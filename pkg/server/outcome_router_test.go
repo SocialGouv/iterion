@@ -55,10 +55,13 @@ func newRouterHarness(t *testing.T) *routerHarness {
 	return &routerHarness{s: s, st: st, dir: filepath.Join(dir, "store")}
 }
 
-// ageRun rewrites the run's persisted updated_at directly in the store
-// layout — no API refreshes it, which is exactly the point: the sweep
-// must find runs whose document has NOT moved.
-func (h *routerHarness) ageRun(t *testing.T, id string, to time.Time) {
+// patchRunDoc rewrites fields of the run's persisted document directly
+// in the store layout. No API does this, which is exactly the point:
+// each caller needs a shape the store's own writers refuse to produce —
+// a document that has NOT moved (the sweep must still find it), a
+// terminal in the past, or the pre-episode zero counter that SaveRun
+// always stamps over.
+func (h *routerHarness) patchRunDoc(t *testing.T, id string, fields map[string]any) {
 	t.Helper()
 	p := filepath.Join(h.dir, "runs", id, "run.json")
 	raw, err := os.ReadFile(p)
@@ -69,34 +72,55 @@ func (h *routerHarness) ageRun(t *testing.T, id string, to time.Time) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse run.json: %v", err)
 	}
-	doc["updated_at"] = to.UTC().Format(time.RFC3339Nano)
-	out, _ := json.Marshal(doc)
+	for k, v := range fields {
+		doc[k] = v
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal run.json: %v", err)
+	}
 	if err := os.WriteFile(p, out, 0o644); err != nil {
 		t.Fatalf("write run.json: %v", err)
 	}
 }
 
+// ageRun backdates updated_at — what the sweep window filters on.
+func (h *routerHarness) ageRun(t *testing.T, id string, to time.Time) {
+	t.Helper()
+	h.patchRunDoc(t, id, map[string]any{"updated_at": to.UTC().Format(time.RFC3339Nano)})
+}
+
 // ageTerminal backdates BOTH stamps that say how long ago a run reached
-// its terminal: updated_at (what the sweep window filters on) and
-// finished_at (what the bank deadline measures from). Same raw rewrite
-// as ageRun, and for the same reason — no API moves them backwards.
+// its terminal: updated_at and finished_at (what the bank deadline
+// measures from).
 func (h *routerHarness) ageTerminal(t *testing.T, id string, to time.Time) {
 	t.Helper()
-	h.ageRun(t, id, to)
-	p := filepath.Join(h.dir, "runs", id, "run.json")
-	raw, err := os.ReadFile(p)
+	stamp := to.UTC().Format(time.RFC3339Nano)
+	h.patchRunDoc(t, id, map[string]any{"updated_at": stamp, "finished_at": stamp})
+}
+
+// zeroOutcomeSeq forces the pre-episode shape (a terminal written by a
+// binary that had no episode bookkeeping). Unreachable through the store
+// API: SaveRun reads a status change as a transition and stampOutcome
+// increments OutcomeSeq for every terminal status.
+func (h *routerHarness) zeroOutcomeSeq(t *testing.T, id string) {
+	t.Helper()
+	h.patchRunDoc(t, id, map[string]any{"outcome_seq": 0})
+	got, err := h.st.LoadRun(context.Background(), id)
 	if err != nil {
-		t.Fatalf("read run.json: %v", err)
+		t.Fatalf("reload after zeroing outcome_seq: %v", err)
 	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("parse run.json: %v", err)
+	if got.OutcomeSeq != 0 {
+		t.Fatalf("outcome_seq rewrite did not take (got %d) — the guard under test would not be exercised", got.OutcomeSeq)
 	}
-	doc["finished_at"] = to.UTC().Format(time.RFC3339Nano)
-	out, _ := json.Marshal(doc)
-	if err := os.WriteFile(p, out, 0o644); err != nil {
-		t.Fatalf("write run.json: %v", err)
-	}
+}
+
+// restoreOutcomeSeq puts the episode back, so a test can prove its
+// silence came from the zero-seq guard and not from the run being
+// unroutable for some other reason.
+func (h *routerHarness) restoreOutcomeSeq(t *testing.T, id string, seq int64) {
+	t.Helper()
+	h.patchRunDoc(t, id, map[string]any{"outcome_seq": seq})
 }
 
 // seedRun creates a terminal run with the given shape. outputs nil ⇒ no
@@ -448,39 +472,59 @@ func TestOutcomeRouter_MergeConflictIsNotRetried(t *testing.T) {
 	}
 }
 
-// A run without the episode bookkeeping (outcome_seq 0 — terminal
-// written by a pre-episode binary) is left alone: no claim key, no
-// unclaimed action.
+// A run without the episode bookkeeping (outcome_seq 0 — a terminal
+// written by a pre-episode binary) is left alone: no stable claim key
+// exists, so the registry cannot make the action idempotent and the
+// router must not act unclaimed.
+//
+// The shape is unreachable through the store API — SaveRun treats the
+// status change as a transition and stampOutcome increments OutcomeSeq
+// for every terminal — so the counter is zeroed by a raw run.json
+// rewrite, the same way ageRun backdates a timestamp. The earlier
+// version of this test tried to reach it through SaveRun, always
+// observed seq 1 and returned before its only assertion, so it could
+// never fail; and its claim that the guard was "covered by the queued-run
+// path in the fixtures test" did not hold either — every run there goes
+// terminal through seedRun and so carries seq >= 1.
 func TestOutcomeRouter_NoEpisodeNoAction(t *testing.T) {
 	h := newRouterHarness(t)
 	ctx := context.Background()
+	// Everything else about this run says "route me": finished, a merge
+	// contract, converged gates, a banked branch. Only the episode
+	// counter is missing.
 	r := h.seedRun(t, "no-episode", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
 		r.RoutingPolicy = mergePolicy("merge")
 		r.Checkpoint = outputs(true, false)
+		r.FinalBranch, r.FinalCommit = "iterion/run/ne", "abc"
 	})
-	// Force the pre-episode shape: terminal status with a zero counter.
-	raw, _ := h.st.LoadRun(ctx, r.ID)
-	raw.Status = store.RunStatusFinished
-	raw.OutcomeSeq = 0
-	// SaveRun would stamp an episode on the status change; write the
-	// legacy shape through the doc-level API by saving twice: first the
-	// transition (stamps seq 1)…
-	if err := h.st.SaveRun(ctx, raw); err != nil {
-		t.Fatal(err)
+	if r.OutcomeSeq == 0 {
+		t.Fatalf("seed should have stamped an episode; the rewrite below would be a no-op")
 	}
-	// …then verify the router leaves a zero-seq run alone by seeding a
-	// FRESH run that never transitioned (created queued, seq 0, status
-	// forced via the raw file is not reachable through the API — so
-	// assert on the seeded seq==0 guard using the queued run directly).
-	if got, _ := h.st.LoadRun(ctx, r.ID); got.OutcomeSeq != 0 {
-		// The FS store stamped an episode (expected: status changed);
-		// the zero-seq guard is then covered by the queued-run path in
-		// the fixtures test. Nothing more to assert here.
-		return
-	}
+	h.zeroOutcomeSeq(t, r.ID)
+
 	h.s.routeOutcomeOffer(ctx, r.ID)
 	if ds := h.decisions(t, r.ID); len(ds) != 0 {
-		t.Fatalf("zero-seq run must be left alone, got %+v", ds)
+		t.Fatalf("a zero-seq run must be left alone, got %+v", ds)
+	}
+	// Through the real sweep too — its window is where such a run would
+	// otherwise be re-offered every 60s.
+	h.ageTerminal(t, r.ID, time.Now().Add(-routerSweepGrace-time.Minute))
+	h.zeroOutcomeSeq(t, r.ID)
+	h.s.outcomeRouterSweepPass(ctx)
+	if ds := h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("the sweep acted on a zero-seq run, got %+v", ds)
+	}
+	if got, _ := h.st.LoadRun(ctx, r.ID); got.MergeStatus == store.MergeStatusMerged {
+		t.Fatal("a zero-seq run was merged unclaimed")
+	}
+
+	// Non-vacuous: restore the episode and the SAME run is decided, so
+	// the two silences above were the zero-seq guard and nothing else.
+	h.restoreOutcomeSeq(t, r.ID, r.OutcomeSeq)
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); len(ds) != 1 {
+		t.Fatalf("with its episode back the run must be decided, got %+v", ds)
 	}
 }
 
