@@ -267,13 +267,20 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 	if !claimed {
 		if existing != nil && existing.State == store.RouteDecisionClaimed &&
 			existing.Attempts >= store.MaxRouteDecisionAttempts && existing.ClaimedAt.Before(staleBefore) {
-			// Poison episode: every permitted claimant died mid-action and
-			// the steal cap now refuses re-arming. Nothing will ever finish
-			// this row — the operator is the only exit, so say so (the
-			// alert claim dedups the once-per-sweep re-offer).
-			s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
+			// Poison episode: every permitted claimant died mid-action (or
+			// every escalate delivery failed) and the steal cap now refuses
+			// re-arming. The operator is the only exit — so this branch
+			// re-offers the alert EVERY sweep until a channel takes it
+			// (the delivery claim dedups; a failed delivery releases it).
+			// Once the operator has heard it, settle the row so the sweep
+			// stops re-offering a decided run.
+			if err := s.notifyRouteDecisionErr(tctx, run, alert.KindRouteActionFailed,
 				fmt.Sprintf("routing decision %q exhausted its %d attempts without completing — operator action required", existing.Decision, existing.Attempts),
-				fmt.Sprintf("route:%s:%d:exhausted", run.ID, run.OutcomeSeq))
+				fmt.Sprintf("route:%s:%d:exhausted", run.ID, run.OutcomeSeq)); err == nil {
+				s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, "attempts exhausted — operator alerted")
+			} else {
+				s.logWarn("server: outcome router: exhausted-claim alert %s:%d: %v", run.ID, run.OutcomeSeq, err)
+			}
 		} else if existing != nil && s.logger != nil {
 			s.logger.Debug("server: outcome router: episode %s:%d already decided (%s/%s at %s)", run.ID, run.OutcomeSeq, existing.Decision, existing.State, existing.ClaimedAt.Format(time.RFC3339))
 		}
@@ -333,13 +340,19 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 	default: // escalate
 		s.logWarn("server: outcome router: run %s episode %d ESCALATED: %s", run.ID, run.OutcomeSeq, reason)
 		// The alert IS escalate's action: escalate is the DEFAULT
-		// decision and a registry row nobody reads is silence. When
-		// delivery fails on every channel, finish the row FAILED so the
-		// registry's own bounded re-claim re-delivers — the alert claim
-		// makes a retry after a half-delivered attempt a no-op.
+		// decision and a registry row nobody reads is silence. But a
+		// DELIVERY failure is not an ACTION failure — finishing the row
+		// failed would burn the 3-attempt cap in ~3 sweep minutes on a
+		// webhook blip (a Mattermost rolling restart) and silence the
+		// escalation permanently. Leave the row CLAIMED instead: the
+		// 15-min lease steal re-delivers at a calmer cadence, and once
+		// the steal cap is spent the exhausted-claim branch above keeps
+		// offering the alert every sweep until a channel takes it. The
+		// delivery claim makes a retry after a half-delivered attempt a
+		// no-op.
 		if err := s.notifyRouteDecisionErr(tctx, run, alert.KindRouteEscalated, reason,
 			fmt.Sprintf("route:%s:%d:escalated", run.ID, run.OutcomeSeq)); err != nil {
-			s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, "operator alert delivery failed: "+err.Error())
+			s.logWarn("server: outcome router: escalate %s:%d alert delivery failed — retrying on the lease cadence: %v", run.ID, run.OutcomeSeq, err)
 			return
 		}
 		s.finishRouteDecision(tctx, rds, run, store.RouteDecisionSucceeded, "")

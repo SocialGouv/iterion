@@ -10,10 +10,23 @@ with a durable, auditable decision registry as the idempotence.
 - **`ITERION_OUTCOME_ROUTER=on`** on the **server** deployment activates the
   router (any other value = off). It rides the Deployment manifest so every
   replica reads the same value: turning it ON is an explicit rollout.
-- **Turning it OFF needs no rollout**: the sweep re-reads the env every tick
-  and the offer path checks it per run, so `kubectl set env` (or an emergency
-  edit) stops new decisions within a minute. A merge already in flight
-  finishes.
+- **Emergency stop**: `kubectl set env deploy/<server> ITERION_OUTCOME_ROUTER=off`.
+  On Kubernetes this mutates the Deployment and therefore triggers a rolling
+  restart — a process env is immutable, so the per-tick env re-read only
+  matters outside k8s (local `iterion server`, tests). The stop is still
+  fast (no image build, pods recycle in seconds) and a merge already in
+  flight finishes.
+- **Re-enabling catches up the OFF window.** The watermark records the FIRST
+  activation and never moves, so after an off/on cycle the sweep processes
+  terminals that landed while the router was off (bounded by the 24h
+  lookback). That is deliberate — every rolling deploy is a short off/on
+  cycle, and skipping the gap would drop the runs that terminated
+  mid-restart. But after a long DELIBERATE stop, the operator may not want
+  the catch-up (runs they consciously left unrouted): before re-enabling,
+  advance the watermark to "now" — Mongo:
+  `db.run_route_decisions.updateOne({_id: "router:watermark"}, {$set: {claimed_at: new Date()}})`;
+  local store: rewrite `<store>/router_watermark.json`'s `activated_at`.
+  Cancelled runs are never routed in any case.
 - **Activation watermark.** The first replica that starts with the switch on
   persists the activation instant (first-writer-wins,
   `EnsureRouterWatermark`). The sweep never reaches behind it, so flipping
@@ -38,7 +51,7 @@ episode via the registry claim.
 |---|---|
 | `merge` | Only for a `finished` run with a banked branch; goes through the ordinary merge-claim machine (`PerformMergeCtx`), re-reading the run under the claim first. Failure → registry row `failed` + `route_action_failed` ops alert; the bounded re-claim retries. |
 | `relaunch` | **Not wired yet**: the row records `failed` ("execution not enabled") and a `route_action_failed` ops alert asks the operator to act. |
-| `escalate` (the default) | The alert **is** the action: a `route_escalated` ops alert (webhook + errtrack, deduped per episode). If delivery fails on every channel, the row finishes `failed` so the bounded re-claim re-delivers. |
+| `escalate` (the default) | The alert **is** the action: a `route_escalated` ops alert (webhook + errtrack, deduped per episode). A delivery failure does **not** burn the attempt cap: the row stays `claimed`, the 15-min lease steal re-delivers, and once the steal cap is spent the exhausted-claim path re-offers the alert every sweep until a channel takes it — then settles the row. A webhook outage delays an escalation; it can no longer silence it. |
 
 Exclusions the offer enforces: cancelled runs (an operator's stop is never
 auto-routed), paused runs, runs owned by a platform continuation

@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -447,5 +450,165 @@ func TestOutcomeRouter_OrphanClaimIsStolenAfterLease(t *testing.T) {
 	ds := h.decisions(t, r.ID)
 	if len(ds) != 1 || ds[0].State != store.RouteDecisionSucceeded || ds[0].Decision != "escalate" {
 		t.Fatalf("stale claim must be stolen and finished: %+v", ds)
+	}
+}
+
+// backdateClaim rewrites every registry row's claimed_at directly in the
+// store layout — the lease is time-based and nothing else ages a claim.
+func (h *routerHarness) backdateClaim(t *testing.T, runID string, to time.Time) {
+	t.Helper()
+	p := filepath.Join(h.dir, "runs", runID, "route_decisions.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []store.RouteDecision
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	for i := range rows {
+		rows[i].ClaimedAt = to
+	}
+	out, _ := json.Marshal(rows)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// advSink is an ErrorReportingSink whose channel health the test flips.
+type advSink struct {
+	mu    sync.Mutex
+	fail  bool
+	calls []alert.Alert
+}
+
+func (s *advSink) Notify(context.Context, alert.Alert) {}
+func (s *advSink) NotifyErr(_ context.Context, a alert.Alert) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, a)
+	if s.fail {
+		return errors.New("channel down")
+	}
+	return nil
+}
+func (s *advSink) kinds() []alert.Kind {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]alert.Kind, 0, len(s.calls))
+	for _, a := range s.calls {
+		out = append(out, a.Kind)
+	}
+	return out
+}
+
+// TestOutcomeRouter_WatermarkStopsRetroRouting proves the property the
+// activation watermark sells, end to end through the sweep: a run that
+// terminated BEFORE the router went live is never routed, while the same
+// run above the watermark is.
+func TestOutcomeRouter_WatermarkStopsRetroRouting(t *testing.T) {
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	r := h.seedRun(t, "pre-activation", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, true)
+		r.FinalBranch, r.FinalCommit = "iterion/run/pre", "abc"
+	})
+	// Terminal well clear of the sweep grace but BELOW a watermark set
+	// to one hour ago: the router activated after this run died.
+	h.ageRun(t, r.ID, time.Now().Add(-6*time.Hour))
+	wm, _ := json.Marshal(map[string]time.Time{"activated_at": time.Now().Add(-time.Hour).UTC()})
+	if err := os.WriteFile(filepath.Join(h.dir, "router_watermark.json"), wm, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.s.outcomeRouterSweepPass(ctx)
+	if ds := h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("pre-activation terminal was routed: %+v", ds)
+	}
+	// The control that keeps this from passing vacuously: aged ABOVE the
+	// watermark (still past the grace), the same run IS swept.
+	h.ageRun(t, r.ID, time.Now().Add(-30*time.Minute))
+	h.s.outcomeRouterSweepPass(ctx)
+	if ds := h.decisions(t, r.ID); len(ds) != 1 {
+		t.Fatalf("post-activation terminal not routed: %+v", ds)
+	}
+}
+
+// TestOutcomeRouter_EscalateDeliveryFailureDoesNotBurnTheCap replays the
+// round-2 adversarial scenario (a webhook dead for minutes silenced an
+// escalation forever) and pins the recovery contract: a delivery failure
+// leaves the row CLAIMED (no cap burn, lease-paced retries), the
+// exhausted claim keeps offering the alert every sweep, and the first
+// healthy channel both delivers and settles the row.
+func TestOutcomeRouter_EscalateDeliveryFailureDoesNotBurnTheCap(t *testing.T) {
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	sink := &advSink{fail: true}
+	h.s.opsAlerts = &alert.OpsDispatcher{Sinks: []alert.Sink{sink}, Logger: iterlog.Nop()}
+	r := h.seedRun(t, "escalate-dead-webhook", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, true) // blocker → escalate
+		r.FinalBranch, r.FinalCommit = "iterion/run/edw", "abc"
+	})
+
+	// Delivery fails: the row stays claimed on attempt 1 — never failed.
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	ds := h.decisions(t, r.ID)
+	if len(ds) != 1 || ds[0].State != store.RouteDecisionClaimed || ds[0].Attempts != 1 {
+		t.Fatalf("delivery failure must leave the row claimed (attempt 1), got %+v", ds)
+	}
+	// Inside the lease a re-offer is a no-op: no cap burn, no spam.
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); ds[0].Attempts != 1 || ds[0].State != store.RouteDecisionClaimed {
+		t.Fatalf("in-lease re-offer must be a no-op, got %+v", ds)
+	}
+	// Two lease expiries later the steal cap is spent — still claimed.
+	for i := 0; i < 2; i++ {
+		h.backdateClaim(t, r.ID, time.Now().Add(-store.RouteClaimLease-time.Minute))
+		h.s.routeOutcomeOffer(ctx, r.ID)
+	}
+	ds = h.decisions(t, r.ID)
+	if ds[0].State != store.RouteDecisionClaimed || ds[0].Attempts != store.MaxRouteDecisionAttempts {
+		t.Fatalf("steal retries must stop at the cap while claimed, got %+v", ds)
+	}
+	// Exhausted + channel still dead: the row survives for the next try.
+	h.backdateClaim(t, r.ID, time.Now().Add(-store.RouteClaimLease-time.Minute))
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); ds[0].State != store.RouteDecisionClaimed {
+		t.Fatalf("exhausted claim with a dead channel must stay open, got %+v", ds)
+	}
+	// The channel heals: the exhausted-claim alert lands and the row
+	// settles, which also removes the run from the sweep list.
+	sink.mu.Lock()
+	sink.fail = false
+	sink.mu.Unlock()
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	ds = h.decisions(t, r.ID)
+	if len(ds) != 1 || ds[0].State != store.RouteDecisionFailed || !strings.Contains(ds[0].Error, "operator alerted") {
+		t.Fatalf("healed channel must deliver and settle the row, got %+v", ds)
+	}
+	kinds := sink.kinds()
+	if len(kinds) < 2 || kinds[len(kinds)-1] != alert.KindRouteActionFailed {
+		t.Fatalf("expected failed escalate deliveries then a successful exhaustion alert, got %v", kinds)
+	}
+	sawEscalate := false
+	for _, k := range kinds {
+		if k == alert.KindRouteEscalated {
+			sawEscalate = true
+		}
+	}
+	if !sawEscalate {
+		t.Fatalf("no escalate delivery was ever attempted: %v", kinds)
+	}
+	ids, err := h.st.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == r.ID {
+			t.Fatalf("settled run still in the sweep list: %v", ids)
+		}
 	}
 }

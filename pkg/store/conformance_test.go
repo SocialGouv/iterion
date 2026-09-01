@@ -798,4 +798,15 @@ func testRouteDecisionRegistry(t *testing.T, s RunStore) {
 	if !found["routable-b"] {
 		t.Fatalf("failed-under-cap run dropped from the sweep: %v", ids)
 	}
+
+	// Oldest first is the contract, and the limit truncates AFTER the
+	// sort: with limit 1 the oldest sleeping terminal must surface —
+	// not the lexically-first or insertion-first one (a directory-order
+	// truncation starves exactly the run the sweep net exists for).
+	time.Sleep(5 * time.Millisecond)
+	mk("aaa-routable-newer", true, true)
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 1)
+	if err != nil || len(ids) != 1 || ids[0] != "routable-b" {
+		t.Fatalf("ListRoutableRuns(limit=1) = (%v, %v), want the oldest routable run [routable-b]", ids, err)
+	}
 }

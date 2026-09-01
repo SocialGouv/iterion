@@ -146,9 +146,13 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 		}
 		return nil, fmt.Errorf("store: list routable runs: %w", err)
 	}
-	var out []string
+	type cand struct {
+		id string
+		at time.Time
+	}
+	var cands []cand
 	for _, e := range entries {
-		if !e.IsDir() || len(out) >= limit {
+		if !e.IsDir() {
 			continue
 		}
 		r, err := s.loadRunRaw(e.Name())
@@ -163,7 +167,19 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 		if settled, err := s.episodeSettled(r.ID, r.OutcomeSeq); err != nil || settled {
 			continue
 		}
-		out = append(out, r.ID)
+		cands = append(cands, cand{id: r.ID, at: r.UpdatedAt})
+	}
+	// Oldest first, and only THEN the limit — truncating in directory
+	// (lexical) order would make the oldest sleeping terminal, the very
+	// run this net exists for, structurally unreachable behind a page of
+	// newer ones (the mongo twin documents the same trap).
+	sort.Slice(cands, func(i, j int) bool { return cands[i].at.Before(cands[j].at) })
+	if len(cands) > limit {
+		cands = cands[:limit]
+	}
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, c.id)
 	}
 	return out, nil
 }
