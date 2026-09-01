@@ -115,10 +115,51 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
+	// Same per-bot fan-out as the GitHub PR lane — resolved BEFORE the
+	// hold-label/bot guards so the replier gate below can name the bot whose
+	// forge token authenticates the authz lookup.
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
+	if len(rules) == 0 {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Replier authorization on the re-request lane (R7e050f): every other
+	// MANUAL trigger on this webhook (`/revi`, `/command`, reply-in-thread,
+	// `/revi approve`) goes through the AuthorizedRepliers/MinReplierRole
+	// gate — the button must too. "The forge gates who may edit reviewers"
+	// is not sufficient: GitLab lets an MR AUTHOR edit their own MR's
+	// reviewers without holding a project role, which would hand a fork
+	// contributor a repeatable, hold-label-exempt trigger. An unauthorized
+	// click simply DEMOTES reviewRequested — the delivery then rides
+	// whatever lane still admits it (resync) or is filtered, with the
+	// hold-label exemption gone along with the gesture's authority.
+	if reviewRequested {
+		gate := s.webhookReviewRequestGate
+		if gate == nil {
+			gate = s.realWebhookReviewRequestGate
+		}
+		authorized, reason, gerr := gate(ctx, cfg, p, rules[0].BotID)
+		if gerr != nil {
+			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
+			httpError(w, http.StatusBadGateway, "authorization check failed")
+			return
+		}
+		if !authorized {
+			reviewRequested = false
+			if !p.IsReviewable() && !gateResync {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+		}
+	}
+
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the MR
-	// vetoes the auto-review. Same escape hatch as the GitHub PR path. A
-	// re-request is exempt like the `/command` lanes: the label pauses
-	// automation, not a deliberate manual trigger.
+	// vetoes the auto-review. Same escape hatch as the GitHub PR path. An
+	// AUTHORIZED re-request is exempt like the `/command` lanes: the label
+	// pauses automation, not a deliberate manual trigger.
 	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
@@ -139,20 +180,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
-	// Same per-bot fan-out as the GitHub PR lane — this MR lane is a separate
-	// function, so parity is not free and must be kept explicitly.
-	//
-	// Routes on the event actor rather than the MR's author, unlike GitHub:
-	// GitLab's merge_request payload carries only `author_id`, so resolving
-	// the author's username would need an extra API call on the hot path. The
-	// difference shows only on a re-review triggered by someone other than
-	// the MR author, which needs ReviewOnSync to be on in the first place.
-	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
-	if len(rules) == 0 {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
-		return
-	}
+	// (Routing note: the fan-out above resolves on the event actor rather
+	// than the MR's author, unlike GitHub — GitLab's merge_request payload
+	// carries only `author_id`, so resolving the author's username would
+	// need an extra API call on the hot path.)
 
 	// Idempotency: one launch per (tenant, webhook, project, MR, head sha) —
 	// per bot once the delivery fans out. The "mr|" prefix keeps the key space
@@ -562,6 +593,35 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 	}
 	if !ok {
 		return false, "replier not authorized: " + p.AuthorUsername, nil
+	}
+	return true, reason, nil
+}
+
+// realWebhookReviewRequestGate is the production replier gate of the
+// re-request-review lane: the SAME controls every other manual trigger
+// honours — cfg.AuthorizedRepliers OR a project role ≥ cfg.MinReplierRole
+// (empty → developer) — applied to the account that clicked the button.
+// Resolution failures refuse (fail closed): this gate is the lane's whole
+// authorization story.
+func (s *Server) realWebhookReviewRequestGate(ctx context.Context, cfg webhooks.Config, p gitlab.Parsed, botID string) (bool, string, error) {
+	token, terr := s.resolveForgeToken(ctx, cfg, botID)
+	if terr != nil || token == "" {
+		return false, "re-request refused: no forge token resolved (configure a forge_token binding)", nil
+	}
+	baseURL, refusal := resolveForgeBaseURL(cfg, p.MRURL)
+	if refusal != "" {
+		return false, refusal, nil
+	}
+	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
+	ok, reason, err := gitlab.AuthorizeReplier(ctx, api, gitlab.ReplierAuth{
+		AuthorID: p.SenderID, AuthorUsername: p.SenderUsername, ProjectID: p.ProjectID,
+		Allowlist: cfg.AuthorizedRepliers, MinRole: cfg.MinReplierRole,
+	})
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "re-request review by unauthorized replier: " + p.SenderUsername, nil
 	}
 	return true, reason, nil
 }

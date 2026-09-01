@@ -278,8 +278,14 @@ Semantics, shared with `/revi` (deliberate manual gesture):
   head reviews twice; forge redeliveries of the same click stay deduped;
 - **open PRs/MRs only** — reviewer edits arrive freely on closed/merged
   ones and never burn a run;
-- **authorized by the forge** — editing a PR's reviewers already requires
-  write access, so no extra replier gate applies;
+- **replier-gated like `/revi`** — the click is authorized through the
+  same `authorized_repliers` allowlist / `min_replier_role` project-role
+  gate (default developer) as every other manual trigger. "The forge
+  gates reviewer edits" is not enough: GitLab lets an MR AUTHOR edit
+  their own MR's reviewers without holding a project role, which would
+  hand a fork contributor a repeatable trigger. An unauthorized click is
+  demoted — the delivery rides whatever automatic lane still admits it
+  (with the hold label honoured) or is filtered;
 - **never self-triggering** — a reviewers change whose *actor* is the bot
   itself (the self-assign echoing back) is filtered
   ([pkg/server/webhooks_common.go:isIterionBotReviewRequest](../pkg/server/webhooks_common.go)).

@@ -39,20 +39,24 @@ func (s *Server) registerWebhookRoutes() {
 }
 
 type webhookConfigReq struct {
-	Name                *string           `json:"name,omitempty"`
-	Provider            *string           `json:"provider,omitempty"`
-	SignMode            *string           `json:"sign_mode,omitempty"`
-	Enabled             *bool             `json:"enabled,omitempty"`
-	BotIDs              []string          `json:"bot_ids,omitempty"`
-	WildcardBots        *bool             `json:"wildcard_bots,omitempty"`
-	DefaultBotID        *string           `json:"default_bot_id,omitempty"`
-	ProjectAllowlist    []string          `json:"project_allowlist,omitempty"`
-	EventAllowlist      []string          `json:"event_allowlist,omitempty"`
-	AuthorAllowlist     []string          `json:"author_allowlist,omitempty"`
-	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
-	HoldLabels          []string          `json:"hold_labels,omitempty"`
-	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
-	ReviewOnSync        *bool             `json:"review_on_sync,omitempty"`
+	Name             *string  `json:"name,omitempty"`
+	Provider         *string  `json:"provider,omitempty"`
+	SignMode         *string  `json:"sign_mode,omitempty"`
+	Enabled          *bool    `json:"enabled,omitempty"`
+	BotIDs           []string `json:"bot_ids,omitempty"`
+	WildcardBots     *bool    `json:"wildcard_bots,omitempty"`
+	DefaultBotID     *string  `json:"default_bot_id,omitempty"`
+	ProjectAllowlist []string `json:"project_allowlist,omitempty"`
+	EventAllowlist   []string `json:"event_allowlist,omitempty"`
+	AuthorAllowlist  []string `json:"author_allowlist,omitempty"`
+	LabelAllowlist   []string `json:"label_allowlist,omitempty"`
+	HoldLabels       []string `json:"hold_labels,omitempty"`
+	BlockForkPRs     *bool    `json:"block_fork_prs,omitempty"`
+	ReviewOnSync     *bool    `json:"review_on_sync,omitempty"`
+	// ReviewOnSyncPinned clears (false) or restates (true) the provenance
+	// pin an explicit review_on_sync set leaves behind; absent = derived
+	// from whether review_on_sync itself is being set.
+	ReviewOnSyncPinned  *bool             `json:"review_on_sync_pinned,omitempty"`
 	Overlap             *string           `json:"overlap,omitempty"`
 	AutoImplementOnOpen *bool             `json:"auto_implement_on_open,omitempty"`
 	BranchImproveAsPR   *bool             `json:"branch_improve_as_pr,omitempty"`
@@ -263,6 +267,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		HoldLabels:          req.HoldLabels,
 		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
 		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
+		ReviewOnSyncPinned:  req.ReviewOnSync != nil, // an explicit set at create is a decision too
 		Overlap:             overlapOrEmpty(req.Overlap),
 		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
 		RateLimit:           rate,
@@ -435,6 +440,13 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ReviewOnSync != nil {
 		cfg.ReviewOnSync = *req.ReviewOnSync
+		// An explicit set is an operator decision: pin it so the gating
+		// derivation stops rewriting the field at the next provision (in
+		// either direction — see webhooks.Config.ReviewOnSyncPinned).
+		cfg.ReviewOnSyncPinned = true
+	}
+	if req.ReviewOnSyncPinned != nil {
+		cfg.ReviewOnSyncPinned = *req.ReviewOnSyncPinned
 	}
 	if req.Overlap != nil {
 		cfg.Overlap = strings.TrimSpace(*req.Overlap)

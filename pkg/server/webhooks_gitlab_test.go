@@ -222,6 +222,9 @@ func TestGitLabWebhook_ReRequestReviewLaunches(t *testing.T) {
 	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
 		return requested("iterion-bot")
 	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
 	cfg := glConfig()
 
 	// The open already claimed this head under the "mr|" key space…
@@ -325,6 +328,9 @@ func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
 	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
 		return requested("iterion-bot")
 	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
 	cfg := glConfig()
 	cfg.ReviewOnSync = true
 
@@ -354,6 +360,51 @@ func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
 	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), pureResync, gitlab.EventHeaderMergeRequest))
 	if calls != 1 {
 		t.Fatalf("pure resync on the same head must dedupe against the first launch: calls=%d", calls)
+	}
+}
+
+// R7e050f: the button is a MANUAL trigger like /revi, and must ride the same
+// replier controls (AuthorizedRepliers / MinReplierRole). An unauthorized
+// click never launches — and never earns the hold-label exemption: with no
+// stub the production gate fail-closes on the missing forge token, which is
+// exactly the state this harness runs in.
+func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg := glConfig()
+
+	// Production gate, no stub: no forge token resolvable → refused, filtered.
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("unauthorized re-request must filter: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// An explicit refusal from the gate seam behaves identically.
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return false, "re-request review by unauthorized replier: mallory", nil
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:01:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("refused re-request must filter: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+
+	// An authz ERROR is a 502 so the forge redelivers (mirror of the note gate).
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return false, "", context.DeadlineExceeded
+	}
+	w3 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:02:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w3.Code != http.StatusBadGateway || calls != 0 {
+		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
 	}
 }
 

@@ -489,7 +489,14 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
 
+	// The derivation only owns UNPINNED syncs: an operator's explicit
+	// review_on_sync set (ReviewOnSyncPinned, stamped by the webhook API) is
+	// never silently replaced — in either direction (Rf2f99f).
 	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot) && !operatorGateDisabled(operatorVars)
+	reviewOnSyncPinned := hasPrevCfg && prevCfg.ReviewOnSyncPinned
+	if reviewOnSyncPinned {
+		reviewOnSync = prevCfg.ReviewOnSync
+	}
 	// Same release-visibility rule as the backfill: a full provision that
 	// rebuilds the config without the sync a previous one carried is the
 	// definitive moment of a repo-wide posture change.
@@ -530,6 +537,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		AuthorAllowlist:    authorAllowlist,
 		LabelAllowlist:     operatorLabels,
 		ReviewOnSync:       reviewOnSync,
+		ReviewOnSyncPinned: reviewOnSyncPinned,
 		ForgeBaseURL:       conn.BaseURL(),
 		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
 		LaunchVars:         nilIfEmpty(launchVars),
@@ -1136,10 +1144,14 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 	// An operator pin of gate_enabled=false is an explicit per-repo decision
 	// to run without a merge gate — the "gate needs re-review-on-sync to
 	// survive" derivation no longer applies, in EITHER direction: don't force
-	// sync on, and release a sync the derivation itself had forced.
+	// sync on, and release a sync the derivation itself had forced. A sync
+	// the operator set EXPLICITLY through the webhook API
+	// (cfg.ReviewOnSyncPinned) is not the derivation's to touch at all — an
+	// explicit choice is never silently replaced (Rf2f99f); an unpinned
+	// value is presumed derivation-owned.
 	gateOff := operatorGateDisabled(cfg.OperatorLaunchVars)
-	wantSync := anyBotGatesMerges(bots, frByBot) && !gateOff
-	dropSync := gateOff && cfg.ReviewOnSync
+	wantSync := anyBotGatesMerges(bots, frByBot) && !gateOff && !cfg.ReviewOnSyncPinned
+	dropSync := gateOff && cfg.ReviewOnSync && !cfg.ReviewOnSyncPinned
 	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) && !dropSync {
 		return nil
 	}

@@ -26,6 +26,7 @@ type Parsed struct {
 	UpdatedAt      string // object_attributes.updated_at — distinguishes successive update events on one head
 	Labels         []string
 	SenderUsername string // the actor that opened/reopened the MR (e.g. "renovate")
+	SenderID       int64  // the actor's numeric account id (replier authz + loop-guard)
 	// Draft reports whether the MR is currently a work-in-progress draft. A
 	// draft MR never auto-triggers a bot (IsReviewable is false).
 	Draft bool
@@ -106,6 +107,7 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 		UpdatedAt:      oa.UpdatedAt,
 		Labels:         labels,
 		SenderUsername: e.User.Username,
+		SenderID:       e.User.ID,
 		Draft:          oa.Draft || oa.WorkInProgress,
 		BecameReady:    becameReady,
 

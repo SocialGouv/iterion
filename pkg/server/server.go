@@ -263,6 +263,12 @@ type Server struct {
 	// resolves the provisioned forge Connection and probes the parser
 	// predicate with its logins). nil → realIterionBotReviewRequest.
 	webhookIterionBotReviewRequest func(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool
+	// webhookReviewRequestGate overrides the replier authorization of the
+	// re-request-review lane (test seam — the real impl resolves the bot's
+	// forge token and applies the same AuthorizedRepliers/MinReplierRole
+	// controls as every other manual trigger). nil →
+	// realWebhookReviewRequestGate.
+	webhookReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p gitlab.Parsed, botID string) (authorized bool, reason string, err error)
 	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.

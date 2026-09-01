@@ -157,7 +157,13 @@ Two properties of the pin worth knowing before setting it:
   (a provision that drops a previously-forced `review_on_sync`), and any
   later launch-vars update that replaces the map WITHOUT the pin silently
   restores the gating posture (fail-safe direction — the gate follows the
-  head again).
+  head again);
+- the derivation only rewrites **unpinned** syncs: a `review_on_sync` an
+  operator set explicitly through the webhook API is provenance-pinned
+  (`review_on_sync_pinned`) and never silently replaced in either
+  direction — so per-push advisory reviews WITHOUT a gate (sync pinned
+  true + `gate_enabled: "false"`) is expressible and survives
+  re-provisions.
 
 What the pin disarms, end to end:
 
