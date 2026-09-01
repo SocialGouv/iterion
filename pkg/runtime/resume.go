@@ -253,25 +253,9 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// publisher flips the run to queued before the runner claims the
 	// resume message (Resume's queued case routed here on the pending
 	// interaction evidence). The CAS still serializes concurrent claims.
-	if err := e.claimForResume(ctx, runID, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	// The claim also CONSUMES the pause pointer — see claimForResume.
+	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
 		return err
-	}
-
-	// The pause pointer is CONSUMED by this resume. The checkpoint now
-	// survives the running claim (ADR-095: a status transition never
-	// destroys it), so leaving the interaction evidence in place would
-	// hand a STALE InteractionID to Resume's `queued` router after a
-	// later park (drain, orphan sweep): that re-entry would route back
-	// here and overwrite the operator's recorded answers with the
-	// retry's empty ones — silently crossing the human gate. With the
-	// pointer cleared, a park inside this window resumes through
-	// resumeFromFailure anchored on cp.NodeID: the gate re-pauses and
-	// re-asks, answers intact.
-	consumed := *cp // cp stays in use in-memory (the delegate-pause branch)
-	consumed.InteractionID = ""
-	consumed.InteractionQuestions = nil
-	if err := e.store.SaveCheckpoint(ctx, runID, &consumed); err != nil && e.logger != nil {
-		e.logger.Warn("resume %s: could not clear the consumed pause pointer: %v", runID, err)
 	}
 
 	// Build runState before edge selection so failures are resumable.
@@ -441,21 +425,59 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 }
 
 // claimForResume atomically claims a run for resume via a compare-and-set
-// on the run status, then emits run_resumed (no data). Returns a clear
-// error when the CAS rejects the transition — typically a second concurrent
-// resume racing the first, which we refuse rather than spawn a duplicate
-// execution clobbering run.json. Used by the human-pause path; the
-// failed-resumable path claims via claimForFailureResume because it
-// carries resume-data on the emit.
-func (e *Engine) claimForResume(ctx context.Context, runID string, allowed ...store.RunStatus) error {
-	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", allowed)
+// on the run status, consumes the pause pointer, then emits run_resumed
+// (no data). Returns a clear error when the CAS rejects the transition —
+// typically a second concurrent resume racing the first, which we refuse
+// rather than spawn a duplicate execution clobbering run.json. The single
+// choke point for BOTH human-pause resume paths (single-shot answers and
+// the review gate) — a claim without the consumption reopens the
+// stale-pointer window on that path alone. The failed-resumable path
+// claims via claimForFailureResume because it carries resume-data on the
+// emit (its checkpoint holds no pause pointer: failure boundaries never
+// set one, and a pause's pointer was consumed by the resume that used it).
+func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, allowed ...store.RunStatus) error {
+	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
 	if !claimed {
-		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", runID)
+		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", r.ID)
 	}
-	return e.emit(ctx, runID, store.EventRunResumed, "", nil)
+	e.consumePausePointer(ctx, r, cp)
+	return e.emit(ctx, r.ID, store.EventRunResumed, "", nil)
+}
+
+// consumePausePointer clears the interaction evidence off the persisted
+// checkpoint right after a resume claim. The checkpoint survives the
+// running claim (ADR-095: a status transition never destroys it), so
+// leaving the evidence in place would hand a STALE InteractionID to
+// Resume's `queued` router after a later park (drain, orphan sweep): that
+// re-entry would route back into the pause path and overwrite the
+// operator's recorded answers with the retry's empty ones — silently
+// crossing the human gate. With the pointer cleared, a park inside this
+// window resumes through resumeFromFailure anchored on cp.NodeID: the
+// gate re-pauses and re-asks, answers intact.
+func (e *Engine) consumePausePointer(ctx context.Context, r *store.Run, cp *store.Checkpoint) {
+	if cp == nil || (cp.InteractionID == "" && len(cp.InteractionQuestions) == 0) {
+		return
+	}
+	// The caller's cp stays whole: the delegate-pause and review-gate
+	// paths still read its InteractionID in memory.
+	consumed := *cp
+	consumed.InteractionID = ""
+	consumed.InteractionQuestions = nil
+	err := e.store.SaveCheckpoint(ctx, r.ID, &consumed)
+	if err != nil {
+		// One retry: a failed consumption reopens the human-gate window,
+		// while aborting here would wedge a run already claimed running.
+		err = e.store.SaveCheckpoint(ctx, r.ID, &consumed)
+	}
+	if err != nil && e.logger != nil {
+		e.logger.Error("resume %s: could not clear the consumed pause pointer — a later park may replay interaction %q over the operator's answers: %v", r.ID, cp.InteractionID, err)
+	}
+	// Align the in-memory run with what is persisted, so a future
+	// SaveRun(r) on this path cannot resurrect the pointer.
+	r.Checkpoint = &consumed
 }
 
 // seedRepoRootForResume fills e.repoRoot from the run record when it has
@@ -1997,10 +2019,12 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	// which therefore still carries the pre-claim status. SaveRun writes
 	// the whole document, so saving `r` verbatim would silently undo the
 	// claim: the run persists as cancelled/paused_* for its entire
-	// execution, the Checkpoint and FinishedAt that the `running`
-	// transition deliberately cleared come back, and — worst — the
+	// execution, the FinishedAt that the `running` transition
+	// deliberately cleared comes back, and — worst — the
 	// duplicate-resume guard falls, letting a second concurrent resume
-	// claim the same run id and spawn a second engine on it.
+	// claim the same run id and spawn a second engine on it. (The
+	// Checkpoint is NOT part of that argument: a status transition never
+	// destroys it — ADR-095 §5.)
 	fresh, lerr := e.store.LoadRun(ctx, r.ID)
 	if lerr != nil {
 		if e.logger != nil {

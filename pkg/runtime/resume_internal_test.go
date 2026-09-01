@@ -336,10 +336,12 @@ func TestCurrentLoopIterationPath_FallbackToEdgeMembership(t *testing.T) {
 // to `running`, and the claim helpers mutate their OWN copy of the record
 // (UpdateRunStatusIf → loadRunRaw), never the caller's. Saving that stale
 // in-memory snapshot verbatim silently undid the claim: the run persisted
-// as cancelled/paused_* for its whole execution, the Checkpoint and
-// FinishedAt the `running` transition deliberately clears came back, and
-// the duplicate-resume guard fell — a second concurrent resume would find
-// a resumable status, win its CAS, and spawn a second engine on one run id.
+// as cancelled/paused_* for its whole execution, the FinishedAt the
+// `running` transition deliberately clears came back, and the
+// duplicate-resume guard fell — a second concurrent resume would find a
+// resumable status, win its CAS, and spawn a second engine on one run id.
+// (The Checkpoint survives every transition — ADR-095 §5 — so it is not
+// part of that argument; the test asserts the restamp preserves it too.)
 func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 	ctx := context.Background()
 	st := tmpStore(t)
@@ -397,8 +399,13 @@ func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 // running claim (ADR-095), leaving a stale InteractionID would route a
 // LATER park's resume back into the pause path and overwrite the
 // operator's answers with empty ones (silently crossing the human
-// gate). A spy store records the write sequence so the oracle holds
-// whatever the rest of the flow does afterwards.
+// gate). The oracle is POSITIONAL — the FIRST checkpoint write after
+// the claim must be the consumption itself: an "any write with an empty
+// pointer" oracle is satisfied by every ordinary boundary write
+// (buildCheckpoint never sets InteractionID), so it goes green the
+// moment the fixture grows a downstream node, fix present or not. The
+// fixture deliberately HAS one (gate → calc → end) to keep the oracle
+// honest against that failure mode.
 func TestResumeFromPauseConsumesThePausePointer(t *testing.T) {
 	base := tmpStore(t)
 	spy := &checkpointSpyStore{RunStore: base}
@@ -413,24 +420,63 @@ func TestResumeFromPauseConsumesThePausePointer(t *testing.T) {
 	}
 	e := &Engine{store: spy, workflow: &ir.Workflow{Name: "wf", Nodes: map[string]ir.Node{
 		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
-	}}}
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
 	run, err := base.LoadRun(ctx, "run-consume")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = e.resumeFromPause(ctx, run, map[string]any{"approve": "YES"})
-	consumedSeen := false
-	for _, w := range spy.writes {
-		if w.InteractionID == "" && len(w.InteractionQuestions) == 0 {
-			consumedSeen = true
-			break
-		}
-		if w.InteractionID == "I1" {
-			continue // pre-claim bookkeeping may re-save the pointer
-		}
+	if rerr := e.resumeFromPause(ctx, run, map[string]any{"approve": "YES"}); rerr != nil {
+		t.Logf("resumeFromPause returned: %v", rerr)
 	}
-	if !consumedSeen {
-		t.Fatalf("no checkpoint write ever cleared the pause pointer (writes: %d) — a park after the claim would replay interaction I1 and overwrite the operator's answers", len(spy.writes))
+	if len(spy.writes) == 0 {
+		t.Fatal("no checkpoint write at all")
+	}
+	w := spy.writes[0]
+	if w.NodeID != "gate" || w.InteractionID != "" || len(w.InteractionQuestions) != 0 {
+		t.Fatalf("first checkpoint write after the claim is %+v; want the gate checkpoint with the pause pointer cleared — a park before the consumption would replay interaction I1 and overwrite the operator's answers", w)
+	}
+}
+
+// Same contract, applied to the OTHER resume path out of a human pause:
+// the review gate. resumeFromPause returns into resumeReviewGate before
+// the single-shot machinery, so its claim must consume the pointer too —
+// the shared claimForResume helper is what holds both paths to it.
+func TestReviewGateConsumesThePausePointer(t *testing.T) {
+	base := tmpStore(t)
+	spy := &checkpointSpyStore{RunStore: base}
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-review", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-review", cp); err != nil {
+		t.Fatal(err)
+	}
+	hn := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, MaxTurns: 3}
+	hn.Interaction = ir.InteractionReview
+	e := &Engine{store: spy, workflow: &ir.Workflow{Name: "wf", Nodes: map[string]ir.Node{
+		"gate": hn,
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	run, err := base.LoadRun(ctx, "run-review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rerr := e.resumeFromPause(ctx, run, map[string]any{
+		"__review_action": "request_changes",
+	}); rerr != nil {
+		t.Logf("resumeFromPause returned: %v", rerr)
+	}
+	if len(spy.writes) == 0 {
+		t.Fatal("no checkpoint write at all")
+	}
+	w := spy.writes[0]
+	if w.NodeID != "gate" || w.InteractionID != "" || len(w.InteractionQuestions) != 0 {
+		t.Fatalf("first checkpoint write after the review-gate claim is %+v; want the gate checkpoint with the pause pointer cleared — a status-only park in that window leaves interaction I1 live, and Resume's queued router sends the re-entry straight back into the review dialogue", w)
 	}
 }
 

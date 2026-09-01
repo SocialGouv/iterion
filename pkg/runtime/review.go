@@ -107,16 +107,13 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 	}
 
 	// Claim the run (paused → running) so a duplicate concurrent resume
-	// can't spawn a second execution.
-	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
-		[]store.RunStatus{store.RunStatusPausedWaitingHuman})
-	if claimErr != nil {
-		return fmt.Errorf("runtime: claim run for review resume: %w", claimErr)
-	}
-	if !claimed {
-		return fmt.Errorf("runtime: run %q is already being executed; refusing duplicate review resume", runID)
-	}
-	if err := e.emit(ctx, runID, store.EventRunResumed, "", nil); err != nil {
+	// can't spawn a second execution. The shared claim helper also
+	// consumes the pause pointer — without it, a status-only park between
+	// this claim and the next checkpoint boundary would leave the stale
+	// InteractionID live, and Resume's `queued` router would send the
+	// re-entry straight back into the review dialogue (an approved,
+	// already-merged gate re-pausing with an empty human turn).
+	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 

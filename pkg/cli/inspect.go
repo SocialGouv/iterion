@@ -164,20 +164,28 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 		}
 	}
 
-	// Checkpoint info (for paused runs).
-	if r.Checkpoint != nil {
+	// Checkpoint info. The checkpoint survives every status transition
+	// (ADR-095), so gate on the statuses where it is a live recovery
+	// point — on a running or terminal run it is history, and rendering
+	// "Paused at" there would misreport the run.
+	if r.Checkpoint != nil && r.Status.CanOperatorResume() {
 		p.Blank()
 		p.Header("Checkpoint")
-		p.KV("Paused at", r.Checkpoint.NodeID)
-		p.KV("Interaction", r.Checkpoint.InteractionID)
-
-		// Show pending interaction questions.
-		inter, err := s.LoadInteraction(context.Background(), opts.RunID, r.Checkpoint.InteractionID)
-		if err == nil && len(inter.Questions) > 0 {
-			p.Blank()
-			p.Line("  Questions:")
-			for k, v := range inter.Questions {
-				p.Line("    %s: %v", k, v)
+		nodeLabel := "Node"
+		if r.Status.IsPaused() {
+			nodeLabel = "Paused at"
+		}
+		p.KV(nodeLabel, r.Checkpoint.NodeID)
+		// The interaction is a pause pointer: pending only while paused.
+		if r.Status.IsPaused() && r.Checkpoint.InteractionID != "" {
+			p.KV("Interaction", r.Checkpoint.InteractionID)
+			inter, err := s.LoadInteraction(context.Background(), opts.RunID, r.Checkpoint.InteractionID)
+			if err == nil && len(inter.Questions) > 0 {
+				p.Blank()
+				p.Line("  Questions:")
+				for k, v := range inter.Questions {
+					p.Line("    %s: %v", k, v)
+				}
 			}
 		}
 	}
