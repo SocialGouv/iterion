@@ -56,6 +56,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
@@ -1755,6 +1756,8 @@ func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint.InteractionID != "I1" {
 		t.Errorf("SaveCheckpoint on a PAUSED run stripped the live pointer (%q) — the next resume cannot load its interaction", r.Checkpoint.InteractionID)
+	}
+}
 
 // testMergeClaimCAS drives the merge state machine at the store level:
 // the claim CAS (entry), the conditional persist (exit), the stale
@@ -1902,5 +1905,46 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	if _, err := s.UpdateRunMergeIf(ctx, "run-merge-claim-ghost", store.RunMergeUpdate{Status: store.MergeStatusPending},
 		[]store.MergeStatus{""}); err == nil {
 		t.Fatal("UpdateRunMergeIf on a missing run must error")
+	}
+}
+
+// testSaveRunPreservesLiveMergeClaim: the merge claim is owned by the
+// merge choke points (ClaimMerge / UpdateRunMergeIf); a full-document
+// SaveRun from a writer that loaded the run BEFORE the claim (operator
+// rename, rewind bookkeeping, cloud publisher stamps) must not disavow
+// a live claim — clobbering merge_status+merge_claimed_at re-opens the
+// double-squash the claim exists to prevent (the next claimant passes
+// immediately while the first is mid-merge).
+func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "mc-save", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The stale copy, loaded before the claim.
+	stale, err := s.LoadRun(ctx, "mc-save")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC())
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	// The stale writer saves (e.g. a rename): the claim must survive.
+	stale.Name = "renamed"
+	if err := s.SaveRun(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "mc-save")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name != "renamed" {
+		t.Errorf("the save's own payload was lost: name=%q", r.Name)
+	}
+	if r.MergeStatus != store.MergeStatusMerging {
+		t.Errorf("SaveRun disavowed a live merge claim: merge_status=%q, want %q — the next claimant would double-squash", r.MergeStatus, store.MergeStatusMerging)
+	}
+	if !r.MergeClaimedAt.Equal(token) {
+		t.Errorf("SaveRun dropped the claim stamp: %v, want %v", r.MergeClaimedAt, token)
 	}
 }

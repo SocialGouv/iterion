@@ -222,6 +222,25 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	r.UpdatedAt = time.Now().UTC()
 	r.SchemaVersion = SchemaVersion
 	stampTenant(ctx, r)
+	// The merge claim is owned by ClaimMerge/UpdateRunMergeIf. A caller
+	// whose copy predates a live claim (rename, rewind bookkeeping)
+	// must not disavow it through this full-document replace. Best-
+	// effort read-then-replace (a claim landing inside this window can
+	// still be clobbered — the FS twin is atomic under its mutex; a
+	// version CAS on SaveRun is the real fix, follow-up), which closes
+	// the measured window: a stale copy loaded BEFORE the claim.
+	if r.MergeStatus != store.MergeStatusMerging {
+		var cur struct {
+			MergeStatus    store.MergeStatus `bson:"merge_status"`
+			MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
+		}
+		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
+			options.FindOne().SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})).Decode(&cur); ferr == nil &&
+			cur.MergeStatus == store.MergeStatusMerging {
+			r.MergeStatus = cur.MergeStatus
+			r.MergeClaimedAt = cur.MergeClaimedAt
+		}
+	}
 	// The notDeleted predicate closes the guard's TOCTOU window: a
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then

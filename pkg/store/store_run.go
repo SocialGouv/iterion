@@ -161,6 +161,17 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The merge claim is owned by ClaimMerge/UpdateRunMergeIf. A caller
+	// whose copy predates a live claim (rename, rewind bookkeeping)
+	// must not disavow it through this full-document write: clobbering
+	// merge_status+merge_claimed_at lets the next claimant through
+	// while the first is mid-merge — the double-squash the claim
+	// exists to prevent. Atomic here (under s.mu, same as writeRun).
+	if cur, err := s.loadRunRaw(r.ID); err == nil &&
+		cur.MergeStatus == MergeStatusMerging && r.MergeStatus != MergeStatusMerging {
+		r.MergeStatus = cur.MergeStatus
+		r.MergeClaimedAt = cur.MergeClaimedAt
+	}
 	return s.writeRun(r)
 }
 

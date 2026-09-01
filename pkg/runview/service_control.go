@@ -311,9 +311,13 @@ type MergeResponse struct {
 // mergeClaimStaleAfter bounds how long a merge claim protects its
 // holder: a "merging" older than this is up for grabs (the claimant
 // crashed mid-merge — a wedged claim must not block the run forever).
-// Generous vs the per-command git timeouts (120s) plus a server-side
-// clone of a large repo.
-const mergeClaimStaleAfter = 15 * time.Minute
+// Sized with margin above the worst-case LIVE claimant: the summed
+// per-command git ceilings on the repo-targeted path (clone 120s +
+// fetch 120s + symbolic-ref 60s + squash attempts 4×60s + push 120s
+// ≈ 14 min) — a steal below that races a claimant that is merely slow,
+// and the token only protects the record, not two concurrent git
+// pushes.
+const mergeClaimStaleAfter = 30 * time.Minute
 
 // mergeUpdateFromRun snapshots r's current merge bookkeeping into a
 // RunMergeUpdate, so a transition writes the fields it changes and
@@ -565,12 +569,16 @@ func (s *Service) reconcileOutOfBand(ctx context.Context, r *store.Run, repoRoot
 	if target == "" || !gitlib.IsAncestor(repoRoot, r.FinalCommit, target) {
 		return false, nil
 	}
-	r.MergedCommit = r.FinalCommit
-	r.MergedInto = target
-	r.MergeStatus = store.MergeStatusMerged
-	r.PendingMergeMessage = ""
-	r.PendingMergeInto = ""
-	upd := mergeUpdateFromRun(r)
+	// Mutate a COPY: on a lost CAS the caller keeps using r, and phantom
+	// merged_commit/merged_into riding into its next transition would
+	// persist a failed record claiming a merge that never landed.
+	rr := *r
+	rr.MergedCommit = rr.FinalCommit
+	rr.MergedInto = target
+	rr.MergeStatus = store.MergeStatusMerged
+	rr.PendingMergeMessage = ""
+	rr.PendingMergeInto = ""
+	upd := mergeUpdateFromRun(&rr)
 	upd.ExpectClaimedAt = claimToken
 	changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, upd, expectedFrom)
 	if err != nil {
@@ -581,6 +589,7 @@ func (s *Service) reconcileOutOfBand(ctx context.Context, r *store.Run, repoRoot
 		// their transition wins; report "nothing reconciled".
 		return false, nil
 	}
+	*r = rr
 	if s.logger != nil {
 		s.logger.Info("runview: run %s already merged out-of-band into %s (FinalCommit %s is an ancestor) — reconciled merge_status=merged", r.ID, target, r.FinalCommit)
 	}
