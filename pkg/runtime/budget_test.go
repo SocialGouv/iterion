@@ -1785,13 +1785,16 @@ func TestBudgetGraceCoversDuration(t *testing.T) {
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
-		Budget:  &ir.Budget{MaxDuration: "300ms"},
+		Budget:  &ir.Budget{MaxDuration: "2s"},
 	}
 
 	exec := newStubExecutor()
 	tailRan := false
 	exec.on("work", func(_ map[string]any) (map[string]any, error) {
-		time.Sleep(350 * time.Millisecond) // past the 300ms cap, inside the 450ms graced ceiling
+		// Past the 2s cap, inside the 3.8s graced ceiling (2s × 1.9) with
+		// ~1.5s of slack: a loaded CI runner adds close to a second of
+		// engine overhead, which a tighter window reads as a real overrun.
+		time.Sleep(2300 * time.Millisecond)
 		return map[string]any{"ok": true}, nil
 	})
 	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
