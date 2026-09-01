@@ -56,7 +56,7 @@ func TestLifecyclePredicateMatrix(t *testing.T) {
 		{"CountsAgainstLaunchLimit", RunStatus.CountsAgainstLaunchLimit, map[RunStatus]bool{
 			RunStatusQueued: true, RunStatusRunning: true,
 		}},
-		{"carriesFailureCode", RunStatus.carriesFailureCode, map[RunStatus]bool{
+		{"CarriesFailureCode", RunStatus.CarriesFailureCode, map[RunStatus]bool{
 			RunStatusFailed: true, RunStatusFailedResumable: true,
 			RunStatusCancelled: true,
 		}},
@@ -91,8 +91,8 @@ func TestLifecyclePredicateRelations(t *testing.T) {
 			t.Errorf("CountsAgainstLaunchLimit(%s) overlaps terminal/paused", st)
 		}
 		// A failure code may only persist on terminal failure shapes.
-		if st.carriesFailureCode() && !(st.IsFinalFailure() || st.IsTerminalResumable()) {
-			t.Errorf("carriesFailureCode(%s) outside failure statuses", st)
+		if st.CarriesFailureCode() && !(st.IsFinalFailure() || st.IsTerminalResumable()) {
+			t.Errorf("CarriesFailureCode(%s) outside failure statuses", st)
 		}
 	}
 }

@@ -69,7 +69,7 @@ func seedFailedResumable(t *testing.T, s *Store, runID string) {
 	if err := s.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
-	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "synthesize"}, "usage window exhausted"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "synthesize"}, "usage window exhausted", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 }

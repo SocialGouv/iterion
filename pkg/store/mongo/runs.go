@@ -625,12 +625,20 @@ func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served 
 	return nil
 }
 
-func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
-	now := time.Now().UTC()
+// runStatusUpdate builds the shared $set/$unset pair for a status
+// transition — the Mongo twin of the FS store's applyStatusTransition,
+// including the FailureCode discipline: set on a failure status,
+// cleared by every transition to a non-failure one.
+func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCode, now time.Time) (bson.M, bson.M) {
 	set := bson.M{
 		"status":     status,
 		"updated_at": now,
 		"error":      runErr,
+	}
+	if status.CarriesFailureCode() {
+		set["failure_code"] = code
+	} else {
+		set["failure_code"] = ""
 	}
 	unset := bson.M{}
 	switch status {
@@ -651,6 +659,17 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 		// elapsed-time UI doesn't stay frozen.
 		unset["finished_at"] = ""
 	}
+	return set, unset
+}
+
+func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
+	return s.UpdateRunStatusCoded(ctx, id, status, runErr, "")
+}
+
+// UpdateRunStatusCoded is UpdateRunStatus carrying the typed failure
+// classification in the same $set.
+func (s *Store) UpdateRunStatusCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode) error {
+	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
 	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
 	if len(unset) > 0 {
 		update["$unset"] = unset
@@ -666,25 +685,13 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 // since the caller's last read (concurrent transition by another
 // publisher, runner, or operator).
 func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, runErr string, expectedFrom []store.RunStatus) (bool, error) {
-	now := time.Now().UTC()
-	set := bson.M{
-		"status":     status,
-		"updated_at": now,
-		"error":      runErr,
-	}
-	unset := bson.M{}
-	switch status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		set["finished_at"] = now
-	case store.RunStatusQueued:
-		set["queued_at"] = now
-		unset["finished_at"] = ""
-	case store.RunStatusRunning:
-		set["error"] = ""
-		unset["finished_at"] = ""
-	case store.RunStatusPausedWaitingHuman:
-		unset["finished_at"] = ""
-	}
+	return s.UpdateRunStatusIfCoded(ctx, id, status, runErr, "", expectedFrom)
+}
+
+// UpdateRunStatusIfCoded is the CAS variant carrying the typed failure
+// classification — code and status land in one atomic UpdateOne.
+func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode, expectedFrom []store.RunStatus) (bool, error) {
+	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
 	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
 	if len(unset) > 0 {
 		update["$unset"] = unset
@@ -726,6 +733,9 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 			"updated_at":  now,
 			"finished_at": now,
 			"error":       runErr,
+			// Queue-park classification is follow-up; empty = unknown,
+			// and the field always reflects the LAST transition.
+			"failure_code": "",
 		},
 		"$inc": bson.M{"version": 1},
 	})
@@ -772,15 +782,16 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // FailRunResumable writes the checkpoint, flips status to
 // failed_resumable, and records the failure reason. Resume can then
 // re-pick up at NodeID without replaying upstream work.
-func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
+func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
 	now := time.Now().UTC()
 	update := bson.M{
 		"$set": bson.M{
-			"status":      store.RunStatusFailedResumable,
-			"checkpoint":  cp,
-			"error":       runErr,
-			"updated_at":  now,
-			"finished_at": now,
+			"status":       store.RunStatusFailedResumable,
+			"checkpoint":   cp,
+			"error":        runErr,
+			"failure_code": code,
+			"updated_at":   now,
+			"finished_at":  now,
 		},
 		"$inc": bson.M{"version": 1},
 	}
@@ -808,15 +819,16 @@ func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Check
 // records the failure reason. The run is terminal — no auto-resume — but
 // the checkpoint is preserved so the operator can still rewind it
 // explicitly. Same atomic cancelled-guard as FailRunResumable.
-func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
+func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
 	now := time.Now().UTC()
 	update := bson.M{
 		"$set": bson.M{
-			"status":      store.RunStatusFailed,
-			"checkpoint":  cp,
-			"error":       runErr,
-			"updated_at":  now,
-			"finished_at": now,
+			"status":       store.RunStatusFailed,
+			"checkpoint":   cp,
+			"error":        runErr,
+			"failure_code": code,
+			"updated_at":   now,
+			"finished_at":  now,
 		},
 		"$inc": bson.M{"version": 1},
 	}

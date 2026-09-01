@@ -23,19 +23,22 @@ func TestSetupFailureStatus(t *testing.T) {
 	cancelOperator()
 
 	for _, tc := range []struct {
-		name   string
-		ctx    context.Context
-		want   store.RunStatus
-		reason string
+		name     string
+		ctx      context.Context
+		want     store.RunStatus
+		wantCode store.FailureCode
 	}{
-		{"a runner drain is resumable", interrupted, store.RunStatusFailedResumable, "interrupted"},
-		{"an operator cancel says so", operator, store.RunStatusCancelled, "cancelled"},
+		{"a runner drain is resumable", interrupted, store.RunStatusFailedResumable, store.FailureInterrupted},
+		{"an operator cancel says so", operator, store.RunStatusCancelled, store.FailureCancelled},
 		{"a real setup error still fails", context.Background(), store.RunStatusFailed, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, msg := setupFailureStatus(tc.ctx, "sandbox start", boom)
+			got, msg, code := setupFailureStatus(tc.ctx, "sandbox start", boom)
 			if got != tc.want {
 				t.Fatalf("status = %q, want %q (msg %q)", got, tc.want, msg)
+			}
+			if code != tc.wantCode {
+				t.Errorf("code = %q, want %q", code, tc.wantCode)
 			}
 			if !strings.Contains(msg, "sandbox start") || !strings.Contains(msg, boom.Error()) {
 				t.Errorf("the message must keep the phase and the cause; got %q", msg)

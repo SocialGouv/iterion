@@ -88,7 +88,7 @@ func (e *Engine) finalizeSpentBudgetBeforeResume(ctx context.Context, r *store.R
 	// The run was claimed to running immediately before this guard. Restore
 	// its existing rich checkpoint while moving it back to failed_resumable,
 	// exactly like failRunErrWithCheckpoint does after an in-loop budget death.
-	if err := e.store.FailRunResumable(ctx, r.ID, r.Checkpoint, rtErr.Message); err != nil {
+	if err := e.store.FailRunResumable(ctx, r.ID, r.Checkpoint, rtErr.Message, rtErr.Code); err != nil {
 		if e.logger != nil {
 			e.logger.Error("failed to persist pre-resume budget failure: %v", err)
 		}

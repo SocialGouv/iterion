@@ -550,7 +550,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		if preservedCp == nil {
 			preservedCp = &store.Checkpoint{NodeID: humanNodeID}
 		}
-		if err := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error()); err != nil {
+		if err := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error(), ""); err != nil {
 			// FailRunResumable failed too — fall back to a hard
 			// "failed" status flip so the run doesn't appear stuck.
 			// If even that fails, log loudly: the store is in a bad
@@ -673,7 +673,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		if preservedCp == nil {
 			preservedCp = &store.Checkpoint{NodeID: e.workflow.Entry}
 		}
-		if frErr := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error()); frErr != nil {
+		if frErr := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error(), ""); frErr != nil {
 			// FailRunResumable failed — fall back to a plain terminal status so
 			// the run doesn't linger as `running`. If THAT also fails the run is
 			// stuck non-terminal (an orphan the operator must hand-hack), so

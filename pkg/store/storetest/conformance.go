@@ -56,6 +56,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
+	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -1112,6 +1113,66 @@ func testStatusTransitions(t *testing.T, s store.RunStore) {
 	}
 }
 
+// testFailureCodeLifecycle pins the ADR-095 persistence discipline on
+// BOTH store twins: the typed code lands in the same write as the
+// failure status (plain, coded-CAS and FailRun* forms), an UNKNOWN
+// code round-trips unharmed (open-world contract), and EVERY
+// transition to a non-failure status clears it — the invariant that
+// keeps a resumed run from lying about a past failure.
+func testFailureCodeLifecycle(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_fc", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	// FailRunResumable carries the code atomically.
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_fc", cp, "quota window shut", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "run_fc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FailureCode != store.FailureUsageLimitBlocked {
+		t.Fatalf("FailureCode after FailRunResumable: got %q", r.FailureCode)
+	}
+	// Resume (any transition to running) clears code AND error together.
+	if err := s.UpdateRunStatus(ctx, "run_fc", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" || r.Error != "" {
+		t.Fatalf("resume must clear code+error, got code=%q error=%q", r.FailureCode, r.Error)
+	}
+	// Coded CAS: code and status land in one write.
+	changed, err := s.UpdateRunStatusIfCoded(ctx, "run_fc", store.RunStatusCancelled, "run cancelled", store.FailureCancelled, []store.RunStatus{store.RunStatusRunning})
+	if err != nil || !changed {
+		t.Fatalf("coded CAS: changed=%v err=%v", changed, err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != store.FailureCancelled {
+		t.Fatalf("FailureCode after coded CAS: got %q", r.FailureCode)
+	}
+	// Transition to queued (the cloud resume pre-flip) clears it too —
+	// the invariant covers queued, not only running.
+	if _, err := s.UpdateRunStatusIf(ctx, "run_fc", store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" {
+		t.Fatalf("queued must clear the code, got %q", r.FailureCode)
+	}
+	// Open-world: an unknown, non-empty code survives persistence.
+	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailed, "boom", store.FailureCode("SOME_FUTURE_CODE_V9")); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "SOME_FUTURE_CODE_V9" {
+		t.Fatalf("unknown code mangled: %q", r.FailureCode)
+	}
+}
+
 // testFailRunTerminal pins the checkpoint-preserving terminal failure on
 // BOTH store twins: status failed + checkpoint retained + FinishedAt set,
 // and the atomic cancelled-outranks guard. The DSL fail-node path depends
@@ -1122,7 +1183,7 @@ func testFailRunTerminal(t *testing.T, s store.RunStore) {
 		t.Fatal(err)
 	}
 	cp := &store.Checkpoint{NodeID: "node-f"}
-	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node"); err != nil {
+	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node", store.FailureFailNode); err != nil {
 		t.Fatalf("FailRunTerminal: %v", err)
 	}
 	r, err := s.LoadRun(testCtx(), "run_ft")
@@ -1149,7 +1210,7 @@ func testFailRunTerminal(t *testing.T, s store.RunStore) {
 	if err := s.UpdateRunStatus(testCtx(), "run_ft_cancel", store.RunStatusCancelled, "operator stop"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure"); err != nil {
+	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure", ""); err != nil {
 		t.Fatalf("FailRunTerminal on a cancelled run: %v", err)
 	}
 	r, err = s.LoadRun(testCtx(), "run_ft_cancel")

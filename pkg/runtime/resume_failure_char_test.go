@@ -89,7 +89,7 @@ func TestResumeFromFailure_ResumableStatusTable(t *testing.T) {
 				Outputs: map[string]map[string]any{"step_a": {"result": "ok"}},
 			}
 			if tc.viaFailResumable {
-				if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+				if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 					t.Fatalf("FailRunResumable: %v", err)
 				}
 			} else {
@@ -158,7 +158,7 @@ func TestResumeFromFailure_NoCheckpointRestartsFromEntry(t *testing.T) {
 	if _, err := s.CreateRun(ctx, runID, "resume_char", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := s.FailRunResumable(ctx, runID, nil, "pre-first-node boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, nil, "pre-first-node boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestResumeFromFailure_RestoresLoopCounters(t *testing.T) {
 		Outputs:      map[string]map[string]any{"fix": {"attempt": 1}},
 		LoopCounters: map[string]int{"retry": 1},
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -344,7 +344,7 @@ func TestResumeFromFailure_CheckpointMapsNotMutated(t *testing.T) {
 		LoopCounters:     map[string]int{},
 		ArtifactVersions: map[string]int{},
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -421,7 +421,7 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 		BackendConversation: conversation,
 		BackendSessionID:    "sess-42",
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -528,7 +528,7 @@ func TestResumeFromFailure_ExecutorEnvRestored(t *testing.T) {
 	if _, err := s.CreateRun(ctx, runID, "resume_char_env", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "step_a"}, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "step_a"}, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -577,7 +577,7 @@ func TestResumeFromFailure_BudgetSpendRestored(t *testing.T) {
 		Outputs:       map[string]map[string]any{"step_a": {"result": "ok"}},
 		BudgetCostUSD: 5.0, // already over the 1.0 cap
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -626,7 +626,7 @@ func TestResumeFromFailure_BudgetExitGraceFinishesAt105Percent(t *testing.T) {
 		Outputs:       map[string]map[string]any{"step_a": {"result": "ok"}},
 		BudgetCostUSD: 1.05,
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -735,7 +735,7 @@ func TestResumeFromFailure_ExhaustedDurationFinalizesBeforeSandbox(t *testing.T)
 		Outputs:         map[string]map[string]any{"step_a": {"result": "ok"}},
 		BudgetElapsedNS: (11 * time.Minute).Nanoseconds(),
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 

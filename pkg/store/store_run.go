@@ -194,6 +194,13 @@ func healRun(r *Run) bool {
 		r.FinishedAt = nil
 		changed = true
 	}
+	// A failure code may only persist on a failure status (the
+	// transition machinery clears it, but a whole-document writer on
+	// an older binary can resurrect a stale one — heal on read).
+	if r.FailureCode != "" && !r.Status.CarriesFailureCode() {
+		r.FailureCode = ""
+		changed = true
+	}
 	return changed
 }
 
@@ -259,6 +266,13 @@ func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error)
 // UpdateRunStatus updates the status (and optional error) of a run.
 // Protected by mu to prevent concurrent read-modify-write races.
 func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error {
+	return s.UpdateRunStatusCoded(ctx, id, status, runErr, "")
+}
+
+// UpdateRunStatusCoded is UpdateRunStatus carrying the typed failure
+// classification; the code lands (or is cleared) in the same write as
+// the status.
+func (s *FilesystemRunStore) UpdateRunStatusCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -266,7 +280,7 @@ func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, sta
 	if err != nil {
 		return err
 	}
-	return s.applyStatusTransition(r, status, runErr)
+	return s.applyStatusTransition(r, status, runErr, code)
 }
 
 // PatchRunSteering persists the live-steering state on run.json.
@@ -337,6 +351,13 @@ func (s *FilesystemRunStore) RecordNodeServed(_ context.Context, id, nodeID stri
 // changed=true on a successful write, false if the status had
 // drifted since the caller's last read.
 func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (bool, error) {
+	return s.UpdateRunStatusIfCoded(ctx, id, status, runErr, "", expectedFrom)
+}
+
+// UpdateRunStatusIfCoded is the CAS variant carrying the typed failure
+// classification — code and status land in one atomic write, never a
+// separate read-modify-write.
+func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -354,7 +375,7 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 	if !matched {
 		return false, nil
 	}
-	if err := s.applyStatusTransition(r, status, runErr); err != nil {
+	if err := s.applyStatusTransition(r, status, runErr, code); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -378,7 +399,9 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
 		return false, nil
 	}
-	if err := s.applyStatusTransition(r, RunStatusFailedResumable, runErr); err != nil {
+	// Classification of the queue-park writer is follow-up work; the
+	// empty code reads as unknown, which is honest here.
+	if err := s.applyStatusTransition(r, RunStatusFailedResumable, runErr, ""); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -388,10 +411,18 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 // UpdateRunStatusIf: mutate r in-place (status, timestamps, terminal
 // finished_at / resume FinishedAt clear, checkpoint clear when leaving
 // paused state), then persist via writeRun. Caller must hold s.mu.
-func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, runErr string) error {
+// The failure code follows the same discipline as Error: set on a
+// failure status, cleared by every transition to a non-failure one —
+// which is what makes a stale code after a resume impossible.
+func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, runErr string, code FailureCode) error {
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
 	r.Error = runErr
+	if status.CarriesFailureCode() {
+		r.FailureCode = code
+	} else {
+		r.FailureCode = ""
+	}
 	switch status {
 	case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable, RunStatusCancelled:
 		t := r.UpdatedAt
@@ -456,7 +487,7 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 // FailRunResumable atomically sets the checkpoint, error message, and status
 // to failed_resumable in a single write, enabling resume from the last
 // successfully completed node.
-func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
+func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -474,6 +505,7 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 	r.Checkpoint = cp
 	r.Status = RunStatusFailedResumable
 	r.Error = runErr
+	r.FailureCode = code
 	t := time.Now().UTC()
 	r.UpdatedAt = t
 	r.FinishedAt = &t
@@ -485,7 +517,7 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 // no auto-resume — but the checkpoint is preserved so the operator can still
 // rewind it explicitly (a run that reached the DSL fail node has a coherent
 // on-disk state worth recovering from).
-func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
+func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -501,6 +533,7 @@ func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp 
 	r.Checkpoint = cp
 	r.Status = RunStatusFailed
 	r.Error = runErr
+	r.FailureCode = code
 	t := time.Now().UTC()
 	r.UpdatedAt = t
 	r.FinishedAt = &t

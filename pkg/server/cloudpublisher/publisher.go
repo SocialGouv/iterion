@@ -1107,7 +1107,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	if prior := strings.TrimSpace(r.Error); prior != "" {
 		reason += " (was " + string(r.Status) + ": " + prior + ")"
 	}
-	changed, err := p.store.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, reason, cancellable)
+	changed, err := p.store.UpdateRunStatusIfCoded(ctx, runID, store.RunStatusCancelled, reason, store.FailureCancelled, cancellable)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: flip status: %w", err)
 	}
@@ -1194,13 +1194,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		if republished {
 			return
 		}
+		// Restore the prior failure classification alongside its text —
+		// the queued claim cleared both. A publish failure gets its own
+		// text but keeps the prior code: the run is back in the state
+		// whose cause that code classifies.
 		runErr := prior.Error
 		if retErr != nil {
 			runErr = fmt.Sprintf("queue resume: %v", retErr)
 		}
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
-		if _, rbErr := p.store.UpdateRunStatusIf(rollbackCtx, spec.RunID, priorStatus, runErr,
+		if _, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
 			[]store.RunStatus{store.RunStatusQueued}); rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}

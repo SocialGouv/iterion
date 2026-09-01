@@ -82,11 +82,11 @@ var KnownFailureCodes = []FailureCode{
 	FailureQueueSchemaMismatch,
 }
 
-// failureStatuses is the only set of statuses on which a non-empty
+// CarriesFailureCode names the only statuses on which a non-empty
 // FailureCode may persist. Every status transition through the store
 // choke points clears the field when the target is outside this set,
 // which is what makes a stale code impossible after a resume.
-func (s RunStatus) carriesFailureCode() bool {
+func (s RunStatus) CarriesFailureCode() bool {
 	return s == RunStatusFailed || s == RunStatusFailedResumable || s == RunStatusCancelled
 }
 
