@@ -745,6 +745,99 @@ func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status st
 	return res.MatchedCount > 0, nil
 }
 
+// mergeStatusFilter builds the merge_status clause for a CAS filter:
+// the empty status matches both an unset field and an explicit "".
+func mergeStatusFilter(expectedFrom []store.MergeStatus) bson.M {
+	hasEmpty := false
+	vals := make([]store.MergeStatus, 0, len(expectedFrom))
+	for _, st := range expectedFrom {
+		if st == "" {
+			hasEmpty = true
+		}
+		vals = append(vals, st)
+	}
+	in := bson.M{"merge_status": bson.M{"$in": vals}}
+	if !hasEmpty {
+		return in
+	}
+	return bson.M{"$or": bson.A{in, bson.M{"merge_status": bson.M{"$exists": false}}}}
+}
+
+// ClaimMerge is the compare-and-set entry to the merge state machine
+// (see store.RunStore), implemented as a conditional FindOneAndUpdate:
+// the flip to "merging" only lands when the persisted status is
+// claimable — unset/pending/failed, or a "merging" whose claim stamp
+// predates staleBefore (the previous claimant crashed mid-merge).
+func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, error) {
+	now := time.Now().UTC()
+	claimable := bson.M{"$or": bson.A{
+		bson.M{"merge_status": bson.M{"$in": bson.A{"", store.MergeStatusPending, store.MergeStatusFailed}}},
+		bson.M{"merge_status": bson.M{"$exists": false}},
+		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$lt": staleBefore}},
+	}}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
+	update := bson.M{
+		"$set": bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": now, "updated_at": now},
+		"$inc": bson.M{"version": 1},
+	}
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.Before).
+		SetProjection(bson.M{"merge_status": 1})
+	var before struct {
+		MergeStatus store.MergeStatus `bson:"merge_status"`
+	}
+	err := s.runs.FindOneAndUpdate(ctx, filter, update, opts).Decode(&before)
+	if err == nil {
+		return true, before.MergeStatus, nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, "", fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	// Not claimable (or missing): read the current status so the caller
+	// can say WHY the claim was refused.
+	var cur struct {
+		MergeStatus store.MergeStatus `bson:"merge_status"`
+	}
+	err = s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+		options.FindOne().SetProjection(bson.M{"merge_status": 1})).Decode(&cur)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, "", fmt.Errorf("store/mongo: claim merge: run %s not found", id)
+		}
+		return false, "", fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	return false, cur.MergeStatus, nil
+}
+
+// UpdateRunMergeIf is the compare-and-set exit from the merge state
+// machine (see store.RunStore): a conditional UpdateOne on the full
+// merge bookkeeping. Empty fields are $unset, mirroring the omitempty
+// shape a full SaveRun would produce.
+func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMergeUpdate, expectedFrom []store.MergeStatus) (bool, error) {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	unset := bson.M{"merge_claimed_at": ""}
+	stringField := func(key, val string) {
+		if val == "" {
+			unset[key] = ""
+		} else {
+			set[key] = val
+		}
+	}
+	stringField("merge_status", string(upd.Status))
+	stringField("merged_commit", upd.MergedCommit)
+	stringField("merged_into", upd.MergedInto)
+	stringField("merge_strategy", string(upd.MergeStrategy))
+	stringField("pending_merge_message", upd.PendingMergeMessage)
+	stringField("pending_merge_into", upd.PendingMergeInto)
+	update := bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{mergeStatusFilter(expectedFrom)}}))
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // FailQueuedRunIfAttempt is the queue-attempt-aware counterpart to the
 // status-only CAS above. queued_at and status are matched in the SAME Mongo
 // update so a concurrent resume cannot slip a newer queued attempt between a

@@ -55,6 +55,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
+	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
@@ -1754,5 +1755,91 @@ func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint.InteractionID != "I1" {
 		t.Errorf("SaveCheckpoint on a PAUSED run stripped the live pointer (%q) — the next resume cannot load its interaction", r.Checkpoint.InteractionID)
+
+// testMergeClaimCAS drives the merge state machine at the store level:
+// the claim CAS (entry), the conditional persist (exit), the stale
+// steal, and the no-clobber-merged invariant that closes the
+// double-squash TOCTOU.
+func testMergeClaimCAS(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-merge-claim"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	notStale := time.Now().Add(-15 * time.Minute)
+
+	// Entry: an unset merge_status is claimable, prior comes back "".
+	claimed, prior, err := s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || !claimed || prior != "" {
+		t.Fatalf("first claim = (%t, %q, %v), want (true, \"\", nil)", claimed, prior, err)
+	}
+	// A held (fresh) claim refuses the second claimant.
+	claimed, prior, err = s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || claimed || prior != store.MergeStatusMerging {
+		t.Fatalf("second claim = (%t, %q, %v), want (false, merging, nil)", claimed, prior, err)
+	}
+
+	// Exit: the holder persists the outcome conditioned on "merging".
+	changed, err := s.UpdateRunMergeIf(ctx, runID, store.RunMergeUpdate{
+		Status:        store.MergeStatusMerged,
+		MergedCommit:  "abc123",
+		MergedInto:    "main",
+		MergeStrategy: store.MergeStrategySquash,
+	}, []store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || !changed {
+		t.Fatalf("persist merged = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.MergeStatus != store.MergeStatusMerged || r.MergedCommit != "abc123" || r.MergedInto != "main" {
+		t.Fatalf("merged bookkeeping = %+v (%v)", r, err)
+	}
+	if !r.MergeClaimedAt.IsZero() {
+		t.Errorf("MergeClaimedAt should be cleared by the exit write, got %v", r.MergeClaimedAt)
+	}
+
+	// No-clobber: a late writer still expecting "merging" (the loser of
+	// a race, or a stolen-claim holder) cannot overwrite "merged".
+	changed, err = s.UpdateRunMergeIf(ctx, runID, store.RunMergeUpdate{Status: store.MergeStatusFailed},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || changed {
+		t.Fatalf("clobber attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, _ := s.LoadRun(ctx, runID); got.MergeStatus != store.MergeStatusMerged || got.MergedCommit != "abc123" {
+		t.Fatalf("merged record damaged: %+v", got)
+	}
+	// And "merged" is terminal for the claim too.
+	claimed, prior, err = s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || claimed || prior != store.MergeStatusMerged {
+		t.Fatalf("claim on merged = (%t, %q, %v), want (false, merged, nil)", claimed, prior, err)
+	}
+
+	// Stale steal: a claim whose stamp predates staleBefore is up for
+	// grabs — the previous claimant crashed mid-merge.
+	const runID2 = "run-merge-claim-stale"
+	if _, err := s.CreateRun(ctx, runID2, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if claimed, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || !claimed {
+		t.Fatalf("seed claim = (%t, %v)", claimed, err)
+	}
+	if claimed, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || claimed {
+		t.Fatalf("fresh claim must hold, got steal (%t, %v)", claimed, err)
+	}
+	claimed, prior, err = s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second))
+	if err != nil || !claimed || prior != store.MergeStatusMerging {
+		t.Fatalf("stale steal = (%t, %q, %v), want (true, merging, nil)", claimed, prior, err)
+	}
+
+	// Exit CAS with the empty status in expectedFrom matches an unset
+	// field (a run that never entered the machine).
+	const runID3 = "run-merge-claim-virgin"
+	if _, err := s.CreateRun(ctx, runID3, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID3, store.RunMergeUpdate{Status: store.MergeStatusPending},
+		[]store.MergeStatus{""})
+	if err != nil || !changed {
+		t.Fatalf("empty-status CAS = (%t, %v), want (true, nil)", changed, err)
 	}
 }

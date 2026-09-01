@@ -131,6 +131,23 @@ type RunStore interface {
 	// cloud publisher to avoid stomping on raced state transitions.
 	UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (changed bool, err error)
 	UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (changed bool, err error)
+	// ClaimMerge is the compare-and-set entry to the merge state
+	// machine: it flips MergeStatus to "merging" and stamps
+	// MergeClaimedAt, iff the current status is claimable — "",
+	// "pending" or "failed", or a "merging" whose MergeClaimedAt is
+	// before staleBefore (the previous claimant crashed; a wedged claim
+	// must not block the run forever). Returns the status the run held
+	// before the claim so an aborted attempt can restore it, and
+	// claimed=false (with the current status) when someone else holds
+	// the claim or the run is already merged/skipped/conflicted.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, err error)
+	// UpdateRunMergeIf is the compare-and-set exit from the merge state
+	// machine: it persists upd's merge fields iff the current
+	// MergeStatus is in expectedFrom (empty string matches an unset
+	// field). Returns changed=false when the state drifted — the caller
+	// lost its claim or raced another writer — in which case nothing
+	// was written.
+	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
 	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error

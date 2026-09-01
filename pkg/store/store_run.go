@@ -408,6 +408,80 @@ func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id stri
 	return true, nil
 }
 
+// mergeClaimable reports whether a run in status cur (with claim time
+// claimedAt) can be claimed for merging at staleBefore: unset, pending
+// and failed are always claimable; a "merging" claim is claimable only
+// once stale (the previous claimant crashed mid-merge).
+func mergeClaimable(cur MergeStatus, claimedAt, staleBefore time.Time) bool {
+	switch cur {
+	case "", MergeStatusPending, MergeStatusFailed:
+		return true
+	case MergeStatusMerging:
+		return claimedAt.Before(staleBefore)
+	default:
+		return false
+	}
+}
+
+// ClaimMerge is the compare-and-set entry to the merge state machine
+// (see store.RunStore). Guarded by the store mutex, so concurrent
+// claimants in one process serialize here.
+func (s *FilesystemRunStore) ClaimMerge(_ context.Context, id string, staleBefore time.Time) (bool, MergeStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, "", err
+	}
+	prior := r.MergeStatus
+	if !mergeClaimable(prior, r.MergeClaimedAt, staleBefore) {
+		return false, prior, nil
+	}
+	r.MergeStatus = MergeStatusMerging
+	r.MergeClaimedAt = time.Now().UTC()
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
+		return false, prior, err
+	}
+	return true, prior, nil
+}
+
+// UpdateRunMergeIf is the compare-and-set exit from the merge state
+// machine (see store.RunStore): the write only lands when the current
+// MergeStatus is in expectedFrom.
+func (s *FilesystemRunStore) UpdateRunMergeIf(_ context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	matched := false
+	for _, want := range expectedFrom {
+		if r.MergeStatus == want {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	r.MergeStatus = upd.Status
+	r.MergedCommit = upd.MergedCommit
+	r.MergedInto = upd.MergedInto
+	r.MergeStrategy = upd.MergeStrategy
+	r.PendingMergeMessage = upd.PendingMergeMessage
+	r.PendingMergeInto = upd.PendingMergeInto
+	r.MergeClaimedAt = time.Time{}
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // FailQueuedRunIfAttempt atomically fails only the queue attempt represented
 // by publishedAt. A later resume refreshes QueuedAt before publishing, so an
 // older delivery cannot clobber that new attempt during its queued→running
