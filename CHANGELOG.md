@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.83.0](https://github.com/SocialGouv/iterion/compare/v3.82.1...v3.83.0) (2026-09-01)
+
+### Features
+
+* **store:** numbered episodes with continuation ownership — the run document stops saying nothing ([#597](https://github.com/SocialGouv/iterion/issues/597)) ([146c7cc](https://github.com/SocialGouv/iterion/commit/146c7cca8f677e0c7a8b1ee4aea437d4380c4cee))
+
+    <details><summary>why</summary>
+
+    A run document that says failed_resumable and nothing else forces every outcome consumer to guess: is a redelivery in flight? did it hit its budget wall? was it an operator stop? Measured on a live campaign: a budget wall hidden behind an empty final_error (the code existed — in the run_failed EVENT, never on the document), and an external router that marked a redelivered run 'handled' while it quietly converged.
+
+    </details>
+
 ## [3.82.1](https://github.com/SocialGouv/iterion/compare/v3.82.0...v3.82.1) (2026-09-01)
 
 ### Bug Fixes
