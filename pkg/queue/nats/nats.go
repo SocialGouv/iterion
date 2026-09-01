@@ -141,6 +141,25 @@ type Conn struct {
 // Nak, which an operator may configure above AckWait. The server's orphan
 // sweeper derives its queued-staleness cutoff from the larger interval so it
 // never flips a message that is still legitimately waiting for redelivery.
+// QueueBacklog reports how many messages wait on the durable consumer —
+// work that exists and nobody has fetched. The server's orphan sweeper
+// reads it to tell "the message is gone" (a real orphan) from "every
+// runner is busy" (a run waiting its turn, which must not be flipped).
+func (c *Conn) QueueBacklog(ctx context.Context) (uint64, error) {
+	// Read the durable consumer's info directly: CreateOrUpdateConsumer
+	// would work too (it is idempotent) but a read must not carry the
+	// power to rewrite the consumer's config on a sweeper tick.
+	cons, err := c.js.Consumer(ctx, c.cfg.StreamName, c.cfg.ConsumerName)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+	}
+	return info.NumPending, nil
+}
+
 func (c *Conn) RedeliveryWindow() time.Duration {
 	interval := c.cfg.AckWait
 	if c.cfg.SchemaMismatchDelay > interval {

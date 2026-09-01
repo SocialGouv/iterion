@@ -63,6 +63,25 @@ const (
 	sweepRunningAfter = 10 * time.Minute
 )
 
+// queueBacklogReader is the optional capability that tells the sweeper
+// whether the QUEUE still holds work nobody has fetched (implemented by
+// natsq.Conn over the durable consumer's NumPending).
+//
+// It separates two causes a "queued row with no lease" cannot tell apart
+// on its own: a message that is GONE (crash mid-decode, purge after
+// MaxDeliver — a genuine orphan, the run must be flipped so resume
+// lights up) and a run that has simply not been fetched YET because
+// every runner is busy. The second is not a fault: with one run per pod
+// and a frozen pool, a long campaign fills the fleet and short runs
+// queue behind it — flipping those killed the instance's own PR reviews
+// (measured 2026-09-01: reviews orphaned while queued, relaunched by the
+// merge gate, orphaned again).
+type queueBacklogReader interface {
+	// QueueBacklog reports how many messages wait on the durable
+	// consumer, i.e. work that exists and nobody has taken.
+	QueueBacklog(ctx context.Context) (uint64, error)
+}
+
 // redeliveryWindower is the optional lease-checker capability the
 // sweeper derives its queued-staleness cutoff from (implemented by
 // natsq.Conn), so the cutoff tracks operator overrides of
@@ -81,6 +100,23 @@ func queuedSweepCutoff(leases runLeaseChecker) time.Duration {
 		}
 	}
 	return sweepQueuedFallback
+}
+
+// queueBacklog asks the queue how much unfetched work it holds. The
+// second return is false when the capability is absent or the read
+// failed — in which case the sweeper behaves exactly as before rather
+// than assuming either answer.
+func (s *Server) queueBacklog(ctx context.Context, leases runLeaseChecker) (uint64, bool) {
+	r, ok := leases.(queueBacklogReader)
+	if !ok {
+		return 0, false
+	}
+	n, err := r.QueueBacklog(ctx)
+	if err != nil {
+		s.logWarn("sweeper: queue backlog unreadable (%v) — the queued pass runs on the lease signal alone", err)
+		return 0, false
+	}
+	return n, true
 }
 
 // runQueueSweeper loops until ctx is cancelled. Started by
@@ -116,6 +152,18 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	passes := []pass{
 		{[]store.RunStatus{store.RunStatusQueued}, now.Add(-queuedSweepCutoff(leases))},
 		{[]store.RunStatus{store.RunStatusRunning}, now.Add(-sweepRunningAfter)},
+	}
+	// A backlog means the queue still holds work nobody has fetched: the
+	// stale queued rows are runs WAITING for a free runner, not orphans.
+	// Skip the queued pass entirely rather than flip them — a run killed
+	// while legitimately waiting is worse than one recovered a tick late,
+	// and the running pass (whose lease check is a real signal) is
+	// unaffected.
+	if backlog, ok := s.queueBacklog(ctx, leases); ok && backlog > 0 {
+		if s.logger != nil {
+			s.logger.Debug("sweeper: %d message(s) still waiting on the consumer — skipping the queued pass (those rows are unclaimed for want of a free runner, not orphaned)", backlog)
+		}
+		passes = passes[1:]
 	}
 	// Per-pass error accounting: any failed step means orphan recovery is
 	// DEGRADED for the runs it skipped — a state a success-only counter

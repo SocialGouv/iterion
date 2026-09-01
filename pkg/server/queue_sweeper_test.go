@@ -248,3 +248,94 @@ func TestSweepOrphanRuns_MixedCauseNeedsBothRecoveries(t *testing.T) {
 		t.Fatal("episode still open after both stages recovered with evidence")
 	}
 }
+
+// fakeBacklogLeases reports a queue backlog, like the real natsq.Conn.
+type fakeBacklogLeases struct {
+	fakeLeases
+	backlog uint64
+	err     error
+}
+
+func (f *fakeBacklogLeases) QueueBacklog(context.Context) (uint64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.backlog, nil
+}
+
+// A queued run with no lease is NOT an orphan while the queue still
+// holds unfetched work: it is waiting for a free runner. One run per
+// pod plus a frozen pool means a long campaign fills the fleet, and
+// flipping the short runs queued behind it killed the instance's own PR
+// reviews (measured 2026-09-01). The running pass, whose lease check is
+// a real signal, must keep working.
+func TestSweepOrphanRuns_queuedWaitingForCapacityIsNotOrphaned(t *testing.T) {
+	s := newOrgTestServer(t)
+	fs := &fakeSweepStore{}
+	s.cfg.Store = fs
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"queued":  {{ID: "r-waiting", TenantID: "t1", Status: "queued"}},
+		"running": {{ID: "r-crashed", TenantID: "t2", Status: "running"}},
+	}}
+	leases := &fakeBacklogLeases{backlog: 3}
+
+	s.sweepOrphanRuns(context.Background(), lister, leases, time.Now().UTC())
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if _, flipped := fs.flipped["r-waiting"]; flipped {
+		t.Fatal("a queued run waiting for a free runner must not be flipped — the queue still holds its message")
+	}
+	if fs.flipped["r-crashed"] != store.RunStatusFailedResumable {
+		t.Fatalf("the running pass must still recover crashed runs: %+v", fs.flipped)
+	}
+}
+
+// An empty queue means the message is GONE: the queued row is a real
+// orphan and must be recovered, exactly as before.
+func TestSweepOrphanRuns_queuedWithEmptyQueueIsStillOrphaned(t *testing.T) {
+	s := newOrgTestServer(t)
+	fs := &fakeSweepStore{}
+	s.cfg.Store = fs
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"queued": {{ID: "r-gone", TenantID: "t1", Status: "queued"}},
+	}}
+
+	s.sweepOrphanRuns(context.Background(), lister, &fakeBacklogLeases{backlog: 0}, time.Now().UTC())
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.flipped["r-gone"] != store.RunStatusFailedResumable {
+		t.Fatalf("a queued row whose message is gone is a real orphan: %+v", fs.flipped)
+	}
+}
+
+// The backlog is an optional capability and an optional answer: a queue
+// that cannot report one leaves the sweeper exactly as it was, rather
+// than assuming either direction.
+func TestSweepOrphanRuns_backlogUnknownKeepsPreviousBehaviour(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		leases runLeaseChecker
+	}{
+		{"capability absent", &fakeLeases{}},
+		{"backlog read fails", &fakeBacklogLeases{err: context.DeadlineExceeded}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newOrgTestServer(t)
+			fs := &fakeSweepStore{}
+			s.cfg.Store = fs
+			lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+				"queued": {{ID: "r-unknown", TenantID: "t1", Status: "queued"}},
+			}}
+
+			s.sweepOrphanRuns(context.Background(), lister, c.leases, time.Now().UTC())
+
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			if fs.flipped["r-unknown"] != store.RunStatusFailedResumable {
+				t.Fatalf("without a backlog answer the sweeper must behave as before: %+v", fs.flipped)
+			}
+		})
+	}
+}
