@@ -1527,3 +1527,97 @@ func TestSubbotInBranchInsideTrunkLoopGetsDistinctReattachKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestResumedBranchStillSeesEnclosingPreviousOutput pins the re-derivation
+// contract behind enclosingLoopPreviousOutput: the field is deliberately NOT
+// persisted on the branch cursor, because a resume rebuilds it from the trunk
+// half (Checkpoint.LoopPreviousOutput -> rs.loopPreviousOutput -> captureBase
+// -> branchBase -> newBranchRunState). If that chain ever breaks,
+// {{loop.<trunk>.previous_output}} silently reads nil inside a resumed branch
+// — no error, just a monotonic-verdict loop that stops seeing its own history.
+func TestResumedBranchStillSeesEnclosingPreviousOutput(t *testing.T) {
+	loopIter := &ir.Ref{Kind: ir.RefLoop, Path: []string{"outer", "iteration"}, Raw: "{{loop.outer.iteration}}"}
+	loopPrev := &ir.Ref{Kind: ir.RefLoop, Path: []string{"outer", "previous_output", "tag"}, Raw: "{{loop.outer.previous_output.tag}}"}
+	wf := &ir.Workflow{
+		Name:  "resumed_branch_enclosing_prev",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"plan":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "plan"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach, Over: "{{outputs.entry.items}}", OverRefs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "items"}}}, ItemBinding: "item"},
+			"gate":     &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "plan"},
+			{From: "plan", To: "dispatch"},
+			{From: "dispatch", To: "gate"},
+			{From: "gate", To: "work", With: []*ir.DataMapping{
+				{Key: "iter", Refs: []*ir.Ref{loopIter}, Raw: loopIter.Raw},
+				{Key: "prev", Refs: []*ir.Ref{loopPrev}, Raw: loopPrev.Raw},
+			}},
+			{From: "work", To: "collect"},
+			{From: "collect", To: "plan", LoopName: "outer", Condition: "again"},
+			{From: "collect", To: "done", IsElse: true},
+		},
+		Loops: map[string]*ir.Loop{
+			"outer": {Name: "outer", MaxIterations: 5, Entries: map[string]bool{"plan": true}, Body: map[string]bool{"plan": true, "dispatch": true, "gate": true, "work": true, "collect": true}},
+		},
+		Foreaches: map[string]*ir.Foreach{},
+		Schemas:   map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{},
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	exec.on("plan", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	var got []map[string]any
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		got = append(got, map[string]any{"iter": input["iter"], "prev": input["prev"]})
+		return map[string]any{}, nil
+	})
+	n := 0
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		n++
+		return map[string]any{"tag": fmt.Sprintf("c%d", n), "again": n < 3}, nil
+	})
+
+	runStore := tmpStore(t)
+	ctx := context.Background()
+	runID := "resumed-branch-enclosing-prev"
+
+	// Three iterations, so the assertion lands where previous_output is
+	// actually populated: it lags one crossing (set from loopCurrentOutput AT
+	// the crossing), exactly as the in-process
+	// TestFanOutInsideTrunkLoopResolvesEnclosingPreviousOutput records.
+	if err := New(wf, runStore, exec).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("first run = %v, want ErrRunPaused at the iteration-0 gate", err)
+	}
+	// Each resume rebuilds runState from the checkpoint in a FRESH engine —
+	// exactly the cold-restart shape the re-derivation has to survive.
+	for i := 1; i <= 2; i++ {
+		if err := New(wf, runStore, exec).Resume(ctx, runID, map[string]any{"approved": true}); !errors.Is(err, ErrRunPaused) {
+			t.Fatalf("resume %d = %v, want ErrRunPaused at the iteration-%d gate", i, err, i)
+		}
+	}
+	if err := New(wf, runStore, exec).Resume(ctx, runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("final resume: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("work calls = %d (%#v), want 3", len(got), got)
+	}
+	if got[0]["iter"] != int64(0) || got[0]["prev"] != nil {
+		t.Fatalf("iteration 0 branch input = %#v, want iter=0 prev=nil", got[0])
+	}
+	if got[1]["iter"] != int64(1) || got[1]["prev"] != nil {
+		t.Fatalf("iteration 1 branch input = %#v, want iter=1 prev=nil (previous_output lags one crossing)", got[1])
+	}
+	if got[2]["iter"] != int64(2) || got[2]["prev"] != "c1" {
+		t.Fatalf("iteration 2 branch input = %#v, want iter=2 prev=c1 — the resumed branch lost the enclosing trunk loop's previous_output", got[2])
+	}
+}
