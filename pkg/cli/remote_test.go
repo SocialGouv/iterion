@@ -529,6 +529,49 @@ func TestRemotePoolPolicy_AudienceTravelsWhole(t *testing.T) {
 	}
 }
 
+// "Whole" cuts BOTH ways, and the narrowing direction is the dangerous
+// one: `pool policy --all-teams=false` turns every dial off, so the
+// audience marshals to an EMPTY object — which must still be sent.
+// Dropping it (an omitempty on a value-typed Audience, say) would make
+// closing a pool that is open to the whole instance a 200 OK that
+// changes nothing, with the operator believing they revoked it.
+func TestRemotePoolPolicy_ClearingTheAudienceIsSent(t *testing.T) {
+	var raw []byte
+	var gotBody map[string]any
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"org1"}`))
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+
+	// Every dial off — what `--all-teams=false` builds.
+	pol := cli.PoolPolicy{Audience: &credpool.Audience{}}
+	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol); err != nil {
+		t.Fatalf("RemotePoolPolicy: %v", err)
+	}
+	aud, ok := gotBody["audience"]
+	if !ok {
+		t.Fatalf("audience dropped from the body %s — closing an open pool would be a silent no-op", raw)
+	}
+	// It must decode server-side as a non-nil Audience (that is what makes
+	// handlePutTeamPool assign it); an empty object is exactly right.
+	m, ok := aud.(map[string]any)
+	if !ok || len(m) != 0 {
+		t.Fatalf("audience = %v, want an empty object", aud)
+	}
+	var srv struct {
+		Audience *credpool.Audience `json:"audience"`
+	}
+	if err := json.Unmarshal(raw, &srv); err != nil {
+		t.Fatal(err)
+	}
+	if srv.Audience == nil {
+		t.Fatal("the server would decode audience as nil and skip the assignment")
+	}
+}
+
 // Standing a NEW pool up without stating the master switch would create
 // it Enabled:false — invisible to the broker's ListEnabled, every pledge
 // under it dead, and nothing says why. The CLI probes first and refuses.
