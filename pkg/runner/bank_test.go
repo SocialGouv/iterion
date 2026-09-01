@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -478,6 +479,15 @@ func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
 	if after.FinalBranch != "" || after.FinalCommit != "" {
 		t.Fatalf("cancelled run recorded FinalBranch=%q FinalCommit=%q, want both empty (not merge-eligible)", after.FinalBranch, after.FinalCommit)
 	}
+	// The branch exists on the forge with nothing on the doc pointing at
+	// it — that state must be on the timeline, not only in a pod log.
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+	if ev == nil {
+		t.Fatal("a pushed-but-unrecorded branch left no run_bank_refused — invisible outside the pod log")
+	}
+	if got := ev.Data["reason"]; got != "cancelled_while_banking" {
+		t.Errorf("reason = %v, want cancelled_while_banking", got)
+	}
 }
 
 // The wall-clock death is the class the death bank most exists for, and
@@ -798,4 +808,729 @@ func TestBankFinishedContainedChainLeavesNoArchive(t *testing.T) {
 	if ev := findEvent(t, r, msg.RunID, store.EventRunBankSuperseded); ev != nil {
 		t.Fatalf("a contained supersede must stay silent, got run_bank_superseded with data=%v", ev.Data)
 	}
+}
+
+// ── Attempt-ref parking (interrupted / paused / lease-loss deaths) ──
+//
+// Those outcomes must not touch the STORAGE branch (another pod may own
+// the lease; FinalBranch on a half-done run would be merge-eligible) —
+// but their work is as stranded as a death's, so it parks on a
+// uniquely-named ref with the run doc left untouched. Falsified both
+// ways: the parking outcomes leave the ref + the timeline event and
+// nothing on the doc; an operator cancel and a verified no-op leave
+// NOTHING; an unverifiable export refuses loudly on the timeline.
+
+func attemptRefAt(t *testing.T, origin, runID, head string) (string, bool) {
+	t.Helper()
+	return refAt(t, origin, "refs/heads/iterion/run-"+runID+"-parked-"+head[:12])
+}
+
+func TestBankAttemptRefParksInterruptedAndPaused(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		err   error
+		cause string
+	}{
+		{"interrupted delivery parks", runtime.ErrRunInterrupted, "interrupted"},
+		{"paused run parks", runtime.ErrRunPaused, "paused"},
+		{"operator pause parks", runtime.ErrRunPausedOperator, "paused_operator"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, msg, work, origin, base := bankFixture(t)
+			gitOut(t, work, "commit", "--allow-empty", "-m", "work in flight")
+			head := gitOut(t, work, "rev-parse", "HEAD")
+
+			r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, c.err)
+
+			if got, present := bankedBranch(t, origin, msg.RunID); present {
+				t.Fatalf("the storage branch must stay untouched, found it at %q", got)
+			}
+			if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+				t.Fatalf("attempt ref = %q (present=%v), want the in-flight head %s parked", got, ok, head)
+			}
+			run := loadRun(t, r, msg.RunID)
+			if run.FinalBranch != "" || run.FinalCommit != "" || run.FinalBranchError != "" {
+				t.Fatalf("run doc = %q/%q/%q, want it untouched (an attempt ref must not be merge-eligible)", run.FinalBranch, run.FinalCommit, run.FinalBranchError)
+			}
+			ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+			if ev == nil {
+				t.Fatal("no run_bank_attempt on the timeline — the parked ref is invisible outside the pod log")
+			}
+			if ev.Data["head"] != head || ev.Data["cause"] != c.cause {
+				t.Errorf("event data = %v, want head %s and cause %q", ev.Data, head, c.cause)
+			}
+		})
+	}
+}
+
+// A bankable death on a ctx cancelled for LEASE LOSS: the storage branch
+// stays with whoever owns the lease, but the work parks on the attempt
+// ref — the case that used to strand it in the snapshot outright.
+func TestBankAttemptRefParksLeaseLossDeath(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work the dying pod holds")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(runtime.ErrRunInterrupted)
+	t.Cleanup(func() { cancel(nil) })
+
+	r.bankIfBankable(ctx, msg, work, base, runtime.WorkspaceIntegrity{}, errors.New("boom"))
+
+	if got, present := bankedBranch(t, origin, msg.RunID); present {
+		t.Fatalf("a lease-loss death must not touch the storage branch, found %q", got)
+	}
+	if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+		t.Fatalf("attempt ref = %q (present=%v), want %s parked", got, ok, head)
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalBranch != "" || run.FinalBranchError != "" {
+		t.Fatalf("run doc = %q/%q, want it untouched", run.FinalBranch, run.FinalBranchError)
+	}
+}
+
+// The operator refusing the work is the one outcome that parks NOTHING —
+// on both roads a cancel can arrive by (classified status, and a
+// bankable death whose ctx cause is the cancel sentinel).
+func TestBankAttemptRefOperatorCancelParksNothing(t *testing.T) {
+	t.Run("classified cancelled", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+
+		r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunCancelled)
+
+		if _, present := bankedBranch(t, origin, msg.RunID); present {
+			t.Fatal("cancelled must not bank the storage branch")
+		}
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("cancelled must not park an attempt ref either")
+		}
+		if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+			t.Fatalf("cancelled left a run_bank_attempt event: %v", ev.Data)
+		}
+	})
+	t.Run("paused on an operator-cancelled ctx", func(t *testing.T) {
+		// The proven minutes-wide window: the pause persisted, then the
+		// operator cancelled while the sandbox export/teardown ran. The
+		// non-bankable road must honour the refusal exactly like the
+		// bankable one.
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(runtime.ErrRunCancelled)
+		t.Cleanup(func() { cancel(nil) })
+
+		r.bankIfBankable(ctx, msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("a pause on an operator-cancelled ctx must not park")
+		}
+		if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+			t.Fatalf("refused work left a run_bank_attempt event: %v", ev.Data)
+		}
+	})
+	t.Run("doc already cancelled parks nothing even on a live ctx", func(t *testing.T) {
+		// The cancel can land without ever cancelling THIS pod's ctx (the
+		// cancel subscription is best-effort). The park re-reads the doc
+		// before pushing, exactly like pushBank does before recording.
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		run := loadRun(t, r, msg.RunID)
+		run.Status = store.RunStatusCancelled
+		if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+			t.Fatalf("flip to cancelled: %v", err)
+		}
+
+		r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("a doc-cancelled run must not park")
+		}
+		// But never in silence: cancelled is a status the product RESUMES
+		// (rewind parks live runs there), so discarding forge-side work
+		// must leave its trace on the timeline.
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+		if ev == nil {
+			t.Fatal("the doc-cancelled skip left no run_bank_attempt — work discarded with zero durable trace on a resumable status")
+		}
+		if errStr, _ := ev.Data["error"].(string); !strings.Contains(errStr, "cancelled") {
+			t.Errorf("event error = %v, want the cancelled-doc skip named", ev.Data["error"])
+		}
+		if ev.Data["head"] != head {
+			t.Errorf("event head = %v, want %s so the work stays findable in the snapshot", ev.Data["head"], head)
+		}
+	})
+	t.Run("bankable death on an operator-cancelled ctx", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(runtime.ErrRunCancelled)
+		t.Cleanup(func() { cancel(nil) })
+
+		r.bankIfBankable(ctx, msg, work, base, runtime.WorkspaceIntegrity{}, errors.New("boom"))
+
+		if _, present := bankedBranch(t, origin, msg.RunID); present {
+			t.Fatal("an operator-cancelled ctx must not bank the storage branch")
+		}
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("an operator-cancelled ctx must not park an attempt ref")
+		}
+		if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+			t.Fatalf("operator cancel left a run_bank_attempt event: %v", ev.Data)
+		}
+	})
+}
+
+// A verified no-op (pod-side HEAD confirms the baseline) parks nothing
+// and stays silent — the attempt ref must not manufacture refs for runs
+// that produced no commits.
+func TestBankAttemptRefVerifiedNoopStaysSilent(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+
+	r.bankIfBankable(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: base}, runtime.ErrRunPaused)
+
+	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("a workless pause parked something anyway: %q (%v)", out, err)
+	}
+	if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+		t.Fatalf("a verified no-op left a run_bank_attempt event: %v", ev.Data)
+	}
+}
+
+// The attempt ref rides the SAME integrity oracle as the storage bank: an
+// export that did not deliver the pod's final tree is refused — but the
+// refusal lands on the TIMELINE, never on FinalBranchError (the run is
+// not terminally unbanked; it may resume, and the field would raise a
+// terminal alarm over a non-terminal outcome).
+func TestBankAttemptRefIntegrityRefusalIsLoudOnTheTimeline(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	podHead := "feedfacefeedfacefeedfacefeedfacefeedface"
+
+	r.bankIfBankable(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead}, runtime.ErrRunInterrupted)
+
+	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("an unverifiable export parked a ref anyway: %q (%v)", out, err)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranchError != "" {
+		t.Fatalf("FinalBranchError = %q, want the attempt-path refusal kept OFF the run doc", run.FinalBranchError)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+	if ev == nil {
+		t.Fatal("the integrity refusal left no run_bank_attempt — a silent loss of the parked-work promise")
+	}
+	if errStr, _ := ev.Data["error"].(string); !strings.Contains(errStr, "export") {
+		t.Errorf("event error = %v, want the export refusal named", ev.Data["error"])
+	}
+	if _, hasRef := ev.Data["ref"]; hasRef {
+		t.Errorf("refusal event carries a ref: %v — exactly one of ref/error may be present", ev.Data)
+	}
+}
+
+// The park's detached ctx must ALWAYS carry a deadline — including when
+// the operator disabled per-op git bounds. That choice bounds one git
+// op; it is not a licence to make a best-effort parking uninterruptible
+// on a pod that already lost its lease (proven: an accept-and-never-
+// answer forge pinned the push forever, and the Nak that triggers
+// redelivery only fires after the park returns).
+func TestAttemptBankContextIsAlwaysBounded(t *testing.T) {
+	old := gitOpTimeout
+	gitOpTimeout = 0 // the operator disabled per-op bounds
+	t.Cleanup(func() { gitOpTimeout = old })
+
+	ctx, cancel := attemptBankContext()
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("the park ctx has no deadline with gitOpTimeout<=0 — an unanswering forge pins the pod forever and delays the redelivery Nak")
+	}
+}
+
+// "Never silence" must hold on the one shape resolveBankHead cannot
+// classify: HEAD unreadable with no integrity signal. The storage bank
+// keeps its historical warn-only behaviour; the PARK path's event is
+// the only durable record, so it must say the work was not parked.
+func TestBankAttemptRefUnreadableHeadIsLoud(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	if err := os.WriteFile(filepath.Join(work, ".git", "HEAD"), []byte("ref: refs/heads/vanished\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunInterrupted)
+
+	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("an unreadable HEAD parked something: %q (%v)", out, err)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+	if ev == nil {
+		t.Fatal("an unreadable HEAD left no run_bank_attempt — total silence on the path whose event is the only record")
+	}
+	if errStr, _ := ev.Data["error"].(string); !strings.Contains(errStr, "HEAD") {
+		t.Errorf("event error = %v, want the unreadable HEAD named", ev.Data["error"])
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalBranchError != "" {
+		t.Fatalf("FinalBranchError = %q, want the park refusal kept off the run doc", run.FinalBranchError)
+	}
+}
+
+// parkIOProbeStore wraps a real store and records the deadline state of
+// the park's store I/O — the round-2 probe made permanent. A wedged
+// store must never pin the pod: the forge got its deadline in round 1,
+// and the store is the same class of external resource, sitting on the
+// same pre-Nak path.
+type parkIOProbeStore struct {
+	store.RunStore
+	loadWindow  chan time.Duration // -1 when no deadline
+	saveWindow  chan time.Duration
+	eventWindow chan time.Duration
+	loadDelay   time.Duration // simulates a slow-but-healthy store
+	loadErr     error         // injected LoadRun failure
+	saveErr     error         // injected SaveRun failure
+}
+
+func window(ctx context.Context) time.Duration {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return -1
+	}
+	return time.Until(d)
+}
+
+func (s *parkIOProbeStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	select {
+	case s.loadWindow <- window(ctx):
+	default:
+	}
+	if s.loadDelay > 0 {
+		select {
+		case <-time.After(s.loadDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+	return s.RunStore.LoadRun(ctx, id)
+}
+
+func (s *parkIOProbeStore) SaveRun(ctx context.Context, run *store.Run) error {
+	if s.saveWindow != nil {
+		select {
+		case s.saveWindow <- window(ctx):
+		default:
+		}
+	}
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	return s.RunStore.SaveRun(ctx, run)
+}
+
+func (s *parkIOProbeStore) AppendEvent(ctx context.Context, runID string, ev store.Event) (*store.Event, error) {
+	select {
+	case s.eventWindow <- window(ctx):
+	default:
+	}
+	return s.RunStore.AppendEvent(ctx, runID, ev)
+}
+
+func TestParkStoreIOIsBounded(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), eventWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work in flight")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+		t.Fatalf("nominal park broken by the probe: ref %q (present=%v)", got, ok)
+	}
+	select {
+	case w := <-probe.loadWindow:
+		if w < 0 {
+			t.Error("the park's doc re-read ran with NO deadline — a wedged store pins the pod forever (round 1's forge class, by another resource)")
+		}
+	default:
+		t.Error("the park never re-read the doc")
+	}
+	select {
+	case w := <-probe.eventWindow:
+		if w < 0 {
+			t.Error("the park's event write ran with NO deadline")
+		} else if w > 30*time.Second {
+			t.Errorf("the event write's window is %s — it must ride its OWN short bound, not the park budget, so the event still lands when the push just died on that budget", w)
+		}
+	default:
+		t.Error("the park never wrote its event")
+	}
+}
+
+// The storage bank's doc pair is PRE-Nak too: a generic `failed` is
+// bankable and naks only after bankIfBankable returns, with the
+// heartbeat still refreshing the lease — so its load->save must be
+// deadlined like every other store op on the teardown traversal. A
+// write that never returns does not serve merge truth; it replaces it
+// with a pod nothing can redeliver.
+func TestStorageBankDocIOIsBounded(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Fatalf("nominal bank broken by the probe: %q (present=%v)", got, ok)
+	}
+	select {
+	case w := <-probe.loadWindow:
+		if w < 0 {
+			t.Error("pushBank's doc load ran with NO deadline — a wedged store pins the pod pre-Nak, lease still refreshing")
+		}
+	default:
+		t.Error("the bank never loaded the doc")
+	}
+	select {
+	case w := <-probe.saveWindow:
+		if w < 0 {
+			t.Error("pushBank's doc save ran with NO deadline")
+		}
+	default:
+		t.Error("the bank never saved the doc")
+	}
+}
+
+// recordBankFailure carries the same doc pair on the same pre-Nak path.
+func TestBankFailureRecordingIsBounded(t *testing.T) {
+	r, msg, _, _, _ := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+
+	r.recordBankFailure(msg, "bank refused: probe")
+
+	select {
+	case w := <-probe.loadWindow:
+		if w < 0 {
+			t.Error("recordBankFailure's doc load ran with NO deadline")
+		}
+	default:
+		t.Error("recordBankFailure never loaded the doc")
+	}
+	select {
+	case w := <-probe.saveWindow:
+		if w < 0 {
+			t.Error("recordBankFailure's doc save ran with NO deadline")
+		}
+	default:
+		t.Error("recordBankFailure never saved the doc")
+	}
+}
+
+// A slow-but-HEALTHY store must not defeat the doc-cancel guard: the
+// round-3 probe answered the cancelled doc in 7s and the 5s-bounded
+// read failed open, pushing refused work. The read rides its own
+// parkDocReadTimeout — wide enough for this case, tight enough that a
+// wedged store cannot spend the doc pair's window in pre-Nak latency
+// (TestParkDocReadBoundIsTight asserts that ceiling); past it,
+// fail-open is the documented preservation-wins residue.
+func TestParkDocCancelGuardSurvivesASlowStore(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	run := loadRun(t, r, msg.RunID)
+	run.Status = store.RunStatusCancelled
+	if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+		t.Fatalf("flip to cancelled: %v", err)
+	}
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), loadDelay: parkDocReadTimeout * 7 / 10}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+		t.Fatal("a slow store defeated the doc-cancel guard: the refused work was pushed anyway")
+	}
+}
+
+// The event write's detachment, exercised at the ONLY moment where the
+// detached and the park-derived shapes diverge: the park budget spent.
+// The push dies on the exhausted budget; the failure event must still
+// land, on a window of its own.
+func TestParkEventLandsWhenTheBudgetIsSpent(t *testing.T) {
+	old := attemptBankBudget
+	attemptBankBudget = time.Millisecond
+	t.Cleanup(func() { attemptBankBudget = old })
+
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store, eventWindow: make(chan time.Duration, 1),
+		loadWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work in flight")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+		t.Fatal("a spent budget still pushed — the probe premise is broken")
+	}
+	select {
+	case w := <-probe.eventWindow:
+		if w < 0 {
+			t.Errorf("the failure event rode the spent park budget (window %s) — it must ride its own bound precisely when the push just died on that budget", w)
+		}
+	default:
+		t.Fatal("the spent-budget park emitted NO event — the exact silence the detached write exists to prevent")
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+	if ev == nil {
+		t.Fatal("no run_bank_attempt persisted")
+	}
+	if _, hasErr := ev.Data["error"]; !hasErr {
+		t.Errorf("event data = %v, want the budget-death error named", ev.Data)
+	}
+}
+
+// ── Round 4: the storage bank's doc I/O exits must be loud and per-op ──
+
+// One shared 30s ctx for load->save meant the save only got what the
+// load left (proven: a 28s load starved a 3s save — branch pushed, doc
+// empty, merge truth lost in silence). Per-op contexts: the save's
+// window must not depend on the load's spend.
+func TestStorageBankSaveGetsItsOwnWindow(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1),
+		loadDelay: 3 * time.Second}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Fatalf("nominal bank broken: %q (present=%v)", got, ok)
+	}
+	// Read through the UNDECORATED store: the delayed probe would charge
+	// the test a second loadDelay for its own assertion.
+	if run, err := probe.RunStore.LoadRun(store.WithIdentity(context.Background(), msg.TenantID, ""), msg.RunID); err != nil || run.FinalBranch == "" {
+		t.Fatalf("the doc pair was not recorded (err=%v)", err)
+	}
+	<-probe.loadWindow
+	select {
+	case w := <-probe.saveWindow:
+		if w < bankDocOpTimeout-1500*time.Millisecond {
+			t.Errorf("save window = %s after a 3s load — the save inherited only what the load left; each doc op must ride its own bound", w)
+		}
+	default:
+		t.Fatal("the bank never saved the doc")
+	}
+}
+
+// Every doc-I/O exit of the storage bank that leaves an accomplished
+// side effect (branch pushed, refusal computed) must land on the
+// timeline — the park already honours this on every exit; these were
+// the five log-only ones.
+func TestStorageBankDocIOFailuresAreLoud(t *testing.T) {
+	t.Run("load failure after the push", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+			t.Fatalf("push should precede the doc read: %q (present=%v)", got, ok)
+		}
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("branch on the forge, doc read dead, timeline EMPTY — the silent merge-truth loss")
+		}
+		if got := ev.Data["reason"]; got != "doc_load_failed" {
+			t.Errorf("reason = %v, want doc_load_failed", got)
+		}
+		if ev.Data["head"] != head {
+			t.Errorf("event head = %v, want the pushed head %s", ev.Data["head"], head)
+		}
+	})
+	t.Run("save failure after the push", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("SaveRun died and the timeline is empty — the doc pair is lost in silence")
+		}
+		if got := ev.Data["reason"]; got != "doc_save_failed" {
+			t.Errorf("reason = %v, want doc_save_failed", got)
+		}
+	})
+	t.Run("refusal recording load failure keeps the cause", func(t *testing.T) {
+		r, msg, _, _, _ := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadErr: errors.New("store down")}
+		r.cfg.Store = probe
+
+		r.recordBankFailure(msg, "bank refused: the exported workspace lost the run's final tree")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("the integrity refusal vanished entirely — neither FinalBranchError nor the timeline carries it")
+		}
+		if cause, _ := ev.Data["cause"].(string); !strings.Contains(cause, "bank refused") {
+			t.Errorf("cause = %v, want the original refusal preserved", ev.Data["cause"])
+		}
+	})
+	t.Run("refusal recording save failure keeps the cause", func(t *testing.T) {
+		r, msg, _, _, _ := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+
+		r.recordBankFailure(msg, "bank refused: probe cause")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("the refusal's save failure is invisible outside the pod log")
+		}
+		if cause, _ := ev.Data["cause"].(string); !strings.Contains(cause, "probe cause") {
+			t.Errorf("cause = %v, want the original refusal preserved", ev.Data["cause"])
+		}
+	})
+}
+
+// The park's doc-cancel courtesy read rides its own tight bound — NOT
+// the doc pair's 30s: on the interrupted path a wedged store was
+// measured costing 30s of pre-Nak latency, 6x the round-2 figure the
+// budget comment argues against.
+func TestParkDocReadBoundIsTight(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+		t.Fatalf("nominal park broken: %q (present=%v)", got, ok)
+	}
+	select {
+	case w := <-probe.loadWindow:
+		if w > parkDocReadTimeout+time.Second {
+			t.Errorf("doc-cancel read window = %s — it must ride its own tight bound (%s), not the doc pair's %s: a wedged store buys that much pre-Nak latency", w, parkDocReadTimeout, bankDocOpTimeout)
+		}
+	default:
+		t.Fatal("the park never re-read the doc")
+	}
+}
+
+// A dead push must be NAMED on every post-push doc-I/O exit: without
+// push_error the event is key-for-key identical to the push-succeeded
+// shape, and once the doc write meant to carry FinalBranchError has
+// died too, push_error is the cause's only durable carrier.
+func TestStorageBankDeadPushExitsNameThePushError(t *testing.T) {
+	deadRemote := func(t *testing.T, work string) {
+		t.Helper()
+		gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
+	}
+	t.Run("dead push x dead save", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		deadRemote(t, work)
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if pe, _ := ev.Data["push_error"].(string); pe == "" {
+			t.Fatalf("event %v claims {branch, head} with no push_error — indistinguishable from a pushed branch, and the push failure has no durable carrier left", ev.Data)
+		}
+	})
+	t.Run("dead push x cancelled doc", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		run := loadRun(t, r, msg.RunID)
+		run.Status = store.RunStatusCancelled
+		if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+			t.Fatal(err)
+		}
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		deadRemote(t, work)
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "failed")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if got := ev.Data["reason"]; got != "cancelled_while_banking" {
+			t.Errorf("reason = %v, want cancelled_while_banking", got)
+		}
+		if pe, _ := ev.Data["push_error"].(string); pe == "" {
+			t.Fatalf("event %v hides the dead push behind cancelled_while_banking", ev.Data)
+		}
+	})
+	// M1 — the hysterical-judge face: a LIVE push must never be declared
+	// dead. push_error present on a succeeded push would be the exact
+	// inverse of the bug this family fixes.
+	t.Run("live push x dead save carries NO push_error", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+			t.Fatalf("push should have landed: %q (present=%v)", got, ok)
+		}
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if _, has := ev.Data["push_error"]; has {
+			t.Fatalf("event %v declares dead a branch that IS on the forge", ev.Data)
+		}
+	})
+	// M2 — the third post-push exit, uncovered until a mutant proved it
+	// could be nil'ed in silence.
+	t.Run("dead push x dead load", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		deadRemote(t, work)
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if got := ev.Data["reason"]; got != "doc_load_failed" {
+			t.Errorf("reason = %v, want doc_load_failed", got)
+		}
+		if pe, _ := ev.Data["push_error"].(string); pe == "" {
+			t.Fatalf("event %v — both push and doc read died and the push failure has no carrier", ev.Data)
+		}
+	})
 }

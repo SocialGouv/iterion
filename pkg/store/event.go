@@ -162,6 +162,21 @@ const (
 	//     integrity-check refusal only
 	//   - reason ("push_failed") / error: the forge refused this
 	//     attempt's push — the push-failure refusal only
+	//   - reason ("doc_load_failed" / "doc_save_failed" /
+	//     "cancelled_while_banking") + head/branch/error/push_error: the
+	//     bank's doc I/O died or was refused AFTER the side effect — the
+	//     branch may sit on the forge with the doc naming nothing, or an
+	//     integrity refusal may have lost its FinalBranchError write; the
+	//     event is then the only durable carrier of what happened. On
+	//     these shapes head sits on the forge ONLY when push_error is
+	//     absent — a present push_error is the explicit marker that the
+	//     push was not confirmed (a deadline can kill the client after
+	//     the server applied the update, so "unconfirmed", not "never
+	//     arrived"). Two producers share the doc_*_failed reasons:
+	//     pushBank's post-push exits carry head/branch (a possibly
+	//     orphaned branch), recordBankFailure's pre-push ones carry
+	//     cause and no head (an integrity refusal that lost its
+	//     FinalBranchError write) — head-vs-cause is the discriminant
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
@@ -179,6 +194,28 @@ const (
 	//     recoverable from the run's git-meta snapshot) — the failure
 	//     shape; exactly one of the two is present
 	EventRunBankSuperseded EventType = "run_bank_superseded"
+	// EventRunBankAttempt marks an attempt's work being parked on its own
+	// uniquely-named ref (iterion/run-<id>-parked-<sha12> — a distinct
+	// infix from the supersede archives' -attempt-, so a pruning policy
+	// can tell a dead attempt's archive from a live run's parked work by
+	// name alone) because the
+	// STORAGE branch must not be touched: an interrupted delivery (the
+	// lease may already belong to another pod — a ref named after this
+	// chain's own head cannot contest anything), a paused run (recording
+	// FinalBranch would make a half-done run merge-eligible), or a
+	// bankable death whose run ctx was cancelled for lease loss. The run
+	// doc is deliberately left alone — no FinalBranch/FinalCommit/
+	// FinalBranchError — so this event is the ONLY durable record that
+	// the ref exists (or why it could not be pushed). Data:
+	//   - ref / head: the parked ref and the commit it holds — the
+	//     success shape (head also rides the doc-cancelled skip, naming
+	//     the commit that was NOT parked)
+	//   - cause: which outcome parked it (interrupted, paused,
+	//     paused_operator, or the lease-loss death)
+	//   - error: why the head could not be resolved or pushed (the work
+	//     stays recoverable from the git-meta snapshot) — the failure
+	//     shape; exactly one of ref/error is present
+	EventRunBankAttempt EventType = "run_bank_attempt"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from
