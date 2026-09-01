@@ -1738,10 +1738,6 @@ func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
 	// …but on a PAUSED run the write-through is legitimate: budget/
 	// bookkeeping updates on a live pause must keep the pointer, or the
 	// next resume cannot load its interaction.
-	r, err = s.LoadRun(ctx, "pp-queued")
-	if err != nil {
-		t.Fatal(err)
-	}
 	// pp-queued is queued (carries) — reuse it: bump a counter and re-save.
 	if ok, cerr := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusPausedWaitingHuman, "",
 		[]store.RunStatus{store.RunStatusQueued}); cerr != nil || !ok {
