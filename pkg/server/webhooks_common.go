@@ -359,12 +359,9 @@ func (s *Server) webhookForgeConnection(ctx context.Context, cfg webhooks.Config
 // iterion's OWN forge identity for a review — the forge-native "Re-request
 // review" button (or adding the bot to the reviewer set): the button form of
 // `/revi`, a deliberate on-demand re-review. `requested` is the parser's
-// per-provider "does this event request a review from <login>?" predicate.
-//
-// The logins that can appear in a reviewer set: the connection's account
-// (GitLab bot user, GitHub/Forgejo PAT account) and the App bot login
-// (Forgejo; GitHub never lets an App be a reviewer, so that form simply
-// never matches there — the explicit refusal of the parity doctrine).
+// per-provider "does this event request a review from <login>?" predicate,
+// probed with the SAME identity set the actor guard reads (iterionBotLogins
+// — see its comment for which login counts on which forge).
 // Fail-safe like the author check: any resolution miss returns false and the
 // delivery stays on the normal filtered path. Routed through the
 // webhookIterionBotReviewRequest seam so handler tests need no live

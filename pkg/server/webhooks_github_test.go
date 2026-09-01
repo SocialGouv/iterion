@@ -749,6 +749,40 @@ func TestGitHubWebhook_BotNotAllowed(t *testing.T) {
 	}
 }
 
+// The gate-resync lane shares the closed-PR rule with the re-request lane
+// (its sibling term): a push to a closed/merged PR's branch still delivers
+// `synchronize` and must not burn a review. A payload WITHOUT a state stays
+// fail-open — filtering it would strand the required check on the new head.
+func TestGitHubWebhook_ResyncOnDeadPRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run1", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	sync := strings.Replace(ghOpenPR, `"action": "opened"`, `"action": "synchronize"`, 1)
+	for _, state := range []string{"closed", "merged"} {
+		body := strings.Replace(sync, `"state": "open"`, `"state": "`+state+`"`, 1)
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+	// A state-less payload keeps the gate following the head.
+	stateless := strings.Replace(sync, ` "state": "open",`, ``, 1)
+	if stateless == sync {
+		t.Fatal("fixture state removal did not apply")
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), stateless, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("stateless resync must stay reviewable: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+}
+
 // TestGitHubWebhook_GateResyncSurvivesBotGuard: the iterion-bot guard skips a
 // PR our own loop produced, keyed on the SENDER. On a merge-gate resync the
 // sender is by construction our own forge bot — the fixer that just pushed —

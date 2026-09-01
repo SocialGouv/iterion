@@ -190,6 +190,15 @@ func (p Parsed) IsSynchronize() bool {
 	return !p.Draft && (p.Action == "synchronize" || p.Action == "synchronized")
 }
 
+// StateOpenOrUnknown reports whether the PR can still receive review work:
+// open, or a payload that omits `state`. Same contract as the GitLab
+// counterpart: fail-open for the merge-gate resync lane (a required check
+// must keep following the head), while deliberate manual gestures use a
+// strict open check (their failure mode is wasted spend, not a stuck check).
+func (p Parsed) StateOpenOrUnknown() bool {
+	return p.State == "" || strings.EqualFold(p.State, "open")
+}
+
 // SubjectID is the stable per-PR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
 	return "pr:" + strconv.FormatInt(p.PRNumber, 10)

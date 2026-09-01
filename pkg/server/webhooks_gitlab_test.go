@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -353,6 +354,52 @@ func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
 	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), pureResync, gitlab.EventHeaderMergeRequest))
 	if calls != 1 {
 		t.Fatalf("pure resync on the same head must dedupe against the first launch: calls=%d", calls)
+	}
+}
+
+// The merge-gate resync lane shares the closed-MR rule with the re-request
+// lane (the round-1 guard's SIBLING term): a push to a closed/merged MR's
+// source branch still delivers the update hook and must not burn a review.
+// A payload WITHOUT a state stays fail-open — filtering it would strand the
+// required check on the new head.
+func TestGitLabWebhook_ResyncOnDeadMRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	cfg := glConfig()
+	cfg.ReviewOnSync = true
+
+	resync := func(state, sha string) string {
+		st := ""
+		if state != "" {
+			st = `"state": "` + state + `", `
+		}
+		return `{
+		  "object_kind": "merge_request",
+		  "user": {"username": "alice"},
+		  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+		  "object_attributes": {"iid": 7, "action": "update", ` + st + `"oldrev": "prev", "source_branch": "feature/x", "target_branch": "main",
+		    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+		    "last_commit": {"id": "` + sha + `"}}
+		}`
+	}
+	for _, state := range []string{"closed", "merged", "locked"} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), resync(state, "sha-"+state), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+	// Open and state-less payloads keep the gate following the head.
+	for i, state := range []string{"opened", ""} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), resync(state, fmt.Sprintf("sha-live-%d", i)), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusAccepted || calls != i+1 {
+			t.Fatalf("state=%q: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
 	}
 }
 

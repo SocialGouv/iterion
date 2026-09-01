@@ -162,6 +162,16 @@ func (p Parsed) IsSynchronize() bool {
 	return !p.Draft && p.Action == "update" && p.OldRev != ""
 }
 
+// StateOpenOrUnknown reports whether the MR can still receive review work:
+// open, or a payload that omits `state` entirely. The fail-open half serves
+// the merge-gate resync lane — a required check must keep following the head,
+// and filtering a stateless payload would deadlock it; deliberate manual
+// gestures (the re-request trigger) use a STRICT open check instead, since
+// there the failure mode is wasted spend, not a stuck check.
+func (p Parsed) StateOpenOrUnknown() bool {
+	return p.State == "" || strings.EqualFold(p.State, "opened")
+}
+
 // SubjectID is the stable per-MR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
 	return "mr:" + strconv.FormatInt(p.MRIID, 10)

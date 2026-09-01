@@ -87,8 +87,11 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// A filtered delivery returns 200 (a 4xx would make GitLab disable
 	// the webhook after repeated metadata-only edits).
 	// ReviewOnSync opts a push-to-MR ("update" with a new head) back into
-	// review so the merge-gate status re-evaluates on the new head SHA.
-	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
+	// review so the merge-gate status re-evaluates on the new head SHA —
+	// but never on a closed/merged/locked MR (pushes to a dead MR's source
+	// branch still deliver the update hook). Fail-open on a payload without
+	// `state`: filtering it would strand the required check instead.
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
 	// A review request explicitly targeting iterion's own bot account — the
 	// GitLab "Re-request review" sidebar button, or adding the bot to the
 	// reviewer set — is the button form of `/revi`: a deliberate on-demand

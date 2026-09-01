@@ -163,7 +163,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// The merge gate opts synchronize (a push to the head) back into review so
 	// the revi/review status re-evaluates on the new head SHA; otherwise only
 	// opened/reopened/ready_for_review review (on-demand re-review on push).
-	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
+	// Never on a closed/merged PR (a push to a dead PR's branch still
+	// delivers synchronize); fail-open on a payload without `state` — a
+	// filtered resync strands the required check.
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
 	reviewable := p.IsReviewable() || gateResync || reviewRequested
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||

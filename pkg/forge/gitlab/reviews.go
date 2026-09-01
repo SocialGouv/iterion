@@ -115,15 +115,13 @@ func (c *AdminClient) AddSelfAsPullReviewer(ctx context.Context, repo string, nu
 	if err != nil {
 		return fmt.Errorf("resolve own account: %w", err)
 	}
+	// A 200 whose body lacks `id` (an SSO interstitial, an error envelope)
+	// decodes to 0 — and GitLab treats a 0 in reviewer_ids as "add nobody",
+	// so the PUT would be a silent no-op reported here as success. Refuse
+	// loudly instead (one branch: WhoAmI formats the id itself, so a
+	// non-numeric string is the same "not a usable id" failure).
 	myID, err := strconv.ParseInt(me.ID, 10, 64)
-	if err != nil {
-		return fmt.Errorf("own account id %q is not numeric: %w", me.ID, err)
-	}
-	if myID <= 0 {
-		// A 200 whose body lacks `id` (an SSO interstitial, an error
-		// envelope) decodes to 0 — and GitLab treats a 0 in reviewer_ids as
-		// "add nobody", so the PUT would be a silent no-op reported here as
-		// success. Refuse loudly instead.
+	if err != nil || myID <= 0 {
 		return fmt.Errorf("own account id %q is not a usable GitLab user id", me.ID)
 	}
 

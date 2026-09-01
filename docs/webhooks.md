@@ -262,11 +262,13 @@ the MR/PR's current head:
   That identity is the **App bot login only** (`<app_slug>[bot]`): a
   PAT/OAuth connection's account may be a HUMAN's, and treating it as the
   bot would turn an ordinary human-to-human review request into an LLM
-  launch (and disarm the anti-loop actor guard). Since a GitHub **App**
-  cannot be a PR reviewer at all (forge restriction), on GitHub this lane
-  is inert by construction and `/revi` remains the on-demand path; on
-  Forgejo an App-connection reviewer works (self-assign not wired — add
-  the bot as reviewer by hand once).
+  launch (and disarm the anti-loop actor guard). In practice the lane is
+  therefore **currently inert on both**: a GitHub App cannot be a PR
+  reviewer at all (forge restriction), and a Forgejo connection never
+  carries an App slug (there is no Forgejo App kind) — `/revi` is the
+  on-demand path there. The wiring exists so a future bot-account
+  connection kind lights it up without touching the handlers; **GitLab is
+  the button forge today.**
 
 Semantics, shared with `/revi` (deliberate manual gesture):
 
