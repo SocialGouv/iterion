@@ -879,6 +879,27 @@ func parseLsRemoteHead(out, branch string) string {
 	return ""
 }
 
+// parseRevListCount reads the number `rev-list --count` printed, taking
+// the line that IS a count rather than the whole output.
+//
+// Same reason as parseLsRemoteHead, whose hardening this mirrors:
+// runGitOutEnv hands back COMBINED output, so any line git writes to
+// stderr first — an "ambiguous refname" warning, a hint, an advice
+// block — makes a whole-output Atoi fail. That failure is the
+// comparison's fail-OPEN arm, so a single warning would silently
+// downgrade the richer-chain guard to "later wins" precisely when the
+// repository state is odd enough for git to comment on it. Returns an
+// error when no line is a count, which keeps that arm reachable for the
+// cases where it is genuinely right.
+func parseRevListCount(out string) (int, error) {
+	for _, line := range strings.Split(out, "\n") {
+		if n, err := strconv.Atoi(strings.TrimSpace(line)); err == nil {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("no commit count in rev-list output %q", strings.TrimSpace(out))
+}
+
 // preserveSupersededChain archives the head a finished outcome is about
 // to force away, when (and only when) that head is not contained in the
 // finished chain. A finished run legitimately supersedes a dead
@@ -973,8 +994,8 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 	}
 	newOut, nerr := r.runGitOutEnv(ctx, workDir, "", nil, "rev-list", "--count", oldHead+".."+head)
 	oldOut, oerr := r.runGitOutEnv(ctx, workDir, "", nil, "rev-list", "--count", head+".."+oldHead)
-	newCount, ncErr := strconv.Atoi(strings.TrimSpace(newOut))
-	oldCount, ocErr := strconv.Atoi(strings.TrimSpace(oldOut))
+	newCount, ncErr := parseRevListCount(newOut)
+	oldCount, ocErr := parseRevListCount(oldOut)
 	if nerr != nil || oerr != nil || ncErr != nil || ocErr != nil {
 		r.cfg.Logger.Warn("runner: run %s: bank: cannot compare diverged chains (%v/%v/%v/%v) — pushing, later wins", runID, nerr, oerr, ncErr, ocErr)
 		return true

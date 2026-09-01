@@ -797,6 +797,40 @@ func TestParseLsRemoteHeadIgnoresStderrNoise(t *testing.T) {
 	}
 }
 
+// The counts the guard compares come off the same COMBINED output
+// parseLsRemoteHead was hardened against. rev-list is local and usually
+// quiet, but git comments on odd repository state (an ambiguous refname,
+// an advice block) — and the count parse fails OPEN, so one such line
+// would silently downgrade the richer-chain guard to "later wins"
+// precisely when the repository is odd enough for git to say something.
+func TestParseRevListCountIgnoresStderrNoise(t *testing.T) {
+	cases := []struct {
+		name, out string
+		want      int
+		wantErr   bool
+	}{
+		{name: "clean count", out: "7\n", want: 7},
+		{name: "zero is a real answer, not an error", out: "0\n", want: 0},
+		{name: "ambiguous-refname warning first",
+			out: "warning: refname 'abc123' is ambiguous.\n5\n", want: 5},
+		{name: "advice block first",
+			out: "hint: Use 'git <command> -- <path>'\nhint: Turn this off with advice.*\n12\n", want: 12},
+		{name: "no count at all still fails open", out: "fatal: bad revision\n", wantErr: true},
+		{name: "empty output still fails open", out: "", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseRevListCount(c.out)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("parseRevListCount err = %v, wantErr %v", err, c.wantErr)
+			}
+			if err == nil && got != c.want {
+				t.Errorf("parseRevListCount = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 // The richer-chain guard is a read-compare-write — ls-remote, compare,
 // force-push — with nothing making it atomic. A sibling attempt that
 // advances the branch in between is clobbered anyway, which is exactly
