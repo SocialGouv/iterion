@@ -116,6 +116,54 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
 		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin)
 
+	// The merge gate opts synchronize (a push to the head) back into review
+	// so the revi/review status re-evaluates on the new head SHA. Never on a
+	// closed/merged PR (a push to a dead PR's branch still delivers
+	// synchronize); fail-open on a payload without `state` — a filtered
+	// resync strands the required check. Computed here (not at the review
+	// filter below) because the replier gate's error policy reads it.
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
+
+	// Replier authorization (R6a15fe — the GitLab twin's R7e050f gate,
+	// applied to this lane too): a manual gesture rides the same
+	// AuthorizedRepliers/MinReplierRole controls as every `/command`. An
+	// unauthorized click DEMOTES the gesture (the delivery then rides
+	// whatever automatic lane still admits it, hold label honoured, or is
+	// filtered). An authz ERROR demotes too when an automatic lane co-rides
+	// the event (R34eb8c — a transient members-API failure must not strand
+	// a merge-gate resync), and 502s only when the click was the delivery's
+	// sole reason (so the forge redelivers it).
+	if reviewRequested {
+		botID := ""
+		if rr := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author()); len(rr) > 0 {
+			botID = rr[0].BotID
+		}
+		gate := s.webhookPRForgeReviewRequestGate
+		if gate == nil {
+			gate = s.realWebhookPRForgeReviewRequestGate
+		}
+		authorized, reason, gerr := gate(ctx, cfg, p, botID)
+		if gerr != nil {
+			if p.IsReviewable() || gateResync {
+				if s.logger != nil {
+					s.logger.Warn("webhooks: %s re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", cfg.Provider, gerr)
+				}
+				reviewRequested = false
+			} else {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
+				httpError(w, http.StatusBadGateway, "authorization check failed")
+				return
+			}
+		} else if !authorized {
+			reviewRequested = false
+			if !p.IsReviewable() && !gateResync && !p.NeedsAutoHeal() {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+		}
+	}
+
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
 	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
 	// — the operator's escape hatch to pause automation on one PR. Placed before
@@ -160,13 +208,8 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	// The merge gate opts synchronize (a push to the head) back into review so
-	// the revi/review status re-evaluates on the new head SHA; otherwise only
-	// opened/reopened/ready_for_review review (on-demand re-review on push).
-	// Never on a closed/merged PR (a push to a dead PR's branch still
-	// delivers synchronize); fail-open on a payload without `state` — a
-	// filtered resync strands the required check.
-	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
+	// Auto-review on opened/reopened/ready_for_review, plus the resync and
+	// re-request lanes resolved above.
 	reviewable := p.IsReviewable() || gateResync || reviewRequested
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||

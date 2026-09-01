@@ -269,6 +269,10 @@ type Server struct {
 	// controls as every other manual trigger). nil →
 	// realWebhookReviewRequestGate.
 	webhookReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p gitlab.Parsed, botID string) (authorized bool, reason string, err error)
+	// webhookPRForgeReviewRequestGate is the GitHub/Forgejo twin of
+	// webhookReviewRequestGate (test seam). nil →
+	// realWebhookPRForgeReviewRequestGate.
+	webhookPRForgeReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (authorized bool, reason string, err error)
 	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.

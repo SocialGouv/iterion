@@ -252,14 +252,56 @@ func prforgeBaseURL(cfg webhooks.Config, p prforge.ParsedNote) (baseURL, refusal
 	if ref == "" {
 		ref = p.CommentURL
 	}
+	return prforgeBaseURLFromRef(ref)
+}
+
+// prforgeBaseURLFromRef derives (and host-gates) the forge web base from a
+// payload URL — the shared tail of prforgeBaseURL, reused by the
+// review-request replier gate whose subject is the PR itself.
+func prforgeBaseURLFromRef(ref string) (baseURL, refusal string) {
 	u, err := url.Parse(ref)
 	if err != nil || u.Host == "" || u.User != nil {
-		return "", "comment URL has no usable forge host"
+		return "", "payload URL has no usable forge host"
 	}
 	if !forgeHostAllowed(u.Host) {
 		return "", "forge host not in ITERION_WEBHOOK_FORGE_HOSTS allowlist"
 	}
 	return u.Scheme + "://" + u.Host, ""
+}
+
+// realWebhookPRForgeReviewRequestGate authorizes a review re-request on the
+// GitHub/Forgejo lane — the same replier controls as the `/command` gate
+// (allowlist OR CollaboratorPermission ≥ the webhook's min_replier_role).
+// R6a15fe: the GitLab twin was gated in R7e050f for exactly this reason
+// ("the forge gates reviewer edits" is not an authorization story); this
+// lane is inert today (no connection shape can be a requested reviewer),
+// but wiring kept for a future connection kind must not arrive ungated.
+// Fail-closed on token resolution, like the GitLab twin.
+func (s *Server) realWebhookPRForgeReviewRequestGate(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (bool, string, error) {
+	token, terr := s.resolveForgeToken(ctx, cfg, botID)
+	if terr != nil || token == "" {
+		return false, "re-request refused: no forge token resolved (configure a forge_token binding)", nil
+	}
+	baseURL := cfg.ForgeBaseURL
+	if baseURL == "" {
+		var refusal string
+		baseURL, refusal = prforgeBaseURLFromRef(p.PRURL)
+		if refusal != "" {
+			return false, refusal, nil
+		}
+	}
+	api := prforgeReplierClient(cfg.Provider, s.forgeHTTPClient(), baseURL, token)
+	if prforgeInAllowlist(cfg.AuthorizedRepliers, p.SenderLogin) {
+		return true, "allowlist", nil
+	}
+	perm, err := api.CollaboratorPermission(ctx, p.ProjectPath, p.SenderLogin)
+	if err != nil {
+		return false, "", err
+	}
+	if prforgePermRank(perm) >= replierMinRoleRank(cfg.MinReplierRole) {
+		return true, "role", nil
+	}
+	return false, "re-request review by unauthorized replier: " + p.SenderLogin, nil
 }
 
 func prforgeInAllowlist(allow []string, login string) bool {

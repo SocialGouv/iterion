@@ -142,11 +142,22 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		}
 		authorized, reason, gerr := gate(ctx, cfg, p, rules[0].BotID)
 		if gerr != nil {
-			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
-			httpError(w, http.StatusBadGateway, "authorization check failed")
-			return
-		}
-		if !authorized {
+			// R34eb8c: an authz ERROR must not strand an automatic lane
+			// co-riding the same event (one update can be BOTH a push and a
+			// reviewers change) — demote the gesture and let the resync
+			// proceed. 502 only when the click was the delivery's sole
+			// reason, so the forge redelivers it.
+			if p.IsReviewable() || gateResync {
+				if s.logger != nil {
+					s.logger.Warn("webhooks: gitlab re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", gerr)
+				}
+				reviewRequested = false
+			} else {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
+				httpError(w, http.StatusBadGateway, "authorization check failed")
+				return
+			}
+		} else if !authorized {
 			reviewRequested = false
 			if !p.IsReviewable() && !gateResync {
 				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
