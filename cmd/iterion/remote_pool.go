@@ -158,7 +158,12 @@ Audience (pick what fits; they combine):
                        borrow")
 
 Only the flags you set are sent, so ` + "`pool policy --enabled=false`" + ` pauses
-a pool without restating its audience.`,
+a pool without restating its audience. The AUDIENCE, though, is replaced
+whole: naming any one audience flag clears the three you did not name, so
+restate every dial you mean to keep.
+
+A pool that does not exist yet is created OPEN — pass --enabled=false to
+write a policy while keeping it paused.`,
 	Args: cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
@@ -216,7 +221,7 @@ func init() {
 
 	remotePoolPolicyCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 	remotePoolPolicyCmd.Flags().StringVar(&remotePoolName, "name", "", "Pool name")
-	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolEnabled, "enabled", true, "Master switch: off skips the pool tier entirely")
+	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolEnabled, "enabled", true, "Master switch: off skips the pool tier entirely (a pool being created comes up on)")
 	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolAudAllTeams, "all-teams", false, "Audience: every team on the instance")
 	remotePoolPolicyCmd.Flags().StringSliceVar(&remotePoolAudOrgs, "orgs", nil, "Audience: every team under these org ids")
 	remotePoolPolicyCmd.Flags().StringSliceVar(&remotePoolAudTeams, "teams", nil, "Audience: exactly these team ids")

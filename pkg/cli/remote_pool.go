@@ -126,9 +126,15 @@ func RemotePoolDonors(ctx context.Context, c *RemoteClient, p *Printer, teamID s
 }
 
 // PoolPolicy is the operator-side settings of a pool: its name, its
-// master switch, and who may draw on it. Every field is optional — only
-// the ones the caller sets are sent, so `pool policy --enabled=false`
-// pauses a pool without restating its audience.
+// master switch, and who may draw on it. Every TOP-LEVEL field is
+// optional — only the ones the caller sets are sent, so `pool policy
+// --enabled=false` pauses a pool without restating its audience.
+//
+// The audience is the exception, and deliberately so: it is a SET, and
+// the server replaces it whole, so sending a partial one would let a
+// forgotten dial from an earlier call survive a narrowing. Callers
+// building one must therefore restate every dial they mean to keep —
+// which is what the command's help says in the operator's words.
 type PoolPolicy struct {
 	Name     *string `json:"name,omitempty"`
 	Enabled  *bool   `json:"enabled,omitempty"`
