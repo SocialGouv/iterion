@@ -158,10 +158,15 @@ Audience (pick what fits; they combine):
                        borrow")
 
 Only the flags you set are sent, so ` + "`pool policy --enabled=false`" + ` pauses
-a pool without restating its audience. The AUDIENCE itself is the one
-exception: it is a set, sent and replaced WHOLE — naming any audience
-flag clears the dials you do not restate, so repeat every one you mean
-to keep on each call.`,
+a pool without restating its audience. Two things sit outside that rule:
+
+  - the AUDIENCE is a set, sent and replaced WHOLE — naming any audience
+    flag clears the dials you do not restate, so repeat every one you
+    mean to keep on each call;
+  - the FIRST call has nothing to leave unchanged, so it must state
+    --enabled: a pool created with its master switch off is invisible to
+    the broker and every pledge under it is dead. It is refused rather
+    than stood up that way.`,
 	Args: cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
