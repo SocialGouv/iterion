@@ -1545,9 +1545,12 @@ func TestFailRunTerminalCancelledWins(t *testing.T) {
 	}
 }
 
-// UpdateRunStatus(failed) preserves an existing checkpoint, while the
-// running/finished transitions keep clearing it.
-func TestUpdateRunStatusFailedKeepsCheckpoint(t *testing.T) {
+// UpdateRunStatus preserves an existing checkpoint on EVERY transition:
+// a status change never destroys the recovery point (ADR-095) —
+// `iterion fork` reads a terminal parent's checkpoint, and the park
+// writers that follow a running claim rely on the resume point
+// surviving it.
+func TestUpdateRunStatusPreservesCheckpoint(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
 	mustCreateRun(t, s, "run-keep-cp")
@@ -1573,8 +1576,8 @@ func TestUpdateRunStatusFailedKeepsCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	if r.Checkpoint != nil {
-		t.Errorf("Checkpoint = %+v after finished transition, want cleared", r.Checkpoint)
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "node-a" {
+		t.Errorf("Checkpoint = %+v after finished transition, want preserved (fork reads it)", r.Checkpoint)
 	}
 }
 

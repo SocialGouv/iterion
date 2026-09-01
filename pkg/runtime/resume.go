@@ -257,6 +257,23 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		return err
 	}
 
+	// The pause pointer is CONSUMED by this resume. The checkpoint now
+	// survives the running claim (ADR-095: a status transition never
+	// destroys it), so leaving the interaction evidence in place would
+	// hand a STALE InteractionID to Resume's `queued` router after a
+	// later park (drain, orphan sweep): that re-entry would route back
+	// here and overwrite the operator's recorded answers with the
+	// retry's empty ones — silently crossing the human gate. With the
+	// pointer cleared, a park inside this window resumes through
+	// resumeFromFailure anchored on cp.NodeID: the gate re-pauses and
+	// re-asks, answers intact.
+	consumed := *cp // cp stays in use in-memory (the delegate-pause branch)
+	consumed.InteractionID = ""
+	consumed.InteractionQuestions = nil
+	if err := e.store.SaveCheckpoint(ctx, runID, &consumed); err != nil && e.logger != nil {
+		e.logger.Warn("resume %s: could not clear the consumed pause pointer: %v", runID, err)
+	}
+
 	// Build runState before edge selection so failures are resumable.
 	// Init maps when the checkpoint deserialised with omitted fields
 	// (Mongo bson omitempty, legacy stores) — a nil map here would

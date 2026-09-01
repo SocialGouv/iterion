@@ -46,9 +46,11 @@ question, the internal claim-CAS sets (they gate a TRANSITION, not
 eligibility — e.g. the failure-resume claim accepts `queued` for the cloud
 pre-flip). The negative-space test
 ([lifecycle_negative_space_test.go](../../pkg/store/lifecycle_negative_space_test.go))
-forbids NEW hand-rolled sets in store, supervise, runview, runtime and
-cloudpublisher (the two packages where the motivating drift bug lived)
-outside its per-set, reason-carrying allowlist.
+forbids NEW hand-rolled sets across eleven packages (store, supervise,
+runview, runtime, cloudpublisher, dispatcher, cli, notify, worktreepool,
+operatormcp, runner) outside its per-set allowlist, each entry anchored
+to the enclosing FUNCTION with its reason — a removed+added pair of
+same-combo sets cannot trade places behind a count.
 
 ### 3. `Run.FailureCode` — persisted, open-world, zero-means-unknown
 
@@ -74,9 +76,12 @@ failure status** — it annotates `Run.Error` and follows it exactly:
   **Synthetic parkings write an empty code** (fork shell, rewind/restore
   claims): they are not failures. A cancel of an already-parked run writes
   CANCELLED; the prior cause survives in the composed text, as before.
-- The resume-after-source-edit wall persists `NODE_NOT_FOUND` (the
-  auto-resume gate refuses to re-hit a deterministic wall only when the
-  code names it); `LOOP_EXHAUSTED`/`JOIN_FAILED`/`RESUME_INVALID` are
+- The resume-after-source-edit wall persists `NODE_NOT_FOUND` at every
+  lookup site (main loop, branch fan-out, both resume paths,
+  convergence — whose wait_all aggregate keeps a code ALL failed
+  branches share). The in-process --auto-resume gate already refuses it
+  through the typed error; readers of the PERSISTED code (dispatcher /
+  retry lanes across processes) are the follow-up card; `LOOP_EXHAUSTED`/`JOIN_FAILED`/`RESUME_INVALID` are
   declared RESERVED with no persisting writer yet. The runview orphan
   reconciles persist `PROCESS_ORPHANED`; the server orphan sweeper, the
   dispatcher promote, force-stale and dead-pid writers, plus
@@ -95,6 +100,23 @@ Mongo twin needs no heal because every transition goes through the coded
 choke points. Deploy server and runner together
 (the runner image is digest-pinned; bump it in the same infra change).
 Rollback is safe: the field stops being written, stale values heal on read.
+
+### 5. A status transition never destroys the checkpoint
+
+The FS store used to clear the checkpoint on the running and finished
+transitions (and the first loop round taught Mongo the same). That
+destroyed the CLOUD resume point: the park writers that follow a claim
+(drain, usage-cap, orphan sweeps, --force-stale) flip
+running→failed_resumable with no checkpoint of their own, and the next
+resume restarted from the workflow entry. The contract is now the
+reverse on BOTH twins — only `DeleteRun` and the rewind machinery
+remove a checkpoint; resumability is `Status`'s job; a finished run
+keeps its checkpoint (`iterion fork` reads it). Two consequences are
+handled explicitly: `resumeFromPause` CONSUMES the pause pointer
+(clears `InteractionID`/`InteractionQuestions` right after its claim,
+or a later park would hand a stale interaction to Resume's queued
+router and overwrite the operator's answers), and the run-outcome
+event only surfaces checkpoint interaction evidence on a PAUSED status.
 
 ## Consequences
 

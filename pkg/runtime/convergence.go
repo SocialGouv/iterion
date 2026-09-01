@@ -45,8 +45,9 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			// When every failed branch carries the SAME typed code, the
 			// aggregate keeps it — a fan-out hitting one deterministic
 			// wall (a ghost node after a source edit) must not launder
-			// NODE_NOT_FOUND into the EXECUTION_FAILED catch-all, which
-			// the auto-resume gate would happily retry.
+			// NODE_NOT_FOUND into the EXECUTION_FAILED catch-all — the
+			// in-process auto-resume gate retries the latter and
+			// refuses the former.
 			if code := commonBranchFailureCode(results); code != "" {
 				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg}
 			}

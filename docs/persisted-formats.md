@@ -106,9 +106,11 @@ though an explicit resume can transition them back to `running`.
 The checkpoint embedded in `run.json` is the source of truth for resume.
 `events.jsonl` is an audit/observation stream and is never replayed to rebuild
 execution state. A checkpoint may be present while a run is still `running`
-because it is saved best-effort after successful node boundaries; it is
-preserved for resumable/cancelled/paused states and cleared on ordinary
-finished/failed transitions.
+because it is saved best-effort after successful node boundaries. **A status
+transition never destroys it** (ADR-095): only `DeleteRun` and the rewind
+machinery remove one, and resumability is decided by `Status` alone — a
+terminal run keeps its checkpoint (`iterion fork` reads a finished
+parent's).
 
 ```jsonc
 {

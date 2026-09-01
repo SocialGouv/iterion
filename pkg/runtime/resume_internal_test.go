@@ -390,3 +390,59 @@ func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 		t.Errorf("workflow_hash = %q, want %q", got.WorkflowHash, "hash-new")
 	}
 }
+
+// The pause pointer is consumed by the resume that uses it: right
+// after resumeFromPause's claim, a checkpoint write clearing the
+// interaction evidence must land — since the checkpoint survives the
+// running claim (ADR-095), leaving a stale InteractionID would route a
+// LATER park's resume back into the pause path and overwrite the
+// operator's answers with empty ones (silently crossing the human
+// gate). A spy store records the write sequence so the oracle holds
+// whatever the rest of the flow does afterwards.
+func TestResumeFromPauseConsumesThePausePointer(t *testing.T) {
+	base := tmpStore(t)
+	spy := &checkpointSpyStore{RunStore: base}
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-consume", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-consume", cp); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{store: spy, workflow: &ir.Workflow{Name: "wf", Nodes: map[string]ir.Node{
+		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
+	}}}
+	run, err := base.LoadRun(ctx, "run-consume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = e.resumeFromPause(ctx, run, map[string]any{"approve": "YES"})
+	consumedSeen := false
+	for _, w := range spy.writes {
+		if w.InteractionID == "" && len(w.InteractionQuestions) == 0 {
+			consumedSeen = true
+			break
+		}
+		if w.InteractionID == "I1" {
+			continue // pre-claim bookkeeping may re-save the pointer
+		}
+	}
+	if !consumedSeen {
+		t.Fatalf("no checkpoint write ever cleared the pause pointer (writes: %d) — a park after the claim would replay interaction I1 and overwrite the operator's answers", len(spy.writes))
+	}
+}
+
+// checkpointSpyStore records every SaveCheckpoint payload.
+type checkpointSpyStore struct {
+	store.RunStore
+	writes []store.Checkpoint
+}
+
+func (s *checkpointSpyStore) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
+	if cp != nil {
+		s.writes = append(s.writes, *cp)
+	}
+	return s.RunStore.SaveCheckpoint(ctx, id, cp)
+}
