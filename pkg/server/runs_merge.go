@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -144,15 +147,38 @@ func (s *Server) forgeTokenForRun(ctx context.Context, r *store.Run) (string, er
 		return "", fmt.Errorf("forge integrations are not wired on this server — cannot open the run's forge token")
 	}
 	tctx := store.WithTenant(ctx, r.TenantID)
-	if conns, err := o.Connections.ListByTenant(tctx, r.TenantID); err == nil {
-		for i := range conns {
-			if conns[i].ManagedSecretID == secID {
-				// Best-effort: a mint failure keeps the stored token,
-				// which may still be live within its hour.
-				_, _ = o.EnsureManagedSecret(tctx, &conns[i], "merge")
-				break
-			}
+	conns, err := o.Connections.ListByTenant(tctx, r.TenantID)
+	if err != nil {
+		// A listing failure would silently skip the re-mint and surface
+		// later as an opaque push-auth error — fail here, with the cause.
+		return "", fmt.Errorf("list forge connections for the merge of %s: %w", r.ID, err)
+	}
+	var conn *forge.Connection
+	for i := range conns {
+		if conns[i].ManagedSecretID == secID {
+			conn = &conns[i]
+			break
 		}
+	}
+	if conn == nil {
+		// The pinned secret can outlive its connection (forge re-linked
+		// since launch) and the stored token may still be live, so this
+		// is a visible degradation, not a refusal.
+		s.logWarn("merge: no connection backs forge token secret %s (run %s) — using the stored token without re-mint", secID, r.ID)
+	} else {
+		// The token authenticates to the connection's forge host; refuse
+		// to open it for a run whose RepoURL points elsewhere (a
+		// mismatch means the run doc drifted from what launch resolved).
+		base := conn.ForgeBaseURL
+		if base == "" {
+			base = forge.DefaultBaseURL(conn.Provider)
+		}
+		if !sameForgeHost(base, r.RepoURL) {
+			return "", fmt.Errorf("run %s targets %s but its pinned forge connection authenticates to %s — refusing to open the token", r.ID, r.RepoURL, base)
+		}
+		// Best-effort: a mint failure keeps the stored token,
+		// which may still be live within its hour.
+		_, _ = o.EnsureManagedSecret(tctx, conn, "merge")
 	}
 	gs, err := o.Secrets.Get(tctx, secID)
 	if err != nil {
@@ -355,4 +381,20 @@ func (s *Server) handleAbortMergeConflict(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sameForgeHost reports whether two URLs point at the same forge host
+// (case-insensitive hostname comparison; ports and paths ignored — a
+// connection's base URL is canonicalised to scheme+host at connect
+// time).
+func sameForgeHost(baseURL, repoURL string) bool {
+	b, err := url.Parse(baseURL)
+	if err != nil || b.Hostname() == "" {
+		return false
+	}
+	r, err := url.Parse(repoURL)
+	if err != nil || r.Hostname() == "" {
+		return false
+	}
+	return strings.EqualFold(b.Hostname(), r.Hostname())
 }
