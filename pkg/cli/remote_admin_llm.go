@@ -2,10 +2,14 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +41,77 @@ func ReadSecretBlob(fromEnv, fromFile string) ([]byte, error) {
 		return nil, fmt.Errorf("provide the payload via --from-env <VAR>, --from-file <path>, or pipe it on stdin")
 	}
 	return b, nil
+}
+
+// ansiEscape matches the escape sequences a terminal capture carries:
+// CSI (colour, cursor) and OSC (title) runs.
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
+
+// ReadCredentialBlob resolves a credentials payload like ReadSecretBlob,
+// then makes it usable: a blob copied out of a terminal (a `cat` of
+// credentials.json under a pager, a screenshot-to-clipboard round trip)
+// carries ANSI escapes, and the server rejected it with a parse error
+// pointing at "" — accurate and useless. The escapes are stripped and
+// the result is validated HERE, so a malformed payload is named before it
+// travels: which file, which JSON error, and what the shape should be.
+//
+// Stripping is a normalisation, not a rescue: anything that is still not
+// the expected object after it is refused, loudly.
+func ReadCredentialBlob(fromEnv, fromFile, kind string) ([]byte, error) {
+	raw, err := ReadSecretBlob(fromEnv, fromFile)
+	if err != nil {
+		return nil, err
+	}
+	clean := bytes.TrimSpace(ansiEscape.ReplaceAll(raw, nil))
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(clean, &probe); err != nil {
+		return nil, fmt.Errorf("%s: the payload is not a JSON object (%v)%s", credentialSourceLabel(fromEnv, fromFile), err, credentialShapeHint(kind))
+	}
+	if want := credentialTopKey(kind); want != "" {
+		if _, ok := probe[want]; !ok {
+			keys := make([]string, 0, len(probe))
+			for k := range probe {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			return nil, fmt.Errorf("%s: no %q key — got %v%s", credentialSourceLabel(fromEnv, fromFile), want, keys, credentialShapeHint(kind))
+		}
+	}
+	return clean, nil
+}
+
+// credentialTopKey is the object key each forfait blob must carry; ""
+// for a kind whose shape this CLI does not pin.
+func credentialTopKey(kind string) string {
+	switch kind {
+	case "claude_code":
+		return "claudeAiOauth"
+	case "codex":
+		return "tokens"
+	}
+	return ""
+}
+
+func credentialShapeHint(kind string) string {
+	switch kind {
+	case "claude_code":
+		return "\nexpected the Claude Code credentials.json: {\"claudeAiOauth\":{\"accessToken\":…,\"refreshToken\":…,\"expiresAt\":…}}"
+	case "codex":
+		return "\nexpected the Codex auth.json: {\"tokens\":{\"access_token\":…,\"refresh_token\":…},\"auth_mode\":\"chatgpt\"}"
+	}
+	return ""
+}
+
+// credentialSourceLabel names WHERE the payload came from, so the error
+// points at the thing to fix rather than at an anonymous blob.
+func credentialSourceLabel(fromEnv, fromFile string) string {
+	switch {
+	case fromFile != "":
+		return fromFile
+	case fromEnv != "":
+		return "$" + fromEnv
+	}
+	return "stdin"
 }
 
 // RemoteAdminLLMOAuthConnect drives the browser code flow for the platform

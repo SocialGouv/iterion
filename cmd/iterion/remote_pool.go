@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/spf13/cobra"
@@ -113,6 +114,15 @@ var remotePoolWithdrawCmd = &cobra.Command{
 	}),
 }
 
+var (
+	remotePoolName            string
+	remotePoolEnabled         bool
+	remotePoolAudAllTeams     bool
+	remotePoolAudContributors bool
+	remotePoolAudOrgs         []string
+	remotePoolAudTeams        []string
+)
+
 var remotePoolDonorsCmd = &cobra.Command{
 	Use:   "donors",
 	Short: "Operator view: the pool's policy and who is lending to it",
@@ -123,6 +133,66 @@ var remotePoolDonorsCmd = &cobra.Command{
 			return err
 		}
 		return cli.RemotePoolDonors(cmd.Context(), c, p, team)
+	}),
+}
+
+// remote pool policy — the OPERATOR half. `donors` shows the pool; this
+// creates or changes it. Until now the only way to open a pool was a raw
+// `remote api PUT`, which meant hand-writing the audience JSON: the one
+// step of standing a pool up had no command.
+var remotePoolPolicyCmd = &cobra.Command{
+	Use:   "policy",
+	Short: "Operator: create or update the pool (name, master switch, who may draw on it)",
+	Long: `Create or update the credential pool of this team's ORG.
+
+The pool document is keyed by org, so its policy governs every team under
+that org — the server treats changing it as an org-level decision and
+refuses a team admin who is not an org admin.
+
+Audience (pick what fits; they combine):
+  --all-teams          every team on the instance
+  --orgs a,b           every team under these orgs (the pool's own org is
+                       always admitted)
+  --teams x,y          exactly these teams
+  --contributors       anyone who is themselves an active donor ("lend to
+                       borrow")
+
+Only the flags you set are sent, so ` + "`pool policy --enabled=false`" + ` pauses
+a pool without restating its audience.`,
+	Args: cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
+		if err != nil {
+			return err
+		}
+		var pol cli.PoolPolicy
+		if cmd.Flags().Changed("name") {
+			pol.Name = &remotePoolName
+		}
+		if cmd.Flags().Changed("enabled") {
+			pol.Enabled = &remotePoolEnabled
+		}
+		// The audience is sent WHOLE or not at all: it is a set, and
+		// merging a partial one server-side would let `--teams x` silently
+		// keep a forgotten --all-teams from a previous call.
+		if cmd.Flags().Changed("all-teams") || cmd.Flags().Changed("orgs") ||
+			cmd.Flags().Changed("teams") || cmd.Flags().Changed("contributors") {
+			pol.Audience = &struct {
+				Teams        []string `json:"teams,omitempty"`
+				Orgs         []string `json:"orgs,omitempty"`
+				Contributors bool     `json:"contributors,omitempty"`
+				AllTeams     bool     `json:"all_teams,omitempty"`
+			}{
+				Teams:        remotePoolAudTeams,
+				Orgs:         remotePoolAudOrgs,
+				Contributors: remotePoolAudContributors,
+				AllTeams:     remotePoolAudAllTeams,
+			}
+		}
+		if pol.Name == nil && pol.Enabled == nil && pol.Audience == nil {
+			return fmt.Errorf("nothing to change — set --name, --enabled, or an audience flag (--all-teams/--orgs/--teams/--contributors)")
+		}
+		return cli.RemotePoolPolicy(cmd.Context(), c, p, team, pol)
 	}),
 }
 
@@ -144,9 +214,18 @@ func init() {
 	remotePoolShareCmd.Flags().StringSliceVar(&remotePoolBots, "bots", nil, "Only these bot ids may use it (default: any)")
 	remotePoolDonorsCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 
+	remotePoolPolicyCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
+	remotePoolPolicyCmd.Flags().StringVar(&remotePoolName, "name", "", "Pool name")
+	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolEnabled, "enabled", true, "Master switch: off skips the pool tier entirely")
+	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolAudAllTeams, "all-teams", false, "Audience: every team on the instance")
+	remotePoolPolicyCmd.Flags().StringSliceVar(&remotePoolAudOrgs, "orgs", nil, "Audience: every team under these org ids")
+	remotePoolPolicyCmd.Flags().StringSliceVar(&remotePoolAudTeams, "teams", nil, "Audience: exactly these team ids")
+	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolAudContributors, "contributors", false, "Audience: anyone who is themselves an active donor")
+
 	remotePoolCmd.AddCommand(
 		remotePoolStatusCmd, remotePoolHistoryCmd, remotePoolShareCmd,
 		remotePoolPauseCmd, remotePoolResumeCmd, remotePoolWithdrawCmd, remotePoolDonorsCmd,
+		remotePoolPolicyCmd,
 	)
 	remoteCmd.AddCommand(remotePoolCmd)
 }
