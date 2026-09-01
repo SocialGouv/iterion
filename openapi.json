@@ -1376,6 +1376,9 @@
           "checkpoint": {
             "$ref": "#/components/schemas/Checkpoint"
           },
+          "continuation_state": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -1460,6 +1463,9 @@
               "$ref": "#/components/schemas/NodeServed"
             },
             "type": "object"
+          },
+          "outcome_seq": {
+            "type": "integer"
           },
           "parent_node_id": {
             "type": "string"

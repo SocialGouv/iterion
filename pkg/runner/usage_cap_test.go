@@ -22,16 +22,18 @@ type capStatusStore struct {
 	store.RunStore
 	gotStatus store.RunStatus
 	gotErr    string
-	gotCode   store.FailureCode
+	gotMeta   store.RunOutcomeMeta
 	gotFrom   []store.RunStatus
 	calls     int
 }
 
-func (s *capStatusStore) UpdateRunStatusIfCoded(_ context.Context, _ string, status store.RunStatus, runErr string, code store.FailureCode, from []store.RunStatus) (bool, error) {
+// The fake records the FULL meta — a fake that throws the metadata away
+// certifies a writer that could stop passing it (adversarial gate F5).
+func (s *capStatusStore) UpdateRunOutcome(_ context.Context, _ string, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, from []store.RunStatus) (bool, error) {
 	s.calls++
 	s.gotStatus = status
 	s.gotErr = runErr
-	s.gotCode = code
+	s.gotMeta = meta
 	s.gotFrom = from
 	return true, nil
 }
@@ -109,8 +111,8 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	if rs.calls != 1 || rs.gotStatus != store.RunStatusFailedResumable {
 		t.Fatalf("status flip: calls=%d status=%q — without failed_resumable the retry cannot arm", rs.calls, rs.gotStatus)
 	}
-	if rs.gotCode != store.FailureUsageLimitBlocked {
-		t.Errorf("failure code = %q, want USAGE_LIMIT_BLOCKED persisted with the flip", rs.gotCode)
+	if rs.gotMeta.Code != store.FailureUsageLimitBlocked {
+		t.Errorf("failure code = %q, want USAGE_LIMIT_BLOCKED persisted with the flip", rs.gotMeta.Code)
 	}
 	if rs.gotErr == "" {
 		t.Error("the run must say why it did not start")

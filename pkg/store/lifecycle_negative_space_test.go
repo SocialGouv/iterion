@@ -254,9 +254,9 @@ func markLogicalDescendants(n ast.Node, marked map[ast.Node]bool) {
 // reason here.
 var negativeSpaceAllowlist = map[string]allowEntry{
 	// -- pkg/store: transition machinery + harnesses.
-	"pkg/store/store_run.go :: Cancelled+Failed+FailedResumable+Finished":                                                              {[]string{"applyStatusTransition"}, "FinishedAt-stamping side-effect switch"},
-	"pkg/store/store_run.go :: PausedWaitingHuman+Running":                                                                             {[]string{"applyStatusTransition"}, "FinishedAt-clear pair (resume paths un-freeze the duration ticker)"},
-	"pkg/store/mongo/runs.go :: Cancelled+Failed+FailedResumable+Finished":                                                             {[]string{"ListNotifiableRuns", "runStatusUpdate"}, "the mongo transition switch + the notifiable-sweep terminal $in (a bson filter cannot call a predicate; both are IsTerminal's set)"},
+	"pkg/store/store_run.go :: Cancelled+Failed+FailedResumable+Finished":                                                              {[]string{"applyStatusTransitionOutcome"}, "FinishedAt-stamping side-effect switch (renamed by the outcome-bookkeeping merge)"},
+	"pkg/store/store_run.go :: PausedWaitingHuman+Running":                                                                             {[]string{"applyStatusTransitionOutcome"}, "FinishedAt-clear pair (resume paths un-freeze the duration ticker)"},
+	"pkg/store/mongo/runs.go :: Cancelled+Failed+FailedResumable+Finished":                                                             {[]string{"ListNotifiableRuns", "SaveRun"}, "the notifiable-sweep terminal $in + SaveRun's terminal-arrival episode increment (a bson filter/pipeline cannot call a predicate; both are IsTerminal's set — the transition choke point itself now derives via predicates in statusTransitionSet)"},
 	"pkg/store/mongo/runs.go :: Queued+Running":                                                                                        {[]string{"CountActiveRunsByTenant"}, "CountsAgainstLaunchLimit twin inside a $in filter"},
 	"pkg/store/storetest/conformance.go :: Cancelled+Failed+FailedResumable+Finished+PausedOperator+PausedWaitingHuman+Queued+Running": {[]string{"testTombstoneRefusesWriters"}, "tombstone canary passes every status to prove no CAS writes on a deleted run"},
 
@@ -293,11 +293,11 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/cli/remote_runs.go :: Cancelled+Failed+FailedResumable+Finished":  {[]string{"followRemoteRun"}, "--follow stop set over the WIRE statuses (strings): IsTerminal's set; the paused non-exit is the known bug #3 follow-up card"},
 
 	// -- pkg/runner.
-	"pkg/runner/loop.go :: Failed+Finished":                    {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
-	"pkg/runner/loop.go :: Failed+Finished+PausedWaitingHuman": {[]string{"resolveDeliveryPreconditions"}, "stale-delivery drop set: shapes a redelivery can never legitimately target"},
-	"pkg/runner/loop.go :: FailedResumable+PausedOperator":     {[]string{"resolveDeliveryPreconditions"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes)"},
-	"pkg/runner/loop_nats.go :: Queued+Running":                {[]string{"parkOnDLQOnFinalDelivery"}, "DLQ park CAS: only a claimed-or-queued attempt may be parked"},
-	"pkg/runner/usage_cap.go :: Queued+Running":                {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+	"pkg/runner/loop.go :: Failed+Finished":                     {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
+	"pkg/runner/loop.go :: Failed+Finished+PausedWaitingHuman":  {[]string{"resolveDeliveryPreconditions"}, "stale-delivery drop set: shapes a redelivery can never legitimately target"},
+	"pkg/runner/loop.go :: FailedResumable+PausedOperator":      {[]string{"resolveDeliveryPreconditions"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes)"},
+	"pkg/runner/loop_nats.go :: FailedResumable+Queued+Running": {[]string{"parkOnDLQOnFinalDelivery"}, "DLQ park CAS: claimed/queued attempts AND the engine's own failed_resumable write — on the nominal path the engine parks first, and a CAS that excluded it dropped the DLQ_PARKED cause silently (gate F4)"},
+	"pkg/runner/usage_cap.go :: Queued+Running":                 {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
 
 	// -- pkg/worktreepool.
 	"pkg/worktreepool/classify.go :: PausedOperator+PausedWaitingHuman": {[]string{"isPausedResumable"}, "the paused pair guarding checkout sparing (GC policy nuance documented at the site)"},

@@ -164,8 +164,9 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 				continue // in flight
 			}
 			runCtx := store.WithIdentity(ctx, ref.TenantID, "sweeper")
-			changed, err := s.cfg.Store.UpdateRunStatusIf(runCtx, ref.ID, store.RunStatusFailedResumable,
+			changed, err := s.cfg.Store.UpdateRunOutcome(runCtx, ref.ID, store.RunStatusFailedResumable,
 				"orphaned by a runner crash or exhausted redelivery — resume to retry",
+				store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal},
 				p.statuses)
 			if err != nil {
 				countErr("flip", err)

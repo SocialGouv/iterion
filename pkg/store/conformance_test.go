@@ -40,6 +40,7 @@ type conformanceOpts struct {
 func conformanceSuiteWithOpts(t *testing.T, factory runStoreFactory, opts conformanceOpts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
@@ -319,6 +320,54 @@ func TestConformance_Filesystem(t *testing.T) {
 		}
 		return s
 	})
+}
+
+// testSaveRunHostileValues guards the Mongo pipeline against
+// aggregation-expression evaluation of DATA: a $-prefixed string value
+// must round-trip verbatim (not be parsed as a field path and dropped
+// or substituted), and a dotted map key must not reject the write —
+// agent outputs ("$ ./gradlew build") and user inputs ("config.path")
+// produce both shapes routinely.
+func testSaveRunHostileValues(t *testing.T, s RunStore) {
+	t.Helper()
+	ctx := context.Background()
+	const runID = "run-hostile-values"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Error = "$workflow_name is not a field path"
+	r.Inputs = map[string]any{"config.path": "/etc/app.yml", "cmd": "$JAVA_HOME/bin/java"}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun with hostile values: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Error != r.Error {
+		t.Fatalf("Error = %q, want %q (a $-value was evaluated, not stored)", got.Error, r.Error)
+	}
+	if got.Inputs["config.path"] != "/etc/app.yml" || got.Inputs["cmd"] != "$JAVA_HOME/bin/java" {
+		t.Fatalf("Inputs = %v, want the hostile keys/values verbatim", got.Inputs)
+	}
+
+	// An upsert-create directly in a terminal status is NOT an episode:
+	// nothing transitioned, the document was born that way (fork seeds
+	// cancelled children through SaveRun on a run that does not exist).
+	born := *got
+	born.ID = "run-born-terminal"
+	born.Status = RunStatusCancelled
+	born.OutcomeSeq = 0
+	if err := s.SaveRun(ctx, &born); err != nil {
+		t.Fatalf("SaveRun upsert-create: %v", err)
+	}
+	if b, err := s.LoadRun(ctx, "run-born-terminal"); err != nil || b.OutcomeSeq != 0 {
+		t.Fatalf("born-terminal = (seq %d, %v), want (0, nil)", b.OutcomeSeq, err)
+	}
 }
 
 // testMergeClaimCAS drives the merge state machine at the store level:

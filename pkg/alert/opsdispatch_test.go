@@ -314,13 +314,18 @@ func TestOpsDispatcher_NewFailureCodeIsANewEpisode(t *testing.T) {
 	}
 
 	// Resume, then re-park on an UNRETRYABLE cause: attempts unchanged,
-	// no retry armed, different code.
+	// no retry armed, different code. Driven through the REAL
+	// transitions (the store owns the cause on a same-status write —
+	// a SaveRun shortcut can no longer re-code a parked run).
+	if err := rs.UpdateRunStatus(context.Background(), run.ID, store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.UpdateRunStatusCoded(context.Background(), run.ID, store.RunStatusFailedResumable,
+		"anthropic: invalid api key", store.FailureAuthFailed); err != nil {
+		t.Fatal(err)
+	}
 	run2, _ := rs.LoadRun(context.Background(), run.ID)
-	run2.Status = store.RunStatusFailedResumable
-	run2.Error = "anthropic: invalid api key"
-	run2.FailureCode = store.FailureAuthFailed
 	run2.RetryState = &store.RunRetryState{Attempts: 1}
-	run2.UpdatedAt = run2.UpdatedAt.Add(10 * time.Minute)
 	if err := rs.SaveRun(context.Background(), run2); err != nil {
 		t.Fatal(err)
 	}

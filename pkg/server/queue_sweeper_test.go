@@ -51,6 +51,10 @@ type fakeSweepStore struct {
 	flipped map[string]store.RunStatus
 }
 
+func (f *fakeSweepStore) UpdateRunOutcome(ctx context.Context, id string, status store.RunStatus, runErr string, _ store.RunOutcomeMeta, expectedFrom []store.RunStatus) (bool, error) {
+	return f.UpdateRunStatusIf(ctx, id, status, runErr, expectedFrom)
+}
+
 func (f *fakeSweepStore) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, _ string, _ []store.RunStatus) (bool, error) {
 	// The sweeper must stamp the run's tenant before the CAS — assert
 	// the ctx carries one (the mongo store would panic otherwise).

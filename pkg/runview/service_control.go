@@ -128,7 +128,10 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	if r.Error != "" {
 		reason += ": " + r.Error
 	}
-	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusCancelled, reason, store.FailureCancelled); err != nil {
+	// An operator cancel is the one server-side writer that KNOWS the
+	// continuation: nobody owns this run's future any more (final).
+	if _, err := s.store.UpdateRunOutcome(ctx, runID, store.RunStatusCancelled, reason,
+		store.RunOutcomeMeta{Code: store.FailureCancelled, Continuation: store.ContinuationFinal}, nil); err != nil {
 		return false, fmt.Errorf("update status: %w", err)
 	}
 	// Re-load post-flip so RecoverFinalize sees the new status.

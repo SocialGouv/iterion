@@ -131,6 +131,17 @@ type RunStore interface {
 	// cloud publisher to avoid stomping on raced state transitions.
 	UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (changed bool, err error)
 	UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (changed bool, err error)
+	// UpdateRunOutcome is the typed status transition: UpdateRunStatusIf
+	// plus the outcome metadata (failure classification + continuation
+	// ownership) persisted atomically with it. nil expectedFrom makes
+	// the write unconditional. This is the RUNNER-side choke point that
+	// stops the class of "the run document says failed_resumable and
+	// nothing else" — a consumer reads WHY and WHO owns the continuation
+	// from the document, not from event-prose archaeology. Engine paths
+	// keep the code-only writers below (the engine cannot know the queue
+	// topology, so it never states a continuation — F3 of the
+	// adversarial gate).
+	UpdateRunOutcome(ctx context.Context, id string, status RunStatus, runErr string, meta RunOutcomeMeta, expectedFrom []RunStatus) (changed bool, err error)
 	// ClaimMerge is the compare-and-set entry to the merge state
 	// machine: it flips MergeStatus to "merging" and stamps
 	// MergeClaimedAt, iff the current status is claimable — "",

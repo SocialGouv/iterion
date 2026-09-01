@@ -160,8 +160,15 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
 		defer scancel()
 		sctx = store.WithIdentity(sctx, msg.TenantID, msg.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunStatusIfCoded(sctx, msg.RunID, store.RunStatusFailedResumable,
-			d.Reason, store.FailureUsageLimitBlocked,
+		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
+			d.Reason,
+			// Continuation deliberately unknown here: the arming
+			// decision happens later (armUsageWindowRetry), and three
+			// of its branches arm nothing — the document must not say
+			// retry_armed before a retry actually exists. Promotion to
+			// retry_armed lives with ScheduleRunRetry; demotion to
+			// final with AbandonRunRetry.
+			store.RunOutcomeMeta{Code: store.FailureUsageLimitBlocked},
 			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil && logger != nil {
 			logger.Warn("runner: usage-cap status flip for %s: %v", msg.RunID, serr)
 		}

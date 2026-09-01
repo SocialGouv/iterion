@@ -1202,6 +1202,24 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
 	}
+	// The continuation promote: only the RUNNER knows whether a Nak
+	// really means a redelivery (the engine has no queue topology, so
+	// its park writers leave continuation unknown). Promote to
+	// redelivery_pending at the actual Nak — a same-status write that
+	// states ownership without touching the engine's cause or message,
+	// and without inventing an episode. A Nak into nothing (last
+	// permitted delivery of an ErrRunInterrupted, exempt from DLQ)
+	// stays unknown, which is honest: nobody owns that run's future.
+	if outcome.action == actionNak && redeliverable && r.cfg.Store != nil {
+		bg, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
+		sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
+		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
+			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending},
+			[]store.RunStatus{store.RunStatusFailedResumable}); serr != nil {
+			logger.Warn("runner: continuation promote for %s: %v", msg.RunID, serr)
+		}
+		cancel()
+	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
