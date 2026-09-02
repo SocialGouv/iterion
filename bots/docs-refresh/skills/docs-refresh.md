@@ -1,6 +1,6 @@
 ---
 name: docs-refresh
-description: Operating playbook for Doki v3 — one adaptive documentation-alignment campaign guided by an advisory scan and gated only by truth oracles (scope containment + real build).
+description: Operating playbook for Doki v3 — one adaptive documentation-alignment campaign guided by an advisory scan and gated on scope containment plus an honest termination contract.
 ---
 
 # docs-refresh — operating playbook
