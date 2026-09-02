@@ -152,6 +152,36 @@ type ClaimLeaser interface {
 	UpdateStateOwned(ctx context.Context, id, newState string, tok ClaimToken) error
 }
 
+// ExpiredClaim is one reap candidate: a card whose claim's lease ran out
+// with nobody renewing. Prev is the claim AS LISTED — the reclaim CAS
+// re-verifies it, so a claim that moved on between the list and the act
+// is simply skipped.
+type ExpiredClaim struct {
+	IssueID    string
+	Identifier string
+	State      string
+	LastRunID  string
+	Prev       ClaimToken
+}
+
+// ClaimReaper is the optional tracker capability behind the claim
+// watchdog: list the cards whose lease expired, and TRANSFER one to a
+// recovery owner. The transfer (never a bare clear) is what closes the
+// double-launch window: an in_progress card freed before its disposition
+// is decided is immediately re-dispatchable, and the reaper would be
+// racing the tick it exists to clean up after.
+type ClaimReaper interface {
+	// ListExpiredClaimCandidates returns cards with a non-empty claim
+	// whose lease expired before cutoff. LEGACY claims (no lease stamped)
+	// are never listed — time cannot prove anything about them.
+	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]ExpiredClaim, error)
+	// ReclaimExpired CAS-transfers the claim from prev to marker iff the
+	// claim is still exactly prev AND still expired at cutoff, bumping
+	// the fencing epoch (the old owner's late writes die at the fence).
+	// ErrClaimConflict when the claim moved on.
+	ReclaimExpired(ctx context.Context, id string, prev ClaimToken, marker string, cutoff time.Time) (ClaimToken, error)
+}
+
 // Errors returned by Tracker implementations. Callers should use
 // errors.Is to discriminate.
 var (

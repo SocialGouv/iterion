@@ -236,3 +236,84 @@ func (s *Store) SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimTok
 }
 
 func isNoDocuments(err error) bool { return errors.Is(err, mongo.ErrNoDocuments) }
+
+// ListExpiredClaimCandidates — see tracker.ClaimReaper (Mongo twin).
+// Legacy claims (zero lease) are excluded by the strictly-positive
+// lower bound; missing fields never match a range operator either.
+func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	cur, err := s.issues.Find(ctx, bson.M{
+		"tenant_id":             s.tenant,
+		"issue.claim":           bson.M{"$ne": ""},
+		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
+	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: list expired claims: %w", err)
+	}
+	var docs []issueDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("boardmongo: decode expired claims: %w", err)
+	}
+	out := make([]tracker.ExpiredClaim, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, tracker.ExpiredClaim{
+			IssueID:    d.Issue.ID,
+			Identifier: d.Issue.ID,
+			State:      d.Issue.State,
+			LastRunID:  d.Issue.LastRunID,
+			Prev:       tracker.ClaimToken{Marker: d.Issue.Claim, Epoch: d.Issue.ClaimEpoch},
+		})
+	}
+	return out, nil
+}
+
+// ReclaimExpired — see tracker.ClaimReaper (Mongo twin): one CAS
+// carrying the whole precondition (claim still exactly prev, lease
+// still expired), the epoch bump, and the fresh recovery lease stamped
+// with the SERVER clock.
+func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	filter := bson.M{
+		"_id": id, "tenant_id": s.tenant,
+		"issue.claim":           prev.Marker,
+		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
+	}
+	if prev.Epoch == 0 {
+		filter["issue.claimepoch"] = bson.M{"$in": bson.A{int64(0), nil}}
+	} else {
+		filter["issue.claimepoch"] = prev.Epoch
+	}
+	res := s.issues.FindOneAndUpdate(ctx, filter,
+		leaseStampPipeline(bson.M{
+			"issue.claim":      marker,
+			"issue.claimepoch": bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}},
+			"issue.claimedat":  "$$NOW",
+			"issue.updatedat":  "$$NOW",
+		}),
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() != nil {
+		if !isNoDocuments(res.Err()) {
+			return tracker.ClaimToken{}, fmt.Errorf("boardmongo: reclaim expired: %w", res.Err())
+		}
+		iss, gerr := s.get(ctx, id)
+		if gerr != nil {
+			return tracker.ClaimToken{}, gerr
+		}
+		return tracker.ClaimToken{}, fmt.Errorf("%w: claim moved on (now %q epoch %d)",
+			tracker.ErrClaimConflict, iss.Claim, iss.ClaimEpoch)
+	}
+	var doc issueDoc
+	if err := res.Decode(&doc); err != nil {
+		return tracker.ClaimToken{}, fmt.Errorf("boardmongo: reclaim decode: %w", err)
+	}
+	if err := s.emit(native.Event{Type: native.EvtIssueClaimed, IssueID: id,
+		Payload: map[string]any{"marker": marker, "claim_epoch": doc.Issue.ClaimEpoch, "reclaimed_from": prev.Marker}}); err != nil {
+		return tracker.ClaimToken{}, err
+	}
+	return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
+}

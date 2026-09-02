@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
@@ -153,6 +154,22 @@ func (a *Adapter) SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToke
 
 func (a *Adapter) SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error {
 	return a.store.SetGaveUpOwned(id, g, tok)
+}
+
+// ListExpiredClaimCandidates / ReclaimExpired expose the store's reaper
+// half under tracker.ClaimReaper (compile-asserted below).
+func (a *Adapter) ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return a.store.ListExpiredClaimCandidates(cutoff, limit)
+}
+
+func (a *Adapter) ReclaimExpired(ctx context.Context, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
+	if err := ctx.Err(); err != nil {
+		return tracker.ClaimToken{}, err
+	}
+	return a.store.ReclaimExpired(id, prev, marker, cutoff)
 }
 
 // Release delegates to the store.
@@ -327,3 +344,11 @@ func shortIdentifier(id string) string {
 	}
 	return id[:15]
 }
+
+// Compile-time: the adapter exposes BOTH watchdog capabilities — an
+// optional-interface miss here is the documented SetLastRun regression
+// (a store method without its Adapter pass-through fails silently).
+var (
+	_ tracker.ClaimLeaser = (*Adapter)(nil)
+	_ tracker.ClaimReaper = (*Adapter)(nil)
+)

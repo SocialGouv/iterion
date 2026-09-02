@@ -202,6 +202,7 @@ func New(opts Options) (*Dispatcher, error) {
 func (c *Dispatcher) Start(ctx context.Context) {
 	c.startOnce.Do(func() {
 		c.sweepStaleLocalClaims()
+		c.startClaimReaper()
 		errtrack.Go("dispatcher.actorLoop", func() { c.actorLoop(ctx) })
 	})
 }

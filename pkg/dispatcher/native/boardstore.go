@@ -1,6 +1,10 @@
 package native
 
-import "github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+import (
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+)
 
 // BoardStore is the storage contract the board operations (boardops), the
 // dispatcher tracker adapter, and the REST handlers operate against. The
@@ -44,6 +48,13 @@ type BoardStore interface {
 	SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
 	SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
 	SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error
+	// The reaper half — MANDATORY for the same reason as the lease: an
+	// optional watchdog is silently inert exactly where it matters (the
+	// cloud). ListExpiredClaimCandidates never lists a legacy claim;
+	// ReclaimExpired is a CAS TRANSFER (claim still prev + still
+	// expired → new owner, epoch bumped), never a bare clear.
+	ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error)
+	ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error)
 	// SetLastRun records the run a dispatch spawned so a cross-restart
 	// resume can find it (unfenced form — for writers acting on
 	// UNCLAIMED cards, e.g. the parked-card reconcilers).

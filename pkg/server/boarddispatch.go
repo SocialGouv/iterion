@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -32,6 +33,11 @@ type boardCoordinator interface {
 	RenewClaim(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
 	SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error
 	ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
+	// The reaper pair (the cloud half of the claim watchdog — the hole
+	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
+	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
+	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error)
 }
 
 // errCardPaused marks a processBoardCard error whose run parked on a
@@ -450,10 +456,17 @@ func (d *boardDispatcher) noteReconcile(tenant, issueID string) {
 func (d *boardDispatcher) run(ctx context.Context) {
 	t := time.NewTicker(d.interval)
 	defer t.Stop()
+	reaperOn := dispatcher.ClaimReaperEnabled()
+	if reaperOn {
+		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", "ITERION_BOARD_CLAIM_REAPER")
+	}
 	for {
 		d.tick(ctx)
 		d.sweepParked(ctx)
 		d.sweepForkAdoptions(ctx)
+		if reaperOn {
+			d.reapExpiredClaims(ctx, time.Now().UTC())
+		}
 		select {
 		case <-ctx.Done():
 			d.wg.Wait() // let in-flight cards finish their state transition
@@ -461,6 +474,68 @@ func (d *boardDispatcher) run(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// reapExpiredClaims is the cloud claim watchdog pass: same decision
+// table as the local dispatcher (dispatcher.DecideStuckCard — one
+// authority, F16), same transfer-before-acting order (F9). Runs on
+// every replica; the per-card CAS transfer elects exactly one winner.
+func (d *boardDispatcher) reapExpiredClaims(ctx context.Context, now time.Time) {
+	cands, err := d.coord.ListExpiredClaimCandidates(ctx, now, 100)
+	if err != nil {
+		d.warn("claim watchdog list: %v", err)
+		return
+	}
+	for _, cand := range cands {
+		d.reapOne(ctx, cand, now)
+	}
+}
+
+func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) {
+	var run *store.Run
+	var runErr error
+	if cand.Claim.LastRunID != "" {
+		if d.runFor == nil {
+			// Without a run loader the table cannot be consulted —
+			// conserve (the read-error row), and say so: a watchdog that
+			// silently cannot decide is the failure mode this exists for.
+			d.warn("claim watchdog: no run loader wired — keeping %s/%s untouched", cand.Tenant, cand.Claim.IssueID)
+			return
+		}
+		run, runErr = d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
+		if runErr != nil && errors.Is(runErr, store.ErrRunNotFound) {
+			run, runErr = nil, nil // pruned run proves nothing is alive
+		}
+	}
+	dec := dispatcher.DecideStuckCard(run, runErr)
+	if dec.Action == dispatcher.StuckKeep {
+		return
+	}
+	tok, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, "reaper:"+d.marker, now)
+	if err != nil {
+		if !errors.Is(err, tracker.ErrClaimConflict) {
+			d.warn("claim watchdog reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		}
+		return
+	}
+	switch dec.Action {
+	case dispatcher.StuckComplete:
+		if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, d.doneState, tok); err != nil {
+			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, d.doneState, err)
+		}
+	case dispatcher.StuckFail:
+		if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, d.blockedState, tok); err != nil {
+			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, d.blockedState, err)
+		}
+	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
+		// Release below is the whole action: the existing nets
+		// (sweepParked, the retry sweeper, the next tick) take over.
+	}
+	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+		d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+	}
+	d.warn("claim watchdog reclaimed %s/%s from %q (%s → %s): %s",
+		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, dec.Action, dec.Reason)
 }
 
 func (d *boardDispatcher) warn(format string, args ...any) {

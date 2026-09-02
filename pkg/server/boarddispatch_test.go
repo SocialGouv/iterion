@@ -125,6 +125,17 @@ func (f *fakeBoardCoord) ReleaseOwned(ctx context.Context, tenant, id string, to
 	return f.Release(ctx, tenant, id, tok.Marker)
 }
 
+func (f *fakeBoardCoord) ListExpiredClaimCandidates(_ context.Context, _ time.Time, _ int) ([]boardmongo.ExpiredCandidate, error) {
+	return nil, nil
+}
+
+func (f *fakeBoardCoord) ReclaimExpired(_ context.Context, _, id string, _ tracker.ClaimToken, marker string, _ time.Time) (tracker.ClaimToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimed[id] = marker
+	return tracker.ClaimToken{Marker: marker, Epoch: 99}, nil
+}
+
 func readyCard(id, bot string) boardmongo.Candidate {
 	return boardmongo.Candidate{Tenant: "t1", Issue: native.Issue{ID: id, Bot: bot, State: native.StateReady}}
 }

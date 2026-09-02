@@ -3,6 +3,7 @@ package boardmongo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -128,4 +129,47 @@ func (c *Coordinator) SetStateOwned(_ context.Context, tenant, id, state string,
 
 func (c *Coordinator) ReleaseOwned(_ context.Context, tenant, id string, tok tracker.ClaimToken) error {
 	return c.StoreFor(tenant).ReleaseOwned(id, tok)
+}
+
+// ExpiredCandidate is one cross-tenant reap candidate.
+type ExpiredCandidate struct {
+	Tenant string
+	Claim  tracker.ExpiredClaim
+}
+
+// ListExpiredClaimCandidates is the reaper's cross-tenant listing — on
+// the Coordinator, not the tenant-scoped store, because the cloud
+// reaper (one per replica, CAS-serialized per card) must see every
+// tenant's expired claims (the plan review's F12).
+func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]ExpiredCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	cur, err := c.coll.Find(ctx, bson.M{
+		"issue.claim":           bson.M{"$ne": ""},
+		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
+	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: list expired claims (cross-tenant): %w", err)
+	}
+	var docs []issueDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("boardmongo: decode expired claims (cross-tenant): %w", err)
+	}
+	out := make([]ExpiredCandidate, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: tracker.ExpiredClaim{
+			IssueID:    d.Issue.ID,
+			Identifier: d.Issue.ID,
+			State:      d.Issue.State,
+			LastRunID:  d.Issue.LastRunID,
+			Prev:       tracker.ClaimToken{Marker: d.Issue.Claim, Epoch: d.Issue.ClaimEpoch},
+		}})
+	}
+	return out, nil
+}
+
+// ReclaimExpired delegates the CAS transfer to the tenant-scoped store.
+func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
+	return c.StoreFor(tenant).ReclaimExpired(id, prev, marker, cutoff)
 }

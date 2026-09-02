@@ -195,6 +195,67 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Fatalf("ReleaseOwned B: %v", err)
 	}
 
+	// --- The reaper pair. A fresh lease is never listed nor reclaimable;
+	// an expired one (probed with a future cutoff — the staleBefore
+	// testability precedent) is TRANSFERRED, epoch bumped, old owner
+	// fenced. Cutoff is the caller's: production passes now.
+	reapProbe, err := store.Create(native.Issue{Title: "reap probe", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create reap probe: %v", err)
+	}
+	tokC, err := store.Claim(reapProbe.ID, "dead-owner")
+	if err != nil {
+		t.Fatalf("Claim reap probe: %v", err)
+	}
+	fresh, err := store.ListExpiredClaimCandidates(time.Now(), 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates (fresh): %v", err)
+	}
+	for _, cand := range fresh {
+		if cand.IssueID == reapProbe.ID {
+			t.Fatalf("a FRESH lease must never be listed as expired: %+v", cand)
+		}
+	}
+	future := time.Now().Add(2 * native.ClaimLeaseDuration)
+	expired, err := store.ListExpiredClaimCandidates(future, 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates (future cutoff): %v", err)
+	}
+	var probeCand *tracker.ExpiredClaim
+	for i := range expired {
+		if expired[i].IssueID == reapProbe.ID {
+			probeCand = &expired[i]
+		}
+	}
+	if probeCand == nil || probeCand.Prev.Marker != "dead-owner" || probeCand.Prev.Epoch != tokC.Epoch {
+		t.Fatalf("expired listing must carry the claim as-is: %+v", probeCand)
+	}
+	// Wrong prev → conflict, nothing moves.
+	if _, err := store.ReclaimExpired(reapProbe.ID, tracker.ClaimToken{Marker: "dead-owner", Epoch: tokC.Epoch + 7}, "reaper:x", future); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("reclaim with wrong prev: want ErrClaimConflict, got %v", err)
+	}
+	// Fresh cutoff → the lease is not expired → refused.
+	if _, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", time.Now()); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("reclaim of a live lease: want ErrClaimConflict, got %v", err)
+	}
+	// The real transfer: epoch bumps, the dead owner is fenced out.
+	rec, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", future)
+	if err != nil {
+		t.Fatalf("ReclaimExpired: %v", err)
+	}
+	if rec.Marker != "reaper:x" || rec.Epoch != tokC.Epoch+1 {
+		t.Fatalf("transfer token = %+v, want reaper:x at epoch %d", rec, tokC.Epoch+1)
+	}
+	if _, err := store.SetStateOwned(reapProbe.ID, native.StateBlocked, tokC); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("dead owner's write after the transfer: want ErrClaimConflict, got %v", err)
+	}
+	if _, err := store.SetStateOwned(reapProbe.ID, native.StateDone, rec); err != nil {
+		t.Fatalf("recovery owner's write: %v", err)
+	}
+	if err := store.ReleaseOwned(reapProbe.ID, rec); err != nil {
+		t.Fatalf("ReleaseOwned recovery: %v", err)
+	}
+
 	// SetLastRun stamps the single pointer AND appends dedup'd run history.
 	if err := store.SetLastRun(created.ID, "run-1", "/tmp/wd"); err != nil {
 		t.Errorf("SetLastRun: %v", err)
