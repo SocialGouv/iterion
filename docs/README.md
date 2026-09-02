@@ -125,6 +125,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
 | [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |
 | [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | Pre-exposure security and reliability checklist. |
+| [ci-pipeline-topology.md](ci-pipeline-topology.md) | How the image workflows are split so each artifact's workflow completion is its own "ready to redeploy" signal, and which prod target tracks which image. |
 | [ci-performance-buildkit-operator.md](ci-performance-buildkit-operator.md) | BuildKit operator and CI-cache tuning. |
 
 ## Desktop
