@@ -26,7 +26,29 @@ with an org fallback**, per kind:
    hasn't connected. Automated runs (webhook / dispatcher / scheduler)
    carry a *synthetic* owner (`webhook:<id>`, …) with no personal
    forfait, so they fall back to the org credential when one is set.
-3. Otherwise the run falls back to **API keys** (BYOK), then host env.
+3. Otherwise the resolution continues down the tier chain: the
+   **credential pool** (a contributor's lent subscription), then the
+   DB-backed **platform tier**, then the pod env.
+
+Two corrections to the mental model that "the forfait is used unless
+nothing else is there":
+
+- **BYOK is resolved FIRST, not last.** It is step 1 of the chain
+  ([publisher.go:359](../pkg/server/cloudpublisher/publisher.go#L359)), and
+  on the same wire it also outranks the forfait at consumption time:
+  `anthropicCredEnvForCLI` tests `ANTHROPIC_API_KEY` *before* the forfait's
+  `CLAUDE_CONFIG_DIR`
+  ([claude_code_creds.go:331-337](../pkg/backend/delegate/claude_code_creds.go)).
+  So a team Anthropic key **shadows** a connected forfait, and deleting the
+  key is the only way to prefer the subscription — see the gotchas in
+  [cloud-llm-credentials.md](cloud-llm-credentials.md).
+- **A forfait the provider is currently refusing is skipped**, so steps 1–2
+  can produce nothing for a tenant that *holds* one, and a later tier
+  serves instead
+  ([the fallback chain](cloud-llm-credentials.md#the-tiers-are-a-fallback-chain-not-a-fixed-first-choice)).
+  If no later tier fills that wire the skipped forfait is restored, so the
+  run parks with a durable usage-window retry rather than failing
+  unauthenticated.
 
 Only the **`claude_code`** backend consumes the forfait (it *is* the
 Claude Code CLI — the ToS-clean path; the runner materialises the sealed
