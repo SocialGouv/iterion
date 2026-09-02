@@ -8,6 +8,54 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-02 — 🔁 re-request lane live pilot on questions-ecrites (runs 01a0620c / 01a0620f / 01a06211)
+
+- Status: **validated** — the three behaviours of the GitHub re-request lane
+  (#605, `review_request_logins`) proven end-to-end on the production
+  instance, on a real repo, through the real GitHub events.
+- Versions: iterion cloud prod v3.88.0 (`9ff26bc47`, deployed minutes
+  before) · bot `review-pr` via the provisioned webhook lane
+  (`overlap: supersede`, `review_on_sync: true`, PAT connection posting as
+  the `iterion-bot` User account).
+- Method: throwaway PR SocialGouv/questions-ecrites#64 (one added doc file);
+  reviewer re-requests driven by the API equivalent of the sidebar 🔁 button
+  (`POST …/requested_reviewers`). No board writes (`post_to_board=false`).
+- Result, all three lanes:
+  1. **open → auto-review** (`01a0620c`): launched 3 s after the PR opened,
+     review posted in ~3 min **as `iterion-bot`** — which clears the pending
+     request, i.e. re-arms the button;
+  2. **🔁 after a posted review** (`01a0620f`): click → new run in 5 s (the
+     salted-key lane — the button is repeatable per head);
+  3. **🔁 during a live review** (`01a06211`): the in-flight run was
+     cancelled with `superseded by a newer delivery for the same subject`
+     and replaced 3 s later (the round-5 supersede-defer fix, observed
+     verbatim).
+- Value: this is the UX the whole migration existed to reproduce (the Revu
+  App's re-request button, on a bot **User** identity — a GitHub App cannot
+  be a requested reviewer). Generalised the same day to vao / domifa /
+  code-du-travail-numerique / qe-front / egapro.
+- Findings / misses: none on the lane itself. The **cost of the road** was
+  upstream, on #605's own gate: round 7 (`01a06146`) computed a clean
+  0-finding verdict in 41.4 min then died at `converge` on the 45 m
+  duration budget — the verdict was in the checkpoint but never published,
+  and the gate's supersede net relaunched a full ~$11 re-review of an
+  unchanged diff. The operator published the checkpoint verdict manually
+  (PR comment + `revi/review` status) rather than pay another round.
+- Engine hardening (cards): `native:85d7752d` (a review bot whose PUBLISH
+  node can be refused by the duration budget wastes the entire run —
+  exit-grace carve-out or a reviewer budget share); `native:3b3562ad`
+  (claude.ai "monthly spend limit" text misclassified as
+  `EXECUTION_FAILED: structured output invalid` → 9 futile retries → DLQ
+  instead of `USAGE_LIMIT_BLOCKED` + usage-window retry; and the claw
+  structured-output recovery is dead on the review schema's union-typed
+  `findings`).
+- Lessons for next run: budget elapsed rides the checkpoint — a run whose
+  clock was eaten by infra failures cannot be rescued by resume (cloud
+  `ResumeSpec` has no budget override); relaunch fresh instead. And a
+  22-second "structured output invalid" failure is a dead credential
+  wearing a schema-error costume: read the run log before blaming the
+  schema.
+
 ## 2026-09-01 — four passes as closure judge of an adversarial loop (runs 01a05daf / 01a05e57 / 01a05e6f)
 
 - Status: **validated** — Revi as the external reviewer closing a `::loop`
