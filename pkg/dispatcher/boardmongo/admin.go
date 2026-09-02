@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"slices"
 	"time"
 
@@ -128,7 +129,7 @@ func (s *Store) RenameState(from, to string) (int, error) {
 	if err := s.persistBoard(ctx, board); err != nil {
 		return 0, err
 	}
-	touched, err := s.migrateState(ctx, from, to, "state_rename")
+	touched, err := s.migrateState(ctx, from, to, tracker.ReasonStateRename)
 	if err != nil {
 		return touched, err
 	}
@@ -183,7 +184,7 @@ func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 		if err := native.ReopenMigrationAllowed(board, ptrs, name, migrateTo); err != nil {
 			return 0, err
 		}
-		touched, err = s.migrateState(ctx, name, migrateTo, "state_delete")
+		touched, err = s.migrateState(ctx, name, migrateTo, tracker.ReasonStateDelete)
 		if err != nil {
 			return touched, err
 		}
@@ -386,7 +387,7 @@ func (s *Store) RenameField(from, to string) (int, error) {
 		}
 		out[to] = v
 		return out, true
-	}, "field_rename")
+	}, tracker.ReasonFieldRename)
 	if err != nil {
 		return touched, err
 	}
@@ -417,7 +418,7 @@ func (s *Store) DeleteField(name string) (int, error) {
 			}
 		}
 		return out, true
-	}, "field_delete")
+	}, tracker.ReasonFieldDelete)
 	if err != nil {
 		return touched, err
 	}

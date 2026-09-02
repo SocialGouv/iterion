@@ -636,7 +636,7 @@ func (s *Store) promoteUnblockedDependentsLocked(closedID string) error {
 		if err := s.emitPostCommitEvent(Event{
 			Type:    EvtIssueState,
 			IssueID: id,
-			Payload: map[string]any{"from": from, "to": target, "reason": "unblocked"},
+			Payload: map[string]any{"from": from, "to": target, "reason": tracker.ReasonUnblocked},
 		}); err != nil {
 			return err
 		}

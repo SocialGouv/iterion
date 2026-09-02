@@ -181,8 +181,12 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 	}
 	r, err := rs.LoadRun(ctx, iss.LastRunID)
 	if err != nil {
-		if errors.Is(err, store.ErrRunNotFound) {
-			return true // last run pruned; a fresh launch is safe
+		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+			// Pruned, or deleted behind a durable tombstone: both are
+			// PROOF of absence, not lack of information — refusing them
+			// bricked a ticket whose operator deleted its run, with no
+			// studio exit (delete does not clear the card's LastRunID).
+			return true
 		}
 		// No information is not no run: a run record that EXISTS but
 		// cannot be read may be alive. The dispatcher's
@@ -409,6 +413,22 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 // case is a *skip*, not a failure, for the loop — hence the dedicated
 // error the caller can distinguish.
 func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
+	if cur, err := board.Get(iss.ID); err != nil {
+		return "", fmt.Errorf("read ticket: %w", err)
+	} else if cur.Claim != "" {
+		return "", fmt.Errorf("ticket %s is claimed by %q — its launcher is already on it; wait for the claim to clear (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
+	}
+	// A claimed ticket already has a launcher — the dispatcher wins with
+	// the CLAIM, and its move out of Ready is offloaded, so the state
+	// alone cannot say the ticket is free. This is the choke point BOTH
+	// callers cross (the admission loop's ClaimForLaunch refuses the same
+	// card earlier — atomically; the operator's explicit "launch now"
+	// reaches here directly), so the guard lives here, on a FRESH read:
+	// launching past it minted a second run while the claim holder was
+	// mid-launch. Read-then-move, not a CAS, because this path must stay
+	// legal for a non-Ready needs-attention relaunch (ClaimForLaunch
+	// requires Ready); the residual µs window is the documented V1 shape,
+	// down from the whole launch flight.
 	entry, found, err := s.findBot(iss.Bot)
 	if err != nil {
 		s.logger.Warn("pipeline admission: resolve bot %q: %v", iss.Bot, err)

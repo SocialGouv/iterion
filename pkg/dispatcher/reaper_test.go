@@ -3,9 +3,11 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -655,8 +657,15 @@ func TestShutdown_SlowRevertDoesNotStarveTheRelease(t *testing.T) {
 type orderRecordingTracker struct {
 	tracker.Tracker
 	leaser      tracker.ClaimLeaser
+	mu          sync.Mutex // ops — shutdown drains entries in parallel now
 	ops         []string
 	slowRefresh time.Duration
+}
+
+func (r *orderRecordingTracker) record(op string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ops = append(r.ops, op)
 }
 
 // RefreshStates is the revert's first act; slowing it is how a shared
@@ -679,19 +688,19 @@ func (r *orderRecordingTracker) RenewClaim(ctx context.Context, id string, tok t
 	return r.leaser.RenewClaim(ctx, id, tok)
 }
 func (r *orderRecordingTracker) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
-	r.ops = append(r.ops, "release")
+	r.record("release")
 	return r.leaser.ReleaseOwned(ctx, id, tok)
 }
 func (r *orderRecordingTracker) UpdateStateOwned(ctx context.Context, id, state string, tok tracker.ClaimToken) error {
-	r.ops = append(r.ops, "state:"+state)
+	r.record("state:" + state)
 	return r.leaser.UpdateStateOwned(ctx, id, state, tok)
 }
 func (r *orderRecordingTracker) Release(ctx context.Context, id, marker string) error {
-	r.ops = append(r.ops, "release")
+	r.record("release")
 	return r.Tracker.Release(ctx, id, marker)
 }
 func (r *orderRecordingTracker) UpdateState(ctx context.Context, id, state string) error {
-	r.ops = append(r.ops, "state:"+state)
+	r.record("state:" + state)
 	return r.Tracker.UpdateState(ctx, id, state)
 }
 
@@ -739,5 +748,160 @@ func TestFinishWorker_SlowRevertDoesNotStarveTheRelease(t *testing.T) {
 	if after.Claim != "" {
 		t.Fatalf("a slow revert consumed the budget the release needed: card still claimed by %q — "+
 			"invisible to the next daemon's candidate listing at EVERY run finish", after.Claim)
+	}
+}
+
+// TestLastRunHold_DeletedRunIsProofOfAbsence: the dispatcher's hold
+// authority must read a durable delete tombstone the way the admission
+// loop's pipelineTicketLaunchable does — proof the run is gone, not the
+// unreadable-store input the hold exists for. Divergent answers on the
+// same input is how one authority bricks the card the other would free.
+func TestLastRunHold_DeletedRunIsProofOfAbsence(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	c.state = newState() // the hold path records its decision on the actor state
+	ctx := context.Background()
+	if _, err := runs.CreateRun(ctx, "run-del", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.DeleteRun(ctx, "run-del"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runs.LoadRun(ctx, "run-del"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Fatalf("precondition: want ErrRunDeleted, got %v", err)
+	}
+	iss, err := board.Create(native.Issue{Title: "retried", State: native.StateReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := board.SetLastRun(iss.ID, "run-del", ""); err != nil {
+		t.Fatal(err)
+	}
+	if c.lastRunHoldBeforeClaim(tracker.Issue{ID: iss.ID, Identifier: "i1"}) {
+		t.Fatal("a ticket whose last run was DELETED is held for ever — the tombstone proves absence, a fresh start is the legitimate path")
+	}
+}
+
+// panickyRefreshTracker panics inside the revert's first act — the shape
+// of any bug in the transition switch.
+type panickyRefreshTracker struct {
+	tracker.Tracker
+	leaser tracker.ClaimLeaser
+}
+
+func (p *panickyRefreshTracker) RefreshStates(context.Context, []string) (map[string]string, error) {
+	panic("boom in the transition phase")
+}
+func (p *panickyRefreshTracker) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	return p.leaser.ClaimLease(ctx, id, marker)
+}
+func (p *panickyRefreshTracker) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return p.leaser.RenewClaim(ctx, id, tok)
+}
+func (p *panickyRefreshTracker) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return p.leaser.ReleaseOwned(ctx, id, tok)
+}
+func (p *panickyRefreshTracker) UpdateStateOwned(ctx context.Context, id, state string, tok tracker.ClaimToken) error {
+	return p.leaser.UpdateStateOwned(ctx, id, state, tok)
+}
+
+// TestFinishWorker_PanicStillReleasesTheClaim: the release + heartbeat
+// stop run in a defer, so a panic in the transition switch (recovered
+// upstream by the worker wrapper) cannot leave a session beating on a
+// card whose run is over — that session renews the lease for ever and
+// the reaper never lists the card.
+func TestFinishWorker_PanicStillReleasesTheClaim(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := native.NewAdapter(board)
+	rec := &panickyRefreshTracker{Tracker: adapter, leaser: adapter}
+	c := &Dispatcher{
+		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
+		ws: newWsBridge(iterlog.Nop()),
+	}
+	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
+	iss, err := board.Create(native.Issue{Title: "panics mid-finish", State: native.StateReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := board.Claim(iss.ID, "host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.SetStateOwned(iss.ID, native.StateInProgress, tok); err != nil {
+		t.Fatal(err)
+	}
+	sess := StartClaimSession(c.leaser, iss.ID, tok, func(string, ...any) {}, nil)
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("precondition: the transition phase must have panicked")
+			}
+		}()
+		c.runFinishWorker(finishPlan{
+			kind: finishRevert, issueID: iss.ID, identifier: "i1",
+			runningTarget: native.StateInProgress, sourceState: native.StateReady,
+			session: sess,
+		})
+	}()
+
+	after, _ := board.Get(iss.ID)
+	if after.Claim != "" {
+		t.Fatalf("panic skipped the release: card still claimed by %q with its heartbeat running — invisible to the reaper for ever", after.Claim)
+	}
+}
+
+// TestShutdown_DrainIsBoundedByOneCardsBudgets: entries drain in
+// parallel — a fleet of slow reverts costs ONE card's budgets, not N of
+// them, or the SIGKILL lands before the tail and those claims are never
+// released.
+func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := native.NewAdapter(board)
+	rec := &orderRecordingTracker{Tracker: adapter, leaser: adapter, slowRefresh: 200 * time.Millisecond}
+	c := &Dispatcher{
+		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
+		ws: newWsBridge(iterlog.Nop()),
+	}
+	c.shutdownRevertBudget, c.shutdownReleaseBudget = 40*time.Millisecond, 40*time.Millisecond
+	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
+	for i := 0; i < 4; i++ {
+		iss, err := board.Create(native.Issue{Title: "in flight", State: native.StateReady})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, err := board.Claim(iss.ID, "host-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := board.SetStateOwned(iss.ID, native.StateInProgress, tok); err != nil {
+			t.Fatal(err)
+		}
+		c.state.running[iss.ID] = &runningEntry{
+			IssueID: iss.ID, Identifier: "i", TransitionedFromState: native.StateReady,
+			claim: StartClaimSession(c.leaser, iss.ID, tok, func(string, ...any) {}, nil),
+		}
+	}
+
+	start := time.Now()
+	c.shutdown()
+	elapsed := time.Since(start)
+
+	// Sequential would be ≥ 4 × 40ms of dead revert contexts; parallel is
+	// one card's worth plus scheduling noise.
+	if elapsed > 120*time.Millisecond {
+		t.Fatalf("drain took %s for 4 cards — sequential again: under a real grace period the SIGKILL beats the tail and those claims stay on disk", elapsed)
+	}
+	for id := range c.state.running {
+		if cur, _ := board.Get(id); cur.Claim != "" {
+			t.Fatalf("card %s still claimed by %q after shutdown", id, cur.Claim)
+		}
 	}
 }

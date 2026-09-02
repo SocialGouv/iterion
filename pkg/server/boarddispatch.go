@@ -99,9 +99,13 @@ type boardDispatcher struct {
 	saturationWarned bool
 
 	interval time.Duration
-	sem      chan struct{}
-	logger   *iterlog.Logger
-	wg       sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
+	// reapEvery paces the watchdog family (reap pass + the two repair
+	// sweeps) inside the run loop; injectable so the periodicity is
+	// provable without waiting a real minute.
+	reapEvery time.Duration
+	sem       chan struct{}
+	logger    *iterlog.Logger
+	wg        sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
 	// clockFallbackReason latches WHICH degradation was last reported, so
 	// the notice stays edge-triggered (a per-pass warn is a log storm at
 	// the watchdog's cadence) without a change of cause going unsaid —
@@ -128,6 +132,7 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		blockedState:    native.StateBlocked,
 		awaitingState:   native.StateAwaitingInput,
 		interval:        5 * time.Second,
+		reapEvery:       dispatcher.ClaimReaperInterval(),
 		sem:             make(chan struct{}, concurrency),
 		logger:          logger,
 	}
@@ -455,27 +460,36 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	if reaperOn {
 		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", dispatcher.ClaimReaperEnvName())
 	}
-	// The watchdog is paced by its OWN interval, not by the dispatch tick
-	// it happens to share a loop with: a lease measured in minutes has no
-	// use for a five-second sweep, and the difference is a cross-tenant
-	// query plus a server-clock round trip per replica, twelve times over.
-	// Independently of the gate: free recovery claims nobody came back
-	// for. The watchdog holds a card under `reaper:<host>` for one lease
-	// when it conserves it, and only the NEXT pass releases it — so
-	// turning the gate off in that window (the documented rollback lever)
-	// would strand the card under a marker nothing else in cloud releases.
-	// The local twin gets this from its boot sweep's pid probe; cloud has
-	// no such sweep, so it needs its own.
-	d.sweepAbandonedRecoveryClaims(ctx)
-	d.sweepUnleasedClaims(ctx)
+	// The watchdog family is paced by its OWN interval, not by the
+	// dispatch tick it shares a loop with: a lease measured in minutes has
+	// no use for a five-second sweep. lastReap starts zero, so the FIRST
+	// pass runs immediately — that pass is the boot sweep; boot and
+	// periodic are one mechanism, not two invocations that can drift.
+	//
+	// The two repair sweeps run independently of the gate (the gate stops
+	// DECISIONS, not REPAIRS) and on every pass, not only at boot: with
+	// the reaper off they are the ONLY thing that frees what a mixed
+	// fleet or a dead watchdog leaves behind, and the rolling deploy that
+	// CREATES the un-leased population is also a fleet of fresh boots —
+	// each younger than the 24h unleasedClaimHorizon, so a boot-only
+	// sweep listed zero candidates for as long as deploys stayed more
+	// frequent than the horizon. (A conserved card is likewise held under
+	// `reaper:<host>` for one lease and only the next pass releases it —
+	// flipping the gate off in that window, the documented rollback
+	// lever, would strand it under a marker nothing else in cloud
+	// releases.)
 	var lastReap time.Time
 	for {
 		d.tick(ctx)
 		d.sweepParked(ctx)
 		d.sweepForkAdoptions(ctx)
-		if reaperOn && time.Since(lastReap) >= dispatcher.ClaimReaperInterval() {
+		if time.Since(lastReap) >= d.reapEvery {
 			lastReap = time.Now()
-			d.reapExpiredClaims(ctx, d.reapCutoff(ctx))
+			if reaperOn {
+				d.reapExpiredClaims(ctx, d.reapCutoff(ctx))
+			}
+			d.sweepAbandonedRecoveryClaims(ctx)
+			d.sweepUnleasedClaims(ctx)
 		}
 		select {
 		case <-ctx.Done():
@@ -487,9 +501,10 @@ func (d *boardDispatcher) run(ctx context.Context) {
 }
 
 // sweepAbandonedRecoveryClaims releases expired claims still held under a
-// watchdog's own recovery marker. Runs ONCE at startup and never behind
-// the reaper gate: its whole purpose is to repair the state a disabled
-// reaper would otherwise leave behind for ever.
+// watchdog's own recovery marker. Runs on the watchdog cadence (first
+// pass = boot) and never behind the reaper gate: its whole purpose is to
+// repair the state a disabled reaper would otherwise leave behind for
+// ever.
 func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
 	// ONE clock for the listing and for the CAS beneath it: the lease is
 	// stamped server-side, so measuring it with this pod's clock is the
@@ -514,7 +529,9 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
 // sweepUnleasedClaims is the OTHER half of "what a disabled reaper leaves
 // behind": ordinary claims a mixed-fleet write stripped of their lease.
 // Nothing else lists them, and a rolling deploy is what creates them, so
-// the repair cannot sit behind a gate this release ships off.
+// the repair sits behind neither the gate this release ships off nor the
+// boot moment — a fresh boot is younger than the 24h horizon by
+// construction, so boot-only meant "never" at sub-24h deploy cadence.
 func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context) {
 	now := d.reapCutoff(ctx)
 	cands, err := d.coord.ListUnleasedClaims(ctx, now, sweepBatch)

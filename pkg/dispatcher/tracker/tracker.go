@@ -218,6 +218,37 @@ func IsReaperMarker(marker string) bool { return strings.HasPrefix(marker, Reape
 // consuming a one-shot label) must not treat it as one.
 const ReasonWatchdog = "watchdog"
 
+// The other board-event reasons, named so the machine set below is an
+// enumeration over constants rather than a scatter of literals.
+const (
+	// Schema migrations: the operator edits the BOARD, and the store
+	// emits one event per touched card — none of those cards moved by an
+	// operator gesture of its own.
+	ReasonStateRename = "state_rename"
+	ReasonStateDelete = "state_delete"
+	ReasonFieldRename = "field_rename"
+	ReasonFieldDelete = "field_delete"
+	// ReasonUnblocked is the auto-promote CASCADE of closing a card's
+	// last blocker — descriptive provenance, NOT machine: the close that
+	// caused it is a deliberate gesture, and a subscription armed on the
+	// promoted card's target state is exactly the intent it expresses.
+	ReasonUnblocked = "unblocked"
+)
+
+// IsMachineReason reports whether a board-event `reason` names iterion
+// acting on the board by itself (a watchdog repair, a schema migration).
+// The set is ENUMERATED, never derived from "any reason is machine":
+// a descriptive reason like ReasonUnblocked must keep firing the
+// triggers it fired before it existed — deriving the predicate from the
+// field's mere presence silently disarmed them.
+func IsMachineReason(reason string) bool {
+	switch reason {
+	case ReasonWatchdog, ReasonStateRename, ReasonStateDelete, ReasonFieldRename, ReasonFieldDelete:
+		return true
+	}
+	return false
+}
+
 // LaunchStateLister is the optional capability naming the states a card
 // is DISPATCHED FROM. The claim watchdog needs it to tell two situations
 // apart that look identical from the card alone: a card an operator

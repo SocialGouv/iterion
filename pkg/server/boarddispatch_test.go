@@ -35,6 +35,9 @@ type fakeBoardCoord struct {
 	epochs   map[string]int64
 	expired  []boardmongo.ExpiredCandidate
 	unleased []boardmongo.ExpiredCandidate
+	// unleasedLists counts ListUnleasedClaims calls — the periodicity
+	// oracle for the repair sweeps.
+	unleasedLists int
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -177,6 +180,7 @@ func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPr
 func (f *fakeBoardCoord) ListUnleasedClaims(_ context.Context, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.unleasedLists++
 	out := make([]boardmongo.ExpiredCandidate, 0, len(f.unleased))
 	for _, e := range f.unleased {
 		if limit > 0 && len(out) >= limit {
@@ -1649,5 +1653,34 @@ func TestCloudSweep_GatedArmCountsOnlyDisposedCards(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "handled") {
 		t.Fatalf("the gated sweep announced work it did not do: %q", buf.String())
+	}
+}
+
+// TestBoardDispatcher_RepairSweepsRunOnTheWatchdogCadence: the two repair
+// sweeps must run on every watchdog pass, gate OFF included — not only at
+// boot. Boot-only meant "never" for the un-leased population: the rolling
+// deploy that CREATES it is also a fleet of fresh boots, each younger
+// than the 24h horizon, so every boot listed zero candidates while the
+// residue accumulated (and the residue is a live holder locked out of
+// its own card by an old binary's full-document replace).
+func TestBoardDispatcher_RepairSweepsRunOnTheWatchdogCadence(t *testing.T) {
+	f := newFakeBoardCoord()
+	// Gate OFF is the arm under test: with the reaper disabled these
+	// sweeps are the ONLY repair.
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.interval = 2 * time.Millisecond
+	d.reapEvery = 0 // every pass — the cadence itself is a prod constant
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	d.run(ctx)
+
+	f.mu.Lock()
+	lists := f.unleasedLists
+	f.mu.Unlock()
+	if lists < 2 {
+		t.Fatalf("un-leased sweep ran %d time(s) over several watchdog passes — boot-only again: "+
+			"at sub-24h deploy cadence that population is never repaired", lists)
 	}
 }

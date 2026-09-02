@@ -2,6 +2,7 @@ package native
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"strings"
 )
 
@@ -344,7 +345,13 @@ func PromoteUnblockedDependents(store BoardStore, closedID string) error {
 			continue
 		}
 		// SetState may re-enter Promote on done only — target is backlog/ready.
-		if _, err := store.SetState(iss.ID, target); err != nil {
+		// Prefer the reason-carrying setter: the promote is a CASCADE and its
+		// provenance must reach the spine on this twin like on the FS one.
+		if rs, ok := store.(StateReasoner); ok {
+			if _, err := rs.SetStateWithReason(iss.ID, target, tracker.ReasonUnblocked); err != nil {
+				return err
+			}
+		} else if _, err := store.SetState(iss.ID, target); err != nil {
 			return err
 		}
 		// Note: issue_unblocked is emitted by the filesystem store's locked

@@ -514,8 +514,11 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 		return true
 	}
 	r, err := c.loadRunForDecision(rs, prev, "pre-claim hold check")
-	if errors.Is(err, store.ErrRunNotFound) {
-		return false // pruned run — the legitimate fresh start
+	if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+		// Pruned, or deleted behind a durable tombstone — both PROVE the
+		// run is gone (the same reading as pipelineTicketLaunchable: the
+		// two authorities must answer alike on the same input).
+		return false
 	}
 	if err != nil {
 		c.recordLastRunHold(iss, fmt.Sprintf("last run %s exists but cannot be read — holding", prev))

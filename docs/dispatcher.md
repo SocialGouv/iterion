@@ -824,11 +824,15 @@ Three properties of that routing are easy to assume wrongly:
 - **A card in the running column with no run recorded is left alone.**
   The run stamp is best-effort and lands after the launch, so its absence
   proves nothing — freeing the card could double-launch a live worker.
-- **Returning a card to the pool is bounded in cloud** (3 attempts): the
-  cloud launcher starts a fresh run rather than resuming the recorded
-  one, so an always-failing card would otherwise be relaunched once per
-  lease forever. Past the ceiling it is filed as failed. The local
-  dispatcher resumes the recorded run and needs no such bound.
+- **Returning a card to the pool is bounded in cloud** (`watchdogRunCeiling`,
+  20 lifetime runs): the cloud launcher starts a fresh run rather than
+  resuming the recorded one, so an always-failing card would otherwise be
+  relaunched once per lease forever. The bound is a coarse SPEND backstop
+  on the card's cumulative run count — every run it ever carried,
+  whatever launched them — not a watchdog retry counter, so it must sit
+  far above any healthy card's normal traffic. Past the ceiling a repark
+  is filed as failed instead. The local dispatcher resumes the recorded
+  run and needs no such bound.
 
 Terminal board states (`done`, `blocked`) are **sinks**: the ordinary
 state-move family refuses to leave them (silent resurrection was

@@ -447,6 +447,18 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 }
 
 func (s *Store) SetState(id, newState string) (*native.Issue, error) {
+	return s.setStateReason(id, newState, "")
+}
+
+// SetStateWithReason is SetState carrying an explicit provenance
+// (native.StateReasoner) — the twin of the FS store's stamped promote
+// path. The conformance suite holds both twins to emitting the same
+// reason on the same gesture.
+func (s *Store) SetStateWithReason(id, newState, reason string) (*native.Issue, error) {
+	return s.setStateReason(id, newState, reason)
+}
+
+func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	iss, err := s.get(ctx, id)
@@ -469,7 +481,11 @@ func (s *Store) SetState(id, newState string) (*native.Issue, error) {
 	if err := s.replace(ctx, iss); err != nil {
 		return nil, err
 	}
-	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID, Payload: map[string]any{"from": old, "to": newState}}); err != nil {
+	payload := map[string]any{"from": old, "to": newState}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID, Payload: payload}); err != nil {
 		return nil, err
 	}
 	if newState == native.StateDone {

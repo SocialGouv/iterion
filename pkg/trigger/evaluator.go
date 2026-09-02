@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -107,16 +108,15 @@ type effectOpts struct {
 var errEffectMachineCaused = errors.New("trigger: one-shot not spent on a machine-caused event")
 
 // machineCaused reports that an event was produced by the machine rather
-// than by an operator or a bot acting on the board. The contract with
-// the stores (native.StateChangePayload, the board schema migrations) is
-// that `reason` IS machine provenance — an operator gesture never
-// carries one — so ANY reason marks the event machine-caused. Matching
-// only the watchdog value let a column rename (reason: state_rename, one
-// event per card) spend every consume_labels one-shot in the column at
-// once, on cards that never moved.
+// than by an operator or a bot acting on the board. The set is the
+// ENUMERATED tracker.IsMachineReason — matching only the watchdog value
+// let a column rename (one event per card) spend every consume_labels
+// one-shot in the column at once, and matching ANY reason killed the
+// one-shot of an unblocked card (the cascade of an operator closing its
+// blocker — intent, not machinery).
 func machineCaused(ev Event) bool {
 	reason, _ := ev.Payload["reason"].(string)
-	return reason != ""
+	return tracker.IsMachineReason(reason)
 }
 
 // applyEffect executes ONE (subscription, event) effect — the single

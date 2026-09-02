@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -165,7 +166,7 @@ func (s *Store) RenameState(from, to string) (touched int, err error) {
 	if err := s.setBoardLocked(next); err != nil {
 		return 0, err
 	}
-	touched, err = s.migrateStateLocked(from, to, "state_rename")
+	touched, err = s.migrateStateLocked(from, to, tracker.ReasonStateRename)
 	if err != nil {
 		return touched, err
 	}
@@ -214,7 +215,7 @@ func (s *Store) DeleteState(name, migrateTo string) (touched int, err error) {
 		if err := s.reopenMigrationAllowedLocked(name, migrateTo); err != nil {
 			return 0, err
 		}
-		touched, err = s.migrateStateLocked(name, migrateTo, "state_delete")
+		touched, err = s.migrateStateLocked(name, migrateTo, tracker.ReasonStateDelete)
 		if err != nil {
 			return touched, err
 		}

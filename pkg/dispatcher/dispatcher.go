@@ -118,9 +118,11 @@ type Dispatcher struct {
 	runReadFailure atomic.Bool
 
 	// shutdownRevertBudget / shutdownReleaseBudget bound the two board
-	// writes a shutdown makes. SEPARATE by design (a slow revert must not
-	// eat the release's deadline) and injectable so the test that proves
-	// that does not have to spend the real ones.
+	// writes of the transition-then-release pair — at shutdown AND in
+	// every runFinishWorker (the same structural pair; the names keep the
+	// site that motivated them). SEPARATE by design (a slow revert must
+	// not eat the release's deadline) and injectable so the tests that
+	// prove it do not spend the real ones.
 	shutdownRevertBudget  time.Duration
 	shutdownReleaseBudget time.Duration
 
@@ -508,38 +510,50 @@ func (c *Dispatcher) shutdown() {
 	// claim eagerly here (best-effort, detached ctx with a short
 	// budget — same pattern as finishRun's release path).
 	currentTarget := c.cfg.Load().Agent.RunningState
+	// The per-card writes drain in PARALLEL: entries are independent
+	// (distinct issues, thread-safe tracker), and a sequential drain made
+	// the wall N × (revert budget + release budget) — under a default
+	// terminationGracePeriodSeconds the SIGKILL arrived before the tail
+	// and those claims were never released. The bound is now ONE card's
+	// budgets, whatever the fleet was carrying.
+	var drain sync.WaitGroup
 	for _, r := range c.state.running {
 		// Shutdown is an internal interruption (the local twin of the cloud
 		// runner drain): failed_resumable, auto-resumed on the next start.
 		if r.Cancel != nil {
 			r.Cancel(runtime.ErrRunInterrupted)
 		}
-		// SEPARATE budgets. The revert opens with a RefreshStates round
-		// trip, so sharing one deadline lets a merely slow tracker spend
-		// the whole of it and leave the release unsent — and the release
-		// is the half shutdown exists for: an unreleased claim hides the
-		// card from the next daemon's candidate listing.
-		// The revert keeps the release's default (not a shorter one): a
-		// tracker slow enough to blow a tighter revert budget but not the
-		// release's would leave the card in_progress WITHOUT a claim — the
-		// least recoverable shape (wrong state for ListEligible, no claim
-		// for the reaper to list).
-		revCtx, revCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
-		// Transition FIRST, release LAST — the order the finish worker and
-		// the parked reconciler both keep, and for the same reason: a
-		// release opens the card to the next claimant immediately, and the
-		// revert's own guard ("is it still in_progress?") cannot tell OUR
-		// in_progress from a SUCCESSOR's. Releasing first therefore let a
-		// shutting-down daemon drag a card back into the launch column
-		// while a fresh run was already working it. Fenced, so a claim
-		// that moved on refuses the revert instead of clobbering it.
-		c.revertTransition(revCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget, r.claim)
-		revCancel()
-		relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
-		c.releaseClaimSess(relCtx, r.IssueID, r.Identifier, r.claim)
-		relCancel()
-		c.stopClaimSession(r)
+		drain.Add(1)
+		go func(r *runningEntry) {
+			defer drain.Done()
+			// SEPARATE budgets. The revert opens with a RefreshStates round
+			// trip, so sharing one deadline lets a merely slow tracker spend
+			// the whole of it and leave the release unsent — and the release
+			// is the half shutdown exists for: an unreleased claim hides the
+			// card from the next daemon's candidate listing.
+			// The revert keeps the release's default (not a shorter one): a
+			// tracker slow enough to blow a tighter revert budget but not the
+			// release's would leave the card in_progress WITHOUT a claim — the
+			// least recoverable shape (wrong state for ListEligible, no claim
+			// for the reaper to list).
+			revCtx, revCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
+			// Transition FIRST, release LAST — the order the finish worker and
+			// the parked reconciler both keep, and for the same reason: a
+			// release opens the card to the next claimant immediately, and the
+			// revert's own guard ("is it still in_progress?") cannot tell OUR
+			// in_progress from a SUCCESSOR's. Releasing first therefore let a
+			// shutting-down daemon drag a card back into the launch column
+			// while a fresh run was already working it. Fenced, so a claim
+			// that moved on refuses the revert instead of clobbering it.
+			c.revertTransition(revCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget, r.claim)
+			revCancel()
+			relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
+			c.releaseClaimSess(relCtx, r.IssueID, r.Identifier, r.claim)
+			relCancel()
+			c.stopClaimSession(r)
+		}(r)
 	}
+	drain.Wait()
 	for _, e := range c.state.retries {
 		if e.Timer != nil {
 			e.Timer.Stop()

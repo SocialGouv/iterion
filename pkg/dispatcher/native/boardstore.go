@@ -108,6 +108,16 @@ func AsUniqueTitleCreator(s BoardStore) UniqueTitleCreator {
 	return u
 }
 
+// StateReasoner is the optional provenance-carrying state setter. The
+// shared auto-promote uses it so BOTH twins emit the same descriptive
+// reason (tracker.ReasonUnblocked) on the same gesture — without it the
+// FS twin stamped and the Mongo twin did not, and the trigger spine read
+// two different truths from one close. The conformance suite is what
+// keeps a backend from silently degrading to the bare SetState.
+type StateReasoner interface {
+	SetStateWithReason(id, newState, reason string) (*Issue, error)
+}
+
 // LaunchClaimer is the optional interface for board backends that can
 // atomically claim a Ready ticket for launch — a CAS StateReady →
 // StateInProgress that reports whether THIS caller won (PR #193 M2). It

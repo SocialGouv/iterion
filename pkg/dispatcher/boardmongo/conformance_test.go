@@ -597,6 +597,30 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if got, _ := lastStatePayload(t, store, ocard.ID)["reason"].(string); got == tracker.ReasonWatchdog {
 		t.Errorf("an OPERATOR move was stamped %q — trigger.machineCaused would refuse to spend the one-shot label gate the operator just pulled", got)
 	}
+
+	// Third provenance row — the auto-promote CASCADE. Both twins must
+	// stamp tracker.ReasonUnblocked on the promoted card's state event:
+	// the FS twin stamped and the Mongo twin did not, and the spine read
+	// two different truths from one close (the reason is DESCRIPTIVE, not
+	// machine — IsMachineReason excludes it, so the one-shot still fires).
+	pblk, err := store.Create(native.Issue{Title: "prov promote blocker", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create blocker: %v", err)
+	}
+	pdep, err := store.Create(native.Issue{Title: "prov promote dependent", State: native.StateWaitingDeps, Blockers: []string{pblk.ID}})
+	if err != nil {
+		t.Fatalf("provenance create dependent: %v", err)
+	}
+	if _, err := store.SetState(pblk.ID, native.StateDone); err != nil {
+		t.Fatalf("provenance close blocker: %v", err)
+	}
+	if dep, err := store.Get(pdep.ID); err != nil || dep.State == native.StateWaitingDeps {
+		t.Fatalf("dependent not promoted (state=%v err=%v)", dep, err)
+	}
+	if got, _ := lastStatePayload(t, store, pdep.ID)["reason"].(string); got != tracker.ReasonUnblocked {
+		t.Errorf("an auto-promoted card's state event must carry %q, got %q — the twins diverge and the spine reads two truths from one close",
+			tracker.ReasonUnblocked, got)
+	}
 }
 
 // runBoardAdminSuite exercises the native.BoardAdmin config-mutation surface

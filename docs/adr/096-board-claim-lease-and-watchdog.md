@@ -146,19 +146,31 @@ promotes dependents past the point where Reopen can undo it.
 **9. Rollout: expand/contract, two releases.** `ITERION_BOARD_CLAIM_REAPER`
 gates the reaper, default **off**. Release N ships the lease fields +
 heartbeats + fenced writes with the reaper off, so a mixed fleet can
-never reap a claim an old binary silently un-leased (the `replace()`
-full-document write was first neutralised — commit 0 — so an old binary
-can no longer erase the new fields either). Release N+1, once no old
-binary can un-lease a claim, enables the reaper.
+never reap a claim an old binary silently un-leased. The `replace()`
+neutralisation (commit 0) protects one direction only — a NEW binary no
+longer erases the claim family; an OLD binary's full-document
+`ReplaceOne` still strips epoch + lease from any card it writes (§8),
+which locks the live holder out of all three fenced verbs and leaves an
+un-leased claim behind. That residue is exactly what the un-leased sweep
+exists for — it runs at boot AND on the reaper cadence, bounded by the
+24h `unleasedClaimHorizon`, because the rolling deploy that creates the
+population is also a fleet of fresh boots that would each see zero
+candidates if the sweep were boot-only. Release N+1, once no old binary
+can un-lease a claim, enables the reaper.
 
 ## Consequences
 
 - The reaper reuses the existing event vocabulary (`EvtIssueClaimed` for
-  a reclaim, `EvtIssueState` for a Reopen) rather than minting audit
-  types. Consequence, pinned by test: a reclaim is **inert** to the
-  trigger spine (a reap pass over N stuck cards fires no subscriptions),
-  while a Reopen is **seen** (a real transition). Reclaim audit lives in
-  the monotone `ClaimEpoch` and the Warn log line, not a separate event.
+  a reclaim, `EvtIssueState` for a Reopen or a filing) rather than
+  minting audit types. Consequence, pinned by test: the **reclaim** is
+  inert to the trigger spine, but a **disposition that files or reparks
+  the card is a real transition the spine sees** — an ordinary
+  subscription on the target state fires (enabling the reaper on a
+  deployment with a `to_states: [blocked]` subscription launches its bot
+  per filed card); only the `consume_labels` one-shot is protected, by
+  the machine provenance (`reason: watchdog`) the write carries. Reclaim
+  audit lives in the monotone `ClaimEpoch` and the Warn log line, not a
+  separate event.
 - `reconcileStalled` stays the actor's in-memory authority over the local
   concurrency SLOT; the reaper is the authority over the persisted CLAIM.
   Disjoint roles, documented, so the two never fight over the same run.

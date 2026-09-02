@@ -699,6 +699,21 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 	// not only at shutdown, so the starvation it prevents is the common
 	// case, not the drain.
 	trCtx, trCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
+	defer trCancel()
+	// The release + heartbeat stop are what free the card, so they run in
+	// a defer: a panic in the transition switch (recovered upstream) must
+	// not skip them — a session left beating renews the lease for ever on
+	// a card whose run is over, which hides it from the reaper for good.
+	defer func() {
+		relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
+		defer relCancel()
+		c.releaseClaimSess(relCtx, plan.issueID, plan.identifier, plan.session)
+		if plan.session != nil {
+			// After the LAST write — stopping earlier would let the lease
+			// lapse exactly while this worker was still writing.
+			plan.session.Stop()
+		}
+	}()
 
 	switch plan.kind {
 	case finishCompleted:
@@ -729,16 +744,6 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 			c.stampGiveUp(plan)
 			c.postCmd(cmdDropRetry{issueID: plan.issueID})
 		}
-	}
-	trCancel()
-
-	relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
-	defer relCancel()
-	c.releaseClaimSess(relCtx, plan.issueID, plan.identifier, plan.session)
-	if plan.session != nil {
-		// After the LAST write — stopping earlier would let the lease
-		// lapse exactly while this worker was still writing.
-		plan.session.Stop()
 	}
 }
 

@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,5 +283,68 @@ func TestReconcileFinishedTickets_ForkIndexIsMemoized(t *testing.T) {
 	srv.reconcileFinishedTickets(context.Background(), board, rs, issues)
 	if rs.listCalls != 1 {
 		t.Errorf("ListRuns called %d times over 2 sweeps, want 1 (index memoized within the TTL)", rs.listCalls)
+	}
+}
+
+// TestLaunchTicketNow_RefusesAClaimedTicket: the operator's "launch now"
+// endpoint reaches launchTicketNow WITHOUT the admission loop's
+// ClaimForLaunch — the guard must live at the choke both callers cross.
+// A ticket claimed under a live lease already has a launcher (the
+// dispatcher's move out of Ready is offloaded, so Ready+claimed is the
+// normal mid-launch shape): minting a second run there double-launched
+// the card.
+func TestLaunchTicketNow_RefusesAClaimedTicket(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := board.Create(native.Issue{Title: "mid-launch", State: native.StateReady, Bot: "feature-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.Claim(iss.ID, "dispatcher-host-a"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	s := newSweepTestServer()
+	_, err = s.launchTicketNow(nil, board, iss)
+	if err == nil {
+		t.Fatal("launchTicketNow accepted a ticket held under a live claim — a second run was minted while its launcher was mid-launch")
+	}
+	// The refusal must be the CLAIM guard, not a downstream accident (an
+	// empty catalog also errors — an assertion on any error certifies
+	// nothing).
+	if !strings.Contains(err.Error(), "claimed by") {
+		t.Fatalf("refused for the wrong reason: %v — the claim guard did not fire", err)
+	}
+	cur, _ := board.Get(iss.ID)
+	if cur.State != native.StateReady {
+		t.Fatalf("the refused ticket must stay untouched, state=%q", cur.State)
+	}
+}
+
+// TestPipelineTicketLaunchable_DeletedRunIsProofOfAbsence: ErrRunDeleted
+// is a durable tombstone — permanent PROOF the run is gone, not the
+// store blip the fail-closed exists for. Refusing it bricked a ticket
+// whose operator deleted its run, with no exit from the studio (delete
+// does not clear the card's LastRunID).
+func TestPipelineTicketLaunchable_DeletedRunIsProofOfAbsence(t *testing.T) {
+	dir := t.TempDir()
+	rs, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := rs.CreateRun(ctx, "run-gone", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.DeleteRun(ctx, "run-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rs.LoadRun(ctx, "run-gone"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Fatalf("precondition: want ErrRunDeleted, got %v", err)
+	}
+	iss := &native.Issue{ID: "card-1", Title: "c", State: native.StateReady, Bot: "feature-dev", LastRunID: "run-gone"}
+	if !pipelineTicketLaunchable(ctx, rs, iss) {
+		t.Fatal("a ticket whose last run was DELETED (durable tombstone) is refused for ever — proof of absence read as lack of information")
 	}
 }

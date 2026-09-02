@@ -59,12 +59,16 @@ func TestNormalizeBoardEvent_ProvenanceTravelsAndBlanksTheActor(t *testing.T) {
 	}
 }
 
-func TestMachineCaused_AnyReasonIsMachine(t *testing.T) {
+func TestMachineCaused_EnumeratedSet(t *testing.T) {
 	for reason, want := range map[string]bool{
-		tracker.ReasonWatchdog: true,
-		"state_rename":         true,
-		"state_delete":         true,
-		"":                     false,
+		tracker.ReasonWatchdog:    true,
+		tracker.ReasonStateRename: true,
+		tracker.ReasonStateDelete: true,
+		tracker.ReasonFieldRename: true,
+		// Descriptive provenance — the cascade of an operator gesture —
+		// keeps its triggers. This row is what died under `reason != ""`.
+		tracker.ReasonUnblocked: false,
+		"":                      false,
 	} {
 		ev := Event{Payload: map[string]any{}}
 		if reason != "" {
@@ -115,5 +119,71 @@ func TestEffectWorker_MachineCausedIsTerminalBenign(t *testing.T) {
 	}
 	if launcher.launches != 0 || board.consumes != 0 {
 		t.Fatalf("machine-caused event launched=%d consumed=%d — the one-shot was spent on a repair", launcher.launches, board.consumes)
+	}
+}
+
+// An UNBLOCKED card is the cascade of an operator closing its blocker —
+// intent, not machinery. Deriving machineCaused from the mere presence
+// of a reason silently disarmed its one-shot: the card was promoted, the
+// label stayed armed, and nothing would ever move it again. Driven from
+// the REAL producer (the FS store's promote) through NormalizeBoardEvent
+// into applyEffect.
+func TestUnblockedCardStillFiresTheOneShot(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	blocker, err := board.Create(native.Issue{Title: "blocker", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	dep, err := board.Create(native.Issue{Title: "dependent", State: native.StateWaitingDeps,
+		Blockers: []string{blocker.ID}, Labels: []string{"triage:auto"}, Assignee: "jo"})
+	if err != nil {
+		t.Fatalf("create dependent: %v", err)
+	}
+	if _, err := board.SetState(blocker.ID, native.StateDone); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	var promoted *native.Event
+	if err := board.ScanEvents(func(e *native.Event) bool {
+		if e.Type == native.EvtIssueState && e.IssueID == dep.ID {
+			ev := *e
+			promoted = &ev
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if promoted == nil {
+		t.Fatal("the dependent was never promoted")
+	}
+	if got, _ := promoted.Payload["reason"].(string); got != tracker.ReasonUnblocked {
+		t.Fatalf("promote payload reason = %q, want %q", got, tracker.ReasonUnblocked)
+	}
+
+	ev, ok, err := NormalizeBoardEvent(board.Get, *promoted, "t1", "org/repo", "board")
+	if err != nil || !ok {
+		t.Fatalf("NormalizeBoardEvent: ok=%v err=%v", ok, err)
+	}
+	if machineCaused(ev) {
+		t.Fatal("an unblocked card is machine-caused — its one-shot would never fire and nothing re-arms it")
+	}
+	if ev.Actor != "jo" {
+		t.Fatalf("Actor = %q on an unblocked promote, want the assignee kept", ev.Actor)
+	}
+
+	subs := NewMemorySubscriptionStore()
+	if err := subs.Create(context.Background(), directConsumeSub()); err != nil {
+		t.Fatal(err)
+	}
+	sb := &stubConsumingBoard{consumeLeft: 1}
+	launcher := &stubEffectLauncher{}
+	eval := NewEvaluator(subs, WithBoardEffect(sb), WithLauncher(launcher))
+	if err := eval.applyEffect(context.Background(), directConsumeSub(), ev, effectOpts{}); err != nil {
+		t.Fatalf("applyEffect: %v", err)
+	}
+	if launcher.launches != 1 || sb.consumes != 1 {
+		t.Fatalf("launches=%d consumes=%d — the unblocked card's one-shot must fire exactly once", launcher.launches, sb.consumes)
 	}
 }
