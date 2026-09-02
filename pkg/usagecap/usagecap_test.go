@@ -219,3 +219,18 @@ func TestNilGuardIsInert(t *testing.T) {
 		t.Fatal("a nil guard must answer as an absent cap, so callers need no nil check")
 	}
 }
+
+// WindowAuth is credential-tier evidence, never an operator cap: FamilyOf
+// must expose it to the evidence consumers (non-None) while an ordinary
+// policy — which configures no "credential" family — must stay inert on
+// it, so an auth-dead credential parks NOTHING through the guard.
+func TestWindowAuth_evidenceNotCap(t *testing.T) {
+	if FamilyOf(WindowAuth) == FamilyNone {
+		t.Fatal("FamilyOf(WindowAuth) = FamilyNone — the evidence consumers would filter it out")
+	}
+	pol := Policy{FiveHour: WindowPolicy{MaxPercent: 85, Mode: ModeSoft}, Week: WindowPolicy{MaxPercent: 85, Mode: ModeHard}}
+	d := Preflight([]Reading{{Window: WindowAuth, Status: StatusRejected, ObservedAt: time.Now()}}, pol, time.Now(), DefaultMaxAge)
+	if d.Blocked {
+		t.Fatal("an auth refusal must never block a launch through the usage cap — it is routing evidence, not quota")
+	}
+}

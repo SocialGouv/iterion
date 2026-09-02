@@ -187,3 +187,54 @@ func TestApiKeySkip_refusedPlatformKeyIsRestoredPlatformSourced(t *testing.T) {
 		t.Fatal("a restored PLATFORM key must keep its platform-sourced metering scope")
 	}
 }
+
+// The third evidence family: a provider that rejected the CREDENTIAL
+// ITSELF (dead token, malformed secret) must be walked past exactly like
+// a quota refusal — without this, a structurally-broken credential keeps
+// filling its slot on every re-resolution and gates the healthy tiers off.
+func TestApiKeyUsable_authRefusalSkips(t *testing.T) {
+	st := usagecap.NewMemStore()
+	p := &Publisher{usageCaps: st, logger: iterlog.New(iterlog.LevelError, nil)}
+	scope := usagecap.TenantScope("team")
+	key := secrets.ApiKey{Provider: secrets.ProviderAnthropic, Name: "dead", Fingerprint: "fp-dead"}
+	if err := st.Record(context.Background(),
+		usagecap.Key(delegate.BackendClaudeCode, scope, "fp-dead"),
+		usagecap.Reading{Window: usagecap.WindowAuth, Status: usagecap.StatusRejected,
+			ObservedAt: time.Now()}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if p.apiKeyUsable(context.Background(), scope, "run-x")(key) {
+		t.Fatal("a fresh auth refusal under the key's fingerprint must skip it")
+	}
+}
+
+// The forfait half of the auth family, end to end at the resolution: an
+// auth-refused user forfait is skipped — its evidence lives under the SAME
+// record fingerprint the runner keys "anthropic-oauth" readings by — and
+// the platform forfait serves instead. This is the dead-on-arrival-fleet
+// scenario: before, the dead record filled the slot on every re-resolution.
+func TestOAuthForfait_authRefusalFallsThroughToPlatform(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, "owner1", "sk-ant-dead")
+	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
+	caps := usagecap.NewMemStore()
+	if err := caps.Record(context.Background(),
+		usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team1"), seededFP("owner1")),
+		usagecap.Reading{Window: usagecap.WindowAuth, Status: usagecap.StatusRejected,
+			ObservedAt: time.Now()}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	p := &Publisher{oauthForfait: oauth, usageCaps: caps,
+		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: testLogger()}
+	rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
+
+	b := resolveBundle(t, p, rs, sealer, "run-a1", "team1", "owner1")
+	if got := string(b.OAuthCredentials["claude_code"]); !contains(got, "sk-ant-platform") {
+		t.Fatalf("claude_code blob = %q, want the PLATFORM forfait — the auth-dead record must be walked past", got)
+	}
+}

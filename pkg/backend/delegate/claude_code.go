@@ -515,14 +515,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// field" schema error — the exact masking that turns a dead credential into
 	// a wild goose chase through the structured-output machinery. Fail fast with
 	// a legible auth error. Non-transient (a retry can't revive a dead token).
-	if rm.Result != nil && isAuthErrorResult(*rm.Result) {
-		detail := strings.TrimSpace(*rm.Result)
+	if authErr := authFailureFast(rm.Result, task); authErr != nil {
 		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
-			task.NodeID, task.Iteration, detail)
-		return result, &ErrAuthFailed{
-			Provider: BackendClaudeCode,
-			Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", detail),
-		}
+			task.NodeID, task.Iteration, redactAuthRender(strings.TrimSpace(*rm.Result)))
+		return result, authErr
 	}
 
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /

@@ -967,7 +967,16 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		}
 		if reopen.After(until) {
 			until = reopen
-			why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
+			// Frequency and auth are refusals, not windows with a fill
+			// level — "(0% used)" on them would read as a contradiction.
+			switch r.Window {
+			case usagecap.WindowAuth:
+				why = "provider rejected the credential itself (auth failure)"
+			case usagecap.WindowFrequency:
+				why = "provider refused the account's request rate (fair-usage)"
+			default:
+				why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
+			}
 		}
 	}
 	return until, why
