@@ -41,6 +41,55 @@ form of the runner-pod env fallback (`ANTHROPIC_API_KEY`,
 secrets), which **remains the final backstop** below it. See the dedicated
 section at the end of this doc.
 
+### The tiers are a fallback chain, not a fixed first choice
+
+A forfait the provider is currently **refusing** is skipped, and the
+resolution falls through to the next tier
+([pkg/server/cloudpublisher/publisher.go](../pkg/server/cloudpublisher/publisher.go)).
+Without that skip, a tenant holding an exhausted forfait was never eligible
+for any later tier: the run got the dead credential, spent one LLM call to be
+refused, and parked until the window reset — up to a week on the weekly one —
+while a second forfait, the pool or the platform tier could have served it
+immediately.
+
+**The only evidence that closes a window is the provider's own refusal**: a
+fresh rejected reading on the fleet's usage meter (`pkg/usagecap`, written by
+every runner on every reading), looked up under the same key the runner
+meters with — the credential's fingerprint, in its own scope, so a tenant's
+forfait never merges with the platform's. The operator's percentage caps
+([usage-caps.md](usage-caps.md)) are deliberately **not** consulted: a cap is
+a ceiling on this deployment's own spending, not evidence the provider would
+refuse, and skipping on it would push work onto a donor to keep a tenant
+under its own budget. Conversely the skip needs no cap configured to work.
+
+Everything uncertain means **usable**, because a wrong skip spends somebody
+else's quota for a subscription that would have worked: no meter wired, no
+fingerprint, no reading for this credential, a stale reading, a
+meter-lookup failure, or any allowed/warning reading at any utilization. A
+rejected reading on a window no cap family governs (`overage` — metered
+money — or a window a future CLI adds) is no evidence either. When several
+windows are refused, the one that reopens **last** rules.
+
+**And a skip that helps nobody is undone.** If the end of the resolution
+finds that wire still empty — no second forfait, no pool grant, no platform
+credential — the skipped forfait is **restored**, so the run parks on the
+provider refusal with a durable usage-window retry instead of failing on a
+no-credential `401` that nothing retries.
+
+Both decisions are logged by name, which is how you answer "why did this run
+use a donor's key when my team has a forfait":
+
+```text
+cloudpublisher: oauth-forfait(user) SKIPPED for run=… kind=… fp=… — … (reopens …); falling through to the next credential tier
+cloudpublisher: window-closed forfait RESTORED for run=… kind=… fp=… — no other tier could serve; a parked run with a durable retry beats a stuck one
+```
+
+A **fair-usage refusal** feeds this too. A provider that refuses the request
+*rate* relays a plain error carrying no window telemetry; iterion classifies
+it as a usage window under the `frequency` name and records it through the
+usage hook, precisely so the next resolution can route around that
+credential rather than resealing it.
+
 ## Decision shortcut
 
 - **Sovereign `web_search` / any claw feature** → needs claw. An Anthropic
