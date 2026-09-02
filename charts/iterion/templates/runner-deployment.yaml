@@ -90,7 +90,7 @@ spec:
             # scaling may create a new pod from an old ReplicaSet after the
             # shared ConfigMap changed. That pod must retain epoch N.
             - name: ITERION_RUNNER_EPOCH
-              value: {{ .Values.config.rollout.runnerEpoch | quote }}
+              value: {{ .Values.config.rollout.runnerEpoch | int64 | quote }}
             - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY
               value: {{ .Values.config.rollout.epochMismatchDelay | quote }}
             {{- if .Values.runner.sandbox.enabled }}

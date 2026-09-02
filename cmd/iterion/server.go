@@ -284,7 +284,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	selfEpoch, highWaterEpoch := natsConn.RunnerEpoch()
 	if natsConn.Superseded() {
 		mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
-		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live but non-ready; run publication is fenced")
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live in diagnostic-only mode; background workers and run publication are fenced")
 	}
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at

@@ -45,6 +45,17 @@ func (s *Server) ListenAndServe() error {
 		s.cfg.Port = tcpAddr.Port
 	}
 	close(s.addrReady)
+	// A process that started below the durable rollout high-water mark is
+	// deliberately kept alive so /healthz and /readyz explain why the pod is
+	// parked. It must not, however, start any of the background coordinators
+	// below: several of them win one-shot CAS claims before launching a run,
+	// and the queue fence would then reject that launch after the claim was
+	// irreversibly consumed. Serve diagnostics only; readiness keeps this pod
+	// out of the Service and the queue layer remains the publication backstop.
+	if s.cfg.Superseded {
+		s.logger.Error("server: superseded epoch — background workers disabled; serving diagnostics only")
+		return s.server.Serve(ln)
+	}
 	// Sweep abandoned upload staging dirs in the background. Without
 	// this, attachments uploaded for runs that never launched (operator
 	// closed the modal, browser crashed mid-upload, etc.) accumulate

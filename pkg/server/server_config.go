@@ -353,8 +353,9 @@ type Config struct {
 	Mode string
 
 	// RunnerEpoch is the generation stamped on every published RunMessage.
-	// Superseded keeps a regressive pod live but out of Service; the queue
-	// backend also rejects publication as a second line of defence.
+	// Superseded keeps a regressive pod live but out of Service and prevents
+	// ListenAndServe from starting background workers; the queue backend also
+	// rejects publication as a second line of defence.
 	RunnerEpoch    uint64
 	HighWaterEpoch uint64
 	Superseded     bool
