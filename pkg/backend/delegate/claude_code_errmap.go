@@ -88,7 +88,7 @@ func isAuthErrorResult(s string) bool {
 	// as an API Error whose length is unbounded because the garbage value
 	// is quoted back. Prefix-anchored: the WHOLE result must be the API
 	// error, so an agent merely quoting one mid-answer cannot match.
-	if strings.HasPrefix(t, "API Error: Header '") && strings.Contains(t[:80], "has invalid value") {
+	if strings.HasPrefix(t, "API Error: Header '") && strings.Contains(t, "has invalid value") {
 		return true
 	}
 	// Real auth renders are short one-liners (like a rate-limit notice); the cap

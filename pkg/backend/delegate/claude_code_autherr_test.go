@@ -87,3 +87,16 @@ func TestAuthFailureFast_recordsEvidence(t *testing.T) {
 		t.Fatal("a nil result must be a no-op")
 	}
 }
+
+// R7cac91: the short-garbage half of the malformed-Authorization render —
+// a 54-byte result must classify, not panic on a fixed-width slice.
+func TestIsAuthErrorResult_shortMalformedCredential(t *testing.T) {
+	for _, s := range []string{
+		"API Error: Header '14' has invalid value: 'Bearer abc'",
+		"API Error: Header '1' has invalid value: 'Bearer '",
+	} {
+		if !isAuthErrorResult(s) {
+			t.Errorf("isAuthErrorResult(%q) = false, want true", s)
+		}
+	}
+}
