@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -526,9 +527,20 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the executor's transient retry.
 	if rm.Result != nil && isRateLimitMessage(*rm.Result) {
 		detail := strings.TrimSpace(*rm.Result)
-		kind, resetAt := classifyRateLimit(detail, time.Now())
+		kind, window, resetAt := classifyRateLimit(detail, time.Now())
 		b.Logger.Warn("[%s#%d/claude-code] provider quota/rate-limit result (%s) — failing: %.120s",
 			task.NodeID, task.Iteration, kind, detail)
+		// Same evidence duty as the stream path: a text-relayed refusal
+		// that names a meter window must reach the store, or the
+		// credential-tier skip stays blind to it.
+		if window != "" && task.Hooks.OnUsageWindow != nil {
+			_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+				Window:     window,
+				Status:     usagecap.StatusRejected,
+				ObservedAt: time.Now().UTC(),
+				ResetsAt:   resetAt,
+			})
+		}
 		return result, &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
 	}
 

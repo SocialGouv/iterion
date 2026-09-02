@@ -85,6 +85,27 @@ func TestForfaitWindowClosed_fallsThroughToTheNextTier(t *testing.T) {
 	}
 }
 
+// A fair-usage/frequency refusal is account-level: it arrives as a relayed
+// error, never as window telemetry, so it carries NO reset instant — the
+// reading's own staleness bound is all there is. It must still skip the
+// forfait: four lanes measured on 2026-09-02 kept resolving a credential
+// the provider refused on every single request.
+func TestForfaitWindowClosed_frequencyRefusalSkips(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
+	meterSays(t, f, fp, usagecap.Reading{
+		Window: usagecap.WindowFrequency, Status: usagecap.StatusRejected,
+		ObservedAt: time.Now(),
+	})
+	got := bundleToken(t, f, "run-frequency-refused")
+	if contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("the frequency-refused forfait was handed over anyway: %q", got)
+	}
+	if !contains(got, "sk-ant-donated") {
+		t.Fatalf("expected the donor's credential from the pool, got %q", got)
+	}
+}
+
 // Conservative by construction: every uncertain answer means "usable", and
 // only the provider's own refusal is evidence. A wrong skip spends a
 // donor's quota (or drops to env) for a subscription that would have

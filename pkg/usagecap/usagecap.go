@@ -63,6 +63,15 @@ const (
 	// subscription quota, and the budget flags (--max-cost-usd) are what
 	// bound money.
 	WindowOverage Window = "overage"
+	// WindowFrequency is not a provider window at all: it is an
+	// account-level refusal of the REQUEST RATE (a fair-usage policy, a
+	// frequency restriction) relayed as an error rather than as window
+	// telemetry, so it never carries a reset instant. It exists as a
+	// window name so the refusal can be recorded as meter evidence: the
+	// credential-tier skip needs a fresh StatusRejected reading to route
+	// around a credential the provider will not serve, and freshness for
+	// a reading with no reset instant is already bounded by ObservedAt.
+	WindowFrequency Window = "frequency"
 )
 
 // Family groups the windows that share one operator-facing cap. An
@@ -72,6 +81,12 @@ type Family string
 const (
 	FamilyFiveHour Family = "5h"
 	FamilyWeek     Family = "week"
+	// FamilyAccount governs no operator cap today (Policy.For of an
+	// unconfigured family is inert), but it is NOT FamilyNone: a
+	// frequency refusal is real provider evidence, and the consumers
+	// that filter evidence on "does a cap family govern this window"
+	// must see it.
+	FamilyAccount Family = "account"
 	// FamilyNone marks a window no cap applies to.
 	FamilyNone Family = ""
 )
@@ -83,6 +98,8 @@ func FamilyOf(w Window) Family {
 		return FamilyFiveHour
 	case WindowSevenDay, WindowSevenDayOpus, WindowSevenDaySonnet, WindowSevenDayOverageIncluded:
 		return FamilyWeek
+	case WindowFrequency:
+		return FamilyAccount
 	default:
 		// Includes WindowOverage and any window a future CLI adds: an
 		// unknown window is not silently folded into a cap that was never
