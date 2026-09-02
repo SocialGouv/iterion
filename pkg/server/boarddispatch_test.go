@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -29,10 +30,12 @@ type fakeBoardCoord struct {
 	claimErr map[string]error
 	stateErr map[string]error
 	renews   map[string]int
+	epochs   map[string]int64
+	expired  []boardmongo.ExpiredCandidate
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
-	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}, stateErr: map[string]error{}, renews: map[string]int{}}
+	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}, stateErr: map[string]error{}, renews: map[string]int{}, epochs: map[string]int64{}}
 }
 
 // ListEligible honours the real coordinator's contract — unclaimed cards in
@@ -125,15 +128,34 @@ func (f *fakeBoardCoord) ReleaseOwned(ctx context.Context, tenant, id string, to
 	return f.Release(ctx, tenant, id, tok.Marker)
 }
 
-func (f *fakeBoardCoord) ListExpiredClaimCandidates(_ context.Context, _ time.Time, _ int) ([]boardmongo.ExpiredCandidate, error) {
-	return nil, nil
-}
-
-func (f *fakeBoardCoord) ReclaimExpired(_ context.Context, _, id string, _ tracker.ClaimToken, marker string, _ time.Time) (tracker.ClaimToken, error) {
+// The reaper pair honours the real coordinator's contract too: a stub
+// that lists nothing and reclaims unconditionally makes every watchdog
+// assertion vacuous. Candidates are seeded by the test; the transfer is
+// a CAS on (marker, epoch) that BUMPS the epoch, exactly as the Mongo
+// twin's conformance suite pins it.
+func (f *fakeBoardCoord) ListExpiredClaimCandidates(_ context.Context, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	out := make([]boardmongo.ExpiredCandidate, 0, len(f.expired))
+	for _, e := range f.expired {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		e.Claim.State = f.states[e.Claim.IssueID]
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func (f *fakeBoardCoord) ReclaimExpired(_ context.Context, _, id string, prev tracker.ClaimToken, marker string, _ time.Time) (tracker.ClaimToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if held, ok := f.claimed[id]; !ok || held != prev.Marker || f.epochs[id] != prev.Epoch {
+		return tracker.ClaimToken{}, tracker.ErrClaimConflict
+	}
 	f.claimed[id] = marker
-	return tracker.ClaimToken{Marker: marker, Epoch: 99}, nil
+	f.epochs[id]++
+	return tracker.ClaimToken{Marker: marker, Epoch: f.epochs[id]}, nil
 }
 
 func readyCard(id, bot string) boardmongo.Candidate {
@@ -992,5 +1014,72 @@ func TestAdoptCardRun(t *testing.T) {
 	}
 	if err := (&Server{}).adoptCardRun("t1", iss.ID, "", ""); err != nil {
 		t.Errorf("an empty run id is a no-op, got %v", err)
+	}
+}
+
+// TestCloudReaper_ReparkReturnsTheCardToThePool is the cloud half of the
+// watchdog's disposition contract, and the reason the fake above had to
+// stop stubbing: the local dispatcher's running column is itself
+// eligible, so a bare release re-arms the card, but this tick lists only
+// d.eligible. A cloud repark that merely releases leaves the card in
+// in_progress, unclaimed, and reachable by NO cloud net — sweepParked
+// lists awaiting_input, and there is no board retry sweeper. The card is
+// stranded exactly where the watchdog was supposed to rescue it.
+func TestCloudReaper_ReparkReturnsTheCardToThePool(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-repark"] = "dead-owner"
+	f.epochs["c-repark"] = 3
+	f.states["c-repark"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-repark", LastRunID: "run-resumable",
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 3},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+
+	if got := f.states["c-repark"]; got != native.StateReady {
+		t.Fatalf("a reparked card must be written back into the eligible pool: state=%q, want %q "+
+			"(released in %q it is claimed by nobody and listed by nothing)", got, native.StateReady, got)
+	}
+	if _, still := f.claimed["c-repark"]; still {
+		t.Fatalf("the dead owner's claim must be released after the repark")
+	}
+}
+
+// TestCloudReaper_HonoursADeliberateStateMove: same contract as the local
+// reaper (shared predicate) — an operator who moved the card while its
+// owner was dead outranks the watchdog's default filing.
+func TestCloudReaper_HonoursADeliberateStateMove(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-moved"] = "dead-owner"
+	f.epochs["c-moved"] = 1
+	f.states["c-moved"] = native.StateReady // the operator re-queued it
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-moved", LastRunID: "run-finished",
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+
+	if got := f.states["c-moved"]; got != native.StateReady {
+		t.Fatalf("the watchdog overwrote a deliberate state move: card is %q, the operator had put it in %q",
+			got, native.StateReady)
+	}
+	if _, still := f.claimed["c-moved"]; still {
+		t.Fatalf("the dead owner's claim must still be freed")
 	}
 }

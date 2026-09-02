@@ -43,6 +43,20 @@ func ValidateStateExit(b *Board, from, to string) error {
 		tracker.ErrTerminalStateExit, from, to)
 }
 
+// TerminalStateNames lists the board's sink columns. The Mongo twin
+// needs them as a CAS precondition: it cannot check-then-act without
+// reopening the TOCTOU the fence closes, so the guard travels INTO the
+// conditional write as a `$nin` on the source state.
+func TerminalStateNames(b *Board) []string {
+	var out []string
+	for _, st := range b.States {
+		if st.Terminal {
+			out = append(out, st.Name)
+		}
+	}
+	return out
+}
+
 // ReopenBlockedByDependents lists the dependents whose promotion this
 // card's DONE already triggered: reopening under them would un-satisfy
 // a dependency their launch already consumed. Deterministic v1: refuse

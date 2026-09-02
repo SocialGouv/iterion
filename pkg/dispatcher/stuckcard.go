@@ -55,6 +55,32 @@ type StuckDecision struct {
 	Reason string
 }
 
+// ShouldFileStuckCard decides whether the watchdog may write `target`
+// onto a card it has just reclaimed. One definition for both reapers
+// (local FS and cloud Mongo): a recopied guard is how the two drift.
+//
+// It reproduces the live finish worker's contract rather than inventing
+// a second one (maybeTransitionToCompleted):
+//
+//   - an empty target, or one equal to the running state, means the
+//     operator disabled the auto-transition — leave the card be;
+//   - a card no longer in the running state was moved DELIBERATELY (an
+//     operator re-queueing it, a bot with board.move). That intent
+//     predates the watchdog and outranks its default filing —
+//     "already moved the state. Honor it."
+//
+// A card whose board has no running state configured cannot be judged
+// this way, so the filing proceeds (nothing to compare against).
+func ShouldFileStuckCard(cardState, runningState, target string) bool {
+	if target == "" || target == runningState {
+		return false
+	}
+	if runningState != "" && cardState != runningState {
+		return false
+	}
+	return true
+}
+
 // DecideStuckCard is the ONE decision table for a card whose claim has
 // no live owner — shared by the local reaper and (as the cloud sweeps
 // converge on it) the server's stranded-card reconcilers, so two

@@ -24,16 +24,20 @@ import (
 
 // ownedFilter is the fencing CAS filter every owner-scoped write uses.
 func (s *Store) ownedFilter(id string, tok tracker.ClaimToken) bson.M {
-	f := bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": tok.Marker}
-	if tok.Epoch == 0 {
-		// A zero epoch can only come from a legacy claim written before
-		// the fence existed; match its absent-or-zero form explicitly so
-		// the filter never silently matches nothing.
-		f["issue.claimepoch"] = bson.M{"$in": bson.A{int64(0), nil}}
-	} else {
-		f["issue.claimepoch"] = tok.Epoch
+	// The epoch matches its own value OR an ABSENT one, always. Absent is
+	// not "any": the marker equality above still pins ownership, so this
+	// only ever admits the holder to a document whose fence field was
+	// dropped. Two writers do that — a legacy claim predating the fence,
+	// and (during a rolling deploy) an older binary's full-document
+	// replace. Without the nil arm the live holder is fenced out of its
+	// OWN card and, the lease having been dropped with the epoch, the
+	// watchdog never lists it either: a permanently stuck card produced by
+	// an ordinary deploy. Admitting the holder lets its next renewal
+	// re-stamp both fields and heal the document.
+	return bson.M{
+		"_id": id, "tenant_id": s.tenant, "issue.claim": tok.Marker,
+		"issue.claimepoch": bson.M{"$in": bson.A{tok.Epoch, nil}},
 	}
-	return f
 }
 
 // ownedRefused turns a zero-match CAS into the right typed error: the
@@ -94,15 +98,36 @@ func (s *Store) ReleaseOwned(id string, tok tracker.ClaimToken) error {
 func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	if s.Board().StateByName(newState) == nil {
+	board := s.Board()
+	dst := board.StateByName(newState)
+	if dst == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
-	res := s.issues.FindOneAndUpdate(ctx, s.ownedFilter(id, tok),
+	// Holding the claim is not a licence to resurrect a card an operator
+	// closed: the terminal sink binds the OWNED family too. The guard
+	// rides INTO the CAS as a `$nin` on the source state (a check-then-act
+	// would reopen the TOCTOU the fence exists to close); terminal→terminal
+	// stays free, it is an operator refiling — see native.ValidateStateExit.
+	filter := s.ownedFilter(id, tok)
+	if !dst.Terminal {
+		if sinks := native.TerminalStateNames(board); len(sinks) > 0 {
+			filter["issue.state"] = bson.M{"$nin": sinks}
+		}
+	}
+	res := s.issues.FindOneAndUpdate(ctx, filter,
 		bson.M{"$set": bson.M{"issue.state": newState, "issue.updatedat": time.Now().UTC()}},
 		options.FindOneAndUpdate().SetReturnDocument(options.Before))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
 			return nil, fmt.Errorf("boardmongo: set state owned: %w", res.Err())
+		}
+		// Zero match: the claim moved on, OR the card sits in a sink. Read
+		// back to tell the two apart — a refused terminal exit must carry
+		// ErrTerminalStateExit, not a misleading claim conflict.
+		if iss, gerr := s.get(ctx, id); gerr == nil {
+			if verr := native.ValidateStateExit(board, iss.State, newState); verr != nil {
+				return nil, verr
+			}
 		}
 		return nil, s.ownedRefused(ctx, id, tok)
 	}
@@ -138,8 +163,15 @@ func (s *Store) SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToke
 	}
 	if iss.LastRunID == runID && iss.LastWorkdir == workdir {
 		// Still verify ownership: an idempotent no-op must not mask a
-		// stolen claim from a caller about to keep writing.
-		if iss.Claim != tok.Marker || iss.ClaimEpoch != tok.Epoch {
+		// stolen claim from a caller about to keep writing. Probe with
+		// ownedFilter rather than comparing the snapshot by hand — one
+		// definition of "does this token own this card", so the healed
+		// absent-epoch document is judged the same way here as everywhere.
+		n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
+		if cerr != nil {
+			return fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
+		}
+		if n == 0 {
 			return s.ownedRefused(ctx, id, tok)
 		}
 		return nil
@@ -243,7 +275,7 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 	defer cancel()
 	cur, err := s.issues.Find(ctx, bson.M{
 		"tenant_id":             s.tenant,
-		"issue.claim":           bson.M{"$ne": ""},
+		"issue.claim":           bson.M{"$gt": ""},
 		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
 	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
 	if err != nil {

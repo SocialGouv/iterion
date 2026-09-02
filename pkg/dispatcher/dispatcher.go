@@ -284,6 +284,12 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 // confidently interpret.
 func isStaleLocalMarker(marker, host string) bool {
 	// markers look like "rog-3158843". Allow underscores in hostname.
+	// The watchdog claims under "reaper:<host>-<pid>": if a reaper dies
+	// mid-disposition its recovery claim must be reclaimable by the SAME
+	// boot sweep as any other, or turning the gate back off (the
+	// expand/contract rollback) would strand every card it was holding —
+	// the reaper being the only other thing that could have freed them.
+	marker = strings.TrimPrefix(marker, reaperMarkerPrefix)
 	dash := strings.LastIndexByte(marker, '-')
 	if dash <= 0 || dash == len(marker)-1 {
 		return false

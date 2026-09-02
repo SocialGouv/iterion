@@ -249,6 +249,33 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if _, err := store.SetStateOwned(reapProbe.ID, native.StateBlocked, tokC); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Fatalf("dead owner's write after the transfer: want ErrClaimConflict, got %v", err)
 	}
+	// The dead owner's TOKENLESS paths must die at the fence too — they
+	// are the ones a stale in-flight worker still reaches. Release is
+	// marker-scoped by contract, and an ORDINARY (unfenced) write must
+	// never carry the claim family along: a read-modify-write that
+	// re-persists a stale claim rewinds the fence and hands the card
+	// back to the owner the reaper just evicted.
+	if err := store.Release(reapProbe.ID, "dead-owner"); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("Release by the evicted owner: want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetLastRun(reapProbe.ID, "run-stale", "/tmp/stale"); err != nil {
+		t.Fatalf("SetLastRun (ordinary write): %v", err)
+	}
+	touchedTitle := "touched"
+	if _, err := store.Update(reapProbe.ID, native.Patch{Title: &touchedTitle}); err != nil {
+		t.Fatalf("Update (ordinary write): %v", err)
+	}
+	if _, _, err := store.AddComment(reapProbe.ID, "op", "a note"); err != nil {
+		t.Fatalf("AddComment (ordinary write): %v", err)
+	}
+	held, _ := store.Get(reapProbe.ID)
+	if held.Claim != "reaper:x" || held.ClaimEpoch != rec.Epoch || held.ClaimLeaseUntil.IsZero() {
+		t.Fatalf("ordinary writes must not touch the claim family: claim=%q epoch=%d (want reaper:x epoch %d), lease=%s",
+			held.Claim, held.ClaimEpoch, rec.Epoch, held.ClaimLeaseUntil)
+	}
+	if err := store.RenewClaim(reapProbe.ID, rec); err != nil {
+		t.Fatalf("the recovery owner must still hold its card after ordinary writes: %v", err)
+	}
 	if _, err := store.SetStateOwned(reapProbe.ID, native.StateDone, rec); err != nil {
 		t.Fatalf("recovery owner's write: %v", err)
 	}
@@ -271,6 +298,24 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 	if _, err := store.SetState(sink.ID, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) || !errors.Is(err, tracker.ErrTransitionRejected) {
 		t.Fatalf("terminal exit via SetState: want ErrTerminalStateExit (wrapping ErrTransitionRejected), got %v", err)
+	}
+	// The OWNED family is automation too — holding the claim is not a
+	// licence to resurrect a card an operator closed. This is the exact
+	// call the cloud launch path makes (in_progress under the token), so
+	// a twin that skips the guard resurrects closed cards and runs on
+	// them.
+	sinkTok, err := store.Claim(sink.ID, "owner-sink")
+	if err != nil {
+		t.Fatalf("Claim sink probe: %v", err)
+	}
+	if _, err := store.SetStateOwned(sink.ID, native.StateInProgress, sinkTok); !errors.Is(err, tracker.ErrTerminalStateExit) {
+		t.Fatalf("terminal exit via SetStateOwned: want ErrTerminalStateExit, got %v", err)
+	}
+	if cur, _ := store.Get(sink.ID); cur.State != native.StateDone {
+		t.Fatalf("a refused owned exit must leave the card terminal, got %q", cur.State)
+	}
+	if err := store.ReleaseOwned(sink.ID, sinkTok); err != nil {
+		t.Fatalf("ReleaseOwned sink probe: %v", err)
 	}
 	dependent, err := store.Create(native.Issue{Title: "dependent", State: native.StateReady, Blockers: []string{sink.ID}})
 	if err != nil {
@@ -887,5 +932,56 @@ func runTrackerSuite(t *testing.T, store native.BoardStore) {
 	states, _ := trk.RefreshStates(ctx, []string{ready.ID})
 	if states[ready.ID] != native.StateDone {
 		t.Errorf("RefreshStates: %v", states)
+	}
+}
+
+// TestCoordinatorServerNow: the reaper measures server-stamped leases, so
+// its cutoff must come from the server too. A coordinator that silently
+// returned the zero time (or the client's clock) would put the skew hole
+// back exactly where $$NOW closed it.
+func TestCoordinatorServerNow(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_clock_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dc()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	if err := boardmongo.EnsureSchema(ctx, db); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	coord := boardmongo.NewCoordinator(db)
+
+	// Empty collection: no document to project from — the documented
+	// zero return, which the caller reads as "fall back to my clock".
+	if got, err := coord.ServerNow(ctx); err != nil || !got.IsZero() {
+		t.Fatalf("ServerNow on an empty board = (%v, %v), want the zero time and no error", got, err)
+	}
+
+	st := boardmongo.New(db, "tenant-clock")
+	if _, err := st.Create(native.Issue{Title: "clock probe"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := coord.ServerNow(ctx)
+	if err != nil {
+		t.Fatalf("ServerNow: %v", err)
+	}
+	if got.IsZero() {
+		t.Fatal("ServerNow returned the zero time with a document present — the reaper would fall back to the pod clock forever")
+	}
+	if delta := time.Since(got); delta > time.Minute || delta < -time.Minute {
+		t.Fatalf("ServerNow = %s, more than a minute from this host's clock (%s) — not a plausible server instant", got, delta)
 	}
 }

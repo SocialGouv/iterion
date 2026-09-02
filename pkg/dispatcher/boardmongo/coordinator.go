@@ -146,7 +146,7 @@ func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff tim
 		limit = 100
 	}
 	cur, err := c.coll.Find(ctx, bson.M{
-		"issue.claim":           bson.M{"$ne": ""},
+		"issue.claim":           bson.M{"$gt": ""},
 		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
 	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
 	if err != nil {
@@ -167,4 +167,36 @@ func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff tim
 // ReclaimExpired delegates the CAS transfer to the tenant-scoped store.
 func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
 	return c.StoreFor(tenant).ReclaimExpired(id, prev, marker, cutoff)
+}
+
+// ServerNow reads the DATABASE's clock. The lease is stamped with
+// `$$NOW` (server-side) precisely so a pod with a fast local clock cannot
+// mint itself extra lease — but the reaper then compared those
+// server-stamped leases against its OWN clock, which re-opened the same
+// hole from the other end: a replica running N minutes fast sees every
+// lease younger than N minutes as expired and reclaims cards from LIVE
+// owners. One round-trip per pass (a minute apart) buys the comparison a
+// single clock.
+func (c *Coordinator) ServerNow(ctx context.Context) (time.Time, error) {
+	cur, err := c.coll.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$limit", Value: 1}},
+		{{Key: "$project", Value: bson.M{"_id": 0, "now": "$$NOW"}}},
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("boardmongo: server clock: %w", err)
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	var rows []struct {
+		Now time.Time `bson:"now"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return time.Time{}, fmt.Errorf("boardmongo: decode server clock: %w", err)
+	}
+	if len(rows) == 0 || rows[0].Now.IsZero() {
+		// An empty collection has no document to project from. The caller
+		// falls back to its own clock — with nothing claimed there is also
+		// nothing for a skewed cutoff to steal.
+		return time.Time{}, nil
+	}
+	return rows[0].Now.UTC(), nil
 }

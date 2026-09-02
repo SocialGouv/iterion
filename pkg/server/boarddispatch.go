@@ -449,7 +449,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 		d.sweepParked(ctx)
 		d.sweepForkAdoptions(ctx)
 		if reaperOn {
-			d.reapExpiredClaims(ctx, time.Now().UTC())
+			d.reapExpiredClaims(ctx, d.reapCutoff(ctx))
 		}
 		select {
 		case <-ctx.Done():
@@ -458,6 +458,33 @@ func (d *boardDispatcher) run(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// reapCutoff resolves the instant an expired lease is measured against.
+// The lease itself is stamped from the DATABASE clock, so measuring it
+// with this pod's clock re-opens from the other end the very hole that
+// stamping closed: a replica running fast would see live leases as
+// expired and reclaim cards from owners that are still working. Ask the
+// database. If it cannot answer, fall back to the local clock and SAY so
+// — a watchdog silently measuring against a suspect clock is worse than
+// one that logs its degradation.
+func (d *boardDispatcher) reapCutoff(ctx context.Context) time.Time {
+	local := time.Now().UTC()
+	clocked, ok := d.coord.(interface {
+		ServerNow(context.Context) (time.Time, error)
+	})
+	if !ok {
+		return local
+	}
+	srv, err := clocked.ServerNow(ctx)
+	if err != nil {
+		d.warn("claim watchdog: server clock unavailable (%v) — measuring leases against this pod's clock", err)
+		return local
+	}
+	if srv.IsZero() {
+		return local
+	}
+	return srv
 }
 
 // reapExpiredClaims is the cloud claim watchdog pass: same decision
@@ -495,7 +522,7 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	if dec.Action == dispatcher.StuckKeep {
 		return
 	}
-	tok, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, "reaper:"+d.marker, now)
+	tok, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
 	if err != nil {
 		if !errors.Is(err, tracker.ErrClaimConflict) {
 			d.warn("claim watchdog reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
@@ -504,22 +531,42 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	}
 	switch dec.Action {
 	case dispatcher.StuckComplete:
-		if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, d.doneState, tok); err != nil {
-			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, d.doneState, err)
-		}
+		d.fileReapedCard(ctx, cand, d.doneState, tok)
 	case dispatcher.StuckFail:
-		if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, d.blockedState, tok); err != nil {
-			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, d.blockedState, err)
-		}
+		d.fileReapedCard(ctx, cand, d.blockedState, tok)
 	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
-		// Release below is the whole action: the existing nets
-		// (sweepParked, the retry sweeper, the next tick) take over.
+		// Unlike the local dispatcher — where the running column is itself
+		// eligible, so a bare release re-arms the card — this tick only
+		// ever lists d.eligible. Releasing an in_progress card here frees
+		// the claim and strands the card: no cloud net picks it up
+		// (sweepParked lists awaiting_input only, and there is no board
+		// retry sweeper). So the return to the pool must be WRITTEN, under
+		// the recovery token, before the release below.
+		if len(d.eligible) > 0 {
+			d.fileReapedCard(ctx, cand, d.eligible[0], tok)
+		}
 	}
 	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
 		d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
 	}
 	d.warn("claim watchdog reclaimed %s/%s from %q (%s → %s): %s",
 		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, dec.Action, dec.Reason)
+}
+
+// fileReapedCard writes a reaped card's disposition under the recovery
+// token, gated by the SHARED predicate the local reaper uses: a card an
+// operator (or a bot with board.move) already moved out of the running
+// column carries an intent that predates the watchdog, and overwriting it
+// would silently undo, say, a manual re-queue.
+func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, target string, tok tracker.ClaimToken) {
+	if !dispatcher.ShouldFileStuckCard(cand.Claim.State, d.inProgressState, target) {
+		d.warn("claim watchdog leaves %s/%s in %q (moved out of %q deliberately — not overwriting it with %q)",
+			cand.Tenant, cand.Claim.IssueID, cand.Claim.State, d.inProgressState, target)
+		return
+	}
+	if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, target, tok); err != nil {
+		d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, target, err)
+	}
 }
 
 func (d *boardDispatcher) warn(format string, args ...any) {

@@ -329,6 +329,19 @@ var issueFieldKeys = func() []string {
 	return keys
 }()
 
+// claimOwnedKeys is the ownership family: it belongs to the CAS writers
+// alone (Claim, RenewClaim, ReleaseOwned, ReclaimExpired), never to a
+// read-modify-write. Persisting it from a snapshot re-applies whatever
+// the claim was when the document was READ, which un-does a reaper's
+// transfer and rewinds the fencing epoch — handing a card back to the
+// owner the watchdog just evicted, with a fresh lease. The bson keys are
+// lowercased struct names (the driver's default), matched against the
+// marshalled map, so a rename that misses this list is caught by the
+// conformance suite rather than by production.
+var claimOwnedKeys = map[string]bool{
+	"claim": true, "claimepoch": true, "claimedat": true, "claimleaseuntil": true,
+}
+
 // replace persists the issue via targeted $set/$unset of the keys THIS
 // binary knows — never a full-document ReplaceOne: in a mixed fleet a
 // replace from an older binary silently erased every field a newer one
@@ -336,7 +349,8 @@ var issueFieldKeys = func() []string {
 // live, expirable claim into a permanently stuck legacy one). Unknown
 // (future) fields survive; a known field the struct no longer emits is
 // still $unset, so for everything this binary owns the semantics match
-// the replace it supersedes.
+// the replace it supersedes. The claim family is excluded outright (see
+// claimOwnedKeys).
 func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
 	expireGiveUp(iss)
 	raw, err := bson.Marshal(iss)
@@ -349,13 +363,22 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
 	}
 	set := bson.M{}
 	for k, v := range m {
+		if claimOwnedKeys[k] {
+			continue
+		}
 		set["issue."+k] = v
 	}
 	unset := bson.M{}
 	for _, k := range issueFieldKeys {
+		if claimOwnedKeys[k] {
+			continue
+		}
 		if _, ok := m[k]; !ok {
 			unset["issue."+k] = ""
 		}
+	}
+	if len(set) == 0 && len(unset) == 0 {
+		return nil
 	}
 	update := bson.M{"$set": set}
 	if len(unset) > 0 {
@@ -534,28 +557,37 @@ func leaseStampPipeline(extra bson.M) mongo.Pipeline {
 	return mongo.Pipeline{{{Key: "$set", Value: set}}}
 }
 
+// Release is the tokenless (marker-scoped) release of the BoardStore
+// contract. It is a single conditional write, never check-then-act: a
+// read-then-write here let an evicted owner's release land after a
+// reaper had transferred the card, clearing the recovery claim and
+// making the card instantly re-dispatchable mid-disposition. The lease
+// bookkeeping goes with the claim — a released card must not keep a
+// fossil lease a reaper could misread. The epoch STAYS: it is the
+// per-issue fence and must only ever move forward.
 func (s *Store) Release(id, marker string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	iss, err := s.get(ctx, id)
+	res, err := s.issues.UpdateOne(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": marker},
+		bson.M{"$set": bson.M{
+			"issue.claim":           "",
+			"issue.claimedat":       time.Time{},
+			"issue.claimleaseuntil": time.Time{},
+			"issue.updatedat":       time.Now().UTC(),
+		}})
 	if err != nil {
-		return err
+		return fmt.Errorf("boardmongo: release issue: %w", err)
 	}
-	if iss.Claim == "" {
-		return nil
-	}
-	if iss.Claim != marker {
+	if res.MatchedCount == 0 {
+		iss, gerr := s.get(ctx, id)
+		if gerr != nil {
+			return gerr
+		}
+		if iss.Claim == "" {
+			return nil // already released — the desired state
+		}
 		return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
-	}
-	// The lease bookkeeping goes with the claim — a released card must
-	// not keep a fossil lease a reaper could misread. The epoch STAYS:
-	// it is the per-issue fence and must only ever move forward.
-	iss.Claim = ""
-	iss.ClaimedAt = time.Time{}
-	iss.ClaimLeaseUntil = time.Time{}
-	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
-		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueReleased, IssueID: id, Payload: map[string]any{"marker": marker}})
 }

@@ -31,12 +31,23 @@ const (
 
 	claimReaperInterval = time.Minute
 	claimReaperBatch    = 100
+
+	// reaperMarkerPrefix tags a recovery claim so it reads as the
+	// watchdog's in logs and events. isStaleLocalMarker strips it: a
+	// reaper that dies holding a card must be sweepable like any other
+	// dead owner, or disabling the gate would strand its cards forever.
+	reaperMarkerPrefix = "reaper:"
 )
 
 // ClaimReaperEnvName is the fleet-gate env var, exported so the cloud
 // board dispatcher references the one constant instead of re-literalling
 // the name in its startup log.
 func ClaimReaperEnvName() string { return claimReaperEnv }
+
+// ReaperMarker builds the watchdog's recovery-claim marker for a host.
+// Exported so the cloud reaper uses the SAME shape the local boot sweep
+// knows how to strip — a recopied literal is how the two drift apart.
+func ReaperMarker(host string) string { return reaperMarkerPrefix + host }
 
 // ClaimReaperEnabled reads the fleet gate (shared with the cloud board
 // dispatcher's reaper — one switch, both surfaces).
@@ -113,7 +124,7 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// still exactly what we listed AND still expired — anything that
 	// moved on (a renewal, an operator, another replica's reaper) makes
 	// this a clean skip.
-	tok, err := reaper.ReclaimExpired(ctx, cand.IssueID, cand.Prev, "reaper:"+c.hostMarker, now)
+	tok, err := reaper.ReclaimExpired(ctx, cand.IssueID, cand.Prev, reaperMarkerPrefix+c.hostMarker, now)
 	if err != nil {
 		if !errors.Is(err, tracker.ErrClaimConflict) {
 			c.logger.Warn("dispatcher: claim watchdog reclaim %s: %v", cand.Identifier, err)
@@ -123,17 +134,9 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	cfg := c.cfg.Load()
 	switch dec.Action {
 	case StuckComplete:
-		if cfg.Agent.CompletedState != "" {
-			if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, cfg.Agent.CompletedState, tok); err != nil {
-				c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, cfg.Agent.CompletedState, err)
-			}
-		}
+		c.fileStuckCard(ctx, cand, cfg.Agent.RunningState, cfg.Agent.CompletedState, tok)
 	case StuckFail:
-		if cfg.Agent.FailedState != "" {
-			if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, cfg.Agent.FailedState, tok); err != nil {
-				c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, cfg.Agent.FailedState, err)
-			}
-		}
+		c.fileStuckCard(ctx, cand, cfg.Agent.RunningState, cfg.Agent.FailedState, tok)
 	case StuckRepark, StuckReleaseOnly:
 		// The release below is the whole action: the card re-enters the
 		// eligible pool, and for Repark the retry machinery resumes the
@@ -148,6 +151,24 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// log levels (the Debug-decline lesson).
 	c.logger.Warn("dispatcher: claim watchdog reclaimed %s from %q (%s → %s): %s",
 		cand.Identifier, cand.Prev.Marker, cand.State, dec.Action, dec.Reason)
+}
+
+// fileStuckCard performs the terminal filing half of a disposition,
+// under the recovery token, gated by the shared ShouldFileStuckCard
+// predicate (the cloud reaper reads the same one). Failures are logged,
+// never fatal: the claim is released either way, so a card is never left
+// owned by a dead worker's ghost.
+func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, runningState, target string, tok tracker.ClaimToken) {
+	if !ShouldFileStuckCard(cand.State, runningState, target) {
+		if target != "" && target != runningState {
+			c.logger.Info("dispatcher: claim watchdog leaves %s in %q (moved out of %q deliberately — not overwriting it with %q)",
+				cand.Identifier, cand.State, runningState, target)
+		}
+		return
+	}
+	if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, target, tok); err != nil {
+		c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
+	}
 }
 
 // loadRunForReap resolves the card's recorded run for the decision

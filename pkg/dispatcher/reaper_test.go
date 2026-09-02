@@ -186,3 +186,41 @@ func TestReapExpiredClaims_SkipsRenewedClaim(t *testing.T) {
 		t.Fatalf("renewed claim must survive the reaper: %+v", got)
 	}
 }
+
+// TestReapOne_HonoursADeliberateStateMove: the watchdog files a card the
+// way its dead worker would have — and the live worker does NOT file a
+// card somebody already moved (maybeTransitionToCompleted returns early
+// on `cur != runningTarget`, "workflow (or operator) already moved the
+// state. Honor it."). The reaper must hold the same line: an operator who
+// drags a stuck card back to ready to re-queue it, or a bot that moved it
+// with board.move, has expressed an intent that arrives BEFORE the
+// watchdog and outranks its default filing. Without this the re-queue is
+// silently undone fifteen minutes later, into a non-eligible column.
+func TestReapOne_HonoursADeliberateStateMove(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-done-moved", store.RunStatusFinished)
+	cfg := c.cfg.Load()
+	cfg.Agent.RunningState = native.StateInProgress
+	c.cfg.Store(cfg)
+	cand := seedClaimedCard(t, board, "run-done-moved")
+
+	// The operator re-queues the stuck card while its owner is dead.
+	if _, err := board.SetState(cand.IssueID, native.StateReady); err != nil {
+		t.Fatalf("operator move: %v", err)
+	}
+	cand.State = native.StateReady
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, err := board.Get(cand.IssueID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateReady {
+		t.Fatalf("the watchdog overwrote a deliberate state move: card is %q, the operator had put it in %q",
+			got.State, native.StateReady)
+	}
+	if got.Claim != "" {
+		t.Fatalf("the dead owner's claim must still be freed: claim=%q", got.Claim)
+	}
+}
