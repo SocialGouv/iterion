@@ -69,12 +69,37 @@ A replier is authorized when **(role-gate) OR (allowlist)**:
 - **Allowlist (explicit):** the author's username/id is in an explicit
   list — for collaborators who lack the role but should be allowed.
 
-Both live at **org-default + per-webhook override**, exactly like the BYOK
-key/secret overrides:
-- `webhooks.Config.AuthorizedRepliers []string` (+ `MinReplierRole`)
-  override the org-level defaults (a team setting).
-- Validation/precedence mirror `validateKeyOverrides` /
-  `validateSecretOverrides`.
+Both live on the webhook config — `webhooks.Config.AuthorizedRepliers
+[]string` and `MinReplierRole`. There is **no org-level default** for
+either, and no validator for them (`validateKeyOverrides` /
+`validateSecretOverrides` guard only their own fields). The chain that
+does exist has three layers:
+
+1. **A manifest floor, composed at provision** — the strictest
+   `forge.webhook.min_replier_role` across the repo's co-enabled bots
+   ([orchestrator.go:445-446](../pkg/forge/orchestrator.go), stamped at
+   :548). What the bots themselves declare they require.
+2. **A per-command override** — `CommandRoute.MinReplierRole`, which the
+   gate prefers over the webhook value whenever the route sets one
+   ([webhooks_gitlab.go:596-598](../pkg/server/webhooks_gitlab.go),
+   [webhooks_prforge.go:223-228](../pkg/server/webhooks_prforge.go)). One
+   webhook can hold `/revi` at developer and a costlier command higher.
+3. **The operator's own webhook `PATCH`** — which a re-provision carries
+   forward merged **stricter of the two** (:1074-1087), so an operator's
+   raise survives a bot toggle while the manifest floor still lands. An
+   operator cannot lower the bar below what the enabled bots declared.
+
+Rank order lives in one place, `webhooks.ReplierRoleRank`
+([match.go:171-185](../pkg/webhooks/match.go)): owner 5, maintainer 4,
+developer 3, reporter 2, guest 1 — with **both** an unset *and* an
+unrecognised value reading as developer, so a typo'd role quietly means
+`developer` rather than failing closed. (The provision-side comparison
+uses its own `webhookRoleRank`, which ranks `""` as zero, precisely so a
+manifest may land a sub-developer floor.)
+
+These two controls gate more than notes and `/command`: they also decide
+the forge-native **"Re-request review"** button on both providers
+([webhooks.md](webhooks.md#re-request-review)).
 
 An unauthorized note → `200 filtered`, no run (and an audit row).
 
