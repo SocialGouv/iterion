@@ -1573,6 +1573,10 @@ iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bo
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
+iterion clean [--level conservative|moderate|aggressive] [--older-than 168h] [--keep-last N] [--all-projects] [--include-resumable] [--with-runs] [--apply]  # Reclaim disk by deleting run worktrees whose work has landed. DRY RUN unless --apply (see docs/worktree-pool.md)
+iterion plugin list|info|config|enable|disable|run|install|uninstall  # Manage plugins (rewriters, MCP servers, skills, lifecycle); see docs/plugins.md
+iterion secret set|list|rm              # Manage local (desktop/headless) secrets — `list` shows names + last4 only, never values (see docs/secrets.md)
+iterion supervise --run-id <id> [--node] [--system] [--monitor] | --claude-session <cwd> | install-hook | uninstall-hook  # Attach an LLM supervisor to a running run or a raw `claude` session (see docs/supervisors.md)
 iterion models [provider/model-id]      # Inspect resolved model capabilities and their source
 iterion mcp [--store-dir] [--read-only] [--only local|remote]  # Operator MCP server on stdio: local_* (store/engine, detached launches) + remote_* (logged-in instance, remote_api escape hatch) — `claude mcp add iterion -- iterion mcp` (see docs/mcp-server.md)
 iterion openapi                         # Generate this build's OpenAPI 3.1 spec offline (stdout)
