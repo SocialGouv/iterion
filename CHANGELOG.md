@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.87.0](https://github.com/SocialGouv/iterion/compare/v3.86.1...v3.87.0) (2026-09-02)
+
+### Features
+
+* **cloudpublisher:** skip a forfait whose window is closed — the credential tiers become a fallback chain ([#601](https://github.com/SocialGouv/iterion/issues/601)) ([e963626](https://github.com/SocialGouv/iterion/commit/e9636266188c27de7056b5de4e9b219c8baef122))
+
+    <details><summary>why</summary>
+
+    The tiers were a fixed first choice, not a chain: a run whose tenant (or the platform) holds an OAuth forfait was never eligible for any later tier, INCLUDING when that forfait's provider window was closed. The run got the exhausted credential, spent one LLM call to be refused, and parked until the window reset - up to a week on the weekly one - while a second forfait or the mutualised pool could have served it immediately.
+
+    </details>
+
 ## [3.86.1](https://github.com/SocialGouv/iterion/compare/v3.86.0...v3.86.1) (2026-09-01)
 
 ### Bug Fixes
