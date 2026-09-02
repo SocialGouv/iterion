@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -597,4 +598,106 @@ func TestLLMRouterMultiCancelAbandonsWedgedBranch(t *testing.T) {
 	// t.TempDir cleanup runs, otherwise RemoveAll races the late write and
 	// fails with "directory not empty".
 	waitBranchFinished(t, s, "run-llm-wedged", "branch_llm_router_agent_b")
+}
+
+// TestLLMRouterMultiResumeReusesPersistedSelection pins the durability promise
+// of the llm-multi fan-out: once an invocation is persisted, a branch-gate
+// resume re-enters execLoop AT THE ROUTER and must reuse the selection it
+// already paid for rather than asking the model again.
+//
+// Re-asking is not merely wasteful. The model could return a different subset,
+// and ensureParallelInvocation compares the branch set against the persisted
+// one — a changed set is a hard "rewind the router before resuming" error, so
+// a re-ask can strand a resumable run outright. The reuse path must also not
+// emit a second router node_finished: it skips node_started (the whole
+// pre-execute block is bypassed), so an unpaired finish would corrupt the
+// timeline the studio reducer folds.
+func TestLLMRouterMultiResumeReusesPersistedSelection(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "llm_router_multi_resume",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"llm_router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "llm_router"}, LLMFields: ir.LLMFields{Model: "test-model"}, RouterMode: ir.RouterLLM, RouterMulti: true},
+			"gate_a":     &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate_a"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"work_a":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work_a"}},
+			"work_b":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work_b"}},
+			"work_c":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work_c"}},
+			"final":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "final"}, AwaitMode: ir.AwaitWaitAll},
+			"done":       &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "llm_router"},
+			{From: "llm_router", To: "gate_a"},
+			{From: "llm_router", To: "work_b"},
+			{From: "llm_router", To: "work_c"},
+			{From: "gate_a", To: "work_a"},
+			{From: "work_a", To: "final"},
+			{From: "work_b", To: "final"},
+			{From: "work_c", To: "final"},
+			{From: "final", To: "done"},
+		},
+		Schemas:   map[string]*ir.Schema{},
+		Prompts:   map[string]*ir.Prompt{},
+		Vars:      map[string]*ir.Var{},
+		Loops:     map[string]*ir.Loop{},
+		Foreaches: map[string]*ir.Foreach{},
+	}
+
+	var mu sync.Mutex
+	routerCalls := 0
+	calls := map[string]int{}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"context": "multi"}, nil
+	})
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
+		mu.Lock()
+		routerCalls++
+		// A second ask returns a DIFFERENT subset, so a re-ask cannot pass
+		// silently: it would either change the branch set (a hard resume
+		// error) or run the wrong branches.
+		reask := routerCalls > 1
+		mu.Unlock()
+		if reask {
+			return map[string]any{"selected_routes": []any{"work_c"}, "reasoning": "re-ask"}, nil
+		}
+		return map[string]any{"selected_routes": []any{"gate_a", "work_b"}, "reasoning": "first ask"}, nil
+	})
+	for _, id := range []string{"work_a", "work_b", "work_c", "final"} {
+		id := id
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			mu.Lock()
+			calls[id]++
+			mu.Unlock()
+			return map[string]any{"result": id}, nil
+		})
+	}
+
+	s := tmpStore(t)
+	const runID = "run-llm-multi-resume"
+	if err := New(wf, s, exec).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want a pause at the branch gate", err)
+	}
+	if err := New(wf, s, exec).Resume(context.Background(), runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("resume = %v, want completion", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if routerCalls != 1 {
+		t.Errorf("llm router executed %d times, want 1 — the resume re-asked the model instead of reusing the persisted selection", routerCalls)
+	}
+	if calls["work_a"] != 1 || calls["work_b"] != 1 {
+		t.Errorf("branch calls = %#v, want work_a and work_b once each", calls)
+	}
+	if calls["work_c"] != 0 {
+		t.Errorf("work_c ran %d times — it was never in the persisted selection", calls["work_c"])
+	}
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSingleRouterLifecyclePair(t, events, "llm_router")
 }
