@@ -15,10 +15,18 @@ func TestToNativeEvents(t *testing.T) {
 		want     []string
 	}{
 		{ProviderGitLab, all, []string{"merge_request", "note"}},
-		// GitHub's pull_request_comment expands to BOTH wire events: the
-		// review-thread half feeds the reply-to-a-suggestion lane.
-		{ProviderGitHub, all, []string{"issue_comment", "pull_request", "pull_request_review_comment"}},
+		// pull_request_comment does NOT include the review-thread firehose:
+		// only a bot that declares pull_request_review_comment (the
+		// conversational lane) makes a repo subscribe it.
+		{ProviderGitHub, all, []string{"issue_comment", "pull_request"}},
 		{ProviderForgejo, all, []string{"issue_comment", "pull_request"}},
+		{ProviderGitHub, []string{bundle.ForgeEventPullRequestReviewComment}, []string{"pull_request_review_comment"}},
+		// Forgejo's review-thread lane is not wired: no native subscription.
+		{ProviderForgejo, []string{bundle.ForgeEventPullRequestReviewComment}, nil},
+		// GitLab's single "note" carries both comment shapes — declaring the
+		// pair still subscribes one native event.
+		{ProviderGitLab, []string{bundle.ForgeEventPullRequestComment, bundle.ForgeEventPullRequestReviewComment}, []string{"note"}},
+		{ProviderGitHub, []string{bundle.ForgeEventPullRequestComment, bundle.ForgeEventPullRequestReviewComment}, []string{"issue_comment", "pull_request_review_comment"}},
 		{ProviderGitLab, []string{bundle.ForgeEventPullRequest}, []string{"merge_request"}},
 		// issue_labeled → "issues" native event on every provider (gitlab's
 		// admin client maps it to the issues_events boolean hook field).

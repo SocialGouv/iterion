@@ -287,13 +287,16 @@ func TestGitHubWebhook_ReviewThreadTopLevelCommentFiltered(t *testing.T) {
 type fakeThreadAPI struct {
 	comments  []forge.PRReviewComment
 	listErr   error
+	listCalls int
 	perm      string
 	permErr   error
 	permCalls int
+	who       forge.Identity
+	whoErr    error
 }
 
 func (f *fakeThreadAPI) WhoAmI(context.Context) (forge.Identity, error) {
-	return forge.Identity{}, nil
+	return f.who, f.whoErr
 }
 func (f *fakeThreadAPI) CollaboratorPermission(context.Context, string, string) (string, error) {
 	f.permCalls++
@@ -303,6 +306,7 @@ func (f *fakeThreadAPI) GetPullRequest(context.Context, string, int) (forge.Pull
 	return forge.PullRef{}, nil
 }
 func (f *fakeThreadAPI) ListPRReviewComments(context.Context, string, int) ([]forge.PRReviewComment, error) {
+	f.listCalls++
 	return f.comments, f.listErr
 }
 
@@ -453,4 +457,41 @@ func TestGitHubWebhook_ReviewThreadForkPRFiltered(t *testing.T) {
 	if w.Code != http.StatusOK || launches != 0 || gates != 0 {
 		t.Fatalf("fork reply must filter payload-only: code=%d launches=%d gates=%d", w.Code, launches, gates)
 	}
+}
+
+// A GitHub PAT/OAuth connection derives NO [bot] identity from the
+// connection (iterionBotLogins gates the account fallback to GitLab) — the
+// identity that posts our reviews is the token's own. The gate must resolve
+// it via WhoAmI so the lane lives on those connections, and must fail
+// CLOSED with an honest reason when nothing at all resolves.
+func TestReviewReplyGateWithAPI_TokenIdentity(t *testing.T) {
+	p := prforge.ParsedReviewComment{ProjectPath: "acme/widgets", PRNumber: 7, CommentID: 9002, ThreadRootID: 9001, AuthorLogin: "alice"}
+	botThread := []forge.PRReviewComment{
+		{ID: 9001, Author: "revi-bot", Body: "the SSRF is reachable", CreatedAt: "2026-09-02T10:00:00Z"},
+		{ID: 9002, InReplyTo: 9001, Author: "alice", Body: "why?", CreatedAt: "2026-09-02T10:05:00Z"},
+	}
+
+	t.Run("WhoAmI serves a PAT connection with no configured identity", func(t *testing.T) {
+		s := newWebhookTestServer(t) // no webhookIterionBotAuthor seam: the real predicate resolves empty
+		api := &fakeThreadAPI{comments: botThread, who: forge.Identity{Login: "revi-bot"}}
+		ok, transcript, reason, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || !ok || reason != "allowlist" {
+			t.Fatalf("ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		if !strings.Contains(transcript, "revi-bot (you, the bot)") {
+			t.Fatalf("the token identity must classify (and label) the thread: %q", transcript)
+		}
+	})
+
+	t.Run("nothing resolved fails closed before any thread fetch", func(t *testing.T) {
+		s := newWebhookTestServer(t)
+		api := &fakeThreadAPI{comments: botThread, whoErr: fmt.Errorf("403 installation token")}
+		ok, _, reason, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || ok || reason != "bot identity unresolved; cannot classify reply" {
+			t.Fatalf("ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		if api.listCalls != 0 {
+			t.Fatalf("an unclassifiable delivery must not pay the comment walk: %d calls", api.listCalls)
+		}
+	})
 }

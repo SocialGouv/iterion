@@ -24,14 +24,23 @@ var normalizedToNative = map[string]map[Provider][]string{
 	// GitHub splits PR comments across TWO wire events: top-level PR
 	// comments arrive as issue_comment, replies inside a review thread as
 	// pull_request_review_comment. GitLab's single "note" covers both. The
-	// normalized name means "comments on the PR", so the GitHub hook must
-	// subscribe both — the review-thread half is what feeds the
-	// reply-to-a-suggestion conversational lane. Forgejo stays on
-	// issue_comment only until that lane is validated there.
+	// review-thread half is deliberately NOT part of this event: one
+	// submitted review fires one pull_request_review_comment delivery per
+	// inline comment, each charged against the webhook rate bucket and the
+	// org monthly quota before any handler filters it — a firehose only the
+	// conversational lane consumes, declared separately below.
 	bundle.ForgeEventPullRequestComment: {
 		ProviderGitLab:  {"note"},
-		ProviderGitHub:  {"issue_comment", "pull_request_review_comment"},
+		ProviderGitHub:  {"issue_comment"},
 		ProviderForgejo: {"issue_comment"},
+	},
+	// The comments INSIDE PR review threads — feeds the
+	// reply-to-a-suggestion conversational lane. GitLab's "note" already
+	// carries thread replies (dedup with pull_request_comment keeps one);
+	// Forgejo is not wired (its dispatch never routes the event).
+	bundle.ForgeEventPullRequestReviewComment: {
+		ProviderGitLab: {"note"},
+		ProviderGitHub: {"pull_request_review_comment"},
 	},
 	// issue_labeled → the forge-native "issues" event. GitLab models it as a
 	// boolean hook field (issues_events); the gitlab admin client translates

@@ -1069,12 +1069,17 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	cfg.LastUsedAt = prev.LastUsedAt
 
 	// Rate limit: enforced by the inbound middleware, so losing an operator's
-	// raise means deliveries silently 429 and reviews never launch. Its own
-	// sibling in the `// Limits.` block (MonthlyCallLimit) is carried above;
-	// the zero value means "never set", where the provision's default stands.
-	if prev.RateLimit != (webhooks.Rate{}) {
+	// raise means deliveries silently 429 and reviews never launch — but an
+	// UNPINNED value is the provisioner's own former default, and carrying it
+	// would freeze every existing webhook on the burst it was born with,
+	// making a default bump unreachable by re-provision (the review-comment
+	// fan-out needs the raised burst precisely on already-provisioned repos).
+	// Only an API-set value (RateLimitPinned, same rule as ReviewOnSyncPinned)
+	// survives the rebuild.
+	if prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}) {
 		cfg.RateLimit = prev.RateLimit
 	}
+	cfg.RateLimitPinned = prev.RateLimitPinned
 
 	// MinReplierRole: a conditional merge, never an overwrite — the provision
 	// stamps a manifest-derived FLOOR (the max requirement over the enabled

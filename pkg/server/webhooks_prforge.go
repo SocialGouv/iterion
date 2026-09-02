@@ -508,11 +508,28 @@ func (s *Server) realWebhookPRForgeReviewReplyGate(ctx context.Context, cfg webh
 // clear the allowlist or the webhook's MinReplierRole. Returns the thread
 // transcript for the bot's grounding.
 func (s *Server) reviewReplyGateWithAPI(ctx context.Context, cfg webhooks.Config, p prforge.ParsedReviewComment, api prforgeReviewThreadAPI) (bool, string, string, error) {
+	isBot, haveIdentity := s.iterionBotAuthorPredicate(ctx, cfg)
+	// The connection-derived set can be legitimately empty (a GitHub
+	// PAT/OAuth connection names no [bot] identity). The identity that
+	// actually POSTS our reviews is the token's own — resolve it like the
+	// GitLab twin (CurrentUser) and union it in, so the lane lives on those
+	// connections. WhoAmI failing on an App installation token is fine: the
+	// [bot] slug already covers that shape.
+	if id, werr := api.WhoAmI(ctx); werr == nil && strings.TrimSpace(id.Login) != "" {
+		tokenLogin, base := id.Login, isBot
+		isBot = func(login string) bool { return base(login) || strings.EqualFold(login, tokenLogin) }
+		haveIdentity = true
+	}
+	if !haveIdentity {
+		// Fail closed with an honest reason — "not a bot review thread"
+		// would misdiagnose a dead identity resolution as a human thread.
+		return false, "", "bot identity unresolved; cannot classify reply", nil
+	}
 	comments, err := api.ListPRReviewComments(ctx, p.ProjectPath, int(p.PRNumber))
 	if err != nil {
 		return false, "", "", err
 	}
-	botInThread, transcript := classifyReviewThread(comments, p, s.iterionBotAuthorPredicate(ctx, cfg))
+	botInThread, transcript := classifyReviewThread(comments, p, isBot)
 	if !botInThread {
 		return false, "", "not a bot review thread (no iterion comment in it)", nil
 	}

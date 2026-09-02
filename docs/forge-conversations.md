@@ -54,14 +54,20 @@ entries there:
   two-route `command_map`, and `ResolveCommandRoute` picks by args
   presence. Bare `/revi` stays a re-review.
 
-Enablement is provisioning, not code: `pull_request_comment` in a
-bot's manifest `forge.events` now expands on GitHub to BOTH wire
-events ([pkg/forge/event_map.go](../pkg/forge/event_map.go)), so a
-(re-)provision subscribes the hook and regenerates the config's
-`event_allowlist` together; webhooks provisioned before that stay
-inert on review-thread replies until re-provisioned, and the converse
-bot must be in the webhook's `bot_ids`. Forgejo is deliberately not
-wired yet (its dispatch never routes the event).
+Enablement is provisioning, not code: the review-thread firehose is
+its OWN normalized manifest event, `pull_request_review_comment`
+([pkg/forge/event_map.go](../pkg/forge/event_map.go)), declared by
+`revi-converse` — deliberately NOT folded into `pull_request_comment`,
+which nine catalog bots declare: one submitted review fires one wire
+delivery per inline comment, each charged against the webhook rate
+bucket and the org monthly quota before any handler filters it, so
+only a repo whose `bot_ids` actually include the conversational bot
+subscribes that volume. A (re-)provision with the converse bot
+subscribes the hook and regenerates the config's `event_allowlist`
+together; webhooks provisioned without it stay inert on review-thread
+replies. Forgejo is deliberately not wired yet (its dispatch never
+routes the event, and the normalized event maps to no Forgejo native
+event).
 
 ## Model — stateless, the thread is the state
 

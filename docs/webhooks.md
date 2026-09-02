@@ -163,8 +163,11 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   event), thread-classified (a human↔human thread never triggers), and
   replier-gated like every comment lane. Requires the converse bot in
   `bot_ids` and the event in `event_allowlist` (a re-provision
-  regenerates both — `pull_request_comment` in a manifest now expands
-  to both GitHub wire events). GitHub only for now. See
+  regenerates both from the converse bot's own manifest event
+  `pull_request_review_comment` — deliberately separate from
+  `pull_request_comment`, so repos without the conversational bot
+  never subscribe the per-inline-comment delivery firehose). GitHub
+  only for now. See
   [forge-conversations.md](forge-conversations.md).
 - **`issues`** with action `labeled` → launches the webhook's bot with
   the labeled issue turned into a feature task. The handler derives
