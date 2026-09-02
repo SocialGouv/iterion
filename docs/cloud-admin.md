@@ -159,21 +159,39 @@ seals them at rest with `ITERION_SECRETS_KEY`. There are two
 storage tracks:
 
 1. **API keys** (BYOK): per-team or per-user, optionally flagged
-   `is_default`. Resolution order at run launch: per-run override →
-   user-default → user-other → team-default → team-other → env.
-2. **OAuth-forfait**: per-user only, one record per kind (Claude Code,
-   Codex). The blob is the verbatim `credentials.json` / `auth.json`
-   the official CLI writes locally; iterion never reads its plaintext
-   except to refresh and to materialise it just-in-time in a per-run
-   `tmpfs` mount on the runner.
+   `is_default`. Within the track, resolution is per-run override →
+   user-default → user-other → team-default → team-other.
+2. **OAuth-forfait**: one record per kind (Claude Code, Codex), stored
+   **per user, per org/team, or deployment-wide** — the team-scoped
+   mirror is `/api/teams/{id}/oauth/*`, and the platform record lives
+   under the reserved `secrets.PlatformOwnerKey`. The blob is the
+   verbatim `credentials.json` / `auth.json` the official CLI writes
+   locally; iterion never reads its plaintext except to refresh and to
+   materialise it just-in-time in a per-run `tmpfs` mount on the runner.
+
+Across the two tracks a launch resolves **five tiers** before the runner's
+env fallback: BYOK API keys → workflow/user generic secrets →
+OAuth-forfait (the run owner's, then the org's) → the mutualised
+[credential pool](credential-pool.md) (only for a run that resolved
+nothing of its own) → the DB-backed [platform tier](cloud-llm-credentials.md)
+(filling, per wire family, only the slots left empty) → pod env. It is a
+real fallback **chain**: a forfait the provider is currently refusing is
+skipped so a later tier can serve, and restored if none could — see
+[the fallback chain](cloud-llm-credentials.md#the-tiers-are-a-fallback-chain-not-a-fixed-first-choice).
 
 **Subscription-OAuth billing guard.** A Claude Pro/Max OAuth subscription
 *works* on API-direct backends when the token reaches them, but Anthropic bills
 third-party clients against the subscription's separate **extra-usage** balance
-rather than the plan's limits. The cloud-uploaded Claude credential is bridged
-to `claw` and `claude_code`; it is **not yet** mapped into pi's agent dir/env
-(pi can use an ambient/local subscription token). iterion warns on each direct
-use (`secrets.SubscriptionOAuthNotice`) and permits it by default.
+rather than the plan's limits. The cloud-uploaded Claude credential is
+materialised for **`claude_code`** (`CLAUDE_CONFIG_DIR`); it is not mapped
+into pi's agent dir/env, and `claw`'s in-process Anthropic client reads its
+bearer from the process env (`ANTHROPIC_AUTH_TOKEN`) rather than from the
+per-run blob — both can still use an ambient/deployment-level subscription
+token. iterion warns on each direct use
+(`secrets.SubscriptionOAuthNotice`) and permits it by default. Note the
+guard tests only whether an OAuth dir was injected, so
+`ITERION_FORBID_SUBSCRIPTION_OAUTH=1` can refuse a `claw` node over a
+credential that node would not itself have spent.
 
 **On a shared instance you probably want to refuse it**: spending an
 operator's extra-usage balance is a cost decision taken on behalf of
