@@ -150,10 +150,28 @@ The **orphan sweeper** runs on the server side
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)) and
 catches the failure mode the runner can't — the pod that died before
 even claiming the run, or before its first status write. It scans
-every 60s for `queued` past the redelivery window + margin (~90min with
-the defaults: `MaxDeliver × AckWait` + 10min) or `running > 10min` AND no
-current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
-Bumps `iterion_runs_orphan_recovered_total`.
+every 60s and CAS-flips matched rows to `failed_resumable`, bumping
+`iterion_runs_orphan_recovered_total`. Two passes, admitted differently:
+
+- **`running > 10min` AND no current NATS-KV lease** — the lease is a real
+  signal, so this pass always runs.
+- **`queued` past the redelivery window + margin** (~90min with the defaults:
+  `MaxDeliver × AckWait` + 10min) — **skipped entirely while the durable
+  consumer still reports pending messages.** A runner pod takes one run at a
+  time, so a saturated pool leaves short runs unfetched, lease-less and
+  stale — the exact shape of an orphan. Reading them as orphaned killed the
+  work the merge gate was waiting on (measured 2026-09-01: campaign runs held
+  the pool, queued PR reviews were flipped, the gate relaunched them, and they
+  were flipped again). The backlog probe is read-only (`NumPending` on the
+  existing consumer), and an absent capability or a failed read leaves the
+  pass behaving exactly as before. An empty queue still means the message is
+  gone, and the row is still recovered.
+
+Every failed step of either pass increments
+`iterion_orphan_sweep_errors_total{stage=scan|lease|flip}` and opens an
+edge-triggered "orphan recovery degraded" warning: a lease probe that
+silently fails used to disarm recovery with no counter at all, which the
+success-only metric cannot distinguish from "nothing to do".
 
 The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
@@ -207,6 +225,7 @@ the FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_auth_password_resets_total{step}` | server | Reset flow (`requested`, `confirmed`) |
 | `iterion_launch_denied_total{reason}` | server | Launch gate refusals |
 | `iterion_runs_orphan_recovered_total` | server | Sweeper flips |
+| `iterion_orphan_sweep_errors_total{stage}` | server | A sweep step that could not do its job — `scan` (the whole pass is disabled), `lease` (a candidate skipped on an unknown lease state), `flip` (the CAS failed). Flat at 0 is health; growth is orphan recovery silently disarmed, which the recovery counter alone cannot show |
 | `iterion_dlq_depth` | server | Sweeper poll of NATS state |
 
 All from a shared registry in
