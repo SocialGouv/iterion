@@ -186,7 +186,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 				return fmt.Errorf("run %q has events.jsonl flushed %s ago (< %s) — engine may still be alive; refusing to force-stale resume. Wait, or use `iterion inspect` to confirm the engine is gone", opts.RunID, age.Truncate(time.Second), forceStaleStaleAfter)
 			}
 		}
-		if changed, casErr := s.UpdateRunStatusIf(ctx, opts.RunID, store.RunStatusFailedResumable, "engine subprocess died abnormally; status auto-promoted via `iterion resume --force-stale`", []store.RunStatus{store.RunStatusRunning}); casErr != nil {
+		if changed, casErr := s.UpdateRunStatusIfCoded(ctx, opts.RunID, store.RunStatusFailedResumable, "engine subprocess died abnormally; status auto-promoted via `iterion resume --force-stale`", store.FailureProcessOrphaned, []store.RunStatus{store.RunStatusRunning}); casErr != nil {
 			return fmt.Errorf("force-stale promote: %w", casErr)
 		} else if !changed {
 			// Reload — something else changed it between LoadRun and now.

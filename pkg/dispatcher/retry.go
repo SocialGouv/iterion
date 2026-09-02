@@ -254,7 +254,7 @@ func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemR
 	if cur.Checkpoint != nil {
 		newStatus = store.RunStatusFailedResumable
 	}
-	if err := s.UpdateRunStatus(ctx, cur.ID, newStatus, "process orphaned: dispatcher found run '"+string(cur.Status)+"' with no live owner"); err != nil {
+	if err := s.UpdateRunStatusCoded(ctx, cur.ID, newStatus, "process orphaned: dispatcher found run '"+string(cur.Status)+"' with no live owner", store.FailureProcessOrphaned); err != nil {
 		// Decision-changing: the dead run keeps reading `running` and holds
 		// its ticket until this write lands — worth a Warn, not a Debug.
 		c.logger.Warn("dispatcher: orphan promotion of run %s → %s failed: %v — the ticket stays held until the status write succeeds", cur.ID, newStatus, err)
