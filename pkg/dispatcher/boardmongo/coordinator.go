@@ -179,6 +179,63 @@ func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff tim
 	return out, nil
 }
 
+// ListAbandonedRecoveryClaims lists expired claims held under a marker
+// namespace — the watchdog's own, so a replica can repair what a crashed
+// one left behind. It SELECTS on the marker instead of filtering a
+// general batch, because a recovery claim is stamped with a fresh lease
+// at the moment of the transfer: it therefore sorts after every ordinary
+// dead owner, and a post-hoc filter over a capped, lease-ordered batch
+// sees exactly none of them on any board that has been running a while.
+func (c *Coordinator) ListAbandonedRecoveryClaims(ctx context.Context, markerPrefix string, cutoff time.Time, limit int) ([]ExpiredCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if markerPrefix == "" {
+		return nil, fmt.Errorf("boardmongo: list abandoned recovery claims: empty marker prefix would match every claim")
+	}
+	out := make([]ExpiredCandidate, 0, limit)
+	for _, arm := range reclaimableLease(cutoff) {
+		if len(out) >= limit {
+			break
+		}
+		filter := bson.M{"issue.claim": bson.M{
+			"$gte": markerPrefix, "$lt": prefixUpperBound(markerPrefix),
+		}}
+		for k, v := range arm {
+			filter[k] = v
+		}
+		cur, err := c.coll.Find(ctx, filter,
+			options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).
+				SetLimit(int64(limit-len(out))))
+		if err != nil {
+			return nil, fmt.Errorf("boardmongo: list abandoned recovery claims: %w", err)
+		}
+		var docs []issueDoc
+		if err := cur.All(ctx, &docs); err != nil {
+			return nil, fmt.Errorf("boardmongo: decode abandoned recovery claims: %w", err)
+		}
+		for _, d := range docs {
+			iss := d.Issue
+			out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: native.ExpiredClaimFrom(&iss)})
+		}
+	}
+	return out, nil
+}
+
+// prefixUpperBound is the exclusive end of a string-prefix range: the
+// last byte incremented, so the scan stays an index range rather than a
+// regex the planner cannot bound.
+func prefixUpperBound(prefix string) string {
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] < 0xFF {
+			b[i]++
+			return string(b[:i+1])
+		}
+	}
+	return prefix
+}
+
 // ReclaimExpired delegates the CAS transfer to the tenant-scoped store.
 func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error) {
 	return c.StoreFor(tenant).ReclaimExpired(id, prev, marker, cutoff)

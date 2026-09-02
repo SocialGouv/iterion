@@ -111,6 +111,12 @@ type Dispatcher struct {
 	// effect without a restart.
 	spendStore store.SpendStore
 
+	// runReadFailure latches whether the claim watchdog can currently
+	// read runs. Atomic because the reaper runs OFF the actor: its
+	// abstention is reported on the edges (every card is conserved while
+	// it holds), never once per card per pass.
+	runReadFailure atomic.Bool
+
 	ws *wsBridge
 }
 

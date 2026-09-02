@@ -50,6 +50,12 @@ func ClaimReaperInterval() time.Duration { return claimReaperInterval }
 // the name in its startup log.
 func ClaimReaperEnvName() string { return claimReaperEnv }
 
+// ReaperMarkerPrefix is the marker namespace a watchdog claims under,
+// exported so a store can SELECT that population rather than filter it
+// out of a capped batch — a recovery claim carries a FRESH lease, so it
+// sorts last among expired claims and a post-hoc filter never sees one.
+func ReaperMarkerPrefix() string { return reaperMarkerPrefix }
+
 // IsReaperMarker reports whether a claim marker was minted by a
 // watchdog. It is the persisted record that a card was already conserved
 // once — the only bound available on a decision that must otherwise be
@@ -136,9 +142,17 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// row is deliberately not consulted here — refusing the transfer would
 	// make its own bound unreachable and leave the card held for ever.
 	if pre := DecideTransfer(run, runErr, card); pre.Action == StuckKeep {
+		if runErr != nil {
+			// The twin of the cloud path's edge-triggered notice: an
+			// unreadable run conserves EVERY card, and at Debug that is
+			// invisible in production — the silent-decline failure this
+			// programme exists to end.
+			c.noteRunReadFailure(runErr)
+		}
 		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, pre.Reason)
 		return
 	}
+	c.noteRunReadFailure(nil)
 	var dec StuckDecision
 	// TRANSFER first (the F9 order): the CAS re-verifies the claim is
 	// still exactly what we listed AND still expired — anything that
@@ -235,6 +249,21 @@ func StampWindowOpen(claimedAt, now time.Time) bool {
 		return false
 	}
 	return now.Sub(claimedAt) < 2*native.ClaimLeaseDuration
+}
+
+// noteRunReadFailure reports the run store's health on its EDGES, like
+// the cloud twin: one line when reads start failing (every card is
+// conserved from there) and one when they recover, never one per card.
+func (c *Dispatcher) noteRunReadFailure(err error) {
+	if err == nil {
+		if c.runReadFailure.Swap(false) {
+			c.logger.Warn("dispatcher: claim watchdog can read runs again — cards are being judged rather than conserved")
+		}
+		return
+	}
+	if !c.runReadFailure.Swap(true) {
+		c.logger.Warn("dispatcher: claim watchdog cannot read runs (%v) — every card is conserved until this clears", err)
+	}
 }
 
 // launchStates asks the tracker which columns a card is dispatched from

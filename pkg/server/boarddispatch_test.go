@@ -148,6 +148,27 @@ func (f *fakeBoardCoord) ListExpiredClaimCandidates(_ context.Context, _ time.Ti
 	return out, nil
 }
 
+// ListAbandonedRecoveryClaims selects by marker prefix like the real
+// coordinator — a fake that ignored the prefix would make the sweep's
+// whole point (asking for the right population rather than filtering a
+// capped batch) untestable.
+func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPrefix string, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]boardmongo.ExpiredCandidate, 0, len(f.expired))
+	for _, e := range f.expired {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		if !strings.HasPrefix(e.Claim.Prev.Marker, markerPrefix) {
+			continue
+		}
+		e.Claim.State = f.states[e.Claim.IssueID]
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 func (f *fakeBoardCoord) ReclaimExpired(_ context.Context, _, id string, prev tracker.ClaimToken, marker string, _ time.Time) (tracker.ClaimToken, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1303,7 +1324,91 @@ func TestCloudReaper_BootSweepFreesAbandonedRecoveryClaims(t *testing.T) {
 	if _, held := f.claimed["c-abandoned"]; held {
 		t.Fatalf("a recovery claim nobody came back for must be freed, still held by %q", f.claimed["c-abandoned"])
 	}
+	// ...and freeing is not enough. A card released in the running column
+	// is reachable by NO cloud net (the tick lists only `eligible`), and
+	// clearing its claim also hides it from the reaper, which filters on a
+	// non-empty claim — so a bare release strands the card permanently and
+	// takes the repair away from the one component that could do it.
+	if got := f.states["c-abandoned"]; got != native.StateReady {
+		t.Fatalf("a card whose watchdog crashed must be returned to the pool, not just unclaimed: state=%q, want %q",
+			got, native.StateReady)
+	}
 	if got := f.claimed["c-ordinary"]; got != "some-pod" {
 		t.Fatalf("an ordinary owner's claim is the watchdog's business, not this sweep's: now %q", got)
+	}
+}
+
+// TestCloudReaper_BootSweepHonoursTheDisposition: the sweep repairs what
+// a crashed watchdog left behind, and "repair" means the card's recorded
+// run decides where it goes — exactly as if the watchdog had lived. A
+// finished run's card belongs in the completed column; dropping that on
+// the floor loses the disposition the run already earned.
+func TestCloudReaper_BootSweepHonoursTheDisposition(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-finished"] = dispatcher.ReaperMarker("crashed-replica")
+	f.epochs["c-finished"] = 4
+	f.states["c-finished"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-finished", LastRunID: "run-done",
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("crashed-replica"), Epoch: 4},
+		},
+	}}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+
+	d.sweepAbandonedRecoveryClaims(context.Background())
+
+	if got := f.states["c-finished"]; got != native.StateDone {
+		t.Fatalf("the run finished, so the card belongs in %q — the sweep dropped its disposition and left it in %q",
+			native.StateDone, got)
+	}
+}
+
+// TestCloudReaper_BootSweepAsksForItsOwnPopulation: a recovery claim is
+// stamped with a FRESH lease at the moment of the transfer, so it sorts
+// after every ordinary dead owner. Filtering a capped, lease-ordered
+// batch for the reaper marker therefore finds none of them on any board
+// that has been running a while — a dead capability with a green test.
+// The sweep must SELECT its population.
+func TestCloudReaper_BootSweepAsksForItsOwnPopulation(t *testing.T) {
+	f := newFakeBoardCoord()
+	// A pile of ordinary expired claims ahead of the one that matters.
+	for i := 0; i < 120; i++ {
+		id := fmt.Sprintf("c-ordinary-%d", i)
+		f.claimed[id] = "some-pod"
+		f.epochs[id] = 1
+		f.states[id] = native.StateInProgress
+		f.expired = append(f.expired, boardmongo.ExpiredCandidate{
+			Tenant: "t1",
+			Claim: tracker.ExpiredClaim{
+				IssueID: id, Prev: tracker.ClaimToken{Marker: "some-pod", Epoch: 1},
+			},
+		})
+	}
+	f.claimed["c-abandoned"] = dispatcher.ReaperMarker("crashed-replica")
+	f.epochs["c-abandoned"] = 9
+	f.states["c-abandoned"] = native.StateInProgress
+	f.expired = append(f.expired, boardmongo.ExpiredCandidate{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-abandoned",
+			Prev:    tracker.ClaimToken{Marker: dispatcher.ReaperMarker("crashed-replica"), Epoch: 9},
+		},
+	})
+
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
+
+	d.sweepAbandonedRecoveryClaims(context.Background())
+
+	if _, held := f.claimed["c-abandoned"]; held {
+		t.Fatal("the abandoned recovery claim sat behind 120 ordinary ones and was never reached — " +
+			"the sweep filtered a capped batch instead of asking for its own population")
 	}
 }

@@ -37,6 +37,7 @@ type boardCoordinator interface {
 	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
 	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ListAbandonedRecoveryClaims(ctx context.Context, markerPrefix string, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 }
 
@@ -105,6 +106,10 @@ type boardDispatcher struct {
 	// the watchdog's cadence) without a change of cause going unsaid —
 	// an operator reading a stale reason is looking at the wrong problem.
 	clockFallbackReason string
+	// runReadFailure latches whether the run store is currently failing,
+	// so the abstention it causes is reported on its edges rather than
+	// once per candidate per pass.
+	runReadFailure bool
 }
 
 // newBoardDispatcher wires a cloud board dispatcher with sensible defaults.
@@ -484,29 +489,45 @@ func (d *boardDispatcher) run(ctx context.Context) {
 // the reaper gate: its whole purpose is to repair the state a disabled
 // reaper would otherwise leave behind for ever.
 func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
-	cands, err := d.coord.ListExpiredClaimCandidates(ctx, d.reapCutoff(ctx), 100)
+	// ONE clock for the listing and for the CAS beneath it: the lease is
+	// stamped server-side, so measuring it with this pod's clock is the
+	// hole reapCutoff exists to close — and splitting them here would
+	// make the CAS refuse what the listing just produced, reporting
+	// "claim moved on" for a claim that did not move.
+	now := d.reapCutoff(ctx)
+	cands, err := d.coord.ListAbandonedRecoveryClaims(ctx, dispatcher.ReaperMarkerPrefix(), now, 100)
 	if err != nil {
 		d.warn("recovery-claim sweep: %v", err)
 		return
 	}
 	for _, cand := range cands {
-		if !dispatcher.IsReaperMarker(cand.Claim.Prev.Marker) {
-			continue
+		// Dispose through the ONE path that knows what a card needs —
+		// releasing bare is what the local twin can afford (its running
+		// column is itself eligible) and what this surface cannot: a card
+		// freed in in_progress is reachable by no cloud net, and clearing
+		// the claim also hides it from the reaper, which filters on a
+		// non-empty claim. reapOne re-judges, files or returns to the
+		// pool, and releases — and because the marker is already a
+		// recovery one, its conservation bound resolves to "release".
+		d.reapOne(ctx, cand, now)
+	}
+}
+
+// noteRunReadFailure reports the run store's health on its EDGES: the
+// transition into failure (every card conserved from here) and back out
+// of it. A per-card line would bury both.
+func (d *boardDispatcher) noteRunReadFailure(tenant string, err error) {
+	if err == nil {
+		if d.runReadFailure {
+			d.runReadFailure = false
+			d.warn("claim watchdog can read runs again — cards are being judged rather than conserved")
 		}
-		tok, _, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID,
-			cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), time.Now())
-		if err != nil {
-			if !errors.Is(err, tracker.ErrClaimConflict) {
-				d.warn("recovery-claim sweep reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
-			}
-			continue
-		}
-		if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
-			d.warn("recovery-claim sweep release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
-			continue
-		}
-		d.warn("recovery-claim sweep freed %s/%s, abandoned under %q — a watchdog conserved it and never came back",
-			cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker)
+		return
+	}
+	if !d.runReadFailure {
+		d.runReadFailure = true
+		d.warn("claim watchdog cannot read runs (first failure on tenant %s: %v) — every card is conserved until this clears",
+			tenant, err)
 	}
 }
 
@@ -591,6 +612,7 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		if runErr != nil && errors.Is(runErr, store.ErrRunNotFound) {
 			run, runErr = nil, nil // pruned run proves nothing is alive
 		}
+		d.noteRunReadFailure(cand.Tenant, runErr)
 	}
 	card := dispatcher.StuckCard{
 		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
@@ -601,14 +623,12 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	// its own bound unreachable — and in cloud there is no boot sweep to
 	// free the card later, so "held" means held for ever.
 	if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
-		if runErr != nil {
-			// A read error is not a normal abstention: it conserves EVERY
-			// candidate, every pass, for as long as the store misbehaves.
-			// Debug would be invisible in production — the failure mode
-			// this whole programme exists to end.
-			d.warn("claim watchdog cannot read the run for %s/%s (%v) — conserving the card",
-				cand.Tenant, cand.Claim.IssueID, runErr)
-		}
+		// A read error is not a normal abstention: it conserves EVERY
+		// candidate, every pass, for as long as the store misbehaves —
+		// invisible at Debug, and a log storm if said per card (batch of
+		// 100, once a minute, per replica). Edge-triggered, like the
+		// degraded-clock notice.
+		d.noteRunReadFailure(cand.Tenant, runErr)
 		return
 	}
 	var dec dispatcher.StuckDecision
