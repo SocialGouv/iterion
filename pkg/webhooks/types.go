@@ -222,7 +222,15 @@ type Config struct {
 	ForgeBaseURL string `bson:"forge_base_url,omitempty" json:"forge_base_url,omitempty"`
 
 	// Limits.
-	RateLimit        Rate `bson:"rate_limit" json:"rate_limit"`
+	RateLimit Rate `bson:"rate_limit" json:"rate_limit"`
+	// RateLimitPinned records that an operator set RateLimit EXPLICITLY
+	// through the webhook API (create or PATCH). The re-provision carry
+	// preserves a pinned value — losing an operator's raise means
+	// deliveries silently 429. An UNPINNED value is presumed
+	// provisioner-owned: a re-provision moves it to the current
+	// provisioning default, so a default bump actually reaches existing
+	// webhooks instead of freezing each on the burst it was born with.
+	RateLimitPinned  bool `bson:"rate_limit_pinned,omitempty" json:"rate_limit_pinned,omitempty"`
 	MonthlyCallLimit int  `bson:"monthly_call_limit,omitempty" json:"monthly_call_limit,omitempty"` // 0 = inherit org
 
 	// OperatorLaunchVars are the per-repo overrides an operator pinned on the

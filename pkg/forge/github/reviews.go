@@ -125,3 +125,58 @@ func (a *AppClient) CreatePullReview(ctx context.Context, repo string, number in
 	}
 	return rest.CreatePullReview(ctx, repo, number, in)
 }
+
+// prReviewCommentWire is the list shape of GET /repos/{repo}/pulls/{n}/comments.
+type prReviewCommentWire struct {
+	ID        int64  `json:"id"`
+	InReplyTo int64  `json:"in_reply_to_id"`
+	Body      string `json:"body"`
+	Path      string `json:"path"`
+	CreatedAt string `json:"created_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// ListPRReviewComments returns the PR's review-thread comments (the inline
+// diff comments and their replies), in chronological order. Backs the
+// reply-in-thread conversational gate: it needs the whole set to
+// reconstruct one thread (id == root || in_reply_to_id == root) and decide
+// whether the bot participates in it. Pagination is capped at the NEWEST
+// pages (fetched newest-first, then reversed): the gate classifies the
+// thread just replied to, which lives at the new end — a cap on the oldest
+// pages would blind it exactly on the long-lived PRs that exceed it — and
+// an unbounded walk on a pathological PR would stall the webhook hot path.
+func (c *AdminClient) ListPRReviewComments(ctx context.Context, repo string, number int) ([]forge.PRReviewComment, error) {
+	const perPage = 100
+	const maxPages = 5
+	out := make([]forge.PRReviewComment, 0, perPage)
+	for page := 1; page <= maxPages; page++ {
+		var resp []prReviewCommentWire
+		path := "/repos/" + repo + "/pulls/" + strconv.Itoa(number) + "/comments?sort=created&direction=desc&per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
+		code, err := c.do(ctx, http.MethodGet, path, nil, &resp)
+		if err != nil {
+			return nil, err
+		}
+		if code != http.StatusOK {
+			return nil, statusErr("GET pull review comments", code)
+		}
+		for _, w := range resp {
+			out = append(out, forge.PRReviewComment{
+				ID:        w.ID,
+				InReplyTo: w.InReplyTo,
+				Body:      w.Body,
+				Path:      w.Path,
+				CreatedAt: w.CreatedAt,
+				Author:    w.User.Login,
+			})
+		}
+		if len(resp) < perPage {
+			break
+		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}

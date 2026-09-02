@@ -273,6 +273,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Overlap:             overlapOrEmpty(req.Overlap),
 		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
 		RateLimit:           rate,
+		RateLimitPinned:     req.RateLimit != nil, // same rule as ReviewOnSyncPinned
 		LaunchVars:          req.LaunchVars,
 		KeyOverrides:        req.KeyOverrides,
 		SecretOverrides:     req.SecretOverrides,
@@ -468,6 +469,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit
+		cfg.RateLimitPinned = true
 	}
 	if req.MonthlyCallLimit != nil {
 		cfg.MonthlyCallLimit = *req.MonthlyCallLimit

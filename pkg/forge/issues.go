@@ -228,3 +228,16 @@ const (
 	CISkipped   = "skipped"
 	CIUnknown   = "unknown"
 )
+
+// PRReviewComment is one comment in a PR's review threads (an inline diff
+// comment or a reply inside one). InReplyTo == 0 marks a thread root; every
+// reply carries the root's id. Consumed by the inbound-webhook
+// reply-in-thread conversational gate.
+type PRReviewComment struct {
+	ID        int64
+	InReplyTo int64
+	Body      string
+	Path      string
+	CreatedAt string
+	Author    string
+}

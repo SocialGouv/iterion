@@ -549,6 +549,7 @@ func TestProvision_ReprovisionKeepsOperatorWebhookSettings(t *testing.T) {
 	cfg.KeyOverrides = map[string]string{"anthropic": "key-1"}
 	cfg.RetryMaxAttempts = 3
 	cfg.RateLimit = webhooks.Rate{Rate: 10, Burst: 200}
+	cfg.RateLimitPinned = true // the PATCH route stamps this on every rate_limit set
 	if err := o.Webhooks.Update(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -631,5 +632,99 @@ func TestCarryOperatorWebhookSettings_EnabledKillSwitchSurvives(t *testing.T) {
 	carryOperatorWebhookSettings(&cfg, webhooks.Config{Enabled: true})
 	if !cfg.Enabled {
 		t.Fatal("an enabled webhook must stay enabled through re-provision")
+	}
+}
+
+// The other half of the RateLimit carry: an UNPINNED value is the
+// provisioner's own former default, and a re-provision must move it to the
+// CURRENT default — otherwise a default bump (1/10 → 2/60, sized for the
+// review-comment fan-out) never reaches an already-provisioned repo and the
+// rollout gesture that subscribes the new event leaves the old burst in
+// place.
+func TestProvision_ReprovisionMigratesUnpinnedRateLimitDefault(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What every pre-bump provision left behind: the historical default,
+	// never touched by an operator.
+	cfg.RateLimit = webhooks.Rate{Rate: 1, Burst: 10}
+	cfg.RateLimitPinned = false
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard", "gate-bot"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RateLimit != (webhooks.Rate{Rate: 2, Burst: 60}) {
+		t.Errorf("rate_limit = %+v, want the current provision default — an unpinned historical default must not survive a re-provision", after.RateLimit)
+	}
+	if after.RateLimitPinned {
+		t.Error("a migrated default must stay unpinned (still provisioner-owned)")
+	}
+}
+
+// An operator's rate PATCHed BEFORE RateLimitPinned existed decodes as
+// unpinned — but its value is one the provisioner never stamps, so the
+// carry must ADOPT it (as pinned) instead of silently replacing an explicit
+// choice with the new default.
+func TestProvision_ReprovisionAdoptsPrePinOperatorRateLimit(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A deliberate throttle set through PATCH before the pin flag shipped:
+	// stored unpinned, but not a value the provisioner ever writes.
+	cfg.RateLimit = webhooks.Rate{Rate: 7, Burst: 123}
+	cfg.RateLimitPinned = false
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard", "gate-bot"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RateLimit != (webhooks.Rate{Rate: 7, Burst: 123}) {
+		t.Errorf("rate_limit = %+v, want the operator's pre-pin tuning preserved", after.RateLimit)
+	}
+	if !after.RateLimitPinned {
+		t.Error("an adopted operator value must come back pinned so the next rebuild needs no heuristic")
 	}
 }
