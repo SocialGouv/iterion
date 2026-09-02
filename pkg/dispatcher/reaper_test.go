@@ -34,7 +34,14 @@ func newReaperHarness(t *testing.T) (*Dispatcher, *native.Store, *store.Filesyst
 		storeDir:   storeDir,
 		hostMarker: "test-host-1",
 	}
-	c.cfg.Store(&Config{Agent: AgentConfig{CompletedState: native.StateDone, FailedState: native.StateBlocked}})
+	// RunningState must be SET: both card-context rows of the decision
+	// table are gated on it, so a harness that leaves it empty disarms
+	// them and every test built on it passes vacuously.
+	c.cfg.Store(&Config{Agent: AgentConfig{
+		RunningState:   native.StateInProgress,
+		CompletedState: native.StateDone,
+		FailedState:    native.StateBlocked,
+	}})
 	return c, board, runs
 }
 
@@ -390,5 +397,65 @@ func TestReapOne_ConservationIsBoundedByTheStampWindow(t *testing.T) {
 	if cur.Claim != "" {
 		t.Fatalf("past the stamp window the card must be freed, not held forever: still claimed by %q "+
 			"— invisible to the dispatch poll, which is the stuck card this watchdog exists to clear", cur.Claim)
+	}
+}
+
+// TestReapOne_ParkedCardIsNotHeldForever: a card an operator parked out
+// of the dispatch pool, whose owner then died, must not be conserved
+// indefinitely. Conservation is the right FIRST answer (releasing lifts a
+// brake somebody set), but a claimed card is invisible to the poll and
+// unclaimable, so an unbounded hold is the stuck card this watchdog
+// exists to clear — and in cloud no boot sweep ever frees it.
+//
+// The bound only works if the reaper TAKES the claim: the parked row is
+// about where the card sits, not about anyone being alive, so refusing
+// the transfer would make its own bound unreachable.
+func TestReapOne_ParkedCardIsNotHeldForever(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-parked", store.RunStatusFailedResumable)
+
+	iss, err := board.Create(native.Issue{Title: "parked by the operator", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := board.Claim(iss.ID, "dead-host-42"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.SetLastRun(iss.ID, "run-parked", "/tmp/wd"); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	if _, err := board.SetState(iss.ID, native.StateReview); err != nil {
+		t.Fatalf("operator park: %v", err)
+	}
+
+	future := time.Now().Add(2 * native.ClaimLeaseDuration)
+	pass := func() {
+		cands, err := board.ListExpiredClaimCandidates(future, 10)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, cd := range cands {
+			if cd.IssueID == iss.ID {
+				c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cd, future)
+			}
+		}
+	}
+
+	pass()
+	after1, _ := board.Get(iss.ID)
+	if after1.State != native.StateReview {
+		t.Fatalf("the operator's park must be honoured, card is %q", after1.State)
+	}
+	if after1.Claim == "" {
+		t.Fatal("first pass must CONSERVE: releasing lifts the brake the operator set")
+	}
+	pass()
+	after2, _ := board.Get(iss.ID)
+	if after2.State != native.StateReview {
+		t.Fatalf("the park must still be honoured on the second pass, card is %q", after2.State)
+	}
+	if after2.Claim != "" {
+		t.Fatalf("conservation must be granted once, not for ever: still claimed by %q — a claimed card is "+
+			"invisible to the dispatch poll and unclaimable, and in cloud nothing else frees it", after2.Claim)
 	}
 }

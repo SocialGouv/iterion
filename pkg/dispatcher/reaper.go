@@ -132,11 +132,14 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 		State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates(),
 		StampWindowOpen: StampWindowOpen(cand.ClaimedAt, now),
 	}
-	dec := DecideStuckCard(run, runErr, card)
-	if dec.Action == StuckKeep {
-		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, dec.Reason)
+	// PRE-transfer: only the rows that protect a live owner. The parked
+	// row is deliberately not consulted here — refusing the transfer would
+	// make its own bound unreachable and leave the card held for ever.
+	if pre := DecideTransfer(run, runErr, card); pre.Action == StuckKeep {
+		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, pre.Reason)
 		return
 	}
+	var dec StuckDecision
 	// TRANSFER first (the F9 order): the CAS re-verifies the claim is
 	// still exactly what we listed AND still expired — anything that
 	// moved on (a renewal, an operator, another replica's reaper) makes

@@ -1177,3 +1177,84 @@ func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
 		t.Fatalf("a card whose run was pruned failed at nothing — it must not be filed as %q", got)
 	}
 }
+
+// TestCloudReaper_ParkedCardIsNotHeldForever is the cloud twin of the
+// local test of the same name, and it exists because two of the decision
+// table's card-context rows could be deleted outright with this suite
+// staying green. Cloud is the twin where the defect is permanent: there
+// is no boot sweep here, so a card held by a dead pod's claim is held
+// until somebody edits the database.
+func TestCloudReaper_ParkedCardIsNotHeldForever(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-parked"] = "dead-pod"
+	f.epochs["c-parked"] = 3
+	f.states["c-parked"] = native.StateReview // parked by the operator
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-parked", LastRunID: "run-resumable",
+			Prev: tracker.ClaimToken{Marker: "dead-pod", Epoch: 3},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+	if _, held := f.claimed["c-parked"]; !held {
+		t.Fatal("first pass must CONSERVE a card parked out of the pool: releasing lifts the operator's brake")
+	}
+	if got := f.states["c-parked"]; got != native.StateReview {
+		t.Fatalf("the park must be honoured, card is %q", got)
+	}
+	// The recovery marker now on the claim is the record of that grant.
+	f.expired[0].Claim.Prev = tracker.ClaimToken{Marker: f.claimed["c-parked"], Epoch: f.epochs["c-parked"]}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+	if _, held := f.claimed["c-parked"]; held {
+		t.Fatalf("conservation must be granted once, not for ever: still claimed by %q — invisible to the "+
+			"dispatch poll, and nothing in cloud ever frees it", f.claimed["c-parked"])
+	}
+	if got := f.states["c-parked"]; got != native.StateReview {
+		t.Fatalf("releasing the claim must not move the card out of where the operator put it, got %q", got)
+	}
+}
+
+// TestCloudReaper_DoesNotStealFromAFreshClaim closes the cloud twin's
+// coverage of the anti-double-launch row: deleting that row entirely left
+// this suite green, which is how it could be broken twice without notice.
+// A card claimed moments ago, sitting in the running column with no run
+// stamped, may have a live worker whose stamp simply has not landed —
+// taking its claim is stealing.
+func TestCloudReaper_DoesNotStealFromAFreshClaim(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-fresh"] = "live-pod"
+	f.epochs["c-fresh"] = 1
+	f.states["c-fresh"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-fresh", LastRunID: "", // the stamp is best-effort and lands after the launch
+			ClaimedAt: time.Now(),
+			Prev:      tracker.ClaimToken{Marker: "live-pod", Epoch: 1},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+
+	if got := f.claimed["c-fresh"]; got != "live-pod" {
+		t.Fatalf("a claim taken moments ago must not be transferred: now held by %q — its worker may be alive "+
+			"and about to stamp its run, and taking the claim double-launches the card", got)
+	}
+
+	// Past the window the same card IS actionable — the row is a delay,
+	// not a permanent exemption.
+	f.expired[0].Claim.ClaimedAt = time.Now().Add(-4 * native.ClaimLeaseDuration)
+	d.reapExpiredClaims(context.Background(), time.Now())
+	if _, held := f.claimed["c-fresh"]; held {
+		t.Fatal("past the stamp window the card must be freed: a stamp that never arrived is not a live worker")
+	}
+}

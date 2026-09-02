@@ -487,7 +487,13 @@ func (d *boardDispatcher) reapCutoff(ctx context.Context) time.Time {
 	}
 	srv, err := clocked.ServerNow(ctx)
 	if err != nil {
-		d.warn("claim watchdog: server clock unavailable (%v) — measuring leases against this pod's clock", err)
+		// Edge-triggered like the zero branch below: a store hiccup at the
+		// watchdog's cadence would otherwise be a log storm, which is the
+		// noise that hides the next real signal.
+		if !d.clockFallbackWarned {
+			d.clockFallbackWarned = true
+			d.warn("claim watchdog: server clock unavailable (%v) — measuring leases against this pod's clock", err)
+		}
 		return local
 	}
 	if srv.IsZero() {
@@ -549,10 +555,14 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 		StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
 	}
-	dec := dispatcher.DecideStuckCard(run, runErr, card)
-	if dec.Action == dispatcher.StuckKeep {
+	// PRE-transfer: only the rows that protect a live owner (see
+	// DecideTransfer). Refusing the transfer on the parked row would make
+	// its own bound unreachable — and in cloud there is no boot sweep to
+	// free the card later, so "held" means held for ever.
+	if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
 		return
 	}
+	var dec dispatcher.StuckDecision
 	tok, liveState, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
 	if err != nil {
 		if !errors.Is(err, tracker.ErrClaimConflict) {

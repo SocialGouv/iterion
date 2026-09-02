@@ -153,14 +153,48 @@ func DecideStuckCard(run *store.Run, runErr error, card StuckCard) StuckDecision
 		// review, a hold whose whole brake is the retained claim) it is not
 		// waiting to be re-dispatched, and releasing lifts a brake somebody
 		// set on purpose.
-		if card.RunningState != "" && card.State != card.RunningState &&
-			!slices.Contains(card.LaunchStates, card.State) {
+		if parkedOutOfPool(card) {
 			return StuckDecision{StuckKeep, fmt.Sprintf(
 				"run %s is %s, but the card sits in %q — parked outside the dispatch pool, so there is nothing to return it to",
 				run.ID, run.Status, card.State)}
 		}
 	}
 	return decideByStatus(run)
+}
+
+// DecideTransfer is the decision taken BEFORE the claim is taken, and it
+// is deliberately narrower than DecideStuckCard: it applies every row
+// that protects a live owner — a running run, a parking brake, a run
+// stamp still in flight — and NOT the parked-out-of-pool row.
+//
+// That distinction is what makes the parked row's bound reachable at all.
+// Refusing to transfer means refusing to act, and a card nothing acts on
+// stays held by its dead owner for ever (in cloud there is no boot sweep
+// to free it later). Parking states WHERE the card should sit, not that
+// anyone is alive: the run behind it is resumable or absent, so taking
+// the claim costs nobody anything — and holding it is precisely what lets
+// the watchdog know, one lease later, that it already conserved this card
+// once.
+func DecideTransfer(run *store.Run, runErr error, card StuckCard) StuckDecision {
+	inPool := card
+	// Neutralise ONLY the pool-membership inputs; StampWindowOpen and the
+	// status rows still speak, because those are the ones about liveness.
+	inPool.State, inPool.RunningState = "", ""
+	d := DecideStuckCard(run, runErr, inPool)
+	if run == nil && card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen {
+		// The one liveness row that needs the card: a stamp may still be
+		// in flight, and transferring would steal from a live worker.
+		return StuckDecision{StuckKeep,
+			"no run recorded, but the card was claimed moments ago and is in the running column — the stamp is best-effort and lands after the launch, so taking the claim now could steal from a live worker"}
+	}
+	return d
+}
+
+// parkedOutOfPool: the card is neither running nor in a column it would
+// be dispatched from, so nothing picks it up if the claim is freed.
+func parkedOutOfPool(card StuckCard) bool {
+	return card.RunningState != "" && card.State != card.RunningState &&
+		!slices.Contains(card.LaunchStates, card.State)
 }
 
 // StuckCard is what the watchdog knows about the CARD, as opposed to its

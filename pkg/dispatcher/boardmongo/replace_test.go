@@ -374,6 +374,19 @@ func TestDroppedFenceRefusesEveryoneAndStaysRecoverable(t *testing.T) {
 		t.Fatal("a long-untouched claim carrying NO lease must be reachable by the watchdog — " +
 			"otherwise it is held forever by an owner nothing can refuse and nothing can relieve")
 	}
+	// Reachable is not enough: the TRANSFER must accept what the listing
+	// produced. When the two drifted apart the watchdog listed and refused
+	// the same card on every pass — a net that looks present and is not.
+	prev := tracker.ClaimToken{Marker: "worker-A", Epoch: 0}
+	for _, c := range cands {
+		if c.IssueID == iss.ID {
+			prev = c.Prev
+		}
+	}
+	if _, _, err := st.ReclaimExpired(iss.ID, prev, "reaper:probe", time.Now()); err != nil {
+		t.Fatalf("the transfer must accept a candidate the listing produced, got %v — "+
+			"listed every pass, refused every pass, is not a recovery path", err)
+	}
 	// A FRESH un-leased claim must NOT be listed: absence of a lease is not
 	// evidence of death, so only long staleness qualifies.
 	fresh, err := st.Create(native.Issue{Title: "fresh legacy", State: native.StateInProgress})
@@ -459,4 +472,71 @@ func TestEpochIsMonotoneAcrossAFamilyDrop(t *testing.T) {
 	if err := st.SetLastRunOwned(iss.ID, "zombie-run", "/tmp/z", first); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Fatalf("superseded token write: want ErrClaimConflict, got %v", err)
 	}
+}
+
+// TestUnleasedArmDoesNotStarveTheBatch: a missing lease sorts before
+// every real one, so a single query over both arms would let un-leased
+// stragglers fill the batch and starve the cards the watchdog exists to
+// act on — expired leases, the ones carrying positive evidence that a
+// heartbeat stopped.
+func TestUnleasedArmDoesNotStarveTheBatch(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_starve_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dc()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	if err := boardmongo.EnsureSchema(ctx, db); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	st := boardmongo.New(db, "tenant-starve")
+	issues := db.Collection(boardmongo.IssuesCollection)
+
+	// Five un-leased ghosts, long untouched.
+	for i := 0; i < 5; i++ {
+		g, err := st.Create(native.Issue{Title: "ghost", State: native.StateInProgress})
+		if err != nil {
+			t.Fatalf("Create ghost: %v", err)
+		}
+		if _, err := issues.UpdateOne(ctx, bson.M{"_id": g.ID}, bson.M{"$set": bson.M{
+			"issue.claim": "old-owner", "issue.updatedat": time.Now().Add(-72 * time.Hour),
+		}, "$unset": bson.M{"issue.claimleaseuntil": "", "issue.claimepoch": ""}}); err != nil {
+			t.Fatalf("seed ghost: %v", err)
+		}
+	}
+	// One genuinely expired lease — the card the watchdog must reach.
+	real, err := st.Create(native.Issue{Title: "genuinely expired", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create real: %v", err)
+	}
+	if _, err := st.Claim(real.ID, "dead-owner"); err != nil {
+		t.Fatalf("Claim real: %v", err)
+	}
+
+	// A batch smaller than the ghost pile: the expired lease must still
+	// make it in.
+	cands, err := st.ListExpiredClaimCandidates(time.Now().Add(2*native.ClaimLeaseDuration), 3)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates: %v", err)
+	}
+	for _, c := range cands {
+		if c.IssueID == real.ID {
+			return
+		}
+	}
+	t.Fatalf("the genuinely-expired card was crowded out of a %d-card batch by un-leased stragglers — "+
+		"they sort first and would monopolise every pass", len(cands))
 }

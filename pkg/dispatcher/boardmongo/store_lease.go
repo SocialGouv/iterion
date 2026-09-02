@@ -179,6 +179,14 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 		res = s.issues.FindOneAndUpdate(ctx, filter,
 			bson.M{"$set": stateSet(newState)},
 			options.FindOneAndUpdate().SetReturnDocument(options.Before))
+		if res.Err() != nil && isNoDocuments(res.Err()) {
+			// Still nothing, with ownership just verified: the card is
+			// moving under us repeatedly. Say THAT — reporting the claim
+			// conflict the counter disproved would make the caller's
+			// session latch `lost` and abandon a card it still holds.
+			return nil, fmt.Errorf("%w: %s moved twice while setting state %q — retry",
+				tracker.ErrTransitionRejected, id, newState)
+		}
 	}
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
@@ -336,41 +344,59 @@ func isNoDocuments(err error) bool { return errors.Is(err, mongo.ErrNoDocuments)
 // missed".
 const unleasedClaimHorizon = 24 * time.Hour
 
+// reclaimableLease is the ONE definition of "this claim may be taken":
+// an expired lease, or none at all past a much longer horizon. The
+// listing and the transfer's CAS both build from it — when they drifted
+// apart, the listing produced candidates the transfer could never accept,
+// so every pass listed and refused the same cards for ever.
+//
+// The two arms are not equivalent evidence. An expired lease is positive:
+// a heartbeat stopped. A missing one is an absence — an older binary's
+// full-document replace, or a claim predating the lease entirely — so it
+// only qualifies once nothing has touched the card in a very long time.
+func reclaimableLease(cutoff time.Time) []bson.M {
+	return []bson.M{
+		{"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff}},
+		{"issue.claimleaseuntil": bson.M{"$in": bson.A{time.Time{}, nil}},
+			"issue.updatedat": bson.M{"$lt": cutoff.Add(-unleasedClaimHorizon)}},
+	}
+}
+
 // ListExpiredClaimCandidates — see tracker.ClaimReaper (Mongo twin).
-// Legacy claims (zero lease) are excluded by the strictly-positive
-// lower bound; missing fields never match a range operator either.
+// The two arms are queried SEPARATELY, expired leases first: they sort
+// by lease instant, and a missing lease sorts before every real one, so
+// a single query would let un-leased stragglers fill the batch and starve
+// the cards the watchdog exists to act on.
 func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	cur, err := s.issues.Find(ctx, bson.M{
-		"tenant_id":   s.tenant,
-		"issue.claim": bson.M{"$gt": ""},
-		"$or": []bson.M{
-			{"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff}},
-			// The UN-LEASED arm: a claim carrying no lease at all. Time
-			// proves nothing about it on its own — which is why it needs a
-			// far longer horizon than an expired lease — but it must be
-			// reachable, or a card whose lease field was dropped (an older
-			// binary's replace, a pre-lease legacy claim) is held forever
-			// by an owner nothing can refuse and nothing can relieve.
-			{"issue.claimleaseuntil": bson.M{"$in": bson.A{time.Time{}, nil}},
-				"issue.updatedat": bson.M{"$lt": cutoff.Add(-unleasedClaimHorizon)}},
-		},
-	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
-	if err != nil {
-		return nil, fmt.Errorf("boardmongo: list expired claims: %w", err)
-	}
-	var docs []issueDoc
-	if err := cur.All(ctx, &docs); err != nil {
-		return nil, fmt.Errorf("boardmongo: decode expired claims: %w", err)
-	}
-	out := make([]tracker.ExpiredClaim, 0, len(docs))
-	for _, d := range docs {
-		iss := d.Issue
-		out = append(out, native.ExpiredClaimFrom(&iss))
+	arms := reclaimableLease(cutoff)
+	out := make([]tracker.ExpiredClaim, 0, limit)
+	for _, arm := range arms {
+		if len(out) >= limit {
+			break
+		}
+		filter := bson.M{"tenant_id": s.tenant, "issue.claim": bson.M{"$gt": ""}}
+		for k, v := range arm {
+			filter[k] = v
+		}
+		cur, err := s.issues.Find(ctx, filter,
+			options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).
+				SetLimit(int64(limit-len(out))))
+		if err != nil {
+			return nil, fmt.Errorf("boardmongo: list expired claims: %w", err)
+		}
+		var docs []issueDoc
+		if err := cur.All(ctx, &docs); err != nil {
+			return nil, fmt.Errorf("boardmongo: decode expired claims: %w", err)
+		}
+		for _, d := range docs {
+			iss := d.Issue
+			out = append(out, native.ExpiredClaimFrom(&iss))
+		}
 	}
 	return out, nil
 }
@@ -386,7 +412,10 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 	// legacy-epoch handling included — one definition of "how a
 	// zero epoch matches") plus the still-expired lease bound.
 	filter := s.ownedFilter(id, prev)
-	filter["issue.claimleaseuntil"] = bson.M{"$gt": time.Time{}, "$lt": cutoff}
+	// Mirror the listing exactly (reclaimableLease): a candidate the
+	// listing produced must be one this CAS can accept, or the watchdog
+	// re-lists and re-refuses the same card on every pass.
+	filter["$or"] = reclaimableLease(cutoff)
 	res := s.issues.FindOneAndUpdate(ctx, filter,
 		leaseStampPipeline(bson.M{
 			"issue.claim":      marker,
