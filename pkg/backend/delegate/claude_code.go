@@ -315,6 +315,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// later resume can detect a credential change.
 	opts, currentFingerprint := b.setupCredsAndSession(ctx, task, opts)
 
+	// Stamp every usage reading with the provider-routing label of THIS
+	// session. One wrap here covers all three detection sites (the
+	// rate_limit_event stream and both text-relayed refusal paths): the
+	// consumer keys the reading under the credential the session actually
+	// ran on, not the bundle's default precedence.
+	task.Hooks.OnUsageWindow = stampUsageSource(task.Hooks.OnUsageWindow, currentFingerprint)
+
 	// Structured output handling. claude CLI >= 2.1 accepts --json-schema
 	// (WithOutputFormat) TOGETHER with --allowedTools in a single pass: the
 	// agent does its tool work and then calls the native StructuredOutput

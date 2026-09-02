@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 func resolveMaxConsecutiveToolErrors() int {
@@ -242,6 +243,24 @@ func providerFingerprint(env map[string]string) string {
 	// path) lands here too — it means "use the inherited ANTHROPIC_API_KEY
 	// from the process env", which is also Anthropic-direct semantically.
 	return "anthropic-env"
+}
+
+// stampUsageSource wraps an OnUsageWindow hook so every reading leaving a
+// session names the provider routing it ran on — the runner's meter then
+// charges a refusal to the credential that was actually spent. Task and
+// TaskHooks travel by value, so the wrap lives and dies with one Execute
+// call: a fallback attempt that re-enters with a different provider stamps
+// its own label. A reading that already names its source keeps it.
+func stampUsageSource(inner func(usagecap.Reading) error, fingerprint string) func(usagecap.Reading) error {
+	if inner == nil {
+		return nil
+	}
+	return func(r usagecap.Reading) error {
+		if r.Source == "" {
+			r.Source = fingerprint
+		}
+		return inner(r)
+	}
 }
 
 // anthropicCredEnvForCLI is the testable core: it returns the env

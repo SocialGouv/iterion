@@ -202,6 +202,13 @@ type Resolution struct {
 // When sealer is non-nil, every Resolution.Plaintext is decrypted; on
 // decrypt failure the resolution is skipped and an error is logged
 // to logErr. Pass nil sealer to get sealed blobs only.
+// A nil usable predicate accepts every key. A non-nil one is consulted in
+// the priority walk (pass 2) ONLY: a key it refuses is skipped and the walk
+// takes the NEXT visible key of that provider, which is what turns several
+// keys of one provider into an ordered fallback chain. An explicit
+// keyOverrides pin is deliberately NOT filtered — the operator named that
+// key, and honouring the pin over the optimisation is what keeps the
+// predicate an optimisation.
 func Resolve(
 	ctx context.Context,
 	store ApiKeyStore,
@@ -209,6 +216,7 @@ func Resolve(
 	providers []Provider,
 	keyOverrides map[Provider]string,
 	sealer Sealer,
+	usable func(ApiKey) bool,
 ) (map[Provider]Resolution, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("secrets: team id required for resolve")
@@ -258,6 +266,9 @@ func Resolve(
 			continue
 		}
 		if _, already := out[k.Provider]; already {
+			continue
+		}
+		if usable != nil && !usable(k) {
 			continue
 		}
 		if r, ok := buildResolution(k, sealer, userID); ok {
