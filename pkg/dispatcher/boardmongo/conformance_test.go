@@ -84,13 +84,13 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 
 	// Claim: idempotent same marker; conflict on a different marker; release.
-	if err := store.Claim(created.ID, "runner-A"); err != nil {
+	if _, err := store.Claim(created.ID, "runner-A"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := store.Claim(created.ID, "runner-A"); err != nil {
+	if _, err := store.Claim(created.ID, "runner-A"); err != nil {
 		t.Errorf("Claim idempotent: %v", err)
 	}
-	if err := store.Claim(created.ID, "runner-B"); !errors.Is(err, tracker.ErrClaimConflict) {
+	if _, err := store.Claim(created.ID, "runner-B"); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Errorf("Claim conflict: want ErrClaimConflict, got %v", err)
 	}
 	if err := store.Release(created.ID, "runner-B"); !errors.Is(err, tracker.ErrClaimConflict) {
@@ -101,6 +101,98 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 	if err := store.Release(created.ID, "runner-A"); err != nil {
 		t.Errorf("Release unclaimed no-op: %v", err)
+	}
+
+	// --- Claim lease + fencing epoch (the watchdog substrate). Both
+	// twins must hold the same bar: a fresh acquisition bumps the epoch
+	// and stamps a lease; a same-marker re-claim refreshes the lease
+	// WITHOUT bumping; release clears the lease but never the epoch; and
+	// every Owned write under a superseded token is refused with the
+	// issue left untouched — the fence that makes a stolen claim's late
+	// writes no-ops.
+	fenced, err := store.Create(native.Issue{Title: "fence probe", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create fence probe: %v", err)
+	}
+	tokA, err := store.Claim(fenced.ID, "owner-A")
+	if err != nil {
+		t.Fatalf("Claim A: %v", err)
+	}
+	if tokA.Marker != "owner-A" || tokA.Epoch < 1 {
+		t.Fatalf("claim token = %+v, want marker owner-A and epoch >= 1", tokA)
+	}
+	afterClaim, _ := store.Get(fenced.ID)
+	if afterClaim.ClaimedAt.IsZero() || afterClaim.ClaimLeaseUntil.IsZero() {
+		t.Fatalf("claim must stamp ClaimedAt + ClaimLeaseUntil: %+v", afterClaim)
+	}
+	if !afterClaim.ClaimLeaseUntil.After(afterClaim.ClaimedAt) {
+		t.Fatalf("lease must expire after acquisition: %+v", afterClaim)
+	}
+	tokA2, err := store.Claim(fenced.ID, "owner-A")
+	if err != nil || tokA2.Epoch != tokA.Epoch {
+		t.Fatalf("same-marker re-claim = (%+v, %v), want same epoch %d", tokA2, err, tokA.Epoch)
+	}
+	if err := store.RenewClaim(fenced.ID, tokA); err != nil {
+		t.Fatalf("RenewClaim: %v", err)
+	}
+	renewed, _ := store.Get(fenced.ID)
+	if renewed.ClaimLeaseUntil.Before(afterClaim.ClaimLeaseUntil) {
+		t.Fatalf("renew must not move the lease backwards: %v -> %v", afterClaim.ClaimLeaseUntil, renewed.ClaimLeaseUntil)
+	}
+	// Owned writes under the live token land.
+	if _, err := store.SetStateOwned(fenced.ID, native.StateInProgress, tokA); err != nil {
+		t.Fatalf("SetStateOwned (live token): %v", err)
+	}
+	if err := store.SetLastRunOwned(fenced.ID, "run-f1", "/tmp/f1", tokA); err != nil {
+		t.Fatalf("SetLastRunOwned (live token): %v", err)
+	}
+	// The claim moves on: A releases, B acquires — the epoch must advance.
+	if err := store.ReleaseOwned(fenced.ID, tokA); err != nil {
+		t.Fatalf("ReleaseOwned: %v", err)
+	}
+	released, _ := store.Get(fenced.ID)
+	if released.Claim != "" || !released.ClaimLeaseUntil.IsZero() || !released.ClaimedAt.IsZero() {
+		t.Fatalf("release must clear the claim AND its lease bookkeeping: %+v", released)
+	}
+	if released.ClaimEpoch != tokA.Epoch {
+		t.Fatalf("release must PRESERVE the epoch (the fence only moves forward): %+v vs token %d", released.ClaimEpoch, tokA.Epoch)
+	}
+	if err := store.ReleaseOwned(fenced.ID, tokA); err != nil {
+		t.Fatalf("ReleaseOwned on unclaimed must be a no-op: %v", err)
+	}
+	tokB, err := store.Claim(fenced.ID, "owner-B")
+	if err != nil {
+		t.Fatalf("Claim B: %v", err)
+	}
+	if tokB.Epoch <= tokA.Epoch {
+		t.Fatalf("fresh acquisition must advance the epoch: A=%d B=%d", tokA.Epoch, tokB.Epoch)
+	}
+	// Every late write under A's superseded token is refused, and the
+	// issue is untouched.
+	if _, err := store.SetStateOwned(fenced.ID, native.StateBlocked, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetStateOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetLastRunOwned(fenced.ID, "run-late", "/tmp/late", tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetLastRunOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetAwaitingInputOwned(fenced.ID, true, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetAwaitingInputOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetGaveUpOwned(fenced.ID, &native.GiveUp{RunID: "run-late"}, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetGaveUpOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.RenewClaim(fenced.ID, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("RenewClaim (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.ReleaseOwned(fenced.ID, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("ReleaseOwned (stale token on live foreign claim): want ErrClaimConflict, got %v", err)
+	}
+	after, _ := store.Get(fenced.ID)
+	if after.State != native.StateInProgress || after.LastRunID != "run-f1" || after.AwaitingInput || after.GaveUp != nil || after.Claim != "owner-B" {
+		t.Fatalf("stale-token writes must leave the issue untouched: %+v", after)
+	}
+	if err := store.ReleaseOwned(fenced.ID, tokB); err != nil {
+		t.Fatalf("ReleaseOwned B: %v", err)
 	}
 
 	// SetLastRun stamps the single pointer AND appends dedup'd run history.
@@ -572,7 +664,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 			t.Fatalf("coord create %s: %v", tc.title, cerr)
 		}
 		if tc.claim {
-			if cerr := st.Claim(iss.ID, "someone"); cerr != nil {
+			if _, cerr := st.Claim(iss.ID, "someone"); cerr != nil {
 				t.Fatalf("claim: %v", cerr)
 			}
 		}

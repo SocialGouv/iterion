@@ -8,6 +8,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 )
 
@@ -95,8 +97,10 @@ func (c *Coordinator) ListEligible(ctx context.Context, eligible []string, limit
 
 // Claim / SetState / Release delegate to the tenant-scoped store, with the
 // context-carrying signatures the dispatcher loop uses. The CAS lives in
-// Store.Claim.
-func (c *Coordinator) Claim(_ context.Context, tenant, id, marker string) error {
+// Store.Claim. Claim returns the ownership token so the cloud dispatcher
+// can heartbeat and fence its writes (the tokenless form is gone on
+// purpose — a caller that discards the token cannot renew its lease).
+func (c *Coordinator) Claim(_ context.Context, tenant, id, marker string) (tracker.ClaimToken, error) {
 	return c.StoreFor(tenant).Claim(id, marker)
 }
 

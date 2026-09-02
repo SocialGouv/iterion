@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -59,17 +60,17 @@ func (f *fakeBoardCoord) ListEligible(_ context.Context, states []string, limit 
 	return out, nil
 }
 
-func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) error {
+func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) (tracker.ClaimToken, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.claimErr[id]; err != nil {
-		return err
+		return tracker.ClaimToken{}, err
 	}
 	if f.claimed[id] != "" {
-		return errors.New("conflict")
+		return tracker.ClaimToken{}, errors.New("conflict")
 	}
 	f.claimed[id] = marker
-	return nil
+	return tracker.ClaimToken{Marker: marker, Epoch: 1}, nil
 }
 
 func (f *fakeBoardCoord) SetState(_ context.Context, _, id, state string) error {

@@ -398,6 +398,24 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.setStateLocked(iss, newState)
+}
+
+// SetStateOwned is SetState fenced on the claim token — the transition
+// an owning worker performs while it still holds the card (one critical
+// section: check-then-call would reopen the TOCTOU the fence closes).
+func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateOwned", &err)
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return nil, err
+	}
+	return s.setStateLocked(iss, newState)
+}
+
+func (s *Store) setStateLocked(iss *Issue, newState string) (*Issue, error) {
 	if s.board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
@@ -421,7 +439,7 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	if newState == StateDone {
 		// Best-effort: a failed auto-promote must not roll back the
 		// successful transition that just committed.
-		_ = s.promoteUnblockedDependentsLocked(id)
+		_ = s.promoteUnblockedDependentsLocked(iss.ID)
 	}
 	return iss, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -20,7 +21,7 @@ import (
 // *boardmongo.Coordinator satisfies it; tests pass a fake.
 type boardCoordinator interface {
 	ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]boardmongo.Candidate, error)
-	Claim(ctx context.Context, tenant, id, marker string) error
+	Claim(ctx context.Context, tenant, id, marker string) (tracker.ClaimToken, error)
 	SetState(ctx context.Context, tenant, id, state string) error
 	Release(ctx context.Context, tenant, id, marker string) error
 }
@@ -122,7 +123,11 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 		default:
 			return claimed // no free slots; the rest wait for the next tick
 		}
-		if err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
+		// The token is not yet threaded through processBoardCard's writes —
+		// that wiring (heartbeat session + fenced writes) is the next commit
+		// of the watchdog chantier; discarding it here keeps today's
+		// behaviour exactly.
+		if _, err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
 			<-d.sem // claim lost (another replica won, or conflict) — release the slot
 			continue
 		}

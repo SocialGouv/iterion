@@ -1,5 +1,7 @@
 package native
 
+import "github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+
 // BoardStore is the storage contract the board operations (boardops), the
 // dispatcher tracker adapter, and the REST handlers operate against. The
 // filesystem-backed *Store satisfies it; a cloud build can supply a
@@ -21,11 +23,30 @@ type BoardStore interface {
 	SetState(id, newState string) (*Issue, error)
 	Delete(id string) error
 
-	// Claim/Release are the dispatcher's per-issue lease (marker = the
-	// dispatcher instance id). SetLastRun records the run a dispatch spawned
-	// so a cross-restart resume can find it.
-	Claim(id, marker string) error
+	// Claim/Release are the dispatcher's per-issue claim (marker = the
+	// dispatcher instance id). Claim stamps a persisted LEASE and returns
+	// the ownership token (marker + fencing epoch) the Owned variants
+	// below demand; RenewClaim is the heartbeat that keeps a live
+	// worker's claim from expiring. These are MANDATORY contract methods,
+	// not an optional capability: an optional lease would be silently
+	// inert on the backend that forgets it, and the cloud board is
+	// exactly where the reaper matters (the SetLastRun/Adapter regression
+	// documents how a silent optional-interface miss plays out).
+	Claim(id, marker string) (tracker.ClaimToken, error)
+	RenewClaim(id string, tok tracker.ClaimToken) error
 	Release(id, marker string) error
+	// ReleaseOwned + the *Owned mutators are the fenced write family: a
+	// CAS on (claim, claim_epoch) so a worker whose claim was stolen
+	// finds every late write refused (tracker.ErrClaimConflict) instead
+	// of clobbering the new owner's state.
+	ReleaseOwned(id string, tok tracker.ClaimToken) error
+	SetStateOwned(id, newState string, tok tracker.ClaimToken) (*Issue, error)
+	SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
+	SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
+	SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error
+	// SetLastRun records the run a dispatch spawned so a cross-restart
+	// resume can find it (unfenced form — for writers acting on
+	// UNCLAIMED cards, e.g. the parked-card reconcilers).
 	SetLastRun(id, runID, workdir string) error
 	// SetAwaitingInput denormalizes onto the issue whether its most recent
 	// run parked awaiting human/operator input, so the board grid can badge

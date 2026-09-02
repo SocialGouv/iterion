@@ -99,12 +99,44 @@ func (a *Adapter) Comment(ctx context.Context, id, body string) error {
 	return err
 }
 
-// Claim delegates to the store.
+// Claim delegates to the store (tracker.Tracker's tokenless form — the
+// token is discarded here; token-aware callers use ClaimLease).
 func (a *Adapter) Claim(ctx context.Context, id, marker string) error {
+	_, err := a.ClaimLease(ctx, id, marker)
+	return err
+}
+
+// ClaimLease claims and returns the ownership token (tracker.ClaimLeaser).
+func (a *Adapter) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	if err := ctx.Err(); err != nil {
+		return tracker.ClaimToken{}, err
+	}
+	return a.store.Claim(id, marker)
+}
+
+// RenewClaim delegates to the store (tracker.ClaimLeaser).
+func (a *Adapter) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return a.store.Claim(id, marker)
+	return a.store.RenewClaim(id, tok)
+}
+
+// ReleaseOwned delegates to the store (tracker.ClaimLeaser).
+func (a *Adapter) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return a.store.ReleaseOwned(id, tok)
+}
+
+// UpdateStateOwned delegates to the store (tracker.ClaimLeaser).
+func (a *Adapter) UpdateStateOwned(ctx context.Context, id, newState string, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := a.store.SetStateOwned(id, newState, tok)
+	return err
 }
 
 // Release delegates to the store.

@@ -438,32 +438,78 @@ func (s *Store) Delete(id string) error {
 	return s.emit(native.Event{Type: native.EvtIssueDeleted, IssueID: id})
 }
 
-// Claim sets the claim marker via a conditional update (CAS): the update only
-// matches when the issue is unclaimed OR already held by this marker, so two
-// replicas racing to claim cannot both win. Idempotent for the same marker.
-func (s *Store) Claim(id, marker string) error {
+// Claim sets the claim marker via a conditional update (CAS), stamps the
+// lease with the SERVER clock ($$NOW — a pod with a fast local clock must
+// not mint itself extra lease), and returns the ownership token. Two
+// phases, both atomic: a fresh acquisition bumps the fencing epoch; an
+// idempotent same-marker re-claim refreshes the lease and returns the
+// CURRENT epoch without bumping (only a change of ownership advances the
+// fence). Two replicas racing to claim still elect exactly one winner.
+func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	now := time.Now().UTC()
-	res, err := s.issues.UpdateOne(ctx,
-		bson.M{"_id": id, "tenant_id": s.tenant, "$or": bson.A{bson.M{"issue.claim": ""}, bson.M{"issue.claim": marker}}},
-		bson.M{"$set": bson.M{"issue.claim": marker, "issue.updatedat": now}},
-	)
-	if err != nil {
-		return fmt.Errorf("boardmongo: claim: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		// Either the issue doesn't exist, or it's held by another marker.
-		iss, gerr := s.get(ctx, id)
-		if gerr != nil {
-			return gerr
+	// Phase 1: fresh acquisition of an unclaimed card.
+	res := s.issues.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": ""},
+		leaseStampPipeline(bson.M{
+			"issue.claim":      marker,
+			"issue.claimepoch": bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}},
+			"issue.claimedat":  "$$NOW",
+			"issue.updatedat":  "$$NOW",
+		}),
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() == nil {
+		var doc issueDoc
+		if err := res.Decode(&doc); err != nil {
+			return tracker.ClaimToken{}, fmt.Errorf("boardmongo: claim decode: %w", err)
 		}
-		return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
+		if err := s.emit(native.Event{Type: native.EvtIssueClaimed, IssueID: id,
+			Payload: map[string]any{"marker": marker, "claim_epoch": doc.Issue.ClaimEpoch}}); err != nil {
+			return tracker.ClaimToken{}, err
+		}
+		return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
 	}
-	if res.ModifiedCount == 0 {
-		return nil // already held by this marker (idempotent)
+	if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
+		return tracker.ClaimToken{}, fmt.Errorf("boardmongo: claim: %w", res.Err())
 	}
-	return s.emit(native.Event{Type: native.EvtIssueClaimed, IssueID: id, Payload: map[string]any{"marker": marker}})
+	// Phase 2: idempotent re-claim by the current holder.
+	res = s.issues.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": marker},
+		leaseStampPipeline(bson.M{}),
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() == nil {
+		var doc issueDoc
+		if err := res.Decode(&doc); err != nil {
+			return tracker.ClaimToken{}, fmt.Errorf("boardmongo: re-claim decode: %w", err)
+		}
+		return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
+	}
+	if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
+		return tracker.ClaimToken{}, fmt.Errorf("boardmongo: re-claim: %w", res.Err())
+	}
+	// Neither arm matched: missing card, or held by someone else.
+	iss, gerr := s.get(ctx, id)
+	if gerr != nil {
+		return tracker.ClaimToken{}, gerr
+	}
+	return tracker.ClaimToken{}, fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
+}
+
+// leaseStampPipeline builds the update pipeline that stamps the claim
+// lease from the server clock, merged with the caller's extra $set
+// fields. A pipeline (not a plain $set document) is what makes $$NOW
+// and the epoch $add expressions legal.
+func leaseStampPipeline(extra bson.M) mongo.Pipeline {
+	set := bson.M{
+		"issue.claimleaseuntil": bson.M{"$dateAdd": bson.M{
+			"startDate": "$$NOW", "unit": "millisecond",
+			"amount": native.ClaimLeaseDuration.Milliseconds(),
+		}},
+	}
+	for k, v := range extra {
+		set[k] = v
+	}
+	return mongo.Pipeline{{{Key: "$set", Value: set}}}
 }
 
 func (s *Store) Release(id, marker string) error {
@@ -479,7 +525,12 @@ func (s *Store) Release(id, marker string) error {
 	if iss.Claim != marker {
 		return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
 	}
+	// The lease bookkeeping goes with the claim — a released card must
+	// not keep a fossil lease a reaper could misread. The epoch STAYS:
+	// it is the per-issue fence and must only ever move forward.
 	iss.Claim = ""
+	iss.ClaimedAt = time.Time{}
+	iss.ClaimLeaseUntil = time.Time{}
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.replace(ctx, iss); err != nil {
 		return err
@@ -542,13 +593,13 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if err != nil {
 		return err
 	}
-	want, ok := giveUpToRecord(iss, g)
+	want, ok := native.GiveUpToRecord(iss, g)
 	if !ok {
 		return nil
 	}
 	// Compared against what would ACTUALLY be written, so a repeat call is a
 	// real no-op rather than a re-write that churns UpdatedAt.
-	if sameGiveUp(iss.GaveUp, want) {
+	if native.SameGiveUp(iss.GaveUp, want) {
 		return nil
 	}
 	// stamped is what actually landed on the issue (nil for a clear); the
@@ -589,42 +640,6 @@ func expireGiveUp(iss *native.Issue) {
 	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
 		iss.GaveUp = nil
 	}
-}
-
-// giveUpToRecord resolves a caller's stamp against the issue as it stands,
-// returning the value to write and whether to write at all.
-//
-// A give-up describes a ticket that is still where the give-up PUT it. When
-// the ticket has already moved — an operator got there between the terminal
-// move and the stamp — the give-up is superseded, and recording it would put
-// the operator's own choice under a "the dispatcher gave up and filed this
-// ticket as …" banner. Nothing is written; the state change already stands in
-// the audit log.
-//
-// A stamp arriving without a state is filled in from the issue, so the value
-// compared for idempotence and the value written are always the same thing.
-func giveUpToRecord(iss *native.Issue, g *native.GiveUp) (*native.GiveUp, bool) {
-	if g == nil {
-		return nil, true
-	}
-	out := *g
-	if out.State == "" {
-		out.State = iss.State
-	}
-	if out.State != iss.State {
-		return nil, false
-	}
-	return &out, true
-}
-
-// sameGiveUp compares two stamps on the fields that decide behaviour (the
-// timestamp is provenance, not identity), so a re-stamp of the same give-up
-// writes nothing. Mirrors the filesystem store's predicate.
-func sameGiveUp(a, b *native.GiveUp) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
 }
 
 // AddComment appends a note to the issue's discussion thread and returns

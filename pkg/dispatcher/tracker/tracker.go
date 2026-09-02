@@ -118,6 +118,40 @@ type Tracker interface {
 	Release(ctx context.Context, id, marker string) error
 }
 
+// ClaimToken is the proof of claim ownership a board store hands back
+// from Claim and demands on every owner-scoped write. The Epoch is a
+// per-issue fencing counter bumped on every fresh acquisition (never on
+// an idempotent same-marker re-claim): a worker whose claim was stolen
+// presents a stale epoch and every late write of its finds a typed
+// refusal instead of clobbering the new owner's state — the ADR-094
+// effect-outbox contract, applied to the board claim.
+//
+// It lives in this package (not native) because native imports tracker
+// for the shared error vocabulary, and the dispatcher-facing capability
+// below needs the type too.
+type ClaimToken struct {
+	Marker string
+	Epoch  int64
+}
+
+// ClaimLeaser is the optional tracker capability for backends whose
+// claims carry a persisted lease + fencing epoch (the native and Mongo
+// boards). Forge adapters (GitHub/GitLab/Forgejo) do NOT implement it —
+// their label-based claims have no record to fence — and the dispatcher
+// must detect that once, say so in its log, and keep the legacy
+// unfenced path for them rather than silently no-oping lease renewals.
+type ClaimLeaser interface {
+	// ClaimLease is Claim returning the ownership token.
+	ClaimLease(ctx context.Context, id, marker string) (ClaimToken, error)
+	// RenewClaim extends the claim's lease. ErrClaimConflict when the
+	// token no longer owns the issue — the caller must stop writing.
+	RenewClaim(ctx context.Context, id string, tok ClaimToken) error
+	// ReleaseOwned releases under the token (fenced Release).
+	ReleaseOwned(ctx context.Context, id string, tok ClaimToken) error
+	// UpdateStateOwned is UpdateState fenced on the token.
+	UpdateStateOwned(ctx context.Context, id, newState string, tok ClaimToken) error
+}
+
 // Errors returned by Tracker implementations. Callers should use
 // errors.Is to discriminate.
 var (
