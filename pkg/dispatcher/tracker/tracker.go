@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -200,6 +201,22 @@ type ClaimReaper interface {
 	// overwrites exactly the intent the watchdog is supposed to honour.
 	ReclaimExpired(ctx context.Context, id string, prev ClaimToken, marker string, cutoff time.Time) (ClaimToken, string, error)
 }
+
+// ReaperMarkerPrefix namespaces the claim marker a watchdog writes. It
+// lives in this leaf package because provenance has to be readable where
+// the write happens: a store holding the claim can then say that a state
+// change came from a MACHINE repairing a dead owner, not from an
+// operator or a bot — and downstream, a one-shot label gate can decline
+// to be spent by it.
+const ReaperMarkerPrefix = "reaper:"
+
+// IsReaperMarker reports whether a claim marker was minted by a watchdog.
+func IsReaperMarker(marker string) bool { return strings.HasPrefix(marker, ReaperMarkerPrefix) }
+
+// ReasonWatchdog is the provenance stamped on a board event a watchdog
+// caused. Consumers that act on operator intent (launching a bot,
+// consuming a one-shot label) must not treat it as one.
+const ReasonWatchdog = "watchdog"
 
 // LaunchStateLister is the optional capability naming the states a card
 // is DISPATCHED FROM. The claim watchdog needs it to tell two situations

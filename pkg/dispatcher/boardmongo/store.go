@@ -123,6 +123,14 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 		{Keys: bson.D{{Key: "issue.claim", Value: 1}, {Key: "issue.claimleaseuntil", Value: 1}},
 			Options: options.Index().SetName("claim_then_lease").
 				SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
+		// (lease, updatedat): the un-leased sweep bounds on the lease and
+		// ORDERS on updatedat; without the second key that sort is a
+		// blocking in-memory one over every un-leased claimed document, at
+		// every pod boot, growing with exactly the population a gated-off
+		// reaper accumulates.
+		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}, {Key: "issue.updatedat", Value: 1}},
+			Options: options.Index().SetName("lease_then_updated").
+				SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
 		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}}, Options: options.Index().
 			SetName("claim_lease_until").
 			SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},

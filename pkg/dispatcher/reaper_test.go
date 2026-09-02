@@ -590,13 +590,75 @@ func TestShutdown_RevertsBeforeReleasing(t *testing.T) {
 	}
 }
 
+// TestShutdown_SlowRevertDoesNotStarveTheRelease: the revert opens with a
+// tracker round trip, so sharing one deadline with the release lets a
+// merely slow tracker spend all of it — and the release is the half
+// shutdown exists for: an unreleased claim hides the card from the next
+// daemon's candidate listing, and the reaper that would free it ships
+// off.
+func TestShutdown_SlowRevertDoesNotStarveTheRelease(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	adapter := native.NewAdapter(board)
+	// Scaled down: the refresh outlasts BOTH budgets, so under one shared
+	// deadline it eats all of it and the release goes out on a dead
+	// context — the shape under test, at a hundredth of the cost.
+	rec := &orderRecordingTracker{Tracker: adapter, leaser: adapter, slowRefresh: 120 * time.Millisecond}
+	c := &Dispatcher{
+		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
+		ws: newWsBridge(iterlog.Nop()),
+	}
+	c.shutdownRevertBudget, c.shutdownReleaseBudget = 30*time.Millisecond, 50*time.Millisecond
+	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
+	iss, err := board.Create(native.Issue{Title: "in flight", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tok, err := board.Claim(iss.ID, "host-1")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if _, err := board.SetStateOwned(iss.ID, native.StateInProgress, tok); err != nil {
+		t.Fatalf("SetStateOwned: %v", err)
+	}
+	c.state.running[iss.ID] = &runningEntry{
+		IssueID: iss.ID, Identifier: "i1", TransitionedFromState: native.StateReady,
+		claim: StartClaimSession(c.leaser, iss.ID, tok, func(string, ...any) {}, nil),
+	}
+
+	c.shutdown()
+
+	after, _ := board.Get(iss.ID)
+	if after.Claim != "" {
+		t.Fatalf("a slow revert consumed the budget the release needed: card still claimed by %q — "+
+			"it is now invisible to the next daemon's candidate listing", after.Claim)
+	}
+}
+
 // orderRecordingTracker records the order of the board operations a
 // shutdown performs. It delegates everything to the real adapter, so the
 // semantics under test are production's.
 type orderRecordingTracker struct {
 	tracker.Tracker
-	leaser tracker.ClaimLeaser
-	ops    []string
+	leaser      tracker.ClaimLeaser
+	ops         []string
+	slowRefresh time.Duration
+}
+
+// RefreshStates is the revert's first act; slowing it is how a shared
+// deadline starves whatever the revert is followed by.
+func (r *orderRecordingTracker) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
+	if r.slowRefresh > 0 {
+		select {
+		case <-time.After(r.slowRefresh):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return r.Tracker.RefreshStates(ctx, ids)
 }
 
 func (r *orderRecordingTracker) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {

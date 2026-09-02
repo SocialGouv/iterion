@@ -37,7 +37,7 @@ const (
 	// watchdog's in logs and events. isStaleLocalMarker strips it: a
 	// reaper that dies holding a card must be sweepable like any other
 	// dead owner, or disabling the gate would strand its cards forever.
-	reaperMarkerPrefix = "reaper:"
+	reaperMarkerPrefix = tracker.ReaperMarkerPrefix
 )
 
 // ClaimReaperInterval is the watchdog's cadence, exported so the cloud
@@ -60,7 +60,7 @@ func ReaperMarkerPrefix() string { return reaperMarkerPrefix }
 // watchdog. It is the persisted record that a card was already conserved
 // once — the only bound available on a decision that must otherwise be
 // re-taken from scratch every lease.
-func IsReaperMarker(marker string) bool { return strings.HasPrefix(marker, reaperMarkerPrefix) }
+func IsReaperMarker(marker string) bool { return tracker.IsReaperMarker(marker) }
 
 // ReaperMarker builds the watchdog's recovery-claim marker for a host.
 // Exported so the cloud reaper uses the SAME shape the local boot sweep
@@ -126,6 +126,11 @@ func (c *Dispatcher) reapExpiredClaims(ctx context.Context, reaper tracker.Claim
 			// cause is how the noise comes back.
 			c.noteRunReadFailure(serr)
 		} else {
+			// Clear where it was set: the store opening IS the condition
+			// observed succeeding. Leaving it to the per-card path would
+			// wedge the latch on for ever on a board whose claimed cards
+			// carry no run — nothing there ever consults the store.
+			c.noteRunReadFailure(nil)
 			runs = s
 		}
 	}

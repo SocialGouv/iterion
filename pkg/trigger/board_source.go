@@ -207,6 +207,15 @@ func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.
 	if from, ok := evt.Payload["from"].(string); ok {
 		payload["from_state"] = from
 	}
+	// Provenance travels: the stores stamp it, and the matcher below needs
+	// it to tell a machine repair from the operator gesture a subscription
+	// is written for. Dropping it here is what let a watchdog spend an
+	// operator's one-shot label gate.
+	machine := false
+	if reason, ok := evt.Payload["reason"].(string); ok && reason != "" {
+		payload["reason"] = reason
+		machine = reason == tracker.ReasonWatchdog
+	}
 	if iss.External != nil && iss.External.Repo != "" {
 		repo = iss.External.Repo
 	}
@@ -223,7 +232,10 @@ func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.
 			Body:  iss.Body,
 			State: iss.State,
 		},
-		Actor:      iss.Assignee,
+		// A machine repair is not authored by the card's assignee. Leaving
+		// their name on it misreports who acted, to every Actor-reading
+		// subscription and audit surface.
+		Actor:      actorFor(iss.Assignee, machine),
 		Labels:     append([]string(nil), iss.Labels...),
 		Payload:    payload,
 		OccurredAt: evt.Timestamp,
@@ -320,3 +332,13 @@ func (n *NativeBoardEffect) ConsumeMatchLabels(_ context.Context, _ string, issu
 
 var _ BoardEffect = (*NativeBoardEffect)(nil)
 var _ LabelConsumer = (*NativeBoardEffect)(nil)
+
+// actorFor blanks the actor on a machine-caused event: attributing a
+// watchdog's repair to whoever the card is assigned to is a lie the
+// audit trail keeps.
+func actorFor(assignee string, machine bool) string {
+	if machine {
+		return ""
+	}
+	return assignee
+}

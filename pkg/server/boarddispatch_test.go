@@ -1512,3 +1512,70 @@ func TestCloudReaper_BootSweepFreesUnleasedClaims(t *testing.T) {
 		t.Fatalf("the gated-off sweep must not decide, card moved to %q", got)
 	}
 }
+
+// TestCloudReaper_UnleasedSweepNeverSkipsLiveness: "no lease" is not "no
+// owner". A legacy claim carries no epoch, which ownedFilter admits by
+// design — so its holder can still renew, write and release, and is
+// merely not heartbeating. Only the run says whether anyone is alive, so
+// this sweep must consult it exactly like every other path that takes a
+// card from its holder. Releasing on the lease alone steals from a live
+// run, and does it with the gate OFF, which is the one thing the gate
+// exists to prevent.
+func TestCloudReaper_UnleasedSweepNeverSkipsLiveness(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-live"] = "podA-1"
+	f.epochs["c-live"] = 0
+	f.states["c-live"] = native.StateInProgress
+	f.unleased = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-live", LastRunID: "run-live", State: native.StateInProgress,
+			Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0},
+		},
+	}}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusRunning}, nil
+	}
+
+	d.sweepUnleasedClaims(context.Background())
+
+	if got := f.claimed["c-live"]; got != "podA-1" {
+		t.Fatalf("the card's run is RUNNING and its claim was taken anyway (now %q) — a missing lease says "+
+			"nothing about liveness, and this holder can still write: only the run decides", got)
+	}
+}
+
+// TestCloudReaper_UnleasedSweepFreesADeadOne is the counter-case, so the
+// guard above cannot be satisfied by refusing everything.
+func TestCloudReaper_UnleasedSweepFreesADeadOne(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-dead"] = "podA-1"
+	f.epochs["c-dead"] = 0
+	f.states["c-dead"] = native.StateInProgress
+	f.unleased = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-dead", LastRunID: "run-dead", State: native.StateInProgress,
+			Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0},
+		},
+	}}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.sweepUnleasedClaims(context.Background())
+
+	if _, held := f.claimed["c-dead"]; held {
+		t.Fatalf("a card whose run is terminal-resumable and whose claim carries no lease must be freed, still held by %q",
+			f.claimed["c-dead"])
+	}
+	if got := f.states["c-dead"]; got != native.StateInProgress {
+		t.Fatalf("the gated-off sweep must not decide, card moved to %q", got)
+	}
+}

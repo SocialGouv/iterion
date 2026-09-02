@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -54,7 +55,8 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 		return err
 	}
 	for _, sub := range matched {
-		if err := e.applyEffect(ctx, sub, ev, effectOpts{}); err != nil && !errors.Is(err, errEffectOneShotSpent) {
+		if err := e.applyEffect(ctx, sub, ev, effectOpts{}); err != nil &&
+			!errors.Is(err, errEffectOneShotSpent) && !errors.Is(err, errEffectMachineCaused) {
 			e.warn("trigger: effect for subscription %s failed: %v", sub.ID, err)
 		}
 	}
@@ -100,9 +102,21 @@ type effectOpts struct {
 
 // applyEffect executes ONE (subscription, event) effect — the single effect
 // body both delivery paths share. Error semantics: nil = executed;
+// errEffectMachineCaused = the event came from iterion repairing itself,
+// so a one-shot operator gate must not be spent on it. Benign like
+// errEffectOneShotSpent: the subscription simply does not fire.
+var errEffectMachineCaused = errors.New("trigger: one-shot not spent on a machine-caused event")
+
 // errEffectOneShotSpent = the one-shot was consumed by another event
 // (terminal, not a failure); anything else = the effect did not happen (the
 // bus path warns and moves on, the outbox path retries).
+// machineCaused reports that an event was produced by iterion repairing
+// itself rather than by an operator or a bot acting on the board.
+func machineCaused(ev Event) bool {
+	reason, _ := ev.Payload["reason"].(string)
+	return reason == tracker.ReasonWatchdog
+}
+
 func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
 	switch sub.EffectiveMode() {
 	case bundle.ExecutionBoard:
@@ -114,6 +128,15 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 	default:
 		if e.launcher == nil {
 			return fmt.Errorf("direct-mode subscription %s but no launcher wired", sub.ID)
+		}
+		if sub.ConsumeLabels && machineCaused(ev) {
+			// A one-shot label gate is an OPERATOR's single pull of a
+			// trigger. A watchdog repairing a card its dead owner left
+			// behind moves that card too — and spending the gate there
+			// burns an intent nobody expressed, on a card nobody touched.
+			// Re-arming it is manual, so this is not recoverable by
+			// waiting.
+			return errEffectMachineCaused
 		}
 		if sub.ConsumeLabels && ev.Source == SourceBoard && !opts.alreadyConsumed {
 			lc, ok := e.board.(LabelConsumer)

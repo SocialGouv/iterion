@@ -203,7 +203,7 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 	updated.State = newState
 	if old != newState {
 		if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
-			Payload: map[string]any{"from": old, "to": newState}}); err != nil {
+			Payload: native.StateChangePayload(old, newState, tok.Marker)}); err != nil {
 			return nil, err
 		}
 		if newState == native.StateDone {

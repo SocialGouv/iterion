@@ -512,7 +512,7 @@ func (s *Store) setStateLocked(iss *Issue, newState string) (*Issue, error) {
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
-		Payload: map[string]any{"from": old, "to": newState},
+		Payload: StateChangePayload(old, newState, iss.Claim),
 	}); err != nil {
 		return nil, err
 	}
@@ -725,6 +725,21 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 // The one thing it cannot catch is a filing that does NOT change the state
 // (Close on a ticket already sitting in the give-up's state); those surfaces
 // clear the stamp explicitly.
+// stateChangePayload builds the state-change event body, stamping the
+// provenance when the card is held by a watchdog. Downstream consumers
+// launch bots and spend one-shot label gates on these events, and a
+// machine repairing a dead owner is not the operator gesture they are
+// written for.
+// StateChangePayload is exported for the Mongo twin, which builds the
+// same event from its own CAS.
+func StateChangePayload(from, to, claim string) map[string]any {
+	p := map[string]any{"from": from, "to": to}
+	if tracker.IsReaperMarker(claim) {
+		p["reason"] = tracker.ReasonWatchdog
+	}
+	return p
+}
+
 func expireGiveUp(iss *Issue) {
 	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
 		iss.GaveUp = nil

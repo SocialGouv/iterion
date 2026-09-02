@@ -500,35 +500,48 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
 		d.warn("recovery-claim sweep: %v", err)
 		return
 	}
-	if len(cands) == 0 {
-		return
-	}
 	if len(cands) == sweepBatch {
 		// A full batch means there are probably more, and NOTHING else can
 		// reach them: a recovery claim carries a fresh lease, so it sorts
-		// behind every ordinary one in the reaper's own listing. Say so
-		// rather than let the remainder wait for the next pod restart —
+		// behind every ordinary one in the reaper's own listing. Say so —
 		// a silent cap reads as "all handled".
 		d.warn("recovery-claim sweep: batch of %d was full — more abandoned claims remain and only another sweep reaches them",
 			sweepBatch)
 	}
-	// What this sweep may do depends on the gate, because the gate is what
-	// an operator pulls when they judge the watchdog itself wrong.
-	//
-	//   gate ON  — the reaper is running and would reach these cards
-	//              anyway; dispose properly (reapOne re-judges, files or
-	//              returns to the pool, then releases). Releasing bare
-	//              here would take the repair away from it: a cleared
-	//              claim is invisible to its listing.
-	//   gate OFF — the watchdog must not DECIDE. Drop the residue it left
-	//              (the recovery claim) and nothing more, restoring the
-	//              card to exactly what it was before a watchdog touched
-	//              it. That card may well be stranded — but it was
-	//              stranded by its own dead owner, and repairing it is the
-	//              watchdog's job, which is precisely what is switched
-	//              off. Filing it `done`/`blocked` here would be worse
-	//              than not repairing it: those are terminal, they promote
-	//              dependents, and Reopen then refuses.
+	d.sweepClaims(ctx, "recovery-claim sweep", cands, now)
+}
+
+// sweepUnleasedClaims is the OTHER half of "what a disabled reaper leaves
+// behind": ordinary claims a mixed-fleet write stripped of their lease.
+// Nothing else lists them, and a rolling deploy is what creates them, so
+// the repair cannot sit behind a gate this release ships off.
+func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context) {
+	now := d.reapCutoff(ctx)
+	cands, err := d.coord.ListUnleasedClaims(ctx, now, sweepBatch)
+	if err != nil {
+		d.warn("un-leased claim sweep: %v", err)
+		return
+	}
+	d.sweepClaims(ctx, "un-leased claim sweep", cands, now)
+}
+
+// sweepClaims is the ONE body both startup sweeps run. Two rules hold
+// whatever the gate says:
+//
+//   - LIVENESS IS NEVER SKIPPED. Every path that takes a card from its
+//     holder consults DecideTransfer first, and these are no exception:
+//     "no lease" is not "no owner". A legacy claim carries no epoch, which
+//     ownedFilter deliberately admits — so its holder can still renew,
+//     write and release, and is merely not heartbeating. Only the run says
+//     whether anyone is alive.
+//   - THE GATE STOPS DECISIONS, NOT REPAIRS. With it on, dispose properly
+//     (reapOne re-judges and files); with it off, drop the residue and
+//     nothing more, leaving the card as it was before a watchdog touched
+//     it.
+func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands []boardmongo.ExpiredCandidate, now time.Time) {
+	if len(cands) == 0 {
+		return
+	}
 	gated := dispatcher.ClaimReaperEnabled()
 	swept := 0
 	for _, cand := range cands {
@@ -537,65 +550,69 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
 			swept++
 			continue
 		}
-		if d.releaseAbandonedRecoveryClaim(ctx, cand, now) {
+		run, runErr := d.loadRunForCard(ctx, cand)
+		card := dispatcher.StuckCard{
+			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+		}
+		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
+			d.warn("%s leaves %s/%s alone: %s", label, cand.Tenant, cand.Claim.IssueID, pre.Reason)
+			continue
+		}
+		if d.releaseSweptClaim(ctx, label, cand, now) {
 			swept++
 		}
 	}
-	d.warn("recovery-claim sweep: handled %d claim(s) left behind by a crashed watchdog (%s=%s)",
-		swept, dispatcher.ClaimReaperEnvName(), map[bool]string{true: "on", false: "off"}[gated])
-}
-
-// sweepUnleasedClaims is the OTHER half of "what a disabled reaper leaves
-// behind". A mixed-fleet write strips a live claim of its lease and its
-// fence; from then on the holder cannot renew, cannot write, and cannot
-// even release — and no listing reaches the card except this one. Since a
-// rolling deploy is exactly what creates that state, the repair cannot
-// sit behind the reaper gate, which ships off during the very release
-// that introduces the fields.
-//
-// It only ever RELEASES: the horizon is a full day, so any session that
-// held the card has long since latched lost and stopped. Deciding the
-// card's disposition is the watchdog's business, and the watchdog may be
-// switched off.
-func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context) {
-	now := d.reapCutoff(ctx)
-	cands, err := d.coord.ListUnleasedClaims(ctx, now, sweepBatch)
-	if err != nil {
-		d.warn("un-leased claim sweep: %v", err)
-		return
-	}
-	freed := 0
-	for _, cand := range cands {
-		if d.releaseAbandonedRecoveryClaim(ctx, cand, now) {
-			freed++
-		}
-	}
-	if freed > 0 {
-		d.warn("un-leased claim sweep: freed %d card(s) whose claim lost its lease to a mixed-fleet write — "+
-			"their holders had been fenced out of their own cards", freed)
+	if swept > 0 {
+		d.warn("%s: handled %d claim(s) (%s=%s)", label, swept,
+			dispatcher.ClaimReaperEnvName(), map[bool]string{true: "on", false: "off"}[gated])
 	}
 }
 
-// releaseAbandonedRecoveryClaim drops a recovery claim without judging
-// the card — the gate-off behaviour. It still goes through a transfer:
-// releasing needs ownership, and the CAS is what makes two replicas
-// sweeping at once elect one winner.
-func (d *boardDispatcher) releaseAbandonedRecoveryClaim(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) bool {
+// loadRunForCard resolves a candidate's run the way reapOne does, so the
+// two never judge the same card on different evidence.
+func (d *boardDispatcher) loadRunForCard(ctx context.Context, cand boardmongo.ExpiredCandidate) (*store.Run, error) {
+	if cand.Claim.LastRunID == "" {
+		return nil, nil
+	}
+	if d.runFor == nil {
+		d.noteRunReadFailure(cand.Tenant, errNoRunLoader)
+		return nil, errNoRunLoader
+	}
+	run, err := d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
+	if err != nil && errors.Is(err, store.ErrRunNotFound) {
+		run, err = nil, nil // a pruned run proves nothing is alive
+	}
+	d.noteRunReadFailure(cand.Tenant, err)
+	return run, err
+}
+
+// releaseSweptClaim drops a claim without judging the card — the
+// gate-off behaviour. It still transfers first: releasing needs
+// ownership, and the CAS is what elects one winner between replicas.
+func (d *boardDispatcher) releaseSweptClaim(ctx context.Context, label string, cand boardmongo.ExpiredCandidate, now time.Time) bool {
 	tok, _, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID,
 		cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
 	if err != nil {
 		if !errors.Is(err, tracker.ErrClaimConflict) {
-			d.warn("recovery-claim sweep reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+			d.warn("%s reclaim %s/%s: %v", label, cand.Tenant, cand.Claim.IssueID, err)
 		}
 		return false
 	}
 	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
-		d.warn("recovery-claim sweep release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
-		return false
+		// Retry once: the transfer already replaced the original marker
+		// with ours, so giving up here leaves the card under a RECOVERY
+		// claim that only a boot sweep releases — strictly worse than the
+		// stranded claim we came to repair.
+		if err2 := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err2 != nil {
+			d.warn("%s could not release %s/%s (was held by %q, now under %q): %v",
+				label, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker,
+				dispatcher.ReaperMarker(d.marker), err2)
+			return false
+		}
 	}
-	d.warn("recovery-claim sweep freed %s/%s (was held under %q by a watchdog that never came back); "+
-		"the card keeps state %q — with the watchdog gated off, nothing decides for it",
-		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State)
+	d.warn("%s freed %s/%s (was held under %q); the card keeps state %q — with the watchdog gated off, nothing decides for it",
+		label, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State)
 	return true
 }
 
@@ -623,7 +640,7 @@ func (d *boardDispatcher) noteRunReadFailure(tenant string, err error) {
 	}
 }
 
-// reapCutoff resolves the instant an expired lease is measured against.// reapCutoff resolves the instant an expired lease is measured against.
+// reapCutoff resolves the instant an expired lease is measured against.
 // The lease itself is stamped from the DATABASE clock, so measuring it
 // with this pod's clock re-opens from the other end the very hole that
 // stamping closed: a replica running fast would see live leases as
@@ -723,12 +740,11 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	// its own bound unreachable — and in cloud there is no boot sweep to
 	// free the card later, so "held" means held for ever.
 	if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
-		// A read error is not a normal abstention: it conserves EVERY
-		// candidate, every pass, for as long as the store misbehaves —
-		// invisible at Debug, and a log storm if said per card (batch of
-		// 100, once a minute, per replica). Edge-triggered, like the
-		// degraded-clock notice.
-		d.noteRunReadFailure(cand.Tenant, runErr)
+		// The store's health was already reported above, and ONLY by a
+		// card that actually consulted it. Reporting again here would let
+		// a card that never touched the store (kept because a run stamp
+		// may still be in flight) clear the latch, announcing a recovery
+		// nobody observed — the flap the local twin was fixed for.
 		return
 	}
 	var dec dispatcher.StuckDecision
