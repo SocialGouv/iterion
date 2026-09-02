@@ -114,7 +114,36 @@ through the candidate listing's un-leased arm, on a much longer horizon
 (a missing lease is an absence, where an expired one is positive evidence
 a heartbeat stopped).
 
-**7. Rollout: expand/contract, two releases.** `ITERION_BOARD_CLAIM_REAPER`
+**7. The twins diverge on purpose, in three places.** Written down
+because an undocumented divergence reads as an oversight, and the next
+contributor "fixes" it:
+
+- The FS listing has no un-leased arm. It cannot need one: its store is
+  a local file its own process rewrites whole, so no peer strips a lease
+  from under it, and its boot sweep already probes the pid behind a
+  same-host marker.
+- `watchdogRunCeiling` is cloud-only. Returning a card to the pool costs
+  a FRESH run there (that launcher cannot resume a recorded one); the
+  local dispatcher resumes the run the card records, so repeating costs
+  nothing new and needs no ceiling.
+- The epoch is a counter on the FS twin and a server-clock floor on the
+  Mongo one. The shared contract is monotonicity, not the increment —
+  only the Mongo twin can lose the field to another binary's write, and
+  only it therefore needs a floor that survives the loss.
+
+**8. What the gate stops, and what it must not.**
+`ITERION_BOARD_CLAIM_REAPER` is what an operator pulls when they judge
+the watchdog itself wrong, so it gates DECISIONS: with it off, nothing
+files a card, returns it to the pool, or otherwise rules on it. It does
+not gate REPAIR. Two populations are left behind by a watchdog that is
+switched off — its own abandoned recovery claims, and ordinary claims a
+mixed-fleet write stripped of lease and fence (whose holder can then
+neither renew, write, nor release). Both are swept at startup, ungated
+and release-only: dropping a claim nobody can use restores the card to
+what it was, whereas filing it would be a decision, and a terminal one
+promotes dependents past the point where Reopen can undo it.
+
+**9. Rollout: expand/contract, two releases.** `ITERION_BOARD_CLAIM_REAPER`
 gates the reaper, default **off**. Release N ships the lease fields +
 heartbeats + fenced writes with the reaper off, so a mixed fleet can
 never reap a claim an old binary silently un-leased (the `replace()`
