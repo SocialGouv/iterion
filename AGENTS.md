@@ -1,8 +1,12 @@
 # Agent operating contract — iterion
 
 This file is the **single source** for the cross-agent working methodology on
-iterion. Every agent session (Claude Code, Codex, pi, or any other harness)
-follows it. The full engineering reference (architecture, build, DSL,
+iterion. Every **interactive agent session** (Claude Code, Codex, pi, or any
+other harness driven by an operator) follows it. **Automated bot runs**
+(iterion-launched campaign/review/fixer bots executing on this repo) are out
+of scope: they follow their own mission contract and MUST NOT attempt the
+board rituals below — no claiming, no ticket creation; their `.bot` mission
+is their ticket. The full engineering reference (architecture, build, DSL,
 conventions) lives in [CLAUDE.md](CLAUDE.md) — read it before touching code;
 this file only carries the work-tracking contract, so it stays cheap to inject.
 
