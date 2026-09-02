@@ -208,6 +208,10 @@ type Config struct {
 	// and the OAuth callback to register.
 	ForgeConnections  forge.ConnectionStore
 	ForgeIntegrations forge.RepoIntegrationStore
+	// ProvisionApprovals parks team-admin provisioning requests pending an
+	// org admin's decision when Org.RequireProvisionApproval is set. Nil
+	// disables the approval gate (every org behaves as if the flag were off).
+	ProvisionApprovals forge.ProvisionApprovalStore
 	// ForgeOAuthApps holds per-tenant, per-instance forge OAuth-app
 	// credentials (sealed client_secret). The connect flow resolves an app
 	// from this store for a (tenant, provider, base URL); an instance with no

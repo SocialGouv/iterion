@@ -100,6 +100,15 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			"connection %s is watch-only (Dependabot alerts only) — it cannot host webhooks or hand a bot a forge token; pick the team's runtime connection", conn.ID)
 		return
 	}
+	// Org ex-ante validation (Org.RequireProvisionApproval): a team admin's
+	// request is parked for an org admin's decision — nothing is created
+	// forge-side until approved. Validated exactly like the direct path
+	// above, so what the admin approves is what would have run.
+	if orgID := s.provisionOrgRequiringApproval(r.Context(), id, teamID); orgID != "" {
+		req.Repo = strings.TrimSpace(req.Repo)
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, "", false)
+		return
+	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
 		TenantID:       teamID,
@@ -176,6 +185,23 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	if len(req.BotIDs) == 0 {
 		httpError(w, http.StatusBadRequest, "bot_ids must be non-empty — use DELETE to remove the integration entirely")
+		return
+	}
+	// Org ex-ante validation: only an EXPANDING bot set (a bot not already
+	// provisioned on this repo) needs the org's approval — removals shrink
+	// the surface and go through directly.
+	if orgID := s.provisionOrgRequiringApproval(r.Context(), id, teamID); orgID != "" && addsBots(ri.BotIDs, req.BotIDs) {
+		s.parkProvisionRequest(w, r, id, orgID, teamID, forgeEnableReq{
+			ConnectionID:         ri.ConnectionID,
+			Repo:                 ri.RepoFullName,
+			BotIDs:               req.BotIDs,
+			ScheduleCrons:        req.ScheduleCrons,
+			LaunchVars:           req.LaunchVars,
+			Overlap:              req.Overlap,
+			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
+			HoldLabels:           req.HoldLabels,
+			LabelAllowlist:       req.LabelAllowlist,
+		}, ri.ID, true)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -318,6 +344,21 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 	default:
 		httpError(w, http.StatusBadGateway, "provisioning failed: %v", err)
 	}
+}
+
+// addsBots reports whether `requested` contains a bot id absent from
+// `current` — the surface-expansion predicate of the org approval gate.
+func addsBots(current, requested []string) bool {
+	have := make(map[string]bool, len(current))
+	for _, b := range current {
+		have[b] = true
+	}
+	for _, b := range requested {
+		if !have[b] {
+			return true
+		}
+	}
+	return false
 }
 
 func splitCSV(s string) []string {

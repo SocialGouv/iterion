@@ -213,6 +213,9 @@ func (s *Server) routes() {
 	if s.forgeOrchestrator != nil && s.authSvc != nil {
 		s.registerForgeRoutes()
 		s.registerForgeProvisioningRoutes()
+		// Org ex-ante approval queue over provisioning (handlers are
+		// nil-safe when no approval store is wired).
+		s.registerForgeApprovalRoutes()
 		if s.forgeOAuthApps != nil {
 			s.registerForgeOAuthAppRoutes()
 		}
