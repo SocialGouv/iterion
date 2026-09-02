@@ -351,7 +351,7 @@ Read-only views plus the launch / resume mutations the studio drives.
 |---|---|---|---|
 | `GET` | `/api/runs` | member (tenant-scoped) | List runs |
 | `GET` | `/api/runs/global-active` | member | Active runs across the **local** stores on this machine — a desktop-daemon affordance walking `$HOME/.iterion/**`. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
-| `POST` | `/api/runs` | member | Launch a workflow |
+| `POST` | `/api/runs` | member | Launch a workflow. The body may carry `routing_policy` — the run's launch-frozen outcome contract. It is validated and hashed here and refused with `400` when malformed, when an expression leaves the contract grammar, or when a ref names a node the workflow lacks / a field that node never publishes ([outcome-router.md](outcome-router.md#the-contract--routing_policy)) |
 | `POST` | `/api/runs/preview-cost` | member | Estimate cost before launch |
 | `POST` | `/api/runs/uploads` | member | Upload an attachment |
 | `GET` | `/api/runs/{id}` | member (run tenant) | Run state |
@@ -376,6 +376,7 @@ Read-only views plus the launch / resume mutations the studio drives.
 | `POST` | `/api/runs/{id}/commit-and-finalize` | member | Commit pending work and finalise |
 | `POST` | `/api/runs/{id}/rename` | member | Rename a run |
 | `GET` | `/api/runs/{id}/children` | member | Child (subbot) runs |
+| `GET` | `/api/runs/{id}/route-decisions` | member | The outcome router's decision registry for this run, newest terminal episode first — decision, reason, policy hash, attempts, outcome ([outcome-router.md](outcome-router.md)) |
 | `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | member | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
 | `GET` | `/api/runs/{id}/session-board` | member | Session-board widgets ([session-board.md](session-board.md)) |
 | `GET` | `/api/runs/{id}/interactions/pending` | member | Unanswered `ask_user_async` questions |
