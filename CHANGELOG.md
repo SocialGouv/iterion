@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.89.0](https://github.com/SocialGouv/iterion/compare/v3.88.0...v3.89.0) (2026-09-02)
+
+### Features
+
+* **webhooks:** an explicitly named review identity lights the re-request lane on GitHub ([#605](https://github.com/SocialGouv/iterion/issues/605)) ([9ff26bc](https://github.com/SocialGouv/iterion/commit/9ff26bc47c2bc746911c7de1013c8bc3a7b4afce)), references [#604](https://github.com/SocialGouv/iterion/issues/604) [#608](https://github.com/SocialGouv/iterion/issues/608) [#608](https://github.com/SocialGouv/iterion/issues/608)
+
+    <details><summary>why</summary>
+
+    Rebuilt as one commit on main after #604 merged and #608 landed the GitHub/Forgejo replier gate there (convergent fix — both Revi loops demanded it); this is the remaining delta. Four Revi rounds on the PR (3→3→5→0 findings, all real) shaped it; every behaviour guard is mutation-verified.
+
+    </details>
+
 ## [3.88.0](https://github.com/SocialGouv/iterion/compare/v3.87.0...v3.88.0) (2026-09-02)
 
 ### Features
