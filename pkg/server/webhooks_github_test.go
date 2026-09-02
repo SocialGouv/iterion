@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -903,5 +904,225 @@ func TestGitHubWebhook_GateResyncSurvivesBotGuard(t *testing.T) {
 	}
 	if *launched2 != 0 {
 		t.Error("a bot-opened PR must not auto-review")
+	}
+}
+
+// The GitHub arming half of review_request_logins: a configured USER login
+// arms the lane where the connection-derived identity cannot (a GitHub App
+// is never a requested reviewer), and BOTH halves of the loop guard read the
+// same set — the actor half must recognise the configured identity's own
+// reviewer-write echo.
+func TestGitHubWebhook_ReviewRequestedArmsOnConfiguredLogin(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return fmt.Sprintf("run-%d", calls), nil
+	}
+	// Replier authorized — this test exercises identity matching, not the gate.
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewRequestLogins = []string{"@iterion-bot"} // a pasted "@handle" is tolerated
+
+	// Addressed to the configured identity → the reviewer launches.
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "Iterion-Bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("configured identity: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	// Addressed to anyone else → filtered, as this action always was.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "bob", "2026-09-01T10:05:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("other reviewer: code=%d calls=%d", w.Code, calls)
+	}
+	// The configured identity as ACTOR — its own reviewer write echoing back —
+	// must not launch: both halves of the guard read the same set.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("iterion-bot", "iterion-bot", "2026-09-01T10:10:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("self request: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	// Nothing configured → the lane is inert, exactly as before.
+	bare, pt2 := ghConfig(t, s)
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(bare), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:15:00Z"), prforge.EventHeaderPullRequest, pt2))
+	if w.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("unarmed webhook: code=%d calls=%d", w.Code, calls)
+	}
+}
+
+// The hold label freezes EVERY automation on a PR, the re-request included.
+// The forge emits the same event for a CODEOWNERS auto-request, which needs no
+// permission from the requester and carries nothing to tell it from a click —
+// so the lane cannot claim the deliberateness a `/command` has.
+func TestGitHubWebhook_ReviewRequestedRespectsHoldLabel(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-1", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewRequestLogins = []string{"iterion-bot"}
+	cfg.HoldLabels = []string{"iterion:hold"}
+
+	body := strings.Replace(
+		ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:00:00Z"),
+		`"state": "open",`, `"state": "open", "labels": [{"name": "iterion:hold"}],`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("held PR: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	rows, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 5)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("no delivery row recorded (%v)", err)
+	}
+	if !strings.Contains(rows[0].Error, "hold label") {
+		t.Fatalf("audit reason = %q, want the hold-label explanation", rows[0].Error)
+	}
+}
+
+// R35dde4: with the identity in CODEOWNERS, a single PR open delivers BOTH
+// `opened` and an automatic `review_requested` — the second must collapse
+// onto the review the first just launched, not double-spend on the same
+// head. Once that review FINISHES, the same gesture is the ordinary
+// re-review click and relaunches.
+func TestGitHubWebhook_ReviewRequestedCollapsesOntoLiveReview(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return fmt.Sprintf("run-%d", calls), nil
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewRequestLogins = []string{"iterion-bot"}
+
+	// PR open claims the head and launches run-1…
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("open: code=%d calls=%d", w.Code, calls)
+	}
+
+	// …the CODEOWNERS auto-request lands seconds later while run-1 is live:
+	// collapsed, with the reason in the audit row.
+	s.webhookRunIsLive = func(_ context.Context, runID string) bool { return runID == "run-1" }
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("auto-request on a live review must collapse: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	rows, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 5)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("no delivery row recorded (%v)", err)
+	}
+	found := false
+	for _, row := range rows {
+		if strings.Contains(row.Error, "already in flight") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no delivery row carries the collapse reason: %+v", rows)
+	}
+
+	// Review finished → the same gesture is a deliberate re-review: relaunch.
+	s.webhookRunIsLive = func(context.Context, string) bool { return false }
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:05:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 2 {
+		t.Fatalf("re-request after the review finished must relaunch: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+}
+
+// Rf96744: a delivery row stranded at `accepted` (a crash between the insert
+// and the post-launch update) must not read as in-flight forever — past the
+// launch window the re-request lane treats it as a finished claim and the
+// button relaunches instead of collapsing for good.
+func TestGitHubWebhook_ReviewRequestedIgnoresStrandedAcceptedRow(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-1", nil
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewRequestLogins = []string{"iterion-bot"}
+
+	// Seed the per-head claim as a stranded `accepted` row: no RunID, and
+	// received well past the launch window.
+	headBase := fmt.Sprintf("gh|%s|%s|acme/widgets|7|abc123", cfg.TenantID, cfg.ID)
+	if err := s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+		ID: "stranded", TenantID: cfg.TenantID, WebhookID: cfg.ID, Provider: cfg.Provider,
+		IdempotencyKey: forgeIdemKey(headBase, "review-pr", cfg.HasBotRules()),
+		Status:         webhooks.StatusAccepted,
+		ReceivedAt:     time.Now().UTC().Add(-2 * acceptedLaunchWindow),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("re-request past a stranded accepted row must relaunch: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// A FRESH accepted row is a launch in progress: the same gesture collapses.
+	if err := s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+		ID: "in-progress", TenantID: cfg.TenantID, WebhookID: cfg.ID, Provider: cfg.Provider,
+		IdempotencyKey: forgeIdemKey(fmt.Sprintf("gh|%s|%s|acme/widgets|8|def456", cfg.TenantID, cfg.ID), "review-pr", cfg.HasBotRules()),
+		Status:         webhooks.StatusAccepted,
+		ReceivedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed fresh: %v", err)
+	}
+	body := strings.Replace(ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:05:00Z"), `"number": 7,`, `"number": 8,`, 2)
+	body = strings.Replace(body, `"sha": "abc123"`, `"sha": "def456"`, 1)
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("re-request on a fresh accepted row must collapse: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+}
+
+// R35dde4, order independence: when the auto-request outruns the `opened`
+// delivery, it claims the ordinary per-head key — so the late open dedupes
+// against it instead of launching a second review of the same head.
+func TestGitHubWebhook_ReviewRequestedBeforeOpenClaimsHeadKey(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-1", nil
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewRequestLogins = []string{"iterion-bot"}
+
+	// Reordered pair: the auto-request arrives first, on an unclaimed head —
+	// it launches the review under the per-head key.
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("re-request on an unclaimed head must launch: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// The late `opened` for the same head dedupes against that claim.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if calls != 1 {
+		t.Fatalf("late open must dedupe against the re-request's claim: calls=%d body=%s", calls, w.Body.String())
 	}
 }

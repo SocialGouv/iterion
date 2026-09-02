@@ -262,30 +262,49 @@ the MR/PR's current head:
   That identity is the **App bot login only** (`<app_slug>[bot]`): a
   PAT/OAuth connection's account may be a HUMAN's, and treating it as the
   bot would turn an ordinary human-to-human review request into an LLM
-  launch (and disarm the anti-loop actor guard). In practice the lane is
-  therefore **currently inert on both**: a GitHub App cannot be a PR
-  reviewer at all (forge restriction), and a Forgejo connection never
-  carries an App slug (there is no Forgejo App kind) — `/revi` is the
-  on-demand path there. The wiring exists so a future bot-account
-  connection kind lights it up without touching the handlers; **GitLab is
-  the button forge today.**
+  launch (and disarm the anti-loop actor guard). A GitHub App cannot be a
+  PR reviewer at all (forge restriction) and a Forgejo connection carries
+  no App slug (there is no Forgejo App kind), so the derived identity
+  leaves the lane inert on both.
+
+  **`review_request_logins` is what lights it up.** The operator names the
+  review identity explicitly on the webhook, and those logins join the same
+  set both halves of the guard read — so the lane answers their request AND
+  the actor guard recognises their own writes. On GitHub that identity has
+  to be a **User account reached through a `pat` connection**: only a user
+  can be a requested reviewer, and the review must be POSTED by that same
+  account for the forge to clear the pending request and re-arm the button.
+  Nothing is derived from the connection for this — see the config table.
 
 Semantics, shared with `/revi` (deliberate manual gesture):
 
-- **exempt from the hold-label pause** — the label pauses *automation*;
-- **repeatable** — each click is its own delivery (the idempotency key is
-  salted with the MR/PR `updated_at`), so re-requesting twice on the same
-  head reviews twice; forge redeliveries of the same click stay deduped;
+- **NOT exempt from the hold-label pause** — unlike `/revi`. The forge
+  emits the same event for a CODEOWNERS auto-request, which needs no
+  permission from the requester and carries no field distinguishing it
+  from a click ([about-code-owners](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)),
+  so the lane cannot claim a command's deliberateness — and the label's
+  promise is that it freezes *every* automation on one PR;
+- **repeatable once the head's review has FINISHED** — such a click is its
+  own delivery (the idempotency key is then salted with the MR/PR
+  `updated_at`), so re-requesting twice on the same head reviews twice. On
+  GitHub a click landing while a review of that head is still in flight
+  collapses onto it instead (the CODEOWNERS auto-request dedupe), and a
+  click on a head no review has claimed yet takes the ordinary per-head
+  key; GitLab keeps the unconditional salt (its lane only arms on an
+  `update` action, so an open-time reviewer assignment never double-fires);
+  forge redeliveries of the same click stay deduped;
 - **open PRs/MRs only** — reviewer edits arrive freely on closed/merged
   ones and never burn a run;
 - **replier-gated like `/revi`** — the click is authorized through the
   same `authorized_repliers` allowlist / `min_replier_role` project-role
-  gate (default developer) as every other manual trigger. "The forge
-  gates reviewer edits" is not enough: GitLab lets an MR AUTHOR edit
-  their own MR's reviewers without holding a project role, which would
-  hand a fork contributor a repeatable trigger. An unauthorized click is
-  demoted — the delivery rides whatever automatic lane still admits it
-  (with the hold label honoured) or is filtered;
+  gate (default developer) as every other manual trigger, on every
+  provider. "The forge gates reviewer edits" is not enough: GitLab lets
+  an MR AUTHOR edit their own MR's reviewers without holding a project
+  role, and GitHub grants "request review" at the **Triage** role —
+  below the write floor the command gate enforces — either of which
+  would hand an under-privileged account a repeatable trigger. An
+  unauthorized click is demoted — the delivery rides whatever automatic
+  lane still admits it (with the hold label honoured) or is filtered;
 - **never self-triggering** — a reviewers change whose *actor* is the bot
   itself (the self-assign echoing back) is filtered
   ([pkg/server/webhooks_common.go:isIterionBotReviewRequest](../pkg/server/webhooks_common.go)).
@@ -578,6 +597,7 @@ are accepted by `POST` / `PATCH`:
 
 | Key | Default | Meaning |
 |---|---|---|
+| `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
 | `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |

@@ -295,6 +295,15 @@ func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, 
 	if login == "" {
 		return false
 	}
+	// Configured identities first, and WITHOUT a connection lookup — the other
+	// half of the pair reads them the same way. An identity only the
+	// review-request half recognised would launch on the bot's own reviewer
+	// write echoing back, which is the loop this guard exists to close.
+	for _, l := range iterionBotLogins(cfg, forge.Connection{}) {
+		if strings.EqualFold(login, l) {
+			return true
+		}
+	}
 	conn, ok := s.webhookForgeConnection(ctx, cfg)
 	if !ok {
 		return false
@@ -323,7 +332,16 @@ func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, 
 //     human's PRs unreviewable on one side and turn an ordinary
 //     human-to-human review request into an LLM launch on the other.
 func iterionBotLogins(cfg webhooks.Config, conn forge.Connection) []string {
+	// Operator-configured identities first: they are the only ones that can
+	// name a USER account, which on GitHub is the only thing that can be a
+	// requested reviewer. See Config.ReviewRequestLogins for why this is never
+	// derived from the connection.
 	var logins []string
+	for _, l := range cfg.ReviewRequestLogins {
+		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
+			logins = append(logins, l)
+		}
+	}
 	if conn.AppSlug != "" {
 		logins = append(logins, conn.AppSlug+"[bot]")
 	}
@@ -381,6 +399,14 @@ func (s *Server) isIterionBotReviewRequest(ctx context.Context, cfg webhooks.Con
 // on the bot's own reviewer-write echo (the actor guard couldn't name it)
 // and would treat a human account's review requests as bot triggers.
 func (s *Server) realIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	// A configured identity needs no connection lookup: it is the operator's
+	// explicit statement of who the button addresses, and it must arm the lane
+	// even when the provisioning marker cannot be resolved.
+	for _, l := range iterionBotLogins(cfg, forge.Connection{}) {
+		if requested(l) {
+			return true
+		}
+	}
 	conn, ok := s.webhookForgeConnection(ctx, cfg)
 	if !ok {
 		return false
@@ -744,6 +770,67 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 // live runs are necessarily among the most recent deliveries on its webhook,
 // and an unbounded scan would put the whole delivery history on the hot path.
 const supersedeLookback = 50
+
+// headReviewClaim reports whether the ordinary per-head key space of this
+// delivery's head is already claimed by an earlier review launch, and whether
+// any of those launches is still in flight. It drives the re-request lane's
+// three-way idempotency choice (collapse / salt / claim) — see the caller in
+// handlePRForgeReview. Absence of the deliveries store reads as unclaimed and
+// a failed run lookup as not-live: the button must keep working when the
+// state cannot be known, at the price of a possible duplicate (the historical
+// behaviour). A StatusLaunchError row is NOT a claim (mirrors the launch
+// tail: a failed launch is retryable); a StatusAccepted row is a launch in
+// progress — in flight by definition, but only within acceptedLaunchWindow
+// of its receipt: a process dying between the insert and the post-launch
+// update strands the row at accepted forever, and reading that as live would
+// permanently disarm the button for the head (Rf96744).
+func (s *Server) headReviewClaim(ctx context.Context, cfg webhooks.Config, rules []webhooks.BotRule, headBase string) (claimed, live bool) {
+	if s.webhookDeliveries == nil {
+		return false, false
+	}
+	for _, rule := range rules {
+		d, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, forgeIdemKey(headBase, rule.BotID, cfg.HasBotRules()))
+		if err != nil || d.Status == webhooks.StatusLaunchError {
+			continue
+		}
+		claimed = true
+		if d.Status == webhooks.StatusAccepted && time.Since(d.ReceivedAt) < acceptedLaunchWindow {
+			return true, true
+		}
+		if d.RunID != "" && s.webhookRunLive(ctx, d.RunID) {
+			return true, true
+		}
+	}
+	return claimed, false
+}
+
+// acceptedLaunchWindow bounds how long a StatusAccepted delivery row reads as
+// "launch in progress" to the re-request collapse. A live launch resolves to
+// launched/launch_error within seconds; a row older than this was stranded by
+// a crash and must not keep collapsing re-requests.
+const acceptedLaunchWindow = 10 * time.Minute
+
+// webhookRunLive resolves the seam: is this run still expected to produce its
+// review (queued, running, or paused)? Terminal statuses — and a run the
+// store cannot load — read as not-live, so a re-request on them relaunches.
+func (s *Server) webhookRunLive(ctx context.Context, runID string) bool {
+	if s.webhookRunIsLive != nil {
+		return s.webhookRunIsLive(ctx, runID)
+	}
+	if s.runs == nil {
+		return false
+	}
+	run, err := s.runs.LoadRunCtx(store.WithoutTenantFilter(ctx), runID)
+	if err != nil || run == nil {
+		return false
+	}
+	switch run.Status {
+	case store.RunStatusQueued, store.RunStatusRunning,
+		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		return true
+	}
+	return false
+}
 
 // supersededRunReason is recorded as the run error of a run cancelled by the
 // overlap=supersede lane. Kept short: the merge-gate synthetic description

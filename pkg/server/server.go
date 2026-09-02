@@ -278,6 +278,11 @@ type Server struct {
 	// webhookReviewRequestGate (test seam). nil →
 	// realWebhookPRForgeReviewRequestGate.
 	webhookPRForgeReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (authorized bool, reason string, err error)
+	// webhookRunIsLive overrides the "is this run still in flight" probe
+	// behind the re-request lane's collapse of a CODEOWNERS auto-request
+	// onto the open review of the same head (test seam). nil → the real
+	// impl reads the run's status through the runview service.
+	webhookRunIsLive func(ctx context.Context, runID string) bool
 	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.

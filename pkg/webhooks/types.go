@@ -162,6 +162,26 @@ type Config struct {
 	// triage+ rights on the forge, which IS the approval gesture.
 	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
+	// ReviewRequestLogins names the review identities whose (re-)request the
+	// on-demand re-review lane answers, IN ADDITION to the one derived from the
+	// webhook's forge connection. It is what makes that lane reachable on
+	// GitHub at all: a GitHub App cannot be a requested reviewer, so the button
+	// only exists for a User account — and the review must be POSTED by that
+	// same account for the forge to clear the pending request and re-arm it,
+	// which is what a `pat` connection to a dedicated bot user gives.
+	//
+	// EXPLICIT ONLY, never derived from the connection's account: the PAT
+	// connect path stamps whatever token was pasted, typically a maintainer's
+	// own, and deriving would turn every ordinary reviewer ping addressed to
+	// that human into a bot run — the reasoning isIterionForgeBotAuthor already
+	// applies when it refuses to trust AccountLogin on GitHub.
+	//
+	// The logins join iterionBotLogins, so BOTH halves of the identity read the
+	// same set: the lane answers their request, and the actor guard recognises
+	// their own PRs and their own reviewer-writes. An identity only one half
+	// knew would launch on the bot's own echo.
+	ReviewRequestLogins []string `bson:"review_request_logins,omitempty" json:"review_request_logins,omitempty"`
+
 	// ReviewOnSync, when true, re-runs the review bot on a PR "synchronize"
 	// (a push to the PR head), not only on opened/reopened. OFF by default
 	// (a push is normally on-demand re-review — see prforge.IsReviewable, kept

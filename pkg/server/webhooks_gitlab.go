@@ -169,10 +169,11 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the MR
-	// vetoes the auto-review. Same escape hatch as the GitHub PR path. An
-	// AUTHORIZED re-request is exempt like the `/command` lanes: the label
-	// pauses automation, not a deliberate manual trigger.
-	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+	// vetoes the auto-review. Same escape hatch as the GitHub PR path.
+	// A re-request is NOT exempt: the label freezes every automation on one
+	// MR, and that promise is what makes it usable at all (see the GitHub
+	// lane for the auto-request case the exemption could not tell apart).
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 

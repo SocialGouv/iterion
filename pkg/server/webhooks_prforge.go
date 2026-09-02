@@ -335,19 +335,9 @@ func prforgePermRank(perm string) int {
 
 // replierMinRoleRank maps a MinReplierRole (gitlab vocabulary) to a rank.
 // Empty defaults to "developer" (matching the GitLab gate default), which
-// equals a GitHub "write" collaborator.
+// equals a GitHub "write" collaborator. Thin delegate: the table lives in
+// pkg/webhooks so the provision carry's stricter-of merge reads the same
+// ordering as the gates.
 func replierMinRoleRank(role string) int {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "owner":
-		return 5
-	case "maintainer":
-		return 4
-	case "developer", "":
-		return 3
-	case "reporter":
-		return 2
-	case "guest":
-		return 1
-	}
-	return 3
+	return webhooks.ReplierRoleRank(role)
 }
