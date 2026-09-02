@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.93.0](https://github.com/SocialGouv/iterion/compare/v3.92.0...v3.93.0) (2026-09-02)
+
+### Features
+
+* **webhooks:** GitHub review-thread conversations — reply to a suggestion, get an in-thread answer ([#626](https://github.com/SocialGouv/iterion/issues/626)) ([d4611df](https://github.com/SocialGouv/iterion/commit/d4611df0774ec14480167be9a4b8c5f69b0985b9))
+
+    <details><summary>why</summary>
+
+    Replying inside one of the bot's review threads on GitHub now launches the converse bot (roleBots().ReviConverse), which answers in the same thread — the GitHub half of the GitLab conversational lane (forge-conversations.md).
+
+    </details>
+
 ## [3.92.0](https://github.com/SocialGouv/iterion/compare/v3.91.0...v3.92.0) (2026-09-02)
 
 ### Features
