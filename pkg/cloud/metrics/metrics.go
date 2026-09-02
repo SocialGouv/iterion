@@ -42,7 +42,7 @@ type Registry struct {
 	LLMTokensTotal          *prometheus.CounterVec // backend, model, direction
 	LLMCostUSDTotal         *prometheus.CounterVec // backend, model
 	RunnerHeartbeatErrors   prometheus.Counter
-	RunnerAdmissionRejected *prometheus.CounterVec // reason (future_epoch)
+	RunnerAdmissionRejected *prometheus.CounterVec // reason (schema|future_epoch)
 	RolloutEpochRegression  *prometheus.CounterVec // component (server|runner)
 
 	// --- Control-plane metrics ------------------------------------

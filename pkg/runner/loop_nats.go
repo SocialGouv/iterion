@@ -92,9 +92,6 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 }
 
 func (r *Runner) handleEpochMismatch(delivery *natsq.Delivery, msg *queue.RunMessage) {
-	if r.cfg.Metrics != nil {
-		r.cfg.Metrics.RunnerAdmissionRejected.WithLabelValues("future_epoch").Inc()
-	}
 	err := fmt.Errorf("message epoch %d is newer than runner epoch %d", msg.RunnerEpoch, r.cfg.RunnerEpoch)
 	r.handleAdmissionMismatch(delivery, "future_epoch", err, r.cfg.EpochMismatchDelay)
 }
@@ -103,6 +100,9 @@ func (r *Runner) handleEpochMismatch(delivery *natsq.Delivery, msg *queue.RunMes
 // and generation fences. Both conditions are expected during a mixed-fleet
 // rollout and both become explicit, resumable failures if MaxDeliver is spent.
 func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind string, mismatchErr error, delay time.Duration) {
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunnerAdmissionRejected.WithLabelValues(kind).Inc()
+	}
 	logger := r.cfg.Logger
 	if delay <= 0 {
 		if kind == "future_epoch" {

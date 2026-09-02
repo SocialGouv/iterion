@@ -50,6 +50,16 @@ func schemaRolloutNATSURI(t *testing.T) string {
 	return uri
 }
 
+func assertAdmissionRejectedCounter(t *testing.T, mreg *metrics.Registry, reason string, want int) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	mreg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	needle := fmt.Sprintf(`iterion_runner_admission_rejected_total{reason=%q} %d`, reason, want)
+	if body := rec.Body.String(); !strings.Contains(body, needle) {
+		t.Fatalf("admission rejection counter %q missing:\n%s", needle, body)
+	}
+}
+
 func TestEpochRolloutOldRunnerDefersToNewRunner(t *testing.T) {
 	uri := schemaRolloutNATSURI(t)
 	conn, _ := schemaRolloutConn(t, uri)
@@ -93,11 +103,7 @@ func TestEpochRolloutOldRunnerDefersToNewRunner(t *testing.T) {
 	if old.Health().Busy {
 		t.Fatal("future-epoch rejection registered an in-flight run")
 	}
-	rec := httptest.NewRecorder()
-	mreg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if body := rec.Body.String(); !strings.Contains(body, `iterion_runner_admission_rejected_total{reason="future_epoch"} 1`) {
-		t.Fatalf("future-epoch rejection counter missing:\n%s", body)
-	}
+	assertAdmissionRejectedCounter(t, mreg, "future_epoch", 1)
 
 	d2, err := cons.Fetch(ctx, 5*time.Second)
 	if err != nil {
@@ -388,6 +394,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		t.Run(dir.name, func(t *testing.T) {
 			conn, _ := schemaRolloutConn(t, uri)
 			ctx := context.Background()
+			mreg := metrics.New()
 			runID := fmt.Sprintf("run-mixed-%d-%d", dir.v, time.Now().UnixNano())
 			tenantID := "tenant-mixed"
 			pool := newPoolHarnessForRun(t, credpool.Limits{MaxConcurrentRuns: 1}, runID)
@@ -450,6 +457,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 				Store:               fs,
 				Logger:              iterlog.Nop(),
 				SchemaMismatchDelay: schemaRolloutTestNakDelay,
+				Metrics:             mreg,
 			}, completionNotifier: notify.New(iterlog.Nop(), time.Second, notify.WithAllowPrivate(true))}
 
 			// --- First delivery: rejected, but NOT in a tight loop. ---
@@ -464,6 +472,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			if msg, ok := r.decodeOrTerm(d1); ok || msg != nil {
 				t.Fatalf("a foreign-version message must not decode (ok=%v)", ok)
 			}
+			assertAdmissionRejectedCounter(t, mreg, "schema", 1)
 
 			// An immediate Nak would redeliver within milliseconds; the
 			// delayed Nak must leave the queue empty on a short poll…

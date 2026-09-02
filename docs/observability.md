@@ -57,8 +57,10 @@ runner pod and `ITERION_LOG_FORMAT=json` on a CLI invocation both work.
 
 Rollout fencing adds two bounded-cardinality Prometheus signals:
 
-- `iterion_runner_admission_rejected_total{reason="future_epoch"}` counts
-  deliveries an old runner delayed before any execution side effect;
+- `iterion_runner_admission_rejected_total{reason="schema"}` and
+  `{reason="future_epoch"}` count deliveries delayed before any execution
+  side effect because the runner cannot admit their wire schema or rollout
+  generation;
 - `iterion_rollout_epoch_regression_total{component="server|runner"}` counts
   process starts below the persistent epoch high-water mark.
 
