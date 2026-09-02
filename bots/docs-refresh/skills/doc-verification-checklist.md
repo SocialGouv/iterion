@@ -16,8 +16,9 @@ note}`; kinds: `missing_path`, `dead_link`, `dead_anchor`,
 counts never gate the run, and an empty or degraded report ("nothing
 scannable") says nothing about alignment.
 
-Read `fail_log` before new work. It contains either a scope violation or the
-previous deterministic verification failure. Also inspect `git log` so you do
+Read `fail_log` before new work. It carries a scope violation — the only
+failure a pass can hand forward, since `scope_check` is the single
+deterministic node after the campaign. Also inspect `git log` so you do
 not repeat documents committed by an earlier pass, and check the dismissals
 ledger to see what earlier passes already settled.
 
