@@ -110,7 +110,9 @@ spec hand-off (claude, read-only), critiqued by a cross-family peer
 (`claw` + `openai/gpt-5.6-sol` by default), and revised by the SAME
 author session before the campaign builds; otherwise the spec hands off
 straight to the campaign (the v2 shape, unchanged). `plan_review_policy`
-picks the mid-run peer-unavailability behaviour: `wait` (default — the
-run parks failed_resumable, the usage-window retry resumes it) or `skip`
-(the reviewer's `action: skip` route — continue unreviewed, loudly
-stamped).
+picks the mid-run peer-unavailability behaviour: `skip` (default — the
+reviewer's `action: skip` route: continue unreviewed, loudly stamped; the
+peer is an optional enrichment and must never block the campaign — the
+primary family alone always suffices) or `wait` (the run parks
+failed_resumable, the usage-window retry resumes it — the deliberate-spend
+posture).
