@@ -8,10 +8,24 @@ ordering alone is not sufficient (issue #481).
 
 ## Wire compatibility policy
 
-- **Strict equality.** A consumer rejects any `v` it does not recognise, in
-  both directions: a v7 runner rejects v8 messages *and* a v8 runner rejects
-  v7 messages still sitting in the queue. There is no "forward-compatible"
-  read.
+- **Range acceptance, forward-strict.** A consumer accepts any `v` in
+  `[MinSchemaVersion, SchemaVersion]` and rejects everything else
+  (`pkg/queue/types.go`): `queue: schema version: <v> unsupported (want
+  <min>–<max>)`. The two directions are **not** symmetric.
+  - **Forward (old runner, new message): always rejected.** A pre-bump runner
+    cannot know the new version, so **server-first ordering — or a same-release
+    roll of both — remains mandatory.**
+  - **Backward (new runner, old queued message): accepted iff the bump kept
+    `MinSchemaVersion` at or below that version.** A purely additive bump
+    (v8→v9, v10→v11) lets the new fleet drain the queue as it stands — v11's
+    decoder promotes a v10 single-object `fallback` to a one-stage chain.
+  - **So the first question of any rollout is: does this bump raise
+    `MinSchemaVersion`?** If yes, Path A (drained queue). If no, Path B is safe
+    and its step 5 — the non-replayable reverse direction — does not apply.
+
+  Today: `SchemaVersion = 11`, `MinSchemaVersion = 10`. Widening the window is
+  a decision, not a default: `MinSchemaVersion` moves only when the new
+  consumer can decode the older payload *without changing what it means*.
 - **Server first.** Deploy the server (producer) before the runners. The new
   server is the only side that can start emitting the new version; runners
   that don't speak it yet hold those messages (see below) instead of
@@ -122,7 +136,11 @@ run Path B for v7 → v8; use Path A.**
    `failed_resumable`.
 2. Once **all** runners run vN+1, list the DLQ and identify the parked
    messages from the transition — the `Iterion-DLQ-Reason` header reads
-   `queue: schema version: N+1 unsupported (want N)`:
+   `queue: schema version: <v> unsupported (want …)`, with the accepted RANGE
+   (`want 10–11`) when the payload decoded far enough to read its version, or
+   a single version (`want 11`) when the version was peeked off the raw
+   envelope because the payload would not unmarshal at all. Grep the stable
+   prefix `queue: schema version:`, not the parenthetical:
 
    ```bash
    curl "https://iterion.example.com/api/admin/dlq?limit=200"
