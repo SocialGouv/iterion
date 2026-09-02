@@ -196,6 +196,17 @@ hold-label pause (a deliberate manual trigger, like any `/command`):
 Removing the pin restores the gating posture: the next provision re-derives
 `review_on_sync: true` from the `statuses` scope.
 
+**Reading back whether the pin took.** `review_on_sync` is a derivation
+input, not a field the webhook API echoes; what an operator can observe is
+its *effect* on the resolved per-bot rule. Fetch
+`GET /api/teams/{id}/webhooks` and read the reviewer's `bot_rules` entry:
+`actions: ["opened","reopened"]` is the released posture, and a
+`"synchronize"` alongside them is head-tracking still on. Two more checks
+worth pairing with it: the head of an open MR/PR carries **no** status
+(`GET /projects/{id}/repository/commits/{FULL-sha}/statuses` — a short SHA
+returns `[]` whatever the truth), and a push's webhook delivery is recorded
+`filtered`.
+
 ### GitHub merge queues
 
 A merge queue tests a synthetic `merge_group` SHA, not the PR head that Revi

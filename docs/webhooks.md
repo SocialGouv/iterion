@@ -256,7 +256,14 @@ the MR/PR's current head:
   **self-assigns the bot as an MR reviewer** after each posted review
   ([forge.ReviewerAssigner](../pkg/forge/reviews.go) — read-modify-write,
   never dropping human reviewers; best-effort, a miss only costs the
-  button).
+  button). The assigner resolves **who it is at call time**, through a live
+  `WhoAmI` on the connection's own token, and refuses to write when that
+  answer is not a usable numeric user id — GitLab reads a `0` in
+  `reviewer_ids` as "add nobody", which would report success while adding
+  no one. So a connection whose token is expired or whose identity does not
+  resolve costs the button silently; on "no button on this repo", check that
+  connection's token first — and check it **per connection**, since one team
+  commonly holds several (one per group).
 - **GitHub / Forgejo** — a `pull_request` event with action
   `review_requested` whose `requested_reviewer` is iterion's identity.
   That identity is the **App bot login only** (`<app_slug>[bot]`): a
