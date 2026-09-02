@@ -239,13 +239,16 @@ iterion remote api-keys create --provider anthropic --name mine --from-file ~/ke
 iterion remote pool share --source api_key --ref anthropic   --key-id <id from `iterion remote api-keys list`> --max-usd-day 3
 
 # 1. Operator: create/enable the pool for the org (default audience:
-#    the org's own teams only).
-iterion remote api PUT /api/teams/<team-id>/pool --data '{"enabled":true}'
+#    the org's own teams only). Creating one REQUIRES --enabled stated
+#    explicitly — a pool stood up disabled is invisible to the broker
+#    and every pledge under it is dead, so the CLI refuses the silent
+#    shape.
+iterion remote pool policy --enabled
 
 # Widen it only if you mean to — this lets more runs spend contributors'
-# personal subscriptions:
-iterion remote api PUT /api/teams/<team-id>/pool \
-  --data '{"enabled":true,"audience":{"contributors":true}}'
+# personal subscriptions. The audience is a SET, replaced whole: restate
+# every dial you mean to keep on each call.
+iterion remote pool policy --contributors
 
 # 2. Contributor: connect the subscription (once), then pledge it.
 iterion remote api POST /api/me/oauth/claude_code/authorize/start

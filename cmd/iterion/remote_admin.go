@@ -219,7 +219,12 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			blob, err := cli.ReadSecretBlob(remoteLLMFromEnv, remoteLLMFromFile)
+			// ReadCredentialBlob, not ReadSecretBlob: a forfait payload
+			// is routinely copied out of a terminal, and the escapes it
+			// carries used to surface as a server-side JSON parse error
+			// pointing at "\x1b". Normalise and validate the shape here,
+			// where the file name is still known.
+			blob, err := cli.ReadCredentialBlob(remoteLLMFromEnv, remoteLLMFromFile, kind)
 			if err != nil {
 				return err
 			}
