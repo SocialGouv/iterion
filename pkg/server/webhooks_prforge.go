@@ -396,6 +396,15 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 		filtered("thread-opening comment (not a reply)")
 		return
 	}
+	// Fork guard, payload-only: on a fork PR the launch pair (base repo's
+	// CloneURL + head-repo SourceBranch) does not name one repository — the
+	// checkout would miss, or silently hit a same-named BASE branch and the
+	// bot would answer grounded in the wrong code. Same posture as the PR
+	// auto lane: filtered.
+	if p.IsCrossRepo() {
+		filtered("fork PR — review-thread replies are same-repo only")
+		return
+	}
 	// Loop-guard next, still without forge I/O: the converse bot answers
 	// with the same PAT identity, so its own reply echoes back as this
 	// event.

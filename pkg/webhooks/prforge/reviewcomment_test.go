@@ -52,3 +52,32 @@ func TestParseReviewCommentTopLevelIsItsOwnRoot(t *testing.T) {
 		t.Fatalf("a thread-opening comment roots its own thread: %+v", p)
 	}
 }
+
+func TestParseReviewCommentForkCarriesHeadRepo(t *testing.T) {
+	body := []byte(`{
+  "action": "created",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "comment": {"id": 9002, "in_reply_to_id": 9001, "body": "q", "user": {"login": "mallory"}},
+  "pull_request": {"number": 7, "state": "open",
+    "head": {"sha": "abc", "ref": "main", "repo": {"full_name": "mallory/widgets"}},
+    "base": {"ref": "main"}},
+  "sender": {"login": "mallory"}
+}`)
+	p, err := ParseReviewComment(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HeadRepoFullName != "mallory/widgets" || !p.IsCrossRepo() {
+		t.Fatalf("fork head repo must be decoded and flagged: %+v", p)
+	}
+}
+
+func TestParseReviewCommentLegacyPayloadIsSameRepo(t *testing.T) {
+	p, err := ParseReviewComment([]byte(reviewCommentReplyFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.IsCrossRepo() {
+		t.Fatalf("a payload without head.repo must stay same-repo (no false gating): %+v", p)
+	}
+}

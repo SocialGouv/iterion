@@ -418,3 +418,39 @@ func TestClassifyReviewThread(t *testing.T) {
 		}
 	})
 }
+
+// A fork PR pairs the BASE repo's clone URL with a HEAD-repo ref — the
+// launch would check out missing or wrong code — so the reply lane filters
+// cross-repo PRs from the payload alone, before the gate.
+func TestGitHubWebhook_ReviewThreadForkPRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	launches, gates := 0, 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launches++
+		return "run-x", nil
+	}
+	s.webhookPRForgeReviewReplyGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedReviewComment, string) (bool, string, string, error) {
+		gates++
+		return true, "", "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.EventAllowlist = []string{"issue_comment", "pull_request", "pull_request_review_comment"}
+
+	body := `{
+  "action": "created",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "comment": {"id": 9002, "in_reply_to_id": 9001, "body": "why?", "user": {"login": "alice"}},
+  "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
+    "html_url": "https://github.com/acme/widgets/pull/7",
+    "head": {"sha": "abc123", "ref": "main", "repo": {"full_name": "mallory/widgets"}},
+    "base": {"ref": "main"}},
+  "sender": {"login": "alice"}
+}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderReviewComment, pt))
+	if w.Code != http.StatusOK || launches != 0 || gates != 0 {
+		t.Fatalf("fork reply must filter payload-only: code=%d launches=%d gates=%d", w.Code, launches, gates)
+	}
+}

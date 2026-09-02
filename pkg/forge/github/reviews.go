@@ -139,19 +139,21 @@ type prReviewCommentWire struct {
 }
 
 // ListPRReviewComments returns the PR's review-thread comments (the inline
-// diff comments and their replies), oldest first as GitHub serves them.
-// Backs the reply-in-thread conversational gate: it needs the whole set to
+// diff comments and their replies), in chronological order. Backs the
+// reply-in-thread conversational gate: it needs the whole set to
 // reconstruct one thread (id == root || in_reply_to_id == root) and decide
-// whether the bot participates in it. Pagination is capped: a conversation
-// gate does not need more than the first pages, and an unbounded walk on a
-// pathological PR would stall the webhook hot path.
+// whether the bot participates in it. Pagination is capped at the NEWEST
+// pages (fetched newest-first, then reversed): the gate classifies the
+// thread just replied to, which lives at the new end — a cap on the oldest
+// pages would blind it exactly on the long-lived PRs that exceed it — and
+// an unbounded walk on a pathological PR would stall the webhook hot path.
 func (c *AdminClient) ListPRReviewComments(ctx context.Context, repo string, number int) ([]forge.PRReviewComment, error) {
 	const perPage = 100
 	const maxPages = 5
 	out := make([]forge.PRReviewComment, 0, perPage)
 	for page := 1; page <= maxPages; page++ {
 		var resp []prReviewCommentWire
-		path := "/repos/" + repo + "/pulls/" + strconv.Itoa(number) + "/comments?per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
+		path := "/repos/" + repo + "/pulls/" + strconv.Itoa(number) + "/comments?sort=created&direction=desc&per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
 		code, err := c.do(ctx, http.MethodGet, path, nil, &resp)
 		if err != nil {
 			return nil, err
@@ -172,6 +174,9 @@ func (c *AdminClient) ListPRReviewComments(ctx context.Context, repo string, num
 		if len(resp) < perPage {
 			break
 		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
 }

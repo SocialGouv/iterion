@@ -539,7 +539,12 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ReviewOnSync:       reviewOnSync,
 		ReviewOnSyncPinned: reviewOnSyncPinned,
 		ForgeBaseURL:       conn.BaseURL(),
-		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
+		// The burst must absorb a full review fan-out: one submitted review
+		// fires one pull_request_review_comment delivery PER inline comment,
+		// near-simultaneously, and the bucket is charged BEFORE the handler
+		// can filter the echoes — overflow answers 429, which GitHub never
+		// redelivers and counts toward auto-disabling the hook.
+		RateLimit:          webhooks.Rate{Rate: 2, Burst: 60},
 		LaunchVars:         nilIfEmpty(launchVars),
 		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:            operatorOverlap,

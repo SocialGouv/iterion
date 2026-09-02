@@ -33,8 +33,11 @@ type ReviewCommentEvent struct {
 		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
 		Head    struct {
-			SHA string `json:"sha"`
-			Ref string `json:"ref"`
+			SHA  string `json:"sha"`
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
@@ -71,6 +74,21 @@ type ParsedReviewComment struct {
 	CommentPath  string // file the thread anchors to
 	AuthorLogin  string
 	Action       string
+	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in —
+	// differs from ProjectPath on a fork PR; empty when the payload omits
+	// head.repo. Read by IsCrossRepo for the fork guard.
+	HeadRepoFullName string
+}
+
+// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
+// than its base — i.e. the PR comes from a fork. Same semantics as
+// Parsed.IsCrossRepo: on a fork, CloneURL (the BASE repo) and SourceBranch
+// (a HEAD-repo ref) do not name the same repository, so a launch would check
+// out a missing — or worse, a same-named base — branch. An empty head repo
+// (minimal/legacy payloads) is treated as same-repo to avoid falsely gating
+// a trusted internal PR.
+func (p ParsedReviewComment) IsCrossRepo() bool {
+	return p.HeadRepoFullName != "" && p.HeadRepoFullName != p.ProjectPath
 }
 
 // ParseReviewComment decodes a pull_request_review_comment webhook body
@@ -99,6 +117,8 @@ func ParseReviewComment(body []byte) (ParsedReviewComment, error) {
 		CommentPath:  e.Comment.Path,
 		AuthorLogin:  e.Comment.User.Login,
 		Action:       e.Action,
+
+		HeadRepoFullName: e.PullRequest.Head.Repo.FullName,
 	}
 	if p.ThreadRootID == 0 {
 		p.ThreadRootID = p.CommentID

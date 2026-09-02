@@ -26,12 +26,16 @@ entries there:
   filters (open PR, event/project allowlists), drops thread-OPENING
   comments from the payload alone (`in_reply_to` empty ⇒ nobody is in
   that thread yet — every inline comment of a bot review echoes back
-  as one, so this spares the whole fetch), runs the loop-guard next,
+  as one, so this spares the whole fetch), drops fork PRs the same
+  payload-only way (`IsCrossRepo` — the base clone URL and the head
+  ref would not name one repository), runs the loop-guard next,
   still without forge I/O (`isIterionForgeBotAuthor` — the bot's
   own answer echoes back as this very event), requires the converse
   bot in the webhook scope (`roleBots().ReviConverse` +
   `cfg.AllowsBot`), then gates: the thread is fetched
-  (`ListPRReviewComments`, capped pagination) and must contain a
+  (`ListPRReviewComments` — newest-first capped pagination, handed
+  back chronological, so a long-lived PR's cap never blinds the gate
+  on the thread just replied to) and must contain a
   comment by the bot identity — a human↔human thread never triggers —
   and the replier must clear `authorized_repliers` or
   `min_replier_role`. The launch carries `converse_question` (the
