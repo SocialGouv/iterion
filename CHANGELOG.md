@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.92.0](https://github.com/SocialGouv/iterion/compare/v3.91.0...v3.92.0) (2026-09-02)
+
+### Features
+
+* **runtime:** support branch-local bounded loops ([#557](https://github.com/SocialGouv/iterion/issues/557)) ([c121be6](https://github.com/SocialGouv/iterion/commit/c121be668848689d6421984e8912b185872a1ab0))
+
+    <details><summary>why</summary>
+
+    The answered branch closed its siblings' resume barrier only through checkpointResumedBranch (the happy path) and the panic recovers. Any other exit between consuming ResumeAnswers and landing the successor cursor — an artifact write failure, an answer satisfying no outgoing edge, a C245/unknown-node guard after an edited source — left the barrier open; under best_effort nothing cancels the siblings and collectBranches only arms its grace timer after a cancellation, so the fan-out hung until…
+
+    </details>
+
 ## [3.91.0](https://github.com/SocialGouv/iterion/compare/v3.90.0...v3.91.0) (2026-09-02)
 
 ### Features
