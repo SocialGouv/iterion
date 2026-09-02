@@ -367,7 +367,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				overrides[secrets.Provider(prov)] = keyID
 			}
 		}
-		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer)
+		// Evidence-based skip: a key the provider freshly refused is
+		// passed over so the priority walk yields the next key of that
+		// provider — the BYOK tier becomes an ordered fallback chain.
+		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer,
+			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID))
 		if err != nil {
 			return credResolution{}, fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
@@ -700,7 +704,8 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 		}
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
-			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer)
+			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer,
+				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 			} else {
@@ -829,27 +834,29 @@ const usageCapLookupTimeout = 5 * time.Second
 //     reset", so a window that reopened stops blocking by itself);
 //   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
 func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord) (time.Time, string) {
-	if p.usageCaps == nil || rec.Fingerprint == "" {
-		return time.Time{}, ""
-	}
 	backend := usageBackendForKind(rec.Kind)
-	if backend == "" {
-		return time.Time{}, ""
-	}
-	// Same key the runner meters under: the credential's own fingerprint,
-	// in the scope that credential belongs to (a tenant's own forfait
-	// never merges with the platform's).
 	scope := usagecap.ScopePlatform
 	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
 		scope = usagecap.TenantScope(tenantID)
 	}
+	return p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+}
+
+// refusedUntil is the ONE evidence reading shared by every credential-skip
+// site (the oauth-forfait tiers and the BYOK api-key walk): it reports when
+// fresh provider refusals against this credential lapse, or the zero time
+// when the credential is usable. label is for the lookup-failure log only.
+func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope string, fingerprint, label string) (time.Time, string) {
+	if p.usageCaps == nil || fingerprint == "" || backend == "" {
+		return time.Time{}, ""
+	}
 	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
 	defer cancel()
-	readings, err := p.usageCaps.Latest(lctx, usagecap.Key(backend, scope, rec.Fingerprint))
+	readings, err := p.usageCaps.Latest(lctx, usagecap.Key(backend, scope, fingerprint))
 	if err != nil {
 		// The meter is an optimisation; its failure must not change which
 		// credential a run gets.
-		p.logger.Warn("cloudpublisher: usage-cap lookup for %s/%s: %v", rec.Kind, rec.Fingerprint, err)
+		p.logger.Warn("cloudpublisher: usage-cap lookup for %s/%s: %v", label, fingerprint, err)
 		return time.Time{}, ""
 	}
 	now := time.Now()
@@ -891,6 +898,37 @@ func usageBackendForKind(kind secrets.OAuthKind) string {
 		return delegate.BackendClaudeCode
 	}
 	return ""
+}
+
+// usageBackendForProvider maps a BYOK api-key provider to the meter backend
+// its refusals are recorded under. Anthropic-shaped keys (the real one and
+// the z.ai facade) are spent by claude_code sessions, so that is where the
+// runner meters them. "" for a provider with no metered evidence — those
+// keys are never skipped.
+func usageBackendForProvider(prov secrets.Provider) string {
+	switch prov {
+	case secrets.ProviderAnthropic, secrets.ProviderZAI:
+		return delegate.BackendClaudeCode
+	}
+	return ""
+}
+
+// apiKeyUsable builds the Resolve predicate for one resolution: a key with
+// fresh provider-refusal evidence under its fingerprint is skipped, and the
+// priority walk hands the NEXT key of that provider over — the ordered
+// fallback the 2026-09-02 fair-usage freeze was routed around by hand.
+// Everything uncertain means "usable", same contract as refusedUntil.
+func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string) func(secrets.ApiKey) bool {
+	return func(k secrets.ApiKey) bool {
+		backend := usageBackendForProvider(k.Provider)
+		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider))
+		if until.IsZero() {
+			return true
+		}
+		p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
+			k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
+		return false
+	}
 }
 
 // providerOfWant maps a want back to the LLM provider it authenticates

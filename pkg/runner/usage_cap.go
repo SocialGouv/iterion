@@ -43,19 +43,27 @@ func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 	scope := usagecap.ScopePlatform
 	credFP := ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		tenantOwnZai := creds.APIKey(secrets.ProviderZAI) != "" &&
+			!creds.IsPlatformSourced(string(secrets.ProviderZAI))
 		tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
 			!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
 		tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
 			!creds.IsPlatformSourced(delegate.BackendClaudeCode)
-		if tenantOwnKey || tenantOwnOAuth {
+		if tenantOwnZai || tenantOwnKey || tenantOwnOAuth {
 			scope = usagecap.TenantScope(msg.TenantID)
 		}
 		// The meter follows the CREDENTIAL: same preference order as the
-		// delegate (a ctx API key outranks an OAuth dir), so the
+		// delegate (z.ai AUTH_TOKEN over an Anthropic API key over an
+		// OAuth dir — anthropicCredEnvForCLI's contract), so the
 		// fingerprint names the credential the run will actually spend.
 		// A rotated token therefore opens a fresh meter instead of
-		// inheriting the readings of the account it replaced.
-		if fp := creds.Fingerprint(string(secrets.ProviderAnthropic)); fp != "" {
+		// inheriting the readings of the account it replaced. Metering a
+		// z.ai-served run under the anthropic slot was the miss that let
+		// a refused key keep a clean meter while every reading landed on
+		// a credential the run never spent.
+		if fp := creds.Fingerprint(string(secrets.ProviderZAI)); fp != "" {
+			credFP = fp
+		} else if fp := creds.Fingerprint(string(secrets.ProviderAnthropic)); fp != "" {
 			credFP = fp
 		} else if fp := creds.Fingerprint(delegate.BackendClaudeCode); fp != "" {
 			credFP = fp
