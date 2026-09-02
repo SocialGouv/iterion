@@ -441,6 +441,12 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 		}
 		convergenceNodeID = plan.preComputedConvergence
 		if convergenceNodeID == "" {
+			// Branches that diverge to distinct terminals have no collector to
+			// carry the verdict, so the spent-budget sentinel has to be raised
+			// here instead — a naked error is retryable to the cloud runner.
+			if verdict := spentBudgetBranchFailure(rs, routerNodeID, results, true); verdict != nil {
+				return "", verdict
+			}
 			return "", fmt.Errorf("no convergence point found after fan_out from %s", routerNodeID)
 		}
 	}

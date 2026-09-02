@@ -358,6 +358,10 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 		convergenceNodeID = convergence
 		if convergenceNodeID == "" {
+			// No collector to carry the verdict (see resolveConvergence).
+			if verdict := spentBudgetBranchFailure(rs, routerNodeID, results, true); verdict != nil {
+				return "", verdict
+			}
 			return "", fmt.Errorf("no convergence point found after fan_out_each from %s", routerNodeID)
 		}
 	}

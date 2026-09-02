@@ -28,53 +28,27 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 
 	// Collect failed branches metadata.
 	var failedBranches []map[string]any
-	// budgetFailures/otherFailures classify why the branches died. A budget
-	// refusal cancels its siblings (cancelOnFirstFailure), so a fan-out killed
-	// by a spent budget yields one budget error plus N cancellations — the
-	// cancellations carry no verdict of their own and must not mask it.
-	budgetFailures, otherFailures := 0, 0
-	var firstBudgetErr error
 	for _, r := range results {
 		if r.err != nil {
 			failedBranches = append(failedBranches, map[string]any{
 				"branch_id": r.branchID,
 				"error":     r.err.Error(),
 			})
-			switch {
-			case errors.Is(r.err, ErrBudgetExceeded):
-				budgetFailures++
-				if firstBudgetErr == nil {
-					firstBudgetErr = r.err
-				}
-			case errors.Is(r.err, context.Canceled), errors.Is(r.err, context.DeadlineExceeded), errors.Is(r.err, ErrRunCancelled):
-			default:
-				otherFailures++
-			}
 		}
+	}
+
+	// A spent run budget outranks the await strategy. wait_all dies on any
+	// failure, so it inherits the verdict as soon as the budget is the only
+	// one; best_effort keeps converging on a partial result and only inherits
+	// it when nothing at all came back. See spentBudgetBranchFailure.
+	if verdict := spentBudgetBranchFailure(rs, convergenceNodeID, results, strategy != ir.AwaitWaitAll); verdict != nil {
+		return "", verdict
 	}
 
 	// Apply await strategy.
 	switch strategy {
 	case ir.AwaitWaitAll:
 		if len(failedBranches) > 0 {
-			if budgetFailures > 0 && otherFailures == 0 {
-				// A branch never gets the exit grace (withinBudgetGrace), so a
-				// fan-out reached on a spent budget refuses every branch and
-				// wait_all kills the run here. That death has to keep carrying
-				// the sentinel: the cloud runner's terminal-ack carve-out
-				// matches errors.Is(err, ErrBudgetExceeded), and a naked error
-				// goes back to JetStream as retryable — a resume/refail loop
-				// re-provisioning a sandbox to re-hit the same spent budget.
-				// It is also what tells the operator to raise the cap and
-				// resume rather than hunt a branch bug.
-				return "", &RuntimeError{
-					Code:    ErrCodeBudgetExceeded,
-					Message: fmt.Sprintf("convergence at %s (wait_all): %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, len(failedBranches), firstBudgetErr),
-					NodeID:  convergenceNodeID,
-					Hint:    "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace",
-					Cause:   ErrBudgetExceeded,
-				}
-			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
 				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
 			// When every failed branch carries the SAME typed code, the
@@ -147,6 +121,72 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 
 	// Return the convergence node ID — the main loop will execute it normally.
 	return convergenceNodeID, nil
+}
+
+// spentBudgetBranchFailure returns the BUDGET_EXCEEDED verdict a fan-out must
+// carry when its branches died on the run's spent budget and nothing else. A
+// branch never receives the exit grace (withinBudgetGrace) — sibling spend
+// lands on one shared budget concurrently — so a fan-out reached over cap
+// refuses every branch at its first node boundary.
+//
+// The sentinel is what makes that death terminal: the cloud runner's
+// terminal-ack carve-out matches errors.Is(err, ErrBudgetExceeded), and a naked
+// error goes back to JetStream as retryable — a resume/refail loop
+// re-provisioning a sandbox to re-hit the same spent cap. It is also what tells
+// the operator to raise the cap and resume rather than hunt a branch bug.
+//
+// strict asks for the stronger evidence the tolerant convergence paths need
+// (best_effort, and a fan-out whose branches diverge to distinct terminals).
+// best_effort exists to salvage a PARTIAL result, so a mixed fan-out still
+// converges; but when the spent budget refused EVERY branch there is nothing
+// to salvage, and converging anyway walks on to the terminal and reports the
+// run `finished` having delivered none of the fan-out's work — the exceeded
+// budget visible only in the per-branch events, with no resumable status to
+// raise the cap from. Escalating a tolerated failure into a run kill needs to
+// be right, so strict mode also demands that the run's OWN accounting agree
+// the cap is spent: a delegate that merely reports a provider budget error is
+// a sibling failure best_effort is meant to absorb, not a run-wide wall.
+//
+// Cancellations are not a verdict: a budget refusal cancels its siblings
+// (cancelOnFirstFailure), so a fan-out killed by a spent budget yields one
+// budget error plus N cancellations, and those must not mask it.
+func spentBudgetBranchFailure(rs *runState, convergenceNodeID string, results []*branchResult, strict bool) *RuntimeError {
+	budgetFailures, otherFailures, failed := 0, 0, 0
+	var firstBudgetErr error
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		failed++
+		switch {
+		case errors.Is(r.err, ErrBudgetExceeded):
+			budgetFailures++
+			if firstBudgetErr == nil {
+				firstBudgetErr = r.err
+			}
+		case errors.Is(r.err, context.Canceled), errors.Is(r.err, context.DeadlineExceeded), errors.Is(r.err, ErrRunCancelled):
+		default:
+			otherFailures++
+		}
+	}
+	if budgetFailures == 0 || otherFailures > 0 {
+		return nil
+	}
+	if strict {
+		if failed != len(results) {
+			return nil
+		}
+		if rs == nil || rs.budget == nil || findExceeded(rs.budget.Check()) == nil {
+			return nil
+		}
+	}
+	return &RuntimeError{
+		Code:    ErrCodeBudgetExceeded,
+		Message: fmt.Sprintf("convergence at %s: %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, failed, firstBudgetErr),
+		NodeID:  convergenceNodeID,
+		Hint:    "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace",
+		Cause:   ErrBudgetExceeded,
+	}
 }
 
 // processConvergenceTerminal handles an all-done topology (every branch ran

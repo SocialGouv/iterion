@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2097,6 +2098,14 @@ func TestBudgetGraceRefusedOnImposedCap(t *testing.T) {
 // branch-local predictive loop pricing is disabled because sibling spend is
 // shared, so its exit-grace safety argument does not hold. A graced trunk may
 // reach the router, but no branch node may start past the declared cap.
+//
+// The collector here is best_effort, and that mode must NOT launder the
+// refusal into a successful run: with every branch refused there is no partial
+// result to salvage, so converging anyway would reach the terminal and report
+// `finished` having delivered none of the fan-out's work — the exceeded budget
+// visible only in the per-branch events, and no resumable status to raise the
+// cap from. A mixed fan-out (some branches delivered) still converges; that is
+// TestBudgetBestEffortFanOutConvergesOnPartialResult below.
 func TestBudgetGraceStopsBeforeFanOutBranches(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_grace_fanout",
@@ -2137,12 +2146,116 @@ func TestBudgetGraceStopsBeforeFanOutBranches(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-grace-fanout", nil); err != nil {
-		t.Fatalf("best_effort terminal convergence should report failed branches in output, got: %v", err)
-	}
+	err := eng.Run(context.Background(), "run-grace-fanout", nil)
 	if got := branches.Load(); got != 0 {
 		t.Fatalf("%d branch nodes ran under an unsafe exit grace", got)
 	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("best_effort fan-out with every branch refused = %v, want ErrBudgetExceeded (a run that delivered nothing must not report success)", err)
+	}
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeBudgetExceeded {
+		t.Fatalf("error = %#v, want a RuntimeError coded BUDGET_EXCEEDED", err)
+	}
+	run, lerr := s.LoadRun(context.Background(), "run-grace-fanout")
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if run.Status == store.RunStatusFinished {
+		t.Fatalf("run status = %q, want a non-success terminal state", run.Status)
+	}
+}
+
+// TestBudgetBestEffortFanOutConvergesOnPartialResult is the other half of the
+// rule above: best_effort exists to salvage a PARTIAL result, so a fan-out
+// where one branch delivered and one was refused on the spent budget must
+// still converge instead of inheriting the sentinel.
+func TestBudgetBestEffortFanOutConvergesOnPartialResult(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_best_effort_partial",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"branch_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_a"}},
+			"branch_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_b"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitBestEffort},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "work", To: "router"},
+			{From: "router", To: "branch_a"},
+			{From: "router", To: "branch_b"},
+			{From: "branch_a", To: "collect"},
+			{From: "branch_b", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	s := tmpStore(t)
+	const runID = "run-best-effort-partial"
+
+	exec := newStubExecutor()
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	// branch_a delivers cheaply; branch_b then crosses the cap and is refused.
+	// Note the branch that CROSSES the cap is itself the one that fails
+	// (recordBranchUsage checks right after recording), so the surviving branch
+	// has to be the cheap one — and it has to be COMPLETELY done first: a
+	// budget failure cancels its siblings whatever the await mode, which would
+	// turn branch_a into a cancellation and leave no partial result at all.
+	// branch_a's branch_finished event is that happens-before edge: it is
+	// emitted from execBranch's defer, after the branch's result is final.
+	// Both branches hold a slot (the default cap is the edge count), so waiting
+	// inside branch_b cannot starve branch_a.
+	exec.on("branch_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.1}, nil
+	})
+	exec.on("branch_b", func(_ map[string]any) (map[string]any, error) {
+		deadline := time.Now().Add(10 * time.Second)
+		for !branchFinished(s, runID, "branch_router_branch_a") {
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("branch_a never finished")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return map[string]any{"ok": true, "_cost_usd": 0.92}, nil
+	})
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	// 1.02 total against a 1.0 cap: over the cap (so branch_b is refused) but
+	// inside the trunk's proportional exit grace, which is what lets the
+	// collector still run and deliver branch_a's banked work.
+	if err := New(wf, s, exec).Run(context.Background(), runID, nil); err != nil {
+		t.Fatalf("best_effort must converge on a partial result, got: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("run status = %q, want finished", run.Status)
+	}
+}
+
+// branchFinished reports whether a branch has emitted branch_finished — the
+// point at which execBranch has returned and its result is final.
+func branchFinished(s store.RunStore, runID, branchID string) bool {
+	evs, _ := s.LoadEvents(context.Background(), runID)
+	for _, e := range evs {
+		if e.BranchID == branchID && e.Type == store.EventBranchFinished {
+			return true
+		}
+	}
+	return false
 }
 
 // TestBudgetGraceFanOutWaitAllKeepsBudgetSentinel pins the stop-path SHAPE of
