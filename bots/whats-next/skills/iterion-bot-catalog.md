@@ -1,9 +1,9 @@
 ---
 name: iterion-bot-catalog
-description: Catalog of iterion bots — pick a bot name for each roadmap_item.assignee. The stock dispatcher routes by assignee through assignee_workflows.
+description: Catalog of iterion bots — pick the bot that should execute each card, and stamp it with `set_bot`. The dispatcher routes by that typed bot field.
 ---
 
-# Iterion Bot Catalog — for whats-next.bot's `propose_roadmap`, `revise_roadmap`, and `emit_action`
+# Iterion Bot Catalog — the bot Nexie stamps on each card
 
 <!-- This file is the HAND-AUTHORED TEMPLATE for the bot catalog. The
      persona table + per-bot reference cards between the GENERATED markers
@@ -17,20 +17,22 @@ description: Catalog of iterion bots — pick a bot name for each roadmap_item.a
      ROOT (not skills/) so it is never mirrored as a skill; the generated
      copy Nexie actually reads is skills/iterion-bot-catalog.md. -->
 
-Consumed by three phases:
+Nexie is a **conversation**, not a pipeline: v3 is four nodes
+(`seed` → `nexie` → `gate` → `chat`, looping back into `nexie`),
+and this catalog is read inside the one `nexie` agent turn that
+frames work onto the board.
 
-1. **`propose_roadmap` / `revise_roadmap`** — pick the right
-   bot name for each `roadmap_item.assignee`. Leave it `""`
-   when no existing bot fits.
-2. **`emit_action`** — validate every assignee against the
-   catalog before creating issues. Unrecognised assignees get
-   stripped to `""` and the issue is labelled
-   `needs-manual-triage`.
+Its job there is routing: for each card, pick the bot that should
+EXECUTE it and stamp that bot with **`set_bot`** — the typed field
+the dispatcher's `Claim` reads first. `assign_issue` is reserved
+for human ownership and is never a bot selector here. Leave the
+bot unstamped when no catalog bot fits, and say so in the reply
+rather than guessing.
 
-**Trust check first**: this catalog enumerates bots discovered
-in the workspace. If the workspace ships no bots (none of the
-cards below resolve), all assignees should be `""` and all issues
-will be `needs-manual-triage`.
+**Trust check first**: this catalog enumerates bots discovered in
+the workspace. If the workspace ships no bots (none of the cards
+below resolve), stamp nothing and tell the operator — a card with
+a bot that does not exist is worse than a card with none.
 
 ## The pivot: kanban-driven, not shell-driven
 
@@ -61,15 +63,18 @@ merges over rendered dispatch vars and is usable today.
 wholesale per assignee; per-ticket `BotArgs` then merges on top
 key-by-key (see the issue-creation section below).
 
-whats-next records the assignee on every issue so operators can drive
-routing by setting `--assignee` and mapping it through
-`assignee_workflows:` (or relying on the registry fallback).
+Nexie stamps the typed `Bot` field (`set_bot`) on every card it frames,
+so routing does not depend on the assignee fallback at all. That fallback
+remains for cards created outside Nexie — by hand, or synced from an
+external tracker.
 
-## Decision tree — pick `assignee` per roadmap item
+## Decision tree — pick the bot to stamp on a card
 
-Walk top-to-bottom; first match wins.
+Walk top-to-bottom; first match wins. The right-hand column is the value
+for `set_bot` (and, for a hand-created card, the legacy `--assignee`
+fallback).
 
-| If the work sounds like… | → `assignee` |
+| If the work sounds like… | → bot |
 |---|---|
 | "where should this project go next?", "long-term vision", "architectural direction", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) AND the project is mature/stable | `evolve` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
@@ -104,8 +109,9 @@ Walk top-to-bottom; first match wins.
 | long-term theme on a greenfield / unstable project | `""` (vision is premature — drive stability first) |
 
 When in doubt, prefer `""` and let the operator triage manually
-in the board UI. An empty assignee is honest; a wrong one
-wastes a bot run.
+in the board UI. An unstamped card is honest; a wrong bot wastes a
+run — and a bot name that does not exist fails at claim time, far from
+the operator who could have fixed it.
 
 ## An issue that ALREADY has an open PR → Billy, with a fork guard
 
@@ -191,7 +197,7 @@ before you walk the table on a new roadmap item.
 ### `evolve` (Evoly) vs `whats-next` (Nexie) — altitude
 
 - `whats-next` / Nexie is the **tactical** orchestrator (you). It
-  answers "what should we work on this week?" — one next_action,
+  answers "what should we work on this week?" — one clear next move,
   ≤2-week-horizon items, kanban dispatch.
 - `evolve` / Evoly is the **strategic** partner, one altitude ABOVE
   you. It answers "where should this project go next quarter / year?":
@@ -1567,18 +1573,22 @@ Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
 
 <!-- ITERION:CATALOG:GENERATED:END -->
 
-## Issue-creation mapping (consumed by `emit_action`)
+## Issue-creation mapping
 
-Each `roadmap_item` lands on the native kanban board as one
+Each framed unit of work lands on the native kanban board as one
 issue. The data model on the wire is:
 
-| `roadmap_item` field | Native tracker field | CLI flag (today) |
+| What you frame | Native tracker field | CLI flag |
 |---|---|---|
-| `title`              | `title`              | `--title`        |
-| `body`               | `body`               | `--body`         |
-| `assignee`           | `assignee`           | `--assignee`     |
-| _(bot name, e.g. `feature-dev`)_ | `bot` (string)       | `--bot` (on `create`) |
-| `args` (object)      | `bot_args` (`map[string]string`) | `--bot-arg key=value` (on `create`) |
+| the card's title     | `title`              | `--title`        |
+| the card's body      | `body`               | `--body`         |
+| the HUMAN owner      | `assignee`           | `--assignee`     |
+| the EXECUTING bot (e.g. `feature-dev`) | `bot` (string) | `--bot` (on `create`) |
+| per-card var overrides | `bot_args` (`map[string]string`) | `--bot-arg key=value` (on `create`) |
+
+The two identity fields are not interchangeable: `bot` is what the
+dispatcher routes on, `assignee` is human ownership. Through the board
+tools that is `set_bot` vs `assign_issue`.
 
 `bot` and `bot_args` are dedicated typed fields on
 `native.Issue` (`pkg/dispatcher/native/issue.go`; JSON
@@ -1591,43 +1601,55 @@ or direct `store.Create/Update` calls. `bot_args` is usable today: the
 dispatcher merges it on top of the rendered `dispatch.vars`
 key-by-key, with `bot_args` winning on shared keys (see `pkg/dispatcher/loop.go`, `buildSpec`).
 
-Concrete `bot_args` example — for an issue assigned to
-`feature-dev` with `args = {"feature_prompt": "Add CSV export"}`:
+Concrete `bot_args` example — a card `feature-dev` should execute,
+carrying its own `feature_prompt`:
 
 ```json
 {
   "title": "Add CSV export",
-  "assignee": "feature-dev",
   "bot": "feature-dev",
   "bot_args": { "feature_prompt": "Add CSV export" },
   "labels": ["horizon:next-action", "source:whats-next"]
 }
 ```
 
-Horizon labels:
+(No `assignee`: nobody human owns it yet. Setting `assignee:
+"feature-dev"` would be the legacy selector shape — harmless but
+misleading, since `bot` already decides.)
+
+Horizon labels — the current vocabulary is `now` / `next` / `later`
+(plus `theme` for a strategic item never dispatched directly):
 
 ```
-horizon=next_action  → --label horizon:next-action --label source:whats-next
-horizon=short_term   → --label horizon:short-term --label source:whats-next
-horizon=long_term    → --label horizon:long-term --label source:whats-next
+horizon:now    + source:whats-next   → start this week
+horizon:next   + source:whats-next   → this month
+horizon:later  + source:whats-next   → this quarter
+horizon:theme  + source:whats-next   → strategic, not dispatched
 ```
 
-Operators driving routing only through the CLI today should set
-`--assignee <bot_name>` and rely on `assignee_workflows:` /
-`assignee_dispatch:` in the dispatcher YAML (or the registry
-fallback) to map that assignee to a workflow + var template — see
-`docs/dispatcher.md` §Routing by issue assignee.
+The `next-action` / `short-term` / `long-term` spellings are **legacy**.
+Treat them as equivalent when filtering old cards, emit the current ones
+on new cards, and do not mass-relabel without an explicit operator ask —
+see `iterion-label-vocabulary`.
 
-## Verification ritual (emit_action)
+`--assignee <bot_name>` plus `assignee_workflows:` /
+`assignee_dispatch:` in the dispatcher YAML remains supported for
+back-compatibility — the dispatcher falls back to routing by assignee
+when no `bot` is stamped, which is the path external trackers
+(GitHub/Forgejo) rely on. Prefer `--bot`; see `docs/dispatcher.md`.
 
-Before creating each issue:
+## Verification ritual
 
-1. If `assignee != ""`, look it up in the persona table above. If
-   it is not one of the listed bots, AND it does not correspond to
-   a `.bot` file the explorer surfaced — strip to `""` and add
-   label `needs-manual-triage`. NEVER invent an assignee.
-2. Empty assignee is FINE. The issue lands without an assignee
-   and the operator triages.
+Before stamping a bot on a card:
+
+1. Look the name up in the persona table above. If it is not one of
+   the listed bots, and no `.bot` file in the workspace matches it,
+   **leave the bot unstamped**. NEVER invent a bot name — a card
+   pointing at a bot that does not exist fails at claim time, away
+   from the operator who could have fixed it.
+2. An unstamped card is FINE. It lands for the operator to triage,
+   and saying "no catalog bot fits this" in your reply is a better
+   answer than a wrong stamp.
 
 ## What you do NOT do
 
@@ -1635,10 +1657,10 @@ Before creating each issue:
   to do that; it doesn't anymore.
 - You do NOT enumerate bots from the user's free-text alone.
   Walk the decision tree against the explore summary.
-- You do NOT recommend an `assignee` whose card is not in the
-  catalog above (and whose `.bot` file the explorer did not
-  surface).
-- You do NOT recommend more than one `next_action`.
+- You do NOT stamp a bot whose card is not in the catalog above
+  (and whose `.bot` file you did not find in the workspace).
+- You do NOT bury the operator in parallel first moves: one clear
+  next step, with the rest framed behind it.
 
 ## Backend selection
 
@@ -1694,4 +1716,6 @@ agent reviewer:
   fall-through emits a `model_fallback` event and stamps
   `_fallback_used` / `_served_by` on the node output, so a deterministic
   gate can fail closed on a degraded input. See
-  [docs/backends.md](../../docs/backends.md) §Cross-backend fallback routes.
+  iterion's own `docs/backends.md` §Cross-backend fallback routes (an
+  unlinked pointer on purpose: this skill runs against any target repo,
+  where no relative path into iterion's tree resolves).
