@@ -90,33 +90,79 @@ current high-water mark. Never restore a lower-epoch Helm revision directly.
 > burns the MaxDeliver budget in seconds, JetStream drops the message, and
 > nothing is parked to replay. That asymmetry drives the path choice below.
 
-## Server-first ordering with the shipped chart
+## Deploy ordering: which side rolls first
 
-Every procedure below hinges on deploying the server (producer) before the
-runners. A plain `helm upgrade` does NOT give you that ordering: the server
-and runner Deployments both resolve to the same image tag
-(`include "iterion.image" .`), so they roll together. Use the chart's
-per-runner image override to sequence the two phases:
+Ordering is decided by ONE question — **does the new runner's accepted window
+still cover what the old server publishes?** In symbols, comparing the two
+builds you are moving between:
+
+    MinSchemaVersion(new runner) <= SchemaVersion(old server)
+
+### Runner-first, when that holds
+
+It holds for any bump that stays inside the compatibility window, which is the
+ordinary case since #481 introduced one (`MinSchemaVersion` 10 has trailed
+`SchemaVersion` by several versions ever since). Roll the **runners first**:
+
+- new runners accept `[Min(new) … Max(new)]`, so the old server's vN messages
+  are still admitted — the "reverse case" of Path B step 5 cannot arise;
+- the old runners never see a vN+1 message, because the server is still
+  publishing vN;
+- then roll the server. Every runner already accepts vN+1.
+
+The rejection window is **zero**, so no maintenance window and no DLQ replay
+are needed — Path A and Path B both become unnecessary.
+
+Doing it the other way round is what costs: a vN+1 server publishing into a
+vN-only fleet gets every delivery delayed-Naked, and a run is parked
+`failed_resumable` once MaxDeliver is spent — ~4 minutes at the defaults
+(8 × 30s), typically less than a full runner Deployment roll.
+
+### Server-first, when it does not
+
+If a bump raises `MinSchemaVersion` past the old server's `SchemaVersion`, new
+runners would reject the vN messages still in the queue. Ordering cannot save
+that case in either direction: deploy the server first and follow Path A
+(drain) or Path B (DLQ replay) below.
+
+### Sequencing the two Deployments
+
+A plain `helm upgrade` rolls both together: the server and runner Deployments
+resolve to the same image tag (`include "iterion.image" .`). Use the chart's
+per-runner image override to sequence the phases — here in runner-first order:
 
 ```bash
-# Phase 1 — pin the runners to the CURRENT (old) image, roll the server only.
+# Phase 1 — pin the runners to the NEW image, leaving the server on the old tag.
 helm upgrade iterion ./charts/iterion \
-  --set image.tag=<new-tag> \
-  --set runner.image=ghcr.io/socialgouv/iterion:<old-tag>
+  --set image.tag=<old-tag> \
+  --set runner.image=ghcr.io/socialgouv/iterion:<new-tag>
 
-# Phase 2 — once the server runs <new-tag>, unpin and roll the runners.
+# Phase 2 — once every runner is Ready on <new-tag>, roll the server.
 helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
 ```
 
-(If your deploy pipeline sequences Deployments itself, use it instead — the
-requirement is only that no vN+1 message is published before the procedure
-below is chosen and running.)
+Swap the two `--set` values for the server-first case. If your deploy pipeline
+sequences Deployments itself, use it instead — the requirement is only that the
+side which must be permissive is Ready before the side which changes what it
+emits.
+
+> Measured on the v11 → v12 cutover (2026-09-02, prod: 12 runner pods, 3 server
+> pods, live traffic including a run executing across the runner roll).
+> Runner-first left the DLQ byte-identical — depth 30, `last_seq` 220, newest
+> message hours older than the rollout — with no
+> `iterion_runner_admission_rejected_total` sample anywhere in the fleet.
 
 ## Rollout procedure for a schema bump vN → vN+1
 
-Choose **one** of the two paths below. Deployment ordering alone (server
-first) is NOT a third option: it leaves the reverse case — vN+1 runners
-rejecting vN messages still in the queue — to chance.
+These two paths are for the **server-first** case only — a bump that raises
+`MinSchemaVersion` past the old server's version. When the compatibility
+window still covers the old wire (the ordinary case), roll runner-first per
+the section above and neither path applies: nothing is ever rejected, so
+there is nothing to drain or replay.
+
+Within the server-first case, choose **one** of the two. Ordering alone is
+not a third option there: it leaves the reverse case — vN+1 runners rejecting
+vN messages still in the queue — to chance.
 
 ### Path A — drained queue before cutover
 
