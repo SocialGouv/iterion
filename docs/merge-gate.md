@@ -91,7 +91,8 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
+| `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** Fires only while the PR/MR is still open — a push to a closed or merged one no longer costs a review. |
+| `review_on_sync_pinned` | `false` | Set implicitly by *any* explicit `review_on_sync` through the webhook API (either value, at create or on a PATCH). While set, provisioning never rewrites `review_on_sync` in either direction — see [Disabling the gate per repo](#disabling-the-gate-per-repo--first-review-only-re-review-on-demand). PATCH `{"review_on_sync_pinned": false}` hands the field back to the derivation. |
 | `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider. See the caution for what actually guards fork PRs. |
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
@@ -141,8 +142,10 @@ block for an admin.
 Some repos want the opposite posture: reviews as **advisory comments only**,
 with the automatic review on MR/PR open the only automatic one and every
 re-review a deliberate human gesture (budget-frugal — no run per push). One
-operator pin buys the whole posture. On the integration's launch vars
-(`launch_vars` on the repo-bots API, or the studio integration settings):
+operator pin buys the whole posture. On the integration's launch vars —
+`launch_vars` on the repo-bots API, which is the only surface that sets them
+(the studio's repo-bots forms send `bot_ids` + `schedule_crons` only, and
+`PATCH /forge/integrations/{iid}` carries just `sync_issues_enabled`):
 
 ```json
 { "gate_enabled": "false" }
@@ -223,7 +226,10 @@ then blocks the other's PRs.
 
 Give them the same context instead. `gate_context` is a var on every bot
 that can gate (`revi/review` on Revi, `vetty/deps` on Vetty by default), so
-the repo declares one shared name and each bot fills it for the PRs it owns:
+the repo declares one shared name and each bot fills it for the PRs it owns
+(a gate that arrives with an EMPTY context gets the server's bot-agnostic
+fallback, `merge-gate` — never some other bot's persona;
+[`pkg/server/forge_publish.go:defaultGateContext`](../pkg/server/forge_publish.go)):
 
 ```sh
 iterion remote forge repo-bots create --data '{
@@ -334,6 +340,16 @@ means "I start from a review and act on it".
   every cycle. After five unattended passes the lane stops and leaves the PR to
   a human — the `/command` road is still open.
 
+**Two triggers, like the repair.** The lane consumes the same lossy
+run-outcome bus as the gate reconciler, so it carries the same net: the
+1-minute gate sweep re-offers every terminal run in its 60-minute lookback to
+this lane as well ([below](#interrupted)). A dropped event therefore costs a
+delay, not the fix pass. The re-offer is free of forge traffic — the per-head
+claim is probed before any API call, so a run whose head already had its pass
+exits on one store read. Cancelled runs are excluded outright (an operator's
+stop is not an invitation to push code), as are paused ones, which are still
+expected to post their own verdict.
+
 It also obeys the ordinary launch gate (org quota, cost cap, concurrency) and
 the hold label, which pauses this lane like every other. Note the org cost cap
 defaults to *unlimited*, so it is a backstop only where you configured one.
@@ -398,7 +414,7 @@ absence of a status once again means what it says.
 Two rules keep the claim from doing harm:
 
 - **It never overwrites a verdict.** A repo pins one gate context precisely so
-  a required check can span several bots ([below](#one-gate)), so a second bot
+  a required check can span several bots ([below](#one-gate-several-bots)), so a second bot
   launching on a head another bot already judged must not blank that judgment
   back to "running". It writes only over nothing, over a previous claim, or
   over a synthetic interruption (a fresh review on that head IS the recovery).
