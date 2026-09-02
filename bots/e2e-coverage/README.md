@@ -34,18 +34,34 @@ skipped.
 | `matrix_path` | no | `docs/e2e-coverage-matrix.md` | The committed feature×coverage matrix, relative to the repo root. |
 | `baseline` | no | `""` | Known pre-existing failures to SKIP (empty = cheap stash-check once). |
 | `max_passes` | no | `8` | Continuation-loop cap. |
+| `plan_review` | no | `auto` | Cross-model plan review (ADR-091). `auto` = on iff ≥2 model families are credentialed at launch; `on` forces it (a missing peer credential then fails loudly); `off` bypasses the plan phase. |
+| `plan_review_policy` | no | `skip` | What a MID-RUN peer failure does: `skip` (continue unreviewed, loudly stamped) or `wait` (park `failed_resumable` and let the usage-window retry resume). |
 | `workspace_dir` | no | `${PROJECT_DIR}` | Workspace root (resolves to the run worktree under `worktree: auto` — do not override). |
 | `scratch_dir` | no | `${PROJECT_SCRATCH_DIR}/e2e-coverage` | Out-of-tree scratch for the gate's verify script/log. |
 
 ## Shape (v2 — one agent, minimal framing)
 
 ```
+plan_topology → plan → plan_review → plan_gate → plan_revise → campaign
+              ↳ campaign                     (when plan_review resolves off)
 campaign → verify_build → verify_run → gate
 gate → done            when converged (suite green AND matrix_ok AND
                        coverage_complete AND (scoped OR 0 uncovered rows))
 gate → campaign        as continuation_loop(max_passes), carrying fail_log
 gate → done            (loop exhausted — ship what is banked)
 ```
+
+**Plan phase (ADR-091).** `plan_review: auto` resolves at launch from the
+run's credentials: when a SECOND model family is available, the plan is
+authored (claude, read-only), critiqued by a cross-family peer
+(`claw` + `openai/gpt-5.6-sol` by default), and revised by the SAME author
+session before the campaign runs; otherwise the phase is bypassed whole
+(`plan_topology -> campaign`, the v2 shape unchanged).
+`plan_review_policy` picks the mid-run peer-unavailability behaviour:
+`skip` (default — the reviewer's `action: skip` route: continue unreviewed,
+loudly stamped; the peer is an optional enrichment and must never block the
+campaign) or `wait` (the run parks failed_resumable, the usage-window retry
+resumes it — the deliberate-spend posture).
 
 - `campaign` — one adaptive claude_code agent: feature inventory → matrix →
   per gap: observable contract → deterministic e2e test in the repo's own
