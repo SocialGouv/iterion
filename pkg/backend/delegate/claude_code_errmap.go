@@ -143,11 +143,14 @@ func isHighConfidenceAuthRender(t string) bool {
 		return true
 	}
 	low := strings.ToLower(t)
-	// The CLI's renders ARE the whole result; anchoring at the start is
-	// what separates them from an answer that quotes the same words.
-	if strings.HasPrefix(low, "not logged in") || strings.HasPrefix(low, "failed to authenticate") {
-		return true
-	}
+	// "Not logged in" (and a bare "Failed to authenticate") are
+	// deliberately NOT here: they indict the DELIVERY, not the
+	// credential — this package documents a healthy materialised forfait
+	// rendered "Not logged in" by pod-env shadowing (claudeForfaitEnv,
+	// live run 019f8a6c), and benching the credential for a delivery
+	// fault would skip a key that works everywhere else. The dead-record
+	// half of that render belongs to ingestion-time validation. Only the
+	// provider's own verdict on the credential arms the skip:
 	for _, sig := range []string{
 		"invalid bearer token",
 		"authentication_error",

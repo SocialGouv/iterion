@@ -126,13 +126,26 @@ func TestAuthFailureFast_looseSignatureFailsWithoutEvidence(t *testing.T) {
 		t.Fatalf("readings = %+v, want NONE — prose must not arm the credential skip", got)
 	}
 
-	// The CLI's own render of the same words, prefix-anchored, does.
+	// The CLI's own "Not logged in" render fails the node but writes no
+	// evidence either: it indicts the delivery, not the credential — a
+	// healthy forfait shadowed by the pod env produces the same render
+	// (claudeForfaitEnv's documented precedent), and benching the
+	// credential for it would skip a key that works everywhere else.
 	cli := "Not logged in · Please run /login"
 	if authFailureFast(&cli, task) == nil {
 		t.Fatal("the CLI render must fail the node")
 	}
+	if len(got) != 0 {
+		t.Fatalf("readings = %+v, want NONE — 'Not logged in' is delivery-ambiguous", got)
+	}
+
+	// A provider verdict on the credential itself does arm the skip.
+	verdict := "Failed to authenticate. API Error: 401 Invalid bearer token"
+	if authFailureFast(&verdict, task) == nil {
+		t.Fatal("the provider verdict must fail the node")
+	}
 	if len(got) != 1 {
-		t.Fatalf("readings = %+v, want one — the CLI's own render is high-confidence", got)
+		t.Fatalf("readings = %+v, want one — the provider rejected the credential itself", got)
 	}
 }
 
