@@ -136,12 +136,25 @@ Semantics that stay put:
 
 ### Which windows a cap governs
 
-The provider reports six windows. `five_hour` is the 5h cap; `seven_day`,
-`seven_day_opus`, `seven_day_sonnet` and `seven_day_overage_included` are all
-governed by the weekly cap — a run refused on the per-model weekly sub-limit
-is refused, whatever the all-models number says. `overage` is **not** capped
-here: it is metered money, not subscription quota, and `--max-cost-usd` is
-what bounds money.
+Seven window names circulate, grouped into three families
+([pkg/usagecap/usagecap.go](../pkg/usagecap/usagecap.go)). `five_hour` is the
+5h cap; `seven_day`, `seven_day_opus`, `seven_day_sonnet` and
+`seven_day_overage_included` are all governed by the weekly cap — a run
+refused on the per-model weekly sub-limit is refused, whatever the all-models
+number says. `overage` is **not** capped here: it is metered money, not
+subscription quota, and `--max-cost-usd` is what bounds money.
+
+`frequency` is the odd one, and it is not a provider window at all: it is an
+account-level refusal of the **request rate** (a fair-usage / frequency
+restriction), relayed as an error rather than as window telemetry. **No
+operator cap governs it** — its family, `account`, is deliberately not
+`FamilyNone` but configures nothing, so setting `ITERION_USAGE_CAP_*` can
+neither trigger nor suppress it. It exists as a window name so the refusal
+can be *recorded as meter evidence*: the credential-tier skip needs a fresh
+rejected reading to route around a credential the provider will not serve
+(see [cloud-llm-credentials.md](cloud-llm-credentials.md)). A window a future
+CLI adds falls to `FamilyNone` rather than being folded into a cap that was
+never meant to govern it.
 
 ## Where the numbers come from
 
@@ -161,6 +174,11 @@ Consequences worth knowing:
 - A reading **expires at its own reset instant**. Past it the window has
   rolled over and the number describes a window that no longer exists, so a
   stale reading stops blocking by itself — no sweeper, no TTL to tune.
+- A reading with **no** reset instant (a `frequency` refusal never carries
+  one) falls back to an age bound instead: trusted for `DefaultMaxAge` — one
+  hour — from when it was observed. Short enough that a wrong block heals
+  inside one five-hour window, long enough to bridge two runs on a quiet
+  deployment.
 
 ## What it looks like when it fires
 
