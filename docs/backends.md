@@ -314,7 +314,7 @@ first, then each route.
 
 | Category | Meaning | Emitted by |
 |---|---|---|
-| `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
+| `usage_window` | this credential serves nothing for a period, not just this call: a subscription 5h/session/weekly cap exhausted, **or** an account-level fair-usage restriction on the request *rate* (which fills no window and names no reset instant). Waiting — or routing around it — is the cure either way | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
 | `auth` | rejected or expired credential | `claude_code`, `pi` |
 | `unavailable` | model the credential cannot reach | `claude_code` |
 | `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
