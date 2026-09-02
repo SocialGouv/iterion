@@ -259,9 +259,11 @@ loop: the guard is a gate + input source, not a dedup engine.
 ## Retry — a provider quota window is waited out, not re-attempted
 
 A scheduled run that dies because the LLM provider's quota window is
-exhausted (the Anthropic forfait 5h / session / daily / **weekly** caps) is
-not a failure of the run: nothing about it is wrong, it just arrived while
-the door was shut. Retrying it inside a node's retry budget, or handing it
+exhausted (the Anthropic forfait 5h / session / daily / **weekly** caps — or
+an account-level **fair-usage restriction on the request rate**, which
+refuses every call the same way and is classified the same) is not a failure
+of the run: nothing about it is wrong, it just arrived while the door was
+shut. Retrying it inside a node's retry budget, or handing it
 back to the work queue, cannot help — a weekly reset can be **seven days**
 away, and each attempt costs a fresh pod against a wall that will not move.
 
@@ -310,6 +312,14 @@ run's total lateness: if the parsed reset is farther away, iterion schedules
 the retry at that horizon and re-evaluates when it wakes. For example, `36h`
 means "wake no later than 36 hours from now and check again";
 `max_attempts` is the separate whole-lifetime bound on repeated waits.
+
+When **nothing names a reopening instant** — always the case for a
+fair-usage restriction, and for any notice whose wording does not parse —
+the retry is armed **one hour out** and re-evaluated on wake: one wasted pod
+an hour beats giving up on the run or sleeping a speculative week. The
+`run_retry_scheduled` event names that derivation (a `…+blind_wait` suffix
+rather than `…+parsed_text`), which is how you tell a guessed wait from a
+provider-stated one.
 
 **What you see.** The run stays `failed_resumable` while it waits, with a
 `run_retry_scheduled` event naming the instant, the attempt number and how
