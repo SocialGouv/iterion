@@ -73,8 +73,21 @@ func (s *claimSession) loop() {
 		case <-s.stop:
 			return
 		case <-t.C:
+			// The renewal's context dies with the session, not just on its
+			// own deadline: Stop() runs ON THE ACTOR and waits for this
+			// loop, so a renewal against a slow store would otherwise hold
+			// the whole dispatcher hostage for its full timeout.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			stopped := make(chan struct{})
+			go func() {
+				select {
+				case <-s.stop:
+					cancel()
+				case <-stopped:
+				}
+			}()
 			err := s.leaser.RenewClaim(ctx, s.issueID, s.tok)
+			close(stopped)
 			cancel()
 			switch {
 			case err == nil:

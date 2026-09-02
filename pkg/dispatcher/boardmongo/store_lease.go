@@ -32,8 +32,9 @@ func (s *Store) ownedFilter(id string, tok tracker.ClaimToken) bson.M {
 	// replace. Without the nil arm the live holder is fenced out of its
 	// OWN card and, the lease having been dropped with the epoch, the
 	// watchdog never lists it either: a permanently stuck card produced by
-	// an ordinary deploy. Admitting the holder lets its next renewal
-	// re-stamp both fields and heal the document.
+	// an ordinary deploy. The admission is temporary by construction:
+	// RenewClaim re-stamps the epoch on the first beat ($ifNull), so a
+	// document is judged strictly again one heartbeat later.
 	return bson.M{
 		"_id": id, "tenant_id": s.tenant, "issue.claim": tok.Marker,
 		"issue.claimepoch": bson.M{"$in": bson.A{tok.Epoch, nil}},
@@ -58,7 +59,16 @@ func (s *Store) ownedRefused(ctx context.Context, id string, tok tracker.ClaimTo
 func (s *Store) RenewClaim(id string, tok tracker.ClaimToken) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), leaseStampPipeline(bson.M{}))
+	// The heartbeat is also where a document whose fence field was
+	// dropped gets HEALED. ownedFilter admits an absent claimepoch (an
+	// older binary's full-document replace drops it) — but admitting it
+	// forever would leave the fence open to any epoch for the whole hold,
+	// since nothing else ever re-creates the field. $ifNull re-stamps it
+	// with the holder's own epoch on the first beat, so the very next
+	// renewal is judged strictly again.
+	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), leaseStampPipeline(bson.M{
+		"issue.claimepoch": bson.M{"$ifNull": bson.A{"$issue.claimepoch", tok.Epoch}},
+	}))
 	if err != nil {
 		return fmt.Errorf("boardmongo: renew claim: %w", err)
 	}
@@ -93,6 +103,20 @@ func (s *Store) ReleaseOwned(id string, tok tracker.ClaimToken) error {
 		Payload: map[string]any{"marker": tok.Marker}})
 }
 
+// stateSet builds the $set every state writer here shares. The give-up
+// stamp goes with it: the FS twin expires the buffer on EVERY write
+// (writeIssueLocked → expireGiveUp), and the targeted $set writers this
+// package added would otherwise leave a card reading "the dispatcher gave
+// up" after something moved it on. The stamp only describes the state it
+// was taken in — a card that left that state has no give-up to show.
+func stateSet(newState string) bson.M {
+	return bson.M{
+		"issue.state":     newState,
+		"issue.gaveup":    nil,
+		"issue.updatedat": time.Now().UTC(),
+	}
+}
+
 // SetStateOwned is SetState fenced on the claim token: the ownership
 // check and the transition are ONE conditional write.
 func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*native.Issue, error) {
@@ -115,15 +139,25 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 		}
 	}
 	res := s.issues.FindOneAndUpdate(ctx, filter,
-		bson.M{"$set": bson.M{"issue.state": newState, "issue.updatedat": time.Now().UTC()}},
+		bson.M{"$set": stateSet(newState)},
 		options.FindOneAndUpdate().SetReturnDocument(options.Before))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
 			return nil, fmt.Errorf("boardmongo: set state owned: %w", res.Err())
 		}
-		// Zero match: the claim moved on, OR the card sits in a sink. Read
-		// back to tell the two apart — a refused terminal exit must carry
-		// ErrTerminalStateExit, not a misleading claim conflict.
+		// Zero match: the claim moved on, OR the card sits in a sink.
+		// Ownership is qualified FIRST (the FS twin's order): a stolen
+		// claim reported as ErrTerminalStateExit would wrap
+		// ErrTransitionRejected, which the live finish worker swallows as
+		// an Info line — the one event this whole fence exists to make
+		// visible, lost in a log nobody reads at production level.
+		n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
+		if cerr != nil {
+			return nil, fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
+		}
+		if n == 0 {
+			return nil, s.ownedRefused(ctx, id, tok)
+		}
 		if iss, gerr := s.get(ctx, id); gerr == nil {
 			if verr := native.ValidateStateExit(board, iss.State, newState); verr != nil {
 				return nil, verr
@@ -228,7 +262,16 @@ func (s *Store) SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimTok
 	if err != nil {
 		return err
 	}
-	if iss.Claim != tok.Marker || iss.ClaimEpoch != tok.Epoch {
+	// Ownership through the ONE helper, never a hand-rolled comparison: a
+	// recopied guard drifts, and this one did — its strict epoch equality
+	// refused exactly the healed-absent-epoch document ownedFilter admits,
+	// losing the give-up stamp during a rolling deploy, which is when a
+	// give-up matters most.
+	n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
+	if cerr != nil {
+		return fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
+	}
+	if n == 0 {
 		return s.ownedRefused(ctx, id, tok)
 	}
 	want, ok := native.GiveUpToRecord(iss, g)
@@ -297,7 +340,7 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 // carrying the whole precondition (claim still exactly prev, lease
 // still expired), the epoch bump, and the fresh recovery lease stamped
 // with the SERVER clock.
-func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
+func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	// The fencing precondition is exactly ownedFilter's (claim == prev,
@@ -315,24 +358,24 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
-			return tracker.ClaimToken{}, fmt.Errorf("boardmongo: reclaim expired: %w", res.Err())
+			return tracker.ClaimToken{}, "", fmt.Errorf("boardmongo: reclaim expired: %w", res.Err())
 		}
 		iss, gerr := s.get(ctx, id)
 		if gerr != nil {
-			return tracker.ClaimToken{}, gerr
+			return tracker.ClaimToken{}, "", gerr
 		}
-		return tracker.ClaimToken{}, fmt.Errorf("%w: claim moved on (now %q epoch %d)",
+		return tracker.ClaimToken{}, "", fmt.Errorf("%w: claim moved on (now %q epoch %d)",
 			tracker.ErrClaimConflict, iss.Claim, iss.ClaimEpoch)
 	}
 	var doc issueDoc
 	if err := res.Decode(&doc); err != nil {
-		return tracker.ClaimToken{}, fmt.Errorf("boardmongo: reclaim decode: %w", err)
+		return tracker.ClaimToken{}, "", fmt.Errorf("boardmongo: reclaim decode: %w", err)
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueClaimed, IssueID: id,
 		Payload: map[string]any{"marker": marker, "claim_epoch": doc.Issue.ClaimEpoch, "reclaimed_from": prev.Marker}}); err != nil {
-		return tracker.ClaimToken{}, err
+		return tracker.ClaimToken{}, "", err
 	}
-	return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
+	return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, doc.Issue.State, nil
 }
 
 // Reopen is the ONE sanctioned exit from a terminal state (see
@@ -368,7 +411,7 @@ func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
 	// racing this one loses cleanly instead of double-applying.
 	res, err := s.issues.UpdateOne(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": iss.State},
-		bson.M{"$set": bson.M{"issue.state": toState, "issue.updatedat": time.Now().UTC()}})
+		bson.M{"$set": stateSet(toState)})
 	if err != nil {
 		return nil, fmt.Errorf("boardmongo: reopen: %w", err)
 	}
@@ -402,7 +445,7 @@ func (s *Store) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
 	}
 	res := s.issues.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": from},
-		bson.M{"$set": bson.M{"issue.state": to, "issue.updatedat": time.Now().UTC()}},
+		bson.M{"$set": stateSet(to)},
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {

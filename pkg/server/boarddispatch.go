@@ -37,7 +37,7 @@ type boardCoordinator interface {
 	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
 	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
-	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error)
+	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 }
 
 // errCardPaused marks a processBoardCard error whose run parked on a
@@ -100,6 +100,9 @@ type boardDispatcher struct {
 	sem      chan struct{}
 	logger   *iterlog.Logger
 	wg       sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
+	// clockFallbackWarned makes the degraded-clock notice edge-triggered:
+	// a per-pass warn would be a log storm at the watchdog's cadence.
+	clockFallbackWarned bool
 }
 
 // newBoardDispatcher wires a cloud board dispatcher with sensible defaults.
@@ -444,11 +447,17 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	if reaperOn {
 		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", dispatcher.ClaimReaperEnvName())
 	}
+	// The watchdog is paced by its OWN interval, not by the dispatch tick
+	// it happens to share a loop with: a lease measured in minutes has no
+	// use for a five-second sweep, and the difference is a cross-tenant
+	// query plus a server-clock round trip per replica, twelve times over.
+	var lastReap time.Time
 	for {
 		d.tick(ctx)
 		d.sweepParked(ctx)
 		d.sweepForkAdoptions(ctx)
-		if reaperOn {
+		if reaperOn && time.Since(lastReap) >= dispatcher.ClaimReaperInterval() {
+			lastReap = time.Now()
 			d.reapExpiredClaims(ctx, d.reapCutoff(ctx))
 		}
 		select {
@@ -482,8 +491,17 @@ func (d *boardDispatcher) reapCutoff(ctx context.Context) time.Time {
 		return local
 	}
 	if srv.IsZero() {
+		// An empty board has no document to read a clock from. Nothing is
+		// claimed either, so a skewed cutoff has nothing to steal — but say
+		// it once rather than never: silence here reads as "the server
+		// clock is in use" when it is not.
+		if !d.clockFallbackWarned {
+			d.clockFallbackWarned = true
+			d.warn("claim watchdog: no document to read the server clock from — measuring leases against this pod's clock until one exists")
+		}
 		return local
 	}
+	d.clockFallbackWarned = false
 	return srv
 }
 
@@ -502,6 +520,12 @@ func (d *boardDispatcher) reapExpiredClaims(ctx context.Context, now time.Time) 
 	}
 }
 
+// watchdogMaxReparks bounds how many times the cloud watchdog returns one
+// card to the dispatch pool. Each return costs a FRESH run there (the
+// cloud launcher cannot resume a recorded one), so this is a spend bound,
+// not a retry policy — the run-level retry machinery is separate.
+const watchdogMaxReparks = 3
+
 func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) {
 	var run *store.Run
 	var runErr error
@@ -518,22 +542,27 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			run, runErr = nil, nil // pruned run proves nothing is alive
 		}
 	}
-	dec := dispatcher.DecideStuckCard(run, runErr)
+	card := dispatcher.StuckCard{
+		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+	}
+	dec := dispatcher.DecideStuckCard(run, runErr, card)
 	if dec.Action == dispatcher.StuckKeep {
 		return
 	}
-	tok, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
+	tok, liveState, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
 	if err != nil {
 		if !errors.Is(err, tracker.ErrClaimConflict) {
 			d.warn("claim watchdog reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
 		}
 		return
 	}
+	// From here the CAS-observed state supersedes the listing's copy.
+	card.State = liveState
 	switch dec.Action {
 	case dispatcher.StuckComplete:
-		d.fileReapedCard(ctx, cand, d.doneState, tok)
+		d.fileReapedCard(ctx, cand, card, d.doneState, tok)
 	case dispatcher.StuckFail:
-		d.fileReapedCard(ctx, cand, d.blockedState, tok)
+		d.fileReapedCard(ctx, cand, card, d.blockedState, tok)
 	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
 		// Unlike the local dispatcher — where the running column is itself
 		// eligible, so a bare release re-arms the card — this tick only
@@ -542,8 +571,20 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		// (sweepParked lists awaiting_input only, and there is no board
 		// retry sweeper). So the return to the pool must be WRITTEN, under
 		// the recovery token, before the release below.
-		if len(d.eligible) > 0 {
-			d.fileReapedCard(ctx, cand, d.eligible[0], tok)
+		//
+		// And it must be BOUNDED. The local dispatcher resumes the
+		// RECORDED run (resolveRunID); this path calls runs.Launch, which
+		// always starts a fresh one. Without a ceiling an always-failing
+		// card would be relaunched once per lease forever — the watchdog
+		// turning a stuck card into a spend loop. Past the ceiling the card
+		// is filed as failed, which is visible and terminal.
+		switch {
+		case cand.Claim.Attempts >= watchdogMaxReparks:
+			d.warn("claim watchdog stops reparking %s/%s after %d attempts — filing it as %s instead of relaunching again",
+				cand.Tenant, cand.Claim.IssueID, cand.Claim.Attempts, d.blockedState)
+			d.fileReapedCard(ctx, cand, card, d.blockedState, tok)
+		case len(d.eligible) > 0:
+			d.fileReapedCard(ctx, cand, card, d.eligible[0], tok)
 		}
 	}
 	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
@@ -558,10 +599,12 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 // operator (or a bot with board.move) already moved out of the running
 // column carries an intent that predates the watchdog, and overwriting it
 // would silently undo, say, a manual re-queue.
-func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, target string, tok tracker.ClaimToken) {
-	if !dispatcher.ShouldFileStuckCard(cand.Claim.State, d.inProgressState, target) {
-		d.warn("claim watchdog leaves %s/%s in %q (moved out of %q deliberately — not overwriting it with %q)",
-			cand.Tenant, cand.Claim.IssueID, cand.Claim.State, d.inProgressState, target)
+func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, target string, tok tracker.ClaimToken) {
+	if !dispatcher.ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
+		if card.State != target {
+			d.warn("claim watchdog leaves %s/%s in %q (moved out of %q deliberately — not overwriting it with %q)",
+				cand.Tenant, cand.Claim.IssueID, card.State, card.RunningState, target)
+		}
 		return
 	}
 	if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, target, tok); err != nil {

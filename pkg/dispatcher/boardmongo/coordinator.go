@@ -80,7 +80,7 @@ func (c *Coordinator) ListEligible(ctx context.Context, eligible []string, limit
 	}
 	cur, err := c.coll.Find(ctx, bson.M{
 		"issue.state": bson.M{"$in": eligible},
-		"issue.claim": "",
+		"issue.claim": bson.M{"$in": bson.A{"", nil}},
 	}, opt)
 	if err != nil {
 		return nil, fmt.Errorf("boardmongo: list eligible: %w", err)
@@ -165,7 +165,7 @@ func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff tim
 }
 
 // ReclaimExpired delegates the CAS transfer to the tenant-scoped store.
-func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
+func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error) {
 	return c.StoreFor(tenant).ReclaimExpired(id, prev, marker, cutoff)
 }
 

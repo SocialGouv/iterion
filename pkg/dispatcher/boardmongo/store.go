@@ -485,9 +485,14 @@ func (s *Store) Delete(id string) error {
 func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	// Phase 1: fresh acquisition of an unclaimed card.
+	// Phase 1: fresh acquisition of an unclaimed card. "Unclaimed" must
+	// include an ABSENT claim field, not just an empty one: the ordinary
+	// write path no longer re-persists the claim family, so nothing
+	// re-creates the field, and a document that lost it (an out-of-band
+	// write, an older binary) would otherwise be unclaimable, invisible
+	// to ListEligible AND invisible to the watchdog — a dead card.
 	res := s.issues.FindOneAndUpdate(ctx,
-		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": ""},
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": bson.M{"$in": bson.A{"", nil}}},
 		leaseStampPipeline(bson.M{
 			"issue.claim":      marker,
 			"issue.claimepoch": bumpEpochExpr(),
@@ -568,6 +573,15 @@ func leaseStampPipeline(extra bson.M) mongo.Pipeline {
 func (s *Store) Release(id, marker string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
+	if marker == "" {
+		// The empty marker owns nothing. Skipping the write is not an
+		// optimisation: the conditional filter is `claim: marker`, which
+		// with an empty marker MATCHES an unclaimed card and would
+		// announce a release that never happened. Falling through to the
+		// read-back below gives the FS twin's answer — nil when the card
+		// is free, ErrClaimConflict when someone holds it.
+		return s.releaseRefused(ctx, id)
+	}
 	res, err := s.issues.UpdateOne(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": marker},
 		bson.M{"$set": bson.M{
@@ -580,16 +594,23 @@ func (s *Store) Release(id, marker string) error {
 		return fmt.Errorf("boardmongo: release issue: %w", err)
 	}
 	if res.MatchedCount == 0 {
-		iss, gerr := s.get(ctx, id)
-		if gerr != nil {
-			return gerr
-		}
-		if iss.Claim == "" {
-			return nil // already released — the desired state
-		}
-		return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
+		return s.releaseRefused(ctx, id)
 	}
 	return s.emit(native.Event{Type: native.EvtIssueReleased, IssueID: id, Payload: map[string]any{"marker": marker}})
+}
+
+// releaseRefused answers a release whose conditional write matched
+// nothing: already free is the desired state, anyone else holding it is
+// a conflict. Same two answers as the FS twin, one definition.
+func (s *Store) releaseRefused(ctx context.Context, id string) error {
+	iss, gerr := s.get(ctx, id)
+	if gerr != nil {
+		return gerr
+	}
+	if iss.Claim == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
 }
 
 func (s *Store) SetLastRun(id, runID, workdir string) error {

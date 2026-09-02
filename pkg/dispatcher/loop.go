@@ -453,7 +453,20 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		// already; the cancel just stops it burning spend toward them.
 		issueID := iss.ID
 		entry.claim = StartClaimSession(c.leaser, issueID, claimTok, c.logger.Warn, func(error) {
-			c.postCmd(cmdClaimLost{issueID: issueID})
+			// NON-blocking on purpose. The actor stops this very session
+			// (stopClaimSession waits for the loop to exit), so a blocking
+			// send here closes a cycle: actor waiting on the session, the
+			// session waiting on the actor's full command channel — the
+			// daemon dispatches nothing again until restart. The message is
+			// best-effort by construction: the fenced write family already
+			// refuses everything this worker will attempt, so dropping it
+			// costs tokens, never correctness.
+			select {
+			case c.cmds <- cmdClaimLost{issueID: issueID}:
+			case <-c.stop:
+			default:
+				c.logger.Warn("dispatcher: claim on %s was lost but the command queue is full — the worker keeps running until its writes are refused", issueID)
+			}
 		})
 	}
 

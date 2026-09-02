@@ -40,17 +40,17 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 // claim must still be exactly prev AND still expired, then the transfer
 // bumps the epoch (the dead owner's late writes die at the fence) and
 // stamps a fresh lease for the recovery owner.
-func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tok tracker.ClaimToken, err error) {
+func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tok tracker.ClaimToken, state string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("ReclaimExpired", &err)
 	iss, err := s.readIssueLocked(id)
 	if err != nil {
-		return tracker.ClaimToken{}, err
+		return tracker.ClaimToken{}, "", err
 	}
 	if iss.Claim != prev.Marker || iss.ClaimEpoch != prev.Epoch ||
 		iss.ClaimLeaseUntil.IsZero() || !iss.ClaimLeaseUntil.Before(cutoff) {
-		return tracker.ClaimToken{}, fmt.Errorf("%w: claim moved on (now %q epoch %d, lease until %s)",
+		return tracker.ClaimToken{}, "", fmt.Errorf("%w: claim moved on (now %q epoch %d, lease until %s)",
 			tracker.ErrClaimConflict, iss.Claim, iss.ClaimEpoch, iss.ClaimLeaseUntil.Format(time.RFC3339))
 	}
 	now := time.Now().UTC()
@@ -60,16 +60,16 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 	iss.ClaimLeaseUntil = now.Add(ClaimLeaseDuration)
 	iss.UpdatedAt = now
 	if err := s.writeIssueLocked(iss); err != nil {
-		return tracker.ClaimToken{}, err
+		return tracker.ClaimToken{}, "", err
 	}
 	s.index[iss.ID] = cloneIssue(iss)
 	if err := s.emitPostCommitEvent(Event{
 		Type: EvtIssueClaimed, IssueID: id,
 		Payload: map[string]any{"marker": marker, "claim_epoch": iss.ClaimEpoch, "reclaimed_from": prev.Marker},
 	}); err != nil {
-		return tracker.ClaimToken{}, err
+		return tracker.ClaimToken{}, "", err
 	}
-	return tracker.ClaimToken{Marker: marker, Epoch: iss.ClaimEpoch}, nil
+	return tracker.ClaimToken{Marker: marker, Epoch: iss.ClaimEpoch}, iss.State, nil
 }
 
 // ExpiredClaimFrom maps an issue onto the reaper candidate shape — one
@@ -82,6 +82,7 @@ func ExpiredClaimFrom(iss *Issue) tracker.ExpiredClaim {
 		Identifier: shortIdentifier(iss.ID),
 		State:      iss.State,
 		LastRunID:  iss.LastRunID,
+		Attempts:   len(iss.Runs),
 		Prev:       tracker.ClaimToken{Marker: iss.Claim, Epoch: iss.ClaimEpoch},
 	}
 }

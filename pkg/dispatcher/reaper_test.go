@@ -191,11 +191,16 @@ func TestReapExpiredClaims_SkipsRenewedClaim(t *testing.T) {
 // way its dead worker would have — and the live worker does NOT file a
 // card somebody already moved (maybeTransitionToCompleted returns early
 // on `cur != runningTarget`, "workflow (or operator) already moved the
-// state. Honor it."). The reaper must hold the same line: an operator who
-// drags a stuck card back to ready to re-queue it, or a bot that moved it
-// with board.move, has expressed an intent that arrives BEFORE the
-// watchdog and outranks its default filing. Without this the re-queue is
-// silently undone fifteen minutes later, into a non-eligible column.
+// state. Honor it."). The reaper holds the same line.
+//
+// The move must be to a NON-launch column to be readable as an intent.
+// A card sitting in a launch column (ready) is ambiguous: it is equally
+// what a deliberate re-queue and a best-effort launch that never moved
+// the card look like, and the two cannot be told apart from the card
+// alone — see TestReapOne_FilesACardTheLaunchNeverMoved for the other
+// side of that ambiguity, and why it is resolved toward filing (leaving
+// such a card unfiled costs a duplicate run of delivered work; filing an
+// operator's re-queue costs a reopen).
 func TestReapOne_HonoursADeliberateStateMove(t *testing.T) {
 	c, board, runs := newReaperHarness(t)
 	mkRun(t, runs, "run-done-moved", store.RunStatusFinished)
@@ -204,11 +209,12 @@ func TestReapOne_HonoursADeliberateStateMove(t *testing.T) {
 	c.cfg.Store(cfg)
 	cand := seedClaimedCard(t, board, "run-done-moved")
 
-	// The operator re-queues the stuck card while its owner is dead.
-	if _, err := board.SetState(cand.IssueID, native.StateReady); err != nil {
+	// The operator parks the stuck card in review while its owner is dead
+	// — a non-launch column, so the intent is unambiguous.
+	if _, err := board.SetState(cand.IssueID, native.StateReview); err != nil {
 		t.Fatalf("operator move: %v", err)
 	}
-	cand.State = native.StateReady
+	cand.State = native.StateReview
 
 	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
 
@@ -216,11 +222,91 @@ func TestReapOne_HonoursADeliberateStateMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.State != native.StateReady {
+	if got.State != native.StateReview {
 		t.Fatalf("the watchdog overwrote a deliberate state move: card is %q, the operator had put it in %q",
-			got.State, native.StateReady)
+			got.State, native.StateReview)
 	}
 	if got.Claim != "" {
 		t.Fatalf("the dead owner's claim must still be freed: claim=%q", got.Claim)
+	}
+}
+
+// TestReapOne_FilesACardTheLaunchNeverMoved is the counter-case to
+// HonoursADeliberateStateMove, and the reason the guard cannot be a bare
+// `cardState != runningState`: BOTH launch paths move the card into the
+// running column best-effort (loop.go "continue regardless — claim is
+// already taken"). A card can therefore be claimed, run to completion,
+// and still sit in its launch column when the owner dies. Refusing to
+// file it there leaves it eligible, and the next tick launches a second
+// run for work already delivered.
+func TestReapOne_FilesACardTheLaunchNeverMoved(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-done-unmoved", store.RunStatusFinished)
+	cfg := c.cfg.Load()
+	cfg.Agent.RunningState = native.StateInProgress
+	c.cfg.Store(cfg)
+
+	iss, err := board.Create(native.Issue{Title: "launch never moved it", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := board.Claim(iss.ID, "dead-host-42"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.SetLastRun(iss.ID, "run-done-unmoved", "/tmp/wd"); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	cands, err := board.ListExpiredClaimCandidates(time.Now().Add(2*native.ClaimLeaseDuration), 10)
+	if err != nil || len(cands) == 0 {
+		t.Fatalf("list: %v (%d)", err, len(cands))
+	}
+	var cand tracker.ExpiredClaim
+	for _, x := range cands {
+		if x.IssueID == iss.ID {
+			cand = x
+		}
+	}
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, err := board.Get(cand.IssueID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateDone {
+		t.Fatalf("a finished run whose launch never moved the card must still be filed: state=%q, want %q "+
+			"(left in %q the card is eligible and the next tick launches a SECOND run for delivered work)",
+			got.State, native.StateDone, got.State)
+	}
+}
+
+// TestReapOne_DecidesOnTheStateTheTransferObserved: the card state that
+// arrives on ExpiredClaim was read at LISTING time. Between that listing
+// and the transfer the reaper loads the run (opening a store, running the
+// orphan oracle) — a window an operator can walk into. Deciding the
+// disposition on the listing's copy overwrites exactly the intent the
+// guard exists to honour, so the state must come from the CAS itself.
+func TestReapOne_DecidesOnTheStateTheTransferObserved(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-done-raced", store.RunStatusFinished)
+	cfg := c.cfg.Load()
+	cfg.Agent.RunningState = native.StateInProgress
+	c.cfg.Store(cfg)
+	cand := seedClaimedCard(t, board, "run-done-raced")
+	// cand.State is in_progress, captured at listing time. The operator
+	// parks the card AFTER the listing, before the transfer.
+	if _, err := board.SetState(cand.IssueID, native.StateReview); err != nil {
+		t.Fatalf("operator move after listing: %v", err)
+	}
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, err := board.Get(cand.IssueID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateReview {
+		t.Fatalf("the watchdog decided on the LISTING's stale state: card is %q, the operator had moved it to %q "+
+			"after the listing and before the transfer", got.State, native.StateReview)
 	}
 }

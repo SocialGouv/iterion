@@ -60,7 +60,7 @@ type BoardStore interface {
 	// ReclaimExpired is a CAS TRANSFER (claim still prev + still
 	// expired → new owner, epoch bumped), never a bare clear.
 	ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error)
-	ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error)
+	ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 	// SetLastRun records the run a dispatch spawned so a cross-restart
 	// resume can find it (unfenced form — for writers acting on
 	// UNCLAIMED cards, e.g. the parked-card reconcilers).

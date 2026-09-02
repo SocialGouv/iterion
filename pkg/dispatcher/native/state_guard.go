@@ -20,10 +20,16 @@ import (
 // exemptions).
 //
 // Direct state writers verified against the guard by their own source
-// constraints (the F18 inventory): ClaimForLaunch (StateReady only),
-// PromoteUnblockedDependents (StateWaitingDeps only), and the board
-// column migrations (schema migration renames a column in place — it
-// does not move a card across the terminal boundary).
+// constraints (the F18 inventory): ClaimForLaunch (StateReady only) and
+// PromoteUnblockedDependents (StateWaitingDeps only).
+//
+// The board column migrations are the ONE writer that can cross the
+// boundary: RenameState moves nothing, but DeleteState(terminal,
+// migrate_to: <working>) carries a whole column across it. That is an
+// explicit operator gesture on the board's own schema, so it is allowed —
+// but it is held to Reopen's dependents check (see
+// reopenMigrationAllowedLocked), because a bulk reopen must not be a way
+// around the refusal a single-card reopen would get.
 
 // ValidateStateExit is the shared gate both twins' SetState family
 // calls. from == to never reaches it (no-ops return earlier).

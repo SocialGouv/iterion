@@ -173,6 +173,16 @@ func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 		if board.StateByName(migrateTo) == nil {
 			return 0, fmt.Errorf("boardmongo: unknown migration target %q", migrateTo)
 		}
+		// A terminal column emptied into a working one is a bulk reopen —
+		// held to the same dependents check as the single-card Reopen, on
+		// both twins.
+		ptrs := make([]*native.Issue, len(all))
+		for i := range all {
+			ptrs[i] = &all[i]
+		}
+		if err := native.ReopenMigrationAllowed(board, ptrs, name, migrateTo); err != nil {
+			return 0, err
+		}
 		touched, err = s.migrateState(ctx, name, migrateTo, "state_delete")
 		if err != nil {
 			return touched, err

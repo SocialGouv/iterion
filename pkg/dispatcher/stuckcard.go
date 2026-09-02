@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -69,16 +70,26 @@ type StuckDecision struct {
 //     predates the watchdog and outranks its default filing —
 //     "already moved the state. Honor it."
 //
-// A card whose board has no running state configured cannot be judged
-// this way, so the filing proceeds (nothing to compare against).
-func ShouldFileStuckCard(cardState, runningState, target string) bool {
-	if target == "" || target == runningState {
+// The exception that makes the guard usable at all: BOTH launch paths
+// move a claimed card into the running column BEST-EFFORT (the local one
+// says so — "continue regardless, claim is already taken"). So a card
+// can be claimed, run to completion, and still sit in the column it was
+// launched FROM. That is not an intent to read, it is a launch that
+// never finished moving it — and refusing to file it there leaves it
+// eligible, so the next tick launches a second run for delivered work.
+// launchStates is that set (the states a card is picked up from).
+//
+// cardState must be the state observed WITH the ownership — the one
+// ReclaimExpired returns — not the one read at listing time, which an
+// operator can invalidate before the transfer lands.
+func ShouldFileStuckCard(cardState, runningState, target string, launchStates []string) bool {
+	if target == "" || target == runningState || cardState == target {
 		return false
 	}
-	if runningState != "" && cardState != runningState {
-		return false
+	if runningState == "" || cardState == runningState {
+		return true
 	}
-	return true
+	return slices.Contains(launchStates, cardState)
 }
 
 // DecideStuckCard is the ONE decision table for a card whose claim has
@@ -110,13 +121,49 @@ func ShouldFileStuckCard(cardState, runningState, target string) bool {
 //	                                   resumes the recorded run)
 //	anything else         → Keep      (open-world: an unknown status is
 //	                                   conserved, never guessed at)
-func DecideStuckCard(run *store.Run, runErr error) StuckDecision {
+func DecideStuckCard(run *store.Run, runErr error, card StuckCard) StuckDecision {
 	if runErr != nil {
 		return StuckDecision{StuckKeep, fmt.Sprintf("run unreadable (%v) — a read error conserves", runErr)}
 	}
 	if run == nil {
+		// "No run recorded" only means "died pre-launch" if the card never
+		// reached the running column. Stamping the run onto the card is
+		// BEST-EFFORT on both launch paths and happens AFTER the launch, so
+		// a card already in the running column with no run id is not
+		// evidence of death — it is evidence of nothing, and freeing it
+		// would put a second run against a worker that may be alive.
+		if card.RunningState != "" && card.State == card.RunningState {
+			return StuckDecision{StuckKeep,
+				"no run recorded, but the card is in the running column — the run stamp is best-effort, so this proves nothing and freeing it could double-launch"}
+		}
 		return StuckDecision{StuckReleaseOnly, "claim held but no run was ever recorded — the claimant died pre-launch"}
 	}
+	if d := decideByStatus(run); d.Action == StuckRepark || d.Action == StuckReleaseOnly {
+		// Returning a card to the pool only makes sense if the card IS in
+		// the pool's reach. Parked somewhere deliberate (awaiting_input,
+		// review, a hold whose whole brake is the retained claim) it is not
+		// waiting to be re-dispatched, and releasing lifts a brake somebody
+		// set on purpose.
+		if card.RunningState != "" && card.State != card.RunningState &&
+			!slices.Contains(card.LaunchStates, card.State) {
+			return StuckDecision{StuckKeep, fmt.Sprintf(
+				"run %s is %s, but the card sits in %q — parked outside the dispatch pool, so there is nothing to return it to",
+				run.ID, run.Status, card.State)}
+		}
+	}
+	return decideByStatus(run)
+}
+
+// StuckCard is what the watchdog knows about the CARD, as opposed to its
+// run. State must be the value observed together with the ownership (the
+// one ReclaimExpired returns), never the listing's older copy.
+type StuckCard struct {
+	State        string
+	RunningState string
+	LaunchStates []string
+}
+
+func decideByStatus(run *store.Run) StuckDecision {
 	switch {
 	case run.Status == store.RunStatusRunning || run.Status.IsQueued():
 		return StuckDecision{StuckKeep, fmt.Sprintf("run %s is %s — a live run is never stolen from", run.ID, run.Status)}

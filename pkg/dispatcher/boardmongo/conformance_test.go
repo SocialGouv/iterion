@@ -195,6 +195,56 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Fatalf("ReleaseOwned B: %v", err)
 	}
 
+	// --- Twin parity on the give-up buffer and on "unclaimed". The FS
+	// store expires the give-up stamp on every write; the Mongo store's
+	// targeted $set writers must do the same, or a card reads "the
+	// dispatcher gave up" after something moved it on. And a claim field
+	// that is ABSENT must read as free everywhere an empty one does —
+	// nothing re-creates it, so a document that lost it would be
+	// unclaimable, unlistable and invisible to the watchdog at once.
+	gu, err := store.Create(native.Issue{Title: "give-up probe", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create give-up probe: %v", err)
+	}
+	guTok, err := store.Claim(gu.ID, "owner-gu")
+	if err != nil {
+		t.Fatalf("Claim give-up probe: %v", err)
+	}
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3}, guTok); err != nil {
+		t.Fatalf("SetGaveUpOwned: %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil {
+		t.Fatalf("the give-up stamp must land: %+v", cur)
+	}
+	if _, err := store.SetStateOwned(gu.ID, native.StateInProgress, guTok); err != nil {
+		t.Fatalf("SetStateOwned after give-up: %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp != nil {
+		t.Fatalf("a state move must expire the give-up buffer (it describes the state it was taken in): %+v", cur.GaveUp)
+	}
+	if _, _, err := store.SetStateFrom(gu.ID, native.StateInProgress, native.StateReady); err != nil {
+		t.Fatalf("SetStateFrom: %v", err)
+	}
+	// The EMPTY marker owns nothing: refused on a held card, and a silent
+	// no-op on a free one. A conditional write filtered on `claim: marker`
+	// would otherwise match an UNCLAIMED card and announce a release that
+	// never happened — the twins must give the same two answers.
+	if err := store.Release(gu.ID, ""); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("Release with an empty marker on a held card: want ErrClaimConflict, got %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.Claim != "owner-gu" {
+		t.Fatalf("an empty-marker release must not touch the claim: %+v", cur.Claim)
+	}
+	if err := store.ReleaseOwned(gu.ID, guTok); err != nil {
+		t.Fatalf("ReleaseOwned give-up probe: %v", err)
+	}
+	if err := store.Release(gu.ID, ""); err != nil {
+		t.Fatalf("Release with an empty marker on a FREE card must be a silent no-op: %v", err)
+	}
+	if _, err := store.SetState(gu.ID, native.StateDone); err != nil {
+		t.Fatalf("park give-up probe: %v", err)
+	}
+
 	// --- The reaper pair. A fresh lease is never listed nor reclaimable;
 	// an expired one (probed with a future cutoff — the staleBefore
 	// testability precedent) is TRANSFERRED, epoch bumped, old owner
@@ -231,20 +281,25 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Fatalf("expired listing must carry the claim as-is: %+v", probeCand)
 	}
 	// Wrong prev → conflict, nothing moves.
-	if _, err := store.ReclaimExpired(reapProbe.ID, tracker.ClaimToken{Marker: "dead-owner", Epoch: tokC.Epoch + 7}, "reaper:x", future); !errors.Is(err, tracker.ErrClaimConflict) {
+	if _, _, err := store.ReclaimExpired(reapProbe.ID, tracker.ClaimToken{Marker: "dead-owner", Epoch: tokC.Epoch + 7}, "reaper:x", future); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Fatalf("reclaim with wrong prev: want ErrClaimConflict, got %v", err)
 	}
 	// Fresh cutoff → the lease is not expired → refused.
-	if _, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", time.Now()); !errors.Is(err, tracker.ErrClaimConflict) {
+	if _, _, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", time.Now()); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Fatalf("reclaim of a live lease: want ErrClaimConflict, got %v", err)
 	}
 	// The real transfer: epoch bumps, the dead owner is fenced out.
-	rec, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", future)
+	rec, recState, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", future)
 	if err != nil {
 		t.Fatalf("ReclaimExpired: %v", err)
 	}
 	if rec.Marker != "reaper:x" || rec.Epoch != tokC.Epoch+1 {
 		t.Fatalf("transfer token = %+v, want reaper:x at epoch %d", rec, tokC.Epoch+1)
+	}
+	// The transfer reports the state it OBSERVED: the watchdog decides a
+	// card's disposition on this, never on the listing's older copy.
+	if recState != native.StateInProgress {
+		t.Fatalf("transfer must report the state it observed: %q, want %q", recState, native.StateInProgress)
 	}
 	if _, err := store.SetStateOwned(reapProbe.ID, native.StateBlocked, tokC); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Fatalf("dead owner's write after the transfer: want ErrClaimConflict, got %v", err)

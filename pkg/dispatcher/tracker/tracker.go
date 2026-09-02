@@ -162,7 +162,13 @@ type ExpiredClaim struct {
 	Identifier string
 	State      string
 	LastRunID  string
-	Prev       ClaimToken
+	// Attempts is how many runs this card has already carried. The
+	// watchdog needs it because returning a card to the pool is not free
+	// on every surface: where the launcher cannot RESUME the recorded run
+	// it starts a fresh one, so an always-failing card would be relaunched
+	// once per lease, forever.
+	Attempts int
+	Prev     ClaimToken
 }
 
 // ClaimReaper is the optional tracker capability behind the claim
@@ -180,7 +186,25 @@ type ClaimReaper interface {
 	// claim is still exactly prev AND still expired at cutoff, bumping
 	// the fencing epoch (the old owner's late writes die at the fence).
 	// ErrClaimConflict when the claim moved on.
-	ReclaimExpired(ctx context.Context, id string, prev ClaimToken, marker string, cutoff time.Time) (ClaimToken, error)
+	//
+	// It also returns the card's state AS OBSERVED BY THE CAS. That is
+	// the only instant at which the state and the ownership are known
+	// together: the state carried on ExpiredClaim was read at listing
+	// time, and an operator can move the card between the listing and
+	// the transfer — deciding the card's disposition on the stale value
+	// overwrites exactly the intent the watchdog is supposed to honour.
+	ReclaimExpired(ctx context.Context, id string, prev ClaimToken, marker string, cutoff time.Time) (ClaimToken, string, error)
+}
+
+// LaunchStateLister is the optional capability naming the states a card
+// is DISPATCHED FROM. The claim watchdog needs it to tell two situations
+// apart that look identical from the card alone: a card an operator
+// deliberately moved (honour it), and a card whose best-effort move into
+// the running column never landed (file it, or the next tick launches a
+// second run for work already delivered). A tracker that cannot answer
+// leaves the watchdog conservative — it honours every move it sees.
+type LaunchStateLister interface {
+	LaunchStates() []string
 }
 
 // Errors returned by Tracker implementations. Callers should use

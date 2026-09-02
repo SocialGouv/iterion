@@ -147,15 +147,17 @@ func (f *fakeBoardCoord) ListExpiredClaimCandidates(_ context.Context, _ time.Ti
 	return out, nil
 }
 
-func (f *fakeBoardCoord) ReclaimExpired(_ context.Context, _, id string, prev tracker.ClaimToken, marker string, _ time.Time) (tracker.ClaimToken, error) {
+func (f *fakeBoardCoord) ReclaimExpired(_ context.Context, _, id string, prev tracker.ClaimToken, marker string, _ time.Time) (tracker.ClaimToken, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if held, ok := f.claimed[id]; !ok || held != prev.Marker || f.epochs[id] != prev.Epoch {
-		return tracker.ClaimToken{}, tracker.ErrClaimConflict
+		return tracker.ClaimToken{}, "", tracker.ErrClaimConflict
 	}
 	f.claimed[id] = marker
 	f.epochs[id]++
-	return tracker.ClaimToken{Marker: marker, Epoch: f.epochs[id]}, nil
+	// The state is read BY the transfer, like the real twins: the caller
+	// must never decide on the listing's stale copy.
+	return tracker.ClaimToken{Marker: marker, Epoch: f.epochs[id]}, f.states[id], nil
 }
 
 func readyCard(id, bot string) boardmongo.Candidate {
@@ -1060,7 +1062,7 @@ func TestCloudReaper_HonoursADeliberateStateMove(t *testing.T) {
 	f := newFakeBoardCoord()
 	f.claimed["c-moved"] = "dead-owner"
 	f.epochs["c-moved"] = 1
-	f.states["c-moved"] = native.StateReady // the operator re-queued it
+	f.states["c-moved"] = native.StateReview // parked by the operator, a non-launch column
 	f.expired = []boardmongo.ExpiredCandidate{{
 		Tenant: "t1",
 		Claim: tracker.ExpiredClaim{
@@ -1075,11 +1077,42 @@ func TestCloudReaper_HonoursADeliberateStateMove(t *testing.T) {
 
 	d.reapExpiredClaims(context.Background(), time.Now())
 
-	if got := f.states["c-moved"]; got != native.StateReady {
+	if got := f.states["c-moved"]; got != native.StateReview {
 		t.Fatalf("the watchdog overwrote a deliberate state move: card is %q, the operator had put it in %q",
-			got, native.StateReady)
+			got, native.StateReview)
 	}
 	if _, still := f.claimed["c-moved"]; still {
 		t.Fatalf("the dead owner's claim must still be freed")
+	}
+}
+
+// TestCloudReaper_ReparkIsBounded: returning a card to the pool costs a
+// FRESH run on this surface — processBoardCard always calls runs.Launch
+// and never resumes the recorded run the way the local dispatcher does.
+// So an always-failing card would be relaunched once per lease, forever:
+// the watchdog turning a stuck card into a spend loop. Past the ceiling
+// it must file the card instead.
+func TestCloudReaper_ReparkIsBounded(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-loop"] = "dead-owner"
+	f.epochs["c-loop"] = 1
+	f.states["c-loop"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-loop", LastRunID: "run-resumable", Attempts: watchdogMaxReparks,
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+
+	if got := f.states["c-loop"]; got != native.StateBlocked {
+		t.Fatalf("past the repark ceiling the card must be filed, not relaunched: state=%q, want %q",
+			got, native.StateBlocked)
 	}
 }

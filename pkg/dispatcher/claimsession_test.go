@@ -102,3 +102,71 @@ func TestClaimSession_ConflictLatchesLossOnce(t *testing.T) {
 	}
 	s.Stop() // idempotent after self-exit
 }
+
+// TestClaimSession_StopIsNotHostageToASlowRenewal: Stop() runs ON THE
+// ACTOR (finishRun's park arms, and shutdown). If it waits for a renewal
+// against a slow store to finish, the whole dispatcher stalls for that
+// renewal's full timeout — measured at three seconds, and ADR-028's
+// "the actor never blocks on tracker I/O" says it must not.
+func TestClaimSession_StopIsNotHostageToASlowRenewal(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	leaser := &slowLeaser{entered: entered, release: release}
+	// Built (not StartClaimSession'd) so the cadence is set BEFORE the
+	// goroutine reads it — the sibling tests' pattern.
+	s := &claimSession{
+		issueID: "issue-1", tok: tracker.ClaimToken{Marker: "m", Epoch: 1},
+		leaser: leaser, warn: func(string, ...any) {}, interval: 5 * time.Millisecond,
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	go s.loop()
+	defer close(release)
+
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the heartbeat never issued a renewal")
+	}
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		s.Stop()
+		done <- time.Since(start)
+	}()
+	select {
+	case took := <-done:
+		if took > time.Second {
+			t.Fatalf("Stop() waited %s on an in-flight renewal — the actor is blocked for that long", took)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() is hostage to an in-flight renewal: the actor cannot make progress until the store answers")
+	}
+}
+
+// slowLeaser blocks inside RenewClaim until released, and reports whether
+// the context it was handed got cancelled — the channel the session must
+// use to cut a renewal short.
+type slowLeaser struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l *slowLeaser) ClaimLease(context.Context, string, string) (tracker.ClaimToken, error) {
+	return tracker.ClaimToken{}, nil
+}
+func (l *slowLeaser) RenewClaim(ctx context.Context, _ string, _ tracker.ClaimToken) error {
+	select {
+	case l.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-l.release:
+		return nil
+	}
+}
+func (l *slowLeaser) ReleaseOwned(context.Context, string, tracker.ClaimToken) error { return nil }
+func (l *slowLeaser) UpdateStateOwned(context.Context, string, string, tracker.ClaimToken) error {
+	return nil
+}

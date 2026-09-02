@@ -29,17 +29,26 @@ func (a *Adapter) Name() string { return "native" }
 // all StateDone (see BlockersSatisfied / CanLaunch). Missing blockers
 // are treated as open (fail closed). Terminal non-success states such
 // as StateBlocked do NOT satisfy a dependency.
+// LaunchStates names the board columns a card is dispatched FROM — see
+// tracker.LaunchStateLister. One definition, shared with ListCandidates
+// below, so the watchdog and the poller can never disagree about which
+// column a launch started in.
+func (a *Adapter) LaunchStates() []string {
+	b := a.store.Board()
+	out := make([]string, 0, len(b.States))
+	for _, s := range b.States {
+		if s.Eligible {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
 func (a *Adapter) ListCandidates(ctx context.Context) ([]tracker.Issue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	b := a.store.Board()
-	eligible := make([]string, 0, len(b.States))
-	for _, s := range b.States {
-		if s.Eligible {
-			eligible = append(eligible, s.Name)
-		}
-	}
+	eligible := a.LaunchStates()
 	if len(eligible) == 0 {
 		return nil, nil
 	}
@@ -165,9 +174,9 @@ func (a *Adapter) ListExpiredClaimCandidates(ctx context.Context, cutoff time.Ti
 	return a.store.ListExpiredClaimCandidates(cutoff, limit)
 }
 
-func (a *Adapter) ReclaimExpired(ctx context.Context, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
+func (a *Adapter) ReclaimExpired(ctx context.Context, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error) {
 	if err := ctx.Err(); err != nil {
-		return tracker.ClaimToken{}, err
+		return tracker.ClaimToken{}, "", err
 	}
 	return a.store.ReclaimExpired(id, prev, marker, cutoff)
 }

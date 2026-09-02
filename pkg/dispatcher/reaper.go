@@ -39,6 +39,11 @@ const (
 	reaperMarkerPrefix = "reaper:"
 )
 
+// ClaimReaperInterval is the watchdog's cadence, exported so the cloud
+// board dispatcher paces its own pass by the SAME constant instead of
+// inheriting whatever its dispatch tick happens to be.
+func ClaimReaperInterval() time.Duration { return claimReaperInterval }
+
 // ClaimReaperEnvName is the fleet-gate env var, exported so the cloud
 // board dispatcher references the one constant instead of re-literalling
 // the name in its startup log.
@@ -115,7 +120,9 @@ func (c *Dispatcher) reapExpiredClaims(ctx context.Context, reaper tracker.Claim
 
 func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, runs *store.FilesystemRunStore, cand tracker.ExpiredClaim, now time.Time) {
 	run, runErr := c.loadRunForReap(ctx, runs, cand.LastRunID)
-	dec := DecideStuckCard(run, runErr)
+	cfg := c.cfg.Load()
+	card := StuckCard{State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates()}
+	dec := DecideStuckCard(run, runErr, card)
 	if dec.Action == StuckKeep {
 		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, dec.Reason)
 		return
@@ -124,19 +131,20 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// still exactly what we listed AND still expired — anything that
 	// moved on (a renewal, an operator, another replica's reaper) makes
 	// this a clean skip.
-	tok, err := reaper.ReclaimExpired(ctx, cand.IssueID, cand.Prev, reaperMarkerPrefix+c.hostMarker, now)
+	tok, liveState, err := reaper.ReclaimExpired(ctx, cand.IssueID, cand.Prev, reaperMarkerPrefix+c.hostMarker, now)
 	if err != nil {
 		if !errors.Is(err, tracker.ErrClaimConflict) {
 			c.logger.Warn("dispatcher: claim watchdog reclaim %s: %v", cand.Identifier, err)
 		}
 		return
 	}
-	cfg := c.cfg.Load()
+	// From here the CAS-observed state supersedes the listing's copy.
+	card.State = liveState
 	switch dec.Action {
 	case StuckComplete:
-		c.fileStuckCard(ctx, cand, cfg.Agent.RunningState, cfg.Agent.CompletedState, tok)
+		c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok)
 	case StuckFail:
-		c.fileStuckCard(ctx, cand, cfg.Agent.RunningState, cfg.Agent.FailedState, tok)
+		c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok)
 	case StuckRepark, StuckReleaseOnly:
 		// The release below is the whole action: the card re-enters the
 		// eligible pool, and for Repark the retry machinery resumes the
@@ -158,17 +166,28 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 // predicate (the cloud reaper reads the same one). Failures are logged,
 // never fatal: the claim is released either way, so a card is never left
 // owned by a dead worker's ghost.
-func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, runningState, target string, tok tracker.ClaimToken) {
-	if !ShouldFileStuckCard(cand.State, runningState, target) {
-		if target != "" && target != runningState {
+func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken) {
+	if !ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
+		if target != "" && target != card.RunningState && card.State != target {
 			c.logger.Info("dispatcher: claim watchdog leaves %s in %q (moved out of %q deliberately — not overwriting it with %q)",
-				cand.Identifier, cand.State, runningState, target)
+				cand.Identifier, card.State, card.RunningState, target)
 		}
 		return
 	}
 	if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, target, tok); err != nil {
 		c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
 	}
+}
+
+// launchStates asks the tracker which columns a card is dispatched from
+// (tracker.LaunchStateLister). A tracker without the capability returns
+// nothing, which keeps the watchdog conservative: it then honours every
+// state it did not expect rather than guessing.
+func (c *Dispatcher) launchStates() []string {
+	if l, ok := c.tracker.(tracker.LaunchStateLister); ok {
+		return l.LaunchStates()
+	}
+	return nil
 }
 
 // loadRunForReap resolves the card's recorded run for the decision
