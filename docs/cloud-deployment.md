@@ -357,6 +357,26 @@ An epoch rollback is intentionally rejected. Do not use `helm rollback` to a
 release with a lower value. Restore an older, fence-aware image as a **new
 release with a higher epoch**. Messages from earlier epochs remain accepted.
 
+**Break glass for a mis-set or corrupt mark.** The high-water mark is
+deliberately monotonic, so normal rollback cannot repair a typo such as
+`runnerEpoch: 100` instead of `10`; a non-decimal value stored in the KV also
+makes every process fail while reading it. Quiesce the installation before
+resetting it: suspend HPA/KEDA reconciliation, scale **both** the server and
+runner Deployments to zero, and verify that no pod capable of claiming the mark
+remains. Then delete only the mark key:
+
+```sh
+nats kv del <rollout-kv-bucket> epoch.high-water
+```
+
+The default rollout bucket is `iterion-runner-rollout`. When
+`ITERION_NATS_KV_BUCKET` / `config.nats.kvBucket` is customised, the rollout
+bucket is `<kvBucket>-rollout`. Correct `runnerEpoch` in the deployment source
+before restoring autoscaling and replicas; otherwise the bad value is claimed
+again immediately. This procedure intentionally stops new submissions and
+executions, so use it only when rolling forward with a higher epoch is not
+possible.
+
 Autoscaling, node turnover and a deploy all arrive as the same signal,
 SIGTERM, so one mechanism covers them all. What happens to a run a runner is
 executing is governed by

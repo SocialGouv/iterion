@@ -1,6 +1,14 @@
 package runner
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/queue"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+)
 
 func TestRunnerEpochAdmissionRelation(t *testing.T) {
 	for _, tc := range []struct {
@@ -16,5 +24,67 @@ func TestRunnerEpochAdmissionRelation(t *testing.T) {
 		if got := runnerEpochAccepted(tc.self, tc.message); got != tc.want {
 			t.Errorf("self=%d message=%d accepted=%t, want %t", tc.self, tc.message, got, tc.want)
 		}
+	}
+}
+
+func TestPlanAdmissionMismatch(t *testing.T) {
+	env := queue.Envelope{V: queue.SchemaVersion + 1, RunnerEpoch: 7}
+	mismatchErr := errors.New("incompatible delivery")
+
+	for _, tc := range []struct {
+		name          string
+		kind          admissionMismatchKind
+		wantDelay     time.Duration
+		wantRunErr    string
+		wantRecovery  string
+		wantLostError string
+	}{
+		{
+			name:          "schema",
+			kind:          admissionMismatchSchema,
+			wantDelay:     natsq.SchemaMismatchNakDelay,
+			wantRunErr:    "schema version mismatch",
+			wantRecovery:  "cloud-queue-schema-rollout.md",
+			wantLostError: "schema version mismatch",
+		},
+		{
+			name:          "future epoch",
+			kind:          admissionMismatchFutureEpoch,
+			wantDelay:     natsq.EpochMismatchNakDelay,
+			wantRunErr:    "runner epoch mismatch",
+			wantRecovery:  "cloud-deployment.md",
+			wantLostError: "runner epoch mismatch",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planAdmissionMismatch(tc.kind, mismatchErr, 0, env, 1, 2)
+			if plan.reason != string(tc.kind) {
+				t.Fatalf("reason = %q, want %q", plan.reason, tc.kind)
+			}
+			if plan.delay != tc.wantDelay {
+				t.Fatalf("delay = %v, want %v", plan.delay, tc.wantDelay)
+			}
+			if plan.final {
+				t.Fatal("first delivery must be delayed, not parked")
+			}
+			if !strings.Contains(plan.parkedRunError, tc.wantRunErr) || !strings.Contains(plan.parkedRunError, tc.wantRecovery) {
+				t.Fatalf("parked run error = %q, want %q and %q", plan.parkedRunError, tc.wantRunErr, tc.wantRecovery)
+			}
+			if got := plan.lostRunError(mismatchErr, errors.New("broker down")); !strings.Contains(got, tc.wantLostError) || !strings.Contains(got, "no queue copy remains") {
+				t.Fatalf("lost run error = %q", got)
+			}
+
+			final := planAdmissionMismatch(tc.kind, mismatchErr, time.Second, env, 2, 2)
+			if !final.final {
+				t.Fatal("last delivery must be parked")
+			}
+			if final.delay != time.Second {
+				t.Fatalf("configured delay = %v, want 1s", final.delay)
+			}
+		})
+	}
+
+	if plan := planAdmissionMismatch(admissionMismatchFutureEpoch, mismatchErr, 0, env, 99, 0); plan.final {
+		t.Fatal("a missing delivery budget must remain on the delayed-Nak path")
 	}
 }
