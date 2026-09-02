@@ -265,6 +265,15 @@ the hours this one spent.
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
   reverted, or when a run fails on "version drift".
+- [docs/dispatcher.md](docs/dispatcher.md#claim-lease--watchdog-native-board-adr-096) —
+  the board **claim lease + watchdog** (ADR-096,
+  `ITERION_BOARD_CLAIM_REAPER`, default off): the fenced leased claim
+  (`claim_epoch`/`claim_lease_until`, heartbeat, owner-scoped CAS
+  writes), the periodic cross-host reaper that reclaims expired leases
+  by TRANSFER and routes the card by `DecideStuckCard`, the
+  terminal-state sink + operator `Reopen`, and the two-release
+  expand/contract rollout. Read it when a native-board card is stuck
+  `in_progress` with a dead owner, or before enabling the reaper.
 - [docs/outcome-router.md](docs/outcome-router.md) — the
   `ITERION_OUTCOME_ROUTER` switch: how a policy-carrying terminal run is
   decided by its launch-frozen contract (merge/relaunch/escalate), the

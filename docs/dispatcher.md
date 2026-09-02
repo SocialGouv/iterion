@@ -788,6 +788,38 @@ filesystems (e.g. dev laptop + CI), the per-issue claim marker
 prevents simultaneous dispatch — each dispatcher writes its own marker
 and refuses to dispatch issues marked by anyone else.
 
+### Claim lease + watchdog (native board, ADR-096)
+
+On the native board (filesystem and Mongo), the claim is a **fenced,
+leased** token, not a bare marker. Each card carries `claim_epoch` (a
+per-issue fencing counter), `claimed_at`, and `claim_lease_until`; the
+owning dispatcher **heartbeats** the lease for the whole hold, and every
+write it makes while it holds the card is a compare-and-set on
+`(claim, claim_epoch)`. A worker whose claim was stolen finds its late
+writes refused rather than clobbering the new owner.
+
+The **claim watchdog** (`ITERION_BOARD_CLAIM_REAPER=on`, default off)
+runs every minute on each dispatcher and each cloud replica. It reclaims
+cards whose lease expired with nobody renewing — **including cross-host
+dead owners**, which the boot-time same-host pid-probe sweep never
+touched — by transferring the claim to a recovery owner (never freeing
+it first, which would let the next tick re-dispatch it), then routing the
+card by its recorded run's terminal state: finished → the completed
+column, terminal failure → the failed column, resumable → released for
+the retry machinery to resume the *same* run, paused → left alone (its
+retained claim is the parking brake, ADR-014). A running/queued run is
+never reclaimed, and any read error conserves. Roll it out in two
+releases: ship the lease fields + heartbeats first (reaper off), then
+enable the reaper once no pre-lease binary is left in the fleet.
+
+Terminal board states (`done`, `blocked`) are **sinks**: the ordinary
+state-move family refuses to leave them (silent resurrection was
+any→any's worst case). The one sanctioned exit is an operator **reopen**
+(the `/board` drag, `iterion issue move`, the pipeline Reset button);
+bots with `board.move` get the refusal with no fallback. A
+terminal→terminal move (closing a blocked give-up as done) stays an
+ordinary refiling.
+
 ## Operational tips
 
 - Always pair `iterion dispatch` with `iterion studio` (or just visit
