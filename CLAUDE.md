@@ -79,7 +79,10 @@ its first commit. The non-negotiables:
   20s — a single failed refresh makes the runner self-cancel rather than
   split-brain), **NATS queue groups** (`usernotify` ⇒ one replica handles each
   event), **per-tenant CAS cursors** (the cloud `board_events` tail elects one
-  publishing replica), and **Mongo CAS** (`cloudsched`'s ticker fires each due
+  *materializing* replica), **leased outbox claims** (the trigger effect
+  worker of ADR-094 — one replica executes each effect; an orphaned claim is
+  reclaimable and a stolen lease turns the old owner's late writes into
+  no-ops), and **Mongo CAS** (`cloudsched`'s ticker fires each due
   schedule exactly once; `orgusage` counters; the `sent_notifications`
   first-writer-wins claim; the atomic `boardmongo.ConsumeLabels`).
 - **Horizontal scale is "more pods".** Per-pod serialization, never a
@@ -261,8 +264,11 @@ the hours this one spent.
   botsource rows under the `platform:` sentinel, resolution team →
   platform → baked at every launch surface, the runner's by-ref rebuild +
   version-drift guard, digest-audited), plus the runtime-mutable webhook
-  role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
-  image (`admin sandbox set --default-image …`, pinned per RunMessage).
+  role bots (`admin roles set --reviewer …`), the `sandbox: auto` default
+  image (`admin sandbox set --default-image …`, pinned per RunMessage), and
+  the **bot vars** (`admin vars set ITERION_X …`, ADR-093 — the
+  `${ITERION_X:-default}` expansions resolved from the DB before the pod
+  env, so a model pin or reasoning-effort tweak needs no Helm change).
   Read it when a bot tweak seems to need a deploy, when a push must be
   reverted, or when a run fails on "version drift".
 - [docs/outcome-router.md](docs/outcome-router.md) — the
@@ -440,7 +446,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
 - `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
 - `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md)) — and, under the reserved `platform:` sentinel tenant, the deployment-wide **platform bot overrides** (super-admin `/api/admin/bots` + `iterion remote admin bots push`): the DB-backed form of the baked catalog, resolved team → platform → baked at every launch surface via [pkg/server/bot_resolver.go](pkg/server/bot_resolver.go) and rebuilt runner-side from the queue message's versioned `bot_bundle` ref (see [docs/platform-bots.md](docs/platform-bots.md))
-- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`) and `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
+- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`), `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage), and `bot_vars` (**ADR-093** — DB-resolved overrides for the `${ITERION_X:-default}` expansions bots declare: model pins, reasoning effort, tunables, consulted before the pod env through the single `ir.SetEnvOverlay` choke point, precedence **setting > pod env > the `.bot`'s own default**; only `ITERION_`-prefixed names are consulted and an empty stored value counts as unset, `Validate` refuses infra namespaces and credential-SHAPED names, and the merge write is CAS-guarded so a concurrent PUT is a loud 409 rather than a dropped key. Values live in CLEAR in the document, every GET and the audit trail — never store a secret in one). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
 - `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
 - `pkg/operatormcp/` — The **operator-facing** MCP tool surface served by `iterion mcp`, the seam that lets any MCP client (Claude Code, the desktop, an IDE) drive iterion end to end. Two families share one server: `local_*` (the local store and engine — validate/launch/follow runs, the native kanban board, bot discovery; reads go straight to the run store, launches spawn a detached `iterion run --background` subprocess so the run outlives the client's session) and `remote_*` (a logged-in instance over its HTTP API — a typed core plus the `remote_api` escape hatch and route/OpenAPI discovery, mirroring the `iterion remote` CLI). Following the `boardops` precedent it owns the tool definitions and dispatch, while the stdio JSON-RPC framing lives with the other MCP servers in `cmd/iterion`. Distinct from `pkg/askusermcp` (tools exposed to a *bot's agent*). See [docs/mcp-server.md](docs/mcp-server.md)
 - `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
@@ -737,8 +743,9 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 
 ### Error Handling
 
-- **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `Code` (type `ErrorCode`), `Message`, `NodeID`, `Hint`, `Cause`
-  - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`
+- **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `Code` (type `ErrorCode`), `Message`, `NodeID`, `Hint`, `Cause`. `ErrorCode` is a **type alias of `store.FailureCode`** (**ADR-095**): one vocabulary, declared in [pkg/store/lifecycle.go](pkg/store/lifecycle.go) and **persisted** on `Run.FailureCode` (`run.json` → `failure_code`) instead of dying as free text at the store boundary. The registry is **open-world** — readers must never validate against it — and an empty value means UNKNOWN, never "no failure" (whether a run failed is `Run.Status`'s job).
+  - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`, `SCHEMA_VALIDATION`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`, `CONTEXT_LENGTH_EXCEEDED`, `TOOL_FAILED_TRANSIENT`, `TOOL_FAILED_PERMANENT`, `NETWORK_TRANSIENT`, `AUTH_FAILED`, `INTERRUPTED`, `FAIL_NODE`, `PROCESS_ORPHANED`, `QUEUE_SCHEMA_MISMATCH`, `DLQ_PARKED`. The engine does not emit `INTERRUPTED` / `FAIL_NODE` / `PROCESS_ORPHANED` / `QUEUE_SCHEMA_MISMATCH` itself — they exist only under their `store.Failure*` names.
+  - **`ContinuationState`** rides beside it (`redelivery_pending` | `retry_armed` | `final`; empty = unknown, never read as final): who owns the run's future after a terminal transition. An outcome consumer must not act — resume, relaunch, route — while a continuation is pending. Engine paths persist the CODE only; continuation is runner/server-side knowledge.
 - **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C199 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
@@ -746,11 +753,13 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 ### Store & Persistence
 
 ```
+<store-dir>/router_watermark.json  # Outcome-router activation instant (first-writer-wins)
 <store-dir>/runs/<run_id>/
-  run.json              # Run metadata (status, inputs, checkpoint)
+  run.json              # Run metadata (status, failure_code, outcome_seq, continuation_state, routing_policy, checkpoint)
   events.jsonl          # Timestamped events (one per line, monotonic seq)
   artifacts/<node>/<v>.json   # Versioned node outputs
   interactions/<id>.json      # Human interaction records (questions/answers)
+  route_decisions.json  # Outcome-router decision registry, one row per terminal episode
   report.md             # Generated by `iterion report` — chronological run report
 ```
 
@@ -808,7 +817,10 @@ worktree at `<store-dir>/worktrees/<run-id>` and runs all nodes inside it
 
 The result is persisted on `run.json` as `final_commit`, `final_branch`,
 `merged_into`, `merged_commit` (differs from `final_commit` under
-squash), `merge_status` (`pending|merged|skipped|failed`) and surfaced
+squash), `merge_status` (`pending|merging|merged|conflicted|skipped|failed`
+— `merging` is the CAS claim held by exactly one worker via `ClaimMerge`,
+stealable after 30 min, and every exit from it is conditional so a loser
+can never overwrite `merged`) and surfaced
 in the studio RunHeader so the user always knows where the run's
 commits landed.
 
@@ -906,10 +918,15 @@ ship on the spine** (each = a source adapter publishing a
   `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
   board has its own spine half
   ([pkg/server/trigger_cloud.go](pkg/server/trigger_cloud.go)) — a
-  `board_events` poll-tail whose per-tenant CAS cursor elects one
-  publishing replica, feeding the same evaluator over the NATS bus with
-  an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
-  consume_labels triggers cannot double-launch across replicas; the
+  `board_events` poll-tail that normalizes + matches a batch FIRST, writes
+  one durable row per matched (event, subscription) pair into the
+  `trigger_effects` outbox, and only THEN CAS-advances the per-tenant
+  cursor; the `EffectWorker` executes those rows under an atomic leased
+  claim with bounded retries (**ADR-094** — cloud board events no longer
+  ride the lossy bus at all; the outbox IS the delivery). The one-shot
+  `consume_labels` gate is the ATOMIC `boardmongo.ConsumeLabels`, and the
+  row's `ConsumeMarked` marker sits between the consume and the launch, so
+  a launch failure retries the launch without re-spending the label; the
   `/api/v1/triggers` CRUD is team-scoped in cloud (active-team JWT).
 - **run-completion** ("runned by iterion") — `runview.Service` emits
   `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
