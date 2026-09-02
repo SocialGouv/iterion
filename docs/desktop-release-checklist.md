@@ -68,7 +68,7 @@ If a release artefact ships a critical bug after publication:
 
 - [ ] **Yank the manifest**: edit the GitHub Release to remove or replace `iterion-desktop-manifest.json` so existing users don't auto-update to the broken version. New users land on a stale version, which is preferred.
 - [ ] **Re-tag a `vX.Y.Z+1` patch release** with the fix and publish; auto-update will lift users off the broken version.
-- [ ] **Revert the brew cask** to the previous good version manually (the cask edits live in the iterion-brew tap repo).
+- [ ] **Revert the brew cask** to the previous good version by editing [`Cask/iterion-desktop.rb`](../Cask/iterion-desktop.rb) on `main` — **the tap lives in this repository**, not in a separate one. [`.github/workflows/brew-update.yml`](../.github/workflows/brew-update.yml) is what normally writes it (it commits `Formula/iterion.rb` + `Cask/iterion-desktop.rb` straight to `main` with `[skip ci]`), so a manual revert is an ordinary commit here.
 - [ ] **Communicate**: pin a notice on the GitHub Release describing the issue, recommended action, and patch ETA.
 - [ ] **Post-mortem**: track the regression that escaped CI/QA; add a scenario to [desktop-qa-checklist.md](desktop-qa-checklist.md) so it can't recur.
 
