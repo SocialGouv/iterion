@@ -240,6 +240,29 @@ func prefixUpperBound(prefix string) (string, error) {
 	return "", fmt.Errorf("boardmongo: marker prefix %q has no upper bound — a prefix range built from it would match nothing", prefix)
 }
 
+func (c *Coordinator) ListUnleasedClaims(ctx context.Context, cutoff time.Time, limit int) ([]ExpiredCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	filter := UnleasedArm(cutoff)
+	filter["issue.claim"] = bson.M{"$gt": ""}
+	cur, err := c.coll.Find(ctx, filter,
+		options.Find().SetSort(bson.D{{Key: "issue.updatedat", Value: 1}}).SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: list un-leased claims: %w", err)
+	}
+	var docs []issueDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("boardmongo: decode un-leased claims: %w", err)
+	}
+	out := make([]ExpiredCandidate, 0, len(docs))
+	for _, d := range docs {
+		iss := d.Issue
+		out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: native.ExpiredClaimFrom(&iss)})
+	}
+	return out, nil
+}
+
 func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error) {
 	return c.StoreFor(tenant).ReclaimExpired(id, prev, marker, cutoff)
 }

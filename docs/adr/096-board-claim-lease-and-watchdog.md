@@ -151,18 +151,20 @@ neutralisation (commit 0) protects one direction only — a NEW binary no
 longer erases the claim family; an OLD binary's full-document
 `ReplaceOne` still strips epoch + lease from any card it writes (§8),
 which locks the live holder out of all three fenced verbs and leaves an
-un-leased claim behind. That residue is deliberately **conserved** while
-the gate is off: releasing on the lease's absence alone would strip the
-claim — the one field every watchdog listing selects on — and leave the
-card in_progress, unclaimed, permanently undecidable. Conserved as-is,
-it is exactly what the gated reap's own two-arm listing (expired lease
-OR un-leased past the 24h horizon) reaches and decides with full
-liveness. Release N+1, once no old binary can un-lease a claim, enables
-the reaper — and with it the repair of whatever the mixed-fleet window
-stranded. The one gate-independent releaser is the recovery-claim sweep
-(`reaper:<host>` markers only, every watchdog pass): releasing an
-abandoned recovery claim is a pure return to the card's pre-watchdog
-state, which is what the rollback lever promises.
+un-leased claim behind. That residue is swept on the watchdog cadence,
+**guarded**: released only when the card still carries a run id AND sits
+in the running column — the shape an unclaimed card is REPAIRABLE in
+(the fork-adoption reconciler lists unclaimed in_progress/blocked cards
+and files them; `releaseSweptClaim` produces that exact shape and the
+next pass decides it). Everything else stays conserved for the gated
+reap's own two-arm listing: a card with no recorded run proves nothing,
+and a launch-column card released bare would re-arm a fresh spend.
+Release N+1, once no old binary can un-lease a claim, enables the
+reaper — and with it the full decision table over whatever the
+mixed-fleet window stranded. The other gate-independent releaser is the
+recovery-claim sweep (`reaper:<host>` markers, every watchdog pass):
+releasing an abandoned recovery claim is a pure return to the card's
+pre-watchdog state, which is what the rollback lever promises.
 
 ## Consequences
 

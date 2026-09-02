@@ -38,6 +38,9 @@ type fakeBoardCoord struct {
 	// recoveryLists counts ListAbandonedRecoveryClaims calls — the
 	// periodicity oracle for the repair-sweep cadence.
 	recoveryLists int
+	// recoveryListErr fault-injects the recovery listing (the sweep's
+	// listing-health latch reads it).
+	recoveryListErr error
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -161,6 +164,9 @@ func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recoveryLists++
+	if f.recoveryListErr != nil {
+		return nil, f.recoveryListErr
+	}
 	out := make([]boardmongo.ExpiredCandidate, 0, len(f.expired))
 	for _, e := range f.expired {
 		if limit > 0 && len(out) >= limit {
@@ -1721,5 +1727,95 @@ func TestCloudReaper_OnePassFeedsTheLatchOnce(t *testing.T) {
 
 	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
 		t.Fatalf("one pass, two arms: %d failure / %d recovery lines — want exactly 1/0 (one verdict per PASS, not per arm)", cannot, again)
+	}
+}
+
+// TestCloudSweep_UnleasedReleaseIsGuarded: the restored un-leased sweep
+// releases ONLY what a release leaves repairable — a running-column card
+// carrying a run id (the fork-adoption reconciler's population). A card
+// with no run, or one sitting in a launch column (where a bare release
+// re-arms a fresh spend), stays conserved for the gated reap.
+func TestCloudSweep_UnleasedReleaseIsGuarded(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	mk := func(id, state, runID string) {
+		f.claimed[id] = "podA-1"
+		f.epochs[id] = 0
+		f.states[id] = state
+		f.unleased = append(f.unleased, boardmongo.ExpiredCandidate{
+			Tenant: "t1",
+			Claim: tracker.ExpiredClaim{IssueID: id, State: state, LastRunID: runID,
+				Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0}},
+		})
+	}
+	mk("c-run", native.StateInProgress, "run-x") // released: reconciler files it
+	mk("c-ready", native.StateReady, "run-y")    // conserved: a launch column
+	mk("c-norun", native.StateInProgress, "")    // conserved: nothing proves the shape
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.run(ctx)
+
+	if _, held := f.claimed["c-run"]; held {
+		t.Fatalf("an un-leased in_progress card WITH a run must be released (the reconciler repairs that shape), still held by %q", f.claimed["c-run"])
+	}
+	if got := f.claimed["c-ready"]; got != "podA-1" {
+		t.Fatalf("a launch-column card must stay conserved (a bare release re-arms a fresh launch), claim now %q", got)
+	}
+	if got := f.claimed["c-norun"]; got != "podA-1" {
+		t.Fatalf("a card with no recorded run must stay conserved, claim now %q", got)
+	}
+}
+
+// TestCloudSweep_KeepWarnFiresOncePerCard: the conserved population is
+// self-sustaining under a disabled gate — the keep warn fires on the
+// card's edge, not once per pass per replica for ever.
+func TestCloudSweep_KeepWarnFiresOncePerCard(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-kept"] = dispatcher.ReaperMarker("dead-replica")
+	f.epochs["c-kept"] = 2
+	f.states["c-kept"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{IssueID: "c-kept", LastRunID: "run-live", State: native.StateInProgress,
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("dead-replica"), Epoch: 2}},
+	}}
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusRunning}, nil
+	}
+	for i := 0; i < 3; i++ {
+		d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
+	}
+	if warns := strings.Count(buf.String(), "leaves t1/c-kept alone"); warns != 1 {
+		t.Fatalf("keep warn fired %d times over 3 passes, want once (per card edge)", warns)
+	}
+}
+
+// TestCloudSweep_ListingFailureWarnsOnce: a store outage at the watchdog
+// cadence is one warn per minute per replica unless the listing health
+// is latched on its edge — with one recovery line when it clears.
+func TestCloudSweep_ListingFailureWarnsOnce(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.recoveryListErr = errors.New("mongo: server selection timeout")
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	for i := 0; i < 3; i++ {
+		d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
+	}
+	if warns := strings.Count(buf.String(), "repairs paused until the listing recovers"); warns != 1 {
+		t.Fatalf("listing failure warned %d times over 3 passes, want once (edge)", warns)
+	}
+	f.recoveryListErr = nil
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
+	if warns := strings.Count(buf.String(), "repairs paused until the listing recovers"); warns != 1 {
+		t.Fatalf("recovered listing re-warned (%d lines total)", warns)
 	}
 }

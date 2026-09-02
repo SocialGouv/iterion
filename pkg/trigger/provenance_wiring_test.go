@@ -104,15 +104,24 @@ func TestEffectWorker_MachineCausedIsTerminalBenign(t *testing.T) {
 		Labels:  []string{"triage:auto"},
 		Payload: map[string]any{"reason": tracker.ReasonWatchdog},
 	}
+	// The ADMISSION rule declines the event at the shared prelude: a
+	// machine-caused event materializes ZERO durable rows (a schema
+	// migration is cards x subscriptions of guaranteed no-ops queued
+	// FIFO ahead of the next genuine trigger otherwise).
 	rows, err := MaterializeEffects(context.Background(), subs, ev, time.Now().UTC())
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("materialize: rows=%d err=%v", len(rows), err)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("materialize: rows=%d err=%v — a machine-caused event must not reach the outbox", len(rows), err)
 	}
-	if err := out.UpsertPending(context.Background(), rows); err != nil {
+
+	// Defense in depth: a row that somehow reaches the worker (an older
+	// binary materialized it pre-upgrade) still dies benign-terminal —
+	// MarkDone, never a five-attempt dead-letter.
+	if err := out.UpsertPending(context.Background(), []EffectRow{{
+		ID: EffectID(ev.ID, "s1"), TenantID: "t1", SubID: "s1", State: EffectPending, Event: ev,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	w := &EffectWorker{Outbox: out, Subs: subs, Evaluator: eval}
-
 	w.Tick(context.Background(), 10)
 	row, _ := out.Row(EffectID(ev.ID, "s1"))
 	if row.State != EffectDone {

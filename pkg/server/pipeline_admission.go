@@ -432,12 +432,19 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	// ever on a paused/cancelled run — so a bare `Claim != ""` refused
 	// the operator's own escape hatch (this endpoint has no Ready
 	// precondition precisely to serve it) and pointed them at a watchdog
-	// that would never come. A claim with NO lease is legacy, i.e. a
-	// fully operational owner that merely does not heartbeat — it is
-	// refused like a live one.
+	// that would never come. A claim with NO lease is admitted too: that
+	// is what a release N-1 binary writes, the population the
+	// expand/contract rollout GUARANTEES during release N — and it has
+	// zero release path (the FS reaper has no un-leased arm at all; the
+	// cloud one only lists it gate ON), so refusing it bricked the card
+	// for ever on both twins. The cost is a seconds-wide double-launch
+	// window against a legacy daemon mid-launch, during the mixed-fleet
+	// release only; ClaimForLaunch (marker-unconditional) still protects
+	// the admission loop, and pipelineTicketLaunchable the active-run
+	// case.
 	if cur, err := board.Get(iss.ID); err != nil {
 		return "", fmt.Errorf("read ticket: %w", err)
-	} else if cur.Claim != "" && (cur.ClaimLeaseUntil.IsZero() || cur.ClaimLeaseUntil.After(time.Now().UTC())) {
+	} else if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(time.Now().UTC()) {
 		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
 	}
 	entry, found, err := s.findBot(iss.Bot)

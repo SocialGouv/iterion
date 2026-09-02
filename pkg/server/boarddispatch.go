@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ type boardCoordinator interface {
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
 	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ListAbandonedRecoveryClaims(ctx context.Context, markerPrefix string, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ListUnleasedClaims(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 }
 
@@ -97,6 +99,7 @@ type boardDispatcher struct {
 	// its populations are self-sustaining under a disabled gate).
 	recoveryBatchFull bool
 	sweepKeepWarned   map[string]string
+	sweepListFailed   map[string]bool
 	// saturationWarned dedups the fork-adoption sweep's listing-cap warning
 	// to one line per condition edge (only touched from the run-loop
 	// goroutine, which calls the sweeps sequentially).
@@ -478,13 +481,14 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	// nothing else in cloud releases.
 	//
 	// The UN-LEASED population (ordinary claims a mixed-fleet write
-	// stripped of lease + fence, §8/§9 of the ADR) is deliberately NOT
-	// swept here: releasing on the lease's absence alone would strip the
-	// claim — the one field every watchdog listing selects on — and leave
-	// the card in_progress, unclaimed, permanently undecidable. Conserved
-	// as-is, it is exactly what the gated reap's own two-arm listing
-	// (expired lease OR un-leased past the 24h horizon) reaches and
-	// decides with full liveness the moment the gate is on.
+	// stripped of lease + fence, §8/§9 of the ADR) is swept GUARDED:
+	// released only when the card still carries a run id AND sits in the
+	// running column — the shape the fork-adoption reconciler lists and
+	// files once the claim is gone (an unclaimed in_progress card is NOT
+	// undecidable: releaseSweptClaim produces that exact shape and the
+	// next pass repairs it). Everything else — no run recorded, or a
+	// launch-column card a bare release would re-arm — stays conserved
+	// for the gated reap's own two-arm listing.
 	var lastReap time.Time
 	for {
 		d.tick(ctx)
@@ -503,6 +507,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 				d.reapExpiredClaims(ctx, now, verdict)
 			}
 			d.sweepAbandonedRecoveryClaims(ctx, now, verdict)
+			d.sweepUnleasedClaims(ctx, now, verdict)
 			verdict.report(d)
 		}
 		select {
@@ -525,8 +530,7 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context, now 
 		defer v.report(d)
 	}
 	cands, err := d.coord.ListAbandonedRecoveryClaims(ctx, dispatcher.ReaperMarkerPrefix(), now, sweepBatch)
-	if err != nil {
-		d.warn("recovery-claim sweep: %v", err)
+	if d.noteSweepListing("recovery-claim sweep", err); err != nil {
 		return
 	}
 	// A full batch means there are probably more, and NOTHING else can
@@ -544,6 +548,25 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context, now 
 		}
 	}
 	d.sweepClaims(ctx, "recovery-claim sweep", cands, now, v)
+}
+
+// sweepUnleasedClaims releases ONLY the un-leased claims whose release
+// leaves a card the fork-adoption sweep can still file: a card in the
+// running column carrying a run id. Anything else (no run recorded, or a
+// card sitting in a launch column where a bare release would re-arm a
+// fresh launch) stays conserved for the gated reap.
+func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time, v *passVerdict) {
+	cands, err := d.coord.ListUnleasedClaims(ctx, now, sweepBatch)
+	if d.noteSweepListing("un-leased claim sweep", err); err != nil {
+		return
+	}
+	keep := cands[:0]
+	for _, c := range cands {
+		if c.Claim.LastRunID != "" && c.Claim.State == d.inProgressState {
+			keep = append(keep, c)
+		}
+	}
+	d.sweepClaims(ctx, "un-leased claim sweep", keep, now, v)
 }
 
 // sweepClaims is the ONE body both startup sweeps run. Two rules hold
@@ -565,6 +588,7 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 	}
 	gated := dispatcher.ClaimReaperEnabled()
 	swept := 0
+	kept := map[string]bool{}
 	for _, cand := range cands {
 		if gated {
 			acted, obs, rerr := d.reapOne(ctx, cand, now)
@@ -586,19 +610,35 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
 			// Once per card+reason, not per pass: a conserved population
 			// is self-sustaining under a disabled gate, and one line per
-			// minute per card per replica is a storm, not a signal.
-			key := cand.Tenant + "/" + cand.Claim.IssueID
+			// minute per card per replica is a storm, not a signal. The
+			// memo is bounded by construction: entries for cards that
+			// left the kept population are purged below, so it never
+			// outgrows one listing's worth of cards.
+			// Keyed by label too: the two sweeps share the memo, and a
+			// cross-label purge would erase the other sweep's entries
+			// every pass — the exact re-warn storm the memo prevents.
+			key := label + "|" + cand.Tenant + "/" + cand.Claim.IssueID
 			if d.sweepKeepWarned == nil {
 				d.sweepKeepWarned = map[string]string{}
 			}
 			if d.sweepKeepWarned[key] != pre.Reason {
 				d.sweepKeepWarned[key] = pre.Reason
-				d.warn("%s leaves %s alone: %s", label, key, pre.Reason)
+				d.warn("%s leaves %s/%s alone: %s", label, cand.Tenant, cand.Claim.IssueID, pre.Reason)
 			}
+			kept[key] = true
 			continue
 		}
 		if d.releaseSweptClaim(ctx, label, cand, now) {
 			swept++
+		}
+	}
+	// Purge memo entries for cards this pass no longer kept — released,
+	// disposed, or gone. Keeps the map bounded by the live population and
+	// lets a card that comes BACK warn again (its silence would otherwise
+	// be permanent on a reason it last showed years ago).
+	for key := range d.sweepKeepWarned {
+		if strings.HasPrefix(key, label+"|") && !kept[key] {
+			delete(d.sweepKeepWarned, key)
 		}
 	}
 	if swept > 0 {
@@ -632,6 +672,27 @@ func (v *passVerdict) fold(tenant string, observed bool, err error) {
 func (v *passVerdict) report(d *boardDispatcher) {
 	if v.observed {
 		d.noteRunReadFailure(v.tenant, v.err)
+	}
+}
+
+// noteSweepListing reports a sweep's listing health on its EDGES, per
+// label: the sweeps run every watchdog pass, so a per-pass line under a
+// store outage is one warn per minute per replica — the storm that
+// hides the next real signal (the Debug-decline lesson, warn once).
+func (d *boardDispatcher) noteSweepListing(label string, err error) {
+	if d.sweepListFailed == nil {
+		d.sweepListFailed = map[string]bool{}
+	}
+	if err != nil {
+		if !d.sweepListFailed[label] {
+			d.sweepListFailed[label] = true
+			d.warn("%s list: %v — repairs paused until the listing recovers", label, err)
+		}
+		return
+	}
+	if d.sweepListFailed[label] {
+		d.sweepListFailed[label] = false
+		d.log("%s listing recovered", label)
 	}
 }
 

@@ -65,6 +65,12 @@ func (s *Service) RenameRunCtx(ctx context.Context, runID, name string) (*store.
 	return r, nil
 }
 
+// ErrRunNotDeletable marks a delete refused on lifecycle grounds — the
+// run exists and is ALIVE. Typed so the HTTP layer can answer 409
+// instead of 404: a refusal made in the name of "the tombstone is proof
+// of absence" must not itself answer with the HTTP proof of absence.
+var ErrRunNotDeletable = errors.New("run is not deletable")
+
 // DeleteRunCtx permanently removes a run and all of its data. It LoadRuns
 // first so a run outside the caller's tenant scope surfaces as not-found
 // (a tenant can only delete its own runs); the actual delete is then
@@ -82,7 +88,7 @@ func (s *Service) DeleteRunCtx(ctx context.Context, runID string) error {
 		return err
 	}
 	if !r.Status.IsTerminal() {
-		return fmt.Errorf("run %s is %s — cancel it first: a delete tombstone reads as proof of absence and would let a second run launch on the same work", runID, r.Status)
+		return fmt.Errorf("%w: run %s is %s — cancel it first: a delete tombstone reads as proof of absence and would let a second run launch on the same work", ErrRunNotDeletable, runID, r.Status)
 	}
 	return s.store.DeleteRun(ctx, runID)
 }

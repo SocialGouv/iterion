@@ -69,6 +69,17 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 // (MaterializeEffects), so an admission rule added for one path cannot be
 // missed by the other.
 func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event) ([]Subscription, error) {
+	// A machine-caused event owes no effect to anyone — decline at the
+	// SHARED admission prelude, before the outbox materializes durable
+	// rows only MarkDone can retire: a schema migration emits one event
+	// per card, and cards x subscriptions rows of guaranteed no-ops
+	// queued FIFO ahead of the next genuine operator trigger is a
+	// head-of-line delay measured in tens of minutes. applyEffect keeps
+	// its own check as defense in depth.
+	if machineCaused(ev) {
+		return nil, nil
+	}
+
 	// An event already launched by an authoritative path (today: the inline
 	// forge webhook, which keeps its own admission/idempotency/quota gates)
 	// is OBSERVATIONAL only — never re-launch or re-promote it.

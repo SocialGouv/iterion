@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/runview"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -413,5 +416,107 @@ func TestLaunchTicketNow_ParkedClaimWithALapsedLeaseStaysRelaunchable(t *testing
 	_, err = s.launchTicketNow(nil, board2, cur)
 	if err != nil && strings.Contains(err.Error(), "claimed by") {
 		t.Fatalf("the operator's relaunch of a parked, claim-retained card is refused: %v — nothing else ever frees that claim", err)
+	}
+}
+
+// TestLaunchTicketNow_LegacyUnleasedClaimIsRelaunchable: a claim with NO
+// lease is what a release N-1 binary writes — the population the
+// expand/contract rollout GUARANTEES during release N — and it has zero
+// release path (the FS reaper has no un-leased arm; the cloud one lists
+// it gate ON only). Refusing it bricked the operator's escape hatch for
+// ever, with an error message naming a lease that does not exist and a
+// watchdog that would never come.
+func TestLaunchTicketNow_LegacyUnleasedClaimIsRelaunchable(t *testing.T) {
+	dir := t.TempDir()
+	board, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := board.Create(native.Issue{Title: "parked pre-ADR-096", State: native.StateReady, Bot: "feature-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.Claim(iss.ID, "dispatcher-host-a"); err != nil {
+		t.Fatal(err)
+	}
+	// Rewrite the issue document the way the OLD binary persisted it: a
+	// bare marker, no lease family at all. Reload so the index reads it.
+	entries, err := os.ReadDir(filepath.Join(dir, "issues"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("issue dir: entries=%d err=%v", len(entries), err)
+	}
+	p := filepath.Join(dir, "issues", entries[0].Name())
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read issue doc: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "claim_lease_until")
+	delete(doc, "claim_epoch")
+	delete(doc, "claimed_at")
+	out, _ := json.Marshal(doc)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	board2, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := board2.Get(iss.ID)
+	if cur.Claim == "" || !cur.ClaimLeaseUntil.IsZero() {
+		t.Fatalf("precondition: want a legacy no-lease claim, got claim=%q lease=%v", cur.Claim, cur.ClaimLeaseUntil)
+	}
+
+	s := newSweepTestServer()
+	_, err = s.launchTicketNow(nil, board2, cur)
+	if err != nil && strings.Contains(err.Error(), "claimed by") {
+		t.Fatalf("a legacy no-lease claim was refused by the guard: %v — no lease will ever lapse and no watchdog lists this card", err)
+	}
+}
+
+// TestHandleDeleteRun_LiveRunAnswers409: the lifecycle refusal must not
+// ride the 404 arm — a refusal made in the name of "the tombstone is
+// proof of absence" answering with the HTTP proof of absence told the
+// API/MCP caller the exact opposite of its own reason.
+func TestHandleDeleteRun_LiveRunAnswers409(t *testing.T) {
+	dir := t.TempDir()
+	rs, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := rs.CreateRun(ctx, "run-live", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	r0, _ := rs.LoadRun(ctx, "run-live")
+	r0.Status = store.RunStatusRunning
+	if err := rs.SaveRun(ctx, r0); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := runview.NewService("", runview.WithStore(rs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSweepTestServer()
+	s.runs = svc
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/runs/run-live", nil)
+	req.SetPathValue("id", "run-live")
+	w := httptest.NewRecorder()
+	s.handleDeleteRun(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("DELETE on a RUNNING run answered %d (%s) — want 409: 404 is the proof-of-absence the refusal exists to protect", w.Code, w.Body.String())
+	}
+
+	// And a genuinely missing run stays 404.
+	req = httptest.NewRequest(http.MethodDelete, "/api/runs/run-gone", nil)
+	req.SetPathValue("id", "run-gone")
+	w = httptest.NewRecorder()
+	s.handleDeleteRun(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("DELETE on a missing run answered %d, want 404", w.Code)
 	}
 }
