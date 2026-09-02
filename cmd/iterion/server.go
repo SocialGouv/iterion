@@ -357,6 +357,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
 		CredPool:         credBroker,
+		// The fleet's shared meter: a forfait the provider has refused is
+		// skipped at launch so the run falls through to the next
+		// credential tier instead of parking for a reset it could have
+		// avoided. Evidence-only — the operator's cap policy is the
+		// runner's business, not the launch's.
+		UsageCaps: usagecap.NewMongoStore(st.DB()),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
 		SandboxImage: func(ctx context.Context) string {
