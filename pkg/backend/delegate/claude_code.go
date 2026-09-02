@@ -517,7 +517,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// a legible auth error. Non-transient (a retry can't revive a dead token).
 	if authErr := authFailureFast(rm.Result, task); authErr != nil {
 		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
-			task.NodeID, task.Iteration, strings.TrimSpace(*rm.Result))
+			task.NodeID, task.Iteration, redactAuthRender(strings.TrimSpace(*rm.Result)))
 		return result, authErr
 	}
 

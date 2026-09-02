@@ -118,6 +118,50 @@ func isAuthErrorResult(s string) bool {
 	return false
 }
 
+// redactAuthRender strips the quoted credential out of an auth render:
+// the malformed-Authorization shape quotes the rejected secret back
+// verbatim, and this text flows into durable, run-readable state (the
+// run document, the failure events, the operator log) — none of which
+// is scrubbed. The prefix alone identifies the failure.
+func redactAuthRender(t string) string {
+	if i := strings.Index(t, "has invalid value"); i >= 0 {
+		return t[:i] + "has invalid value: <redacted>"
+	}
+	return t
+}
+
+// isHighConfidenceAuthRender reports whether the result is the CLI's OWN
+// auth-failure render — prefix-anchored shapes and distinctive wire
+// phrases — as opposed to prose that merely mentions logging in. Only
+// these arm the credential-skip evidence: a classifier false positive
+// used to cost one visibly-failed node, but an evidence write benches
+// the credential fleet-wide for DefaultMaxAge, so the loose substring
+// signatures ("not logged in" inside an agent's sentence) must not
+// reach it.
+func isHighConfidenceAuthRender(t string) bool {
+	if strings.HasPrefix(t, "API Error: Header '") && strings.Contains(t, "has invalid value") {
+		return true
+	}
+	low := strings.ToLower(t)
+	// The CLI's renders ARE the whole result; anchoring at the start is
+	// what separates them from an answer that quotes the same words.
+	if strings.HasPrefix(low, "not logged in") || strings.HasPrefix(low, "failed to authenticate") {
+		return true
+	}
+	for _, sig := range []string{
+		"invalid bearer token",
+		"authentication_error",
+		"invalid x-api-key",
+		"oauth token has expired",
+		"oauth token expired",
+	} {
+		if strings.Contains(low, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 // authFailureFast classifies a CLI result as a rendered authentication
 // failure, records the refusal as meter evidence, and returns the typed
 // error — nil when the result is not an auth render. The evidence write
@@ -125,12 +169,15 @@ func isAuthErrorResult(s string) bool {
 // server-side, and without a reading the next resolution re-picks this
 // same dead credential, gating the healthy tiers off behind it. The
 // session's Source stamp keys the reading under the credential that
-// actually ran.
+// actually ran. Fail-fast and evidence are two thresholds on purpose:
+// every auth render fails the node legibly, but only the CLI's own
+// high-confidence shapes bench the credential.
 func authFailureFast(result *string, task Task) error {
 	if result == nil || !isAuthErrorResult(*result) {
 		return nil
 	}
-	if task.Hooks.OnUsageWindow != nil {
+	t := strings.TrimSpace(*result)
+	if isHighConfidenceAuthRender(t) && task.Hooks.OnUsageWindow != nil {
 		_ = task.Hooks.OnUsageWindow(usagecap.Reading{
 			Window:     usagecap.WindowAuth,
 			Status:     usagecap.StatusRejected,
@@ -139,7 +186,7 @@ func authFailureFast(result *string, task Task) error {
 	}
 	return &ErrAuthFailed{
 		Provider: BackendClaudeCode,
-		Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", strings.TrimSpace(*result)),
+		Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", redactAuthRender(t)),
 	}
 }
 
