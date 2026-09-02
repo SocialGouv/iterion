@@ -79,6 +79,14 @@ func isModelUnavailableResult(s string) bool {
 // credential; the caller fails fast with a legible auth error.
 func isAuthErrorResult(s string) bool {
 	t := strings.TrimSpace(s)
+	// A malformed Authorization value (a secret that is not a token at
+	// all — the paid case embedded a whole CLI login transcript) renders
+	// as an API Error whose length is unbounded because the garbage value
+	// is quoted back. Prefix-anchored: the WHOLE result must be the API
+	// error, so an agent merely quoting one mid-answer cannot match.
+	if strings.HasPrefix(t, "API Error: Header '") && strings.Contains(t[:80], "has invalid value") {
+		return true
+	}
 	// Real auth renders are short one-liners (like a rate-limit notice); the cap
 	// keeps an agent discussing auth in a long answer from false-positiving.
 	if t == "" || len(t) > 200 {

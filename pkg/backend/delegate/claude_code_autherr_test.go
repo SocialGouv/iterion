@@ -39,3 +39,18 @@ func TestIsAuthErrorResult(t *testing.T) {
 		}
 	}
 }
+
+// The malformed-credential render: a secret that is not a token at all is
+// quoted back inside an unbounded "API Error: Header …" line. Prefix-anchored
+// so only a result that IS the error matches — an agent quoting one
+// mid-answer must not.
+func TestIsAuthErrorResult_malformedCredential(t *testing.T) {
+	long := "API Error: Header '14' has invalid value: 'Bearer \x1b[?2004hWelcome to Claude Code v2.1.220\nWelcome to Claude Code v2.1.220\n\n · Opening browser to sign in'"
+	if !isAuthErrorResult(long) {
+		t.Fatal("the malformed-Authorization render must classify as an auth failure")
+	}
+	quoted := "The run failed because the log said: API Error: Header '14' has invalid value: 'Bearer x'. We should investigate the credential store."
+	if isAuthErrorResult(quoted) {
+		t.Fatal("prose quoting the error mid-answer must not classify")
+	}
+}

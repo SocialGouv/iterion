@@ -187,3 +187,23 @@ func TestApiKeySkip_refusedPlatformKeyIsRestoredPlatformSourced(t *testing.T) {
 		t.Fatal("a restored PLATFORM key must keep its platform-sourced metering scope")
 	}
 }
+
+// The third evidence family: a provider that rejected the CREDENTIAL
+// ITSELF (dead token, malformed secret) must be walked past exactly like
+// a quota refusal — without this, a structurally-broken credential keeps
+// filling its slot on every re-resolution and gates the healthy tiers off.
+func TestApiKeyUsable_authRefusalSkips(t *testing.T) {
+	st := usagecap.NewMemStore()
+	p := &Publisher{usageCaps: st, logger: iterlog.New(iterlog.LevelError, nil)}
+	scope := usagecap.TenantScope("team")
+	key := secrets.ApiKey{Provider: secrets.ProviderAnthropic, Name: "dead", Fingerprint: "fp-dead"}
+	if err := st.Record(context.Background(),
+		usagecap.Key(delegate.BackendClaudeCode, scope, "fp-dead"),
+		usagecap.Reading{Window: usagecap.WindowAuth, Status: usagecap.StatusRejected,
+			ObservedAt: time.Now()}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if p.apiKeyUsable(context.Background(), scope, "run-x")(key) {
+		t.Fatal("a fresh auth refusal under the key's fingerprint must skip it")
+	}
+}

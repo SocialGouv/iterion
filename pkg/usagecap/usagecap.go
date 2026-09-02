@@ -72,6 +72,19 @@ const (
 	// around a credential the provider will not serve, and freshness for
 	// a reading with no reset instant is already bounded by ObservedAt.
 	WindowFrequency Window = "frequency"
+	// WindowAuth is not a provider window either: it is the provider
+	// REJECTING THE CREDENTIAL ITSELF — a dead token, an expired OAuth
+	// record, a malformed secret. Like WindowFrequency it exists as a
+	// window name so the refusal can be recorded as meter evidence: the
+	// credential-tier skip is the only consumer, and without this
+	// evidence a structurally-broken credential keeps filling its slot
+	// on every re-resolution, gating the pool and platform tiers off
+	// behind a credential that can never serve (five consecutive
+	// dead-on-arrival fleets were the lived cost). No reset instant —
+	// a dead credential does not heal on a schedule — so freshness is
+	// bounded by ObservedAt, giving a cheap periodic re-probe in case
+	// an operator rotated the secret in place.
+	WindowAuth Window = "auth"
 )
 
 // Family groups the windows that share one operator-facing cap. An
@@ -87,6 +100,11 @@ const (
 	// that filter evidence on "does a cap family govern this window"
 	// must see it.
 	FamilyAccount Family = "account"
+	// FamilyCredential mirrors FamilyAccount for WindowAuth: no
+	// operator cap governs it (an unconfigured family is inert in the
+	// guard), but it is real provider evidence the credential-tier
+	// skip must see — FamilyNone would filter it out at the consumer.
+	FamilyCredential Family = "credential"
 	// FamilyNone marks a window no cap applies to.
 	FamilyNone Family = ""
 )
@@ -100,6 +118,8 @@ func FamilyOf(w Window) Family {
 		return FamilyWeek
 	case WindowFrequency:
 		return FamilyAccount
+	case WindowAuth:
+		return FamilyCredential
 	default:
 		// Includes WindowOverage and any window a future CLI adds: an
 		// unknown window is not silently folded into a cap that was never
