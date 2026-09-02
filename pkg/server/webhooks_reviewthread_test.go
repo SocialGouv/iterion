@@ -494,4 +494,18 @@ func TestReviewReplyGateWithAPI_TokenIdentity(t *testing.T) {
 			t.Fatalf("an unclassifiable delivery must not pay the comment walk: %d calls", api.listCalls)
 		}
 	})
+
+	t.Run("the token identity also loop-guards: the bot's own answer never converses with itself", func(t *testing.T) {
+		s := newWebhookTestServer(t) // PAT shape: connection-derived set empty, handler guard blind
+		api := &fakeThreadAPI{comments: botThread, who: forge.Identity{Login: "revi-bot"}}
+		selfReply := p
+		selfReply.AuthorLogin = "revi-bot"
+		ok, _, reason, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, selfReply, api)
+		if err != nil || ok || reason != "self reply (loop-guard, token identity)" {
+			t.Fatalf("ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		if api.listCalls != 0 {
+			t.Fatalf("a self reply must be refused before the comment walk: %d calls", api.listCalls)
+		}
+	})
 }

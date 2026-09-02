@@ -1043,6 +1043,26 @@ func managedSecretName(conn *Connection) string {
 // the carry would silently override the caller. Two fields are CONDITIONAL
 // exceptions, each commented in place: RateLimit (zero means never set) and
 // MinReplierRole (a provision-derived floor merged stricter-of).
+// provisionRateDefaults are every RateLimit value the provisioner itself has
+// ever stamped on a config (current default last). The carry uses it to tell
+// a provisioner-owned value (migrates to the current default) from an
+// operator's pre-RateLimitPinned PATCH (adopted as pinned): nothing but the
+// provisioner and the PATCH route ever writes the field, so an unpinned
+// value outside this set can only be an operator's explicit choice.
+var provisionRateDefaults = []webhooks.Rate{
+	{Rate: 1, Burst: 10},
+	{Rate: 2, Burst: 60},
+}
+
+func isProvisionRateDefault(r webhooks.Rate) bool {
+	for _, d := range provisionRateDefaults {
+		if r == d {
+			return true
+		}
+	}
+	return false
+}
+
 func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	// Enabled is the operator's per-repo kill switch (PATCH {"enabled":false}
 	// → every inbound delivery answers 410) — a re-provision must not
@@ -1070,16 +1090,26 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 
 	// Rate limit: enforced by the inbound middleware, so losing an operator's
 	// raise means deliveries silently 429 and reviews never launch — but an
-	// UNPINNED value is the provisioner's own former default, and carrying it
-	// would freeze every existing webhook on the burst it was born with,
-	// making a default bump unreachable by re-provision (the review-comment
-	// fan-out needs the raised burst precisely on already-provisioned repos).
-	// Only an API-set value (RateLimitPinned, same rule as ReviewOnSyncPinned)
-	// survives the rebuild.
-	if prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}) {
+	// UNPINNED provisioner default, if carried, would freeze every existing
+	// webhook on the burst it was born with, making a default bump
+	// unreachable by re-provision (the review-comment fan-out needs the
+	// raised burst precisely on already-provisioned repos). So: an API-set
+	// value (RateLimitPinned, same rule as ReviewOnSyncPinned) survives the
+	// rebuild; a stored value the provisioner NEVER stamped can only be an
+	// operator's PATCH from before the pin existed — adopted as pinned
+	// rather than silently replaced (an explicit choice, raise or
+	// deliberate throttle alike); only recognized provisioner defaults
+	// migrate to the current one.
+	switch {
+	case prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}):
 		cfg.RateLimit = prev.RateLimit
+		cfg.RateLimitPinned = true
+	case !prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}) && !isProvisionRateDefault(prev.RateLimit):
+		cfg.RateLimit = prev.RateLimit
+		cfg.RateLimitPinned = true
+	default:
+		cfg.RateLimitPinned = prev.RateLimitPinned
 	}
-	cfg.RateLimitPinned = prev.RateLimitPinned
 
 	// MinReplierRole: a conditional merge, never an overwrite — the provision
 	// stamps a manifest-derived FLOOR (the max requirement over the enabled

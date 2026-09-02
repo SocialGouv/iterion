@@ -379,9 +379,11 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	}
 	// The allowlist must name the event (or be empty = zero-config): configs
 	// provisioned before this lane carry ["issue_comment","pull_request"]
-	// and stay inert until re-provisioned — forge.ToNativeEvents now expands
-	// pull_request_comment to both GitHub wire events, so a re-provision
-	// regenerates hook AND allowlist together.
+	// and stay inert until re-provisioned WITH the converse bot —
+	// pull_request_review_comment is its own normalized manifest event,
+	// declared by the converse bot alone (not folded into
+	// pull_request_comment), so only its presence in bot_ids makes the
+	// re-provision subscribe the hook and regenerate the allowlist.
 	if p.Action != "created" || p.PRState != "open" ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request_review_comment", "pull_request_review_comment") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
@@ -524,6 +526,15 @@ func (s *Server) reviewReplyGateWithAPI(ctx context.Context, cfg webhooks.Config
 		// Fail closed with an honest reason — "not a bot review thread"
 		// would misdiagnose a dead identity resolution as a human thread.
 		return false, "", "bot identity unresolved; cannot classify reply", nil
+	}
+	// The completing half of the handler's loop-guard: that one reads the
+	// connection-derived set only, which on a PAT/OAuth connection is empty
+	// — yet the token identity resolved above is exactly who the bot's own
+	// in-thread answer posts as. Without this check that answer walks the
+	// whole gate, authorizes itself (the posting account has write), and
+	// the conversation answers itself forever.
+	if isBot(p.AuthorLogin) {
+		return false, "", "self reply (loop-guard, token identity)", nil
 	}
 	comments, err := api.ListPRReviewComments(ctx, p.ProjectPath, int(p.PRNumber))
 	if err != nil {
