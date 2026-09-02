@@ -8,11 +8,23 @@ import (
 func TestClassifyRateLimit(t *testing.T) {
 	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name      string
-		text      string
-		wantKind  string
-		wantReset time.Time
+		name       string
+		text       string
+		wantKind   string
+		wantWindow string
+		wantReset  time.Time
 	}{
+		{
+			// The fair-usage account restriction, verbatim from the wire
+			// (2026-09-02): it refuses the request RATE, carries no reset
+			// instant, and names the frequency window so the refusal
+			// reaches the meter as credential-skip evidence. Two lots and
+			// two rites burned their budgets on it unclassified.
+			name:       "fair-usage account refusal names the frequency window",
+			text:       "API Error: Request rejected (429) · [1313][Your account's current usage pattern does not comply with the Fair Usage Policy, and your request frequency has been limited. For details, please refer to the Subscription Service Agreement. To restore access, please submit a request.][202609021420552fc3f7d9844944b6]",
+			wantKind:   RateLimitKindUsageWindow,
+			wantWindow: "frequency",
+		},
 		{
 			name:      "forfait limit with pm clock",
 			text:      "You've hit your limit · resets 3pm",
@@ -73,14 +85,43 @@ func TestClassifyRateLimit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			kind, reset := classifyRateLimit(tt.text, now)
+			kind, window, reset := classifyRateLimit(tt.text, now)
 			if kind != tt.wantKind {
 				t.Fatalf("kind = %q, want %q", kind, tt.wantKind)
+			}
+			if string(window) != tt.wantWindow {
+				t.Fatalf("window = %q, want %q", window, tt.wantWindow)
 			}
 			if !reset.Equal(tt.wantReset) {
 				t.Fatalf("reset = %v, want %v", reset, tt.wantReset)
 			}
 		})
+	}
+}
+
+// TestIsRateLimitMessage_RelayedAPIErrorLength pins the two sides of the
+// prefix-anchored acceptance: the real fair-usage relay (~330 chars, over
+// the one-liner cap) must be seen, and an agent essay that merely embeds
+// or quotes the same words must not — the length cap is what keeps a
+// PARKING path from firing on prose.
+func TestIsRateLimitMessage_RelayedAPIErrorLength(t *testing.T) {
+	relay := "API Error: Request rejected (429) · [1313][Your account's current usage pattern does not comply with the Fair Usage Policy, and your request frequency has been limited. For details, please refer to the Subscription Service Agreement. To restore access, please submit a request.][202609021420552fc3f7d9844944b6]"
+	if len(relay) <= 200 {
+		t.Fatalf("fixture lost its point: the relay must exceed the one-liner cap, len=%d", len(relay))
+	}
+	if !isRateLimitMessage(relay) {
+		t.Fatal("the verbatim fair-usage relay must be recognised — this exact miss let the refusal become node output")
+	}
+	prose := "While auditing the client I read their Fair Usage Policy and noticed the request frequency has been limited in their nginx config; here is a long analysis of why that matters for the migration plan, with several paragraphs of detail that keep going well past any plausible relayed error length. " + relay
+	if isRateLimitMessage(prose) {
+		t.Fatal("an agent essay embedding the relay mid-text must not classify — it does not START with the relay prefix")
+	}
+	tooLong := relay + " ... and then the agent keeps narrating for hundreds of characters about what it plans to do next, which is no longer the provider talking but the model writing an essay around a quote, so the acceptance must cut off. Padding padding padding padding padding padding padding padding padding padding padding padding."
+	if len(tooLong) <= relayedAPIErrorMaxLen {
+		t.Fatalf("fixture lost its point: len=%d must exceed relayedAPIErrorMaxLen", len(tooLong))
+	}
+	if isRateLimitMessage(tooLong) {
+		t.Fatal("a prefix-opening text past the relay length bound must not classify")
 	}
 }
 
