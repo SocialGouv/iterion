@@ -524,25 +524,31 @@ tool lot_verify:
         # additions are exempted from the immutability verdict below, and
         # ONLY those: an addition cannot mask an existing divergence, which
         # is the one property that makes the exemption safe to grant.
-        def harness_json(mode, **extra):
-            hp = os.path.join(ws, gm_dir, "harness.py")
-            if not os.path.isfile(hp):
-                return None
-            # A net materialised BEFORE this feature has no extension modes:
-            # its main() would fall through to the FULL gate path — boot the
-            # app, run the campaign — and die on this call's timeout (review
-            # finding, executed against the merge-base harness). Capability
-            # is read from the file, and its absence is the legal state of
-            # an older net: no extension machinery, no exemption, exactly
-            # the pre-feature behaviour until the net's owner re-materialises.
+        # A net materialised BEFORE this feature has no extension modes: its
+        # main() would fall through to the FULL gate path — boot the app, run
+        # the campaign — and die on the call's timeout (review finding,
+        # executed against the merge-base harness). So capability is read from
+        # the file BEFORE any call, once, and its ABSENCE is the legal state
+        # of an older net: no machinery, no exemption — and no refusal either,
+        # exactly the pre-feature behaviour until its owner re-materialises.
+        # Absence is not an escape hatch: harness.py is judged like every
+        # other path under the net, so a lot that deletes or downgrades it to
+        # dodge the certifier moves a judged path and is refused by the diff
+        # below (verified: both shapes go red on the immutability term).
+        hp = os.path.join(ws, gm_dir, "harness.py")
+        has_ext = os.path.isfile(hp)
+        if has_ext:
             try:
                 with open(hp, encoding="utf-8") as f:
-                    if 'mode == "extend-verify"' not in f.read():
-                        return None
+                    has_ext = 'mode == "extend-verify"' in f.read()
             except OSError as e:
+                # Unreadable is NOT absent: nothing here certifies that this
+                # net has no machinery, so it goes on to the certifier and is
+                # refused there like any other silence.
                 problems.append("cannot read %s to probe its capabilities: %s"
                                 % (hp, e))
-                return None
+
+        def harness_json(mode, **extra):
             env = dict(os.environ, GM_MODE=mode, GM_WORKSPACE=ws,
                        GM_DIR=gm_dir, **extra)
             try:
@@ -561,11 +567,11 @@ tool lot_verify:
                                    (p.stdout + p.stderr)[-400:]))
                 return None
 
-        listing = harness_json("extensions")
+        listing = harness_json("extensions") if has_ext else None
         if listing is not None:
             report["extension_pending"] = listing.get("pending") or []
         exempt = set()
-        verdict = harness_json("extend-verify", GM_BASE=base)
+        verdict = harness_json("extend-verify", GM_BASE=base) if has_ext else None
         if verdict is not None and not verdict.get("error"):
             exempt = set(verdict.get("ok_paths") or [])
 
@@ -650,12 +656,20 @@ tool lot_verify:
                                    "; ".join(r.get("problems") or []))
                                 for r in bad)
                 report["refs_untouched"] = False
-        else:
+        elif has_ext:
             # No verdict is not "nothing to refuse". The certifier runs on
             # ledger content the constrained party writes, so a crash there
             # is reachable from the ledger itself — reading its silence as
             # absolution let a rewritten ledger ride a green (adversarial
             # finding, executed).
+            #
+            # Guarded on has_ext because that argument is ABOUT a certifier:
+            # a net that has none has no ledger to defraud and no certificate
+            # to forge, so there is nothing here to refuse. Unguarded, this
+            # term bricked every campaign running against a pre-feature net —
+            # measured: honest lot, build green, oracle green, net untouched,
+            # refs_untouched false naming a certifier that never ran, so the
+            # lot could neither converge nor stop.
             problems.append(
                 "the extension certifier returned no usable verdict (%s) — "
                 "a certifier that cannot answer is a refusal, not an absence"
