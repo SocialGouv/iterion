@@ -196,6 +196,37 @@ hold-label pause (a deliberate manual trigger, like any `/command`):
 Removing the pin restores the gating posture: the next provision re-derives
 `review_on_sync: true` from the `statuses` scope.
 
+**Reading back whether the pin took.** `GET /api/teams/{id}/webhooks`
+serialises the config. Read `operator_launch_vars`: it carries the pin
+verbatim (mirrored onto the config at provision) and is the authority BOTH
+consumers read — the `review_on_sync` derivation and the gate machinery's
+own `runGateDisabled`. `"gate_enabled": "false"` there is the answer.
+
+Two neighbouring fields say what the pin *did*, with one JSON trap: they
+are `omitempty` bools, so **absence means `false`**, not "unknown".
+
+- `review_on_sync` — `true` = a push still re-reviews; absent = released.
+  It is a *consequence*, not the pin: in the sync-pinned-true +
+  `gate_enabled: "false"` shape described above (advisory reviews on every
+  push, no gate) it reads `true` while the gate is off, so it answers
+  "does a push re-review", never "is the gate armed".
+- `review_on_sync_pinned` — whether an explicitly-PATCHed sync is
+  provenance-protected from the derivation (see above).
+
+Do not read the reviewer's `bot_rules.actions` for this: that list is
+materialised from the bot manifest's invocation
+([`resolveBotRules`](../pkg/forge/orchestrator.go)) and is identical either
+way, while the push decision reads `cfg.ReviewOnSync` directly
+(`gateResync` in the webhook handlers). It would report "released" on an
+armed gate.
+
+Pair it with two run-time observations, which is what actually proves the
+posture end to end: a push's webhook delivery is recorded **`filtered`**,
+and the head of an open MR/PR carries **no** status. Query that last one
+with the **full** SHA — GitLab's statuses endpoint returns `[]` for an
+abbreviated one whether or not a status exists (measured on 19.2: full SHA
+→ `["iterion/review"]`, same commit at 8 chars → `[]`).
+
 ### GitHub merge queues
 
 A merge queue tests a synthetic `merge_group` SHA, not the PR head that Revi

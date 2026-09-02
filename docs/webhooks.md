@@ -256,7 +256,14 @@ the MR/PR's current head:
   **self-assigns the bot as an MR reviewer** after each posted review
   ([forge.ReviewerAssigner](../pkg/forge/reviews.go) — read-modify-write,
   never dropping human reviewers; best-effort, a miss only costs the
-  button).
+  button). The assigner resolves **who it is at call time**, through a live
+  `WhoAmI` on the connection's own token, and refuses to write when that
+  answer is not a usable numeric user id — GitLab reads a `0` in
+  `reviewer_ids` as "add nobody", which would report success while adding
+  no one. On "no button on this repo", the server has already said why: the
+  failure logs at **Warn** naming provider, repo, MR number and the
+  underlying error (`resolve own account: …` or `own account id %q is not a
+  usable GitLab user id`), while the review itself completes untouched.
 - **GitHub / Forgejo** — a `pull_request` event with action
   `review_requested` whose `requested_reviewer` is iterion's identity.
   That identity is the **App bot login only** (`<app_slug>[bot]`): a
