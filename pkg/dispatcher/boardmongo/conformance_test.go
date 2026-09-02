@@ -256,6 +256,61 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Fatalf("ReleaseOwned recovery: %v", err)
 	}
 
+	// --- Terminal sink + Reopen + SetStateFrom. Both twins: leaving a
+	// Terminal:true state via the ordinary family is refused (typed,
+	// wrapping ErrTransitionRejected so old callers still match); Reopen
+	// is the one exit, working-state targets only, refused while
+	// dependents promoted on this card's DONE are outstanding; the CAS
+	// move reports drift instead of clobbering.
+	sink, err := store.Create(native.Issue{Title: "sink probe", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create sink probe: %v", err)
+	}
+	if _, err := store.SetState(sink.ID, native.StateDone); err != nil {
+		t.Fatalf("SetState(done): %v", err)
+	}
+	if _, err := store.SetState(sink.ID, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) || !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("terminal exit via SetState: want ErrTerminalStateExit (wrapping ErrTransitionRejected), got %v", err)
+	}
+	dependent, err := store.Create(native.Issue{Title: "dependent", State: native.StateReady, Blockers: []string{sink.ID}})
+	if err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+	if _, err := store.Reopen(sink.ID, native.StateReady); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("Reopen with a promoted dependent: want refusal, got %v", err)
+	}
+	if _, err := store.Update(dependent.ID, native.Patch{Blockers: &[]string{}}); err != nil {
+		t.Fatalf("clear dependent blockers: %v", err)
+	}
+	if _, err := store.Reopen(sink.ID, native.StateBlocked); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("Reopen into another terminal: want refusal, got %v", err)
+	}
+	reopened, err := store.Reopen(sink.ID, native.StateReady)
+	if err != nil || reopened.State != native.StateReady {
+		t.Fatalf("Reopen = (%+v, %v), want ready", reopened, err)
+	}
+	if _, err := store.Reopen(sink.ID, native.StateInbox); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("Reopen of a non-terminal card: want refusal, got %v", err)
+	}
+	// SetStateFrom: lands on the expected source, reports drift otherwise.
+	if _, changed, err := store.SetStateFrom(sink.ID, native.StateReady, native.StateInProgress); err != nil || !changed {
+		t.Fatalf("SetStateFrom(ready→in_progress) = (changed=%t, %v)", changed, err)
+	}
+	if _, changed, err := store.SetStateFrom(sink.ID, native.StateReady, native.StateInbox); err != nil || changed {
+		t.Fatalf("SetStateFrom on drifted state = (changed=%t, %v), want a clean no-op", changed, err)
+	}
+	if _, _, err := store.SetStateFrom(sink.ID, native.StateDone, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) {
+		t.Fatalf("SetStateFrom out of terminal: want ErrTerminalStateExit, got %v", err)
+	}
+	// Park the probes terminally so the list-filter section below keeps
+	// its counts (one shared store per suite run).
+	if _, err := store.SetState(sink.ID, native.StateDone); err != nil {
+		t.Fatalf("park sink probe: %v", err)
+	}
+	if _, err := store.SetState(dependent.ID, native.StateDone); err != nil {
+		t.Fatalf("park dependent probe: %v", err)
+	}
+
 	// SetLastRun stamps the single pointer AND appends dedup'd run history.
 	if err := store.SetLastRun(created.ID, "run-1", "/tmp/wd"); err != nil {
 		t.Errorf("SetLastRun: %v", err)
@@ -321,8 +376,13 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if got, _ := store.Get(created.ID); got.GaveUp != nil {
 		t.Errorf("stamp survived the ticket moving: %+v", got.GaveUp)
 	}
-	if _, err := store.SetState(created.ID, current.State); err != nil {
-		t.Errorf("SetState(back): %v", err)
+	// Coming BACK from blocked is a terminal exit — the ordinary move is
+	// refused by the sink guard, and Reopen is the sanctioned path.
+	if _, err := store.SetState(created.ID, current.State); !errors.Is(err, tracker.ErrTerminalStateExit) {
+		t.Errorf("SetState out of blocked: want ErrTerminalStateExit, got %v", err)
+	}
+	if _, err := store.Reopen(created.ID, current.State); err != nil {
+		t.Errorf("Reopen(back): %v", err)
 	}
 	if got, _ := store.Get(created.ID); got.GaveUp != nil {
 		t.Errorf("stamp came back when the ticket returned to its state: %+v", got.GaveUp)

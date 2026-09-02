@@ -8,6 +8,7 @@ package tracker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -201,3 +202,10 @@ var (
 	// already claimed by a different marker.
 	ErrClaimConflict = errors.New("tracker: issue already claimed by another marker")
 )
+
+// ErrTerminalStateExit marks a refused exit from a Terminal:true board
+// state — the sink guard. It WRAPS ErrTransitionRejected so existing
+// errors.Is(…, ErrTransitionRejected) callers keep matching; operator
+// surfaces additionally match this sentinel to fall back to the
+// sanctioned Reopen.
+var ErrTerminalStateExit = fmt.Errorf("%w: terminal state is a sink", ErrTransitionRejected)

@@ -271,7 +271,7 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 // parent iss.LastRunID still names (the board mutates its own copy of
 // the issue on SetLastRun).
 func (s *Server) fileFinishedTicket(board native.BoardStore, iss *native.Issue, runID string) {
-	if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
+	if _, _, err := board.SetStateFrom(iss.ID, iss.State, native.StateDone); err != nil {
 		s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, runID, err)
 		return
 	}
@@ -414,7 +414,7 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	// Leave StateReady BEFORE launching so the next tick won't re-pick this
 	// ticket while Launch is in flight. StateInProgress is not StateReady, so
 	// admitReadyPipelines skips it; the run's status then drives the column.
-	if _, err := board.SetState(iss.ID, native.StateInProgress); err != nil {
+	if _, _, err := board.SetStateFrom(iss.ID, native.StateReady, native.StateInProgress); err != nil {
 		s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
 		return "", fmt.Errorf("claim ticket: %w", err)
 	}
@@ -444,7 +444,7 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	if err != nil {
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)
 		// Return it to Backlog so it isn't stuck claimed with no run.
-		if _, rErr := board.SetState(iss.ID, native.StateInbox); rErr != nil {
+		if _, _, rErr := board.SetStateFrom(iss.ID, native.StateInProgress, native.StateInbox); rErr != nil {
 			s.logger.Warn("pipeline admission: revert ticket %s: %v", iss.ID, rErr)
 		}
 		return "", fmt.Errorf("launch: %w", err)

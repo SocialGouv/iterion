@@ -407,11 +407,15 @@ func (s *Store) SetState(id, newState string) (*native.Issue, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.Board().StateByName(newState) == nil {
+	board := s.Board()
+	if board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
 	if iss.State == newState {
 		return iss, nil
+	}
+	if err := native.ValidateStateExit(board, iss.State, newState); err != nil {
+		return nil, err
 	}
 	old := iss.State
 	iss.State = newState

@@ -317,3 +317,97 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 	}
 	return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
 }
+
+// Reopen is the ONE sanctioned exit from a terminal state (see
+// native/state_guard.go): terminal-only source, working-state target,
+// refused when dependents were already promoted on this card's DONE.
+func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	board := s.Board()
+	st := board.StateByName(iss.State)
+	if st == nil || !st.Terminal {
+		return nil, fmt.Errorf("%w: %q is not terminal — use an ordinary state move", tracker.ErrTransitionRejected, iss.State)
+	}
+	to := board.StateByName(toState)
+	if to == nil {
+		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, toState)
+	}
+	if to.Terminal && toState != iss.State {
+		return nil, fmt.Errorf("%w: reopen targets a working state, not another terminal (%q)", tracker.ErrTransitionRejected, toState)
+	}
+	all, err := s.List(native.ListFilter{})
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: reopen dependents: %w", err)
+	}
+	if err := native.ReopenBlockedByDependents(all, id, iss.State); err != nil {
+		return nil, err
+	}
+	// CAS on the source state: an operator (or another replica's reopen)
+	// racing this one loses cleanly instead of double-applying.
+	res, err := s.issues.UpdateOne(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": iss.State},
+		bson.M{"$set": bson.M{"issue.state": toState, "issue.updatedat": time.Now().UTC()}})
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: reopen: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return nil, fmt.Errorf("%w: card moved while reopening", tracker.ErrTransitionRejected)
+	}
+	old := iss.State
+	iss.State = toState
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
+		Payload: map[string]any{"from": old, "to": toState, "reopened": true}}); err != nil {
+		return nil, err
+	}
+	return iss, nil
+}
+
+// SetStateFrom is the CAS move for automated writers — changed=false
+// when the state drifted; the terminal guard still applies.
+func (s *Store) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	board := s.Board()
+	if board.StateByName(to) == nil {
+		return nil, false, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, to)
+	}
+	if from == to {
+		iss, err := s.get(ctx, id)
+		return iss, false, err
+	}
+	if err := native.ValidateStateExit(board, from, to); err != nil {
+		return nil, false, err
+	}
+	res := s.issues.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": from},
+		bson.M{"$set": bson.M{"issue.state": to, "issue.updatedat": time.Now().UTC()}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() != nil {
+		if !isNoDocuments(res.Err()) {
+			return nil, false, fmt.Errorf("boardmongo: set state from: %w", res.Err())
+		}
+		iss, gerr := s.get(ctx, id)
+		if gerr != nil {
+			return nil, false, gerr
+		}
+		return iss, false, nil
+	}
+	var doc issueDoc
+	if err := res.Decode(&doc); err != nil {
+		return nil, false, fmt.Errorf("boardmongo: set state from decode: %w", err)
+	}
+	updated := doc.Issue
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
+		Payload: map[string]any{"from": from, "to": to}}); err != nil {
+		return nil, false, err
+	}
+	if to == native.StateDone {
+		_ = native.PromoteUnblockedDependents(s, id)
+	}
+	return &updated, true, nil
+}

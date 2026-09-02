@@ -415,12 +415,92 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (upda
 	return s.setStateLocked(iss, newState)
 }
 
+// Reopen is the ONE sanctioned exit from a terminal state — an
+// operator-surface op, refused when dependents were already promoted on
+// this card's completion (deterministic v1). It emits the ordinary
+// state event (tailers and the trigger spine must see the truth) with a
+// reopened marker.
+func (s *Store) Reopen(id, toState string) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("Reopen", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, err
+	}
+	st := s.board.StateByName(iss.State)
+	if st == nil || !st.Terminal {
+		return nil, fmt.Errorf("%w: %q is not terminal — use an ordinary state move", tracker.ErrTransitionRejected, iss.State)
+	}
+	if s.board.StateByName(toState) == nil {
+		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, toState)
+	}
+	if to := s.board.StateByName(toState); to.Terminal && toState != iss.State {
+		return nil, fmt.Errorf("%w: reopen targets a working state, not another terminal (%q)", tracker.ErrTransitionRejected, toState)
+	}
+	all := make([]*Issue, 0, len(s.index))
+	for _, dep := range s.index {
+		all = append(all, dep)
+	}
+	if err := ReopenBlockedByDependents(all, id, iss.State); err != nil {
+		return nil, err
+	}
+	old := iss.State
+	iss.State = toState
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return nil, err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	if err := s.emitPostCommitEvent(Event{
+		Type:    EvtIssueState,
+		IssueID: iss.ID,
+		Payload: map[string]any{"from": old, "to": toState, "reopened": true},
+	}); err != nil {
+		return nil, err
+	}
+	return iss, nil
+}
+
+// SetStateFrom is the CAS form for AUTOMATED writers: the move lands
+// only when the current state is exactly `from` (changed=false when it
+// drifted — an operator got there first), and the terminal guard still
+// applies (automation never exits a sink).
+func (s *Store) SetStateFrom(id, from, to string) (updated *Issue, changed bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateFrom", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, false, err
+	}
+	// Guard BEFORE the drift check (twin contract): an automated writer
+	// that declares a terminal source is a programming error and must be
+	// refused loudly whatever the card currently reads.
+	if from != to {
+		if err := ValidateStateExit(s.board, from, to); err != nil {
+			return nil, false, err
+		}
+	}
+	if iss.State != from {
+		return cloneIssue(iss), false, nil
+	}
+	out, err := s.setStateLocked(iss, to)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
 func (s *Store) setStateLocked(iss *Issue, newState string) (*Issue, error) {
 	if s.board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
 	if iss.State == newState {
 		return iss, nil
+	}
+	if err := ValidateStateExit(s.board, iss.State, newState); err != nil {
+		return nil, err
 	}
 	old := iss.State
 	iss.State = newState

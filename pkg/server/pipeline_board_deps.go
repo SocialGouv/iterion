@@ -319,7 +319,7 @@ func (s *Server) handlePipelineBoardBulkReady(w http.ResponseWriter, r *http.Req
 				continue
 			}
 		}
-		if _, err := boardStore.SetState(iss.ID, target); err != nil {
+		if _, err := native.SetStateOrReopen(boardStore, iss.ID, target); err != nil {
 			out.Skipped = append(out.Skipped, iss.ID)
 			out.SkippedWhy[iss.ID] = err.Error()
 			continue

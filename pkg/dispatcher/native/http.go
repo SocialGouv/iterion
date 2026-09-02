@@ -334,7 +334,9 @@ func (h *BoardAPI) handleTransitionIssue(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, errors.New("transition: to is required"))
 		return
 	}
-	iss, err := s.SetState(id, in.To)
+	// The board REST API is an operator surface (the /board drag):
+	// leaving a terminal state is the sanctioned reopen.
+	iss, err := SetStateOrReopen(s, id, in.To)
 	if err != nil {
 		writeErr(w, statusForErr(err), err)
 		return

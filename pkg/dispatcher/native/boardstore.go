@@ -25,6 +25,12 @@ type BoardStore interface {
 	List(filter ListFilter) ([]*Issue, error)
 	Update(id string, p Patch) (*Issue, error)
 	SetState(id, newState string) (*Issue, error)
+	// SetStateFrom is the CAS move for AUTOMATED writers (changed=false
+	// when the state drifted); Reopen is the ONE sanctioned exit from a
+	// Terminal:true state (operator surfaces only — see the guard in
+	// state_guard.go).
+	SetStateFrom(id, from, to string) (*Issue, bool, error)
+	Reopen(id, toState string) (*Issue, error)
 	Delete(id string) error
 
 	// Claim/Release are the dispatcher's per-issue claim (marker = the

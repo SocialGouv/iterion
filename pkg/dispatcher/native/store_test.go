@@ -1020,9 +1020,10 @@ func TestGiveUpStampDoesNotComeBackWhenTheTicketReturns(t *testing.T) {
 	}
 
 	// The operator retries: the ticket is restaged, which supersedes the
-	// give-up. Any write in the new state expires the stamp.
-	if _, err := s.SetState(iss.ID, StateReady); err != nil {
-		t.Fatalf("SetState(ready): %v", err)
+	// give-up. Restaging out of a terminal state is the sanctioned
+	// Reopen (the sink guard refuses the ordinary move).
+	if _, err := s.Reopen(iss.ID, StateReady); err != nil {
+		t.Fatalf("Reopen(ready): %v", err)
 	}
 	if got, _ := s.Get(iss.ID); got.GaveUp != nil {
 		t.Fatalf("stamp survived the ticket leaving its state: %+v", got.GaveUp)
