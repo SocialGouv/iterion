@@ -474,3 +474,53 @@ func TestUsageCapKey_FingerprintFollowsTheSpendingCredential(t *testing.T) {
 		t.Errorf("legacy fingerprint-less credentials = %q, want the historical key %q", got, want)
 	}
 }
+
+// A reading is keyed under the credential its session ACTUALLY ran on —
+// the delegate's provider-routing label — not the bundle's default
+// precedence. A bundle holding both a z.ai token and an Anthropic key
+// previously charged an anthropic-pinned node's refusal to the z.ai
+// fingerprint, and the evidence-based skip then parked the healthy key
+// while keeping the frozen one.
+func TestUsageCapCredKeys_ReadingFollowsTheSessionSource(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderZAI:       "zai-token",
+			secrets.ProviderAnthropic: "sk-ant",
+		},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/oauth"},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+			delegate.BackendClaudeCode:        "fp-oauth",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	scope := usagecap.TenantScope("team-7")
+
+	cases := []struct{ source, wantFP string }{
+		// Empty (older binary) and the inherited-env label follow the
+		// bundle default: z.ai first, the delegate's own precedence.
+		{"", "fp-zai"},
+		{"anthropic-env", "fp-zai"},
+		{"facade:https://api.z.ai/api/anthropic", "fp-zai"},
+		{"anthropic-direct", "fp-ant"},
+		{"anthropic-oauth", "fp-oauth"},
+	}
+	for _, c := range cases {
+		if got := keys.forSource(c.source); got != usagecap.Key(delegate.BackendClaudeCode, scope, c.wantFP) {
+			t.Errorf("forSource(%q) = %q, want fingerprint %q", c.source, got, c.wantFP)
+		}
+	}
+
+	// A source naming a shape the bundle does not hold falls back to the
+	// default rather than inventing an empty-fingerprint meter.
+	partial := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant"},
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-ant"},
+	})
+	pk := usageCapCredKeys(partial, msg)
+	if got := pk.forSource("facade:https://api.z.ai"); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), "fp-ant") {
+		t.Errorf("facade source without a zai credential = %q, want the default fallback", got)
+	}
+}

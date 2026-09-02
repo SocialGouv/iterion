@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // resetClaudeCredEnv scrubs every process-env var that participates in
@@ -371,3 +372,27 @@ func (noopLikeRun) Driver() string { return "noop" }
 type k8sLikeRun struct{ sandbox.Run }
 
 func (k8sLikeRun) Driver() string { return "kubernetes" }
+
+// The usage-source stamp: every reading leaving a session names the
+// provider routing it ran on, so the runner's meter charges the refusal
+// to the credential that was actually spent.
+func TestStampUsageSource(t *testing.T) {
+	var got usagecap.Reading
+	hook := stampUsageSource(func(r usagecap.Reading) error { got = r; return nil }, "anthropic-direct")
+	if err := hook(usagecap.Reading{Window: usagecap.WindowFrequency}); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	if got.Source != "anthropic-direct" {
+		t.Fatalf("Source = %q, want the session fingerprint", got.Source)
+	}
+	// A reading that already names its source keeps it.
+	if err := hook(usagecap.Reading{Source: "facade:x"}); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	if got.Source != "facade:x" {
+		t.Fatalf("Source = %q, want the reading's own label preserved", got.Source)
+	}
+	if stampUsageSource(nil, "x") != nil {
+		t.Fatal("no observer must stay no observer")
+	}
+}

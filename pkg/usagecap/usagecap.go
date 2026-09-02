@@ -203,6 +203,15 @@ type Reading struct {
 	ResetsAt time.Time
 	// ObservedAt is when iterion saw the reading.
 	ObservedAt time.Time
+	// Source is the delegate's provider-routing label for the session
+	// that produced this reading (providerFingerprint: "facade:<url>",
+	// "anthropic-direct", "anthropic-oauth", "anthropic-env"). It lets
+	// the publisher key the reading under the credential the node
+	// ACTUALLY spent — a node pinned `provider: anthropic` must not
+	// charge its refusal to the z.ai key sharing the bundle. Empty on
+	// readings from older binaries; consumers fall back to the bundle's
+	// default precedence then. Never carries a secret.
+	Source string
 }
 
 // Provider status values.

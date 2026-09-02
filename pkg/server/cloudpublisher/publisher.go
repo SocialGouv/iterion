@@ -356,6 +356,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		PlatformSourced:    map[string]bool{},
 	}
 
+	// Refused-but-only keys, per provider, remembered across the tiers for
+	// the restore step — the api-key twin of skippedForfaits below.
+	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
+
 	// 1. BYOK API keys.
 	if p.apiKeys != nil {
 		// Per-webhook key overrides (provider name → api_key id) take
@@ -383,6 +387,26 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 			bundle.APIKeys[prov] = string(r.Plaintext)
 			usedIDs = append(usedIDs, r.KeyID)
+		}
+		// A provider whose EVERY key was refused resolves to nothing under
+		// the predicate. Remember what an unfiltered walk would have chosen:
+		// if the end of the resolution finds that wire still empty — no
+		// second key, no forfait, no pool grant, no platform credential —
+		// the refused key is restored, because a run that makes one refused
+		// call parks on a durable usage-window retry, while a run published
+		// with an empty wire fails on a no-credential auth error nothing
+		// retries (or silently spends the runner pod's ambient env).
+		if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
+			fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, refused, overrides, p.sealer, nil)
+			if ferr != nil {
+				p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
+			}
+			for prov, r := range fallback {
+				if len(r.Plaintext) == 0 {
+					continue
+				}
+				skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID}
+			}
 		}
 		// Bumping last_used_at is best-effort observability, not on
 		// the launch's critical path. Fire it detached with a short
@@ -565,21 +589,36 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle)
+		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys)
 	}
 
-	// A skipped forfait is only an improvement when some other tier could
-	// actually serve its wire. If nothing did — no second forfait, no
-	// pool grant, no platform credential — restore it: the run then
-	// parks on the provider refusal with a DURABLE usage-window retry,
-	// instead of failing on a no-credential auth error nothing retries.
-	if len(skippedForfaits) > 0 {
+	// A skipped credential is only an improvement when some other tier
+	// could actually serve its wire. If nothing did — no second key, no
+	// second forfait, no pool grant, no platform credential — restore it:
+	// the run then parks on the provider refusal with a DURABLE
+	// usage-window retry, instead of failing on a no-credential auth
+	// error nothing retries. Keys before forfaits, in allKnownProviders
+	// order, matching both the delegate's precedence on a shared wire and
+	// the deterministic-winner rule of fillFromPlatform.
+	if len(skippedForfaits) > 0 || len(skippedAPIKeys) > 0 {
 		taken := map[string]bool{}
 		for prov := range bundle.APIKeys {
 			taken[secrets.WireFamily(string(prov))] = true
 		}
 		for kind := range bundle.OAuthCredentials {
 			taken[secrets.WireFamily(kind)] = true
+		}
+		for _, prov := range allKnownProviders {
+			sk, ok := skippedAPIKeys[prov]
+			if !ok || taken[secrets.WireFamily(string(prov))] {
+				continue
+			}
+			bundle.APIKeys[prov] = sk.plaintext
+			if sk.platform {
+				bundle.PlatformSourced[string(prov)] = true
+			}
+			taken[secrets.WireFamily(string(prov))] = true
+			p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov)
 		}
 		for kind, sf := range skippedForfaits {
 			if taken[secrets.WireFamily(kind)] {
@@ -680,7 +719,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey) {
 	if p.sealer == nil {
 		return
 	}
@@ -737,6 +776,27 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 							_ = p.apiKeys.MarkUsed(bg, id, t)
 						}
 					})
+				}
+			}
+			// This tier is the last DB-backed one and the runner's env
+			// backstop is invisible from here, so a refused platform key
+			// must not vanish outright — the rule the OAuth branch below
+			// states verbatim. It is remembered for the restore step
+			// instead, behind any tenant key of the same provider, whose
+			// restore takes precedence.
+			if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
+				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", refused, nil, p.sealer, nil)
+				if ferr != nil {
+					p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
+				}
+				for prov, r := range fallback {
+					if len(r.Plaintext) == 0 {
+						continue
+					}
+					if _, seen := skippedAPIKeys[prov]; seen {
+						continue
+					}
+					skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, platform: true}
 				}
 			}
 		}
@@ -806,6 +866,28 @@ var poolWantOrder = func() []credpool.Credential {
 type skippedForfait struct {
 	payload []byte
 	fp      string
+}
+
+// skippedAPIKey is a provider's refused-but-only key, held back by the
+// evidence predicate and restored when no other tier served its wire.
+// platform marks the deployment's own key so the restore keeps its
+// PlatformSourced metering scope.
+type skippedAPIKey struct {
+	plaintext string
+	keyID     string
+	platform  bool
+}
+
+// providersWithoutKey returns the subset of provs that filled no API-key
+// slot — the candidates for the refused-key fallback lookup.
+func providersWithoutKey(provs []secrets.Provider, apiKeys map[secrets.Provider]string) []secrets.Provider {
+	var missing []secrets.Provider
+	for _, prov := range provs {
+		if apiKeys[prov] == "" {
+			missing = append(missing, prov)
+		}
+	}
+	return missing
 }
 
 // usageCapLookupTimeout bounds the meter read on the launch path — the
