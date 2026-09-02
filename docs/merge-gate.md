@@ -141,12 +141,23 @@ block for an admin.
 Some repos want the opposite posture: reviews as **advisory comments only**,
 with the automatic review on MR/PR open the only automatic one and every
 re-review a deliberate human gesture (budget-frugal — no run per push). One
-operator pin buys the whole posture. On the integration's launch vars
-(`launch_vars` on the repo-bots API, or the studio integration settings):
+operator pin buys the whole posture. It goes on the integration's launch
+vars, and the **repo-bots API is the only surface that carries them** — the
+studio's enable and update dialogs send `bot_ids` + `schedule_crons` only,
+so the pin is neither settable nor readable there:
 
-```json
-{ "gate_enabled": "false" }
+```sh
+iterion remote forge repo-bots create --data '{
+  "connection_id": "<conn-id>",
+  "repo": "owner/repo",
+  "bot_ids": ["review-pr"],
+  "launch_vars": { "gate_enabled": "false" }}'
 ```
+
+On an already-enabled repo, `repo-bots update <integration-id>` with the
+same `launch_vars` block. Do **not** pin it on the webhook config's own
+`launch_vars` instead: provisioning rebuilds that from the manifests, so a
+value living only there is dropped at the next bot toggle.
 
 Two properties of the pin worth knowing before setting it:
 
