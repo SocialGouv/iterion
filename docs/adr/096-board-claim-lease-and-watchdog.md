@@ -61,15 +61,33 @@ CAS carries the whole precondition (claim still exactly `prev` AND still
 expired), so a renewal, an operator, or another replica's reaper between
 the list and the act is a clean skip.
 
-**4. One decision table, liveness-first.** `DecideStuckCard(run, err)` is
-pure and shared by the local reaper and the cloud sweeps, so two
-authorities can never classify the same situation differently. A read
+**4. One decision table, liveness-first.** `DecideStuckCard(run, err,
+card)` is pure and shared by the local reaper and the cloud sweeps, so
+two authorities can never classify the same situation differently. A read
 error conserves; a running/queued run is never stolen from; a paused run
 keeps ADR-014's parking brake; an operator cancel is never auto-routed;
 a platform continuation (redelivery/retry armed) owns its future;
-finished→complete, terminal-failure→fail, resumable→release-for-retry
-(the retry machinery resumes the *recorded* run, never a fresh sibling);
-an unknown status is conserved, never guessed at.
+finished→complete, terminal-failure→fail, resumable→back to the pool; an
+unknown status is conserved, never guessed at.
+
+It judges the card as well as the run, and both of those rows are bounded
+on purpose — an unbounded "keep" is the same outcome, for the operator,
+as the stuck card this watchdog exists to clear:
+
+- *No run recorded but the card is in the running column* → keep, because
+  the run stamp is best-effort and lands AFTER the launch, so its absence
+  proves nothing and freeing the card could double-launch a live worker.
+  Bounded by the claim's own age (`StampWindowOpen`): the real window is
+  seconds, and past two leases "the stamp is late" stops being credible.
+- *A card parked outside the dispatch pool* → keep, because returning it
+  to the pool only means something if the pool can reach it; releasing
+  lifts a brake somebody set. A decision that flips to keep only AFTER
+  the transfer is granted **once** — the recovery marker left on the
+  claim is the record of that grant.
+
+The decision is taken on the state the TRANSFER observed, never on the
+listing's copy: the listing only selects a candidate, and an operator can
+move the card in the window between the two.
 
 **5. Terminal states are sinks.** Leaving a `Terminal:true` state through
 the ordinary `SetState` family is refused (`ErrTerminalStateExit`, which
@@ -81,7 +99,22 @@ Automated writers use `SetStateFrom` (CAS on the declared source). Bots
 (`board.move`) get the refusal with **no** fallback — a run must not
 drag a card out of done.
 
-**6. Rollout: expand/contract, two releases.** `ITERION_BOARD_CLAIM_REAPER`
+**6. The fence cannot repeat, and a lost fence is refused rather than
+guessed.** The epoch is floored at the server clock, so it is monotone
+even across a write that DROPS it: derived from the document alone it
+would restart at 1, and since markers are per-process rather than
+per-claim, two successive holds by one worker would be handed identical
+tokens — the fence defeated with no exotic premise. When the field is
+missing entirely the fence refuses *everyone*, including the live holder:
+admitting a document with no epoch admits every generation of that
+marker, which lets a superseded token re-stamp the fence at its own older
+value and lock the live holder out of its own card. A refused holder
+stops cleanly, which is the safe failure; the card stays recoverable
+through the candidate listing's un-leased arm, on a much longer horizon
+(a missing lease is an absence, where an expired one is positive evidence
+a heartbeat stopped).
+
+**7. Rollout: expand/contract, two releases.** `ITERION_BOARD_CLAIM_REAPER`
 gates the reaper, default **off**. Release N ships the lease fields +
 heartbeats + fenced writes with the reaper off, so a mixed fleet can
 never reap a claim an old binary silently un-leased (the `replace()`
