@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.90.0](https://github.com/SocialGouv/iterion/compare/v3.89.0...v3.90.0) (2026-09-02)
+
+### Features
+
+* **secrets:** several keys of one provider become an ordered fallback chain ([#612](https://github.com/SocialGouv/iterion/issues/612)) ([7ff4007](https://github.com/SocialGouv/iterion/commit/7ff4007c06ed7db256bbe824148e03d42735f89d))
+
+    <details><summary>why</summary>
+
+    Completes the credential chain the fair-usage freeze exposed: the BYOK tier resolved ONE fixed key per provider, so a key whose account the provider froze was resealed into every fresh launch until an operator removed it by hand (measured 2026-09-02: two removals, five cancels, three relaunch waves).
+
+    </details>
+
 ## [3.89.0](https://github.com/SocialGouv/iterion/compare/v3.88.0...v3.89.0) (2026-09-02)
 
 ### Features
