@@ -93,5 +93,10 @@ explain the exact decision. Do not pause for ordinary editorial judgment.
 Before `docs_aligned=true`, account for every issue you surfaced as fixed,
 dismissed-to-ledger, or recorded-as-promise, and ensure no known real drift
 or significant missing documentation remains. State which claims you
-verified and why dismissed items were not code claims. The scope gate and
-the verification gate will independently check the result.
+verified and why dismissed items were not code claims.
+
+The only thing that will independently check the result is the **scope
+gate** — it proves you stayed in the writeable set, nothing more. There is
+no build gate and no second reviewer: convergence is `scope_ok ∧
+docs_aligned`, so `docs_aligned` is *your* claim and nothing downstream can
+catch a false one within the pass. Report it accordingly.
