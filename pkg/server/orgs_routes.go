@@ -115,6 +115,21 @@ func (s *Server) handleUpdateOrgTeamCaps(w http.ResponseWriter, r *http.Request)
 	if !applyNonNegative(w, req.LaunchRatePerMin, &t.LaunchRatePerMin, "launch_rate_per_min") {
 		return
 	}
+	// The platform default is a CEILING for the delegated route: any non-zero
+	// team value overrides it in the launch gate (orValue), so without this
+	// clamp an org admin could raise a team above the deployment-wide limit.
+	// Raising past the ceiling stays super-admin (/api/admin/orgs). 0 keeps
+	// meaning "inherit the platform default" and is always allowed.
+	if d := s.orgDefaults.MaxConcurrentRuns; d > 0 && t.MaxConcurrentRuns > d {
+		httpError(w, http.StatusUnprocessableEntity,
+			"max_concurrent_runs %d exceeds the platform ceiling %d — a platform admin must raise it", t.MaxConcurrentRuns, d)
+		return
+	}
+	if d := s.orgDefaults.LaunchRatePerMin; d > 0 && t.LaunchRatePerMin > d {
+		httpError(w, http.StatusUnprocessableEntity,
+			"launch_rate_per_min %d exceeds the platform ceiling %d — a platform admin must raise it", t.LaunchRatePerMin, d)
+		return
+	}
 	t.UpdatedAt = time.Now().UTC()
 	if err := s.authStore().UpdateTeam(r.Context(), t); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())

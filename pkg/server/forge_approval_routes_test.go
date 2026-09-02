@@ -235,6 +235,27 @@ func TestProvisionApproval_UpdateExpansionOnly(t *testing.T) {
 		t.Fatalf("same-set update should be direct: code=%d body=%s", w.Code, w.Body.String())
 	}
 
+	// Turning the zero-touch fixer lane ON expands the automated surface
+	// even with the bot set unchanged → parked (gate-bypass regression).
+	w = httptest.NewRecorder()
+	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, `{"bot_ids":["review-pr"],"auto_fix_on_gate_failure":true}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("auto-fix ON should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := s.provisionApprovals.Delete(context.Background(), approvalIDFrom(t, w)); err != nil {
+		t.Fatal(err)
+	}
+	// Turning it OFF (or leaving it) tightens → direct.
+	w = httptest.NewRecorder()
+	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, `{"bot_ids":["review-pr"],"auto_fix_on_gate_failure":false}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("auto-fix OFF should be direct: code=%d body=%s", w.Code, w.Body.String())
+	}
+
 	// Adding a bot expands → parked.
 	w = httptest.NewRecorder()
 	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, `{"bot_ids":["review-pr","dep-guard"]}`, "t1")
@@ -277,6 +298,42 @@ func TestOrgSettings_RequireProvisionApproval(t *testing.T) {
 	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("flag off: enable should be direct: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func approvalIDFrom(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var parked struct {
+		ApprovalID string `json:"approval_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &parked); err != nil || parked.ApprovalID == "" {
+		t.Fatalf("no approval id in %s (%v)", w.Body.String(), err)
+	}
+	return parked.ApprovalID
+}
+
+// The platform default is a ceiling for the DELEGATED caps route: an org
+// admin may tighten below it, never raise above it.
+func TestOrgTeamCaps_PlatformCeiling(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	s.orgDefaults.MaxConcurrentRuns = 5
+	s.orgDefaults.LaunchRatePerMin = 20
+
+	req := orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/teams/t1/caps", `{"max_concurrent_runs":6}`, "o1")
+	req.SetPathValue("team_id", "t1")
+	w := httptest.NewRecorder()
+	s.handleUpdateOrgTeamCaps(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("above-ceiling should 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	// At or below the ceiling passes; 0 = inherit is always allowed.
+	req = orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/teams/t1/caps", `{"max_concurrent_runs":5,"launch_rate_per_min":0}`, "o1")
+	req.SetPathValue("team_id", "t1")
+	w = httptest.NewRecorder()
+	s.handleUpdateOrgTeamCaps(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("at-ceiling should pass: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

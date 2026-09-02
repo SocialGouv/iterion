@@ -187,10 +187,10 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusBadRequest, "bot_ids must be non-empty — use DELETE to remove the integration entirely")
 		return
 	}
-	// Org ex-ante validation: only an EXPANDING bot set (a bot not already
-	// provisioned on this repo) needs the org's approval — removals shrink
-	// the surface and go through directly.
-	if orgID := s.provisionOrgRequiringApproval(r.Context(), id, teamID); orgID != "" && addsBots(ri.BotIDs, req.BotIDs) {
+	// Org ex-ante validation: only an update EXPANDING the automated
+	// surface needs the org's approval — removals and tightenings go
+	// through directly (see expandsProvisionSurface).
+	if orgID := s.provisionOrgRequiringApproval(r.Context(), id, teamID); orgID != "" && expandsProvisionSurface(ri, req) {
 		s.parkProvisionRequest(w, r, id, orgID, teamID, forgeEnableReq{
 			ConnectionID:         ri.ConnectionID,
 			Repo:                 ri.RepoFullName,
@@ -347,7 +347,8 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 }
 
 // addsBots reports whether `requested` contains a bot id absent from
-// `current` — the surface-expansion predicate of the org approval gate.
+// `current` — part of the surface-expansion predicate of the org
+// approval gate.
 func addsBots(current, requested []string) bool {
 	have := make(map[string]bool, len(current))
 	for _, b := range current {
@@ -355,6 +356,50 @@ func addsBots(current, requested []string) bool {
 	}
 	for _, b := range requested {
 		if !have[b] {
+			return true
+		}
+	}
+	return false
+}
+
+// expandsProvisionSurface is the org-approval predicate for UPDATES of an
+// existing integration: true when the request grows what automation may do
+// on the repo without a human. Keying on the bot set alone would let a
+// team admin bypass the gate through the switches replayed by the same
+// endpoint — turning the zero-touch fixer lane on, lifting a hold label,
+// or widening the issue-label dispatch — so those expansions park too.
+// Tightenings (removing bots, turning auto-fix off, adding hold labels,
+// narrowing the allowlist) and LaunchVars edits go through directly.
+func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool {
+	if addsBots(ri.BotIDs, req.BotIDs) {
+		return true
+	}
+	// Zero-touch lane turned ON (nil leaves the stored choice alone).
+	if req.AutoFixOnGateFailure != nil && *req.AutoFixOnGateFailure && !ri.AutoFixOnGateFailure {
+		return true
+	}
+	// HoldLabels is the operator's automation brake: removing any current
+	// entry re-arms lanes the label was pausing. nil keeps the stored set.
+	if req.HoldLabels != nil && removesAny(ri.HoldLabels, req.HoldLabels) {
+		return true
+	}
+	// An EMPTY allowlist means "any freshly-applied label dispatches", so
+	// clearing a non-empty one — or adding a label to it — widens dispatch.
+	if req.LabelAllowlist != nil && len(ri.LabelAllowlist) > 0 &&
+		(len(req.LabelAllowlist) == 0 || addsBots(ri.LabelAllowlist, req.LabelAllowlist)) {
+		return true
+	}
+	return false
+}
+
+// removesAny reports whether any entry of `current` is absent from `next`.
+func removesAny(current, next []string) bool {
+	keep := make(map[string]bool, len(next))
+	for _, s := range next {
+		keep[s] = true
+	}
+	for _, s := range current {
+		if !keep[s] {
 			return true
 		}
 	}

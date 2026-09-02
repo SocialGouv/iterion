@@ -71,9 +71,10 @@ export default function GovernanceTab({
   };
 
   const approve = async (a: ProvisionApproval) => {
+    const extras = approvalExtras(a);
     const ok = await confirm({
       title: "Approve provisioning?",
-      message: `Enable ${a.bot_ids.join(", ")} on ${a.repo_full_name}? The webhook and token are created on the forge immediately.`,
+      message: `Enable ${a.bot_ids.join(", ")} on ${a.repo_full_name}${extras ? ` (${extras})` : ""}? The webhook and token are created on the forge immediately.`,
       confirmLabel: "Approve",
     });
     if (!ok) return;
@@ -152,7 +153,12 @@ export default function GovernanceTab({
                 {approvals.map((a) => (
                   <Tr key={a.id}>
                     <Td className="font-mono text-xs">{a.repo_full_name}</Td>
-                    <Td>{a.bot_ids.join(", ")}</Td>
+                    <Td>
+                      {a.bot_ids.join(", ")}
+                      {approvalExtras(a) && (
+                        <div className="text-caption text-fg-muted">{approvalExtras(a)}</div>
+                      )}
+                    </Td>
                     <Td className="font-mono text-xs">{a.tenant_id}</Td>
                     <Td className="font-mono text-xs">{a.requested_by}</Td>
                     <Td className="text-fg-muted">{formatDateTime(a.created_at)}</Td>
@@ -204,6 +210,32 @@ export default function GovernanceTab({
       </section>
     </div>
   );
+}
+
+// approvalExtras summarises the automation switches the approval would
+// replay verbatim — what the admin is REALLY approving beyond the bot
+// list. Empty string when the request carries none.
+function approvalExtras(a: ProvisionApproval): string {
+  const parts: string[] = [];
+  if (a.auto_fix) parts.push("zero-touch auto-fix ON");
+  if (a.hold_labels && a.hold_labels.length > 0)
+    parts.push(`hold labels: ${a.hold_labels.join(", ")}`);
+  if (a.label_allowlist && a.label_allowlist.length > 0)
+    parts.push(`label allowlist: ${a.label_allowlist.join(", ")}`);
+  if (a.launch_vars && Object.keys(a.launch_vars).length > 0)
+    parts.push(
+      `launch vars: ${Object.entries(a.launch_vars)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ")}`,
+    );
+  if (a.schedule_crons && Object.keys(a.schedule_crons).length > 0)
+    parts.push(
+      `schedules: ${Object.entries(a.schedule_crons)
+        .map(([k, v]) => `${k} @ ${v}`)
+        .join(", ")}`,
+    );
+  if (a.overlap) parts.push(`overlap: ${a.overlap}`);
+  return parts.join(" · ");
 }
 
 function TeamCapsRow({

@@ -17,7 +17,12 @@ export interface ProvisionApproval {
   bot_ids: string[];
   integration_id?: string;
   replace?: boolean;
+  schedule_crons?: Record<string, string>;
   launch_vars?: Record<string, string>;
+  overlap?: string;
+  auto_fix?: boolean;
+  hold_labels?: string[];
+  label_allowlist?: string[];
   requested_by: string;
   created_at: string;
 }
