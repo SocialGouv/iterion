@@ -2,8 +2,12 @@ package delegate
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // apiErrorResultStatusRe extracts the HTTP-ish status code the claude CLI
@@ -112,6 +116,31 @@ func isAuthErrorResult(s string) bool {
 		}
 	}
 	return false
+}
+
+// authFailureFast classifies a CLI result as a rendered authentication
+// failure, records the refusal as meter evidence, and returns the typed
+// error — nil when the result is not an auth render. The evidence write
+// comes BEFORE the failure on purpose: re-resolution is already universal
+// server-side, and without a reading the next resolution re-picks this
+// same dead credential, gating the healthy tiers off behind it. The
+// session's Source stamp keys the reading under the credential that
+// actually ran.
+func authFailureFast(result *string, task Task) error {
+	if result == nil || !isAuthErrorResult(*result) {
+		return nil
+	}
+	if task.Hooks.OnUsageWindow != nil {
+		_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+			Window:     usagecap.WindowAuth,
+			Status:     usagecap.StatusRejected,
+			ObservedAt: time.Now().UTC(),
+		})
+	}
+	return &ErrAuthFailed{
+		Provider: BackendClaudeCode,
+		Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", strings.TrimSpace(*result)),
+	}
 }
 
 // retypeNetworkError re-classifies an opaque claude_code failure as an

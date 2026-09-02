@@ -1,6 +1,11 @@
 package delegate
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/usagecap"
+)
 
 // TestIsAuthErrorResult guards the auth-failure classifier that keeps a dead
 // forfait token (or rejected API key) from masquerading as a structured-output
@@ -52,5 +57,33 @@ func TestIsAuthErrorResult_malformedCredential(t *testing.T) {
 	quoted := "The run failed because the log said: API Error: Header '14' has invalid value: 'Bearer x'. We should investigate the credential store."
 	if isAuthErrorResult(quoted) {
 		t.Fatal("prose quoting the error mid-answer must not classify")
+	}
+}
+
+// The evidence write: an auth failure must leave a rejected WindowAuth
+// reading behind (through the task hook, so the Source stamp applies)
+// before the typed error surfaces — otherwise the next resolution
+// re-picks the same dead credential.
+func TestAuthFailureFast_recordsEvidence(t *testing.T) {
+	var got []usagecap.Reading
+	task := Task{}
+	task.Hooks.OnUsageWindow = func(r usagecap.Reading) error { got = append(got, r); return nil }
+
+	res := "Failed to authenticate. API Error: 401 Invalid bearer token"
+	err := authFailureFast(&res, task)
+	var auth *ErrAuthFailed
+	if !errors.As(err, &auth) {
+		t.Fatalf("err = %v, want ErrAuthFailed", err)
+	}
+	if len(got) != 1 || got[0].Window != usagecap.WindowAuth || got[0].Status != usagecap.StatusRejected {
+		t.Fatalf("readings = %+v, want one rejected WindowAuth reading", got)
+	}
+
+	ok := "All done, docs aligned."
+	if authFailureFast(&ok, task) != nil || len(got) != 1 {
+		t.Fatal("a normal result must produce neither error nor evidence")
+	}
+	if authFailureFast(nil, task) != nil {
+		t.Fatal("a nil result must be a no-op")
 	}
 }
