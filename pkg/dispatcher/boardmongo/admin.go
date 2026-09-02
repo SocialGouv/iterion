@@ -67,7 +67,7 @@ func (s *Store) migrateState(ctx context.Context, from, to, reason string) (int,
 		}
 		iss.State = to
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
+		if err := s.replace(ctx, &iss, "state"); err != nil {
 			return touched, fmt.Errorf("boardmongo: write %s during state migration: %w", iss.ID, err)
 		}
 		if err := s.emit(native.Event{
@@ -278,7 +278,7 @@ func (s *Store) applyFieldRewrite(ctx context.Context, transform func(fields map
 		}
 		iss.Fields = nextFields
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
+		if err := s.replace(ctx, &iss, "fields"); err != nil {
 			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, reason, err)
 		}
 		if err := s.emit(native.Event{
@@ -538,7 +538,7 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 		}
 		iss.Labels = newLabels
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
+		if err := s.replace(ctx, &iss, "labels"); err != nil {
 			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, eventType, err)
 		}
 		evtPayload := map[string]any{"issue_id": iss.ID}

@@ -240,12 +240,20 @@ func prefixUpperBound(prefix string) (string, error) {
 	return "", fmt.Errorf("boardmongo: marker prefix %q has no upper bound — a prefix range built from it would match nothing", prefix)
 }
 
-func (c *Coordinator) ListUnleasedClaims(ctx context.Context, cutoff time.Time, limit int) ([]ExpiredCandidate, error) {
+// ListUnleasedClaims lists un-leased claims whose card is REPAIRABLE
+// after a bare release: running column + a recorded run. The population
+// filter lives in the QUERY because the batch cap does too — a post-hoc
+// Go filter let the conserved population (never written, always oldest,
+// always first in updatedat-ascending order) permanently starve the
+// repairable cards out of the batch.
+func (c *Coordinator) ListUnleasedClaims(ctx context.Context, cutoff time.Time, runningState string, limit int) ([]ExpiredCandidate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	filter := UnleasedArm(cutoff)
 	filter["issue.claim"] = bson.M{"$gt": ""}
+	filter["issue.state"] = runningState
+	filter["issue.lastrunid"] = bson.M{"$gt": ""}
 	cur, err := c.coll.Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "issue.updatedat", Value: 1}}).SetLimit(int64(limit)))
 	if err != nil {
@@ -276,7 +284,15 @@ func (c *Coordinator) ReclaimExpired(_ context.Context, tenant, id string, prev 
 // owners. One round-trip per pass (a minute apart) buys the comparison a
 // single clock.
 func (c *Coordinator) ServerNow(ctx context.Context) (time.Time, error) {
-	cur, err := c.coll.Aggregate(ctx, mongo.Pipeline{
+	return serverNow(ctx, c.coll)
+}
+
+// serverNow is the one $$NOW read, shared by the Coordinator (the
+// reaper's cutoff) and the tenant Store (the launch guard's lease
+// comparison) — two sites deriving "now" differently is the cross-clock
+// hole this exists to close.
+func serverNow(ctx context.Context, coll *mongo.Collection) (time.Time, error) {
+	cur, err := coll.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$limit", Value: 1}},
 		{{Key: "$project", Value: bson.M{"_id": 0, "now": "$$NOW"}}},
 	})

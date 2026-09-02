@@ -520,3 +520,61 @@ func TestHandleDeleteRun_LiveRunAnswers409(t *testing.T) {
 		t.Fatalf("DELETE on a missing run answered %d, want 404", w.Code)
 	}
 }
+
+// clockedBoard hands the guard a board-side clock distinct from the
+// pod's — the shape of the Mongo twin, whose leases are stamped $$NOW.
+type clockedBoard struct {
+	native.BoardStore
+	now time.Time
+}
+
+func (c clockedBoard) ServerNow(context.Context) (time.Time, error) { return c.now, nil }
+
+// TestLaunchTicketNow_LeaseIsMeasuredWithTheBoardClock: the lease is
+// stamped by the DATABASE clock, so measuring it with the pod's re-opens
+// the cross-clock hole from the other end — a pod running Δ fast reads
+// every lease younger than Δ as lapsed and launches past a LIVE holder
+// (at Δ ≥ the 15m lease the guard is fully disarmed).
+func TestLaunchTicketNow_LeaseIsMeasuredWithTheBoardClock(t *testing.T) {
+	dir := t.TempDir()
+	board, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := board.Create(native.Issue{Title: "held", State: native.StateReady, Bot: "feature-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.Claim(iss.ID, "dispatcher-host-a"); err != nil {
+		t.Fatal(err)
+	}
+	// Rewrite the lease into the window that separates the two clocks:
+	// LAPSED by the pod's clock (until = pod-1m), LIVE by the board's
+	// (server clock runs 30m behind the pod's).
+	entries, err := os.ReadDir(filepath.Join(dir, "issues"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("issue dir: %v", err)
+	}
+	p := filepath.Join(dir, "issues", entries[0].Name())
+	raw, _ := os.ReadFile(p)
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["claim_lease_until"] = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	out, _ := json.Marshal(doc)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	board2, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := clockedBoard{BoardStore: board2, now: time.Now().UTC().Add(-30 * time.Minute)}
+
+	s := newSweepTestServer()
+	_, lerr := s.launchTicketNow(nil, cb, func() *native.Issue { c, _ := board2.Get(iss.ID); return c }())
+	if lerr == nil || !strings.Contains(lerr.Error(), "claimed by") {
+		t.Fatalf("a lease LIVE on the board's clock was admitted because the pod's clock ran fast: err=%v", lerr)
+	}
+}

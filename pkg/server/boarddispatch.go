@@ -39,7 +39,7 @@ type boardCoordinator interface {
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
 	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ListAbandonedRecoveryClaims(ctx context.Context, markerPrefix string, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
-	ListUnleasedClaims(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ListUnleasedClaims(ctx context.Context, cutoff time.Time, runningState string, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 }
 
@@ -100,6 +100,7 @@ type boardDispatcher struct {
 	recoveryBatchFull bool
 	sweepKeepWarned   map[string]string
 	sweepListFailed   map[string]bool
+	sweepBatchFull    map[string]bool
 	// saturationWarned dedups the fork-adoption sweep's listing-cap warning
 	// to one line per condition edge (only touched from the run-loop
 	// goroutine, which calls the sweeps sequentially).
@@ -482,13 +483,13 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	//
 	// The UN-LEASED population (ordinary claims a mixed-fleet write
 	// stripped of lease + fence, §8/§9 of the ADR) is swept GUARDED:
-	// released only when the card still carries a run id AND sits in the
-	// running column — the shape the fork-adoption reconciler lists and
-	// files once the claim is gone (an unclaimed in_progress card is NOT
-	// undecidable: releaseSweptClaim produces that exact shape and the
-	// next pass repairs it). Everything else — no run recorded, or a
-	// launch-column card a bare release would re-arm — stays conserved
-	// for the gated reap's own two-arm listing.
+	// released only when the released card is one something actually
+	// FILES afterwards — running column, recorded run, and that run
+	// FINISHED (the one disposition the fork-adoption reconciler
+	// honours). A failed / resumable / pruned pointer released bare
+	// would sit unclaimed in the running column, invisible to every
+	// watchdog listing, for ever — so those stay conserved for the
+	// gated reap, like the no-run and launch-column shapes.
 	var lastReap time.Time
 	for {
 		d.tick(ctx)
@@ -551,22 +552,102 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context, now 
 }
 
 // sweepUnleasedClaims releases ONLY the un-leased claims whose release
-// leaves a card the fork-adoption sweep can still file: a card in the
-// running column carrying a run id. Anything else (no run recorded, or a
-// card sitting in a launch column where a bare release would re-arm a
-// fresh launch) stays conserved for the gated reap.
+// leaves a card something actually FILES afterwards: a running-column
+// card whose run FINISHED (StuckComplete — the one disposition the
+// fork-adoption reconciler honours; a failed / resumable / pruned
+// pointer released bare would sit unclaimed in the running column,
+// invisible to every watchdog listing, for ever). Everything else stays
+// conserved for the gated reap. The population filter (running column +
+// a recorded run) lives in the QUERY, not a post-listing Go filter: the
+// batch cap applies at the query, and the conserved population — never
+// written, therefore always oldest, therefore always FIRST in the
+// updatedat-ascending order — permanently starved the repairable card
+// out of a post-hoc filter's batch.
 func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time, v *passVerdict) {
-	cands, err := d.coord.ListUnleasedClaims(ctx, now, sweepBatch)
-	if d.noteSweepListing("un-leased claim sweep", err); err != nil {
+	if v == nil { // standalone (test) form: this call IS the pass
+		v = &passVerdict{}
+		defer v.report(d)
+	}
+	const label = "un-leased claim sweep"
+	cands, err := d.coord.ListUnleasedClaims(ctx, now, d.inProgressState, sweepBatch)
+	if d.noteSweepListing(label, err); err != nil {
 		return
 	}
-	keep := cands[:0]
-	for _, c := range cands {
-		if c.Claim.LastRunID != "" && c.Claim.State == d.inProgressState {
-			keep = append(keep, c)
+	// Full batch = more remain that only this sweep reaches (the sibling
+	// sweep's rule); say so on the edge.
+	d.noteSweepFullBatch(label, len(cands) == sweepBatch)
+	if dispatcher.ClaimReaperEnabled() {
+		// Gate ON: the reap's own two-arm listing covers this population
+		// with the full decision table; hand the batch to the shared body
+		// (reapOne disposes, CAS-idempotent with the reap pass).
+		d.sweepClaims(ctx, label, cands, now, v)
+		return
+	}
+	released := 0
+	kept := map[string]bool{}
+	for _, cand := range cands {
+		run, runErr := d.loadRunForCard(ctx, cand)
+		v.fold(cand.Tenant, cand.Claim.LastRunID != "", runErr)
+		card := dispatcher.StuckCard{
+			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+		}
+		if dec := dispatcher.DecideStuckCard(run, runErr, card); dec.Action != dispatcher.StuckComplete {
+			d.warnKeepOnce(label, cand, dec.Reason, kept)
+			continue
+		}
+		if d.releaseSweptClaim(ctx, label, cand, now) {
+			released++
 		}
 	}
-	d.sweepClaims(ctx, "un-leased claim sweep", keep, now, v)
+	d.purgeKeepMemo(label, kept)
+	if released > 0 {
+		d.warn("%s: handled %d claim(s) (%s=off)", label, released, dispatcher.ClaimReaperEnvName())
+	}
+}
+
+// warnKeepOnce reports a conserved card on its (card, reason) edge —
+// once, not once per pass per replica: the conserved population is
+// self-sustaining. kept collects this pass's keys for purgeKeepMemo.
+func (d *boardDispatcher) warnKeepOnce(label string, cand boardmongo.ExpiredCandidate, reason string, kept map[string]bool) {
+	key := label + "|" + cand.Tenant + "/" + cand.Claim.IssueID
+	if d.sweepKeepWarned == nil {
+		d.sweepKeepWarned = map[string]string{}
+	}
+	if d.sweepKeepWarned[key] != reason {
+		d.sweepKeepWarned[key] = reason
+		d.warn("%s leaves %s/%s alone: %s", label, cand.Tenant, cand.Claim.IssueID, reason)
+	}
+	kept[key] = true
+}
+
+// purgeKeepMemo drops this label's memo entries for cards the pass no
+// longer kept — released, disposed, or gone. Bounds the memo by the live
+// population and lets a card that comes BACK warn again.
+func (d *boardDispatcher) purgeKeepMemo(label string, kept map[string]bool) {
+	for key := range d.sweepKeepWarned {
+		if strings.HasPrefix(key, label+"|") && !kept[key] {
+			delete(d.sweepKeepWarned, key)
+		}
+	}
+}
+
+// noteSweepFullBatch reports a sweep's batch saturation on its edge: a
+// full batch means more remain that only this sweep reaches, and a
+// silent cap reads as "all handled".
+func (d *boardDispatcher) noteSweepFullBatch(label string, full bool) {
+	if d.sweepBatchFull == nil {
+		d.sweepBatchFull = map[string]bool{}
+	}
+	if full == d.sweepBatchFull[label] {
+		return
+	}
+	d.sweepBatchFull[label] = full
+	if full {
+		d.warn("%s: batch of %d was full — more remain and only this sweep reaches them", label, sweepBatch)
+	} else {
+		d.log("%s back under its %d-claim batch", label, sweepBatch)
+	}
 }
 
 // sweepClaims is the ONE body both startup sweeps run. Two rules hold
@@ -583,12 +664,16 @@ func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time
 //     nothing more, leaving the card as it was before a watchdog touched
 //     it.
 func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands []boardmongo.ExpiredCandidate, now time.Time, v *passVerdict) {
-	if len(cands) == 0 {
-		return
-	}
 	gated := dispatcher.ClaimReaperEnabled()
 	swept := 0
 	kept := map[string]bool{}
+	// The purge runs on EVERY pass, an empty one included — bailing before
+	// it left memo entries alive across an empty pass, so a card that came
+	// back with the same reason stayed silent for ever.
+	defer d.purgeKeepMemo(label, kept)
+	if len(cands) == 0 {
+		return
+	}
 	for _, cand := range cands {
 		if gated {
 			acted, obs, rerr := d.reapOne(ctx, cand, now)
@@ -608,37 +693,11 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
 		}
 		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
-			// Once per card+reason, not per pass: a conserved population
-			// is self-sustaining under a disabled gate, and one line per
-			// minute per card per replica is a storm, not a signal. The
-			// memo is bounded by construction: entries for cards that
-			// left the kept population are purged below, so it never
-			// outgrows one listing's worth of cards.
-			// Keyed by label too: the two sweeps share the memo, and a
-			// cross-label purge would erase the other sweep's entries
-			// every pass — the exact re-warn storm the memo prevents.
-			key := label + "|" + cand.Tenant + "/" + cand.Claim.IssueID
-			if d.sweepKeepWarned == nil {
-				d.sweepKeepWarned = map[string]string{}
-			}
-			if d.sweepKeepWarned[key] != pre.Reason {
-				d.sweepKeepWarned[key] = pre.Reason
-				d.warn("%s leaves %s/%s alone: %s", label, cand.Tenant, cand.Claim.IssueID, pre.Reason)
-			}
-			kept[key] = true
+			d.warnKeepOnce(label, cand, pre.Reason, kept)
 			continue
 		}
 		if d.releaseSweptClaim(ctx, label, cand, now) {
 			swept++
-		}
-	}
-	// Purge memo entries for cards this pass no longer kept — released,
-	// disposed, or gone. Keeps the map bounded by the live population and
-	// lets a card that comes BACK warn again (its silence would otherwise
-	// be permanent on a reason it last showed years ago).
-	for key := range d.sweepKeepWarned {
-		if strings.HasPrefix(key, label+"|") && !kept[key] {
-			delete(d.sweepKeepWarned, key)
 		}
 	}
 	if swept > 0 {

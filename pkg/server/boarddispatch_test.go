@@ -184,7 +184,7 @@ func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPr
 // ListUnleasedClaims: the fake honours the contract that matters here —
 // only claims whose candidate carries no lease-derived evidence, which
 // the tests seed explicitly via unleased.
-func (f *fakeBoardCoord) ListUnleasedClaims(_ context.Context, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
+func (f *fakeBoardCoord) ListUnleasedClaims(_ context.Context, _ time.Time, runningState string, limit int) ([]boardmongo.ExpiredCandidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]boardmongo.ExpiredCandidate, 0, len(f.unleased))
@@ -193,6 +193,13 @@ func (f *fakeBoardCoord) ListUnleasedClaims(_ context.Context, _ time.Time, limi
 			break
 		}
 		e.Claim.State = f.states[e.Claim.IssueID]
+		// The real coordinator filters the population in the QUERY
+		// (running column + a recorded run) — a fake that returned
+		// everything would certify a sweep the production listing never
+		// feeds.
+		if e.Claim.State != runningState || e.Claim.LastRunID == "" {
+			continue
+		}
 		out = append(out, e)
 	}
 	return out, nil
@@ -1748,25 +1755,46 @@ func TestCloudSweep_UnleasedReleaseIsGuarded(t *testing.T) {
 				Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0}},
 		})
 	}
-	mk("c-run", native.StateInProgress, "run-x") // released: reconciler files it
-	mk("c-ready", native.StateReady, "run-y")    // conserved: a launch column
-	mk("c-norun", native.StateInProgress, "")    // conserved: nothing proves the shape
+	mk("c-run", native.StateInProgress, "run-finished") // released: the reconciler FILES a finished pointer
+	mk("c-ready", native.StateReady, "run-y")           // conserved: a launch column (query-filtered out)
+	mk("c-norun", native.StateInProgress, "")           // conserved: nothing proves the shape (query-filtered out)
+	mk("c-failed", native.StateInProgress, "run-failed")
+	mk("c-resum", native.StateInProgress, "run-resumable")
+	mk("c-pruned", native.StateInProgress, "run-pruned")
 	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
 	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
-		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+		switch id {
+		case "run-finished":
+			return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+		case "run-failed":
+			return &store.Run{ID: id, Status: store.RunStatusFailed}, nil
+		case "run-resumable":
+			return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+		default:
+			return nil, store.ErrRunNotFound
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	d.run(ctx)
 
 	if _, held := f.claimed["c-run"]; held {
-		t.Fatalf("an un-leased in_progress card WITH a run must be released (the reconciler repairs that shape), still held by %q", f.claimed["c-run"])
+		t.Fatalf("an un-leased in_progress card whose run FINISHED must be released (the reconciler files that shape), still held by %q", f.claimed["c-run"])
 	}
-	if got := f.claimed["c-ready"]; got != "podA-1" {
-		t.Fatalf("a launch-column card must stay conserved (a bare release re-arms a fresh launch), claim now %q", got)
-	}
-	if got := f.claimed["c-norun"]; got != "podA-1" {
-		t.Fatalf("a card with no recorded run must stay conserved, claim now %q", got)
+	// Everything the reconciler does NOT file must stay conserved: a bare
+	// release strips the one field every watchdog listing selects on, and
+	// an unclaimed in_progress card with a failed/resumable/pruned
+	// pointer is repaired by NOTHING — invisible for ever.
+	for id, why := range map[string]string{
+		"c-ready":  "a launch column (a bare release re-arms a fresh launch)",
+		"c-norun":  "no recorded run",
+		"c-failed": "a terminal-failed pointer the reconciler never files",
+		"c-resum":  "a resumable pointer only the gated reap may repark",
+		"c-pruned": "a pruned pointer (release-only is the gated reap's call)",
+	} {
+		if got := f.claimed[id]; got != "podA-1" {
+			t.Fatalf("%s must stay conserved (%s), claim now %q", id, why, got)
+		}
 	}
 }
 
@@ -1817,5 +1845,54 @@ func TestCloudSweep_ListingFailureWarnsOnce(t *testing.T) {
 	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 	if warns := strings.Count(buf.String(), "repairs paused until the listing recovers"); warns != 1 {
 		t.Fatalf("recovered listing re-warned (%d lines total)", warns)
+	}
+}
+
+// The third sweep honours the standalone (nil verdict) form its two
+// siblings implement — handing nil through to sweepClaims dereferenced
+// it inside run()'s goroutine, which has no recover.
+func TestCloudSweep_UnleasedNilVerdictDoesNotPanic(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-x"] = "podA-1"
+	f.states["c-x"] = native.StateInProgress
+	f.unleased = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim:  tracker.ExpiredClaim{IssueID: "c-x", State: native.StateInProgress, LastRunID: "run-x", Prev: tracker.ClaimToken{Marker: "podA-1"}},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+	d.sweepUnleasedClaims(context.Background(), time.Now(), nil)
+}
+
+// The keep memo purges on EVERY pass, an empty one included — bailing
+// before the purge left entries alive, so a card that came back with
+// the same reason stayed silent for ever.
+func TestCloudSweep_KeepMemoPurgesOnAnEmptyPass(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-back"] = dispatcher.ReaperMarker("dead-replica")
+	f.epochs["c-back"] = 2
+	f.states["c-back"] = native.StateInProgress
+	cand := boardmongo.ExpiredCandidate{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{IssueID: "c-back", LastRunID: "run-live", State: native.StateInProgress,
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("dead-replica"), Epoch: 2}},
+	}
+	f.expired = []boardmongo.ExpiredCandidate{cand}
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusRunning}, nil
+	}
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil) // warn 1
+	f.expired = nil
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil) // empty pass: purge
+	f.expired = []boardmongo.ExpiredCandidate{cand}
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil) // came back: warn again
+	if warns := strings.Count(buf.String(), "leaves t1/c-back alone"); warns != 2 {
+		t.Fatalf("card left and came back, warned %d time(s), want 2 — the empty pass did not purge the memo", warns)
 	}
 }

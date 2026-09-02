@@ -506,6 +506,23 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	}
 	target := args.To
 	if target == "" {
+		// A card ALREADY in a terminal state stays where it is: closing a
+		// closed ticket is not a request to re-file it into a different
+		// sink (the terminal→terminal carve-out is an operator refiling;
+		// this is a bot surface, and re-filing here also erased the
+		// dispatcher's give-up stamp on a card the bot never asked to
+		// move). No-op, current issue returned.
+		if cur, err := store.Get(resolved); err == nil {
+			if st := store.Board().StateByName(cur.State); st != nil && st.Terminal {
+				// Still an acknowledgment: the give-up stamp goes (same
+				// best-effort contract as below — nothing moved).
+				_ = store.SetGaveUp(resolved, nil)
+				if refreshed, gerr := store.Get(resolved); gerr == nil {
+					cur = refreshed
+				}
+				return json.Marshal(cur)
+			}
+		}
 		// Find the first terminal state on the board.
 		for _, st := range store.Board().States {
 			if st.Terminal {

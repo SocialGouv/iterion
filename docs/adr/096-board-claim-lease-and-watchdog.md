@@ -152,13 +152,17 @@ longer erases the claim family; an OLD binary's full-document
 `ReplaceOne` still strips epoch + lease from any card it writes (§8),
 which locks the live holder out of all three fenced verbs and leaves an
 un-leased claim behind. That residue is swept on the watchdog cadence,
-**guarded**: released only when the card still carries a run id AND sits
-in the running column — the shape an unclaimed card is REPAIRABLE in
-(the fork-adoption reconciler lists unclaimed in_progress/blocked cards
-and files them; `releaseSweptClaim` produces that exact shape and the
-next pass decides it). Everything else stays conserved for the gated
-reap's own two-arm listing: a card with no recorded run proves nothing,
-and a launch-column card released bare would re-arm a fresh spend.
+**guarded twice**: the QUERY selects only running-column cards with a
+recorded run (the batch cap applies at the query, so a post-hoc filter
+would let the conserved population — never written, always oldest in
+the updatedat order — permanently starve the batch), and the release
+fires only when that run FINISHED — the one disposition the
+fork-adoption reconciler actually files. A failed / resumable / pruned
+pointer released bare would sit unclaimed in the running column,
+invisible to every watchdog listing (they all select on a non-empty
+claim), for ever. Everything else stays conserved for the gated reap's
+own two-arm listing: a card with no recorded run proves nothing, and a
+launch-column card released bare would re-arm a fresh spend.
 Release N+1, once no old binary can un-lease a claim, enables the
 reaper — and with it the full decision table over whatever the
 mixed-fleet window stranded. The other gate-independent releaser is the

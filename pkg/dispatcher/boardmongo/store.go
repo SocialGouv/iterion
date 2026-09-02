@@ -364,7 +364,19 @@ var claimOwnedKeys = map[string]bool{
 // still $unset, so for everything this binary owns the semantics match
 // the replace it supersedes. The claim family is excluded outright (see
 // claimOwnedKeys).
-func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
+// changed names the issue fields the CALLER mutated, as bson keys or
+// their snake_case event aliases (bot_args → botargs). The write is
+// scoped to exactly those (+ updatedat, + gaveup — expireGiveUp below
+// may clear the stamp on any write): persisting the WHOLE snapshot
+// re-applied every other family from a stale read — the same defect
+// claimOwnedKeys closed for the claim family, live on all the others
+// (a bot comment or an admin label sweep pulled a card back OUT of a
+// terminal sink the fenced owner had filed it into, with no state
+// event, no guard, and its consumed one-shot labels restored). A
+// caller that forgets a key loses its own write — which the
+// conformance suite's read-back assertions catch, where a clobber of
+// SOMEBODY ELSE'S write was invisible.
+func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...string) error {
 	expireGiveUp(iss)
 	raw, err := bson.Marshal(iss)
 	if err != nil {
@@ -374,19 +386,30 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
 	if err := bson.Unmarshal(raw, &m); err != nil {
 		return fmt.Errorf("boardmongo: remarshal issue: %w", err)
 	}
-	set := bson.M{}
-	for k, v := range m {
-		if claimOwnedKeys[k] {
-			continue
-		}
-		set["issue."+k] = v
-	}
-	unset := bson.M{}
+	known := map[string]bool{}
 	for _, k := range issueFieldKeys {
+		known[k] = true
+	}
+	keys := map[string]bool{"updatedat": true, "gaveup": true}
+	for _, k := range changed {
+		k = strings.ReplaceAll(k, "_", "")
+		// A typo'd key would silently write nothing — the caller's own
+		// mutation lost with no error, which is worse than the clobber
+		// this scoping replaced. Refuse it loudly.
+		if !known[k] {
+			return fmt.Errorf("boardmongo: replace: unknown issue field %q", k)
+		}
+		keys[k] = true
+	}
+	set := bson.M{}
+	unset := bson.M{}
+	for k := range keys {
 		if claimOwnedKeys[k] {
 			continue
 		}
-		if _, ok := m[k]; !ok {
+		if v, ok := m[k]; ok {
+			set["issue."+k] = v
+		} else {
 			unset["issue."+k] = ""
 		}
 	}
@@ -426,7 +449,7 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 		return nil, changed.err
 	}
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, changed.fields...); err != nil {
 		return nil, err
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: iss.ID, Payload: map[string]any{"changed": changed.fields}}); err != nil {
@@ -444,6 +467,14 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 		}
 	}
 	return iss, nil
+}
+
+// ServerNow reads the DATABASE clock (the clock every lease is stamped
+// with). The launch guard compares leases against it so a pod running
+// fast cannot read a live lease as lapsed — the same one-clock rule the
+// reaper's cutoff follows.
+func (s *Store) ServerNow(ctx context.Context) (time.Time, error) {
+	return serverNow(ctx, s.issues)
 }
 
 func (s *Store) SetState(id, newState string) (*native.Issue, error) {
@@ -478,7 +509,7 @@ func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, erro
 	old := iss.State
 	iss.State = newState
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "state"); err != nil {
 		return nil, err
 	}
 	payload := map[string]any{"from": old, "to": newState}
@@ -669,7 +700,7 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	iss.LastWorkdir = workdir
 	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
 	iss.UpdatedAt = now
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "lastrunid", "lastworkdir", "runs"); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})
@@ -691,7 +722,7 @@ func (s *Store) SetAwaitingInput(id string, v bool) error {
 	}
 	iss.AwaitingInput = v
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "awaitinginput"); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"awaiting_input": v}})
@@ -733,7 +764,7 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 		stamped = &stamp
 	}
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "gaveup"); err != nil {
 		return err
 	}
 	payload := map[string]any{"gave_up": stamped != nil}
@@ -778,7 +809,7 @@ func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comm
 	}
 	iss.Comments = append(iss.Comments, c)
 	iss.UpdatedAt = c.CreatedAt
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "comments"); err != nil {
 		return nil, nil, err
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueComment, IssueID: id, Payload: map[string]any{"comment_id": c.ID, "author": author}}); err != nil {

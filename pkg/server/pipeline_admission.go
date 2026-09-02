@@ -406,6 +406,26 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 	}
 }
 
+// boardNow resolves the instant a lease is measured against. The lease
+// is stamped with the DATABASE clock ($$NOW), so comparing it to this
+// pod's clock re-opens the cross-clock hole from the other end: a pod
+// running Δ fast reads every lease younger than Δ as lapsed and admits a
+// launch past a LIVE holder (at Δ ≥ the lease duration the guard is
+// fully disarmed). Backends without a server clock (the single-process
+// FS twin) fall back to the local one, which is then the only clock.
+func boardNow(board native.BoardStore) time.Time {
+	if sn, ok := board.(interface {
+		ServerNow(context.Context) (time.Time, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if srv, err := sn.ServerNow(ctx); err == nil && !srv.IsZero() {
+			return srv
+		}
+	}
+	return time.Now().UTC()
+}
+
 // launchTicketNow claims a ticket and launches its bot, returning the run
 // id. It is the shared body of the admission loop (which ignores the error
 // and retries next tick) and of the operator's explicit "launch now" drag,
@@ -444,7 +464,7 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	// case.
 	if cur, err := board.Get(iss.ID); err != nil {
 		return "", fmt.Errorf("read ticket: %w", err)
-	} else if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(time.Now().UTC()) {
+	} else if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(boardNow(board)) {
 		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
 	}
 	entry, found, err := s.findBot(iss.Bot)
