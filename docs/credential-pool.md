@@ -7,7 +7,13 @@ provider — and how a run with no credential of its own draws on it.
 Read [cloud-llm-credentials.md](cloud-llm-credentials.md) first: the pool is
 the **fourth** tier of the credential resolution described there — below it
 sit only the deployment's own platform credentials (DB-backed) and the
-runner-pod env backstop.
+runner-pod env backstop. "Has no credential of its own" is evaluated after
+the tier chain has skipped any forfait the provider is currently refusing
+([the fallback chain](cloud-llm-credentials.md#the-tiers-are-a-fallback-chain-not-a-fixed-first-choice)),
+so a tenant *holding* an exhausted subscription can reach the pool — that is
+the case the skip exists for. A forfait that would still serve blocks a
+grant, as before: spending a contributor's lent subscription while the tenant
+has a working credential is taking a donation nobody needed.
 
 ## The one-paragraph model
 
@@ -15,8 +21,8 @@ A contributor connects a subscription through the ordinary personal OAuth
 flow (or already holds a personal BYOK key), then makes a **pledge**: a standing offer of that credential
 bounded by ceilings *they* choose (spend per day and per week, runs per day,
 runs at once, an optional sharing window, an optional bot allow-list). At
-launch, a run that has neither a BYOK key nor a personal/org forfait asks
-the **broker** for a donor; it picks the least-consumed eligible pledge,
+launch, a run that has neither a BYOK key nor a **usable** personal/org
+forfait asks the **broker** for a donor; it picks the least-consumed eligible pledge,
 records a **lease** against the run, and hands the credential to the
 ordinary sealing path — the runner cannot tell it apart from a personal
 forfait. When the attempt ends, the runner reports what it spent, which
