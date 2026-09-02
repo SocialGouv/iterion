@@ -277,8 +277,8 @@ pool — full model in [credential-pool.md](credential-pool.md).
 | `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
 | `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
 | `GET` | `/api/me/pool/history` | member | The runs your quota served |
-| `GET` | `/api/teams/{id}/pool` | team member | The pool's policy and its donors |
-| `PUT` | `/api/teams/{id}/pool` | team admin | Set the audience policy deciding who may draw |
+| `GET` | `/api/teams/{id}/pool` | member | The pool's policy — **plus the donor roster only for an org admin**: who lends and how much they have given is the contributors' own business |
+| `PUT` | `/api/teams/{id}/pool` | **org** admin | The pool's `name`, `enabled` master switch and `audience` (who may draw); each applied only when present in the body. The pool document is keyed by ORG and governs every team under it, so a team admin who is not an org admin gets `403 changing the credential pool is an org-level decision` — gating on the addressed team would let one team's admin widen who may spend the whole org's contributed subscriptions |
 
 Source: [pkg/server/credpool_routes.go](../pkg/server/credpool_routes.go).
 
