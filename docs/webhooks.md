@@ -287,12 +287,16 @@ Semantics, shared with `/revi` (deliberate manual gesture):
 - **repeatable once the head's review has FINISHED** — such a click is its
   own delivery (the idempotency key is then salted with the MR/PR
   `updated_at`), so re-requesting twice on the same head reviews twice. On
-  GitHub a click landing while a review of that head is still in flight
-  collapses onto it instead (the CODEOWNERS auto-request dedupe), and a
+  GitHub a click landing while EVERY fanned-out bot's review of that head is
+  still in flight collapses onto them instead (the CODEOWNERS auto-request
+  dedupe) — unless the webhook's `overlap` is `supersede`, which takes
+  precedence: the click salts, the stale run is cancelled and the fresh one
+  replaces it ("newest request wins" is the operator's explicit choice). A
   click on a head no review has claimed yet takes the ordinary per-head
-  key; GitLab keeps the unconditional salt (its lane only arms on an
-  `update` action, so an open-time reviewer assignment never double-fires);
-  forge redeliveries of the same click stay deduped;
+  key. GitLab keeps the unconditional salt (its lane only arms on an
+  `update` action, so the open itself never double-fires; an auto-assign
+  arriving as a follow-up update salts per click, bounded by the overlap
+  policy); forge redeliveries of the same click stay deduped;
 - **open PRs/MRs only** — reviewer edits arrive freely on closed/merged
   ones and never burn a run;
 - **replier-gated like `/revi`** — the click is authorized through the

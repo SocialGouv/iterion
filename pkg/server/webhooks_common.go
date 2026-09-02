@@ -729,10 +729,7 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 			return s.runs.CancelWithReason(runID, supersededRunReason)
 		}
 	}
-	if cfg.Overlap == "" || s.webhookDeliveries == nil || cancel == nil {
-		return
-	}
-	if decision, _ := schedgate.EvaluateOverlap([]string{"probe"}, cfg.OverlapPolicy()); decision != schedgate.DecisionSupersede {
+	if s.webhookDeliveries == nil || cancel == nil || !overlapSupersedes(cfg) {
 		return
 	}
 	if meta.SubjectID == "" {
@@ -773,13 +770,22 @@ const supersedeLookback = 50
 
 // headReviewClaim reports whether the ordinary per-head key space of this
 // delivery's head is already claimed by an earlier review launch, and whether
-// any of those launches is still in flight. It drives the re-request lane's
-// three-way idempotency choice (collapse / salt / claim) — see the caller in
-// handlePRForgeReview. Absence of the deliveries store reads as unclaimed and
-// a failed run lookup as not-live: the button must keep working when the
-// state cannot be known, at the price of a possible duplicate (the historical
-// behaviour). A StatusLaunchError row is NOT a claim (mirrors the launch
-// tail: a failed launch is retryable); a StatusAccepted row is a launch in
+// EVERY fanned-out rule's claim is still in flight — the only state in which
+// the click has nothing left to serve. Rb9e7c9: with several bots on the
+// event, one live run must not swallow the re-review of a bot whose own run
+// finished, nor a retryable launch_error's relaunch — so a single not-live
+// rule declines the collapse and the delivery salts. It drives the
+// re-request lane's three-way idempotency choice (collapse / salt / claim) —
+// see the caller in handlePRForgeReview.
+//
+// Failure posture: THE BUTTON KEEPS WORKING. Absence of the deliveries store
+// reads as unclaimed, a failed RUN lookup as not-live, and a failed STORE
+// read (≠ not-found) as claimed-but-not-live — claimed is what routes the
+// delivery onto the salted key, so a store hiccup costs at most a duplicate
+// review, never a silently deduped no-op (R1545ff; a not-found miss keeps
+// the per-head key, whose row the launch tail retries or dedupes exactly).
+// A StatusLaunchError row is NOT a claim (mirrors the launch tail: a failed
+// launch is retryable via its own key); a StatusAccepted row is a launch in
 // progress — in flight by definition, but only within acceptedLaunchWindow
 // of its receipt: a process dying between the insert and the post-launch
 // update strands the row at accepted forever, and reading that as live would
@@ -788,20 +794,43 @@ func (s *Server) headReviewClaim(ctx context.Context, cfg webhooks.Config, rules
 	if s.webhookDeliveries == nil {
 		return false, false
 	}
+	live = true
 	for _, rule := range rules {
 		d, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, forgeIdemKey(headBase, rule.BotID, cfg.HasBotRules()))
-		if err != nil || d.Status == webhooks.StatusLaunchError {
+		switch {
+		case errors.Is(err, webhooks.ErrNotFound):
+			live = false
+			continue
+		case err != nil:
+			claimed, live = true, false
+			continue
+		case d.Status == webhooks.StatusLaunchError:
+			live = false
 			continue
 		}
 		claimed = true
-		if d.Status == webhooks.StatusAccepted && time.Since(d.ReceivedAt) < acceptedLaunchWindow {
-			return true, true
-		}
-		if d.RunID != "" && s.webhookRunLive(ctx, d.RunID) {
-			return true, true
+		switch {
+		case d.Status == webhooks.StatusAccepted && time.Since(d.ReceivedAt) < acceptedLaunchWindow:
+			// launch in progress — in flight.
+		case d.RunID != "" && s.webhookRunLive(ctx, d.RunID):
+			// run still expected to produce its review — in flight.
+		default:
+			live = false
 		}
 	}
-	return claimed, false
+	return claimed, claimed && live
+}
+
+// overlapSupersedes reports whether this webhook's overlap policy resolves to
+// supersede — the single predicate shared by the launch tail's cancel pass
+// (supersedeLiveRuns) and the re-request collapse, which DEFERS to it: an
+// explicit supersede is the operator saying "newest request wins".
+func overlapSupersedes(cfg webhooks.Config) bool {
+	if cfg.Overlap == "" {
+		return false
+	}
+	decision, _ := schedgate.EvaluateOverlap([]string{"probe"}, cfg.OverlapPolicy())
+	return decision == schedgate.DecisionSupersede
 }
 
 // acceptedLaunchWindow bounds how long a StatusAccepted delivery row reads as

@@ -299,15 +299,27 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		//     so a concurrent or late `opened` for the same head dedupes
 		//     against it instead of double-launching (order-independent).
 		// re_review marks the posted summary like the `/revi` comment path.
-		claimed, inFlight := s.headReviewClaim(ctx, cfg, rules, idemBase)
-		if inFlight {
-			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
-				"re-request collapsed — a review of this head is already in flight")
-			writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
-			return
-		}
-		if claimed {
+		//
+		// Under an explicit `overlap: supersede` the collapse is SKIPPED and
+		// the click salts unconditionally: that policy is the operator saying
+		// "newest request wins", so the launch tail's supersede pass cancels
+		// the stale run and the fresh one replaces it — collapsing would
+		// silently override that choice. The CODEOWNERS double resolves
+		// there too: the auto-request supersedes the open's run, one
+		// survivor.
+		if overlapSupersedes(cfg) {
 			idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+		} else {
+			claimed, inFlight := s.headReviewClaim(ctx, cfg, rules, idemBase)
+			if inFlight {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+					"re-request collapsed — a review of this head is already in flight")
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+			if claimed {
+				idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+			}
 		}
 		extra["re_review"] = "true"
 	}
