@@ -377,7 +377,9 @@ var claimOwnedKeys = map[string]bool{
 // conformance suite's read-back assertions catch, where a clobber of
 // SOMEBODY ELSE'S write was invisible.
 func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...string) error {
+	hadGaveUp := iss.GaveUp != nil
 	expireGiveUp(iss)
+	expired := hadGaveUp && iss.GaveUp == nil
 	raw, err := bson.Marshal(iss)
 	if err != nil {
 		return fmt.Errorf("boardmongo: marshal issue: %w", err)
@@ -390,7 +392,16 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...strin
 	for _, k := range issueFieldKeys {
 		known[k] = true
 	}
-	keys := map[string]bool{"updatedat": true, "gaveup": true}
+	// gaveup rides along ONLY when the expiry above actually fired:
+	// naming it unconditionally wrote the snapshot's (usually nil) stamp
+	// on every write — the very clobber this scoping removed, left open
+	// on the one field that decides whether a failed pipeline shows in
+	// Needs attention (measured 103/120 stamps lost to a concurrent
+	// write; the FS twin's single critical section loses 0).
+	keys := map[string]bool{"updatedat": true}
+	if expired {
+		keys["gaveup"] = true
+	}
 	for _, k := range changed {
 		k = strings.ReplaceAll(k, "_", "")
 		// A typo'd key would silently write nothing — the caller's own
@@ -401,25 +412,22 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...strin
 		}
 		keys[k] = true
 	}
+	// native.Issue carries no bson tags, so EVERY field marshals (a nil
+	// slice as null, a nil pointer as null — which is also why an append
+	// must be a $concatArrays pipeline, never $push, see AddComment).
+	// There is no $unset arm: a key named in `changed` is always present
+	// in the marshalled map.
 	set := bson.M{}
-	unset := bson.M{}
 	for k := range keys {
 		if claimOwnedKeys[k] {
 			continue
 		}
-		if v, ok := m[k]; ok {
-			set["issue."+k] = v
-		} else {
-			unset["issue."+k] = ""
-		}
+		set["issue."+k] = m[k]
 	}
-	if len(set) == 0 && len(unset) == 0 {
+	if len(set) == 0 {
 		return nil
 	}
 	update := bson.M{"$set": set}
-	if len(unset) > 0 {
-		update["$unset"] = unset
-	}
 	if _, err := s.issues.UpdateOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, update); err != nil {
 		return fmt.Errorf("boardmongo: replace issue: %w", err)
 	}
@@ -791,6 +799,20 @@ func expireGiveUp(iss *native.Issue) {
 
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment.
+// toBSON round-trips a value into the driver's generic document form,
+// for embedding inside an aggregation-pipeline update.
+func toBSON(v any) (bson.M, error) {
+	raw, err := bson.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m bson.M
+	if err := bson.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comment, error) {
 	if strings.TrimSpace(body) == "" {
 		return nil, nil, errors.New("comment: body required")
@@ -807,11 +829,27 @@ func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comm
 		Body:      body,
 		CreatedAt: time.Now().UTC(),
 	}
+	// An APPEND, not a read-modify-$set of the whole array: two
+	// concurrent comments through the snapshot form lost one of the two
+	// every time (60/60 measured — a /command posted while a bot wrote
+	// its dispatch trace vanished with no error). $push cannot serve: a
+	// nil slice persists as null (no bson tags), which $push refuses —
+	// the pipeline form coalesces null to [] first.
+	cm, err := toBSON(c)
+	if err != nil {
+		return nil, nil, fmt.Errorf("boardmongo: marshal comment: %w", err)
+	}
+	if _, err := s.issues.UpdateOne(ctx,
+		bson.M{"_id": iss.ID, "tenant_id": s.tenant},
+		mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			"issue.comments": bson.M{"$concatArrays": bson.A{
+				bson.M{"$ifNull": bson.A{"$issue.comments", bson.A{}}}, bson.A{cm}}},
+			"issue.updatedat": c.CreatedAt,
+		}}}}); err != nil {
+		return nil, nil, fmt.Errorf("boardmongo: append comment: %w", err)
+	}
 	iss.Comments = append(iss.Comments, c)
 	iss.UpdatedAt = c.CreatedAt
-	if err := s.replace(ctx, iss, "comments"); err != nil {
-		return nil, nil, err
-	}
 	if err := s.emit(native.Event{Type: native.EvtIssueComment, IssueID: id, Payload: map[string]any{"comment_id": c.ID, "author": author}}); err != nil {
 		return nil, nil, err
 	}

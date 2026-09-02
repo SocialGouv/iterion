@@ -118,8 +118,12 @@ func (c *Coordinator) Release(_ context.Context, tenant, id, marker string) erro
 // cloud dispatcher's claim session uses: every write is a CAS on the
 // ownership token, so a replica whose claim was superseded finds typed
 // refusals instead of clobbering the new owner.
-func (c *Coordinator) RenewClaim(_ context.Context, tenant, id string, tok tracker.ClaimToken) error {
-	return c.StoreFor(tenant).RenewClaim(id, tok)
+func (c *Coordinator) RenewClaim(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error {
+	// The renewal honours the SESSION's context: Stop() cancels it, and a
+	// renew that ignored the cancel held Stop hostage for the op timeout —
+	// on the dispatcher actor locally, inside the drain's WaitGroup in
+	// cloud.
+	return c.StoreFor(tenant).RenewClaimCtx(ctx, id, tok)
 }
 
 func (c *Coordinator) SetStateOwned(_ context.Context, tenant, id, state string, tok tracker.ClaimToken) error {

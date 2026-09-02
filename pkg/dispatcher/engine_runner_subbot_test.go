@@ -235,7 +235,12 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	// 60s burned, nothing actionable in the log).
 	var dispatchErr error
 	dispatched := false
-	deadline := time.Now().Add(60 * time.Second)
+	// 180s, up from 60: the bound is pure spawn allowance on a loaded
+	// machine (the child blocks on the release file, so a longer deadline
+	// proves nothing extra and races nothing). At 60s the full suite's
+	// parallel packages (race builds + mongod conformance + the watchdog
+	// branch's grown dispatcher suite) tipped it over intermittently.
+	deadline := time.Now().Add(180 * time.Second)
 	for time.Now().Before(deadline) && !held {
 		select {
 		case dispatchErr = <-done:

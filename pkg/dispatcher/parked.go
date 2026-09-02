@@ -81,10 +81,8 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 		// Transition FIRST, Release LAST (same ordering as the finish
 		// worker): the claim keeps ListCandidates away until the card is
 		// in its final, mostly-non-eligible state.
-		if err := c.tracker.Release(ctx, iss.ID, c.hostMarker); err != nil {
-			c.logger.Warn("dispatcher: parked sweep release %s: %v", iss.Identifier, err)
-		}
-		c.claims.Remove(iss.ID)
+		c.dropJournalAfterRelease(iss.ID, iss.Identifier,
+			c.tracker.Release(ctx, iss.ID, c.hostMarker))
 		moved = true
 	}
 	if moved {

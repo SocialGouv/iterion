@@ -62,7 +62,18 @@ func (s *Store) ownedRefused(ctx context.Context, id string, tok tracker.ClaimTo
 // and stamping either would churn board_events and the sweeps' ordering
 // on every heartbeat of every claimed card.
 func (s *Store) RenewClaim(id string, tok tracker.ClaimToken) error {
-	ctx, cancel := ctxWithTimeout()
+	return s.RenewClaimCtx(context.Background(), id, tok)
+}
+
+// RenewClaimCtx is RenewClaim bounded by the CALLER's context on top of
+// the store's own op timeout. The claim session cancels its renewal
+// context when Stop() runs — a cancel that reached no store made the
+// documented "Stop is not hostage to a slow renewal" guarantee false in
+// production: Stop runs on the dispatcher ACTOR (and inside the cloud
+// drain's WaitGroup), so a slow Mongo held the whole dispatcher for the
+// full op timeout.
+func (s *Store) RenewClaimCtx(parent context.Context, id string, tok tracker.ClaimToken) error {
+	ctx, cancel := context.WithTimeout(parent, opTimeout)
 	defer cancel()
 	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), leaseStampPipeline(bson.M{}))
 	if err != nil {

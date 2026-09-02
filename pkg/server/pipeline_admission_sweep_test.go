@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -576,5 +577,37 @@ func TestLaunchTicketNow_LeaseIsMeasuredWithTheBoardClock(t *testing.T) {
 	_, lerr := s.launchTicketNow(nil, cb, func() *native.Issue { c, _ := board2.Get(iss.ID); return c }())
 	if lerr == nil || !strings.Contains(lerr.Error(), "claimed by") {
 		t.Fatalf("a lease LIVE on the board's clock was admitted because the pod's clock ran fast: err=%v", lerr)
+	}
+}
+
+type erroringClockBoard struct {
+	native.BoardStore
+}
+
+func (erroringClockBoard) ServerNow(context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("mongo: server selection timeout")
+}
+
+// The launch guard's clock degradation is LOGGED, once per edge — the
+// reaper's own rule, copied here WITH the property this time (round 13
+// had copied the sibling minus its logging).
+func TestBoardNow_DegradationWarnsOnItsEdge(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	s := &Server{logger: iterlog.New(iterlog.LevelWarn, &buf)}
+	cb := erroringClockBoard{BoardStore: board}
+	s.boardNow(cb)
+	s.boardNow(cb)
+	if warns := strings.Count(buf.String(), "board clock unavailable"); warns != 1 {
+		t.Fatalf("clock degradation warned %d time(s) over 2 calls, want once (edge) — silent measurement against a suspect clock", warns)
+	}
+	// FS twin (no ServerNow): silent by design.
+	buf.Reset()
+	s.boardNow(board)
+	if buf.Len() != 0 {
+		t.Fatalf("the FS twin's local-clock fallback must stay silent, got %q", buf.String())
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -413,18 +414,51 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 // launch past a LIVE holder (at Δ ≥ the lease duration the guard is
 // fully disarmed). Backends without a server clock (the single-process
 // FS twin) fall back to the local one, which is then the only clock.
-func boardNow(board native.BoardStore) time.Time {
+func (s *Server) boardNow(board native.BoardStore) time.Time {
+	reason := ""
+	defer func() {
+		// Degradation is LOGGED, on its edge — the reaper's own rule ("a
+		// watchdog silently measuring against a suspect clock is worse
+		// than one that logs its degradation"), copied here WITH the
+		// property this time. The FS twin's fallback is expected and
+		// stays silent (single process, one clock).
+		if _, hasClock := board.(interface {
+			ServerNow(context.Context) (time.Time, error)
+		}); !hasClock {
+			return
+		}
+		s.stateMu.Lock()
+		prev := s.boardClockWarned
+		s.boardClockWarned = reason
+		s.stateMu.Unlock()
+		if reason != prev && reason != "" {
+			s.logger.Warn("pipeline admission: board clock unavailable (%s) — measuring the claim lease against this pod's clock", reason)
+		}
+	}()
 	if sn, ok := board.(interface {
 		ServerNow(context.Context) (time.Time, error)
 	}); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if srv, err := sn.ServerNow(ctx); err == nil && !srv.IsZero() {
+		srv, err := sn.ServerNow(ctx)
+		switch {
+		case err != nil:
+			reason = err.Error()
+		case srv.IsZero():
+			reason = "empty collection"
+		default:
 			return srv
 		}
 	}
 	return time.Now().UTC()
 }
+
+// The cross-clock guard only exists if the PRODUCTION board type still
+// exposes the server clock — a decorator around CloudBoardFor that
+// drops the method would disarm it silently, suite green.
+var _ interface {
+	ServerNow(context.Context) (time.Time, error)
+} = (*boardmongo.Store)(nil)
 
 // launchTicketNow claims a ticket and launches its bot, returning the run
 // id. It is the shared body of the admission loop (which ignores the error
@@ -464,7 +498,7 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	// case.
 	if cur, err := board.Get(iss.ID); err != nil {
 		return "", fmt.Errorf("read ticket: %w", err)
-	} else if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(boardNow(board)) {
+	} else if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(s.boardNow(board)) {
 		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
 	}
 	entry, found, err := s.findBot(iss.Bot)

@@ -441,3 +441,115 @@ func TestListUnleasedClaims_QueryFiltersAndDoesNotStarve(t *testing.T) {
 		t.Fatalf("STARVED: the one repairable card is not in the batch of %d — the conserved population fills the cap and the sweep never sees it", len(cands))
 	}
 }
+
+// The give-up stamp is the field that decides whether a failed pipeline
+// shows in Needs attention. Naming it unconditionally in replace() wrote
+// the snapshot's (usually nil) stamp on every write — a concurrent bot
+// comment erased a dispatcher give-up 103/120, or resurrected a cleared
+// one 108/120. It rides along only when the expiry actually fired.
+func TestScopedReplace_BotWriteNeverTouchesTheGiveUpStamp(t *testing.T) {
+	s := scopedMongo(t)
+	const N = 120
+	lost, resurrected := 0, 0
+	for i := 0; i < N; i++ {
+		iss, err := s.Create(native.Issue{Title: "gaveup race", State: native.StateInProgress})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = s.SetGaveUp(iss.ID, &native.GiveUp{RunID: "r1", State: native.StateInProgress, Attempts: 3})
+		}()
+		go func() {
+			defer wg.Done()
+			asg := "someone"
+			_, _ = s.Update(iss.ID, native.Patch{Assignee: &asg})
+		}()
+		wg.Wait()
+		if got, _ := s.Get(iss.ID); got.GaveUp == nil {
+			lost++
+		}
+	}
+	if lost > 0 {
+		t.Fatalf("%d/%d give-up stamps LOST to a concurrent bot write — the failed pipeline files as Closed instead of Needs attention", lost, N)
+	}
+	for i := 0; i < N; i++ {
+		iss, err := s.Create(native.Issue{Title: "gaveup clear race", State: native.StateInProgress})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetGaveUp(iss.ID, &native.GiveUp{RunID: "r1", State: native.StateInProgress, Attempts: 3}); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = s.SetGaveUp(iss.ID, nil) }()
+		go func() {
+			defer wg.Done()
+			asg := "someone"
+			_, _ = s.Update(iss.ID, native.Patch{Assignee: &asg})
+		}()
+		wg.Wait()
+		if got, _ := s.Get(iss.ID); got.GaveUp != nil {
+			resurrected++
+		}
+	}
+	if resurrected > 0 {
+		t.Fatalf("%d/%d CLEARED give-up stamps resurrected by a concurrent bot write — the acknowledged card is stuck in Needs attention", resurrected, N)
+	}
+}
+
+// Two concurrent comments both land: the append is an atomic
+// $concatArrays pipeline, not a read-modify-$set of the whole array
+// (which lost one of every concurrent pair, 60/60 — a /command posted
+// while a bot wrote its trace vanished with no error).
+func TestScopedReplace_ConcurrentCommentsBothLand(t *testing.T) {
+	s := scopedMongo(t)
+	const N = 60
+	lost := 0
+	for i := 0; i < N; i++ {
+		iss, err := s.Create(native.Issue{Title: "comment race", State: native.StateInProgress})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _, _ = s.AddComment(iss.ID, "op", "/billy") }()
+		go func() { defer wg.Done(); _, _, _ = s.AddComment(iss.ID, "bot", "trace") }()
+		wg.Wait()
+		if got, _ := s.Get(iss.ID); len(got.Comments) != 2 {
+			lost++
+		}
+	}
+	if lost > 0 {
+		t.Fatalf("a comment was LOST in %d/%d concurrent pairs", lost, N)
+	}
+}
+
+// The claim session cancels its renewal context at Stop(); a renew that
+// ignored the cancel held Stop hostage for the full op timeout — on the
+// dispatcher actor locally, inside the drain's WaitGroup in cloud. The
+// store's renew must honour the CALLER's context.
+func TestRenewClaimCtx_HonoursTheCallersContext(t *testing.T) {
+	s := scopedMongo(t)
+	iss, err := s.Create(native.Issue{Title: "renewed", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := s.Claim(iss.ID, "worker-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	err = s.RenewClaimCtx(ctx, iss.ID, tok)
+	if err == nil {
+		t.Fatal("a renew on a CANCELLED context reported success — the session's Stop() cancel reaches nothing")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("the cancelled renew still took %s — Stop() is hostage to it", time.Since(start))
+	}
+}

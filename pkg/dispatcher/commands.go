@@ -753,13 +753,26 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 // by the finish worker; the issue is re-pickable by the next tick once this
 // returns (subject to the issue's final tracker state and any retry guard).
 func (c *Dispatcher) releaseClaim(ctx context.Context, issueID, identifier string) {
-	if err := c.tracker.Release(ctx, issueID, c.hostMarker); err != nil &&
+	err := c.tracker.Release(ctx, issueID, c.hostMarker)
+	c.dropJournalAfterRelease(issueID, identifier, err)
+}
+
+// dropJournalAfterRelease removes the journal entry ONLY when the claim
+// is verifiably no longer ours: a successful release, or the benign
+// races (already gone, held by someone else). On any other error — a
+// forge 503, a blown shutdown budget — the claim is STILL POSTED, and on
+// an external tracker the journal is the only recovery path (the claim
+// label carries no host/pid, no lease, no reaper): dropping the entry
+// there stranded the label for ever on one transient error, with no
+// crash involved. sweepJournalledClaims already kept its entry for
+// exactly this reason; the release sites now follow the same rule.
+func (c *Dispatcher) dropJournalAfterRelease(issueID, identifier string, err error) {
+	if err != nil &&
 		!errors.Is(err, tracker.ErrNotFound) &&
 		!errors.Is(err, tracker.ErrClaimConflict) {
-		c.logger.Warn("dispatcher: release %s: %v", identifier, err)
+		c.logger.Warn("dispatcher: release %s failed (%v) — keeping the claim journal entry so the next boot retries", identifier, err)
+		return
 	}
-	// Drop the journal entry even on the benign races above — in all of
-	// them the claim is no longer ours to recover at the next boot.
 	c.claims.Remove(issueID)
 }
 
@@ -780,12 +793,8 @@ func (c *Dispatcher) fencedUpdateState(ctx context.Context, issueID, state strin
 // both, the claim is no longer ours to release.
 func (c *Dispatcher) releaseClaimSess(ctx context.Context, issueID, identifier string, sess *claimSession) {
 	if sess != nil && c.leaser != nil {
-		if err := c.leaser.ReleaseOwned(ctx, issueID, sess.Token()); err != nil &&
-			!errors.Is(err, tracker.ErrNotFound) &&
-			!errors.Is(err, tracker.ErrClaimConflict) {
-			c.logger.Warn("dispatcher: release %s: %v", identifier, err)
-		}
-		c.claims.Remove(issueID)
+		err := c.leaser.ReleaseOwned(ctx, issueID, sess.Token())
+		c.dropJournalAfterRelease(issueID, identifier, err)
 		return
 	}
 	c.releaseClaim(ctx, issueID, identifier)

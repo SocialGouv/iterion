@@ -1896,3 +1896,81 @@ func TestCloudSweep_KeepMemoPurgesOnAnEmptyPass(t *testing.T) {
 		t.Fatalf("card left and came back, warned %d time(s), want 2 — the empty pass did not purge the memo", warns)
 	}
 }
+
+// TestBoardDispatcher_DrainLeavesInFlightCardInPlace: a draining replica
+// says nothing about the RUN, which keeps executing on its runner pod —
+// filing blocked wrote a terminal "won't do" on live work, for ever
+// (reconcileDeadPointer refuses to reclassify blocked by design). The
+// drain leaves the card in the running column and releases the claim:
+// unclaimed in_progress is what the reconciler files once the run
+// terminates — the disposition the LOCAL twin's context.Canceled arm
+// reaches.
+func TestBoardDispatcher_DrainLeavesInFlightCardInPlace(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "feature-dev"))
+	ctx, cancel := context.WithCancel(context.Background())
+	d := newBoardDispatcher(f, func(c context.Context, _ string, _ native.Issue) error {
+		cancel() // the replica begins draining mid-run
+		<-c.Done()
+		return c.Err()
+	}, "replica-A", 4, nil)
+	d.tick(ctx)
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != d.inProgressState {
+		t.Fatalf("a drained replica filed the in-flight card as %q — the run keeps executing and will finish; want it left in %q", got, d.inProgressState)
+	}
+	if _, held := f.claimed["native:1"]; held {
+		t.Fatalf("the drain must still release the claim (the write the drain exists for)")
+	}
+}
+
+// TestCloudSweep_FullBatchWarnsOnItsEdge covers the shared saturation
+// helper both sweeps use (the round-13 mutation check found it
+// uncovered): one warn on saturation, one recovery line, nothing per
+// pass.
+func TestCloudSweep_FullBatchWarnsOnItsEdge(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	for i := 0; i < sweepBatch; i++ {
+		id := fmt.Sprintf("c-%03d", i)
+		f.claimed[id] = dispatcher.ReaperMarker("dead")
+		f.epochs[id] = 1
+		f.states[id] = native.StateInProgress
+		f.expired = append(f.expired, boardmongo.ExpiredCandidate{
+			Tenant: "t1",
+			Claim:  tracker.ExpiredClaim{IssueID: id, Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("dead"), Epoch: 1}},
+		})
+	}
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
+	if warns := strings.Count(buf.String(), "was full"); warns != 1 {
+		t.Fatalf("full-batch warned %d time(s) over 2 saturated passes, want once (edge)", warns)
+	}
+}
+
+// TestCloudSweep_UnleasedGateOnArmDisposes covers the gate-ON arm the
+// round-13 mutation check found uncovered: with the reaper enabled the
+// un-leased sweep hands its batch to the FULL decision table (reapOne),
+// which disposes shapes the gate-off arm deliberately conserves.
+func TestCloudSweep_UnleasedGateOnArmDisposes(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "on")
+	f := newFakeBoardCoord()
+	f.claimed["c-resum"] = "podA-1"
+	f.epochs["c-resum"] = 0
+	f.states["c-resum"] = native.StateInProgress
+	f.unleased = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{IssueID: "c-resum", State: native.StateInProgress, LastRunID: "run-resumable",
+			Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0}},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+	d.sweepUnleasedClaims(context.Background(), time.Now(), nil)
+	if _, held := f.claimed["c-resum"]; held {
+		t.Fatalf("gate ON: a resumable pointer must be DISPOSED by the full table (repark → release), still held by %q", f.claimed["c-resum"])
+	}
+}

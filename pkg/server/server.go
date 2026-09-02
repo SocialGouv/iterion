@@ -57,6 +57,9 @@ type Server struct {
 	// acceptable: the SPA reset on `project_switched` invalidates any
 	// inflight request data before it's surfaced.
 	stateMu sync.RWMutex
+	// boardClockWarned dedups the launch guard's clock-degradation warn on
+	// its edge (empty = healthy). Guarded by stateMu.
+	boardClockWarned string
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.

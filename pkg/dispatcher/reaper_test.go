@@ -1002,3 +1002,59 @@ func TestShutdown_DrainDoesNotLeakAgainstASerializingTracker(t *testing.T) {
 		t.Fatalf("%d/32 claims leaked against a serializing tracker — budgets that start before a card's turn burn a shared window while queued", leaked)
 	}
 }
+
+// failingReleaseTracker fails Release with an injectable error.
+type failingReleaseTracker struct {
+	tracker.Tracker
+	releaseErr error
+}
+
+func (f *failingReleaseTracker) Release(ctx context.Context, id, marker string) error {
+	if f.releaseErr != nil {
+		return f.releaseErr
+	}
+	return f.Tracker.Release(ctx, id, marker)
+}
+
+// TestReleaseClaim_KeepsJournalOnTransientFailure: the journal entry is
+// dropped ONLY when the claim is verifiably no longer ours. On an
+// external tracker the journal is the sole recovery path (the claim
+// label carries no host/pid, no lease, no reaper) — dropping the entry
+// on a forge 503 stranded the label for ever, with no crash involved.
+// sweepJournalledClaims already kept its entry; the release sites now
+// follow the same rule.
+func TestReleaseClaim_KeepsJournalOnTransientFailure(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := native.NewAdapter(board)
+	rec := &failingReleaseTracker{Tracker: adapter}
+	c := &Dispatcher{
+		tracker: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state:  newState(),
+		claims: newClaimJournal(t.TempDir(), iterlog.Nop()),
+	}
+	iss, err := board.Create(native.Issue{Title: "claimed", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.Claim(iss.ID, "host-1"); err != nil {
+		t.Fatal(err)
+	}
+	c.claims.Record(claimEntry{IssueID: iss.ID})
+	rec.releaseErr = errors.New("forge: 503 service unavailable")
+
+	c.releaseClaim(context.Background(), iss.ID, "i1")
+	if !c.claims.Contains(iss.ID) {
+		t.Fatal("the release FAILED and the journal entry was dropped — the claim is still posted and nothing will ever retry it")
+	}
+
+	// A benign race (claim already gone) drops it — the entry is not
+	// hoarded once the claim is verifiably not ours.
+	rec.releaseErr = tracker.ErrClaimConflict
+	c.releaseClaim(context.Background(), iss.ID, "i1")
+	if c.claims.Contains(iss.ID) {
+		t.Fatal("a benign release race must still drop the journal entry")
+	}
+}

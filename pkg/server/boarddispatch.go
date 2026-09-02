@@ -94,13 +94,13 @@ type boardDispatcher struct {
 	reconcileMemoMu sync.Mutex
 	reconcileMemo   map[string]time.Time
 
-	// recoveryBatchFull / sweepKeepWarned dedup the recovery sweep's
-	// per-pass warns on their edges (the sweep runs every watchdog pass;
-	// its populations are self-sustaining under a disabled gate).
-	recoveryBatchFull bool
-	sweepKeepWarned   map[string]string
-	sweepListFailed   map[string]bool
-	sweepBatchFull    map[string]bool
+	// sweepKeepWarned / sweepListFailed / sweepBatchFull dedup the repair
+	// sweeps' per-pass warns on their edges (the sweeps run every
+	// watchdog pass; their populations are self-sustaining under a
+	// disabled gate).
+	sweepKeepWarned map[string]string
+	sweepListFailed map[string]bool
+	sweepBatchFull  map[string]bool
 	// saturationWarned dedups the fork-adoption sweep's listing-cap warning
 	// to one line per condition edge (only touched from the run-loop
 	// goroutine, which calls the sweeps sequentially).
@@ -197,24 +197,41 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	}
 	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState
-	if runErr != nil {
+	switch {
+	case runErr != nil && errors.Is(runErr, errCardPaused):
 		// A pause is not a failure: route the card to the awaiting-input
 		// column so the operator answers it there, not to blocked.
-		if errors.Is(runErr, errCardPaused) {
-			final = d.awaitingState
-		} else {
-			final = d.blockedState
-			d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+		final = d.awaitingState
+	case runErr != nil && ctx.Err() != nil:
+		// THIS REPLICA is going away — that says nothing about the run,
+		// which keeps executing on its runner pod and will finish.
+		// Filing blocked here wrote a terminal "won't do" on live work,
+		// for ever (reconcileDeadPointer refuses to reclassify blocked:
+		// it is an operator-facing bad-outcome flag). Leave the card in
+		// place and only release the claim: unclaimed in_progress is
+		// exactly what the fork-adoption reconciler files once the run
+		// terminates — the same disposition the LOCAL twin's
+		// context.Canceled arm (finishRevert) reaches. The claim-lost
+		// path is unaffected: it cancels cardCtx, not this parent ctx.
+		final = ""
+		d.warn("card %s/%s: replica draining mid-run — leaving the card in place, releasing the claim", c.Tenant, c.Issue.ID)
+	case runErr != nil:
+		final = d.blockedState
+		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+	}
+	// Final writes on a DETACHED ctx: a superseded claim cancelled
+	// cardCtx (the fenced writes must still run to be REFUSED loudly —
+	// typed conflict in the log — rather than die on a dead ctx reading
+	// as a store outage), and a draining replica's parent ctx is dead
+	// too, while the release below is the write the drain exists FOR.
+	finCtx, finCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer finCancel()
+	if final != "" {
+		if err := d.coord.SetStateOwned(finCtx, c.Tenant, c.Issue.ID, final, tok); err != nil {
+			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
 		}
 	}
-	// Final writes on the PARENT ctx: a superseded claim cancelled
-	// cardCtx, and these fenced writes must still run to be REFUSED
-	// loudly (typed conflict in the log) rather than die on a dead ctx
-	// reading as a store outage.
-	if err := d.coord.SetStateOwned(ctx, c.Tenant, c.Issue.ID, final, tok); err != nil {
-		d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
-	}
-	if err := d.coord.ReleaseOwned(ctx, c.Tenant, c.Issue.ID, tok); err != nil {
+	if err := d.coord.ReleaseOwned(finCtx, c.Tenant, c.Issue.ID, tok); err != nil {
 		d.warn("card %s/%s release: %v", c.Tenant, c.Issue.ID, err)
 	}
 }
@@ -536,18 +553,8 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context, now 
 	}
 	// A full batch means there are probably more, and NOTHING else can
 	// reach them: a recovery claim carries a fresh lease, so it sorts
-	// behind every ordinary one in the reaper's own listing. Say so — on
-	// the condition's EDGE (the sweep runs every pass now, and a
-	// per-pass line is the storm that hides the next real signal).
-	if full := len(cands) == sweepBatch; full != d.recoveryBatchFull {
-		d.recoveryBatchFull = full
-		if full {
-			d.warn("recovery-claim sweep: batch of %d was full — more abandoned claims remain and only another sweep reaches them",
-				sweepBatch)
-		} else {
-			d.log("recovery-claim sweep back under its %d-claim batch", sweepBatch)
-		}
-	}
+	// behind every ordinary one in the reaper's own listing.
+	d.noteSweepFullBatch("recovery-claim sweep", len(cands) == sweepBatch)
 	d.sweepClaims(ctx, "recovery-claim sweep", cands, now, v)
 }
 
