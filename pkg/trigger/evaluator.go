@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -100,22 +99,31 @@ type effectOpts struct {
 	onConsumed func()
 }
 
-// applyEffect executes ONE (subscription, event) effect — the single effect
-// body both delivery paths share. Error semantics: nil = executed;
-// errEffectMachineCaused = the event came from iterion repairing itself,
-// so a one-shot operator gate must not be spent on it. Benign like
-// errEffectOneShotSpent: the subscription simply does not fire.
+// errEffectMachineCaused = the event came from iterion acting on the
+// board by itself (a watchdog repair, a schema migration), so a one-shot
+// operator gate must not be spent on it. Benign like
+// errEffectOneShotSpent (the one-shot consumed by another event): the
+// subscription simply does not fire, on the bus path AND the outbox path.
 var errEffectMachineCaused = errors.New("trigger: one-shot not spent on a machine-caused event")
 
-// errEffectOneShotSpent = the one-shot was consumed by another event
-// (terminal, not a failure); anything else = the effect did not happen (the
-// bus path warns and moves on, the outbox path retries).
-// machineCaused reports that an event was produced by iterion repairing
-// itself rather than by an operator or a bot acting on the board.
+// machineCaused reports that an event was produced by the machine rather
+// than by an operator or a bot acting on the board. The contract with
+// the stores (native.StateChangePayload, the board schema migrations) is
+// that `reason` IS machine provenance — an operator gesture never
+// carries one — so ANY reason marks the event machine-caused. Matching
+// only the watchdog value let a column rename (reason: state_rename, one
+// event per card) spend every consume_labels one-shot in the column at
+// once, on cards that never moved.
 func machineCaused(ev Event) bool {
 	reason, _ := ev.Payload["reason"].(string)
-	return reason == tracker.ReasonWatchdog
+	return reason != ""
 }
+
+// applyEffect executes ONE (subscription, event) effect — the single
+// effect body both delivery paths share. Error semantics: nil =
+// executed; errEffectMachineCaused / errEffectOneShotSpent = benign, the
+// subscription does not fire; anything else = the effect did not happen
+// (the bus path warns and moves on, the outbox path retries).
 
 func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
 	switch sub.EffectiveMode() {

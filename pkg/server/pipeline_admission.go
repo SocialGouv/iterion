@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -179,8 +180,19 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 		return true
 	}
 	r, err := rs.LoadRun(ctx, iss.LastRunID)
-	if err != nil || r == nil {
-		return true // last run vanished; a fresh launch is safe
+	if err != nil {
+		if errors.Is(err, store.ErrRunNotFound) {
+			return true // last run pruned; a fresh launch is safe
+		}
+		// No information is not no run: a run record that EXISTS but
+		// cannot be read may be alive. The dispatcher's
+		// lastRunHoldBeforeClaim HOLDS on exactly this input — failing
+		// open here made the two authorities disagree on the same card
+		// and minted a sibling for a live run on a store blip.
+		return false
+	}
+	if r == nil {
+		return true
 	}
 	switch r.Status {
 	case store.RunStatusRunning,

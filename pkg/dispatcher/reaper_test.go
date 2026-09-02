@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -495,51 +497,60 @@ func TestReapOne_DoesNotStealFromAFreshClaim(t *testing.T) {
 	}
 }
 
-// TestReapOne_LatchDoesNotFlapOnAMixedBatch: the run-read latch reports
-// the store's health on its edges, so it must only be fed by cards that
-// actually consulted the store. A card with no run recorded
-// short-circuits before it — letting that clear the latch makes it flap
-// on any mixed batch and announce a recovery nothing observed, which is
-// the storm it exists to prevent, half of it false.
-func TestReapOne_LatchDoesNotFlapOnAMixedBatch(t *testing.T) {
-	c, board, _ := newReaperHarness(t)
+// TestReaperPass_LatchIsFedOncePerPass drives the PASS (the composition
+// reapExpiredClaims wires), not reapOne: the latch takes ONE verdict per
+// pass, so a mixed batch — one card whose run is unreadable, one healthy,
+// two with no run at all — reports the failure once, repeats nothing on
+// the next pass, and announces exactly one recovery when the store
+// heals. Feeding it per card flapped it: a false failure/recovery warn
+// pair every pass, for ever, half of it announcing a recovery nothing
+// observed.
+func TestReaperPass_LatchIsFedOncePerPass(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
 	var buf bytes.Buffer
 	c.logger = iterlog.New(iterlog.LevelWarn, &buf)
 
-	// Alternate: with a run (the store is consulted and fails, since the
-	// harness passes a nil store below) and without one.
-	for i, runID := range []string{"run-a", "", "run-b", ""} {
+	mkRun(t, runs, "run-ok", store.RunStatusFinished)
+	mkRun(t, runs, "run-bad", store.RunStatusFinished)
+	if err := os.WriteFile(filepath.Join(c.storeDir, "runs", "run-bad", "run.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("corrupt run: %v", err)
+	}
+	for _, runID := range []string{"run-ok", "run-bad", "", ""} {
 		iss, err := board.Create(native.Issue{Title: "card", State: native.StateInProgress})
 		if err != nil {
-			t.Fatalf("Create %d: %v", i, err)
+			t.Fatalf("Create: %v", err)
 		}
 		if _, err := board.Claim(iss.ID, "dead-host"); err != nil {
-			t.Fatalf("Claim %d: %v", i, err)
+			t.Fatalf("Claim: %v", err)
 		}
 		if runID != "" {
 			if err := board.SetLastRun(iss.ID, runID, "/tmp"); err != nil {
-				t.Fatalf("SetLastRun %d: %v", i, err)
+				t.Fatalf("SetLastRun: %v", err)
 			}
 		}
 	}
 	at := time.Now().Add(2 * native.ClaimLeaseDuration)
-	cands, err := board.ListExpiredClaimCandidates(at, 10)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	for _, cd := range cands {
-		// nil store: exactly what reapExpiredClaims passes when store.New fails.
-		c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), nil, cd, at)
+	reaper := c.tracker.(tracker.ClaimReaper)
+
+	c.reapExpiredClaims(context.Background(), reaper, at)
+	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
+		t.Fatalf("first pass: %d failure / %d recovery lines — want exactly 1/0 (one verdict per pass, no flap)", cannot, again)
 	}
 
-	cannot := strings.Count(buf.String(), "cannot read runs")
-	again := strings.Count(buf.String(), "can read runs again")
-	if again > 0 {
-		t.Fatalf("the latch announced %d recovery(ies) the store never made (and flapped: %d failure lines) — "+
-			"a card with no run never consulted the store and must not clear the latch", again, cannot)
+	// Second pass, same condition: the edge already fired, nothing new.
+	c.reapExpiredClaims(context.Background(), reaper, at)
+	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
+		t.Fatalf("second pass repeated the edge: %d failure / %d recovery lines", cannot, again)
 	}
-	if cannot != 1 {
-		t.Fatalf("the failure must be reported once on its edge, got %d lines", cannot)
+
+	// The store heals (the corrupt record is pruned): one recovery, once.
+	if err := os.RemoveAll(filepath.Join(c.storeDir, "runs", "run-bad")); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	c.reapExpiredClaims(context.Background(), reaper, at)
+	c.reapExpiredClaims(context.Background(), reaper, at)
+	if again := strings.Count(buf.String(), "can read runs again"); again != 1 {
+		t.Fatalf("recovery announced %d times, want exactly once", again)
 	}
 }
 
@@ -682,4 +693,51 @@ func (r *orderRecordingTracker) Release(ctx context.Context, id, marker string) 
 func (r *orderRecordingTracker) UpdateState(ctx context.Context, id, state string) error {
 	r.ops = append(r.ops, "state:"+state)
 	return r.Tracker.UpdateState(ctx, id, state)
+}
+
+// TestFinishWorker_SlowRevertDoesNotStarveTheRelease: the shutdown budget
+// split's STRUCTURAL TWIN — runFinishWorker performs the same
+// transition-then-release pair, and it runs at EVERY finished run, not
+// only at shutdown. Under one shared deadline a merely slow tracker spent
+// it all on the revert's RefreshStates and left the claim in place: the
+// card invisible to the next daemon's listing, with the reaper that would
+// free it gated off by default.
+func TestFinishWorker_SlowRevertDoesNotStarveTheRelease(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	adapter := native.NewAdapter(board)
+	rec := &orderRecordingTracker{Tracker: adapter, leaser: adapter, slowRefresh: 120 * time.Millisecond}
+	c := &Dispatcher{
+		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
+		ws: newWsBridge(iterlog.Nop()),
+	}
+	c.shutdownRevertBudget, c.shutdownReleaseBudget = 30*time.Millisecond, 50*time.Millisecond
+	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
+	iss, err := board.Create(native.Issue{Title: "finishing", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tok, err := board.Claim(iss.ID, "host-1")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if _, err := board.SetStateOwned(iss.ID, native.StateInProgress, tok); err != nil {
+		t.Fatalf("SetStateOwned: %v", err)
+	}
+	sess := StartClaimSession(c.leaser, iss.ID, tok, func(string, ...any) {}, nil)
+
+	c.runFinishWorker(finishPlan{
+		kind: finishRevert, issueID: iss.ID, identifier: "i1",
+		runningTarget: native.StateInProgress, sourceState: native.StateReady,
+		session: sess,
+	})
+
+	after, _ := board.Get(iss.ID)
+	if after.Claim != "" {
+		t.Fatalf("a slow revert consumed the budget the release needed: card still claimed by %q — "+
+			"invisible to the next daemon's candidate listing at EVERY run finish", after.Claim)
+	}
 }

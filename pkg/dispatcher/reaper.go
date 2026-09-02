@@ -118,37 +118,45 @@ func (c *Dispatcher) reapExpiredClaims(ctx context.Context, reaper tracker.Claim
 	// shared openRunStore/loadRunForDecision helpers maintain (an
 	// unsynchronized map — using them here was a data race, caught by
 	// the reaper's own first test).
+	// The latch is fed ONCE, with the whole pass's verdict. Feeding it at
+	// two sites (store-open clears, per-card read sets) made it FLAP on a
+	// board with one unreadable run — two warns per pass for ever, one of
+	// them announcing a recovery nothing observed: the very storm the
+	// latch exists to prevent.
 	var runs *store.FilesystemRunStore
+	var passErr error // the pass's run-read verdict
+	observed := false // did anything consult the store this pass?
 	if c.storeDir != "" {
 		if s, serr := store.New(c.storeDir, store.WithLogger(c.logger)); serr != nil {
-			// Same condition, same latch: this repeats every pass for as
-			// long as the store is unopenable, and two mechanisms for one
-			// cause is how the noise comes back.
-			c.noteRunReadFailure(serr)
+			passErr, observed = serr, true
 		} else {
-			// Clear where it was set: the store opening IS the condition
-			// observed succeeding. Leaving it to the per-card path would
-			// wedge the latch on for ever on a board whose claimed cards
-			// carry no run — nothing there ever consults the store.
-			c.noteRunReadFailure(nil)
 			runs = s
 		}
 	}
 	for _, cand := range cands {
-		c.reapOne(ctx, reaper, runs, cand, now)
+		obs, rerr := c.reapOne(ctx, reaper, runs, cand, now)
+		if obs {
+			observed = true
+			if rerr != nil && passErr == nil {
+				passErr = rerr
+			}
+		}
+	}
+	// Only a pass that touched the store reports on its health: a board
+	// whose claimed cards carry no run observed nothing, so it neither
+	// clears nor sets the latch (a clear there would announce a recovery
+	// nothing measured).
+	if observed {
+		c.noteRunReadFailure(passErr)
 	}
 }
 
-func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, runs *store.FilesystemRunStore, cand tracker.ExpiredClaim, now time.Time) {
+// reapOne judges one candidate. Returns whether the run store was
+// consulted and what the read said — the CALLER folds those into the
+// pass-level latch verdict; noting per card is what made the latch flap.
+func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, runs *store.FilesystemRunStore, cand tracker.ExpiredClaim, now time.Time) (runObserved bool, runReadErr error) {
 	run, runErr := c.loadRunForReap(ctx, runs, cand.LastRunID)
-	if cand.LastRunID != "" {
-		// Only a card that HAS a run reports on the store's health: a card
-		// without one short-circuits before the store is touched, so
-		// letting it clear the latch announces a recovery nothing
-		// observed — and on a mixed batch the latch then flaps, emitting
-		// the very storm it exists to prevent, half of it false.
-		c.noteRunReadFailure(runErr)
-	}
+	runObserved, runReadErr = cand.LastRunID != "", runErr
 	cfg := c.cfg.Load()
 	card := StuckCard{
 		State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates(),
@@ -202,6 +210,7 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// log levels (the Debug-decline lesson).
 	c.logger.Warn("dispatcher: claim watchdog reclaimed %s from %q (%s → %s): %s",
 		cand.Identifier, cand.Prev.Marker, cand.State, dec.Action, dec.Reason)
+	return
 }
 
 // fileStuckCard performs the terminal filing half of a disposition,

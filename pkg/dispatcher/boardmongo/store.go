@@ -131,9 +131,6 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}, {Key: "issue.updatedat", Value: 1}},
 			Options: options.Index().SetName("lease_then_updated").
 				SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
-		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}}, Options: options.Index().
-			SetName("claim_lease_until").
-			SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("boardmongo: ensure issues index: %w", err)

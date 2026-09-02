@@ -19,6 +19,25 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
 
+// lastStatePayload returns the newest EvtIssueState payload for id — the
+// provenance rows read the event the way pkg/trigger does.
+func lastStatePayload(t *testing.T, s native.BoardStore, id string) map[string]any {
+	t.Helper()
+	var last map[string]any
+	if err := s.ScanEvents(func(e *native.Event) bool {
+		if e.Type == native.EvtIssueState && e.IssueID == id {
+			last = e.Payload
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if last == nil {
+		t.Fatalf("no state event for %s", id)
+	}
+	return last
+}
+
 // runBoardStoreSuite exercises the native.BoardStore contract. It runs against
 // both the filesystem native.Store (always — proving the suite) and the Mongo
 // store (gated on ITERION_TEST_MONGO_URI), so the two implementations are held
@@ -541,6 +560,42 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 	if err := store.Delete(created.ID); !errors.Is(err, tracker.ErrNotFound) {
 		t.Errorf("Delete missing: want ErrNotFound, got %v", err)
+	}
+
+	// Claim provenance is a CROSS-TWIN contract read by pkg/trigger
+	// (machineCaused refuses to spend a one-shot label gate; board_source
+	// blanks the Actor). Two halves, both on both twins — the provenance
+	// describes the WRITER, never whoever holds the card:
+	//
+	//	a watchdog's FENCED write     → reason: watchdog
+	//	an OPERATOR's tokenless write → no reason, whoever holds the card
+	wcard, err := store.Create(native.Issue{Title: "prov watchdog write", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	wtok, err := store.Claim(wcard.ID, tracker.ReaperMarkerPrefix+"prov-host")
+	if err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	if _, err := store.SetStateOwned(wcard.ID, native.StateBlocked, wtok); err != nil {
+		t.Fatalf("provenance SetStateOwned: %v", err)
+	}
+	if got, _ := lastStatePayload(t, store, wcard.ID)["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Errorf("a watchdog's fenced move must be stamped %q, got %q — the spine would spend an operator's one-shot on a machine repair",
+			tracker.ReasonWatchdog, got)
+	}
+	ocard, err := store.Create(native.Issue{Title: "prov operator write", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	if _, err := store.Claim(ocard.ID, tracker.ReaperMarkerPrefix+"prov-host"); err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	if _, err := store.SetState(ocard.ID, native.StateReady); err != nil {
+		t.Fatalf("provenance operator SetState: %v", err)
+	}
+	if got, _ := lastStatePayload(t, store, ocard.ID)["reason"].(string); got == tracker.ReasonWatchdog {
+		t.Errorf("an OPERATOR move was stamped %q — trigger.machineCaused would refuse to spend the one-shot label gate the operator just pulled", got)
 	}
 }
 

@@ -398,7 +398,7 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.setStateLocked(iss, newState)
+	return s.setStateLocked(iss, newState, "")
 }
 
 // SetStateOwned is SetState fenced on the claim token — the transition
@@ -412,7 +412,7 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (upda
 	if err != nil {
 		return nil, err
 	}
-	return s.setStateLocked(iss, newState)
+	return s.setStateLocked(iss, newState, tok.Marker)
 }
 
 // Reopen is the ONE sanctioned exit from a terminal state — an
@@ -485,14 +485,17 @@ func (s *Store) SetStateFrom(id, from, to string) (updated *Issue, changed bool,
 	if iss.State != from {
 		return cloneIssue(iss), false, nil
 	}
-	out, err := s.setStateLocked(iss, to)
+	out, err := s.setStateLocked(iss, to, "")
 	if err != nil {
 		return nil, false, err
 	}
 	return out, true, nil
 }
 
-func (s *Store) setStateLocked(iss *Issue, newState string) (*Issue, error) {
+// byMarker is the WRITER's identity (the claim token a fenced write
+// presented; "" for tokenless operator/automation writes) — provenance
+// describes who acted, never who happens to hold the card.
+func (s *Store) setStateLocked(iss *Issue, newState, byMarker string) (*Issue, error) {
 	if s.board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
@@ -512,7 +515,7 @@ func (s *Store) setStateLocked(iss *Issue, newState string) (*Issue, error) {
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
-		Payload: StateChangePayload(old, newState, iss.Claim),
+		Payload: StateChangePayload(old, newState, byMarker),
 	}); err != nil {
 		return nil, err
 	}
@@ -540,6 +543,13 @@ func (s *Store) ClaimForLaunch(id string) (claimed *Issue, won bool, err error) 
 		return nil, false, err
 	}
 	if iss.State != StateReady {
+		return nil, false, nil
+	}
+	// A claimed card already has a launcher: the dispatcher wins with the
+	// CLAIM (its move to in_progress is offloaded off the actor), so the
+	// state alone cannot say the card is free. Admitting it here made
+	// this a second launch authority and double-launched the card.
+	if iss.Claim != "" {
 		return nil, false, nil
 	}
 	iss.State = StateInProgress
@@ -708,6 +718,23 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	return nil
 }
 
+// StateChangePayload builds the state-change event body, stamping the
+// provenance when the WRITER is a watchdog. byMarker is the writer's own
+// claim marker — the token a fenced write presented — never the marker
+// the card happens to carry: an operator moving a card the watchdog is
+// conserving is still an operator gesture. Downstream consumers launch
+// bots and spend one-shot label gates on these events, and a machine
+// repairing a dead owner is not the operator gesture they are written
+// for. Exported for the Mongo twin, which builds the same event from
+// its own CAS.
+func StateChangePayload(from, to, byMarker string) map[string]any {
+	p := map[string]any{"from": from, "to": to}
+	if tracker.IsReaperMarker(byMarker) {
+		p["reason"] = tracker.ReasonWatchdog
+	}
+	return p
+}
+
 // expireGiveUp drops a give-up stamp that no longer describes the state the
 // issue is being written in. It runs on the ONE write path rather than at each
 // of the several state writers (SetState, ClaimForLaunch, the unblock promote,
@@ -725,21 +752,6 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 // The one thing it cannot catch is a filing that does NOT change the state
 // (Close on a ticket already sitting in the give-up's state); those surfaces
 // clear the stamp explicitly.
-// stateChangePayload builds the state-change event body, stamping the
-// provenance when the card is held by a watchdog. Downstream consumers
-// launch bots and spend one-shot label gates on these events, and a
-// machine repairing a dead owner is not the operator gesture they are
-// written for.
-// StateChangePayload is exported for the Mongo twin, which builds the
-// same event from its own CAS.
-func StateChangePayload(from, to, claim string) map[string]any {
-	p := map[string]any{"from": from, "to": to}
-	if tracker.IsReaperMarker(claim) {
-		p["reason"] = tracker.ReasonWatchdog
-	}
-	return p
-}
-
 func expireGiveUp(iss *Issue) {
 	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
 		iss.GaveUp = nil

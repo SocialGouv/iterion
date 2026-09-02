@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1577,5 +1578,76 @@ func TestCloudReaper_UnleasedSweepFreesADeadOne(t *testing.T) {
 	}
 	if got := f.states["c-dead"]; got != native.StateInProgress {
 		t.Fatalf("the gated-off sweep must not decide, card moved to %q", got)
+	}
+}
+
+// TestCloudReaper_LatchIsFedOncePerPass: the pass folds every card's run
+// read into ONE latch verdict. Feeding the latch per card flapped it on a
+// mixed batch — one unreadable run plus one healthy = a false
+// failure/recovery warn pair on EVERY pass, the second line announcing a
+// recovery the store never made.
+func TestCloudReaper_LatchIsFedOncePerPass(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-bad"], f.claimed["c-ok"] = "dead-1", "dead-2"
+	f.epochs["c-bad"], f.epochs["c-ok"] = 1, 1
+	f.states["c-bad"], f.states["c-ok"] = native.StateInProgress, native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{
+		{Tenant: "t1", Claim: tracker.ExpiredClaim{IssueID: "c-bad", LastRunID: "run-bad", Prev: tracker.ClaimToken{Marker: "dead-1", Epoch: 1}}},
+		{Tenant: "t1", Claim: tracker.ExpiredClaim{IssueID: "c-ok", LastRunID: "run-ok", Prev: tracker.ClaimToken{Marker: "dead-2", Epoch: 1}}},
+	}
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	healed := false
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		if id == "run-bad" && !healed {
+			return nil, errors.New("decode run run-bad: invalid character")
+		}
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
+		t.Fatalf("first pass: %d failure / %d recovery lines — want exactly 1/0 (one verdict per pass, no per-card flap)", cannot, again)
+	}
+	d.reapExpiredClaims(context.Background(), time.Now())
+	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
+		t.Fatalf("second pass repeated the edge: %d failure / %d recovery lines", cannot, again)
+	}
+	healed = true
+	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now())
+	if again := strings.Count(buf.String(), "can read runs again"); again != 1 {
+		t.Fatalf("recovery announced %d times, want exactly once", again)
+	}
+}
+
+// TestCloudSweep_GatedArmCountsOnlyDisposedCards: "handled N claim(s)"
+// must count cards the sweep actually disposed. The gated arm counted
+// every candidate — a card whose run is RUNNING is (correctly) conserved
+// by reapOne, and the sweep then announced work it did not do.
+func TestCloudSweep_GatedArmCountsOnlyDisposedCards(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-live"] = "dead-replica"
+	f.epochs["c-live"] = 2
+	f.states["c-live"] = native.StateInProgress
+	f.unleased = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim:  tracker.ExpiredClaim{IssueID: "c-live", LastRunID: "run-live", Prev: tracker.ClaimToken{Marker: "dead-replica", Epoch: 2}},
+	}}
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "on")
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusRunning}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.run(ctx)
+
+	if _, held := f.claimed["c-live"]; !held {
+		t.Fatalf("a card whose run is RUNNING must be conserved, claim was taken")
+	}
+	if strings.Contains(buf.String(), "handled") {
+		t.Fatalf("the gated sweep announced work it did not do: %q", buf.String())
 	}
 }

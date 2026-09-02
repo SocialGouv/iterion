@@ -519,7 +519,12 @@ func (c *Dispatcher) shutdown() {
 		// the whole of it and leave the release unsent — and the release
 		// is the half shutdown exists for: an unreleased claim hides the
 		// card from the next daemon's candidate listing.
-		revCtx, revCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 3*time.Second))
+		// The revert keeps the release's default (not a shorter one): a
+		// tracker slow enough to blow a tighter revert budget but not the
+		// release's would leave the card in_progress WITHOUT a claim — the
+		// least recoverable shape (wrong state for ListEligible, no claim
+		// for the reaper to list).
+		revCtx, revCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
 		// Transition FIRST, release LAST — the order the finish worker and
 		// the parked reconciler both keep, and for the same reason: a
 		// release opens the card to the next claimant immediately, and the

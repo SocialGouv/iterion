@@ -211,10 +211,14 @@ func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.
 	// it to tell a machine repair from the operator gesture a subscription
 	// is written for. Dropping it here is what let a watchdog spend an
 	// operator's one-shot label gate.
+	// `reason` IS machine provenance (native.StateChangePayload, the board
+	// schema migrations): an operator gesture never carries one, so any
+	// reason marks the event machine-caused — the same contract
+	// machineCaused reads on the effect side.
 	machine := false
 	if reason, ok := evt.Payload["reason"].(string); ok && reason != "" {
 		payload["reason"] = reason
-		machine = reason == tracker.ReasonWatchdog
+		machine = true
 	}
 	if iss.External != nil && iss.External.Repo != "" {
 		repo = iss.External.Repo

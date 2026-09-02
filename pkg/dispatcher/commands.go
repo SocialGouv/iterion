@@ -694,27 +694,30 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 		c.beforeFinishWorker(plan)
 	}
 
-	relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer relCancel()
+	// SEPARATE budgets, the shutdown pattern (a slow revert must not eat
+	// the release's deadline) — and this site runs at EVERY finished run,
+	// not only at shutdown, so the starvation it prevents is the common
+	// case, not the drain.
+	trCtx, trCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
 
 	switch plan.kind {
 	case finishCompleted:
-		c.maybeTransitionToCompleted(relCtx, plan.issueID, plan.identifier, plan.runningTarget, plan.completedState, plan.session)
+		c.maybeTransitionToCompleted(trCtx, plan.issueID, plan.identifier, plan.runningTarget, plan.completedState, plan.session)
 	case finishRevert:
 		// Revert the in-progress transition so the next retry/dispatch tick
 		// sees the issue eligible again from its source state. Without it the
 		// issue would sit in `in_progress` (no longer eligible) until the
 		// operator dragged it back.
-		c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
+		c.revertTransition(trCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
 	case finishGiveUp:
-		if err := c.fencedUpdateState(relCtx, plan.issueID, plan.failedState, plan.session); err != nil {
+		if err := c.fencedUpdateState(trCtx, plan.issueID, plan.failedState, plan.session); err != nil {
 			// The board can't represent "failed" (state undefined, transition
 			// rejected, or a transient tracker error) — preserve the legacy
 			// unbounded retry rather than freeze the ticket: revert to the
 			// source state and KEEP the retry finishRun optimistically
 			// scheduled (no cmdDropRetry).
 			c.logger.Warn("dispatcher: %s exhausted %d attempts but the move to failed state %q failed (%v) — keeping retry behaviour", plan.identifier, plan.attemptCount, plan.failedState, err)
-			c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
+			c.revertTransition(trCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
 		} else {
 			// Terminal move succeeded — the give-up is final, so drop the
 			// optimistic retry guard the actor scheduled.
@@ -727,7 +730,10 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 			c.postCmd(cmdDropRetry{issueID: plan.issueID})
 		}
 	}
+	trCancel()
 
+	relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
+	defer relCancel()
 	c.releaseClaimSess(relCtx, plan.issueID, plan.identifier, plan.session)
 	if plan.session != nil {
 		// After the LAST write — stopping earlier would let the lease
@@ -929,8 +935,8 @@ func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string, sess *claim
 //
 // The motivation lives in the cfg.Agent.CompletedState comment in
 // config.go; this helper is just the application path. Detached
-// ctx is the caller's relCtx so a winding-down dispatcher still
-// completes the move (parallels the Release path).
+// ctx is the caller's transition budget so a winding-down dispatcher
+// still completes the move (parallels the Release path).
 func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, identifier, runningTarget, completed string, sess *claimSession) {
 	if completed == "" || completed == runningTarget {
 		return

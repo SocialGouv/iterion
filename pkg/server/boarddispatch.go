@@ -544,13 +544,21 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 	}
 	gated := dispatcher.ClaimReaperEnabled()
 	swept := 0
+	verdict := passVerdict{}
 	for _, cand := range cands {
 		if gated {
-			d.reapOne(ctx, cand, now)
-			swept++
+			acted, obs, rerr := d.reapOne(ctx, cand, now)
+			verdict.fold(cand.Tenant, obs, rerr)
+			// Count only what was actually disposed: a conserved card or
+			// a lost CAS announced as "handled" reads as work done on a
+			// card nothing touched.
+			if acted {
+				swept++
+			}
 			continue
 		}
 		run, runErr := d.loadRunForCard(ctx, cand)
+		verdict.fold(cand.Tenant, cand.Claim.LastRunID != "", runErr)
 		card := dispatcher.StuckCard{
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
@@ -563,9 +571,38 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 			swept++
 		}
 	}
+	verdict.report(d)
 	if swept > 0 {
 		d.warn("%s: handled %d claim(s) (%s=%s)", label, swept,
 			dispatcher.ClaimReaperEnvName(), map[bool]string{true: "on", false: "off"}[gated])
+	}
+}
+
+// passVerdict folds a pass's per-card run reads into ONE latch feed.
+// Feeding the latch per card flapped it on a mixed batch — a false
+// failure/recovery warn pair every pass, for ever.
+type passVerdict struct {
+	observed bool
+	err      error
+	tenant   string // the tenant of the first failure, for the message
+}
+
+func (v *passVerdict) fold(tenant string, observed bool, err error) {
+	if !observed {
+		return
+	}
+	v.observed = true
+	if err != nil && v.err == nil {
+		v.err, v.tenant = err, tenant
+	}
+}
+
+// report feeds the latch once — and only when something consulted the
+// store: a pass over cards with no runs measured nothing, so it neither
+// sets nor clears.
+func (v *passVerdict) report(d *boardDispatcher) {
+	if v.observed {
+		d.noteRunReadFailure(v.tenant, v.err)
 	}
 }
 
@@ -576,14 +613,12 @@ func (d *boardDispatcher) loadRunForCard(ctx context.Context, cand boardmongo.Ex
 		return nil, nil
 	}
 	if d.runFor == nil {
-		d.noteRunReadFailure(cand.Tenant, errNoRunLoader)
 		return nil, errNoRunLoader
 	}
 	run, err := d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
 	if err != nil && errors.Is(err, store.ErrRunNotFound) {
 		run, err = nil, nil // a pruned run proves nothing is alive
 	}
-	d.noteRunReadFailure(cand.Tenant, err)
 	return run, err
 }
 
@@ -692,9 +727,12 @@ func (d *boardDispatcher) reapExpiredClaims(ctx context.Context, now time.Time) 
 		d.warn("claim watchdog list: %v", err)
 		return
 	}
+	verdict := passVerdict{}
 	for _, cand := range cands {
-		d.reapOne(ctx, cand, now)
+		_, obs, rerr := d.reapOne(ctx, cand, now)
+		verdict.fold(cand.Tenant, obs, rerr)
 	}
+	verdict.report(d)
 }
 
 // watchdogRunCeiling is a coarse SPEND backstop, not a retry policy:
@@ -711,25 +749,31 @@ const watchdogRunCeiling = 20
 // remainder.
 const sweepBatch = 100
 
-func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) {
+// reapOne judges one candidate. acted reports whether the card's claim
+// was actually transferred and disposed (a conserved card, a lost CAS or
+// a read failure did NOT get handled — the sweep's count must not claim
+// otherwise); runObserved/runReadErr report on the run store so the
+// CALLER folds one latch verdict per pass — noting per card flapped the
+// latch on a mixed batch (one unreadable run + one healthy = a false
+// failure/recovery pair every pass).
+func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) (acted, runObserved bool, runReadErr error) {
 	var run *store.Run
 	var runErr error
 	if cand.Claim.LastRunID != "" {
+		runObserved = true
 		if d.runFor == nil {
 			// Without a run loader the table cannot be consulted —
-			// conserve (the read-error row), and say so: a watchdog that
-			// silently cannot decide is the failure mode this exists for.
-			// Same shape as the read failure below, so the same latch: a
+			// conserve (the read-error row). The wiring gap reaches the
+			// latch through the pass verdict like any read failure: a
 			// missing loader conserves EVERY card on EVERY pass, and one
 			// line per card would bury the one that matters.
-			d.noteRunReadFailure(cand.Tenant, errNoRunLoader)
-			return
+			return false, true, errNoRunLoader
 		}
 		run, runErr = d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
 		if runErr != nil && errors.Is(runErr, store.ErrRunNotFound) {
 			run, runErr = nil, nil // pruned run proves nothing is alive
 		}
-		d.noteRunReadFailure(cand.Tenant, runErr)
+		runReadErr = runErr
 	}
 	card := dispatcher.StuckCard{
 		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
@@ -740,11 +784,6 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	// its own bound unreachable — and in cloud there is no boot sweep to
 	// free the card later, so "held" means held for ever.
 	if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
-		// The store's health was already reported above, and ONLY by a
-		// card that actually consulted it. Reporting again here would let
-		// a card that never touched the store (kept because a run stamp
-		// may still be in flight) clear the latch, announcing a recovery
-		// nobody observed — the flap the local twin was fixed for.
 		return
 	}
 	var dec dispatcher.StuckDecision
@@ -775,6 +814,7 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
 			d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
 		}
+		acted = true
 		return
 	}
 	switch dec.Action {
@@ -816,6 +856,8 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	}
 	d.warn("claim watchdog reclaimed %s/%s from %q (%s → %s): %s",
 		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, dec.Action, dec.Reason)
+	acted = true
+	return
 }
 
 // fileReapedCard writes a reaped card's disposition under the recovery
