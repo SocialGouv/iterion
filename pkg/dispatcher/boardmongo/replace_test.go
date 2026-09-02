@@ -279,13 +279,17 @@ func TestTokenlessReleaseCannotStealFromTheReaper(t *testing.T) {
 	}
 }
 
-// TestRenewHealsADroppedFence: the fencing epoch is admitted when ABSENT
-// (an older binary's full-document replace drops it, and refusing the
-// live holder there would fence it out of its own card with no recovery).
-// That admission must not outlive the first heartbeat: nothing else in
-// the system ever re-creates the field, so a document left healed-at-read
-// would accept ANY epoch for the whole hold — the fence, silently off.
-func TestRenewHealsADroppedFence(t *testing.T) {
+// TestDroppedFenceRefusesEveryoneAndStaysRecoverable: when a document
+// loses its fencing epoch (an older binary's full-document replace, a
+// pre-lease legacy claim), the holder is REFUSED — admitting it looks
+// harmless because the marker still pins ownership, and is not: a marker
+// has successive generations (release, then re-claim by the same worker),
+// and with the field gone every generation matches, so a superseded token
+// re-stamps the fence at its own older value and locks the live holder
+// out of its own card. Refusing is the safe failure. What must not happen
+// is the card becoming UNRECOVERABLE, so the watchdog's un-leased arm has
+// to see it.
+func TestDroppedFenceRefusesEveryoneAndStaysRecoverable(t *testing.T) {
 	uri := os.Getenv("ITERION_TEST_MONGO_URI")
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
@@ -313,30 +317,146 @@ func TestRenewHealsADroppedFence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	tok, err := st.Claim(iss.ID, "pod-new")
+	// Two generations of the SAME marker — the shape that makes admitting
+	// an absent epoch unsafe.
+	tokGen1, err := st.Claim(iss.ID, "worker-A")
 	if err != nil {
-		t.Fatalf("Claim: %v", err)
+		t.Fatalf("Claim gen1: %v", err)
+	}
+	if err := st.ReleaseOwned(iss.ID, tokGen1); err != nil {
+		t.Fatalf("ReleaseOwned gen1: %v", err)
+	}
+	tokGen2, err := st.Claim(iss.ID, "worker-A")
+	if err != nil {
+		t.Fatalf("Claim gen2: %v", err)
+	}
+	if tokGen2.Epoch <= tokGen1.Epoch {
+		t.Fatalf("precondition: a fresh acquisition must advance the epoch (%d → %d)", tokGen1.Epoch, tokGen2.Epoch)
 	}
 
-	// An older binary's replace drops the fence field.
+	// An older binary's replace drops the fence field (and the lease with it).
 	issues := db.Collection(boardmongo.IssuesCollection)
-	if _, err := issues.UpdateOne(ctx, bson.M{"_id": iss.ID},
-		bson.M{"$unset": bson.M{"issue.claimepoch": ""}}); err != nil {
-		t.Fatalf("drop the fence field: %v", err)
+	if _, err := issues.UpdateOne(ctx, bson.M{"_id": iss.ID}, bson.M{"$unset": bson.M{
+		"issue.claimepoch": "", "issue.claimleaseuntil": "",
+	}}); err != nil {
+		t.Fatalf("drop the fence fields: %v", err)
 	}
 
-	// The live holder is admitted — that is the point of the nil arm.
-	if err := st.RenewClaim(iss.ID, tok); err != nil {
-		t.Fatalf("the live holder must be admitted to its own healed card: %v", err)
+	// The SUPERSEDED generation must not be able to take the card back.
+	if err := st.RenewClaim(iss.ID, tokGen1); !errors.Is(err, tracker.ErrClaimConflict) {
+		after, _ := st.Get(iss.ID)
+		t.Fatalf("a superseded token was admitted to a card whose fence field was dropped "+
+			"(err=%v, card epoch now %d) — it can re-stamp the fence at its own older value "+
+			"and lock the live holder out", err, after.ClaimEpoch)
 	}
-	// ...and the beat must have RE-STAMPED the fence, so a bogus epoch is
-	// refused from here on.
-	bogus := tracker.ClaimToken{Marker: "pod-new", Epoch: tok.Epoch + 424242}
-	if err := st.RenewClaim(iss.ID, bogus); !errors.Is(err, tracker.ErrClaimConflict) {
-		t.Fatalf("after healing, an arbitrary epoch must be refused: got %v — the fence is open for the whole hold", err)
+	// The live one is refused too — the safe failure, not a silent pass.
+	if err := st.RenewClaim(iss.ID, tokGen2); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("with no epoch on the document the fence cannot judge anyone: want a refusal, got %v", err)
 	}
-	after, _ := st.Get(iss.ID)
-	if after.ClaimEpoch != tok.Epoch {
-		t.Fatalf("the heartbeat must re-stamp the holder's own epoch: got %d, want %d", after.ClaimEpoch, tok.Epoch)
+
+	// ...and the card must still be REACHABLE, or refusing everyone would
+	// have created a permanently held card instead of a stolen one.
+	if _, err := issues.UpdateOne(ctx, bson.M{"_id": iss.ID},
+		bson.M{"$set": bson.M{"issue.updatedat": time.Now().Add(-48 * time.Hour)}}); err != nil {
+		t.Fatalf("age the card: %v", err)
+	}
+	cands, err := st.ListExpiredClaimCandidates(time.Now(), 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates: %v", err)
+	}
+	var found bool
+	for _, c := range cands {
+		if c.IssueID == iss.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a long-untouched claim carrying NO lease must be reachable by the watchdog — " +
+			"otherwise it is held forever by an owner nothing can refuse and nothing can relieve")
+	}
+	// A FRESH un-leased claim must NOT be listed: absence of a lease is not
+	// evidence of death, so only long staleness qualifies.
+	fresh, err := st.Create(native.Issue{Title: "fresh legacy", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create fresh: %v", err)
+	}
+	if _, err := issues.UpdateOne(ctx, bson.M{"_id": fresh.ID},
+		bson.M{"$set": bson.M{"issue.claim": "legacy-owner"}}); err != nil {
+		t.Fatalf("seed legacy claim: %v", err)
+	}
+	cands, _ = st.ListExpiredClaimCandidates(time.Now(), 50)
+	for _, c := range cands {
+		if c.IssueID == fresh.ID {
+			t.Fatal("a RECENT claim with no lease must not be reaped by time — absence of a lease proves nothing")
+		}
+	}
+}
+
+// TestEpochIsMonotoneAcrossAFamilyDrop: the fence is only a fence while
+// its counter cannot repeat. Derived from the document alone it restarts
+// at 1 whenever the field goes missing — and an older binary's
+// full-document replace removes it — so a worker holding a card twice
+// (markers are per-process, not per-claim) would be handed the SAME token
+// twice, and its first, superseded one would still be accepted.
+func TestEpochIsMonotoneAcrossAFamilyDrop(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_mono_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dc()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	if err := boardmongo.EnsureSchema(ctx, db); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	st := boardmongo.New(db, "tenant-mono")
+	iss, err := st.Create(native.Issue{Title: "monotone probe", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first, err := st.Claim(iss.ID, "worker-A")
+	if err != nil {
+		t.Fatalf("Claim first: %v", err)
+	}
+	if err := st.ReleaseOwned(iss.ID, first); err != nil {
+		t.Fatalf("ReleaseOwned: %v", err)
+	}
+
+	// An older binary's full-document replace takes the whole claim family
+	// with it (its struct carries none of these fields).
+	issues := db.Collection(boardmongo.IssuesCollection)
+	if _, err := issues.UpdateOne(ctx, bson.M{"_id": iss.ID}, bson.M{"$unset": bson.M{
+		"issue.claim": "", "issue.claimepoch": "", "issue.claimedat": "", "issue.claimleaseuntil": "",
+	}}); err != nil {
+		t.Fatalf("drop the claim family: %v", err)
+	}
+
+	second, err := st.Claim(iss.ID, "worker-A")
+	if err != nil {
+		t.Fatalf("Claim second: %v", err)
+	}
+	if second.Epoch <= first.Epoch {
+		t.Fatalf("a re-mint after the field was dropped must land AHEAD of every token ever issued: "+
+			"first=%d second=%d — the two holds are indistinguishable and the superseded token still writes",
+			first.Epoch, second.Epoch)
+	}
+	// The superseded token must be refused everywhere.
+	if err := st.RenewClaim(iss.ID, first); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("superseded token renew: want ErrClaimConflict, got %v", err)
+	}
+	if err := st.SetLastRunOwned(iss.ID, "zombie-run", "/tmp/z", first); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("superseded token write: want ErrClaimConflict, got %v", err)
 	}
 }

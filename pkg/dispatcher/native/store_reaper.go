@@ -78,11 +78,12 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 // wired once instead of three times.
 func ExpiredClaimFrom(iss *Issue) tracker.ExpiredClaim {
 	return tracker.ExpiredClaim{
-		IssueID:    iss.ID,
-		Identifier: shortIdentifier(iss.ID),
-		State:      iss.State,
-		LastRunID:  iss.LastRunID,
-		Attempts:   len(iss.Runs),
-		Prev:       tracker.ClaimToken{Marker: iss.Claim, Epoch: iss.ClaimEpoch},
+		IssueID:      iss.ID,
+		Identifier:   shortIdentifier(iss.ID),
+		State:        iss.State,
+		LastRunID:    iss.LastRunID,
+		LifetimeRuns: len(iss.Runs),
+		ClaimedAt:    iss.ClaimedAt,
+		Prev:         tracker.ClaimToken{Marker: iss.Claim, Epoch: iss.ClaimEpoch},
 	}
 }

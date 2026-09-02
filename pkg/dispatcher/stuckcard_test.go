@@ -65,7 +65,9 @@ func TestDecideStuckCard(t *testing.T) {
 // CARD rather than the run — each one a way the watchdog could destroy
 // work by acting on an absence.
 func TestDecideStuckCard_CardContext(t *testing.T) {
-	inRunning := StuckCard{State: "in_progress", RunningState: "in_progress", LaunchStates: []string{"ready"}}
+	// StampWindowOpen: a stamp could still be in flight (the claim is
+	// fresh). Its false counterpart is the row right below.
+	inRunning := StuckCard{State: "in_progress", RunningState: "in_progress", LaunchStates: []string{"ready"}, StampWindowOpen: true}
 	parked := StuckCard{State: "awaiting_input", RunningState: "in_progress", LaunchStates: []string{"ready"}}
 	inLaunch := StuckCard{State: "ready", RunningState: "in_progress", LaunchStates: []string{"ready"}}
 
@@ -87,5 +89,13 @@ func TestDecideStuckCard_CardContext(t *testing.T) {
 	}
 	if got := DecideStuckCard(resumable, nil, inRunning); got.Action != StuckRepark {
 		t.Fatalf("resumable + running card = %s, want repark", got.Action)
+	}
+	// ...and the conservative row EXPIRES: once no stamp can credibly be
+	// in flight any more, holding the card only hides it.
+	stale := inRunning
+	stale.StampWindowOpen = false
+	if got := DecideStuckCard(nil, nil, stale); got.Action != StuckReleaseOnly {
+		t.Fatalf("no run + running card past the stamp window = %s (%s), want release — "+
+			"a held card is invisible to the dispatch poll", got.Action, got.Reason)
 	}
 }

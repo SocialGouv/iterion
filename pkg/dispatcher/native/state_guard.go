@@ -75,14 +75,32 @@ func ReopenBlockedByDependents(all []*Issue, id, from string) error {
 	if from != StateDone {
 		return nil // only done satisfies blockers, only done promoted anyone
 	}
-	var promoted []string
+	return reopenBlocked(promotedDependents(all), id, from)
+}
+
+// promotedDependents indexes blocker → the dependents already promoted on
+// it. Built ONCE per gesture: the per-card scan it replaces made a bulk
+// column migration quadratic, and on the FS twin that ran under the
+// store-wide lock (measured: 62ms at 8k cards, ~10s at 100k, with every
+// read blocked behind it).
+func promotedDependents(all []*Issue) map[string][]string {
+	idx := make(map[string][]string)
 	for _, iss := range all {
+		if iss.State == StateWaitingDeps {
+			continue
+		}
 		for _, b := range iss.Blockers {
-			if b == id && iss.State != StateWaitingDeps {
-				promoted = append(promoted, iss.ID)
-			}
+			idx[b] = append(idx[b], iss.ID)
 		}
 	}
+	return idx
+}
+
+func reopenBlocked(idx map[string][]string, id, from string) error {
+	if from != StateDone {
+		return nil
+	}
+	promoted := idx[id]
 	if len(promoted) > 0 {
 		return fmt.Errorf("%w: reopening %s would un-satisfy dependents already promoted on its completion (%s) — resolve or re-block them first",
 			tracker.ErrTransitionRejected, id, strings.Join(promoted, ", "))

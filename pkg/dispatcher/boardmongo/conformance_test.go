@@ -293,8 +293,13 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if err != nil {
 		t.Fatalf("ReclaimExpired: %v", err)
 	}
-	if rec.Marker != "reaper:x" || rec.Epoch != tokC.Epoch+1 {
-		t.Fatalf("transfer token = %+v, want reaper:x at epoch %d", rec, tokC.Epoch+1)
+	// The contract is MONOTONICITY, not a unit increment: the Mongo twin
+	// floors the counter at the server clock so a re-mint after the field
+	// was dropped still lands ahead of every token ever issued, while the
+	// FS twin (which never loses the field) simply increments. Both must
+	// only ever move the fence FORWARD.
+	if rec.Marker != "reaper:x" || rec.Epoch <= tokC.Epoch {
+		t.Fatalf("transfer token = %+v, want reaper:x at an epoch strictly above %d", rec, tokC.Epoch)
 	}
 	// The transfer reports the state it OBSERVED: the watchdog decides a
 	// card's disposition on this, never on the listing's older copy.
@@ -614,6 +619,38 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	}
 	if _, err := admin.DeleteState("ghost", ""); err == nil {
 		t.Error("DeleteState unknown should fail")
+	}
+
+	// Deleting a TERMINAL column into a working one reopens every card in
+	// it at once. Both twins must hold it to the same bar as the
+	// single-card Reopen — otherwise the column editor is the way around
+	// the sink on whichever twin forgot the guard.
+	closed, err := store.Create(native.Issue{Title: "closed with a dependent", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create closed: %v", err)
+	}
+	if _, err := store.SetState(closed.ID, native.StateDone); err != nil {
+		t.Fatalf("SetState done: %v", err)
+	}
+	dependent, err := store.Create(native.Issue{Title: "promoted dependent", State: native.StateReady, Blockers: []string{closed.ID}})
+	if err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+	if _, err := admin.DeleteState(native.StateDone, native.StateReady); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Errorf("deleting a terminal column into a working one is a bulk reopen: want the dependents refusal, got %v", err)
+	}
+	if got, _ := store.Get(closed.ID); got.State != native.StateDone {
+		t.Errorf("a refused bulk reopen must leave its cards terminal, got %q", got.State)
+	}
+	// Cleared, it proceeds — the guard refuses a class, not the gesture.
+	if _, err := store.Update(dependent.ID, native.Patch{Blockers: &[]string{}}); err != nil {
+		t.Fatalf("clear blockers: %v", err)
+	}
+	if _, err := admin.DeleteState(native.StateDone, native.StateReady); err != nil {
+		t.Errorf("with no promoted dependents the migration must proceed: %v", err)
+	}
+	if err := admin.AddState(native.State{Name: native.StateDone, Display: "Done", Terminal: true}); err != nil {
+		t.Fatalf("restore done column: %v", err)
 	}
 
 	// ReorderStates: permutation only.

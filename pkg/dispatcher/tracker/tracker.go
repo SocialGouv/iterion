@@ -162,13 +162,18 @@ type ExpiredClaim struct {
 	Identifier string
 	State      string
 	LastRunID  string
-	// Attempts is how many runs this card has already carried. The
-	// watchdog needs it because returning a card to the pool is not free
-	// on every surface: where the launcher cannot RESUME the recorded run
-	// it starts a fresh one, so an always-failing card would be relaunched
-	// once per lease, forever.
-	Attempts int
-	Prev     ClaimToken
+	// LifetimeRuns is how many runs this card has EVER carried — the
+	// append-only history, whatever launched them (operator re-queues,
+	// dispatcher retries, fork adoptions). It is not a count of watchdog
+	// reparks and must not be used as one: a card worked on three times is
+	// perfectly healthy. Its only use is as a coarse spend backstop on the
+	// surface where returning a card to the pool costs a fresh run.
+	LifetimeRuns int
+	// ClaimedAt is when the claim was acquired. It is what bounds the
+	// watchdog's conservative rows: "wait, a run stamp may still be in
+	// flight" is true for seconds, not forever.
+	ClaimedAt time.Time
+	Prev      ClaimToken
 }
 
 // ClaimReaper is the optional tracker capability behind the claim

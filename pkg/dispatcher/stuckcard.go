@@ -86,7 +86,16 @@ func ShouldFileStuckCard(cardState, runningState, target string, launchStates []
 	if target == "" || target == runningState || cardState == target {
 		return false
 	}
-	if runningState == "" || cardState == runningState {
+	if runningState == "" {
+		// `running_state: none` is a documented opt-out (the board has no
+		// in-flight column). With nothing to compare against, "the card
+		// moved" cannot be told from "the card never moved" — so the only
+		// safe filing is onto a card still sitting where it was launched
+		// from. Anywhere else is somebody's choice, and the watchdog does
+		// not overwrite choices it cannot read.
+		return slices.Contains(launchStates, cardState)
+	}
+	if cardState == runningState {
 		return true
 	}
 	return slices.Contains(launchStates, cardState)
@@ -132,9 +141,9 @@ func DecideStuckCard(run *store.Run, runErr error, card StuckCard) StuckDecision
 		// a card already in the running column with no run id is not
 		// evidence of death — it is evidence of nothing, and freeing it
 		// would put a second run against a worker that may be alive.
-		if card.RunningState != "" && card.State == card.RunningState {
+		if card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen {
 			return StuckDecision{StuckKeep,
-				"no run recorded, but the card is in the running column — the run stamp is best-effort, so this proves nothing and freeing it could double-launch"}
+				"no run recorded, but the card was claimed moments ago and is in the running column — the stamp is best-effort and lands after the launch, so freeing it now could double-launch"}
 		}
 		return StuckDecision{StuckReleaseOnly, "claim held but no run was ever recorded — the claimant died pre-launch"}
 	}
@@ -161,6 +170,14 @@ type StuckCard struct {
 	State        string
 	RunningState string
 	LaunchStates []string
+	// StampWindowOpen says a run stamp could still plausibly be in
+	// flight for this card — the claim was taken moments ago. The stamp
+	// is written AFTER the launch and best-effort, so its absence means
+	// nothing while this holds, and everything once it does not. Without
+	// it the conservative row below never expires, and a card whose
+	// stamp will never arrive is held out of the pool forever: the same
+	// outcome, for the operator, as the stuck card this watchdog clears.
+	StampWindowOpen bool
 }
 
 func decideByStatus(run *store.Run) StuckDecision {

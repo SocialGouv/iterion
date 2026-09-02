@@ -310,3 +310,85 @@ func TestReapOne_DecidesOnTheStateTheTransferObserved(t *testing.T) {
 			"after the listing and before the transfer", got.State, native.StateReview)
 	}
 }
+
+// TestReapOne_ReDecidesOnTheTransferState: the disposition is chosen
+// before the transfer, on the state the LISTING carried, and only the
+// filing was re-pointed at what the CAS saw. Every rule that reads the
+// card — the anti-double-launch one, the parked-out-of-pool one — must
+// judge the CAS value too, or an operator moving a card in that window
+// gets a decision taken about a card that no longer exists.
+func TestReapOne_ReDecidesOnTheTransferState(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-resumable-raced", store.RunStatusFailedResumable)
+	cfg := c.cfg.Load()
+	cfg.Agent.RunningState = native.StateInProgress
+	c.cfg.Store(cfg)
+	cand := seedClaimedCard(t, board, "run-resumable-raced")
+	// Listing said in_progress → the table would repark (release). The
+	// operator parks the card out of the pool before the transfer lands.
+	if _, err := board.SetState(cand.IssueID, native.StateReview); err != nil {
+		t.Fatalf("operator park after listing: %v", err)
+	}
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, err := board.Get(cand.IssueID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateReview {
+		t.Fatalf("the card must stay where the operator parked it, got %q", got.State)
+	}
+	if got.Claim == "" {
+		t.Fatal("the decision was taken on the LISTING's state: a card parked out of the dispatch pool must be " +
+			"conserved, but its claim — the operator's only brake — was released")
+	}
+}
+
+// TestReapOne_ConservationIsBoundedByTheStampWindow: a card in the
+// running column with NO run recorded is conserved, because the run
+// stamp is written after the launch and best-effort — its absence proves
+// nothing YET. But "yet" is the whole point: the window is seconds, and
+// holding the card past it produces exactly the stuck card the watchdog
+// exists to clear (a claimed card is invisible to the dispatch poll).
+func TestReapOne_ConservationIsBoundedByTheStampWindow(t *testing.T) {
+	c, board, _ := newReaperHarness(t)
+	cfg := c.cfg.Load()
+	cfg.Agent.RunningState = native.StateInProgress
+	c.cfg.Store(cfg)
+
+	iss, err := board.Create(native.Issue{Title: "no stamp", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := board.Claim(iss.ID, "dead-host-42"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	claimedAt := time.Now()
+	reapAt := func(at time.Time) {
+		cands, err := board.ListExpiredClaimCandidates(at, 10)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, cd := range cands {
+			if cd.IssueID == iss.ID {
+				c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cd, at)
+			}
+		}
+	}
+
+	// Lease expired, but a stamp could still be in flight: conserve.
+	reapAt(claimedAt.Add(3 * native.ClaimLeaseDuration / 2))
+	if cur, _ := board.Get(iss.ID); cur.Claim == "" {
+		t.Fatal("while a run stamp is still plausibly in flight the claim must be conserved — " +
+			"freeing it here can double-launch a worker that is alive")
+	}
+	// Well past it: the stamp is never coming, and holding the card only
+	// hides it.
+	reapAt(claimedAt.Add(4 * native.ClaimLeaseDuration))
+	cur, _ := board.Get(iss.ID)
+	if cur.Claim != "" {
+		t.Fatalf("past the stamp window the card must be freed, not held forever: still claimed by %q "+
+			"— invisible to the dispatch poll, which is the stuck card this watchdog exists to clear", cur.Claim)
+	}
+}

@@ -1092,6 +1092,9 @@ func TestCloudReaper_HonoursADeliberateStateMove(t *testing.T) {
 // So an always-failing card would be relaunched once per lease, forever:
 // the watchdog turning a stuck card into a spend loop. Past the ceiling
 // it must file the card instead.
+//
+// The ceiling counts LIFETIME runs, so it sits far above healthy traffic —
+// see TestCloudReaper_CeilingSparesAHealthyCard for the other side.
 func TestCloudReaper_ReparkIsBounded(t *testing.T) {
 	f := newFakeBoardCoord()
 	f.claimed["c-loop"] = "dead-owner"
@@ -1100,7 +1103,7 @@ func TestCloudReaper_ReparkIsBounded(t *testing.T) {
 	f.expired = []boardmongo.ExpiredCandidate{{
 		Tenant: "t1",
 		Claim: tracker.ExpiredClaim{
-			IssueID: "c-loop", LastRunID: "run-resumable", Attempts: watchdogMaxReparks,
+			IssueID: "c-loop", LastRunID: "run-resumable", LifetimeRuns: watchdogRunCeiling,
 			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
 		},
 	}}
@@ -1114,5 +1117,63 @@ func TestCloudReaper_ReparkIsBounded(t *testing.T) {
 	if got := f.states["c-loop"]; got != native.StateBlocked {
 		t.Fatalf("past the repark ceiling the card must be filed, not relaunched: state=%q, want %q",
 			got, native.StateBlocked)
+	}
+}
+
+// TestCloudReaper_CeilingSparesAHealthyCard: the spend backstop is
+// compared against every run a card ever carried — operator re-queues,
+// dispatcher retries, fork adoptions. A card worked on a handful of times
+// is not a runaway, and filing it as failed on its FIRST repark would be
+// the watchdog inventing a failure that never happened.
+func TestCloudReaper_CeilingSparesAHealthyCard(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-healthy"] = "dead-owner"
+	f.epochs["c-healthy"] = 1
+	f.states["c-healthy"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-healthy", LastRunID: "run-4", LifetimeRuns: 3,
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+
+	if got := f.states["c-healthy"]; got != native.StateReady {
+		t.Fatalf("a card with 3 lifetime runs is healthy: state=%q, want %q — the ceiling counted runs as if they were reparks",
+			got, native.StateReady)
+	}
+}
+
+// TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed: a release-only card
+// failed at nothing — its claimant died before recording a run, or the
+// run was removed by the documented retention command. Filing it as
+// failed reports a failure that never happened.
+func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-nofail"] = "dead-owner"
+	f.epochs["c-nofail"] = 1
+	f.states["c-nofail"] = native.StateReady
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-nofail", LastRunID: "run-pruned", LifetimeRuns: watchdogRunCeiling + 5,
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) {
+		return nil, store.ErrRunNotFound // pruned by `iterion runs prune`
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now())
+
+	if got := f.states["c-nofail"]; got == native.StateBlocked {
+		t.Fatalf("a card whose run was pruned failed at nothing — it must not be filed as %q", got)
 	}
 }

@@ -542,7 +542,19 @@ func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 // definition, shared by the two writers that acquire a fresh claim
 // (Claim phase 1 and ReclaimExpired's transfer).
 func bumpEpochExpr() bson.M {
-	return bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}}
+	// MONOTONE, not merely incrementing. A counter derived from the
+	// document alone restarts at 1 whenever the field is missing — and a
+	// full-document replace from an older binary removes it — so two
+	// successive holds by the SAME worker (markers are process-scoped,
+	// not claim-scoped) would mint IDENTICAL tokens, and a superseded
+	// one would be indistinguishable from the live one. Taking the
+	// server clock as a floor makes a re-mint after any loss land far
+	// ahead of every token ever issued, so the fence keeps meaning what
+	// it says even across the rolling deploy that drops the field.
+	return bson.M{"$max": bson.A{
+		bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}},
+		bson.M{"$toLong": "$$NOW"},
+	}}
 }
 
 // leaseStampPipeline builds the update pipeline that stamps the claim

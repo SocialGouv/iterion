@@ -24,21 +24,26 @@ import (
 
 // ownedFilter is the fencing CAS filter every owner-scoped write uses.
 func (s *Store) ownedFilter(id string, tok tracker.ClaimToken) bson.M {
-	// The epoch matches its own value OR an ABSENT one, always. Absent is
-	// not "any": the marker equality above still pins ownership, so this
-	// only ever admits the holder to a document whose fence field was
-	// dropped. Two writers do that — a legacy claim predating the fence,
-	// and (during a rolling deploy) an older binary's full-document
-	// replace. Without the nil arm the live holder is fenced out of its
-	// OWN card and, the lease having been dropped with the epoch, the
-	// watchdog never lists it either: a permanently stuck card produced by
-	// an ordinary deploy. The admission is temporary by construction:
-	// RenewClaim re-stamps the epoch on the first beat ($ifNull), so a
-	// document is judged strictly again one heartbeat later.
-	return bson.M{
-		"_id": id, "tenant_id": s.tenant, "issue.claim": tok.Marker,
-		"issue.claimepoch": bson.M{"$in": bson.A{tok.Epoch, nil}},
+	f := bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": tok.Marker}
+	if tok.Epoch == 0 {
+		// A zero epoch can only come from a claim written before the fence
+		// existed; match its absent-or-zero form so the filter never
+		// silently matches nothing. Safe because Claim always bumps: no
+		// token minted by this code carries 0.
+		f["issue.claimepoch"] = bson.M{"$in": bson.A{int64(0), nil}}
+	} else {
+		// STRICT otherwise — including when the document has no epoch at
+		// all. Admitting an absent epoch looks harmless (the marker still
+		// pins ownership) and is not: a marker can have SUCCESSIVE
+		// generations (release then re-claim by the same worker), and with
+		// the field gone every generation matches. Measured: a superseded
+		// token re-stamped the fence at its own older value and locked the
+		// live holder out of its own card. A holder refused here stops
+		// cleanly, which is the safe failure; the card is recovered by
+		// ListExpiredClaimCandidates' un-leased arm below.
+		f["issue.claimepoch"] = tok.Epoch
 	}
+	return f
 }
 
 // ownedRefused turns a zero-match CAS into the right typed error: the
@@ -59,16 +64,7 @@ func (s *Store) ownedRefused(ctx context.Context, id string, tok tracker.ClaimTo
 func (s *Store) RenewClaim(id string, tok tracker.ClaimToken) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	// The heartbeat is also where a document whose fence field was
-	// dropped gets HEALED. ownedFilter admits an absent claimepoch (an
-	// older binary's full-document replace drops it) — but admitting it
-	// forever would leave the fence open to any epoch for the whole hold,
-	// since nothing else ever re-creates the field. $ifNull re-stamps it
-	// with the holder's own epoch on the first beat, so the very next
-	// renewal is judged strictly again.
-	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), leaseStampPipeline(bson.M{
-		"issue.claimepoch": bson.M{"$ifNull": bson.A{"$issue.claimepoch", tok.Epoch}},
-	}))
+	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), leaseStampPipeline(bson.M{}))
 	if err != nil {
 		return fmt.Errorf("boardmongo: renew claim: %w", err)
 	}
@@ -132,6 +128,21 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 	// rides INTO the CAS as a `$nin` on the source state (a check-then-act
 	// would reopen the TOCTOU the fence exists to close); terminal→terminal
 	// stays free, it is an operator refiling — see native.ValidateStateExit.
+	// Same-state is a no-op on the FS twin (setStateLocked returns early),
+	// so it must be one here: writing anyway churns UpdatedAt — which the
+	// newest-first sweeps and the board_events tail order on — and
+	// stateSet would clear a give-up stamp that still describes the state
+	// the card is actually in.
+	if cur, gerr := s.get(ctx, id); gerr == nil && cur.State == newState {
+		n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
+		if cerr != nil {
+			return nil, fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
+		}
+		if n == 0 {
+			return nil, s.ownedRefused(ctx, id, tok)
+		}
+		return cur, nil
+	}
 	filter := s.ownedFilter(id, tok)
 	if !dst.Terminal {
 		if sinks := native.TerminalStateNames(board); len(sinks) > 0 {
@@ -141,16 +152,13 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 	res := s.issues.FindOneAndUpdate(ctx, filter,
 		bson.M{"$set": stateSet(newState)},
 		options.FindOneAndUpdate().SetReturnDocument(options.Before))
-	if res.Err() != nil {
-		if !isNoDocuments(res.Err()) {
-			return nil, fmt.Errorf("boardmongo: set state owned: %w", res.Err())
-		}
-		// Zero match: the claim moved on, OR the card sits in a sink.
-		// Ownership is qualified FIRST (the FS twin's order): a stolen
-		// claim reported as ErrTerminalStateExit would wrap
-		// ErrTransitionRejected, which the live finish worker swallows as
-		// an Info line — the one event this whole fence exists to make
-		// visible, lost in a log nobody reads at production level.
+	if res.Err() != nil && isNoDocuments(res.Err()) {
+		// Zero match has three causes and they must not be conflated: the
+		// claim moved on, the card sits in a sink, or the card simply
+		// changed under us between the CAS and now. Qualify ownership
+		// FIRST (the FS twin's order) — a stolen claim reported as a
+		// transition rejection is swallowed by the live finish worker as
+		// an Info line, losing the one event this fence exists to surface.
 		n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
 		if cerr != nil {
 			return nil, fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
@@ -162,6 +170,19 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 			if verr := native.ValidateStateExit(board, iss.State, newState); verr != nil {
 				return nil, verr
 			}
+		}
+		// We still own the claim and the sink does not refuse us: the card
+		// moved in the window. Retry ONCE rather than synthesise a claim
+		// conflict the counter just disproved — the caller's session
+		// treats ErrClaimConflict as terminal and would abandon a card it
+		// still holds.
+		res = s.issues.FindOneAndUpdate(ctx, filter,
+			bson.M{"$set": stateSet(newState)},
+			options.FindOneAndUpdate().SetReturnDocument(options.Before))
+	}
+	if res.Err() != nil {
+		if !isNoDocuments(res.Err()) {
+			return nil, fmt.Errorf("boardmongo: set state owned: %w", res.Err())
 		}
 		return nil, s.ownedRefused(ctx, id, tok)
 	}
@@ -307,6 +328,14 @@ func (s *Store) SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimTok
 
 func isNoDocuments(err error) bool { return errors.Is(err, mongo.ErrNoDocuments) }
 
+// unleasedClaimHorizon is how stale a claim carrying NO lease must be
+// before the watchdog will touch it. Deliberately far longer than the
+// lease: an expired lease is positive evidence a heartbeat stopped,
+// while a missing one is only an absence — so the bar is "nothing has
+// touched this card in a very long time" rather than "a beat was
+// missed".
+const unleasedClaimHorizon = 24 * time.Hour
+
 // ListExpiredClaimCandidates — see tracker.ClaimReaper (Mongo twin).
 // Legacy claims (zero lease) are excluded by the strictly-positive
 // lower bound; missing fields never match a range operator either.
@@ -317,9 +346,19 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	cur, err := s.issues.Find(ctx, bson.M{
-		"tenant_id":             s.tenant,
-		"issue.claim":           bson.M{"$gt": ""},
-		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
+		"tenant_id":   s.tenant,
+		"issue.claim": bson.M{"$gt": ""},
+		"$or": []bson.M{
+			{"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff}},
+			// The UN-LEASED arm: a claim carrying no lease at all. Time
+			// proves nothing about it on its own — which is why it needs a
+			// far longer horizon than an expired lease — but it must be
+			// reachable, or a card whose lease field was dropped (an older
+			// binary's replace, a pre-lease legacy claim) is held forever
+			// by an owner nothing can refuse and nothing can relieve.
+			{"issue.claimleaseuntil": bson.M{"$in": bson.A{time.Time{}, nil}},
+				"issue.updatedat": bson.M{"$lt": cutoff.Add(-unleasedClaimHorizon)}},
+		},
 	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
 	if err != nil {
 		return nil, fmt.Errorf("boardmongo: list expired claims: %w", err)

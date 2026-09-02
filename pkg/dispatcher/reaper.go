@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -48,6 +49,12 @@ func ClaimReaperInterval() time.Duration { return claimReaperInterval }
 // board dispatcher references the one constant instead of re-literalling
 // the name in its startup log.
 func ClaimReaperEnvName() string { return claimReaperEnv }
+
+// IsReaperMarker reports whether a claim marker was minted by a
+// watchdog. It is the persisted record that a card was already conserved
+// once — the only bound available on a decision that must otherwise be
+// re-taken from scratch every lease.
+func IsReaperMarker(marker string) bool { return strings.HasPrefix(marker, reaperMarkerPrefix) }
 
 // ReaperMarker builds the watchdog's recovery-claim marker for a host.
 // Exported so the cloud reaper uses the SAME shape the local boot sweep
@@ -121,7 +128,10 @@ func (c *Dispatcher) reapExpiredClaims(ctx context.Context, reaper tracker.Claim
 func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, runs *store.FilesystemRunStore, cand tracker.ExpiredClaim, now time.Time) {
 	run, runErr := c.loadRunForReap(ctx, runs, cand.LastRunID)
 	cfg := c.cfg.Load()
-	card := StuckCard{State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates()}
+	card := StuckCard{
+		State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates(),
+		StampWindowOpen: StampWindowOpen(cand.ClaimedAt, now),
+	}
 	dec := DecideStuckCard(run, runErr, card)
 	if dec.Action == StuckKeep {
 		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, dec.Reason)
@@ -138,8 +148,16 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 		}
 		return
 	}
-	// From here the CAS-observed state supersedes the listing's copy.
+	// The transfer is the first moment state and ownership are known
+	// TOGETHER, so the decision is re-taken on what it saw. The listing's
+	// copy only ever selected a candidate; every rule that reads the card
+	// (the anti-double-launch one, the parked-out-of-pool one) must judge
+	// this value or it is judging a card that no longer exists.
 	card.State = liveState
+	if dec = DecideStuckCard(run, runErr, card); dec.Action == StuckKeep {
+		c.keepAfterTransfer(ctx, cand, tok, dec)
+		return
+	}
 	switch dec.Action {
 	case StuckComplete:
 		c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok)
@@ -177,6 +195,43 @@ func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClai
 	if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, target, tok); err != nil {
 		c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
 	}
+}
+
+// keepAfterTransfer handles a decision that flipped to Keep once the
+// transfer showed the card's real state. The claim is already ours, so
+// "keep" has to be enacted rather than assumed — and it must not be
+// enacted forever: holding a card no one can dispatch is the same
+// outcome, for the operator, as the stuck card the watchdog exists to
+// clear. So conservation is granted ONCE. The recovery marker on the
+// claim is the record of that grant: finding it means this card was
+// already conserved a full lease ago and the reason has not gone away,
+// so the claim is released and said out loud.
+func (c *Dispatcher) keepAfterTransfer(ctx context.Context, cand tracker.ExpiredClaim, tok tracker.ClaimToken, dec StuckDecision) {
+	if !IsReaperMarker(cand.Prev.Marker) {
+		c.logger.Warn("dispatcher: claim watchdog holds %s under a recovery claim: %s — re-judged at the next lease",
+			cand.Identifier, dec.Reason)
+		return
+	}
+	c.logger.Warn("dispatcher: claim watchdog releases %s after conserving it for a full lease (%s) — "+
+		"the reason has not cleared, and holding it any longer only hides the card",
+		cand.Identifier, dec.Reason)
+	if err := c.leaser.ReleaseOwned(ctx, cand.IssueID, tok); err != nil {
+		c.logger.Warn("dispatcher: claim watchdog release %s: %v", cand.Identifier, err)
+	}
+}
+
+// StampWindowOpen reports whether a run stamp could still plausibly be
+// in flight for a claim taken at claimedAt. The stamp is written
+// immediately after the launch, so the real window is seconds; a whole
+// lease is already generous, and two is the point past which "the stamp
+// is late" stops being a credible explanation. A zero claimedAt (a store
+// that never recorded one) reads as CLOSED: an unknown age must not
+// grant an unbounded hold.
+func StampWindowOpen(claimedAt, now time.Time) bool {
+	if claimedAt.IsZero() {
+		return false
+	}
+	return now.Sub(claimedAt) < 2*native.ClaimLeaseDuration
 }
 
 // launchStates asks the tracker which columns a card is dispatched from

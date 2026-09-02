@@ -520,11 +520,14 @@ func (d *boardDispatcher) reapExpiredClaims(ctx context.Context, now time.Time) 
 	}
 }
 
-// watchdogMaxReparks bounds how many times the cloud watchdog returns one
-// card to the dispatch pool. Each return costs a FRESH run there (the
-// cloud launcher cannot resume a recorded one), so this is a spend bound,
-// not a retry policy — the run-level retry machinery is separate.
-const watchdogMaxReparks = 3
+// watchdogRunCeiling is a coarse SPEND backstop, not a retry policy:
+// past it the cloud watchdog stops returning a card to the pool, because
+// each return costs a FRESH run there (that launcher cannot resume a
+// recorded one). It is compared against the card's lifetime run count —
+// every run it ever carried, whatever launched them — so it must sit far
+// above any healthy card's normal traffic. A card re-queued three times
+// by an operator is not a runaway.
+const watchdogRunCeiling = 20
 
 func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) {
 	var run *store.Run
@@ -544,6 +547,7 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	}
 	card := dispatcher.StuckCard{
 		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+		StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
 	}
 	dec := dispatcher.DecideStuckCard(run, runErr, card)
 	if dec.Action == dispatcher.StuckKeep {
@@ -556,8 +560,28 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		}
 		return
 	}
-	// From here the CAS-observed state supersedes the listing's copy.
+	// The transfer is the first moment state and ownership are known
+	// TOGETHER, so the decision is re-taken on what it saw — every rule
+	// that reads the card must judge this value, not the listing's copy.
 	card.State = liveState
+	if dec = dispatcher.DecideStuckCard(run, runErr, card); dec.Action == dispatcher.StuckKeep {
+		// Conservation is granted ONCE: a card held under a recovery claim
+		// is invisible to ListEligible and to sweepParked alike, so holding
+		// it forever is the stuck card the watchdog exists to clear. The
+		// recovery marker already on the claim is the record of the grant.
+		if !dispatcher.IsReaperMarker(cand.Claim.Prev.Marker) {
+			d.warn("claim watchdog holds %s/%s under a recovery claim: %s — re-judged at the next lease",
+				cand.Tenant, cand.Claim.IssueID, dec.Reason)
+			return
+		}
+		d.warn("claim watchdog releases %s/%s after conserving it for a full lease (%s) — "+
+			"the reason has not cleared, and holding it any longer only hides the card",
+			cand.Tenant, cand.Claim.IssueID, dec.Reason)
+		if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+			d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		}
+		return
+	}
 	switch dec.Action {
 	case dispatcher.StuckComplete:
 		d.fileReapedCard(ctx, cand, card, d.doneState, tok)
@@ -579,9 +603,14 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		// turning a stuck card into a spend loop. Past the ceiling the card
 		// is filed as failed, which is visible and terminal.
 		switch {
-		case cand.Claim.Attempts >= watchdogMaxReparks:
-			d.warn("claim watchdog stops reparking %s/%s after %d attempts — filing it as %s instead of relaunching again",
-				cand.Tenant, cand.Claim.IssueID, cand.Claim.Attempts, d.blockedState)
+		case dec.Action == dispatcher.StuckRepark && cand.Claim.LifetimeRuns >= watchdogRunCeiling:
+			// Only a REPARK spends a fresh run here. A release-only card
+			// (the claimant died before recording anything, or its run was
+			// pruned by the documented retention command) has failed at
+			// nothing and must never be filed as failed.
+			d.warn("claim watchdog stops returning %s/%s to the pool: it has already carried %d runs — "+
+				"filing it as %s rather than paying for another",
+				cand.Tenant, cand.Claim.IssueID, cand.Claim.LifetimeRuns, d.blockedState)
 			d.fileReapedCard(ctx, cand, card, d.blockedState, tok)
 		case len(d.eligible) > 0:
 			d.fileReapedCard(ctx, cand, card, d.eligible[0], tok)

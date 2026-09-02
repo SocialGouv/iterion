@@ -253,11 +253,12 @@ func ReopenMigrationAllowed(b *Board, all []*Issue, from, to string) error {
 	if src == nil || !src.Terminal || (dst != nil && dst.Terminal) {
 		return nil
 	}
+	idx := promotedDependents(all)
 	for _, iss := range all {
 		if iss.State != from {
 			continue
 		}
-		if err := ReopenBlockedByDependents(all, iss.ID, iss.State); err != nil {
+		if err := reopenBlocked(idx, iss.ID, iss.State); err != nil {
 			return err
 		}
 	}
