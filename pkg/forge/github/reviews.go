@@ -125,3 +125,53 @@ func (a *AppClient) CreatePullReview(ctx context.Context, repo string, number in
 	}
 	return rest.CreatePullReview(ctx, repo, number, in)
 }
+
+// prReviewCommentWire is the list shape of GET /repos/{repo}/pulls/{n}/comments.
+type prReviewCommentWire struct {
+	ID        int64  `json:"id"`
+	InReplyTo int64  `json:"in_reply_to_id"`
+	Body      string `json:"body"`
+	Path      string `json:"path"`
+	CreatedAt string `json:"created_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// ListPRReviewComments returns the PR's review-thread comments (the inline
+// diff comments and their replies), oldest first as GitHub serves them.
+// Backs the reply-in-thread conversational gate: it needs the whole set to
+// reconstruct one thread (id == root || in_reply_to_id == root) and decide
+// whether the bot participates in it. Pagination is capped: a conversation
+// gate does not need more than the first pages, and an unbounded walk on a
+// pathological PR would stall the webhook hot path.
+func (c *AdminClient) ListPRReviewComments(ctx context.Context, repo string, number int) ([]forge.PRReviewComment, error) {
+	const perPage = 100
+	const maxPages = 5
+	out := make([]forge.PRReviewComment, 0, perPage)
+	for page := 1; page <= maxPages; page++ {
+		var resp []prReviewCommentWire
+		path := "/repos/" + repo + "/pulls/" + strconv.Itoa(number) + "/comments?per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
+		code, err := c.do(ctx, http.MethodGet, path, nil, &resp)
+		if err != nil {
+			return nil, err
+		}
+		if code != http.StatusOK {
+			return nil, statusErr("GET pull review comments", code)
+		}
+		for _, w := range resp {
+			out = append(out, forge.PRReviewComment{
+				ID:        w.ID,
+				InReplyTo: w.InReplyTo,
+				Body:      w.Body,
+				Path:      w.Path,
+				CreatedAt: w.CreatedAt,
+				Author:    w.User.Login,
+			})
+		}
+		if len(resp) < perPage {
+			break
+		}
+	}
+	return out, nil
+}

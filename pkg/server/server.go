@@ -257,6 +257,11 @@ type Server struct {
 	// PR-surface command comment (the issue_comment payload carries no head
 	// branch — test seam). nil → realWebhookPRForgePRResolver.
 	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
+	// webhookPRForgeReviewReplyGate overrides the review-thread reply gate
+	// (forge token + thread fetch + bot-in-thread + replier authz — test
+	// seam). Returns (authorized, threadContext, reason, err). nil →
+	// realWebhookPRForgeReviewReplyGate.
+	webhookPRForgeReviewReplyGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedReviewComment, botID string) (bool, string, string, error)
 	// webhookIterionBotAuthor overrides the "is this PR/MR authored by iterion's
 	// own forge bot" check that keeps the PR-open auto-review lane from launching
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the

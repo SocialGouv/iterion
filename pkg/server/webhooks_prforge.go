@@ -342,3 +342,174 @@ func prforgePermRank(perm string) int {
 func replierMinRoleRank(role string) int {
 	return webhooks.ReplierRoleRank(role)
 }
+
+// ---------------------------------------------------------------------------
+// Review-thread conversations (GitHub) — reply to a Revi suggestion, get an
+// in-thread answer. The GitHub twin of the GitLab note reply-in-thread lane
+// (docs/forge-conversations.md); Forgejo is NOT wired yet (its dispatch never
+// routes the event here).
+// ---------------------------------------------------------------------------
+
+// prforgeReviewThreadAPI extends the replier surface with the thread fetch
+// the reply gate needs. github.AdminClient satisfies it; the Forgejo client
+// deliberately does not (the lane is GitHub-only until Forgejo's
+// review-comment API is validated).
+type prforgeReviewThreadAPI interface {
+	prforgeReplierAPI
+	ListPRReviewComments(ctx context.Context, repo string, number int) ([]forge.PRReviewComment, error)
+}
+
+// handlePRForgeReviewThreadReply routes a pull_request_review_comment event
+// (a reply inside a PR review thread) to the converse bot when the thread is
+// one of iterion's own: replying to a Revi suggestion IS the question, no
+// slash-command needed. Mirrors the GitLab note lane's reply-in-thread half.
+// Every benign refusal is a 200/filtered so the forge never auto-disables
+// the hook.
+func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, provider webhooks.Provider, body []byte, payloadHash, srcIP string) {
+	p, err := prforge.ParseReviewComment(body)
+	if err != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, webhookEventMeta{Kind: "review_comment"}, webhooks.StatusFiltered, payloadHash, srcIP, "invalid pull_request_review_comment payload")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+	meta := prforgeReviewCommentMeta(p)
+	filtered := func(reason string) {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+	}
+	// The allowlist must name the event (or be empty = zero-config): configs
+	// provisioned before this lane carry ["issue_comment","pull_request"]
+	// and stay inert until re-provisioned — forge.ToNativeEvents now expands
+	// pull_request_comment to both GitHub wire events, so a re-provision
+	// regenerates hook AND allowlist together.
+	if p.Action != "created" || p.PRState != "open" ||
+		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request_review_comment", "pull_request_review_comment") ||
+		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
+		filtered("out of scope (not a new open-PR review comment / event / project)")
+		return
+	}
+	// Loop-guard FIRST and without forge I/O: the converse bot answers with
+	// the same PAT identity, so its own reply echoes back as this event.
+	if s.isIterionForgeBotAuthor(ctx, cfg, p.AuthorLogin) {
+		filtered("self reply (loop-guard)")
+		return
+	}
+	// ONE role snapshot: the enable-gate and the launch below must name the
+	// same converse bot.
+	converseBot := s.roleBots().ReviConverse
+	if !s.canRouteToConverseBot(cfg, converseBot) {
+		filtered("converse bot not enabled on this webhook")
+		return
+	}
+	gate := s.webhookPRForgeReviewReplyGate
+	if gate == nil {
+		gate = s.realWebhookPRForgeReviewReplyGate
+	}
+	authorized, threadContext, reason, aerr := gate(ctx, cfg, provider, p, converseBot)
+	if aerr != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
+		httpError(w, http.StatusBadGateway, "authorization check failed")
+		return
+	}
+	if !authorized {
+		filtered(reason)
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("webhooks: %s review-thread reply %s#%d by %s authorized (%s)", provider, p.ProjectPath, p.PRNumber, p.AuthorLogin, reason)
+	}
+	vars := applyWebhookVarLayers(buildPRForgeReviewReplyVars(p, threadContext, nil), cfg)
+	// Idempotency: one launch per reply comment; "rc|" keeps the key space
+	// disjoint from the pr|/cmd| paths.
+	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("rc|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.RepoID, p.SubjectID())))
+	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, converseBot, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+}
+
+// prforgeReviewCommentMeta builds the delivery-audit meta for a review-thread
+// reply.
+func prforgeReviewCommentMeta(p prforge.ParsedReviewComment) webhookEventMeta {
+	return webhookEventMeta{
+		Kind:         "review_comment",
+		Action:       "comment",
+		ProjectPath:  p.ProjectPath,
+		SubjectID:    p.SubjectID(),
+		SubjectURL:   p.PRURL,
+		SubjectSHA:   p.HeadSHA,
+		SenderHandle: p.AuthorLogin,
+	}
+}
+
+// buildPRForgeReviewReplyVars composes the converse launch vars for a
+// review-thread reply: the PR context (reviewPRVars) + the conversation vars
+// the converse bot declares. discussion_id is the THREAD ROOT comment id —
+// exactly what GitHub's /pulls/{n}/comments/{id}/replies endpoint wants (see
+// bots/revi-converse/skills/forge-reply.md §4). No re_review flag: a reply
+// is a question, never a fresh review.
+func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext string, launchVars map[string]string) map[string]string {
+	question := strings.TrimSpace(p.CommentBody)
+	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.PRTitle+"\n\n"+p.PRBody), launchVars, map[string]string{
+		"source_branch":     p.SourceBranch,
+		"head_sha":          p.HeadSHA,
+		"conversation_mode": "reply",
+		"discussion_id":     fmt.Sprintf("%d", p.ThreadRootID),
+		"trigger_note":      p.CommentBody,
+		"replier":           p.AuthorLogin,
+		"converse_question": question,
+	})
+	if threadContext != "" {
+		vars["thread_context"] = threadContext
+	}
+	return vars
+}
+
+// realWebhookPRForgeReviewReplyGate is the production reply gate: resolve
+// the bot's forge token, fetch the PR's review comments, keep only the
+// reply's thread, and authorize BOTH halves — the thread must be one of
+// iterion's own (a comment by the bot identity in it; a human↔human thread
+// never triggers), and the replier must clear the allowlist or the webhook's
+// MinReplierRole. Returns the thread transcript for the bot's grounding.
+// ok=false + reason for benign refusals; err only for infra failure.
+func (s *Server) realWebhookPRForgeReviewReplyGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedReviewComment, botID string) (bool, string, string, error) {
+	token, terr := s.resolveForgeToken(ctx, cfg, botID)
+	if terr != nil || token == "" {
+		return false, "", "no forge token resolved (configure a forge_token binding)", nil
+	}
+	baseURL := strings.TrimSpace(cfg.ForgeBaseURL)
+	if baseURL == "" {
+		return false, "", "no forge base url on this webhook", nil
+	}
+	client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
+	api, ok := client.(prforgeReviewThreadAPI)
+	if !ok {
+		return false, "", "review-thread conversations are not supported on this provider yet", nil
+	}
+	comments, err := api.ListPRReviewComments(ctx, p.ProjectPath, int(p.PRNumber))
+	if err != nil {
+		return false, "", "", err
+	}
+	var transcript strings.Builder
+	botInThread := false
+	for _, c := range comments {
+		if c.ID != p.ThreadRootID && c.InReplyTo != p.ThreadRootID {
+			continue
+		}
+		if c.ID != p.CommentID && s.isIterionForgeBotAuthor(ctx, cfg, c.Author) {
+			botInThread = true
+		}
+		fmt.Fprintf(&transcript, "%s (%s):\n%s\n---\n", c.Author, c.CreatedAt, strings.TrimSpace(c.Body))
+	}
+	if !botInThread {
+		return false, "", "not a bot review thread (no iterion comment in it)", nil
+	}
+	if prforgeInAllowlist(cfg.AuthorizedRepliers, p.AuthorLogin) {
+		return true, transcript.String(), "allowlist", nil
+	}
+	perm, err := api.CollaboratorPermission(ctx, p.ProjectPath, p.AuthorLogin)
+	if err != nil {
+		return false, "", "", err
+	}
+	if prforgePermRank(perm) >= replierMinRoleRank(cfg.MinReplierRole) {
+		return true, transcript.String(), "role", nil
+	}
+	return false, "", "replier not authorized: " + p.AuthorLogin, nil
+}

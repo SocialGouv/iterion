@@ -50,6 +50,12 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		// comment. Routes through the command registry to its bot.
 		s.handlePRForgeComment(ctx, w, r, cfg, webhooks.ProviderGitHub, body, payloadHash, srcIP)
 		return
+	case prforge.EventHeaderReviewComment:
+		// Conversational path: a reply inside one of the bot's review threads
+		// IS a question — routes to the converse bot, which answers in the
+		// same thread. GitHub-only (Forgejo's dispatch does not route here).
+		s.handlePRForgeReviewThreadReply(ctx, w, r, cfg, webhooks.ProviderGitHub, body, payloadHash, srcIP)
+		return
 	case prforge.EventHeaderIssues:
 		// Issue lifecycle path: labeling an issue (e.g. "implement") — or, with
 		// AutoImplementOnOpen, opening one — launches an implementer bot

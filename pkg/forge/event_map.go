@@ -15,24 +15,31 @@ import (
 // This same native vocabulary is what the inbound matchers + a
 // webhooks.Config.EventAllowlist expect, so the orchestrator uses it for
 // both the forge-side hook AND the iterion-side allowlist.
-var normalizedToNative = map[string]map[Provider]string{
+var normalizedToNative = map[string]map[Provider][]string{
 	bundle.ForgeEventPullRequest: {
-		ProviderGitLab:  "merge_request",
-		ProviderGitHub:  "pull_request",
-		ProviderForgejo: "pull_request",
+		ProviderGitLab:  {"merge_request"},
+		ProviderGitHub:  {"pull_request"},
+		ProviderForgejo: {"pull_request"},
 	},
+	// GitHub splits PR comments across TWO wire events: top-level PR
+	// comments arrive as issue_comment, replies inside a review thread as
+	// pull_request_review_comment. GitLab's single "note" covers both. The
+	// normalized name means "comments on the PR", so the GitHub hook must
+	// subscribe both — the review-thread half is what feeds the
+	// reply-to-a-suggestion conversational lane. Forgejo stays on
+	// issue_comment only until that lane is validated there.
 	bundle.ForgeEventPullRequestComment: {
-		ProviderGitLab:  "note",
-		ProviderGitHub:  "issue_comment",
-		ProviderForgejo: "issue_comment",
+		ProviderGitLab:  {"note"},
+		ProviderGitHub:  {"issue_comment", "pull_request_review_comment"},
+		ProviderForgejo: {"issue_comment"},
 	},
 	// issue_labeled → the forge-native "issues" event. GitLab models it as a
 	// boolean hook field (issues_events); the gitlab admin client translates
 	// this native "issues" name to that field.
 	bundle.ForgeEventIssueLabeled: {
-		ProviderGitLab:  "issues",
-		ProviderGitHub:  "issues",
-		ProviderForgejo: "issues",
+		ProviderGitLab:  {"issues"},
+		ProviderGitHub:  {"issues"},
+		ProviderForgejo: {"issues"},
 	},
 }
 
@@ -49,12 +56,13 @@ func ToNativeEvents(p Provider, normalized []string) []string {
 		if !ok {
 			continue
 		}
-		native, ok := m[p]
-		if !ok || seen[native] {
-			continue
+		for _, native := range m[p] {
+			if seen[native] {
+				continue
+			}
+			seen[native] = true
+			out = append(out, native)
 		}
-		seen[native] = true
-		out = append(out, native)
 	}
 	sort.Strings(out)
 	return out

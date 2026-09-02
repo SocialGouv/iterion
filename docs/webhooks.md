@@ -152,7 +152,20 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `IsCrossRepo`). A PR opened by iterion's **own forge bot** (another iterion
   bot's PR — see below) is also skipped.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
-  `/featurly <prompt>`, `/billy`), routed through the command registry.
+  `/featurly <prompt>`, `/billy`), routed through the command registry —
+  including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
+  manifests' complementary `when_args_empty`/`when_args_present`
+  disambiguators (question → the converse bot, bare → re-review).
+- **`pull_request_review_comment`** with action `created` → the
+  conversational reply lane: replying inside one of the bot's review
+  threads launches the converse bot, which answers **in the same
+  thread**. Loop-guarded (the bot's own answer echoes back as this
+  event), thread-classified (a human↔human thread never triggers), and
+  replier-gated like every comment lane. Requires the converse bot in
+  `bot_ids` and the event in `event_allowlist` (a re-provision
+  regenerates both — `pull_request_comment` in a manifest now expands
+  to both GitHub wire events). GitHub only for now. See
+  [forge-conversations.md](forge-conversations.md).
 - **`issues`** with action `labeled` → launches the webhook's bot with
   the labeled issue turned into a feature task. The handler derives
   `feature_prompt` (issue title + body), `open_mr=true`, and

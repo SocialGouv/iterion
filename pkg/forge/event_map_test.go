@@ -15,7 +15,9 @@ func TestToNativeEvents(t *testing.T) {
 		want     []string
 	}{
 		{ProviderGitLab, all, []string{"merge_request", "note"}},
-		{ProviderGitHub, all, []string{"issue_comment", "pull_request"}},
+		// GitHub's pull_request_comment expands to BOTH wire events: the
+		// review-thread half feeds the reply-to-a-suggestion lane.
+		{ProviderGitHub, all, []string{"issue_comment", "pull_request", "pull_request_review_comment"}},
 		{ProviderForgejo, all, []string{"issue_comment", "pull_request"}},
 		{ProviderGitLab, []string{bundle.ForgeEventPullRequest}, []string{"merge_request"}},
 		// issue_labeled → "issues" native event on every provider (gitlab's
