@@ -413,22 +413,33 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 // case is a *skip*, not a failure, for the loop — hence the dedicated
 // error the caller can distinguish.
 func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
+	// A ticket held under a LIVE claim already has a launcher — the
+	// dispatcher wins with the CLAIM, and its move out of Ready is
+	// offloaded, so the state alone cannot say the ticket is free. This is
+	// the choke point BOTH callers cross (the admission loop's
+	// ClaimForLaunch refuses the same card earlier — atomically; the
+	// operator's explicit "launch now" reaches here directly), so the
+	// guard lives here, on a FRESH read: launching past it minted a second
+	// run while the claim holder was mid-launch. Read-then-move, not a
+	// CAS, because this path must stay legal for a non-Ready
+	// needs-attention relaunch (ClaimForLaunch requires Ready); the
+	// residual µs window is the documented V1 shape, down from the whole
+	// launch flight.
+	//
+	// LIVE is the lease, not the marker. The dispatcher PARKS an
+	// awaiting-input card with its claim retained and its heartbeat
+	// STOPPED (ADR-014), and DecideStuckCard conserves that claim for
+	// ever on a paused/cancelled run — so a bare `Claim != ""` refused
+	// the operator's own escape hatch (this endpoint has no Ready
+	// precondition precisely to serve it) and pointed them at a watchdog
+	// that would never come. A claim with NO lease is legacy, i.e. a
+	// fully operational owner that merely does not heartbeat — it is
+	// refused like a live one.
 	if cur, err := board.Get(iss.ID); err != nil {
 		return "", fmt.Errorf("read ticket: %w", err)
-	} else if cur.Claim != "" {
-		return "", fmt.Errorf("ticket %s is claimed by %q — its launcher is already on it; wait for the claim to clear (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
+	} else if cur.Claim != "" && (cur.ClaimLeaseUntil.IsZero() || cur.ClaimLeaseUntil.After(time.Now().UTC())) {
+		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
 	}
-	// A claimed ticket already has a launcher — the dispatcher wins with
-	// the CLAIM, and its move out of Ready is offloaded, so the state
-	// alone cannot say the ticket is free. This is the choke point BOTH
-	// callers cross (the admission loop's ClaimForLaunch refuses the same
-	// card earlier — atomically; the operator's explicit "launch now"
-	// reaches here directly), so the guard lives here, on a FRESH read:
-	// launching past it minted a second run while the claim holder was
-	// mid-launch. Read-then-move, not a CAS, because this path must stay
-	// legal for a non-Ready needs-attention relaunch (ClaimForLaunch
-	// requires Ready); the residual µs window is the documented V1 shape,
-	// down from the whole launch flight.
 	entry, found, err := s.findBot(iss.Bot)
 	if err != nil {
 		s.logger.Warn("pipeline admission: resolve bot %q: %v", iss.Bot, err)

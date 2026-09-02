@@ -2,9 +2,11 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
@@ -185,5 +187,86 @@ func TestUnblockedCardStillFiresTheOneShot(t *testing.T) {
 	}
 	if launcher.launches != 1 || sb.consumes != 1 {
 		t.Fatalf("launches=%d consumes=%d — the unblocked card's one-shot must fire exactly once", launcher.launches, sb.consumes)
+	}
+}
+
+// A machine gesture fires NO effect — not only "spends no one-shot".
+// A column rename emits one state event per card in the column, all
+// correctly stamped machine (IsMachineReason) with the actor blanked;
+// gating only the ConsumeLabels branch let an ordinary direct
+// subscription mint a run PER CARD, on cards nobody moved. Driven from
+// the REAL store's RenameState through NormalizeBoardEvent into
+// applyEffect.
+func TestColumnRenameFiresNoEffect(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := board.AddState(native.State{Name: "staging"}); err != nil {
+		t.Fatalf("AddState: %v", err)
+	}
+	const cards = 3
+	for i := 0; i < cards; i++ {
+		iss, err := board.Create(native.Issue{Title: "c", State: native.StateBacklog, Assignee: "jo"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if _, err := board.SetState(iss.ID, "staging"); err != nil {
+			t.Fatalf("park: %v", err)
+		}
+	}
+	before := 0
+	_ = board.ScanEvents(func(*native.Event) bool { before++; return true })
+	if _, err := board.RenameState("staging", "verification"); err != nil {
+		t.Fatalf("RenameState: %v", err)
+	}
+
+	// Two subscriptions on the renamed column: one plain direct launch,
+	// one board promote. NEITHER carries consume_labels, so neither was
+	// covered by the one-shot-only guard.
+	direct := Subscription{
+		ID: "s-direct", TenantID: "t1", BotID: "some-bot", Enabled: true,
+		Mode:  bundle.ExecutionDirect,
+		Match: Matcher{Sources: []Source{SourceBoard}, SubjectStates: []string{"verification"}},
+	}
+	promote := Subscription{
+		ID: "s-promote", TenantID: "t1", BotID: "some-bot", Enabled: true,
+		Mode:  bundle.ExecutionBoard,
+		Match: Matcher{Sources: []Source{SourceBoard}, SubjectStates: []string{"verification"}},
+	}
+	subs := NewMemorySubscriptionStore()
+	launcher := &stubEffectLauncher{}
+	sb := &stubConsumingBoard{consumeLeft: 99}
+	eval := NewEvaluator(subs, WithLauncher(launcher), WithBoardEffect(sb))
+
+	seen, matched := 0, 0
+	_ = board.ScanEvents(func(e *native.Event) bool {
+		seen++
+		if seen <= before || !IsCardEvent(e.Type) {
+			return true
+		}
+		ev, ok, nerr := NormalizeBoardEvent(board.Get, *e, "t1", "org/repo", "board")
+		if nerr != nil || !ok {
+			return true
+		}
+		if got, _ := ev.Payload["reason"].(string); got != tracker.ReasonStateRename {
+			t.Fatalf("rename event reason = %q, want %q — the provenance never reached the effect side", got, tracker.ReasonStateRename)
+		}
+		for _, sub := range []Subscription{direct, promote} {
+			if !sub.Match.Match(ev) {
+				continue
+			}
+			matched++
+			if err := eval.applyEffect(context.Background(), sub, ev, effectOpts{}); !errors.Is(err, errEffectMachineCaused) {
+				t.Fatalf("applyEffect on a %s subscription = %v, want errEffectMachineCaused", sub.EffectiveMode(), err)
+			}
+		}
+		return true
+	})
+	if matched != cards*2 {
+		t.Fatalf("the rename produced %d matching (event, subscription) pairs, want %d — the probe is vacuous", matched, cards*2)
+	}
+	if launcher.launches != 0 || sb.promotes != 0 {
+		t.Fatalf("a COLUMN RENAME launched %d run(s) and promoted %d card(s) nobody moved", launcher.launches, sb.promotes)
 	}
 }

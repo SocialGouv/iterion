@@ -151,26 +151,36 @@ neutralisation (commit 0) protects one direction only — a NEW binary no
 longer erases the claim family; an OLD binary's full-document
 `ReplaceOne` still strips epoch + lease from any card it writes (§8),
 which locks the live holder out of all three fenced verbs and leaves an
-un-leased claim behind. That residue is exactly what the un-leased sweep
-exists for — it runs at boot AND on the reaper cadence, bounded by the
-24h `unleasedClaimHorizon`, because the rolling deploy that creates the
-population is also a fleet of fresh boots that would each see zero
-candidates if the sweep were boot-only. Release N+1, once no old binary
-can un-lease a claim, enables the reaper.
+un-leased claim behind. That residue is deliberately **conserved** while
+the gate is off: releasing on the lease's absence alone would strip the
+claim — the one field every watchdog listing selects on — and leave the
+card in_progress, unclaimed, permanently undecidable. Conserved as-is,
+it is exactly what the gated reap's own two-arm listing (expired lease
+OR un-leased past the 24h horizon) reaches and decides with full
+liveness. Release N+1, once no old binary can un-lease a claim, enables
+the reaper — and with it the repair of whatever the mixed-fleet window
+stranded. The one gate-independent releaser is the recovery-claim sweep
+(`reaper:<host>` markers only, every watchdog pass): releasing an
+abandoned recovery claim is a pure return to the card's pre-watchdog
+state, which is what the rollback lever promises.
 
 ## Consequences
 
 - The reaper reuses the existing event vocabulary (`EvtIssueClaimed` for
   a reclaim, `EvtIssueState` for a Reopen or a filing) rather than
-  minting audit types. Consequence, pinned by test: the **reclaim** is
-  inert to the trigger spine, but a **disposition that files or reparks
-  the card is a real transition the spine sees** — an ordinary
-  subscription on the target state fires (enabling the reaper on a
-  deployment with a `to_states: [blocked]` subscription launches its bot
-  per filed card); only the `consume_labels` one-shot is protected, by
-  the machine provenance (`reason: watchdog`) the write carries. Reclaim
-  audit lives in the monotone `ClaimEpoch` and the Warn log line, not a
-  separate event.
+  minting audit types. Consequence, pinned by test: a machine-caused
+  event — the enumerated `tracker.IsMachineReason` provenance every
+  machine writer stamps (`watchdog`, the schema migrations) — **fires no
+  effect at all**: not a launch, not a board promote, and no
+  `consume_labels` one-shot. A subscription is written for an operator's
+  (or a bot's) gesture; gating only the one-shot left the ordinary
+  launch open, and a column rename (one event per card) mass-launched a
+  run per card nobody moved. The events still FLOW (audit tails and
+  projections see every transition, actor blanked); only the effect
+  layer declines them. `unblocked` is deliberately NOT machine — the
+  auto-promote is the cascade of closing a card's blocker, and its
+  triggers keep firing. Reclaim audit lives in the monotone `ClaimEpoch`
+  and the Warn log line, not a separate event.
 - `reconcileStalled` stays the actor's in-memory authority over the local
   concurrency SLOT; the reaper is the authority over the persisted CLAIM.
   Disjoint roles, documented, so the two never fight over the same run.

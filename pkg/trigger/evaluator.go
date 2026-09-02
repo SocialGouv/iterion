@@ -101,11 +101,12 @@ type effectOpts struct {
 }
 
 // errEffectMachineCaused = the event came from iterion acting on the
-// board by itself (a watchdog repair, a schema migration), so a one-shot
-// operator gate must not be spent on it. Benign like
-// errEffectOneShotSpent (the one-shot consumed by another event): the
-// subscription simply does not fire, on the bus path AND the outbox path.
-var errEffectMachineCaused = errors.New("trigger: one-shot not spent on a machine-caused event")
+// board by itself (a watchdog repair, a schema migration), so NO effect
+// fires on it: not a launch, not a promote, and no one-shot gate is
+// spent. Benign like errEffectOneShotSpent (the one-shot consumed by
+// another event): the subscription simply does not fire, on the bus path
+// AND the outbox path.
+var errEffectMachineCaused = errors.New("trigger: no effect fires on a machine-caused event")
 
 // machineCaused reports that an event was produced by the machine rather
 // than by an operator or a bot acting on the board. The set is the
@@ -126,6 +127,16 @@ func machineCaused(ev Event) bool {
 // (the bus path warns and moves on, the outbox path retries).
 
 func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
+	// BEFORE the mode switch: a machine-caused event fires NOTHING. A
+	// subscription is written for an operator's (or a bot's) gesture, and
+	// a schema migration emits one event per card in the touched column —
+	// so gating only the one-shot left the ordinary launch and the board
+	// promote wide open: renaming a column mass-launched a run per card,
+	// on cards nobody moved (the exact fan-out the one-shot guard was
+	// written against, minus the label).
+	if machineCaused(ev) {
+		return errEffectMachineCaused
+	}
 	switch sub.EffectiveMode() {
 	case bundle.ExecutionBoard:
 		if e.board == nil {
@@ -136,15 +147,6 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 	default:
 		if e.launcher == nil {
 			return fmt.Errorf("direct-mode subscription %s but no launcher wired", sub.ID)
-		}
-		if sub.ConsumeLabels && machineCaused(ev) {
-			// A one-shot label gate is an OPERATOR's single pull of a
-			// trigger. A watchdog repairing a card its dead owner left
-			// behind moves that card too — and spending the gate there
-			// burns an intent nobody expressed, on a card nobody touched.
-			// Re-arming it is manual, so this is not recoverable by
-			// waiting.
-			return errEffectMachineCaused
 		}
 		if sub.ConsumeLabels && ev.Source == SourceBoard && !opts.alreadyConsumed {
 			lc, ok := e.board.(LabelConsumer)

@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -346,5 +349,69 @@ func TestPipelineTicketLaunchable_DeletedRunIsProofOfAbsence(t *testing.T) {
 	iss := &native.Issue{ID: "card-1", Title: "c", State: native.StateReady, Bot: "feature-dev", LastRunID: "run-gone"}
 	if !pipelineTicketLaunchable(ctx, rs, iss) {
 		t.Fatal("a ticket whose last run was DELETED (durable tombstone) is refused for ever — proof of absence read as lack of information")
+	}
+}
+
+// TestLaunchTicketNow_ParkedClaimWithALapsedLeaseStaysRelaunchable: the
+// dispatcher PARKS an awaiting-input card with its claim RETAINED and its
+// heartbeat STOPPED (ADR-014), and DecideStuckCard conserves that claim
+// for ever on a paused/cancelled run — no watchdog will ever take it. A
+// bare `Claim != ""` guard therefore closed the operator's own escape
+// hatch (this endpoint has no Ready precondition precisely to serve a
+// needs-attention relaunch) and told them to wait for something that
+// cannot come. LIVE is the lease, not the marker.
+func TestLaunchTicketNow_ParkedClaimWithALapsedLeaseStaysRelaunchable(t *testing.T) {
+	dir := t.TempDir()
+	board, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := board.Create(native.Issue{Title: "parked", State: native.StateReady, Bot: "feature-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := board.Claim(iss.ID, "dispatcher-host-a")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if _, err := board.SetStateOwned(iss.ID, native.StateAwaitingInput, tok); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+	// Age the lease on disk, then reopen: the heartbeat is stopped, so in
+	// production the lease simply lapses.
+	matches, _ := filepath.Glob(filepath.Join(dir, "issues", "*.json"))
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one issue file, got %v", matches)
+	}
+	p := matches[0]
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["claim_lease_until"] = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	out, _ := json.Marshal(doc)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	board2, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, err := board2.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.Claim == "" || cur.ClaimLeaseUntil.After(time.Now().UTC()) {
+		t.Fatalf("precondition: want a retained claim with a LAPSED lease, got claim=%q lease=%s", cur.Claim, cur.ClaimLeaseUntil)
+	}
+
+	s := newSweepTestServer()
+	_, err = s.launchTicketNow(nil, board2, cur)
+	if err != nil && strings.Contains(err.Error(), "claimed by") {
+		t.Fatalf("the operator's relaunch of a parked, claim-retained card is refused: %v — nothing else ever frees that claim", err)
 	}
 }

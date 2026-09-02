@@ -517,6 +517,14 @@ func (c *Dispatcher) shutdown() {
 	// and those claims were never released. The bound is now ONE card's
 	// budgets, whatever the fleet was carrying.
 	var drain sync.WaitGroup
+	// Bounded parallelism, and each card's budgets start when its TURN
+	// starts, not at a shared T0: unbounded goroutines against a tracker
+	// that serializes (the FS store is one mutex; a forge client rate-
+	// limits) burn one shared window while queued — measured at N=20 with
+	// production budgets, 7 claims leaked in 10s where the sequential
+	// drain freed all 20. With 4 in flight a card waits on at most 3
+	// calls ahead of it inside the tracker, which any budget dwarfs.
+	sem := make(chan struct{}, 4)
 	for _, r := range c.state.running {
 		// Shutdown is an internal interruption (the local twin of the cloud
 		// runner drain): failed_resumable, auto-resumed on the next start.
@@ -526,6 +534,8 @@ func (c *Dispatcher) shutdown() {
 		drain.Add(1)
 		go func(r *runningEntry) {
 			defer drain.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			// SEPARATE budgets. The revert opens with a RefreshStates round
 			// trip, so sharing one deadline lets a merely slow tracker spend
 			// the whole of it and leave the release unsent — and the release

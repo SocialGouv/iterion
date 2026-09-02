@@ -2,6 +2,8 @@ package native
 
 import (
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
 
 // RVA-T9 R2: ClaimForLaunch is a SECOND launch authority that never reads
@@ -38,4 +40,55 @@ func TestRVAT9_ClaimForLaunchIgnoresALiveLease(t *testing.T) {
 			"two launchers now own the same card (state now %q, claim still %q)",
 			tok.Marker, tok.Epoch, after.State, after.Claim)
 	}
+}
+
+// The EXPORTED promote helper (the board-deps surface's path) must stamp
+// the same descriptive reason the store's internal locked promote does —
+// the type-assert fallback to bare SetState was a silent twin divergence
+// inside one store.
+func TestPromoteHelper_StampsUnblockedOnTheFSTwin(t *testing.T) {
+	s := newTestStore(t)
+	// The blocker completes BEFORE the dependent exists, so the store's
+	// internal locked cascade never fires — the exported helper is the
+	// ONLY promoter this test exercises (with the dependent pre-existing,
+	// the internal path promotes first and the assertion reads ITS event:
+	// vacuous for the helper).
+	blocker, err := s.Create(Issue{Title: "blocker", State: StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetStateOwned(blocker.ID, StateDone, mustClaim(t, s, blocker.ID)); err != nil {
+		t.Fatal(err)
+	}
+	dep, err := s.Create(Issue{Title: "dep", State: StateWaitingDeps, Blockers: []string{blocker.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PromoteUnblockedDependents(s, blocker.ID); err != nil {
+		t.Fatal(err)
+	}
+	var last map[string]any
+	if err := s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtIssueState && e.IssueID == dep.ID {
+			last = e.Payload
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if last == nil {
+		t.Fatal("dependent never promoted")
+	}
+	if got, _ := last["reason"].(string); got != tracker.ReasonUnblocked {
+		t.Fatalf("exported promote stamped reason %q, want %q — the helper silently degraded to the bare SetState", got, tracker.ReasonUnblocked)
+	}
+}
+
+func mustClaim(t *testing.T, s *Store, id string) tracker.ClaimToken {
+	t.Helper()
+	tok, err := s.Claim(id, "host-t11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
 }

@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -68,9 +69,20 @@ func (s *Service) RenameRunCtx(ctx context.Context, runID, name string) (*store.
 // first so a run outside the caller's tenant scope surfaces as not-found
 // (a tenant can only delete its own runs); the actual delete is then
 // tenant-scoped by the store as well. Idempotent at the store layer.
+//
+// A run that is not TERMINAL is refused: the delete tombstone is read
+// everywhere as PROOF the run is gone (the board launch authorities
+// admit a fresh run on it), so deleting a running/queued/paused run
+// would mint a live sibling while the engine goroutine keeps burning.
+// The studio already disables delete on those; this is the choke both
+// the HTTP handler and the MCP/CLI escape hatch cross.
 func (s *Service) DeleteRunCtx(ctx context.Context, runID string) error {
-	if _, err := s.store.LoadRun(ctx, runID); err != nil {
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
 		return err
+	}
+	if !r.Status.IsTerminal() {
+		return fmt.Errorf("run %s is %s — cancel it first: a delete tombstone reads as proof of absence and would let a second run launch on the same work", runID, r.Status)
 	}
 	return s.store.DeleteRun(ctx, runID)
 }

@@ -492,10 +492,31 @@ func (s *Store) SetStateFrom(id, from, to string) (updated *Issue, changed bool,
 	return out, true, nil
 }
 
+// SetStateWithReason is SetState carrying an explicit DESCRIPTIVE
+// provenance (StateReasoner) — the FS half of the twin contract the
+// shared auto-promote writes through. Without it the exported
+// PromoteUnblockedDependents silently degraded to the bare SetState on
+// this twin (its other caller, the board deps surface) and the promote
+// lost its reason here while Mongo stamped it.
+func (s *Store) SetStateWithReason(id, newState, reason string) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateWithReason", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.setStateReasonLocked(iss, newState, "", reason)
+}
+
 // byMarker is the WRITER's identity (the claim token a fenced write
 // presented; "" for tokenless operator/automation writes) — provenance
 // describes who acted, never who happens to hold the card.
 func (s *Store) setStateLocked(iss *Issue, newState, byMarker string) (*Issue, error) {
+	return s.setStateReasonLocked(iss, newState, byMarker, "")
+}
+
+func (s *Store) setStateReasonLocked(iss *Issue, newState, byMarker, reason string) (*Issue, error) {
 	if s.board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
@@ -515,7 +536,13 @@ func (s *Store) setStateLocked(iss *Issue, newState, byMarker string) (*Issue, e
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
-		Payload: StateChangePayload(old, newState, byMarker),
+		Payload: func() map[string]any {
+			p := StateChangePayload(old, newState, byMarker)
+			if reason != "" {
+				p["reason"] = reason
+			}
+			return p
+		}(),
 	}); err != nil {
 		return nil, err
 	}

@@ -207,10 +207,6 @@ func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.
 	if from, ok := evt.Payload["from"].(string); ok {
 		payload["from_state"] = from
 	}
-	// Provenance travels: the stores stamp it, and the matcher below needs
-	// it to tell a machine repair from the operator gesture a subscription
-	// is written for. Dropping it here is what let a watchdog spend an
-	// operator's one-shot label gate.
 	// Provenance travels verbatim; whether it is MACHINE provenance is the
 	// enumerated tracker.IsMachineReason — the same contract machineCaused
 	// reads on the effect side. A descriptive reason (unblocked) keeps its

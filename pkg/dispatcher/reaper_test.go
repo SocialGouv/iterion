@@ -905,3 +905,100 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 		}
 	}
 }
+
+// serializingSlowTracker: one global lock, fixed latency per call — the
+// shape of the FS store's single mutex and of a rate-limited forge
+// client. What it exposes: goroutines whose budgets started before
+// their turn burn a SHARED window while queued.
+type serializingSlowTracker struct {
+	tracker.Tracker
+	leaser  tracker.ClaimLeaser
+	gate    sync.Mutex
+	latency time.Duration
+}
+
+func (r *serializingSlowTracker) call(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.gate.Lock()
+	defer r.gate.Unlock()
+	time.Sleep(r.latency)
+	return ctx.Err()
+}
+func (r *serializingSlowTracker) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
+	if err := r.call(ctx); err != nil {
+		return nil, err
+	}
+	return r.Tracker.RefreshStates(ctx, ids)
+}
+func (r *serializingSlowTracker) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	return r.leaser.ClaimLease(ctx, id, marker)
+}
+func (r *serializingSlowTracker) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return r.leaser.RenewClaim(ctx, id, tok)
+}
+func (r *serializingSlowTracker) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	if err := r.call(ctx); err != nil {
+		return err
+	}
+	return r.leaser.ReleaseOwned(ctx, id, tok)
+}
+func (r *serializingSlowTracker) UpdateStateOwned(ctx context.Context, id, state string, tok tracker.ClaimToken) error {
+	if err := r.call(ctx); err != nil {
+		return err
+	}
+	return r.leaser.UpdateStateOwned(ctx, id, state, tok)
+}
+
+// TestShutdown_DrainDoesNotLeakAgainstASerializingTracker: bounded
+// parallelism with budgets that start at each card's TURN. Unbounded
+// goroutines whose clocks all started at T0 burned one shared window
+// while queued behind the tracker's lock — claims at the tail were
+// refused at entry and leaked, the very failure the drain exists to
+// prevent (measured at N=20 with production budgets: 7 leaked where the
+// old sequential drain freed all 20).
+func TestShutdown_DrainDoesNotLeakAgainstASerializingTracker(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := native.NewAdapter(board)
+	rec := &serializingSlowTracker{Tracker: adapter, leaser: adapter, latency: 30 * time.Millisecond}
+	c := &Dispatcher{
+		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
+		ws: newWsBridge(iterlog.Nop()),
+	}
+	c.shutdownRevertBudget, c.shutdownReleaseBudget = 500*time.Millisecond, 500*time.Millisecond
+	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
+	for i := 0; i < 32; i++ {
+		iss, err := board.Create(native.Issue{Title: "in flight", State: native.StateReady})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, err := board.Claim(iss.ID, "host-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := board.SetStateOwned(iss.ID, native.StateInProgress, tok); err != nil {
+			t.Fatal(err)
+		}
+		c.state.running[iss.ID] = &runningEntry{
+			IssueID: iss.ID, Identifier: "i", TransitionedFromState: native.StateReady,
+			claim: StartClaimSession(c.leaser, iss.ID, tok, func(string, ...any) {}, nil),
+		}
+	}
+
+	c.shutdown()
+
+	leaked := 0
+	for id := range c.state.running {
+		if cur, _ := board.Get(id); cur.Claim != "" {
+			leaked++
+		}
+	}
+	if leaked > 0 {
+		t.Fatalf("%d/32 claims leaked against a serializing tracker — budgets that start before a card's turn burn a shared window while queued", leaked)
+	}
+}

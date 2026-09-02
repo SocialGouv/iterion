@@ -35,9 +35,9 @@ type fakeBoardCoord struct {
 	epochs   map[string]int64
 	expired  []boardmongo.ExpiredCandidate
 	unleased []boardmongo.ExpiredCandidate
-	// unleasedLists counts ListUnleasedClaims calls — the periodicity
-	// oracle for the repair sweeps.
-	unleasedLists int
+	// recoveryLists counts ListAbandonedRecoveryClaims calls — the
+	// periodicity oracle for the repair-sweep cadence.
+	recoveryLists int
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -160,6 +160,7 @@ func (f *fakeBoardCoord) ListExpiredClaimCandidates(_ context.Context, _ time.Ti
 func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPrefix string, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.recoveryLists++
 	out := make([]boardmongo.ExpiredCandidate, 0, len(f.expired))
 	for _, e := range f.expired {
 		if limit > 0 && len(out) >= limit {
@@ -180,7 +181,6 @@ func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPr
 func (f *fakeBoardCoord) ListUnleasedClaims(_ context.Context, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.unleasedLists++
 	out := make([]boardmongo.ExpiredCandidate, 0, len(f.unleased))
 	for _, e := range f.unleased {
 		if limit > 0 && len(out) >= limit {
@@ -1089,7 +1089,7 @@ func TestCloudReaper_ReparkReturnsTheCardToThePool(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-repark"]; got != native.StateReady {
 		t.Fatalf("a reparked card must be written back into the eligible pool: state=%q, want %q "+
@@ -1120,7 +1120,7 @@ func TestCloudReaper_HonoursADeliberateStateMove(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-moved"]; got != native.StateReview {
 		t.Fatalf("the watchdog overwrote a deliberate state move: card is %q, the operator had put it in %q",
@@ -1157,7 +1157,7 @@ func TestCloudReaper_ReparkIsBounded(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-loop"]; got != native.StateBlocked {
 		t.Fatalf("past the repark ceiling the card must be filed, not relaunched: state=%q, want %q",
@@ -1187,7 +1187,7 @@ func TestCloudReaper_CeilingSparesAHealthyCard(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-healthy"]; got != native.StateReady {
 		t.Fatalf("a card with 3 lifetime runs is healthy: state=%q, want %q — the ceiling counted runs as if they were reparks",
@@ -1216,7 +1216,7 @@ func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
 		return nil, store.ErrRunNotFound // pruned by `iterion runs prune`
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-nofail"]; got == native.StateBlocked {
 		t.Fatalf("a card whose run was pruned failed at nothing — it must not be filed as %q", got)
@@ -1246,7 +1246,7 @@ func TestCloudReaper_ParkedCardIsNotHeldForever(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 	if _, held := f.claimed["c-parked"]; !held {
 		t.Fatal("first pass must CONSERVE a card parked out of the pool: releasing lifts the operator's brake")
 	}
@@ -1256,7 +1256,7 @@ func TestCloudReaper_ParkedCardIsNotHeldForever(t *testing.T) {
 	// The recovery marker now on the claim is the record of that grant.
 	f.expired[0].Claim.Prev = tracker.ClaimToken{Marker: f.claimed["c-parked"], Epoch: f.epochs["c-parked"]}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 	if _, held := f.claimed["c-parked"]; held {
 		t.Fatalf("conservation must be granted once, not for ever: still claimed by %q — invisible to the "+
 			"dispatch poll, and nothing in cloud ever frees it", f.claimed["c-parked"])
@@ -1288,7 +1288,7 @@ func TestCloudReaper_DoesNotStealFromAFreshClaim(t *testing.T) {
 	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
 	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
 	if got := f.claimed["c-fresh"]; got != "live-pod" {
 		t.Fatalf("a claim taken moments ago must not be transferred: now held by %q — its worker may be alive "+
@@ -1298,7 +1298,7 @@ func TestCloudReaper_DoesNotStealFromAFreshClaim(t *testing.T) {
 	// Past the window the same card IS actionable — the row is a delay,
 	// not a permanent exemption.
 	f.expired[0].Claim.ClaimedAt = time.Now().Add(-4 * native.ClaimLeaseDuration)
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 	if _, held := f.claimed["c-fresh"]; held {
 		t.Fatal("past the stamp window the card must be freed: a stamp that never arrived is not a live worker")
 	}
@@ -1374,7 +1374,7 @@ func TestCloudReaper_BootSweepHonoursTheDisposition(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
 	}
 
-	d.sweepAbandonedRecoveryClaims(context.Background())
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-finished"]; got != native.StateDone {
 		t.Fatalf("the run finished, so the card belongs in %q — the sweep dropped its disposition and left it in %q",
@@ -1419,7 +1419,7 @@ func TestCloudReaper_BootSweepAsksForItsOwnPopulation(t *testing.T) {
 		"replica-new", 1, iterlog.Nop())
 	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
 
-	d.sweepAbandonedRecoveryClaims(context.Background())
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 
 	if _, held := f.claimed["c-abandoned"]; held {
 		t.Fatal("the abandoned recovery claim sat behind 120 ordinary ones and was never reached — " +
@@ -1452,7 +1452,7 @@ func TestCloudReaper_GateOffSweepNeverFilesTerminal(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
 	}
 
-	d.sweepAbandonedRecoveryClaims(context.Background())
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 
 	if got := f.states["c-gated"]; got == native.StateDone || got == native.StateBlocked {
 		t.Fatalf("with the watchdog gated off the sweep filed the card TERMINALLY (%q) — the rollback lever "+
@@ -1474,20 +1474,22 @@ func TestCloudReaper_GateOffSweepNeverFilesTerminal(t *testing.T) {
 			Prev:    tracker.ClaimToken{Marker: "some-pod", Epoch: 2},
 		},
 	}}
-	d.sweepAbandonedRecoveryClaims(context.Background())
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 	if got := f.claimed["c-ordinary"]; got != "some-pod" {
 		t.Fatalf("an ordinary owner's claim is the watchdog's business, not this sweep's: now %q", got)
 	}
 }
 
-// TestCloudReaper_BootSweepFreesUnleasedClaims: the second population a
-// disabled reaper abandons. A mixed-fleet write strips a LIVE claim of
-// its lease and its fence; from then on the holder cannot renew, cannot
-// write, and cannot even release its own card, and no listing reaches it
-// except this sweep. A rolling deploy is what creates that state, so the
-// repair cannot sit behind the gate — which ships off during exactly the
-// release that introduces the fields.
-func TestCloudReaper_BootSweepFreesUnleasedClaims(t *testing.T) {
+// TestCloudReaper_GateOffConservesUnleasedClaims — the INVERSE of the
+// round-8 expectation, corrected by round 11's proof: releasing a claim
+// on the lease's absence alone strips the ONE field every watchdog
+// listing selects on, leaving the card in_progress, unclaimed,
+// permanently undecidable (the gated reap of release N+1 finds nothing
+// left to repair). Conserved as-is, the card is exactly what the gated
+// reap's two-arm listing reaches and decides with full liveness. This
+// is a TRIPWIRE: it reddens if anyone rewires a gate-off sweep that
+// disposes of the un-leased population.
+func TestCloudReaper_GateOffConservesUnleasedClaims(t *testing.T) {
 	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
 	f := newFakeBoardCoord()
 	f.claimed["c-stripped"] = "podA-1"
@@ -1507,36 +1509,32 @@ func TestCloudReaper_BootSweepFreesUnleasedClaims(t *testing.T) {
 	cancel()
 	d.run(ctx)
 
-	if _, held := f.claimed["c-stripped"]; held {
-		t.Fatalf("a claim stripped of its lease by a mixed-fleet write must be freed at startup: still held by %q "+
-			"— its holder is fenced out of its own card and cannot release it, and the only other listing that "+
-			"reaches it is behind the gate this release ships off", f.claimed["c-stripped"])
+	if got := f.claimed["c-stripped"]; got != "podA-1" {
+		t.Fatalf("an un-leased ordinary claim must be CONSERVED under a disabled gate (now %q) — "+
+			"stripping it forecloses the only repair, the gated reap's own listing", got)
 	}
-	// Released, not decided: the watchdog is off.
 	if got := f.states["c-stripped"]; got != native.StateInProgress {
-		t.Fatalf("the gated-off sweep must not decide, card moved to %q", got)
+		t.Fatalf("the gated-off pass must not decide, card moved to %q", got)
 	}
 }
 
-// TestCloudReaper_UnleasedSweepNeverSkipsLiveness: "no lease" is not "no
-// owner". A legacy claim carries no epoch, which ownedFilter admits by
-// design — so its holder can still renew, write and release, and is
-// merely not heartbeating. Only the run says whether anyone is alive, so
-// this sweep must consult it exactly like every other path that takes a
-// card from its holder. Releasing on the lease alone steals from a live
-// run, and does it with the gate OFF, which is the one thing the gate
-// exists to prevent.
-func TestCloudReaper_UnleasedSweepNeverSkipsLiveness(t *testing.T) {
+// TestCloudReaper_RecoverySweepNeverSkipsLiveness: "held under a
+// reaper marker" is not "safe to free". The recovery sweep is the one
+// gate-independent releaser left, and it must consult the run like every
+// other path that takes a card from its holder — a conserved card whose
+// run is RUNNING again (a resume landed while the watchdog was down)
+// must stay held rather than be re-opened to a second launcher.
+func TestCloudReaper_RecoverySweepNeverSkipsLiveness(t *testing.T) {
 	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
 	f := newFakeBoardCoord()
-	f.claimed["c-live"] = "podA-1"
-	f.epochs["c-live"] = 0
+	f.claimed["c-live"] = dispatcher.ReaperMarker("dead-replica")
+	f.epochs["c-live"] = 7
 	f.states["c-live"] = native.StateInProgress
-	f.unleased = []boardmongo.ExpiredCandidate{{
+	f.expired = []boardmongo.ExpiredCandidate{{
 		Tenant: "t1",
 		Claim: tracker.ExpiredClaim{
 			IssueID: "c-live", LastRunID: "run-live", State: native.StateInProgress,
-			Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0},
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("dead-replica"), Epoch: 7},
 		},
 	}}
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
@@ -1545,27 +1543,26 @@ func TestCloudReaper_UnleasedSweepNeverSkipsLiveness(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusRunning}, nil
 	}
 
-	d.sweepUnleasedClaims(context.Background())
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 
-	if got := f.claimed["c-live"]; got != "podA-1" {
-		t.Fatalf("the card's run is RUNNING and its claim was taken anyway (now %q) — a missing lease says "+
-			"nothing about liveness, and this holder can still write: only the run decides", got)
+	if got := f.claimed["c-live"]; got != dispatcher.ReaperMarker("dead-replica") {
+		t.Fatalf("the card's run is RUNNING and its claim was taken anyway (now %q) — only the run decides", got)
 	}
 }
 
-// TestCloudReaper_UnleasedSweepFreesADeadOne is the counter-case, so the
-// guard above cannot be satisfied by refusing everything.
-func TestCloudReaper_UnleasedSweepFreesADeadOne(t *testing.T) {
+// TestCloudReaper_RecoverySweepFreesADeadOne is the counter-case, so
+// the liveness guard above cannot be satisfied by refusing everything.
+func TestCloudReaper_RecoverySweepFreesADeadOne(t *testing.T) {
 	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
 	f := newFakeBoardCoord()
-	f.claimed["c-dead"] = "podA-1"
-	f.epochs["c-dead"] = 0
+	f.claimed["c-dead"] = dispatcher.ReaperMarker("dead-replica")
+	f.epochs["c-dead"] = 3
 	f.states["c-dead"] = native.StateInProgress
-	f.unleased = []boardmongo.ExpiredCandidate{{
+	f.expired = []boardmongo.ExpiredCandidate{{
 		Tenant: "t1",
 		Claim: tracker.ExpiredClaim{
 			IssueID: "c-dead", LastRunID: "run-dead", State: native.StateInProgress,
-			Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0},
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("dead-replica"), Epoch: 3},
 		},
 	}}
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
@@ -1574,11 +1571,10 @@ func TestCloudReaper_UnleasedSweepFreesADeadOne(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 	}
 
-	d.sweepUnleasedClaims(context.Background())
+	d.sweepAbandonedRecoveryClaims(context.Background(), time.Now(), nil)
 
 	if _, held := f.claimed["c-dead"]; held {
-		t.Fatalf("a card whose run is terminal-resumable and whose claim carries no lease must be freed, still held by %q",
-			f.claimed["c-dead"])
+		t.Fatalf("an abandoned recovery claim over a dead run must be freed, still held by %q", f.claimed["c-dead"])
 	}
 	if got := f.states["c-dead"]; got != native.StateInProgress {
 		t.Fatalf("the gated-off sweep must not decide, card moved to %q", got)
@@ -1609,17 +1605,17 @@ func TestCloudReaper_LatchIsFedOncePerPass(t *testing.T) {
 		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
 	}
 
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
 		t.Fatalf("first pass: %d failure / %d recovery lines — want exactly 1/0 (one verdict per pass, no per-card flap)", cannot, again)
 	}
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
 		t.Fatalf("second pass repeated the edge: %d failure / %d recovery lines", cannot, again)
 	}
 	healed = true
-	d.reapExpiredClaims(context.Background(), time.Now())
-	d.reapExpiredClaims(context.Background(), time.Now())
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 	if again := strings.Count(buf.String(), "can read runs again"); again != 1 {
 		t.Fatalf("recovery announced %d times, want exactly once", again)
 	}
@@ -1656,13 +1652,10 @@ func TestCloudSweep_GatedArmCountsOnlyDisposedCards(t *testing.T) {
 	}
 }
 
-// TestBoardDispatcher_RepairSweepsRunOnTheWatchdogCadence: the two repair
-// sweeps must run on every watchdog pass, gate OFF included — not only at
-// boot. Boot-only meant "never" for the un-leased population: the rolling
-// deploy that CREATES it is also a fleet of fresh boots, each younger
-// than the 24h horizon, so every boot listed zero candidates while the
-// residue accumulated (and the residue is a live holder locked out of
-// its own card by an old binary's full-document replace).
+// TestBoardDispatcher_RepairSweepsRunOnTheWatchdogCadence: the recovery
+// sweep must run on every watchdog pass, gate OFF included — not only at
+// boot: a claim abandoned mid-conservation would otherwise wait for a
+// restart nobody scheduled.
 func TestBoardDispatcher_RepairSweepsRunOnTheWatchdogCadence(t *testing.T) {
 	f := newFakeBoardCoord()
 	// Gate OFF is the arm under test: with the reaper disabled these
@@ -1677,10 +1670,56 @@ func TestBoardDispatcher_RepairSweepsRunOnTheWatchdogCadence(t *testing.T) {
 	d.run(ctx)
 
 	f.mu.Lock()
-	lists := f.unleasedLists
+	lists := f.recoveryLists
 	f.mu.Unlock()
 	if lists < 2 {
-		t.Fatalf("un-leased sweep ran %d time(s) over several watchdog passes — boot-only again: "+
-			"at sub-24h deploy cadence that population is never repaired", lists)
+		t.Fatalf("recovery sweep ran %d time(s) over several watchdog passes — boot-only again: "+
+			"a claim abandoned mid-conservation waits for a restart nobody scheduled", lists)
+	}
+}
+
+// TestCloudReaper_OnePassFeedsTheLatchOnce: the reap and the recovery
+// sweep run in the SAME watchdog pass and fold into ONE verdict — a
+// report per arm brought the mixed flap back one level up (a failing
+// reap followed by a healthy sweep announced a recovery the store never
+// made, every pass, for ever).
+func TestCloudReaper_OnePassFeedsTheLatchOnce(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "on")
+	f := newFakeBoardCoord()
+	// One ordinary expired claim whose run is unreadable…
+	f.claimed["c-bad"] = "dead-1"
+	f.epochs["c-bad"] = 1
+	f.states["c-bad"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim:  tracker.ExpiredClaim{IssueID: "c-bad", LastRunID: "run-bad", Prev: tracker.ClaimToken{Marker: "dead-1", Epoch: 1}},
+	}}
+	// …and one abandoned recovery claim whose run reads fine (the fake's
+	// recovery listing filters f.expired by marker prefix, like the real
+	// coordinator selects).
+	f.claimed["c-rec"] = dispatcher.ReaperMarker("old-replica")
+	f.epochs["c-rec"] = 5
+	f.states["c-rec"] = native.StateInProgress
+	f.expired = append(f.expired, boardmongo.ExpiredCandidate{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{IssueID: "c-rec", LastRunID: "run-ok",
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("old-replica"), Epoch: 5}},
+	})
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.reapEvery = 0
+	d.interval = time.Hour // one pass: the cancelled ctx exits after it
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		if id == "run-bad" {
+			return nil, errors.New("decode run run-bad: invalid character")
+		}
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.run(ctx)
+
+	if cannot, again := strings.Count(buf.String(), "cannot read runs"), strings.Count(buf.String(), "can read runs again"); cannot != 1 || again != 0 {
+		t.Fatalf("one pass, two arms: %d failure / %d recovery lines — want exactly 1/0 (one verdict per PASS, not per arm)", cannot, again)
 	}
 }

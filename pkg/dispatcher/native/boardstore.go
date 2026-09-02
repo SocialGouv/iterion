@@ -143,6 +143,7 @@ func AsLaunchClaimer(s BoardStore) LaunchClaimer {
 var _ BoardStore = (*Store)(nil)
 var _ UniqueTitleCreator = (*Store)(nil)
 var _ LaunchClaimer = (*Store)(nil)
+var _ StateReasoner = (*Store)(nil)
 
 // Compile-time guarantees: the filesystem store is a full board backend.
 var (
