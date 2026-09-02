@@ -11,6 +11,7 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,17 +76,27 @@ import (
 // same-release roll of both — remains required; dual-accept removes only
 // the stranded-v8-message half of the window.)
 //
+// v=10 (2026-08-29): added Fallback so the operator's single run-level
+// fallback route (`--fallback` / launch `fallback`) reaches the runner.
+// Same failure direction as v=7: the server accepted the field and the
+// local executor honoured it, but the cloud path dropped it at publish —
+// so the one route meant to rescue a run from a provider's exhausted
+// usage window never fired precisely where runs park unattended.
+// v=11 (2026-08-30): Fallback became an ordered chain. New consumers accept
+// both the v10 object and the v11 array, while producers always emit the
+// array. A v10 runner must reject the new payload rather than run with a
+// partially decoded rescue policy.
+//
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 9
+const SchemaVersion = 11
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
-// v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored
-// bundle, env-default image"), so a v8 payload decodes into exactly the
-// pre-v9 behaviour.
-const MinSchemaVersion = 8
+// v10 → v11 is additive from the new consumer's perspective: its custom
+// decoder promotes the v10 fallback object to a one-stage chain.
+const MinSchemaVersion = 10
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -129,6 +140,15 @@ type RunMessage struct {
 	// display-only: the studio showed an override the delegates never
 	// honoured.
 	ModelOverrides []ModelOverride `json:"model_overrides,omitempty"`
+	// Fallback carries the operator's ordered run-level fallback chain so
+	// the claiming runner APPLIES it to its executor (ir.ApplyRunFallback,
+	// same screen as a local launch) — the wire mirror of
+	// store.RunFallback, same doctrine as ModelOverrides above. Without
+	// this field the cloud path accepted the launch's `fallback` and
+	// dropped it at publish: the one route meant to rescue a run from an
+	// exhausted usage window never fired on the path where runs park
+	// unattended.
+	Fallback RunFallback `json:"fallback,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
@@ -258,6 +278,50 @@ type ModelOverride struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+}
+
+// RunFallbackEntry is one stage of the operator's run-level fallback
+// chain on the wire — the queue twin of runview.FallbackEntry.
+type RunFallbackEntry struct {
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// RunFallback is the ordered wire chain. Producers marshal it as an array;
+// UnmarshalJSON also accepts the v10 single-object form and promotes it to a
+// one-stage chain. Eligibility is decided by ir.ApplyRunFallback after decode.
+type RunFallback []RunFallbackEntry
+
+func (f *RunFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("queue: empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("queue: invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []RunFallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("queue: decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry RunFallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("queue: decode legacy fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("queue: fallback must be an object or array")
+	}
 }
 
 // IRBackend is the storage backend an IRRef points at.

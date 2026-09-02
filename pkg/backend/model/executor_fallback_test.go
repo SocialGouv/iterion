@@ -107,6 +107,36 @@ func TestProviderFallback_FallsThroughThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestRunFallbackEventsCarryStageIndexes(t *testing.T) {
+	rec := &fallbackRecorder{}
+	fake := &providerScriptedBackend{fail: map[string]error{
+		"primary": &delegate.ErrTransient{Reason: "primary unavailable"},
+		"stage-0": &delegate.ErrTransient{Reason: "first fallback unavailable"},
+	}}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, fake)
+	e := newFallbackExecutor(reg, rec.hook())
+	stage0, stage1 := 0, 1
+	chain := []chainElement{
+		{Provider: "primary"},
+		{Provider: "stage-0", FallbackIndex: &stage0},
+		{Provider: "stage-1", FallbackIndex: &stage1},
+	}
+	task := &delegate.Task{NodeID: "review", Model: "claude-opus-5"}
+
+	if _, err := e.dispatchWithProviderFallback(context.Background(), "review", delegate.BackendClaudeCode, chain, fake, task); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(rec.events) != 2 {
+		t.Fatalf("fallback events = %+v, want two stage transitions", rec.events)
+	}
+	for i, event := range rec.events {
+		if event.FallbackIndex == nil || *event.FallbackIndex != i {
+			t.Fatalf("event %d fallback index = %v, want %d", i, event.FallbackIndex, i)
+		}
+	}
+}
+
 // TestProviderFallback_PerElementModelSwap is the headline case for the
 // per-element model feature: a claude_code node declares
 // `provider: "zai:glm-5.2,anthropic:claude-opus-4-8"`, z.ai (running the

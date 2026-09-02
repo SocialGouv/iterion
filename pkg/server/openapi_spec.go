@@ -78,6 +78,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		BotSources:        botsource.NewMemoryStore(),
 		BotRolesSettings:  platformcfg.NewMemoryStore[platformcfg.BotRoles](),
 		SandboxSettings:   platformcfg.NewMemoryStore[platformcfg.Sandbox](),
+		BotVarsSettings:   platformcfg.NewMemoryStore[platformcfg.BotVars](),
 		Store:             runStore,
 	}
 

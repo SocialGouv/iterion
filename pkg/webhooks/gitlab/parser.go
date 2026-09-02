@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Parsed is the normalized merge-request view the handler consumes.
@@ -21,8 +22,11 @@ type Parsed struct {
 	MRURL          string
 	HeadSHA        string
 	OldRev         string
+	State          string // opened|closed|merged|locked
+	UpdatedAt      string // object_attributes.updated_at — distinguishes successive update events on one head
 	Labels         []string
 	SenderUsername string // the actor that opened/reopened the MR (e.g. "renovate")
+	SenderID       int64  // the actor's numeric account id (replier authz + loop-guard)
 	// Draft reports whether the MR is currently a work-in-progress draft. A
 	// draft MR never auto-triggers a bot (IsReviewable is false).
 	Draft bool
@@ -31,6 +35,15 @@ type Parsed struct {
 	// GitLab equivalent of GitHub's `ready_for_review` action — the moment a
 	// draft becomes reviewable — since GitLab has no dedicated action for it.
 	BecameReady bool
+	// ReRequestedReviewers are the usernames whose review was explicitly
+	// re-requested by THIS event (the "Re-request review" sidebar button —
+	// `changes.reviewers.current[].re_requested`, gitlab-org/gitlab!205274).
+	ReRequestedReviewers []string
+	// AddedReviewers are the usernames newly present in the reviewer set
+	// (current − previous). Adding a reviewer is the same request-a-review
+	// gesture on GitLab versions that predate the re_requested attribute —
+	// and the fallback trigger when it is absent.
+	AddedReviewers []string
 }
 
 // ParseMergeRequest decodes a GitLab merge_request webhook body.
@@ -58,6 +71,24 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 	if c := e.Changes.WorkInProgress; c != nil && c.Previous && !c.Current {
 		becameReady = true
 	}
+	var reRequested, added []string
+	if rc := e.Changes.Reviewers; rc != nil {
+		prev := make(map[int64]bool, len(rc.Previous))
+		for _, r := range rc.Previous {
+			prev[r.ID] = true
+		}
+		for _, r := range rc.Current {
+			if r.Username == "" {
+				continue
+			}
+			if r.ReRequested {
+				reRequested = append(reRequested, r.Username)
+			}
+			if !prev[r.ID] {
+				added = append(added, r.Username)
+			}
+		}
+	}
 	return Parsed{
 		ProjectID:      e.Project.ID,
 		ProjectPath:    e.Project.PathWithNamespace,
@@ -72,11 +103,35 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 		MRURL:          oa.URL,
 		HeadSHA:        oa.LastCommit.ID,
 		OldRev:         oa.OldRev,
+		State:          oa.State,
+		UpdatedAt:      oa.UpdatedAt,
 		Labels:         labels,
 		SenderUsername: e.User.Username,
+		SenderID:       e.User.ID,
 		Draft:          oa.Draft || oa.WorkInProgress,
 		BecameReady:    becameReady,
+
+		ReRequestedReviewers: reRequested,
+		AddedReviewers:       added,
 	}, nil
+}
+
+// ReviewRequestedFrom reports whether THIS event asks `login` for a review:
+// either an explicit "Re-request review" click targeting them, or their
+// first addition to the reviewer set (the same gesture, and the only form
+// GitLab versions without the re_requested attribute can express).
+func (p Parsed) ReviewRequestedFrom(login string) bool {
+	for _, u := range p.ReRequestedReviewers {
+		if strings.EqualFold(u, login) {
+			return true
+		}
+	}
+	for _, u := range p.AddedReviewers {
+		if strings.EqualFold(u, login) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsReviewable reports whether the MR action should AUTO-trigger a review.
@@ -107,6 +162,16 @@ func (p Parsed) IsReviewable() bool {
 // revi/review status re-evaluates on the new head.
 func (p Parsed) IsSynchronize() bool {
 	return !p.Draft && p.Action == "update" && p.OldRev != ""
+}
+
+// StateOpenOrUnknown reports whether the MR can still receive review work:
+// open, or a payload that omits `state` entirely. The fail-open half serves
+// the merge-gate resync lane — a required check must keep following the head,
+// and filtering a stateless payload would deadlock it; deliberate manual
+// gestures (the re-request trigger) use a STRICT open check instead, since
+// there the failure mode is wasted spend, not a stuck check.
+func (p Parsed) StateOpenOrUnknown() bool {
+	return p.State == "" || strings.EqualFold(p.State, "opened")
 }
 
 // SubjectID is the stable per-MR identifier used in delivery records.

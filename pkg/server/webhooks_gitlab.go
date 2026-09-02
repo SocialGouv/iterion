@@ -72,7 +72,8 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 // handleGitLabMergeRequestEvent handles a verified MR open/reopen. The
 // merge-request path covers the auto-launch ("review on open") leg;
 // pushes do NOT re-trigger (see gitlab.IsReviewable) — re-review is
-// on-demand via the `/revi` Note hook below.
+// on-demand, via the `/revi` Note hook below or the forge-native
+// "Re-request review" button on iterion's bot reviewer (reviewRequested).
 func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP string) {
 	p, err := gitlab.ParseMergeRequest(body)
 	if err != nil {
@@ -86,9 +87,26 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// A filtered delivery returns 200 (a 4xx would make GitLab disable
 	// the webhook after repeated metadata-only edits).
 	// ReviewOnSync opts a push-to-MR ("update" with a new head) back into
-	// review so the merge-gate status re-evaluates on the new head SHA.
-	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
-	reviewable := p.IsReviewable() || gateResync
+	// review so the merge-gate status re-evaluates on the new head SHA —
+	// but never on a closed/merged/locked MR (pushes to a dead MR's source
+	// branch still deliver the update hook). Fail-open on a payload without
+	// `state`: filtering it would strand the required check instead.
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
+	// A review request explicitly targeting iterion's own bot account — the
+	// GitLab "Re-request review" sidebar button, or adding the bot to the
+	// reviewer set — is the button form of `/revi`: a deliberate on-demand
+	// re-review, PROVISIONAL until the replier gate below confirms the
+	// clicker (GitLab lets an MR author edit reviewers without a project
+	// role — "the forge gates it" is not an authorization story). Only on
+	// an OPEN MR (reviewer edits arrive freely on closed/merged ones —
+	// mirroring the Note lane's closed-MR filter). Never when the actor IS
+	// the bot: the publish tail self-assigns the bot as reviewer after each
+	// review, and that PUT echoes straight back to this handler.
+	reviewRequested := p.Action == "update" &&
+		strings.EqualFold(p.State, "opened") &&
+		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
+		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername)
+	reviewable := p.IsReviewable() || gateResync || reviewRequested
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "merge_request", "merge_request", "note") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
@@ -98,9 +116,63 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
+	// Same per-bot fan-out as the GitHub PR lane — resolved BEFORE the
+	// hold-label/bot guards so the replier gate below can name the bot whose
+	// forge token authenticates the authz lookup.
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
+	if len(rules) == 0 {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Replier authorization on the re-request lane (R7e050f): every other
+	// MANUAL trigger on this webhook (`/revi`, `/command`, reply-in-thread,
+	// `/revi approve`) goes through the AuthorizedRepliers/MinReplierRole
+	// gate — the button must too. "The forge gates who may edit reviewers"
+	// is not sufficient: GitLab lets an MR AUTHOR edit their own MR's
+	// reviewers without holding a project role, which would hand a fork
+	// contributor a repeatable, hold-label-exempt trigger. An unauthorized
+	// click simply DEMOTES reviewRequested — the delivery then rides
+	// whatever lane still admits it (resync) or is filtered, with the
+	// hold-label exemption gone along with the gesture's authority.
+	if reviewRequested {
+		gate := s.webhookReviewRequestGate
+		if gate == nil {
+			gate = s.realWebhookReviewRequestGate
+		}
+		authorized, reason, gerr := gate(ctx, cfg, p, rules[0].BotID)
+		if gerr != nil {
+			// R34eb8c: an authz ERROR must not strand an automatic lane
+			// co-riding the same event (one update can be BOTH a push and a
+			// reviewers change) — demote the gesture and let the resync
+			// proceed. 502 only when the click was the delivery's sole
+			// reason, so the forge redelivers it.
+			if p.IsReviewable() || gateResync {
+				if s.logger != nil {
+					s.logger.Warn("webhooks: gitlab re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", gerr)
+				}
+				reviewRequested = false
+			} else {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
+				httpError(w, http.StatusBadGateway, "authorization check failed")
+				return
+			}
+		} else if !authorized {
+			reviewRequested = false
+			if !p.IsReviewable() && !gateResync {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+		}
+	}
+
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the MR
-	// vetoes the auto-review. Same escape hatch as the GitHub PR path.
-	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+	// vetoes the auto-review. Same escape hatch as the GitHub PR path. An
+	// AUTHORIZED re-request is exempt like the `/command` lanes: the label
+	// pauses automation, not a deliberate manual trigger.
+	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 
@@ -109,38 +181,44 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// `/revi`). Mirror of the GitHub PR-open path, including its merge-gate
 	// resync exception: a fixer's push is by construction sent by our own bot,
 	// and the re-review it triggers is what re-posts the required check and
-	// supersedes the fixer's self-verdict.
-	if !gateResync && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
+	// supersedes the fixer's self-verdict. (A reviewRequested delivery never
+	// reaches this guard's condition with a bot sender — its own actor guard
+	// already excluded that — and a human's re-request on a bot-authored MR
+	// is deliberate, so it reviews.)
+	if !gateResync && !reviewRequested && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"MR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
-	// Same per-bot fan-out as the GitHub PR lane — this MR lane is a separate
-	// function, so parity is not free and must be kept explicitly.
-	//
-	// Routes on the event actor rather than the MR's author, unlike GitHub:
-	// GitLab's merge_request payload carries only `author_id`, so resolving
-	// the author's username would need an extra API call on the hot path. The
-	// difference shows only on a re-review triggered by someone other than
-	// the MR author, which needs ReviewOnSync to be on in the first place.
-	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
-	if len(rules) == 0 {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
-		return
-	}
+	// (Routing note: the fan-out above resolves on the event actor rather
+	// than the MR's author, unlike GitHub — GitLab's merge_request payload
+	// carries only `author_id`, so resolving the author's username would
+	// need an extra API call on the hot path.)
 
 	// Idempotency: one launch per (tenant, webhook, project, MR, head sha) —
 	// per bot once the delivery fans out. The "mr|" prefix keeps the key space
 	// disjoint from the Note hook ("note|") so a /revi on the same MR can't
 	// collide with the open.
 	idemBase := fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)
+	extra := map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA}
+	if reviewRequested && !gateResync {
+		// A deliberate re-request must relaunch even on a head the auto-review
+		// already claimed — and again on a second click. The MR's updated_at
+		// salts the key so each click is its own delivery, and the "rereq|"
+		// prefix keeps it disjoint from the open/resync space. re_review marks
+		// the posted summary like the `/revi` note path does. NOT when the
+		// same event is also a gate resync (a push carrying a reviewers diff):
+		// the resync already reviews this head under the per-head key, and
+		// swapping key spaces would let the following pure resync review it a
+		// second time.
+		idemBase = fmt.Sprintf("rereq|%s|%s|%d|%d|%s|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA, p.UpdatedAt)
+		extra["re_review"] = "true"
+	}
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
-		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA})
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
 
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
@@ -531,6 +609,35 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 	return true, reason, nil
 }
 
+// realWebhookReviewRequestGate is the production replier gate of the
+// re-request-review lane: the SAME controls every other manual trigger
+// honours — cfg.AuthorizedRepliers OR a project role ≥ cfg.MinReplierRole
+// (empty → developer) — applied to the account that clicked the button.
+// Resolution failures refuse (fail closed): this gate is the lane's whole
+// authorization story.
+func (s *Server) realWebhookReviewRequestGate(ctx context.Context, cfg webhooks.Config, p gitlab.Parsed, botID string) (bool, string, error) {
+	token, terr := s.resolveForgeToken(ctx, cfg, botID)
+	if terr != nil || token == "" {
+		return false, "re-request refused: no forge token resolved (configure a forge_token binding)", nil
+	}
+	baseURL, refusal := resolveForgeBaseURL(cfg, p.MRURL)
+	if refusal != "" {
+		return false, refusal, nil
+	}
+	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
+	ok, reason, err := gitlab.AuthorizeReplier(ctx, api, gitlab.ReplierAuth{
+		AuthorID: p.SenderID, AuthorUsername: p.SenderUsername, ProjectID: p.ProjectID,
+		Allowlist: cfg.AuthorizedRepliers, MinRole: cfg.MinReplierRole,
+	})
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "re-request review by unauthorized replier: " + p.SenderUsername, nil
+	}
+	return true, reason, nil
+}
+
 // canRouteToConverseBot reports whether the given conversational bot id
 // (the caller's roleBots snapshot — passed in so the gate and the launch
 // agree on ONE bot) is allowed by this webhook config and resolvable on
@@ -799,9 +906,49 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		Policy: sb.RetryPolicy(),
 	})
 	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry)
+	overrides, err := s.scheduledForgeOverrides(ctx, sb)
+	if err != nil {
+		return err
+	}
+	spec.SecretOverrides = overrides
 	lb.Stamp(&spec)
 	_, err = s.runs.Launch(ctx, spec)
 	return err
+}
+
+// scheduledForgeOverrides resolves a repo-bound schedule's forge connection
+// AT THE TICK — the same managed-token mint every studio/API launch performs.
+// Without it the clone leans on a hand-set `forge_token` team secret, which
+// expires eventually and then kills every tick at clone with "Invalid
+// username or token" while manual launches (which mint fresh) keep working —
+// exactly the masked failure docs/scheduling.md warns about. Explicit error,
+// never a silent fall-through: a schedule that PINNED an integration wants
+// its token; letting the tick limp on to a doomed clone would just move the
+// failure three minutes later and strip its cause. A schedule with no pinned
+// integration keeps the legacy bot-secret-binding resolution (nil overrides).
+func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.ScheduledBot) (map[string]string, error) {
+	if sb.RepoIntegrationID == "" {
+		return nil, nil
+	}
+	if s.forgeIntegrations == nil || s.forgeConnections == nil || s.forgeOrchestrator == nil {
+		return nil, fmt.Errorf("schedule %s pins repo integration %s but the forge layer is not wired", sb.ID, sb.RepoIntegrationID)
+	}
+	integ, err := s.forgeIntegrations.Get(store.WithoutTenantFilter(ctx), sb.RepoIntegrationID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: resolve repo integration %s: %w", sb.ID, sb.RepoIntegrationID, err)
+	}
+	if integ.TenantID != sb.TenantID {
+		return nil, fmt.Errorf("schedule %s: repo integration %s belongs to another tenant", sb.ID, sb.RepoIntegrationID)
+	}
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), integ.ConnectionID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: resolve forge connection %s: %w", sb.ID, integ.ConnectionID, err)
+	}
+	secID, err := s.forgeOrchestrator.EnsureManagedSecret(store.WithTenant(ctx, conn.TenantID), &conn, "scheduler:"+sb.BotID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
+	}
+	return map[string]string{"forge_token": secID}, nil
 }
 
 // buildScheduledLaunchSpec is the pure-data half of launchScheduledBot,

@@ -65,6 +65,8 @@ export interface RunSummary {
   updated_at: string;
   finished_at?: string;
   error?: string;
+  // Machine-readable classification of `error` (ADR-095); absent = unknown.
+  failure_code?: string;
   active: boolean;
   // When a failed_resumable run will be resumed automatically, once the
   // provider quota window that killed it reopens. Absent when no retry is
@@ -133,7 +135,11 @@ export type MergeStatus =
   // currently in the conflicted state (markers on disk, UU paths in
   // the index). The studio renders MergeConflictView until the
   // operator resolves every file + finalizes or aborts.
-  | "conflicted";
+  | "conflicted"
+  // A worker holds the merge claim (ClaimMerge CAS) and is squashing/
+  // pushing right now; a second merge request is refused server-side
+  // until the claim resolves or goes stale.
+  | "merging";
 
 // Mirror of sessionboard.Widget / sessionboard.Spec (Go). The LLM
 // curation layer (Phase 2) emits these; the studio renders one card per
@@ -274,6 +280,8 @@ export interface RunHeader {
   updated_at: string;
   finished_at?: string;
   error?: string;
+  // Machine-readable classification of `error` (ADR-095); absent = unknown.
+  failure_code?: string;
   // Typed for the budget-consumption + paused-node fields the UI reads;
   // the rest of the checkpoint stays opaque. See RunCheckpoint.
   checkpoint?: RunCheckpoint;

@@ -117,6 +117,21 @@ func (s *MongoDeliveryStore) ListByWebhook(ctx context.Context, tenantID, webhoo
 		options.Find().SetSort(bson.M{"received_at": -1}).SetLimit(int64(limit)))
 }
 
+func (s *MongoDeliveryStore) CountLaunched(ctx context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error) {
+	n, err := s.kit.Coll().CountDocuments(ctx, bson.M{
+		"tenant_id":    tenantID,
+		"webhook_id":   webhookID,
+		"event_kind":   eventKind,
+		"project_path": projectPath,
+		"subject_id":   subjectID,
+		"run_id":       bson.M{"$nin": bson.A{nil, ""}},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("webhooks: count launched deliveries: %w", err)
+	}
+	return int(n), nil
+}
+
 // ---- MongoCounter ----
 
 type MongoCounter struct{ col *mongo.Collection }

@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -107,11 +110,18 @@ type launchRunRequest struct {
 	// See runview.ModelOverrideEntry. The current queue contract carries them
 	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
-	// Fallback is the operator's single run-level fallback route, taken
-	// when an agent node's primary fails. It applies only to agent nodes
-	// that declare no `fallbacks:` of their own and never to judges.
+	// RoutingPolicy is the launch-frozen outcome contract: what
+	// "success" and "blocked" mean for this run (bot-DSL expressions
+	// over the terminal outputs), where a success lands, and which
+	// actions a consumer may take automatically. Validated and hashed
+	// here; immutable afterwards.
+	RoutingPolicy *store.RoutingPolicy `json:"routing_policy,omitempty"`
+	// Fallback is the operator's ordered run-level fallback chain, taken
+	// when an agent node's primary or preceding stage fails. It applies only
+	// to agent nodes that declare no `fallbacks:` of their own and never to judges.
+	// A single object is promoted to a one-stage chain for compatibility.
 	// Omitted = none. See ADR-087.
-	Fallback *runview.FallbackEntry `json:"fallback,omitempty"`
+	Fallback launchFallback `json:"fallback,omitempty"`
 	// Budget carries run-level budget-cap overrides for the workflow's
 	// `budget:` block — the HTTP twin of the CLI --max-* flags. Non-zero
 	// fields win over the DSL/recipe budget; zero fields inherit. A bad
@@ -156,6 +166,41 @@ type launchRunRequest struct {
 	// holds the run's user-facing answer (the "final_answer" field).
 	// Empty → the notifier scans all artifact nodes for "final_answer".
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// launchFallback accepts the original single-object request and the ordered
+// array form. Its default JSON marshaler always emits the canonical array.
+type launchFallback []runview.FallbackEntry
+
+func (f *launchFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []runview.FallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry runview.FallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("decode legacy fallback: %w", err)
+		}
+		*f = []runview.FallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("fallback must be an object or array")
+	}
 }
 
 // launchBudgetSpec is the wire shape of launchRunRequest.Budget. Field
@@ -246,6 +291,16 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
+	}
+	if req.RoutingPolicy != nil {
+		// Refuse a malformed contract BEFORE any work happens — a bad
+		// expression discovered at the terminal would strand a finished
+		// run behind an unreadable policy.
+		if perr := routing.Validate(req.RoutingPolicy); perr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", perr)
+			return
+		}
+		req.RoutingPolicy.Hash = req.RoutingPolicy.ComputeHash()
 	}
 	// Cloud mode has no operator filesystem, so a bare workspace file_path
 	// can't be read. Resolve the bot through the tiered authority instead
@@ -418,6 +473,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(botID),
 		ModelOverrides:     req.ModelOverrides,
+		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,
 		Budget:             budget,
 		ParentRunID:        req.ParentRunID,
@@ -449,6 +505,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			// succeeds once the window reopens, and the message says when.
 			s.httpErrorFor(w, r, http.StatusTooManyRequests, "%v", err)
 			span.SetStatus(codes.Error, "usage cap reached")
+			return
+		}
+		if s.writeQueueOutageError(w, r, "launch", err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "queue unavailable")
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", err)
@@ -626,6 +687,9 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 // writeResumeError preserves the normal human-readable error response and
 // adds a stable code for the one resume failure the studio must act on.
 func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
+	if s.writeQueueOutageError(w, r, "resume", err) {
+		return
+	}
 	if runtime.IsWorkflowSourceChanged(err) {
 		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
 			"error":      fmt.Sprintf("resume: %v", err),
@@ -634,6 +698,23 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		return
 	}
 	s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+}
+
+// writeQueueOutageError is shared by launch and both resume error sites
+// (upload preflight and publication). errors.As deliberately handles the
+// wrapping and errors.Join shapes produced when queue publication and the
+// compensating run-status update both fail.
+func (s *Server) writeQueueOutageError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
+	var queueErr *runview.QueueUnavailableError
+	if !errors.As(err, &queueErr) {
+		return false
+	}
+	s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
+		"error":      fmt.Sprintf("%s: %v", operation, queueErr),
+		"error_code": queueErr.Code(),
+		"retryable":  queueErr.Retryable(),
+	})
+	return true
 }
 
 // parseTimeout accepts an empty string (no timeout) or a Go duration

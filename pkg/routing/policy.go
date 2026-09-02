@@ -1,0 +1,392 @@
+// Package routing evaluates a run's launch-frozen RoutingPolicy
+// against its terminal state. It is a pure decision function — it
+// performs no action, maintains no state, and is shared by every
+// consumer (API surfaces today, the outcome reactor next) so there is
+// exactly one reading of a contract.
+package routing
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// Decision is what the policy says about a terminal run. It is a
+// statement, not an action — the consumer still applies its own
+// preconditions (banked branch integrity, continuation ownership,
+// relaunch budget) before acting.
+type Decision string
+
+const (
+	// DecisionMerge: SuccessWhen held, no blocker held, and "merge" is
+	// an allowed action.
+	DecisionMerge Decision = "merge"
+	// DecisionEscalate: a blocker held, an expression could not be
+	// read strictly, the outcome is a failure the policy does not
+	// permit acting on, or the policy allows nothing — a human (or a
+	// richer consumer) owns the next step. Escalation is the DEFAULT:
+	// every uncertain path lands here, never on merge.
+	DecisionEscalate Decision = "escalate"
+	// DecisionRelaunch: the run's terminal state does not satisfy the
+	// contract and the policy permits
+	// retrying fresh ("relaunch" allowed). The consumer enforces
+	// MaxRelaunches — the decision only states permission. NOTE: no
+	// shipped consumer enforces it yet (there is no relaunch counter or
+	// lineage on the run); until one exists the field is declared,
+	// validated and persisted but NOT applied — a consumer wiring
+	// relaunch must ship the counter with it.
+	DecisionRelaunch Decision = "relaunch"
+)
+
+// Verdict carries the decision and its evidence: which expression
+// produced it and what it evaluated to. A consumer records the verdict
+// (with the policy hash) so an audit can replay WHY.
+type Verdict struct {
+	Decision Decision
+	// Reason is a one-line, human-readable cause ("success_when held",
+	// "block_when[0] held", "success_when: path absent").
+	Reason string
+	// PolicyHash echoes the contract that decided.
+	PolicyHash string
+}
+
+// CurrentPolicyVersion is the newest contract schema this reader
+// understands. A newer contract carries fields this code cannot see —
+// executing it anyway would honour half a contract.
+const CurrentPolicyVersion = 1
+
+// Evaluate reads the policy against the run's terminal state. Strict
+// by construction:
+//   - nil policy → escalate ("no contract, no automatic action");
+//   - a contract newer than this reader → escalate;
+//   - no terminal outputs on the run → escalate;
+//   - any blocker that is true OR unreadable → escalate;
+//   - SuccessWhen unreadable (absent path, non-bool value, parse
+//     error) → escalate — a missing field is a contract violation,
+//     not a false. Strictness holds through composition: every REF of
+//     the expression is resolved and type-checked individually before
+//     evaluation, because "!"/"&&"/"||" coerce their operands (an
+//     absent field under "!" would otherwise read as true);
+//   - SuccessWhen true → merge if allowed, else escalate;
+//   - SuccessWhen false → relaunch if allowed, else escalate.
+func Evaluate(r *store.Run) Verdict {
+	// LoadRun returns nil on error and half the repo writes
+	// `err == nil && r != nil` for exactly that; a consumer that
+	// forgets panics in a goroutine outside net/http's recover.
+	if r == nil {
+		return Verdict{Decision: DecisionEscalate, Reason: "no run to evaluate"}
+	}
+	p := r.RoutingPolicy
+	if p == nil {
+		return Verdict{Decision: DecisionEscalate, Reason: "no routing policy on the run"}
+	}
+	// The hash is the audit's claim of WHICH contract decided; recopying
+	// a stale stamp would let a verdict ride under a hash that does not
+	// describe the applied contract, and an unstamped policy (a future
+	// surface skipping ComputeHash) would audit as "". Recompute — and
+	// refuse a mismatch rather than guess which of the two is the truth.
+	recomputed := p.ComputeHash()
+	if p.Hash != "" && p.Hash != recomputed {
+		return Verdict{Decision: DecisionEscalate, PolicyHash: recomputed,
+			Reason: "policy hash mismatch: the stored contract does not match its stamp"}
+	}
+	v := Verdict{PolicyHash: recomputed}
+	if p.Version > CurrentPolicyVersion {
+		v.Decision = DecisionEscalate
+		v.Reason = fmt.Sprintf("contract version %d is newer than this reader (max %d)", p.Version, CurrentPolicyVersion)
+		return v
+	}
+	if !r.Status.IsTerminal() {
+		// The contract describes a TERMINAL run: while the run is still
+		// moving (or parked on a human gate) the checkpoint's outputs
+		// are not its final word, and acting on them would land work in
+		// flight. The reactor pre-filters too, but this is the single
+		// trusted reading — the precondition lives HERE, not in a doc.
+		v.Decision = DecisionEscalate
+		v.Reason = fmt.Sprintf("run is not terminal (status %s) — nothing to decide yet", r.Status)
+		return v
+	}
+	if r.Checkpoint == nil || len(r.Checkpoint.Outputs) == 0 {
+		// Defence in depth, independent of the per-ref checks below:
+		// with no terminal outputs there is nothing to read a verdict
+		// from, whatever shape the expressions take.
+		v.Decision = DecisionEscalate
+		v.Reason = "no terminal outputs on the run — nothing to evaluate the contract against"
+		return v
+	}
+
+	ctx := exprContext(r)
+
+	for i, b := range p.BlockWhen {
+		held, err := evalStrictBool(b, ctx)
+		if err != nil {
+			v.Decision = DecisionEscalate
+			v.Reason = fmt.Sprintf("block_when[%d] unreadable: %v", i, err)
+			return v
+		}
+		if held {
+			v.Decision = DecisionEscalate
+			v.Reason = fmt.Sprintf("block_when[%d] held: %s", i, b)
+			return v
+		}
+	}
+
+	success, err := evalStrictBool(p.SuccessWhen, ctx)
+	if err != nil {
+		v.Decision = DecisionEscalate
+		v.Reason = fmt.Sprintf("success_when unreadable: %v", err)
+		return v
+	}
+	if success {
+		if !r.Status.IsFinalSuccess() {
+			// A cancelled or failed_resumable run can carry a checkpoint
+			// whose outputs still satisfy success_when — the gate spoke
+			// on an EARLIER pass. Only a run that completed its workflow
+			// may land its work.
+			v.Decision = DecisionEscalate
+			v.Reason = fmt.Sprintf("success_when held but the run's status is %s, not finished — the outputs describe an earlier pass", r.Status)
+			return v
+		}
+		if allows(p, "merge") {
+			v.Decision = DecisionMerge
+			v.Reason = "success_when held: " + p.SuccessWhen
+			return v
+		}
+		v.Decision = DecisionEscalate
+		v.Reason = "success_when held but merge is not an allowed action"
+		return v
+	}
+	if allows(p, "relaunch") {
+		if p.MaxRelaunches <= 0 {
+			// The omitempty default IS the documented "never relaunch
+			// automatically": a contract that lists the action but
+			// leaves the cap at zero has not granted anything.
+			v.Decision = DecisionEscalate
+			v.Reason = "success_when did not hold and max_relaunches is 0 — relaunch is listed but not granted"
+			return v
+		}
+		v.Decision = DecisionRelaunch
+		v.Reason = "success_when did not hold: " + p.SuccessWhen
+		return v
+	}
+	v.Decision = DecisionEscalate
+	v.Reason = "success_when did not hold and relaunch is not an allowed action"
+	return v
+}
+
+// Validate parses every expression and normalises the policy; called at
+// launch so a malformed contract is refused BEFORE any work happens,
+// never discovered at the terminal.
+func Validate(p *store.RoutingPolicy) error {
+	if p == nil {
+		return nil
+	}
+	if p.Version < 1 || p.Version > CurrentPolicyVersion {
+		return fmt.Errorf("routing policy: version must be 1..%d, got %d", CurrentPolicyVersion, p.Version)
+	}
+	if strings.TrimSpace(p.SuccessWhen) == "" {
+		return fmt.Errorf("routing policy: success_when is required")
+	}
+	if err := validateExpr("success_when", p.SuccessWhen); err != nil {
+		return err
+	}
+	for i, b := range p.BlockWhen {
+		if err := validateExpr(fmt.Sprintf("block_when[%d]", i), b); err != nil {
+			return err
+		}
+	}
+	for _, a := range p.AllowedActions {
+		switch a {
+		case "merge", "relaunch", "resume":
+		default:
+			return fmt.Errorf("routing policy: unknown action %q (allowed: merge, relaunch, resume)", a)
+		}
+	}
+	if p.MaxRelaunches < 0 {
+		return fmt.Errorf("routing policy: max_relaunches must be >= 0")
+	}
+	switch p.MergeStrategy {
+	case "", store.MergeStrategySquash, store.MergeStrategyMerge:
+	default:
+		return fmt.Errorf("routing policy: unknown merge_strategy %q (allowed: squash, merge)", p.MergeStrategy)
+	}
+	if err := validateBranchName(p.MergeInto); err != nil {
+		return fmt.Errorf("routing policy: merge_into: %w", err)
+	}
+	return nil
+}
+
+// validateExpr enforces the v1 contract grammar: a boolean combination
+// of outputs.<node>.<key>… refs, nothing else. A namespace the routing
+// context cannot resolve (vars, input, artifacts, loop) — or a
+// comparison, literal or combinator whose truthy coercion would defeat
+// strict evaluation — is refused at LAUNCH, not discovered at the
+// terminal.
+func validateExpr(field, src string) error {
+	ast, err := expr.Parse(src)
+	if err != nil {
+		return fmt.Errorf("routing policy: %s: %w", field, err)
+	}
+	if !ast.IsBoolAlgebraOverRefs() {
+		return fmt.Errorf("routing policy: %s: the contract grammar is output refs combined with !, && and || only", field)
+	}
+	for _, ref := range ast.Refs() {
+		if ref.Namespace != "outputs" || len(ref.Path) < 2 {
+			return fmt.Errorf("routing policy: %s: ref %s.%s is outside the contract's vocabulary (outputs.<node>.<key> only)", field, ref.Namespace, strings.Join(ref.Path, "."))
+		}
+	}
+	return nil
+}
+
+// validateBranchName refuses target names git would misread — the value
+// comes from an HTTP body and feeds a git operation. "" is allowed (the
+// run's RepoRef default); everything else goes through the repo's ONE
+// canonical rule (gitlib.ValidateBranchName), which is strictly stronger
+// than the ad-hoc check it replaces (length, HEAD, refspec sigils,
+// control bytes, @{ …).
+func validateBranchName(name string) error {
+	if name == "" {
+		return nil
+	}
+	return gitlib.ValidateBranchName(name)
+}
+
+// allows reports whether action is in the policy's allowed set. An
+// empty set allows NOTHING — the fail-closed default.
+func allows(p *store.RoutingPolicy, action string) bool {
+	for _, a := range p.AllowedActions {
+		if a == action {
+			return true
+		}
+	}
+	return false
+}
+
+// evalStrictBool evaluates src strictly. Three layers, each needed:
+//  1. the expression must be pure boolean algebra over refs (the
+//     grammar Validate enforces — re-checked here so a contract that
+//     somehow bypassed launch validation still cannot coerce);
+//  2. EVERY ref must resolve to a non-nil bool BEFORE evaluation —
+//     "!"/"&&"/"||" coerce their operands via truthiness, so the
+//     final-result type check alone would let "!outputs.gone.flag"
+//     (absent field, typo'd node, renamed key) read as true;
+//  3. the result must be a bool (redundant given 1+2, kept as belt).
+func evalStrictBool(src string, ctx *expr.Context) (bool, error) {
+	ast, err := expr.Parse(src)
+	if err != nil {
+		return false, fmt.Errorf("parse: %w", err)
+	}
+	if !ast.IsBoolAlgebraOverRefs() {
+		return false, fmt.Errorf("not a boolean combination of output refs — the strict contract grammar is refs, !, &&, || only")
+	}
+	for _, ref := range ast.Refs() {
+		val := resolveRef(ctx, ref)
+		if val == nil {
+			return false, fmt.Errorf("%s.%s: path absent", ref.Namespace, strings.Join(ref.Path, "."))
+		}
+		if _, ok := val.(bool); !ok {
+			return false, fmt.Errorf("%s.%s: not a bool (got %T)", ref.Namespace, strings.Join(ref.Path, "."), val)
+		}
+	}
+	val, err := ast.Eval(ctx)
+	if err != nil {
+		return false, err
+	}
+	b, ok := val.(bool)
+	if !ok {
+		return false, fmt.Errorf("not a bool (got %T)", val)
+	}
+	return b, nil
+}
+
+// resolveRef reads one ref through the same resolvers evaluation uses.
+func resolveRef(ctx *expr.Context, ref expr.Ref) any {
+	switch ref.Namespace {
+	case "outputs":
+		if ctx.Outputs == nil {
+			return nil
+		}
+		return ctx.Outputs(ref.Path)
+	default:
+		return nil
+	}
+}
+
+// exprContext resolves the ONE namespace the contract grammar admits —
+// outputs.<node>.<key>…, the checkpoint's output map (the gates the bot
+// published). validateExpr refuses every other namespace at launch; a
+// run.* resolver existed once and was dropped as unreachable.
+func exprContext(r *store.Run) *expr.Context {
+	return &expr.Context{
+		Outputs: func(path []string) any {
+			if r.Checkpoint == nil || len(path) == 0 {
+				return nil
+			}
+			node, ok := r.Checkpoint.Outputs[path[0]]
+			if !ok {
+				return nil
+			}
+			var cur any = node
+			for _, seg := range path[1:] {
+				m, ok := cur.(map[string]any)
+				if !ok {
+					return nil
+				}
+				cur, ok = m[seg]
+				if !ok {
+					return nil
+				}
+			}
+			return cur
+		},
+	}
+}
+
+// ValidateRefs resolves every contract ref against the workflow the run
+// will execute: the node must exist and, when the caller can answer,
+// the field must be declared. A blocker on a field the bot never
+// publishes passes the grammar, survives the launch, and silently
+// disables the automation at the terminal ("unreadable → escalate,
+// forever") — the exact inverse of the launch-refusal promise. hasField
+// may be nil (or answer true) for nodes whose output shape is not
+// statically known; the node check always runs.
+func ValidateRefs(p *store.RoutingPolicy, hasNode func(node string) bool, hasField func(node, field string) bool) error {
+	if p == nil || hasNode == nil {
+		return nil
+	}
+	check := func(label, src string) error {
+		if src == "" {
+			return nil
+		}
+		ast, err := expr.Parse(src)
+		if err != nil {
+			// Validate owns the grammar refusal; this is belt.
+			return fmt.Errorf("routing policy: %s: %w", label, err)
+		}
+		for _, ref := range ast.Refs() {
+			if ref.Namespace != "outputs" || len(ref.Path) < 2 {
+				continue // Validate's refusal, not ours
+			}
+			node, key := ref.Path[0], ref.Path[1]
+			if !hasNode(node) {
+				return fmt.Errorf("routing policy: %s: outputs.%s.%s references node %q, which does not exist in this workflow", label, node, key, node)
+			}
+			if hasField != nil && !hasField(node, key) {
+				return fmt.Errorf("routing policy: %s: outputs.%s.%s references field %q, which node %q never publishes — the contract would evaluate unreadable at the terminal and disable the automation", label, node, key, key, node)
+			}
+		}
+		return nil
+	}
+	if err := check("success_when", p.SuccessWhen); err != nil {
+		return err
+	}
+	for i, b := range p.BlockWhen {
+		if err := check(fmt.Sprintf("block_when[%d]", i), b); err != nil {
+			return err
+		}
+	}
+	return nil
+}

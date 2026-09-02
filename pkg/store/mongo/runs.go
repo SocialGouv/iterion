@@ -153,6 +153,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		{"run_turns", s.runTurns},
 		{"run_logs", s.runLogs},
 		{"run_tags", s.runTags},
+		{"run_route_decisions", s.routeDecisions},
 	}
 	for _, c := range children {
 		if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {
@@ -222,11 +223,120 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	r.UpdatedAt = time.Now().UTC()
 	r.SchemaVersion = SchemaVersion
 	stampTenant(ctx, r)
+	// The merge claim is owned by ClaimMerge/UpdateRunMergeIf. A caller
+	// whose copy predates a live claim (rename, rewind bookkeeping)
+	// must not disavow it through this full-document replace. Best-
+	// effort read-then-replace (a claim landing inside this window can
+	// still be clobbered — the FS twin is atomic under its mutex; a
+	// version CAS on SaveRun is the real fix, follow-up), which closes
+	// the measured window: a stale copy loaded BEFORE the claim.
+	if r.MergeStatus != store.MergeStatusMerging {
+		var cur struct {
+			MergeStatus    store.MergeStatus `bson:"merge_status"`
+			MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
+		}
+		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
+			options.FindOne().SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})).Decode(&cur); ferr == nil &&
+			cur.MergeStatus == store.MergeStatusMerging {
+			r.MergeStatus = cur.MergeStatus
+			r.MergeClaimedAt = cur.MergeClaimedAt
+		}
+	}
 	// The notDeleted predicate closes the guard's TOCTOU window: a
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then
 	// trips the duplicate-_id error instead of resurrecting the run.
-	_, err := s.runs.ReplaceOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), r, options.Replace().SetUpsert(true))
+	// Best-effort guard: a copy whose STATUS is already non-failure
+	// must not resurrect its failure code through this full-document
+	// write. A copy stale on the status itself still rewrites
+	// status+code together (the inherent SaveRun read-modify-write
+	// hazard — a version CAS is the real fix, follow-up); callers on
+	// that path re-stamp the fields by hand (see rewind.go).
+	if !r.Status.CarriesFailureCode() {
+		r.FailureCode = ""
+	}
+	// Same discipline for the pause pointer: a full-document write on a
+	// non-carrying status must not resurrect consumed interaction
+	// evidence (mirrors the FS twin).
+	if !r.Status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
+	}
+	// Pipeline update instead of a plain ReplaceOne: the outcome
+	// bookkeeping (outcome_seq / continuation_state) does not belong to
+	// full-document savers — a caller replaying a stale in-memory Run
+	// must not rewind the episode counter or resurrect a continuation a
+	// status transition wrote meanwhile. Same persisted status ⇒ keep
+	// the persisted values; a status change through SaveRun IS a
+	// transition ⇒ new episode on terminal arrival, continuation
+	// cleared (untyped). Mirrors FilesystemRunStore.
+	raw, err := bson.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("store/mongo: marshal run %s: %w", r.ID, err)
+	}
+	var doc bson.M
+	if err := bson.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("store/mongo: remarshal run %s: %w", r.ID, err)
+	}
+	delete(doc, "outcome_seq")
+	delete(doc, "continuation_state")
+	delete(doc, "failure_code")
+	delete(doc, "routing_policy")
+	terminalInc := 0
+	switch r.Status {
+	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		terminalInc = 1
+	}
+	// $ifNull: an upsert-create has no $status; without the default a
+	// brand-new document written directly in a terminal status would
+	// count an episode on Mongo and none on FS.
+	statusChanged := bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$status", r.Status}}, r.Status}}
+	seqBase := bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}
+	// The document's own (normalized) failure code lands on a status
+	// CHANGE — a transition through SaveRun owns its cause (the
+	// publisher rollback re-stamps the prior one this way). On a
+	// same-status save the persisted value wins: a stale copy must not
+	// erase what a park wrote meanwhile.
+	var docCode any = "$$REMOVE"
+	if r.FailureCode != "" {
+		docCode = bson.M{"$literal": string(r.FailureCode)}
+	}
+	computed := bson.M{
+		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
+		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
+		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
+		// The launch-frozen contract is IMMUTABLE: once persisted it
+		// wins over whatever the saver carries (a stale full-document
+		// save, or a binary too old to know the field, must not drop
+		// it). The first-write fallback only stays open while the run
+		// has not started producing (absent/queued/running status):
+		// fixing a contract onto ALREADY-TERMINAL work would decide
+		// retroactively — the exact attack the snapshot exists to stop.
+		"routing_policy": bson.M{"$cond": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
+			"$routing_policy",
+			bson.M{"$cond": bson.A{
+				bson.M{"$in": bson.A{bson.M{"$ifNull": bson.A{"$status", string(store.RunStatusQueued)}}, bson.A{store.RunStatusQueued, store.RunStatusRunning}}},
+				bson.M{"$literal": r.RoutingPolicy},
+				nil,
+			}},
+		}},
+	}
+	// $literal shields the document from aggregation-expression
+	// evaluation: without it, any string VALUE starting with "$" is
+	// parsed as a field path (silently dropped or substituted by
+	// another field's value) and any map key containing "." rejects
+	// the write — an agent output like "$ ./gradlew build" or an input
+	// keyed "config.path" is enough. The computed fields stay outside
+	// the literal: they must resolve $status/$outcome_seq against the
+	// stored pre-image.
+	pipeline := mongo.Pipeline{
+		{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{computed, bson.M{"$literal": doc}}}}},
+	}
+	_, err = s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), pipeline, options.UpdateOne().SetUpsert(true))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return fmt.Errorf("store/mongo: run %s: %w", r.ID, store.ErrRunDeleted)
@@ -625,38 +735,133 @@ func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served 
 	return nil
 }
 
-func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
-	now := time.Now().UTC()
+// statusTransitionSet builds the single $set-stage document of a
+// status-transition PIPELINE update — the Mongo twin of the FS store's
+// applyStatusTransitionOutcome, and the one choke point every status
+// writer goes through (a writer that hand-rolls its update WILL
+// drift). A pipeline, not a plain $set/$unset pair, because two of the
+// disciplines are conditional on the CURRENT document:
+//   - outcome_seq increments only on a TRANSITION into a terminal
+//     status ($cond on "$status"): a same-status rewrite (a drain's
+//     markInterrupted, a repeated flip, the publisher's rollback) must
+//     not invent an episode;
+//   - continuation_state is preserved on a same-status rewrite unless
+//     the writer states one (an untyped rewrite of an already-parked
+//     run must not erase a live retry_armed), and cleared on a genuine
+//     state change without a statement.
+//
+// Free-text values ride under $literal — in a pipeline stage a string
+// value is an EXPRESSION, and an operator-supplied error message
+// containing "$status" must be stored as data, not evaluated.
+func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOutcomeMeta, now time.Time) bson.M {
+	terminal := status.IsFinalSuccess() || status.IsFinalFailure() || status.IsTerminalResumable()
+	statusChanged := bson.M{"$ne": bson.A{"$status", string(status)}}
 	set := bson.M{
-		"status":     status,
+		"status":     bson.M{"$literal": string(status)},
 		"updated_at": now,
-		"error":      runErr,
+		"version":    bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 	}
-	unset := bson.M{}
-	switch status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
+	// The error message: a transition always states its own (empty
+	// included); a same-status rewrite that states nothing keeps the
+	// transition's message — the runner's continuation promote must not
+	// blank the engine's failure text.
+	if runErr != "" {
+		set["error"] = bson.M{"$literal": runErr}
+	} else {
+		set["error"] = bson.M{"$cond": bson.A{statusChanged, "", bson.M{"$ifNull": bson.A{"$error", ""}}}}
+	}
+	// The FailureCode discipline: set on a failure status, removed by
+	// every transition to a non-failure one — $$REMOVE, not "", keeps
+	// the persisted shape identical to the FS twin's omitempty JSON
+	// (including an UNKNOWN empty code on a failure status). An untyped
+	// SAME-STATUS rewrite preserves the cause the transition wrote
+	// (adversarial gate F1's second half: a drain-style rewrite must
+	// not erase the typed cause).
+	switch {
+	case status.CarriesFailureCode() && meta.Code != "":
+		set["failure_code"] = bson.M{"$literal": string(meta.Code)}
+	case status.CarriesFailureCode():
+		set["failure_code"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
+			bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}}
+	default:
+		set["failure_code"] = "$$REMOVE"
+	}
+	// The pause pointer is a consumable (store.CarriesPausePointer):
+	// strip it off the SURVIVING checkpoint via $unsetField, guarded on
+	// the checkpoint being a document (a dotted write on a null parent
+	// would materialize an empty object; an absent field evaluates to
+	// missing and stays absent).
+	if !status.CarriesPausePointer() {
+		set["checkpoint"] = bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{bson.M{"$type": "$checkpoint"}, "object"}},
+			bson.M{"$unsetField": bson.M{"field": "interaction_questions",
+				"input": bson.M{"$unsetField": bson.M{"field": "interaction_id", "input": "$checkpoint"}}}},
+			"$checkpoint",
+		}}
+	}
+	switch {
+	case terminal:
 		set["finished_at"] = now
-	case store.RunStatusQueued:
+	case status == store.RunStatusQueued:
+		// Every queue publication is a distinct attempt (rejected by
+		// identity, not merely by the shared `queued` status).
 		set["queued_at"] = now
-		unset["finished_at"] = ""
-	case store.RunStatusRunning:
+		set["finished_at"] = "$$REMOVE"
+	case status == store.RunStatusRunning:
 		// Resume must clear FinishedAt or the elapsed-time ticker
-		// freezes mid-run (mirrors FilesystemRunStore).
-		set["error"] = ""
-		unset["finished_at"] = ""
-	case store.RunStatusPausedWaitingHuman:
-		// Mirror the FS store: a generic UpdateRunStatus that crosses
-		// from a previously-terminal (failed_resumable) state into
-		// paused-waiting-human must also clear finished_at so the
-		// elapsed-time UI doesn't stay frozen.
-		unset["finished_at"] = ""
+		// freezes mid-run; a running run carries no failure message.
+		set["error"] = bson.M{"$literal": ""}
+		set["finished_at"] = "$$REMOVE"
+	case status == store.RunStatusPausedWaitingHuman:
+		// A generic UpdateRunStatus crossing from a previously-terminal
+		// state into paused must clear finished_at too.
+		set["finished_at"] = "$$REMOVE"
 	}
-	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
-	if len(unset) > 0 {
-		update["$unset"] = unset
+	if terminal {
+		seqBase := bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}
+		set["outcome_seq"] = bson.M{"$cond": bson.A{statusChanged,
+			bson.M{"$add": bson.A{seqBase, 1}}, seqBase}}
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
+	if meta.Continuation != "" {
+		set["continuation_state"] = bson.M{"$literal": string(meta.Continuation)}
+	} else {
+		set["continuation_state"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
+			bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}}
+	}
+	return set
+}
+
+// statusTransitionPipeline wraps the $set stage as the update pipeline.
+func statusTransitionPipeline(set bson.M) mongo.Pipeline {
+	return mongo.Pipeline{{{Key: "$set", Value: set}}}
+}
+
+func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
+	return s.UpdateRunStatusCoded(ctx, id, status, runErr, "")
+}
+
+// UpdateRunStatusCoded is UpdateRunStatus carrying the typed failure
+// classification in the same atomic write.
+func (s *Store) UpdateRunStatusCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode) error {
+	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC()))
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), pipeline,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: update status %s", id))
+}
+
+// UpdateRunOutcome is the typed status transition (see store.RunStore):
+// UpdateRunStatusIf plus the outcome metadata persisted atomically.
+// The RUNNER-side writer — the engine's code-only writers stay above.
+func (s *Store) UpdateRunOutcome(ctx context.Context, id string, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, expectedFrom []store.RunStatus) (bool, error) {
+	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, meta, time.Now().UTC()))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	if len(expectedFrom) > 0 {
+		filter["status"] = bson.M{"$in": expectedFrom}
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, pipeline)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: update outcome %s: %w", id, err)
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // UpdateRunStatusIf is a compare-and-set on the status field
@@ -666,38 +871,164 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 // since the caller's last read (concurrent transition by another
 // publisher, runner, or operator).
 func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, runErr string, expectedFrom []store.RunStatus) (bool, error) {
-	now := time.Now().UTC()
-	set := bson.M{
-		"status":     status,
-		"updated_at": now,
-		"error":      runErr,
+	return s.UpdateRunStatusIfCoded(ctx, id, status, runErr, "", expectedFrom)
+}
+
+// UpdateRunStatusIfCoded is the CAS variant carrying the typed failure
+// classification — code and status land in one atomic UpdateOne.
+func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode, expectedFrom []store.RunStatus) (bool, error) {
+	if len(expectedFrom) == 0 {
+		// A CAS with no expected set is an unconditional write in
+		// disguise (and the FS twin would silently no-op instead) —
+		// refuse loudly rather than diverge.
+		return false, fmt.Errorf("store/mongo: update status if %s: empty expectedFrom", id)
 	}
-	unset := bson.M{}
-	switch status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		set["finished_at"] = now
-	case store.RunStatusQueued:
-		set["queued_at"] = now
-		unset["finished_at"] = ""
-	case store.RunStatusRunning:
-		set["error"] = ""
-		unset["finished_at"] = ""
-	case store.RunStatusPausedWaitingHuman:
-		unset["finished_at"] = ""
-	}
-	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
-	if len(unset) > 0 {
-		update["$unset"] = unset
-	}
-	filter := withTenantFilter(ctx, bson.M{"_id": id})
-	if len(expectedFrom) > 0 {
-		filter["status"] = bson.M{"$in": expectedFrom}
-	}
-	res, err := s.runs.UpdateOne(ctx, filter, update)
+	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC()))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	filter["status"] = bson.M{"$in": expectedFrom}
+	res, err := s.runs.UpdateOne(ctx, filter, pipeline)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// mergeStatusFilter builds the merge_status clause for a CAS filter:
+// the empty status matches both an unset field and an explicit "".
+func mergeStatusFilter(expectedFrom []store.MergeStatus) bson.M {
+	hasEmpty := false
+	vals := make([]store.MergeStatus, 0, len(expectedFrom))
+	for _, st := range expectedFrom {
+		if st == "" {
+			hasEmpty = true
+		}
+		vals = append(vals, st)
+	}
+	in := bson.M{"merge_status": bson.M{"$in": vals}}
+	if !hasEmpty {
+		return in
+	}
+	return bson.M{"$or": bson.A{in, bson.M{"merge_status": bson.M{"$exists": false}}}}
+}
+
+// ClaimMerge is the compare-and-set entry to the merge state machine
+// (see store.RunStore), implemented as a conditional FindOneAndUpdate:
+// the flip to "merging" only lands when the persisted status is
+// claimable — unset/pending/failed, or a "merging" whose claim stamp
+// predates staleBefore (the previous claimant crashed mid-merge).
+func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
+	// Millisecond precision: BSON stores times in ms, and the token
+	// must compare equal after a round-trip.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claimable := bson.M{"$or": bson.A{
+		bson.M{"merge_status": bson.M{"$in": bson.A{"", store.MergeStatusPending, store.MergeStatusFailed, store.MergeStatusSkipped, store.MergeStatusConflicted}}},
+		bson.M{"merge_status": bson.M{"$exists": false}},
+		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$lt": staleBefore}},
+		// A "merging" without a stamp (a full-document writer dropped
+		// it) counts as infinitely stale — it must not wedge the run.
+		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$exists": false}},
+	}}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
+	// Strictly monotonic vs the stamp being stolen (mirrors the FS
+	// twin): a steal landing in the SAME millisecond would mint an
+	// equal token and the loser's token-scoped exits would pass as the
+	// winner's. The pipeline computes max(now, old+1ms); the Go side
+	// derives the identical token from the pre-image below.
+	tokenExpr := bson.M{"$cond": bson.A{
+		bson.M{"$and": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$type": "$merge_claimed_at"}, "missing"}},
+			bson.M{"$gte": bson.A{"$merge_claimed_at", now}},
+		}},
+		bson.M{"$add": bson.A{"$merge_claimed_at", 1}},
+		now,
+	}}
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		"merge_status":     bson.M{"$literal": string(store.MergeStatusMerging)},
+		"merge_claimed_at": tokenExpr,
+		"updated_at":       now,
+		"version":          bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
+	}}}}
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.Before).
+		SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})
+	var before struct {
+		MergeStatus    store.MergeStatus `bson:"merge_status"`
+		MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
+	}
+	err := s.runs.FindOneAndUpdate(ctx, filter, update, opts).Decode(&before)
+	if err == nil {
+		token := now
+		if !before.MergeClaimedAt.IsZero() && !now.After(before.MergeClaimedAt) {
+			token = before.MergeClaimedAt.Add(time.Millisecond)
+		}
+		return true, before.MergeStatus, token, nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	// Not claimable (or missing): read the current status so the caller
+	// can say WHY the claim was refused.
+	var cur struct {
+		MergeStatus store.MergeStatus `bson:"merge_status"`
+	}
+	err = s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+		options.FindOne().SetProjection(bson.M{"merge_status": 1})).Decode(&cur)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge: run %s not found", id)
+		}
+		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	return false, cur.MergeStatus, time.Time{}, nil
+}
+
+// UpdateRunMergeIf is the compare-and-set exit from the merge state
+// machine (see store.RunStore): a conditional UpdateOne on the full
+// merge bookkeeping. Empty fields are $unset, mirroring the omitempty
+// shape a full SaveRun would produce.
+func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMergeUpdate, expectedFrom []store.MergeStatus) (bool, error) {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	unset := bson.M{"merge_claimed_at": ""}
+	stringField := func(key, val string) {
+		if val == "" {
+			unset[key] = ""
+		} else {
+			set[key] = val
+		}
+	}
+	stringField("merge_status", string(upd.Status))
+	stringField("merged_commit", upd.MergedCommit)
+	stringField("merged_into", upd.MergedInto)
+	stringField("merge_strategy", string(upd.MergeStrategy))
+	stringField("pending_merge_message", upd.PendingMergeMessage)
+	stringField("pending_merge_into", upd.PendingMergeInto)
+	update := bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}}
+	cas := bson.A{mergeStatusFilter(expectedFrom)}
+	if !upd.ExpectClaimedAt.IsZero() {
+		// Scope the exit to ONE claim: a claimant whose claim was
+		// stolen must not consume its successor's (see RunMergeUpdate).
+		cas = append(cas, bson.M{"merge_claimed_at": upd.ExpectClaimedAt})
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": cas}))
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
+	}
+	if res.MatchedCount > 0 {
+		return true, nil
+	}
+	// Distinguish "state drifted" (a CAS outcome the caller handles)
+	// from "run missing" (an error — a silently absorbed write would
+	// masquerade as a lost race).
+	exists := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+		options.FindOne().SetProjection(bson.M{"_id": 1}))
+	if err := exists.Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, fmt.Errorf("store/mongo: update merge if: run %s not found", id)
+		}
+		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
+	}
+	return false, nil
 }
 
 // FailQueuedRunIfAttempt is the queue-attempt-aware counterpart to the
@@ -720,15 +1051,11 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 			bson.M{"queued_at": nil},
 		},
 	}))
-	res, err := s.runs.UpdateOne(ctx, filter, bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailedResumable,
-			"updated_at":  now,
-			"finished_at": now,
-			"error":       runErr,
-		},
-		"$inc": bson.M{"version": 1},
-	})
+	// Queue-park classification is follow-up; the empty code reads as
+	// unknown, which is honest here. The filter pins status=queued, so
+	// the transition-gated episode increment always fires.
+	pipeline := statusTransitionPipeline(statusTransitionSet(store.RunStatusFailedResumable, runErr, store.RunOutcomeMeta{}, now))
+	res, err := s.runs.UpdateOne(ctx, filter, pipeline)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)
 	}
@@ -741,6 +1068,25 @@ var _ store.QueuedAttemptStore = (*Store)(nil)
 // §F T-33 layers an explicit version-conditional update on top; this
 // method is the simple "no contention" form used by the engine itself.
 func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
+	// Same pointer discipline as statusTransitionSet (mirrors the FS
+	// twin): a checkpoint carrying interaction evidence may only land
+	// while the run's status carries it — otherwise a stale in-memory
+	// copy is being replayed. The status read costs one projection and
+	// only fires when the checkpoint actually carries a pointer (the
+	// rare pause-adjacent writes; ordinary boundary writes skip it).
+	if cp != nil && (cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		var cur struct {
+			Status store.RunStatus `bson:"status"`
+		}
+		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+			options.FindOne().SetProjection(bson.M{"status": 1})).Decode(&cur); ferr == nil &&
+			!cur.Status.CarriesPausePointer() {
+			c := *cp
+			c.InteractionID = ""
+			c.InteractionQuestions = nil
+			cp = &c
+		}
+	}
 	update := bson.M{
 		"$set": bson.M{
 			"checkpoint": cp,
@@ -748,7 +1094,7 @@ func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpo
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: save checkpoint %s", id))
 }
 
@@ -762,76 +1108,74 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 			"checkpoint": cp,
 			"updated_at": now,
 		},
-		"$inc":   bson.M{"version": 1},
-		"$unset": bson.M{"finished_at": ""},
+		"$inc": bson.M{"version": 1},
+		// A paused run carries no failure classification and no
+		// platform continuation statement — same discipline as
+		// statusTransitionSet, which this checkpoint-coupled write
+		// bypasses.
+		"$unset": bson.M{"finished_at": "", "failure_code": "", "continuation_state": ""},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
 }
 
-// FailRunResumable writes the checkpoint, flips status to
-// failed_resumable, and records the failure reason. Resume can then
-// re-pick up at NodeID without replaying upstream work.
-func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailedResumable,
-			"checkpoint":  cp,
-			"error":       runErr,
-			"updated_at":  now,
-			"finished_at": now,
-		},
-		"$inc": bson.M{"version": 1},
+// failRunCheckpointed is the shared body of FailRunResumable and
+// FailRunTerminal: the shared transition pipeline (which owns the
+// failure-code and outcome-bookkeeping discipline) plus the
+// checkpoint, guarded by the atomic cancelled-wins filter — an
+// operator cancel is terminal and outranks a failure racing in behind
+// it, and the failure would win simply by writing last, auto-resuming
+// a run somebody deliberately stopped.
+func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
+	set := statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC())
+	// The whole-checkpoint $set replaces statusTransitionSet's
+	// surviving-checkpoint expression — apply the pointer consumption
+	// to the VALUE instead. (Engine failure boundaries never set a
+	// pointer; this guards the preserved-checkpoint callers.) $literal
+	// because in a pipeline stage the checkpoint's own content —
+	// arbitrary node outputs — would otherwise be evaluated as
+	// expressions.
+	if cp != nil && !status.CarriesPausePointer() &&
+		(cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		consumed := *cp
+		consumed.InteractionID = ""
+		consumed.InteractionQuestions = nil
+		cp = &consumed
 	}
-	// An operator cancel is terminal and outranks a resumable failure. The two
-	// race whenever an interruption and a cancel arrive together, and resumable
-	// would win simply by writing last — auto-resuming a run somebody
-	// deliberately stopped. Excluded in the FILTER so the guard is atomic.
-	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
-	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if cp != nil {
+		set["checkpoint"] = bson.M{"$literal": cp}
+	} else {
+		set["checkpoint"] = nil
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}}))
+	res, err := s.runs.UpdateOne(ctx, filter, statusTransitionPipeline(set))
 	if err != nil {
-		return fmt.Errorf("store/mongo: fail resumable %s: %w", id, err)
+		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)
 	}
 	if res.MatchedCount == 0 {
-		// Either the run is gone, or it is already cancelled and stays so.
-		// Distinguish, since a genuine miss must still surface.
+		// Either the run is gone (absent or tombstoned — LoadRun's
+		// typed error says which), or it is already cancelled and
+		// stays so.
 		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
 			return nil
+		} else {
+			return fmt.Errorf("store/mongo: %s %s: %w", opName, id, gerr)
 		}
-		return fmt.Errorf("store/mongo: run %s not found", id)
 	}
 	return nil
 }
 
+// FailRunResumable writes the checkpoint, flips status to
+// failed_resumable, and records the failure reason + code. Resume can
+// then re-pick up at NodeID without replaying upstream work.
+func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	return s.failRunCheckpointed(ctx, id, store.RunStatusFailedResumable, cp, runErr, code, "fail resumable")
+}
+
 // FailRunTerminal writes the checkpoint, flips status to failed, and
-// records the failure reason. The run is terminal — no auto-resume — but
-// the checkpoint is preserved so the operator can still rewind it
-// explicitly. Same atomic cancelled-guard as FailRunResumable.
-func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailed,
-			"checkpoint":  cp,
-			"error":       runErr,
-			"updated_at":  now,
-			"finished_at": now,
-		},
-		"$inc": bson.M{"version": 1},
-	}
-	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
-	res, err := s.runs.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("store/mongo: fail terminal %s: %w", id, err)
-	}
-	if res.MatchedCount == 0 {
-		// Either the run is gone, or it is already cancelled and stays so.
-		// Distinguish, since a genuine miss must still surface.
-		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
-			return nil
-		}
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+// records the failure reason + code. The run is terminal — no
+// auto-resume — but the checkpoint is preserved so the operator can
+// still rewind it explicitly.
+func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	return s.failRunCheckpointed(ctx, id, store.RunStatusFailed, cp, runErr, code, "fail terminal")
 }

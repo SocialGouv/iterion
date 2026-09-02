@@ -365,6 +365,20 @@ you have accepted their loss.
   that pauses for human input will pause and persist a resumable
   checkpoint (resume it later with [`iterion resume`](resume.md)),
   not block the cron job.
+- **A repo-bound schedule mints its clone token at the tick.** A schedule
+  whose `repo_url` matched a team repo integration at creation carries
+  `repo_integration_id`; each tick resolves that integration's connection
+  and mints/refreshes the MANAGED secret (`EnsureManagedSecret` — the
+  same path a studio/API launch uses), pinning it as the run's
+  `forge_token`. A pinned integration that cannot resolve **fails the
+  tick loudly** rather than limping to a doomed clone. Only a schedule
+  with NO pinned integration falls back to the bot's `forge_token`
+  secret resolution — per-bot binding first
+  (`POST /api/teams/{id}/bots/{bot}/bindings`), else any team secret
+  *named* `forge_token` — where a hand-set token that expires kills every
+  tick at clone (`Invalid username or token`) while manual launches keep
+  working. If a schedule is stuck in that state, recreate it with the
+  repo attached (or bind the bot to the connection's managed secret).
 
 ## Implementation
 

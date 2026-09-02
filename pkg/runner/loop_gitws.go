@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -383,32 +384,10 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 // determined (defence in depth — ValidateCloneSource has already rejected
 // hostless and unsupported-transport forms above).
 func extractRepoHost(repoURL string) (string, error) {
-	s := strings.TrimSpace(repoURL)
-	if i := strings.Index(s, "://"); i >= 0 {
-		u, err := url.Parse(s)
-		if err != nil {
-			return "", fmt.Errorf("parse: %w", err)
-		}
-		host := u.Hostname()
-		if host == "" {
-			return "", fmt.Errorf("missing host in %q", repoURL)
-		}
-		return host, nil
-	}
-	// scp-like: `[user@]host:path`. ValidateCloneSource already requires
-	// the colon to come before any slash and the host to be non-empty.
-	colon := strings.Index(s, ":")
-	if colon <= 0 {
-		return "", fmt.Errorf("missing host in %q", repoURL)
-	}
-	host := s[:colon]
-	if at := strings.LastIndex(host, "@"); at >= 0 {
-		host = host[at+1:]
-	}
-	if host == "" {
-		return "", fmt.Errorf("missing host in %q", repoURL)
-	}
-	return host, nil
+	// ValidateCloneSource already requires the scp-like colon to come
+	// before any slash and the host to be non-empty; the shared helper
+	// enforces the same shape.
+	return gitlib.RepoHost(repoURL)
 }
 
 // gitOpTimeout bounds a single runner-side git subprocess. Without it a
@@ -441,6 +420,14 @@ func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) er
 // baseline (later entries win) — network git ops use it to route through the
 // clone-guard proxy via HTTPS_PROXY.
 func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) error {
+	_, err := r.runGitOutEnv(ctx, dir, tok, extraEnv, args...)
+	return err
+}
+
+// runGitOutEnv is runGitEnv returning the command's combined output —
+// for the callers that need to READ git (ls-remote, rev-list), with the
+// same timeout, cancellation hardening and token redaction.
+func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) (string, error) {
 	if gitOpTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
@@ -470,11 +457,11 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 			shown = strings.ReplaceAll(shown, tok, "***")
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
-			return fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
+			return "", fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
 		}
-		return fmt.Errorf("git %s: %w: %s", shown, err, detail)
+		return "", fmt.Errorf("git %s: %w: %s", shown, err, detail)
 	}
-	return nil
+	return string(out), nil
 }
 
 // gitCredentialFile is where the clone's live forge token lives, in git's
@@ -557,19 +544,52 @@ func injectGitToken(rawURL, token string) string {
 	return u.String()
 }
 
-// bankRepoWorkspace pushes a successful repo-targeted run's work to the
-// forge as a per-run storage branch and records FinalCommit/FinalBranch,
-// so `runs merge` has something to merge. The worktree-finalization path
+// bankRepoWorkspace pushes a repo-targeted run's work to the forge as a
+// per-run storage branch and records FinalCommit/FinalBranch, so
+// `runs merge` has something to merge. The worktree-finalization path
 // that normally banks a run never fires on this path ("store has no
-// filesystem root — worktree isolation skipped"), which used to leave a
-// FINISHED run's commits only in this pod's soon-wiped clone.
+// filesystem root — worktree isolation skipped"), which used to leave
+// the run's commits only in this pod's soon-wiped clone.
 //
-// Called only when the run succeeded. A push failure never changes the
-// run's outcome — the work is done, and failing the run would re-run all
-// of it — but it is never silent either: the cause lands in
-// FinalBranchError and FinalBranch stays empty, so merge keeps refusing
-// with the truth instead of a bare "nothing to merge".
-func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
+// Called for every bankable outcome (bankableStatus): a finished run,
+// and the deaths — budget_exceeded, failed — whose successor would
+// otherwise restart from the base commit with the work stranded in the
+// git-meta snapshot. The push is force-to-own-branch and the branch name
+// is per-run, so a later attempt that ends better simply overwrites —
+// and only a better one does: pushBank's guard refuses a strictly poorer
+// chain, and leases the ref state it compared against.
+//
+// A push failure never changes the run's outcome — but it is never
+// silent either: on the FIRST bank the cause lands in FinalBranchError
+// while FinalBranch stays empty, so merge keeps refusing with the truth
+// instead of a bare "nothing to merge". Once an earlier attempt HAS
+// banked, that pair is valid and mergeable, so a later attempt's refusal
+// is recorded on the run's timeline (run_bank_refused) instead — never
+// by overwriting the pair or the field whose meaning is "this commit has
+// no branch guarding it".
+func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, finalStatus string) {
+	head, refusal := r.resolveBankHead(ctx, msg.RunID, workDir, base, integ)
+	if refusal != "" {
+		r.recordBankFailure(msg, refusal)
+		return
+	}
+	if head == "" {
+		return
+	}
+	r.pushBank(ctx, msg, workDir, head, finalStatus)
+}
+
+// resolveBankHead applies the export-integrity oracle to the host clone
+// and answers which commit a bank may push. The one head-resolution
+// authority for BOTH bank shapes (storage branch and attempt ref), so
+// the two cannot drift on what "the run's final tree" means. Outcomes:
+//   - head != "": bankable (a caveat, when any, is already logged);
+//   - head == "" && refusal == "": nothing to bank — a verified no-op,
+//     or an unreadable HEAD with no integrity signal (warned, as before);
+//   - head == "" && refusal != "": refuse loudly — the CALLER records it
+//     (FinalBranchError for a terminal bank, the timeline for an
+//     attempt ref), because where the refusal must land differs.
+func (r *Runner) resolveBankHead(ctx context.Context, runID, workDir, base string, integ runtime.WorkspaceIntegrity) (string, string) {
 	head, headErr := gitlib.RevParseHead(workDir)
 	if integ.Applicable {
 		// The workspace is a pod-side COPY streamed back at sandbox
@@ -582,14 +602,13 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 		switch {
 		case integ.CaptureErr != "":
 			if headErr != nil || (base != "" && head == base) {
-				r.recordBankFailure(msg, fmt.Sprintf(
+				return "", fmt.Sprintf(
 					"bank refused: pod-side HEAD unknown (%s) and the exported workspace shows no new work (HEAD %s, baseline %s) — cannot tell 'no commits' from 'the export lost the work'",
-					integ.CaptureErr, strutil.FirstNonBlank(head, "unreadable"), strutil.FirstNonBlank(base, "unknown")))
-				return
+					integ.CaptureErr, strutil.FirstNonBlank(head, "unreadable"), strutil.FirstNonBlank(base, "unknown"))
 			}
 			// The host tree does carry new commits; completeness is
 			// unverifiable but preserving the visible work wins.
-			r.cfg.Logger.Warn("runner: run %s: banking WITHOUT pod-side verification (capture failed: %s) — the branch may be missing commits that never left the pod", msg.RunID, integ.CaptureErr)
+			r.cfg.Logger.Warn("runner: run %s: banking WITHOUT pod-side verification (capture failed: %s) — the branch may be missing commits that never left the pod", runID, integ.CaptureErr)
 		case headErr != nil || head != integ.PodHead:
 			// The export can deliver every OBJECT yet leave the clone's
 			// ref system stale: tar cannot delete, so when a pod-side
@@ -600,29 +619,194 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 			// THAT exact commit by SHA — it is the tree the run
 			// finished on. Otherwise refuse loudly.
 			if headErr == nil && r.hostHasCommit(ctx, workDir, integ.PodHead) {
-				r.cfg.Logger.Warn("runner: run %s: exported workspace reads %s but the pod-side HEAD %s IS present host-side (stale ref shadowing) — banking the pod's final commit by SHA", msg.RunID, head, integ.PodHead)
-				r.pushBank(ctx, msg, workDir, integ.PodHead)
-				return
+				r.cfg.Logger.Warn("runner: run %s: exported workspace reads %s but the pod-side HEAD %s IS present host-side (stale ref shadowing) — banking the pod's final commit by SHA", runID, head, integ.PodHead)
+				return integ.PodHead, ""
 			}
-			r.recordBankFailure(msg, fmt.Sprintf(
+			return "", fmt.Sprintf(
 				"bank refused: the run finished at pod-side HEAD %s but the exported workspace reads %s — the export did not deliver the run's final tree",
-				integ.PodHead, strutil.FirstNonBlank(head, "unreadable")))
-			return
+				integ.PodHead, strutil.FirstNonBlank(head, "unreadable"))
 		}
 	}
 	if headErr != nil {
-		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", msg.RunID, headErr)
-		return
+		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", runID, headErr)
+		return "", ""
 	}
 	if base != "" && head == base {
 		confirmed := ""
 		if integ.Applicable {
 			confirmed = " (pod-side HEAD confirms it)"
 		}
-		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", msg.RunID, confirmed)
+		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", runID, confirmed)
+		return "", ""
+	}
+	return head, ""
+}
+
+// bankAttemptRef parks an attempt's work on a uniquely-named ref —
+// iterion/run-<id>-parked-<head12>. Same head-derived shape as
+// preserveSupersededChain's archives, but a DISTINCT infix on purpose:
+// an archive names the complete chain of a dead attempt (a once-valid
+// FinalBranch), a parked ref names the half-done work of a run that may
+// still be alive, and a future pruning policy must be able to tell the
+// two apart by name alone. Parked when the STORAGE branch must not be
+// touched: an
+// interrupted delivery (the lease may already belong to another pod,
+// and two pods force-pushing one branch is the split-brain the bank
+// refusal exists to prevent — but a ref carrying this chain's own head
+// in its NAME cannot contest anything), a paused run (recording
+// FinalBranch would make a half-done run merge-eligible mid-flight),
+// and a bankable death whose run ctx was cancelled for lease loss.
+//
+// Without it, those attempts' commits exist only in the git-meta
+// snapshot, and turning that snapshot back into a branch takes a manual
+// replay every time — the same measured cost the death bank closed for
+// budget/failure outcomes, still being paid for these.
+//
+// Deliberately DOC-LESS: no FinalBranch (merge eligibility), no
+// FinalCommit, no FinalBranchError (the run is not terminally
+// unbanked — it may resume or redeliver). The ref lands on the run's
+// timeline as run_bank_attempt, success or failure — never silence.
+//
+// The run ctx on these paths is typically already cancelled, so the
+// push runs on its own detached, bounded context. That is safe here
+// precisely because the ref is uncontested: the anti-clobber machinery
+// (ls-remote, lease, supersede) exists for a SHARED name and would be
+// dead weight on a name derived from the pushed head itself. The push
+// is plain (no force): a ref already at this head is a no-op, an
+// existing ANCESTOR is fast-forwarded (contained in the new chain —
+// nothing lost), and a divergent squatter — a 12-hex prefix collision —
+// is refused by git and reported, never overwritten.
+func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, cause string) {
+	ctx, cancel := attemptBankContext()
+	defer cancel()
+	head, refusal := r.resolveBankHead(ctx, msg.RunID, workDir, base, integ)
+	if refusal != "" {
+		r.cfg.Logger.Error("runner: run %s: attempt ref not parked (%s): %s", msg.RunID, cause, refusal)
+		r.recordBankAttempt(msg, map[string]any{"cause": cause, "error": refusal})
 		return
 	}
-	r.pushBank(ctx, msg, workDir, head)
+	if head == "" {
+		// A verified no-op stays silent — but an unreadable HEAD is not a
+		// no-op, and on THIS path the event is the only durable record.
+		// (The storage bank keeps its historical warn-only behaviour: its
+		// refusals land on FinalBranchError, a field this path never
+		// touches.)
+		if _, err := gitlib.RevParseHead(workDir); err != nil {
+			r.recordBankAttempt(msg, map[string]any{"cause": cause,
+				"error": "workspace HEAD unreadable — nothing parked, the work stays in the git-meta snapshot: " + err.Error()})
+		}
+		return
+	}
+	// Doc re-read before the push: an operator cancel can land without
+	// ever cancelling THIS pod's ctx (the cancel subscription is
+	// best-effort — "continuing without"), and refused work parks
+	// nowhere. Unlike pushBank's re-read — which runs AFTER its push and
+	// only withholds merge eligibility — this one withholds the push
+	// itself, and `cancelled` is a status the product RESUMES (rewind
+	// parks live runs there), so the skip is recorded on the timeline,
+	// never silent. Bounded read, fail-open on error: the read is a
+	// courtesy to the operator, not a gate on preserving work — and not
+	// a licence for a wedged store to pin the pod. Its own tight bound:
+	// wide enough that a merely SLOW store does not fail the guard open
+	// (proven at 7s), tight enough that a wedged store cannot buy its
+	// whole window in pre-Nak recovery latency (measured at 30s when
+	// this rode the doc pair's bound). Past it, the documented
+	// preservation-wins residue applies.
+	rctx, rcancel := context.WithTimeout(ctx, parkDocReadTimeout)
+	run, lerr := r.cfg.Store.LoadRun(store.WithIdentity(rctx, msg.TenantID, msg.OwnerID), msg.RunID)
+	rcancel()
+	if lerr == nil && run != nil && run.Status == store.RunStatusCancelled {
+		r.cfg.Logger.Warn("runner: run %s: NOT parking (%s) — the run doc reads cancelled; the operator refused the work.", msg.RunID, cause)
+		r.recordBankAttempt(msg, map[string]any{"cause": cause, "head": head,
+			"error": "not parked — the run doc reads cancelled (the work stays in the git-meta snapshot)"})
+		return
+	}
+	ref := "iterion/run-" + msg.RunID + "-parked-" + shortSHA(head)
+	if err := r.runGit(ctx, workDir, "", "push", "origin", head+":refs/heads/"+ref); err != nil {
+		r.cfg.Logger.Error("runner: run %s: attempt ref push %s FAILED — the work exists only in this pod's clone and the git-meta snapshot: %v", msg.RunID, ref, err)
+		r.recordBankAttempt(msg, map[string]any{"cause": cause, "error": fmt.Sprintf("push %s: %v", ref, err)})
+		return
+	}
+	r.cfg.Logger.Info("runner: run %s: attempt work parked at %s @ %.12s (%s)", msg.RunID, ref, head, cause)
+	r.recordBankAttempt(msg, map[string]any{"cause": cause, "ref": ref, "head": head})
+}
+
+// attemptBankBudget bounds the park's GIT work end to end; each store
+// op rides its own short bound on top (parkStoreOpTimeout for the
+// event write — detached on purpose, so the event still lands when the
+// push just died on this budget; parkDocReadTimeout for the doc read).
+// Deliberately far below bankBudget: the park is ONE push, not the
+// bank's four network ops — and on the interrupted path it runs BEFORE
+// the Nak that triggers redelivery, so every second spent here is
+// added recovery latency for a run another pod should already be
+// picking up. A var so tests can exercise the spent-budget divergence.
+var attemptBankBudget = 2 * time.Minute
+
+// parkStoreOpTimeout bounds the park's timeline event write (the doc
+// courtesy read rides parkDocReadTimeout) — the store is the same
+// class of external resource as the forge, on the same pre-Nak path,
+// and the mongo client carries no timeout of its own. Same 5s
+// teardown-write convention as runtime's run_failure/pause paths.
+const parkStoreOpTimeout = 5 * time.Second
+
+// bankDocOpTimeout bounds the storage bank's run-doc pair I/O
+// (pushBank's load→save, recordBankFailure's) — load-bearing for merge
+// truth, hence far more generous than parkStoreOpTimeout, but bounded
+// all the same: the storage bank is PRE-Nak too (a generic `failed` is
+// bankable and naks only after banking returns, with the heartbeat
+// still refreshing the lease), and a doc write that never returns does
+// not serve merge truth — it replaces it with a pod nothing can
+// redeliver. A deadline here fails LOUDLY on the existing error paths.
+const bankDocOpTimeout = 30 * time.Second
+
+// parkDocReadTimeout bounds the park's doc-cancel courtesy read alone —
+// tighter than the doc pair's bound on purpose: this read sits on the
+// interrupted pre-Nak path, where a wedged store buys its whole window
+// in added recovery latency (measured at 30s when it rode
+// bankDocOpTimeout). 10s covers the slow-but-healthy store the guard
+// exists for (proven at 7s) with margin.
+const parkDocReadTimeout = 10 * time.Second
+
+// bankStoreCtx builds one bounded store context PER DOC OP: detached
+// (the run ctx may already be cancelled), identity-carrying, always
+// deadlined. Per op, not per pair — a load that eats the shared window
+// starves the save, and a save that dies after the push loses the
+// merge truth the pair exists to record (proven: 28s load, 3s save
+// that would have fit its own bound, branch orphaned on the forge).
+func bankStoreCtx(msg *queue.RunMessage) (context.Context, context.CancelFunc) {
+	wctx, cancel := context.WithTimeout(context.Background(), bankDocOpTimeout)
+	return store.WithIdentity(wctx, msg.TenantID, msg.OwnerID), cancel
+}
+
+// attemptBankContext builds the park's detached context — ALWAYS
+// deadlined, including when the operator disabled per-op git bounds
+// (ITERION_RUNNER_GIT_TIMEOUT<=0). That choice bounds one git op; it is
+// not a licence to make a best-effort parking uninterruptible: the
+// caller's ctx is already cancelled on these paths, so nothing else can
+// ever stop the push, and a forge that accepts the connection and never
+// answers would pin the pod forever (proven by probe). Unlike
+// bankContext's unbounded arm, this pod has already lost the run — a
+// park it cannot finish in the budget is a park it forfeits, loudly.
+func attemptBankContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), attemptBankBudget)
+}
+
+// recordBankAttempt puts a park outcome on the run's timeline — the
+// only durable record of the parked ref, since the run doc is
+// deliberately left untouched on every bankAttemptRef path. The write
+// rides its OWN detached short bound, not the park budget: the event
+// must land precisely when the push just died on that budget, and a
+// wedged store must not pin the pod either way.
+func (r *Runner) recordBankAttempt(msg *queue.RunMessage, data map[string]any) {
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunBankAttempt,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_attempt: %v", msg.RunID, err)
+	}
 }
 
 // hostHasCommit reports whether sha resolves to a commit object present
@@ -636,11 +820,40 @@ func (r *Runner) hostHasCommit(ctx context.Context, workDir, sha string) bool {
 // FinalBranchError when the forge refused the push. head is a resolved
 // SHA — the normal path banks the exported HEAD, the ref-shadowing
 // recovery banks the pod-side commit directly.
-func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head string) {
+func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head, finalStatus string) {
 	branch := "iterion/run-" + msg.RunID
 	tok := ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
+	}
+	// An earlier attempt of this run may have banked a RICHER chain than
+	// this outcome carries: a redelivered failure re-clones from base,
+	// and its retry can legitimately end with fewer commits. "A later
+	// attempt that ends better simply overwrites" — so a blind force-push
+	// here would enforce "later" without "better", orphaning the richer
+	// branch. Push when the branch is absent, unchanged, an ancestor of
+	// the new head, or at most as long; refuse loudly when this chain is
+	// strictly poorer and leave the branch (and the run doc that already
+	// points at it) alone.
+	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
+	if oldHead != "" && oldHead != head {
+		// A FINISHED outcome is the run's converged final state and
+		// supersedes whatever an earlier dead attempt banked, however
+		// long that chain was: a resume re-clones at the base and only
+		// re-does the remaining nodes, so the finished chain is
+		// legitimately SHORTER than the dead one it completes — refusing
+		// it would make `runs merge` land the dead attempt's tree over
+		// the finished run's. The chain comparison protects dead
+		// attempts from poorer dead attempts, nothing else. Supersede is
+		// not destruction, though: when the finished chain does not
+		// CONTAIN the banked head, that head may be the only copy of the
+		// dead attempt's commits, so it is archived first.
+		if finalStatus == "finished" {
+			r.preserveSupersededChain(ctx, msg, workDir, tok, branch, oldHead, head)
+			r.cfg.Logger.Info("runner: run %s: bank: finished outcome supersedes the chain banked at %.12s", msg.RunID, oldHead)
+		} else if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
+			return
+		}
 	}
 	// Push through `origin` so git resolves the credential from the
 	// clone's live store (installGitCredentialStore wired
@@ -651,44 +864,353 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// a paused-and-resumed run can end far later, and the bank push then
 	// died on a dead credential while a live one sat in the store. The
 	// claim-time token stays only as the redaction key for error output.
-	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", "origin", head+":refs/heads/"+branch)
+	pushErr := r.runGit(ctx, workDir, tok, bankPushArgs(branch, head, oldHead)...)
 
-	// Persist on a background ctx carrying the run's tenant identity (the
-	// run ctx may already be cancelled) — recordRunGitMeta's rationale.
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
-	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
+	// Persist on detached, deadlined ctxs carrying the run's tenant
+	// identity (the run ctx may already be cancelled) — bounded PER OP,
+	// because this runs pre-Nak with the lease still refreshing, and a
+	// load that eats a shared window starves the save. Every exit past
+	// this point that leaves the pushed branch unrecorded goes on the
+	// timeline: the doc is what `runs merge` trusts, and a branch the
+	// doc does not name is invisible everywhere but the pod log.
+	lctx, lcancel := bankStoreCtx(msg)
+	run, lerr := r.cfg.Store.LoadRun(lctx, msg.RunID)
+	lcancel()
 	if lerr != nil || run == nil {
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
+		data := bankExitData(branch, head, "doc_load_failed", pushErr)
+		data["error"] = fmt.Sprintf("the doc read died, nothing recorded: %v", lerr)
+		r.recordBankRefused(msg, data)
 		return
 	}
-	run.FinalCommit = head
+	// Re-read just before the write: an operator cancel that landed while
+	// the push was in flight must not become merge-eligible through this
+	// SaveRun — the branch may exist on the forge, but the doc is what
+	// `runs merge` trusts, and a cancel is the operator refusing the
+	// work.
+	if run.Status == store.RunStatusCancelled {
+		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — leaving FinalBranch unset (branch %s pushed but not recorded)", msg.RunID, branch)
+		r.recordBankRefused(msg, bankExitData(branch, head, "cancelled_while_banking", pushErr))
+		return
+	}
+	// The three fields must stay mutually consistent ACROSS ATTEMPTS. A
+	// bankable death naks, so the redelivered attempt banks into this same
+	// doc — and `runs merge` reads FinalBranch and FinalCommit TOGETHER
+	// (PerformDeferredMerge takes BranchToMerge + FinalSHA, and
+	// BuildSquashMessage resolves FinalCommit in a clone that only fetched
+	// the branch).
 	if pushErr != nil {
+		// This attempt's head is NOT on the forge. When an earlier attempt
+		// already banked a valid pair, this failure must not TOUCH it:
+		// writing FinalBranchError over it would hide the good branch from
+		// the studio (it renders the branch row only when the error field
+		// is empty) and break the field's contract ("FinalCommit is set
+		// but has no branch guarding it"). The failure goes on the run's
+		// timeline instead, and the doc keeps telling the truth about the
+		// branch that exists.
+		if run.FinalBranch != "" {
+			r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — keeping the earlier attempt's banked pair (%s @ %.12s): %v", msg.RunID, branch, run.FinalBranch, run.FinalCommit, pushErr)
+			r.recordBankRefused(msg, map[string]any{
+				"branch":    branch,
+				"kept_head": run.FinalCommit,
+				"reason":    "push_failed",
+				"error":     pushErr.Error(),
+			})
+			return
+		}
+		run.FinalCommit = head
 		run.FinalBranchError = fmt.Sprintf("bank push %s: %v", branch, pushErr)
 		r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — the work exists only in this pod's clone: %v", msg.RunID, branch, pushErr)
 	} else {
+		run.FinalCommit = head
 		run.FinalBranch = branch
+		// A later attempt that banks cleanly clears an earlier attempt's
+		// recorded failure: leaving it would make a perfectly banked run
+		// report a bank failure forever on the field `runs merge` surfaces.
+		run.FinalBranchError = ""
 		r.cfg.Logger.Info("runner: run %s banked: %s @ %.12s", msg.RunID, branch, head)
 	}
-	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
+	sctx, scancel := bankStoreCtx(msg)
+	defer scancel()
+	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
+		data := bankExitData(branch, head, "doc_save_failed", pushErr)
+		data["error"] = serr.Error()
+		r.recordBankRefused(msg, data)
 	}
 }
 
-// recordBankFailure persists why a finished run's work could NOT be
-// banked into FinalBranchError — the field `runs merge` surfaces — so an
-// integrity refusal is exactly as loud as a failed push, never a silent
-// no-op. FinalBranch stays empty: there is no branch to merge, and the
-// recorded cause is the truth the operator acts on.
+// bankExitData shapes a post-push doc-I/O exit for the timeline. head
+// sits on the forge only when the push SUCCEEDED, so a dead push is
+// named on every such exit: without it the event is key-for-key
+// identical to the push-succeeded shape, and once the doc write meant
+// to carry FinalBranchError has died too, push_error is the cause's
+// only durable carrier.
+func bankExitData(branch, head, reason string, pushErr error) map[string]any {
+	data := map[string]any{"branch": branch, "head": head, "reason": reason}
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	return data
+}
+
+// bankPushArgs builds the bank's push, binding it to the ref state the
+// richer-chain guard actually compared against.
+//
+// bankedBranchHead → bankSupersedes → push is a read-compare-write with
+// nothing making it atomic: a sibling attempt that advances the branch
+// in between is clobbered anyway, which is precisely the loss the guard
+// exists to prevent. --force-with-lease=<ref>:<expect> moves the
+// decision into the push itself, so the update lands only if the branch
+// is still where we read it. (The lease authorises the non-fast-forward
+// update on its own once satisfied — no --force alongside it, which
+// would only muddy which of the two is doing the deciding.)
+//
+// The lease is applied ONLY when oldHead is known. An empty <expect>
+// means "the ref must not exist", which would break the very first bank
+// and would silently convert an unreadable remote — the documented
+// fail-OPEN degradation of bankedBranchHead — into a hard failure.
+func bankPushArgs(branch, head, oldHead string) []string {
+	refspec := head + ":refs/heads/" + branch
+	if oldHead == "" {
+		return []string{"push", "--force", "origin", refspec}
+	}
+	return []string{"push", "--force-with-lease=refs/heads/" + branch + ":" + oldHead, "origin", refspec}
+}
+
+// bankedBranchHead reads the forge's current tip of the run's storage
+// branch ("" when the branch does not exist, or when the read itself
+// fails — an unreadable remote must not block the bank, it degrades to
+// the pre-check-less push).
+func (r *Runner) bankedBranchHead(ctx context.Context, workDir, tok, branch string) string {
+	out, err := r.runGitOutEnv(ctx, workDir, tok, nil, "ls-remote", "origin", "refs/heads/"+branch)
+	if err != nil {
+		r.cfg.Logger.Warn("runner: bank: ls-remote %s: %v — pushing without the prior-attempt check", branch, err)
+		return ""
+	}
+	return parseLsRemoteHead(out, branch)
+}
+
+// parseLsRemoteHead picks the sha ls-remote advertised for
+// refs/heads/<branch>. It takes the line that actually NAMES the ref,
+// not the first token of the output, because runGitOutEnv returns
+// COMBINED output: on a network ls-remote any stderr line git emits
+// first (a redirect warning, a `remote:` banner) would otherwise become
+// the "prior head" — a non-sha token whose fetch then fails, collapsing
+// the anti-clobber guard into the blind force-push it exists to
+// prevent, exactly when the output is not pristine. Returns "" when the
+// branch is not advertised.
+func parseLsRemoteHead(out, branch string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == "refs/heads/"+branch {
+			return f[0]
+		}
+	}
+	return ""
+}
+
+// preserveSupersededChain archives the head a finished outcome is about
+// to force away, when (and only when) that head is not contained in the
+// finished chain. A finished run legitimately supersedes a dead
+// attempt's longer chain, but on the documented budget-cap→resume
+// recovery the resumed run re-clones at base and re-does the work — it
+// can converge without ever carrying the dead attempt's commits, and
+// the banked branch may hold their ONLY forge-side copy. The archive
+// ref keeps that work reachable at iterion/run-<id>-attempt-<head12>
+// without contesting the storage branch, which must point at the
+// finished product.
+//
+// A failure here never blocks the bank: the finished head is what every
+// downstream consumer (`runs merge`, the gate, the PR) reads off the
+// storage branch, and the dead chain stays recoverable from the run's
+// git-meta snapshot — pricier, but not gone. It is never silent either:
+// the divergence always lands on the run's timeline as
+// run_bank_superseded, carrying either the archive ref or the error.
+func (r *Runner) preserveSupersededChain(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) {
+	// The banked head came from ls-remote; the finished clone has no
+	// reason to carry it. Fetch before any ancestry test or archive push
+	// — both need the object locally.
+	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: cannot fetch superseded head %.12s to archive it — the finished push drops it from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, oldHead, branch, err)
+		r.recordBankSuperseded(msg, branch, oldHead, head, "", "fetch superseded head: "+err.Error())
+		return
+	}
+	if r.runGit(ctx, workDir, "", "merge-base", "--is-ancestor", oldHead, head) == nil {
+		return // contained in the finished chain — nothing to lose
+	}
+	archive := branch + "-attempt-" + shortSHA(oldHead)
+	if err := r.runGit(ctx, workDir, tok, "push", "origin", oldHead+":refs/heads/"+archive); err != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: archive push %s FAILED — the finished push drops %.12s from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, archive, oldHead, branch, err)
+		r.recordBankSuperseded(msg, branch, oldHead, head, "", "archive push: "+err.Error())
+		return
+	}
+	r.cfg.Logger.Info("runner: run %s: bank: superseded chain archived at %s @ %.12s", msg.RunID, archive, oldHead)
+	r.recordBankSuperseded(msg, branch, oldHead, head, archive, "")
+}
+
+// shortSHA is the 12-hex abbreviation used in archive ref names —
+// defensive about inputs shorter than an abbreviation, which a forge
+// ls-remote never returns but a unit test might.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// recordBankSuperseded puts a finished outcome's takeover of an earlier
+// attempt's diverging banked chain on the run's timeline. Exactly one of
+// archivedRef / archiveErr is non-empty.
+func (r *Runner) recordBankSuperseded(msg *queue.RunMessage, branch, oldHead, newHead, archivedRef, archiveErr string) {
+	data := map[string]any{
+		"branch":          branch,
+		"superseded_head": oldHead,
+		"new_head":        newHead,
+	}
+	if archivedRef != "" {
+		data["archived_ref"] = archivedRef
+	}
+	if archiveErr != "" {
+		data["archive_error"] = archiveErr
+	}
+	// Bounded like every best-effort timeline write on a teardown path
+	// (parkStoreOpTimeout): a wedged store must not pin the pod.
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunBankSuperseded,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_superseded: %v", msg.RunID, err)
+	}
+}
+
+// bankSupersedes says whether this outcome's head may overwrite the
+// branch an earlier attempt banked at oldHead. True when the new head
+// contains the old one (a resume that carried the work forward), or when
+// its chain is at least as long — later wins only when it is not
+// strictly poorer. On the refusal path it RECORDS the loss it prevented,
+// on the run's timeline as well as in the pod log; on unverifiable
+// ground (fetch failed, no common baseline) it lets the push through —
+// the chain comparison is skipped, but the push still carries
+// bankPushArgs' lease on the head that was read, so "unverifiable" costs
+// the comparison and never the anti-clobber guarantee.
+func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) bool {
+	runID := msg.RunID
+	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: fetch prior banked head %.12s: %v — pushing without the comparison", runID, oldHead, err)
+		return true
+	}
+	if r.runGit(ctx, workDir, "", "merge-base", "--is-ancestor", oldHead, head) == nil {
+		return true
+	}
+	newOut, nerr := r.runGitOutEnv(ctx, workDir, "", nil, "rev-list", "--count", oldHead+".."+head)
+	oldOut, oerr := r.runGitOutEnv(ctx, workDir, "", nil, "rev-list", "--count", head+".."+oldHead)
+	newCount, ncErr := strconv.Atoi(strings.TrimSpace(newOut))
+	oldCount, ocErr := strconv.Atoi(strings.TrimSpace(oldOut))
+	if nerr != nil || oerr != nil || ncErr != nil || ocErr != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: cannot compare diverged chains (%v/%v/%v/%v) — pushing, later wins", runID, nerr, oerr, ncErr, ocErr)
+		return true
+	}
+	if newCount >= oldCount {
+		return true
+	}
+	r.cfg.Logger.Warn("runner: run %s: bank REFUSED: an earlier attempt banked a richer chain at %s (%.12s, %d exclusive commits) than this outcome carries (%.12s, %d) — keeping the richer branch",
+		runID, branch, oldHead, oldCount, head, newCount)
+	r.recordBankRefused(msg, map[string]any{
+		"branch":          branch,
+		"kept_head":       oldHead,
+		"kept_commits":    oldCount,
+		"dropped_head":    head,
+		"dropped_commits": newCount,
+	})
+	return false
+}
+
+// recordBankRefused puts a refused bank on the RUN's timeline, not only
+// in the pod log.
+//
+// Without it the refusal is invisible to the operator: pushBank returns
+// without touching the run doc, so FinalBranch/FinalCommit keep naming a
+// valid forge-backed pair produced by a DIFFERENT attempt, and `runs
+// merge` merges that attempt's tree — a head this run's own artifacts
+// and gate never cite, with nothing anywhere saying the two diverge.
+// That silence is what the surrounding code already refuses elsewhere
+// ("an integrity refusal is exactly as loud as a failed push, never a
+// silent no-op"). FinalBranchError is deliberately NOT the carrier: its
+// documented meaning is "FinalCommit has no persistent branch guarding
+// it", so writing it here would break the invariant and raise an
+// alarming branch failure over a perfectly good branch.
+//
+// Best-effort, on the identity ctx rather than the run ctx (which may
+// already be dead): a store that refuses the append must never change
+// the run's outcome.
+func (r *Runner) recordBankRefused(msg *queue.RunMessage, data map[string]any) {
+	// Bounded like every best-effort timeline write on a teardown path
+	// (parkStoreOpTimeout): a wedged store must not pin the pod.
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunBankRefused,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_refused: %v", msg.RunID, err)
+	}
+}
+
+// recordBankFailure persists why a run's work could NOT be banked into
+// FinalBranchError — the field `runs merge` surfaces — so an integrity
+// refusal is exactly as loud as a failed push, never a silent no-op.
+//
+// It writes that field only when no branch is recorded yet, which is the
+// condition its invariant assumes ("FinalCommit is set but no persistent
+// branch guards it"). That used to be unconditionally true: the bank ran
+// once, on success only. Now a bankable death naks and the redelivered
+// attempt banks into the SAME doc, so an attempt that banked cleanly can
+// be followed by one the integrity check refuses — a
+// kubernetes-export mismatch on the retry, say. Overwriting the field
+// there would raise an alarming branch failure over the valid,
+// forge-backed, mergeable pair the earlier attempt left, and make this
+// function's own "FinalBranch stays empty" false. The refusal is still
+// recorded, on the timeline, exactly like a refused chain comparison.
 func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 	r.cfg.Logger.Error("runner: run %s: %s", msg.RunID, cause)
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
-	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
+	lctx, lcancel := bankStoreCtx(msg)
+	run, lerr := r.cfg.Store.LoadRun(lctx, msg.RunID)
+	lcancel()
 	if lerr != nil || run == nil {
+		// The refusal is often the ONLY information the run leaves (an
+		// export mismatch has no branch) — a dead doc read must not
+		// erase it; the timeline carries it instead.
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record refusal: %v", msg.RunID, lerr)
+		r.recordBankRefused(msg, map[string]any{
+			"cause":  cause,
+			"reason": "doc_load_failed",
+			"error":  fmt.Sprintf("%v", lerr),
+		})
+		return
+	}
+	if run.FinalBranch != "" {
+		r.cfg.Logger.Error("runner: run %s: bank refused for THIS attempt while the doc keeps an earlier attempt's branch %s @ %.12s — not overwriting a valid pair with this refusal: %s",
+			msg.RunID, run.FinalBranch, run.FinalCommit, cause)
+		r.recordBankRefused(msg, map[string]any{
+			"branch":    run.FinalBranch,
+			"kept_head": run.FinalCommit,
+			"cause":     cause,
+		})
 		return
 	}
 	run.FinalBranchError = cause
-	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
+	sctx, scancel := bankStoreCtx(msg)
+	defer scancel()
+	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranchError: %v", msg.RunID, serr)
+		r.recordBankRefused(msg, map[string]any{
+			"cause":  cause,
+			"reason": "doc_save_failed",
+			"error":  serr.Error(),
+		})
 	}
 }

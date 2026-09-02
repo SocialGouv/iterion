@@ -135,6 +135,30 @@ tool" — the audience is anyone who operates agent work. But don't make git
 optional in the core, and don't ship a view that needs the engine to know a
 specific bot (see 2).
 
+**Backend parity doctrine — claw ↔ claude_code (pre-arbitrated).** `claw`
+(claw-code-go, the sibling repo) is meant to be feature-paritary with
+`claude_code`, and the two backends are meant to be **interchangeable** on
+the same node: `claude_code` is the more stable and mature harness today;
+`claw` reaches every provider the registry knows. This doctrine is an
+**addendum** to the numbered five above, not a sixth principle — equally
+settled, equally not to re-litigate. Consequences, settled:
+
+- A claw error, gap or limitation met in real use is a **claw-code-go
+  backlog item, not a disqualification** — fix the harness, then re-judge
+  the model. (Known gap to burn down: session resume parity — `claw`
+  never reads `SessionID`, replaying from the run's own store. MCP
+  servers and mid-tool-loop `ask_user` under the sandboxed
+  `__claw-runner` shipped in V2-2/V2-3 — see
+  [docs/sandbox.md](docs/sandbox.md).)
+- Every engine-side capability wired for one of the two (credentials,
+  fingerprinting/meters, permission gate, session resume, events) must be
+  wired — or explicitly refused with a typed diagnostic — for the other.
+  A feature that silently works on one backend only is a defect (see 1).
+- Backend fallback/switching (run-level `fallback`, per-node overrides) is
+  the interchangeability mechanism: every production switch is also a
+  parity measurement. Keep switches observable (events name the backend
+  and the served model).
+
 ## Operational-knowledge reflex — capture what a session cost you to discover
 
 When a work session burns real time **discovering how to configure or operate
@@ -241,6 +265,20 @@ the hours this one spent.
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
   reverted, or when a run fails on "version drift".
+- [docs/outcome-router.md](docs/outcome-router.md) — the
+  `ITERION_OUTCOME_ROUTER` switch: how a policy-carrying terminal run is
+  decided by its launch-frozen contract (merge/relaunch/escalate), the
+  activation watermark that keeps a flip from retro-routing 24h of
+  history, the decision registry (lease, attempt cap,
+  `GET /api/runs/{id}/route-decisions`), the `route_escalated` /
+  `route_action_failed` ops alerts, and the rollout + emergency-stop
+  procedure. Read it before flipping the switch on a deployment.
+- [docs/sentry-feedback-loop.md](docs/sentry-feedback-loop.md) — reading
+  production errors BACK from the platform Sentry (org `incubateur`, project
+  `iterion`/62 on sentry2): the user-auth-token setup, the repo's `.mcp.json`
+  (iterion + Sentry MCP servers, `SENTRY_ACCESS_TOKEN` env), raw-API recipes,
+  and the error-watch sentinel design (detect→card→fix→resolve). Read it to
+  triage a prod crash or wire an agent session to live errors.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -335,12 +373,13 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `tool/` — Tool registry, policies, adapters
   - `mcp/` — MCP server lifecycle, configuration, health checks
   - `recipe/` — Recipe handling for tool adapters and execution policies
-  - `cost/` — Cost estimation and budgeting
-  - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities`)
+  - `cost/` — Cost estimation and budgeting. Prices a call from three sources in order: claw's live registry, the spec aggregator's published pair (`modelspecs`, taken only when BOTH rates are positive — a half-published pair would price the other half at zero), then the committed static table. Zero is always *unknown*, never *free*: `Annotate` omits `_cost_usd` rather than emit a 0
+  - `modelspecs/` — The dynamic model-spec registry of **ADR-042**, extracted to a LEAF package (only iterion dep: `pkg/store`) so `cost/` can read published pricing without inverting the import graph — `cost/` is a leaf precisely *because* `model/` imports it (**ADR-093**). Serves a consensus-filtered `Spec` (context window, max output, prices, three flags) per `provider/model` and per bare `model`; a field the publishers disagree on is zeroed, i.e. UNKNOWN, so the caller keeps its curated value. Supplies but does not decide — merging over the curated table stays in `model/` (`mergeSpec`). `Default()` is built lazily from the env (not at init, which would make a test's `ITERION_MODEL_SPECS_CACHE` too late); `SetDefault`/`NewSeeded` are the cross-package test seam that keeps a price assertion off the host's `~/.iterion` cache
+  - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities` — carrying `ContextWindow` / `MaxOutputTokens` / `InputCostPerM` / `OutputCostPerM`, every one zero-means-unknown)
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
-- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; consumed by the 4 campaign bots' plan phase), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
+- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; consumed by the 7 campaign bots' plan phase), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
@@ -1744,7 +1783,17 @@ committed, PR-reviewable record. Index + template:
 
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
-- **version.yml** — conventional changelog via release-it, version from `package.json`
+- **version.yml** — conventional changelog via release-it, version from `package.json`.
+  release-it writes the new section into [CHANGELOG.md](CHANGELOG.md) as part of the
+  release commit itself (`infile` + `git add . --update`), so the file cannot drift
+  from the tags — never hand-edit it. It holds the **current major only**; earlier
+  ones are archived under [docs/changelog/](docs/changelog/) because GitHub stops
+  rendering markdown past 512 KB. Each entry carries a collapsed `why` excerpt taken
+  from the commit body — the rendering lives in
+  [scripts/changelog-writer.mjs](scripts/changelog-writer.mjs), shared by release-it
+  ([.release-it.mjs](.release-it.mjs)) and the regenerator (`task changelog:gen`), so
+  a rebuilt section is byte-identical to a released one. Re-run `task changelog:gen`
+  after a major bump, or when it warns the file is nearing the ceiling.
 
 **`main` is protected by a merge queue** (ruleset "main protected — merge
 queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
@@ -1780,8 +1829,12 @@ the findings in a session. The command seeds Billy with Revi's review
 (kind-matched hand-off), he pushes fixes onto the PR branch, posts his ledger +
 gate count, and the push re-triggers Revi. Every such run is a dogfood run:
 monitor it, fix the frictions it surfaces, write the bilan. Full habit +
-gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). (The zero-touch
-`auto_fix_on_gate_failure` lane is deliberately not enabled here yet.)
+gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). The zero-touch
+`auto_fix_on_gate_failure` lane is **enabled here** since 2026-08-28: a red
+`revi/review` launches Billy by itself, with no comment. So **check no fixer
+run is already in flight** (`iterion remote runs list`, or the gate's `pending`
+link) before hand-fixing a red PR — a manual push while he works recreates the
+mid-run collision.
 
 ## Conventions
 

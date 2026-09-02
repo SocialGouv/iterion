@@ -206,21 +206,30 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// that never gated anything. Naming the reason is what makes the next
 	// occurrence a grep instead of an investigation.
 	//
-	// Warn on the EVENT path only. The sweep re-offers the same run every
-	// minute for the whole lookback, so a run sitting in a permanent abstain
-	// branch — a lost grant, an unreachable forge — would log the identical
-	// line ~60 times an hour per replica and bury the branches that carry new
-	// information, defeating the point of naming the reason at all. The event
-	// fires once per run, which is exactly one line per occurrence.
+	// Warn on the EVENT path, and on the sweep's LAST pass over this run.
+	// The sweep re-offers the same run every minute for the whole lookback, so
+	// a run sitting in a permanent abstain branch — a lost grant, an
+	// unreachable forge — would log the identical line ~60 times an hour per
+	// replica and bury the branches that carry new information. But Debug is
+	// suppressed at the info level deployments run at, so those passes said
+	// NOTHING at all: the one Warn the event path emits dies with the pod, and
+	// a check stuck for a day leaves nothing to diagnose it with. The last
+	// pass is the one that matters anyway — past the lookback nothing revisits
+	// the run and the miss becomes permanent — so it speaks, once.
 	abstain := func(format string, args ...any) error {
-		if s.logger != nil {
-			msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
-			args = append([]any{runID, via, prURL}, args...)
-			if via == gateTriggerSweep {
-				s.logger.Debug(msg, args...)
-			} else {
-				s.logger.Warn(msg, args...)
-			}
+		if s.logger == nil {
+			return nil
+		}
+		msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
+		args = append([]any{runID, via, prURL}, args...)
+		switch {
+		case via != gateTriggerSweep:
+			s.logger.Warn(msg, args...)
+		case s.gateSweepIsLastPass(run):
+			s.logger.Warn(msg+" — this was the last sweep pass inside the "+
+				gateSweepLookback.String()+" window: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
+		default:
+			s.logger.Debug(msg, args...)
 		}
 		return nil
 	}
@@ -248,6 +257,12 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// succeeds, and a rollout that restarts every replica.
 	gateCtx := runInputString(run, "gate_context")
 	if gateCtx == "" {
+		return nil
+	}
+	// A run whose launch pinned the gate off owes no verdict — painting a
+	// synthetic failure over its silence would manufacture the very deadlock
+	// the pin exists to avoid (see runGateDisabled).
+	if runGateDisabled(run) {
 		return nil
 	}
 
@@ -448,6 +463,33 @@ func gateRunURL(base, runID string) string {
 }
 
 // runInputString reads one launch input as a trimmed string.
+// runGateDisabled reports whether the run was launched with an EXPLICIT
+// gate_enabled pin that leaves the gating bot advisory-only (the value
+// classification is forge.GateValueDisables — one table shared with the
+// provisioning derivation). Every gate arm (the launch claim, this
+// reconciler, the auto-fix lane) must consult it: a repo that pinned the
+// gate off while still carrying a gate_context would otherwise get a
+// pending claim nothing ever resolves, then a synthetic "review died"
+// failure and a relaunch — a misconfiguration turned into a deadlock.
+// Absent key, or a non-string non-bool input shape → the gate stays armed
+// (the pre-pin behavior).
+func runGateDisabled(run *store.Run) bool {
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	v, ok := run.Inputs["gate_enabled"]
+	if !ok {
+		return false
+	}
+	switch t := v.(type) {
+	case string:
+		return forge.GateValueDisables(t)
+	case bool:
+		return !t
+	}
+	return false
+}
+
 func runInputString(run *store.Run, key string) string {
 	if run == nil || run.Inputs == nil {
 		return ""

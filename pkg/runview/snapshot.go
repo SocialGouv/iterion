@@ -97,12 +97,15 @@ type RunHeader struct {
 	// overrides + cloud ceiling clamp), surfaced so the studio Overview
 	// draws budget meters with a denominator. Nil when the workflow
 	// declared no budget: block. See store.RunBudget.
-	Budget     *store.RunBudget  `json:"budget,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
-	UpdatedAt  time.Time         `json:"updated_at"`
-	FinishedAt *time.Time        `json:"finished_at,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	Checkpoint *store.Checkpoint `json:"checkpoint,omitempty"`
+	Budget     *store.RunBudget `json:"budget,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+	FinishedAt *time.Time       `json:"finished_at,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	// FailureCode is Error's machine-readable classification (ADR-095);
+	// empty = unknown/legacy.
+	FailureCode store.FailureCode `json:"failure_code,omitempty"`
+	Checkpoint  *store.Checkpoint `json:"checkpoint,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
@@ -126,14 +129,21 @@ type RunHeader struct {
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The studio uses these to
 	// surface the persistent branch and FF status in the run header.
-	FinalCommit      string              `json:"final_commit,omitempty"`
-	FinalBranch      string              `json:"final_branch,omitempty"`
-	FinalBranchError string              `json:"final_branch_error,omitempty"`
-	MergedInto       string              `json:"merged_into,omitempty"`
-	MergedCommit     string              `json:"merged_commit,omitempty"`
-	MergeStrategy    store.MergeStrategy `json:"merge_strategy,omitempty"`
-	MergeStatus      store.MergeStatus   `json:"merge_status,omitempty"`
-	AutoMerge        bool                `json:"auto_merge,omitempty"`
+	FinalCommit      string `json:"final_commit,omitempty"`
+	FinalBranch      string `json:"final_branch,omitempty"`
+	FinalBranchError string `json:"final_branch_error,omitempty"`
+	// Outcome bookkeeping (see store.Run): the episode counter, the
+	// typed cause of the last terminal transition, and who owns the
+	// continuation. This is what lets an outcome consumer act on the
+	// DOCUMENT instead of parsing error prose or replaying events.
+	RoutingPolicy     *store.RoutingPolicy    `json:"routing_policy,omitempty"`
+	OutcomeSeq        int64                   `json:"outcome_seq,omitempty"`
+	ContinuationState store.ContinuationState `json:"continuation_state,omitempty"`
+	MergedInto        string                  `json:"merged_into,omitempty"`
+	MergedCommit      string                  `json:"merged_commit,omitempty"`
+	MergeStrategy     store.MergeStrategy     `json:"merge_strategy,omitempty"`
+	MergeStatus       store.MergeStatus       `json:"merge_status,omitempty"`
+	AutoMerge         bool                    `json:"auto_merge,omitempty"`
 	// LocAdded / LocDeleted aggregate the three-dot numstat of the
 	// run's commits against its fork point (merge-base of the merge
 	// target and FinalCommit), computed server-side with a cache.
@@ -1418,6 +1428,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
+		FailureCode:       r.FailureCode,
 		Checkpoint:        r.Checkpoint,
 		WorkDir:           r.WorkDir,
 		ProjectPath:       r.ProjectPath,
@@ -1426,6 +1437,9 @@ func headerFromRun(r *store.Run) RunHeader {
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
+		RoutingPolicy:     r.RoutingPolicy,
+		OutcomeSeq:        r.OutcomeSeq,
+		ContinuationState: r.ContinuationState,
 		MergedInto:        r.MergedInto,
 		MergedCommit:      r.MergedCommit,
 		MergeStrategy:     r.MergeStrategy,

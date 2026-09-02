@@ -135,6 +135,18 @@ vars:
   ## digest message (never silently).
   max_digest_items: int = 150
 
+  ## Per-MESSAGE character budget at delivery. A digest above it is split
+  ## into consecutive messages, never cut (see the notify node). 14000 sits
+  ## under Mattermost's default 16383-char post limit; a Slack sink wants
+  ## something lower, which a sink's own `max_chars` sets per-channel.
+  max_message_chars: int = 14000
+
+  ## Ceiling on the number of messages ONE digest may occupy. Reached only
+  ## by an abnormal digest (a runaway synthesis), where posting a dozen
+  ## messages in a row is worse than saying so: the last message then
+  ## carries the truncation notice. 0 = no ceiling, post whatever it takes.
+  max_messages: int = 5
+
   ## Out-of-tree scratch for the fetched-items handoff between collect
   ## nodes (never pollutes the workspace).
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/feed-watch"
@@ -385,6 +397,10 @@ schema notify_input:
   dry_run: bool
   category: string
   digest_title: string
+  ## Per-message character budget; a sink's own `max_chars` overrides it.
+  max_message_chars: int
+  ## Ceiling on the messages one digest may occupy (0 = none).
+  max_messages: int
 
 schema silence_input:
   category: string
@@ -404,10 +420,19 @@ schema silence_input:
 
 schema notify_output:
   posted: bool
-  dry_run: bool
+  ## Sinks that received the digest ENTIRELY (every message of it).
   delivered: int
+  dry_run: bool
   targets: string[]
   summary: string
+  ## The most messages the digest occupies on any sink (1 = it fit
+  ## everywhere). That is the sink with the NARROWEST budget: a smaller
+  ## max_chars means more parts.
+  parts: int
+  ## Individual POSTs that succeeded, all sinks and parts counted. The
+  ## delivery evidence `delivered` cannot carry: a sink that took 2 of 3
+  ## parts leaves delivered=0 with content already in the channel.
+  posts: int
 
 schema commit_input:
   category: string
@@ -870,10 +895,15 @@ tool load_pending:
             ln = ln.strip()
             if ln:
                 items.append(json.loads(ln))
-    snapshot_ids = [e.get('id') or '' for e in items]
     items.sort(key=lambda d: d.get('ts') or 0, reverse=True)
     overflow = max(0, len(items) - max_items)
     items = items[:max_items]
+    # Snapshot only what is actually handed to the LLM: commit_state
+    # clears every snapshot id from pending.jsonl after delivery, so an
+    # id captured before the max_items cut would purge an overflow item
+    # that was never synthesized nor published. Overflow items stay in
+    # the queue for the next digest instead.
+    snapshot_ids = [e.get('id') or '' for e in items]
     # ── Canonicalize item URLs through their redirects ──────────────
     # Many feeds serve tracking/redirect URLs (FeedBlitz, FeedBurner,
     # feedproxy) whose host is the aggregator's, not the article's. The
@@ -1092,10 +1122,22 @@ tool load_pending:
 ## forfait as a third-party-SDK CGU violation, which is what a
 ## forfait-backed cloud runner hits when the backend auto-detects to
 ## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
-## on a metered OpenAI key instead. No board capabilities: the digest's
+## on the OpenAI family instead (a metered key, or the ChatGPT-forfait
+## via claw's codex OAuth path). No board capabilities: the digest's
 ## sink is the chat webhook, and declaring board.* would require the
 ## iterion_board MCP server active on every run (it is not on a cloud
 ## runner), failing the node at setup even when unused.
+##
+## The gpt_forfait fallback keeps the digest deliverable when the
+## Anthropic subscription window (or iterion's own usage cap on it) is
+## exhausted: usage_window routes the SAME prompt to the OpenAI family
+## through claw, billed on the codex OAuth forfait when no metered key
+## is present. The deny gate survives the route — a sandboxed claw run
+## receives the policy over the IPC and enforces it in-container. The
+## crossing is loud (`model_fallback` event, `_fallback_used` /
+## `_served_by: gpt_forfait` on the output), and the deterministic
+## verify_message firewall downstream judges the digest the same way
+## whoever served it.
 agent synthesize:
   backend: "${FEED_WATCH_BACKEND:-claude_code}"
   model: "${FEED_WATCH_MODEL:-}"
@@ -1107,6 +1149,11 @@ agent synthesize:
   tools: [web_fetch]
   tool_max_steps: 30
   session: fresh
+  fallbacks:
+    gpt_forfait:
+      backend: "claw"
+      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-5.5}"
+      on: [usage_window]
 
 ## Deterministic link firewall between the LLM and delivery. Extracts
 ## every URL from the digest and HARD-FAILS the run if any host is not the
@@ -1174,69 +1221,248 @@ tool verify_message:
 
 ## Deterministic delivery (no LLM at the last step — a provider
 ## rate-limit cannot sink a finished digest). Posts to every configured
-## sink; a PARTIAL failure is surfaced in the output but does not fail
-## the run (a retry would double-post the sinks that succeeded); a
-## TOTAL failure fails the run loudly (safe to resume — nothing was
-## delivered).
+## sink.
+##
+## `posted` is NOT "something went out": it is the QUEUE-CONSUMPTION signal
+## (`notify -> commit_state when posted`), and commit_state clears the
+## delivered snapshots from pending.jsonl. So it is true only when every
+## sink received the digest WHOLE. Anything less — a sink that failed, a
+## sink that got parts 1..k of n, or a digest the max_messages ceiling
+## truncated — fails the run loudly with the queue INTACT. The successful
+## posts are reported on stderr; the replay may duplicate what already
+## landed, and that is the deliberate trade: a duplicate is recoverable, a
+## dropped digest is not.
+##
+## A digest longer than the sink's per-message budget is SPLIT into
+## consecutive messages, never cut: the channel is the digest's only
+## audience, and the "full version in the run artifacts" a truncation
+## points at is not a place its readers can go. Incoming webhooks return
+## no post id, so the parts cannot be threaded — they are ordinary
+## consecutive posts, ordered by sequential (blocking) POSTs.
 tool notify:
   input: notify_input
   output: notify_output
   language: py
   script: |
-    import json, os, sys, urllib.request
+    import json, os, sys, time, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     message = {{input.message_markdown}}
     sinks = {{input.sinks}} or []
     dry_run = {{input.dry_run}}
     category = {{input.category}}
+    default_chars = int({{input.max_message_chars}} or 0) or 14000
+    max_messages = int({{input.max_messages}} or 0)
     webhooks_file = {{secrets.webhooks.path}}
+
+    # The notice the LAST part carries when max_messages cut the tail off.
+    TRUNC_NOTE = ' -- digest truncated, full version in the run artifacts'
+
+    def mark_for(i, n, cut):
+        return '_(' + str(i) + '/' + str(n) + (TRUNC_NOTE if cut else '') + ')_'
+
+    # Room for the blank line + the marker appended to every part of a split
+    # digest. DERIVED from the longest marker a part can carry (the truncation
+    # notice, three-digit counts) rather than guessed: a reserve smaller than
+    # the marker it reserves for puts the last message OVER the budget the
+    # budget exists to respect.
+    MARK_RESERVE = len(chr(10) + chr(10) + mark_for(999, 999, True))
 
     def out(o):
         print(json.dumps(o, ensure_ascii=False))
         raise SystemExit(0)
 
+    def split_text(text, limit):
+        """Cut `text` into <=limit chunks at the widest markdown boundary
+        available: blank-line blocks first, then lines (a digest entry is
+        one line, so no entry and no link is ever broken), then a hard cut
+        for a single line that alone exceeds the budget."""
+        if len(text) <= limit:
+            return [text]
+        parts, cur = [], ''
+        def take(piece, sep):
+            # Greedily grow the current part; emit it when `piece` no
+            # longer fits and start a new one.
+            nonlocal cur
+            cand = piece if not cur else cur + sep + piece
+            if len(cand) <= limit:
+                cur = cand
+                return True
+            return False
+        for block in text.split(chr(10) + chr(10)):
+            if take(block, chr(10) + chr(10)):
+                continue
+            if cur:
+                parts.append(cur)
+                cur = ''
+            if len(block) <= limit:
+                cur = block
+                continue
+            for line in block.split(chr(10)):
+                if take(line, chr(10)):
+                    continue
+                if cur:
+                    parts.append(cur)
+                    cur = ''
+                while len(line) > limit:
+                    parts.append(line[:limit])
+                    line = line[limit:]
+                cur = line
+        if cur:
+            parts.append(cur)
+        return unorphan(parts, limit)
+
+    def unorphan(parts, limit):
+        """Move a section heading stranded at the end of a part onto the
+        next one: its items are there, and a header with nothing under it
+        reads as a delivery glitch."""
+        sep = chr(10) + chr(10)
+        for i in range(len(parts) - 1):
+            blocks = parts[i].split(sep)
+            if len(blocks) < 2 or not blocks[-1].lstrip().startswith('#'):
+                continue
+            moved = blocks[-1]
+            if len(parts[i + 1]) + len(moved) + len(sep) > limit:
+                continue
+            parts[i] = sep.join(blocks[:-1])
+            parts[i + 1] = moved + sep + parts[i + 1]
+        return parts
+
+    # Budgets whose rendering DROPPED content (the max_messages ceiling).
+    # Visible outside messages_for because truncation, like a partial
+    # delivery, must forbid consuming the queue.
+    truncated_limits = set()
+
+    def messages_for(limit):
+        """The digest as it will be posted to a sink of budget `limit`:
+        one entry when it fits, else numbered parts, the last one carrying
+        the truncation notice if the ceiling cut the tail off."""
+        parts = split_text(message or '', max(limit - MARK_RESERVE, 1))
+        cut = max_messages > 0 and len(parts) > max_messages
+        if cut:
+            truncated_limits.add(limit)
+            parts = parts[:max_messages]
+            # Every part was sized against MARK_RESERVE, which covers the
+            # plain `_(i/n)_` marker — not the 62-char truncation notice the
+            # LAST part now carries. Re-trim that one part rather than
+            # reserving 64 chars on EVERY part, which would shrink the whole
+            # digest to pay for a marker only one message ever gets.
+            room = limit - len(mark_for(len(parts), len(parts), True)) - 2
+            if room > 0 and len(parts[-1]) > room:
+                parts[-1] = parts[-1][:room].rstrip()
+        if len(parts) == 1 and not cut:
+            return parts
+        n = len(parts)
+        msgs = []
+        for i, part in enumerate(parts, 1):
+            msgs.append(part + chr(10) + chr(10) + mark_for(i, n, cut and i == n))
+        return msgs
+
     if not sinks:
         out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'targets': [],
+             'parts': len(messages_for(default_chars)), 'posts': 0,
              'summary': 'no sinks configured for ' + category + ' -- digest kept in the run artifacts only'})
-    text = message or ''
-    if len(text) > 14000:
-        text = text[:14000] + chr(10) + '_(digest truncated -- full version in the run artifacts)_'
-    payloads = []
+
+    # One split per distinct budget: sinks sharing a budget share the work.
+    plans, by_limit = [], {}
     for s in sinks:
-        payloads.append(((s.get('webhook') or ''),
-                         {'text': text, 'channel': s.get('channel') or '',
-                          'username': s.get('username') or 'Vigie',
-                          'icon_emoji': s.get('icon_emoji') or ':telescope:'}))
+        limit = int(s.get('max_chars') or 0) or default_chars
+        if limit not in by_limit:
+            by_limit[limit] = messages_for(limit)
+        plans.append(((s.get('webhook') or ''), by_limit[limit],
+                      {'channel': s.get('channel') or '',
+                       'username': s.get('username') or 'Vigie',
+                       'icon_emoji': s.get('icon_emoji') or ':telescope:'}))
+    parts_max = max(len(m) for _, m, _ in plans)
+
     if dry_run:
         ## stderr only: the engine parses this node's WHOLE stdout as one
         ## JSON object — an extra stdout line breaks the output and the
         ## `when posted` edges dead-end the run (NO_OUTGOING_EDGE).
-        for name, p in payloads:
-            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + ' chars=' + str(len(text)), file=sys.stderr)
-        out({'posted': False, 'dry_run': True, 'delivered': 0, 'targets': [n for n, _ in payloads],
-             'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted'})
+        for name, msgs, p in plans:
+            for i, text in enumerate(msgs, 1):
+                print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] +
+                      ' part=' + str(i) + '/' + str(len(msgs)) + ' chars=' + str(len(text)), file=sys.stderr)
+        out({'posted': False, 'dry_run': True, 'delivered': 0, 'targets': [n for n, _, _ in plans],
+             'parts': parts_max, 'posts': 0,
+             'summary': 'dry-run: ' + str(len(plans)) + ' sink(s) x up to ' + str(parts_max) +
+                        ' message(s) prepared, nothing posted'})
     whmap = {}
     if webhooks_file and os.path.exists(webhooks_file):
         with open(webhooks_file, encoding='utf-8') as fh:
             whmap = json.load(fh)
-    missing = sorted({n for n, _ in payloads if not whmap.get(n)})
+    missing = sorted({n for n, _, _ in plans if not whmap.get(n)})
     if missing:
         raise SystemExit('feed-watch: webhook name(s) [' + ', '.join(missing) + '] not found in the bound `webhooks` secret (JSON map name -> url). Bind it (iterion secret set webhooks ...) or run with --var dry_run=true.')
-    delivered, failures, targets = 0, [], []
-    for name, p in payloads:
-        req = urllib.request.Request(whmap[name], data=json.dumps(p).encode('utf-8'),
-                                     headers={'Content-Type': 'application/json',
-                                              'User-Agent': 'feed-watch (iterion)'}, method='POST')
-        try:
-            with urllib.request.urlopen(req, timeout=20):
-                delivered += 1
-                targets.append(name + '->' + (p['channel'] or 'default'))
-        except Exception as e:
-            failures.append(name + ': ' + type(e).__name__ + ': ' + str(e)[:200])
-    if delivered == 0:
-        raise SystemExit('feed-watch: all ' + str(len(payloads)) + ' webhook post(s) failed: ' + '; '.join(failures))
+    delivered, posts_ok, failures, targets = 0, 0, [], []
+    for name, msgs, p in plans:
+        sent = 0
+        for i, text in enumerate(msgs, 1):
+            body = dict(p)
+            body['text'] = text
+            req = urllib.request.Request(whmap[name], data=json.dumps(body).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json',
+                                                  'User-Agent': 'feed-watch (iterion)'}, method='POST')
+            try:
+                with urllib.request.urlopen(req, timeout=20):
+                    sent += 1
+                    posts_ok += 1
+            except Exception as e:
+                failures.append(name + ' part ' + str(i) + '/' + str(len(msgs)) + ': ' +
+                                type(e).__name__ + ': ' + str(e)[:200])
+                # Stop this sink: posting part 3 over a missing part 2
+                # leaves a hole no reader can detect.
+                break
+            if i < len(msgs):
+                # Two posts created in the same millisecond can render in
+                # arbitrary order on Mattermost; the parts are numbered but
+                # cheap insurance beats a shuffled digest.
+                time.sleep(0.3)
+        label = name + '->' + (p['channel'] or 'default')
+        if sent == len(msgs):
+            delivered += 1
+            targets.append(label + ('' if len(msgs) == 1 else ' (' + str(len(msgs)) + ' msgs)'))
+        elif sent:
+            targets.append(label + ' (' + str(sent) + '/' + str(len(msgs)) + ' msgs)')
+    if posts_ok == 0:
+        raise SystemExit('feed-watch: all webhook post(s) failed across ' + str(len(plans)) +
+                         ' sink(s): ' + '; '.join(failures))
+    # `posted` is not "something went out" — it is the QUEUE-CONSUMPTION
+    # signal (`notify -> commit_state when posted`), and commit_state clears
+    # every delivered snapshot from pending.jsonl. So it may only be true when
+    # every sink received the WHOLE digest.
+    #
+    # Splitting made the gap reachable in a new way (parts 2..n fail, part 1
+    # is out), but it was already there between SINKS: one sink of two served
+    # used to consume the queue for both. Both are the same defect — a green
+    # run that silently drops what it never delivered — so both are closed
+    # here, the way the sibling bot closes it: keep the successful posts, do
+    # NOT consume, and fail LOUDLY so the stuck half is visible. The replay
+    # may duplicate what already landed; a duplicate is recoverable, a lost
+    # digest is not.
+    # Truncation is the THIRD way this node can drop content, and it is the
+    # quietest: the ceiling removes the tail parts BEFORE any POST, so every
+    # sink reports a complete send, `delivered` reaches len(plans), and the
+    # queue would be consumed for items whose text never left. The channel
+    # only sees a notice pointing at run artifacts its readers cannot open.
+    # Same rule as a partial delivery: content dropped => do not consume.
+    if delivered < len(plans) or truncated_limits:
+        print(json.dumps({'posted': False, 'dry_run': False, 'delivered': delivered,
+                          'targets': targets, 'parts': parts_max, 'posts': posts_ok,
+                          'truncated': bool(truncated_limits)},
+                         ensure_ascii=False), file=sys.stderr)
+        why = ('the digest was TRUNCATED by the max_messages ceiling (' + str(max_messages) +
+               '), so part of it never left' if truncated_limits
+               else 'only ' + str(delivered) + '/' + str(len(plans)) +
+                    ' sink(s) received the COMPLETE digest')
+        raise SystemExit('feed-watch: ' + why + ' (' + str(posts_ok) +
+                         ' post(s) ok) -- the queue is NOT consumed, so this digest replays in '
+                         'full on the next run and may duplicate what already landed. ' +
+                         '; '.join(failures))
     out({'posted': True, 'dry_run': False, 'delivered': delivered, 'targets': targets,
-         'summary': 'delivered ' + str(delivered) + '/' + str(len(payloads)) +
+         'parts': parts_max, 'posts': posts_ok,
+         'summary': 'delivered ' + str(delivered) + '/' + str(len(plans)) + ' sink(s)' +
+                    ('' if parts_max == 1 else ' in ' + str(parts_max) + ' message(s)') +
+                    ' -- ' + str(posts_ok) + ' post(s) ok' +
                     ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
 
 ## Announce this category's OWN silence, deterministically and without an
@@ -1287,6 +1513,7 @@ tool notify_silence:
         text = text.replace(k, v)
     if not sinks:
         out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'targets': [],
+             'parts': 1, 'posts': 0,
              'summary': 'silence of ' + str(silence_days) + 'd for ' + category +
                         ' -- no sinks configured, nothing announced'})
     payloads = [((s.get('webhook') or ''),
@@ -1297,7 +1524,7 @@ tool notify_silence:
         for name, p in payloads:
             print('DRY-RUN silence -> webhook=' + name + ' channel=' + p['channel'], file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0,
-             'targets': [n for n, _ in payloads],
+             'targets': [n for n, _ in payloads], 'parts': 1, 'posts': 0,
              'summary': 'dry-run: silence alert prepared for ' + category +
                         ' (' + str(silence_days) + 'd), nothing posted'})
     whmap = {}
@@ -1377,7 +1604,10 @@ tool notify_silence:
         raise SystemExit('feed-watch: silence alert for ' + category + ' (' + str(silence_days) +
                          'd) reached NOBODY -- all ' + str(len(payloads)) + ' post(s) failed: ' +
                          '; '.join(failures))
+    # A silence alert is one short operator-authored message — never split,
+    # so parts is 1 and posts tracks delivered.
     out({'posted': delivered > 0, 'dry_run': False, 'delivered': delivered, 'targets': targets,
+         'parts': 1, 'posts': delivered,
          'summary': 'silence alert for ' + category + ' (' + str(silence_days) + 'd): delivered ' +
                     str(delivered) + '/' + str(len(payloads)) +
                     ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
@@ -1601,7 +1831,9 @@ workflow feed_watch:
     sinks: "{{outputs.load_pending.sinks}}",
     dry_run: "{{vars.dry_run}}",
     category: "{{outputs.load_pending.category}}",
-    digest_title: "{{outputs.load_pending.digest_title}}"
+    digest_title: "{{outputs.load_pending.digest_title}}",
+    max_message_chars: "{{vars.max_message_chars}}",
+    max_messages: "{{vars.max_messages}}"
   }
 
   ## Only a DELIVERED digest consumes the queue: dry-run and

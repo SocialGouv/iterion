@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 func TestEnvelopeRoundTripAllTypes(t *testing.T) {
@@ -138,5 +141,39 @@ func TestEnvelopeWriter_ConcurrentSafe(t *testing.T) {
 	}
 	if want := goroutines * perGoroutine; count != want {
 		t.Errorf("decoded %d envelopes, want %d (lines interleaved?)", count, want)
+	}
+}
+
+// TestPermissionPolicyEnvelopeRoundTrip: the policy's serialisable form
+// survives the IPC envelope byte-for-byte, exemptions included.
+func TestPermissionPolicyEnvelopeRoundTrip(t *testing.T) {
+	cfg := permission.PolicyConfig{
+		Mode:   "deny",
+		Allow:  []string{"WebFetch(*)", "TodoWrite"},
+		Deny:   []string{"Bash(*)"},
+		Exempt: []string{"structuredoutput"},
+	}
+	env, err := NewPermissionPolicyEnvelope(cfg)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if env.Type != EnvelopePermissionPolicy {
+		t.Fatalf("type = %q", env.Type)
+	}
+	var got permission.PolicyConfig
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !reflect.DeepEqual(cfg, got) {
+		t.Fatalf("round-trip mismatch: sent %+v got %+v", cfg, got)
+	}
+	// And the decoded form rebuilds a working policy through the same
+	// parser the launcher authored it against.
+	pol, err := permission.NewPolicyFromConfig(got)
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if pol.CanAsk() {
+		t.Fatal("deny-only policy must not be able to Ask")
 	}
 }

@@ -377,6 +377,137 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	}
 }
 
+// bankableStatus says whether a run that classified to this finalStatus
+// should push its workspace branch to the forge (bankRepoWorkspace).
+// Keyed on classifyExecResult's OUTPUT, not on raw sentinels, so the
+// budget-beats-interrupted precedence lives in exactly one place: an
+// interruption that also carries a spent budget classifies as
+// budget_exceeded — a manual-resume death whose redelivery never comes
+// back on its own — and must bank like one. classifyExecResult is pure,
+// so the bank site calls it a second time without side effects.
+func bankableStatus(finalStatus string) bool {
+	switch finalStatus {
+	case "finished", "budget_exceeded", "failed":
+		return true
+	}
+	return false
+}
+
+// bankIfBankable is the single gate between a run's outcome and the
+// forge push. Kept as one method so the decision and the action are
+// testable TOGETHER against a real bare remote — the measured regression
+// this blocks is someone quietly reverting the gate to success-only,
+// which every direct bankRepoWorkspace test is blind to.
+func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
+	finalStatus := classifyExecResult(runErr, msg.RunID).finalStatus
+	// The operator refusing the work is honoured on EVERY road out of
+	// here — including a cancel that lands while the run was pausing or
+	// tearing down (the cancel subscription cancels the run ctx from a
+	// NATS goroutine, and the sandbox export gives it a minutes-wide
+	// window to race the engine's own paused/interrupted return).
+	operatorRefused := errors.Is(context.Cause(ctx), runtime.ErrRunCancelled)
+	if bankableStatus(finalStatus) {
+		bankCtx, cancel, ok := bankContext(ctx)
+		if ok {
+			defer cancel()
+			r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
+			return
+		}
+		if operatorRefused {
+			// The operator refused the work — it is not parked anywhere.
+			r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled by the operator. This attempt's work stays in the git-meta snapshot.", msg.RunID)
+			return
+		}
+		// The refusal protects the STORAGE branch from a lease that may
+		// already belong to another pod; a ref named after this chain's
+		// own head cannot contest anything, so the work parks there
+		// instead of stranding in the snapshot.
+		r.cfg.Logger.Warn("runner: run %s: NOT banking the storage branch — the run ctx was cancelled (%v), not merely deadlined: this pod's lease may already have moved. Parking this attempt's work on its own ref instead.", msg.RunID, context.Cause(ctx))
+		r.bankAttemptRef(msg, workDir, base, integ, "lease-loss death ("+finalStatus+")")
+		return
+	}
+	if operatorRefused {
+		r.cfg.Logger.Warn("runner: run %s: NOT parking (%s) — the operator cancelled the run; refused work parks nowhere.", msg.RunID, finalStatus)
+		return
+	}
+	switch finalStatus {
+	case "interrupted", "paused", "paused_operator":
+		// Not the storage branch — an interrupted delivery redelivers and
+		// its successor banks that branch; recording FinalBranch on a
+		// paused run would make it merge-eligible mid-flight — but the
+		// work itself is as stranded as a death's (the successor
+		// re-clones at base), so it parks on a uniquely-named ref, run
+		// doc untouched.
+		r.bankAttemptRef(msg, workDir, base, integ, finalStatus)
+	}
+	// cancelled stays unbanked entirely: the operator refused the work.
+}
+
+// bankContext decides whether the bank may outlive the run ctx.
+//
+// The wall-clock death is the one this PR most exists for, and it is the
+// one the run ctx cannot serve: executeRun wraps ctx in
+// context.WithTimeout(msg.TimeoutSec), the engine returns a
+// sentinel-free RuntimeError on that deadline (classified `failed`, so
+// bankable), and every git op goes through exec.CommandContext — whose
+// Start() refuses outright on a done ctx. Unfixed, the ls-remote, the
+// fetch and the push all fail instantly and the branch never reaches the
+// forge.
+//
+// Only OUR OWN deadline is resurrectable: the work is done, the pod is
+// healthy, the lease is still ours (the heartbeat never stopped). Every
+// other cancellation — operator cancel, drain, heartbeat/lease loss —
+// means either the operator refused the work or ANOTHER POD may already
+// own this run, and force-pushing the storage branch from here would be
+// a split-brain write. Those causes can still arrive classified as a
+// generic `failed`: handleContextDoneWithCheckpoint falls back to
+// failRun — LOSING the ErrRunInterrupted sentinel — when the
+// FailRunResumable store write itself fails. That is exactly why the
+// cancellation CAUSE is the oracle here and the returned error is not.
+//
+// Cause propagation makes this correct in both orders: parent cancelled
+// first ⇒ the child reports the parent's ErrRunInterrupted/
+// ErrRunCancelled; child deadline first ⇒ DeadlineExceeded. A DSL
+// max_duration budget death never cancels ctx at all, so it takes the
+// live-ctx arm unchanged.
+//
+// The detachment relies on the wall-clock deadline living on a CHILD of
+// the heartbeat's ctx (executeRun wraps ctx; the heartbeat watches the
+// parent), so DeadlineExceeded-as-cause proves the lease never stopped.
+// That layering is load-bearing: a deadline moved onto the run ctx
+// itself would make a heartbeat-lost pod read as "merely deadlined" and
+// force-push from a lease that may have moved. Keep any new deadline
+// below executeRun's.
+//
+// The detached ctx gets its OWN aggregate deadline: per-op gitOpTimeout
+// bounds each git subprocess but not the sequence — the bank issues up
+// to four network ops (ls-remote, fetch, archive push, push), and a
+// wedged forge must not pin a pod for 4×op-timeout past the deadline
+// the operator set precisely to cap the run. When the operator disabled
+// per-op bounds (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"),
+// that choice is honoured here too.
+func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	cause := context.Cause(ctx)
+	switch {
+	case cause == nil:
+		return ctx, func() {}, true // live ctx — nothing to detach
+	case errors.Is(cause, context.DeadlineExceeded):
+		detached := context.WithoutCancel(ctx)
+		if gitOpTimeout > 0 {
+			bounded, cancel := context.WithTimeout(detached, bankBudget)
+			return bounded, cancel, true
+		}
+		return detached, func() {}, true
+	default:
+		return nil, nil, false
+	}
+}
+
+// bankBudget bounds the whole post-deadline bank sequence. Generous
+// against the nominal case (seconds) and small against the run
+// deadlines it may outlive (hours).
+const bankBudget = 10 * time.Minute
+
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
@@ -1071,6 +1202,24 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
 	}
+	// The continuation promote: only the RUNNER knows whether a Nak
+	// really means a redelivery (the engine has no queue topology, so
+	// its park writers leave continuation unknown). Promote to
+	// redelivery_pending at the actual Nak — a same-status write that
+	// states ownership without touching the engine's cause or message,
+	// and without inventing an episode. A Nak into nothing (last
+	// permitted delivery of an ErrRunInterrupted, exempt from DLQ)
+	// stays unknown, which is honest: nobody owns that run's future.
+	if outcome.action == actionNak && redeliverable && r.cfg.Store != nil {
+		bg, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
+		sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
+		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
+			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending},
+			[]store.RunStatus{store.RunStatusFailedResumable}); serr != nil {
+			logger.Warn("runner: continuation promote for %s: %v", msg.RunID, serr)
+		}
+		cancel()
+	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
@@ -1240,7 +1389,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// the server pod, which has no worktree, serves the panels from that.
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
+		cloneStart := time.Now()
 		repoDir, derr := r.prepareRepoWorkspace(ctx, msg)
+		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
+		// auth failure is exactly what the histogram exists to show), with
+		// the same nil guard every other Metrics site carries.
+		if r.cfg.Metrics != nil {
+			r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
+		}
 		if derr != nil {
 			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
 		}
@@ -1534,13 +1690,24 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// clean "no commits" (run 01a02a4b).
 		integ := engine.SandboxWorkspaceIntegrity()
 		r.recordRunGitMeta(ctx, msg, workDir, gitBase, integ)
-		// Bank a SUCCESSFUL repo-targeted run to the forge before the
-		// clone is wiped: the worktree-finalization path never fires
-		// here, so without this push a finished run's commits exist
-		// nowhere the server can reach (runs merge: "nothing to merge").
-		if runErr == nil {
-			r.bankRepoWorkspace(ctx, msg, workDir, gitBase, integ)
-		}
+		// Bank a repo-targeted run's work to the forge before the clone
+		// is wiped — on success AND on the deaths whose successor would
+		// otherwise restart from RepoSHA: the worktree-finalization path
+		// never fires here, so an unbanked death leaves its commits only
+		// in the git-meta snapshot above, and turning that snapshot back
+		// into a branch takes a manual replay every time (measured: nine
+		// manual recoveries in three days of one campaign). An interrupted
+		// delivery must NOT touch the storage branch — the lease may
+		// already belong to another pod, and a bank from here could race
+		// the new owner's push (bankContext refuses on the same oracle) —
+		// and a paused run must not either: FinalBranch on a half-done
+		// run would make it merge-eligible mid-flight. But their work is
+		// as stranded as a death's (the successor re-clones at RepoSHA
+		// and banks only its OWN later commits), so both park it on a
+		// uniquely-named attempt ref instead — doc untouched, no name
+		// contested (bankAttemptRef). A cancel is the operator saying
+		// the work is not wanted; it parks nowhere.
+		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 
 	// Upload any tool-produced artifact files (run reports, SBOMs) from
@@ -1771,6 +1938,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// wire. Before this, the cloud path persisted them display-only:
 		// the studio showed an override the delegates never honoured.
 		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
+		// The operator's run-level fallback chain, carried on the wire for
+		// the same reason as the pins above — and applied through the SAME
+		// ir.ApplyRunFallback screen a local launch passes, so a pod can
+		// never take a crossing the compiler would refuse.
+		RunFallback: runFallbackFromMsg(msg.Fallback),
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the
@@ -1825,6 +1997,25 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // set — the runner-side twin of runview's launch-entry fold, so a cloud
 // run resolves per-node models exactly like a local launch with the same
 // flags.
+// runFallbackFromMsg folds the wire chain into the IR form the executor
+// applies. Names are stamped here (not on the wire) so every consumer
+// reports the stages under the recognisable launch-route label.
+func runFallbackFromMsg(entries queue.RunFallback) []ir.Fallback {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]ir.Fallback, 0, len(entries))
+	for _, f := range entries {
+		out = append(out, ir.Fallback{
+			Name:     ir.RunFallbackName,
+			Backend:  f.Backend,
+			Model:    f.Model,
+			Provider: f.Provider,
+		})
+	}
+	return out
+}
+
 func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 	var o model.ModelOverrides
 	for _, e := range entries {

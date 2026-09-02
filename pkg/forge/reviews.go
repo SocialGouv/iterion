@@ -72,6 +72,22 @@ type ReviewClient interface {
 	CreatePullReview(ctx context.Context, repo string, number int, in NewReview) (ReviewResult, error)
 }
 
+// ReviewerAssigner is the optional capability of adding the client's OWN
+// identity to a pull/merge request's reviewer set. It is what makes the
+// forge-native "Re-request review" button exist on a reviewed PR: the
+// inbound webhook treats a re-request targeting that identity as an
+// on-demand re-review. Implemented by the gitlab admin client only — the
+// forge that needs it: GitLab reviewers are explicit sidebar assignments a
+// posted note never creates. GitHub adds a review's author to the reviewer
+// list by itself (the button appears organically for PAT/OAuth-account
+// connections), and a GitHub App cannot be a PR reviewer at all (forge
+// restriction) — both are deliberate non-implementations, not gaps.
+// Must be idempotent (a reviewer already present is a no-op) and additive
+// (never drop the humans already on the reviewer set).
+type ReviewerAssigner interface {
+	AddSelfAsPullReviewer(ctx context.Context, repo string, number int) error
+}
+
 // FoldCommentsMarkdown renders inline comments as a markdown list for
 // inclusion in a review's summary body — the fallback when a forge rejects
 // (some of) the inline anchors. Suggestions are kept as plain fenced code

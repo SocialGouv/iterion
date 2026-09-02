@@ -43,6 +43,51 @@ func TestRunMessage_RoundTripJSON(t *testing.T) {
 	}
 }
 
+func TestRunMessage_FallbackAcceptsObjectAndArray(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []RunFallbackEntry
+	}{
+		{
+			name: "legacy object",
+			raw:  `{"fallback":{"backend":"codex","model":"gpt-5.5"}}`,
+			want: []RunFallbackEntry{{Backend: "codex", Model: "gpt-5.5"}},
+		},
+		{
+			name: "ordered array",
+			raw:  `{"fallback":[{"backend":"codex","model":"gpt-5.5"},{"backend":"claw","model":"openai/gpt-5.5"}]}`,
+			want: []RunFallbackEntry{
+				{Backend: "codex", Model: "gpt-5.5"},
+				{Backend: "claw", Model: "openai/gpt-5.5"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var msg RunMessage
+			if err := json.Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(msg.Fallback) != len(tc.want) {
+				t.Fatalf("fallback = %+v, want %+v", msg.Fallback, tc.want)
+			}
+			for i := range tc.want {
+				if msg.Fallback[i] != tc.want[i] {
+					t.Fatalf("fallback[%d] = %+v, want %+v", i, msg.Fallback[i], tc.want[i])
+				}
+			}
+			blob, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !bytes.Contains(blob, []byte(`"fallback":[`)) {
+				t.Fatalf("canonical fallback is not an array: %s", blob)
+			}
+		})
+	}
+}
+
 func TestRunMessage_ValidateIRRefBackend(t *testing.T) {
 	good := &RunMessage{
 		V:            SchemaVersion,
@@ -181,17 +226,24 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// bump with a dual-accept window (MinSchemaVersion=8): the change is
 	// purely additive, so consumers take both and a rolling deploy has no
 	// rollout-ordering hazard.
-	if SchemaVersion != 9 {
-		t.Errorf("SchemaVersion = %d, want 9 (bump intentionally)", SchemaVersion)
+	// v=10 (2026-08-29) added Fallback — dropped, the run-level rescue
+	// route the launch declared never reaches the pod, and the run parks
+	// on the very provider wall the route exists to escape. Additive,
+	// same dual-accept window as v9 (MinSchemaVersion=9).
+	// v=11 (2026-08-30) expands Fallback to an ordered chain. Producers emit
+	// an array; the new decoder still promotes a v10 object to one stage, so
+	// the dual-accept window advances to MinSchemaVersion=10.
+	if SchemaVersion != 11 {
+		t.Errorf("SchemaVersion = %d, want 11 (bump intentionally)", SchemaVersion)
 	}
-	if MinSchemaVersion != 8 {
-		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)
+	if MinSchemaVersion != 10 {
+		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
 	}
 }
 
-// TestValidate_DualAcceptWindow pins the rollout guarantee the v9 bump
-// relies on: a v8 payload (published by a not-yet-upgraded server, or
-// queued before the deploy) still validates on a v9 consumer, while
+// TestValidate_DualAcceptWindow pins the rollout guarantee the latest bump
+// relies on: a v10 payload (published by a not-yet-upgraded server, or
+// queued before the deploy) still validates on a v11 consumer, while
 // anything outside [MinSchemaVersion, SchemaVersion] is rejected as the
 // TRANSIENT ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {

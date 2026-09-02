@@ -37,6 +37,9 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	if cfg.NATS.Stream != d.NATS.Stream {
 		t.Errorf("NATS.Stream: got %q want %q", cfg.NATS.Stream, d.NATS.Stream)
 	}
+	if cfg.NATS.StreamReplicas != 1 {
+		t.Errorf("NATS.StreamReplicas: got %d want 1", cfg.NATS.StreamReplicas)
+	}
 	if cfg.Mongo.EventsTTLDays != d.Mongo.EventsTTLDays {
 		t.Errorf("Mongo.EventsTTLDays: got %d want %d", cfg.Mongo.EventsTTLDays, d.Mongo.EventsTTLDays)
 	}
@@ -665,6 +668,7 @@ func TestLoad_InvalidRunnerDurations(t *testing.T) {
 
 func TestLoad_NATSQueueTuningEnvOverride(t *testing.T) {
 	clearITERION(t)
+	t.Setenv("ITERION_NATS_STREAM_REPLICAS", "3")
 	t.Setenv("ITERION_NATS_MAX_ACK_PENDING", "512")
 	t.Setenv("ITERION_NATS_ACK_WAIT", "15m")
 	t.Setenv("ITERION_NATS_MAX_DELIVER", "12")
@@ -677,6 +681,9 @@ func TestLoad_NATSQueueTuningEnvOverride(t *testing.T) {
 	}
 	if cfg.NATS.MaxAckPending != 512 {
 		t.Errorf("MaxAckPending = %d, want 512", cfg.NATS.MaxAckPending)
+	}
+	if cfg.NATS.StreamReplicas != 3 {
+		t.Errorf("StreamReplicas = %d, want 3", cfg.NATS.StreamReplicas)
 	}
 	if cfg.NATS.AckWait != 15*time.Minute {
 		t.Errorf("AckWait = %s, want 15m", cfg.NATS.AckWait)
@@ -699,7 +706,7 @@ func TestLoad_NATSQueueTuningYAML(t *testing.T) {
 	clearITERION(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c.yaml")
-	body := "nats:\n  max_ack_pending: 64\n  ack_wait: 5m\n  max_deliver: 3\n  max_age: 12h\n  dlq_max_age: 72h\n  max_payload: 1048576\n"
+	body := "nats:\n  stream_replicas: 2\n  max_ack_pending: 64\n  ack_wait: 5m\n  max_deliver: 3\n  max_age: 12h\n  dlq_max_age: 72h\n  max_payload: 1048576\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -710,11 +717,57 @@ func TestLoad_NATSQueueTuningYAML(t *testing.T) {
 	if cfg.NATS.MaxAckPending != 64 || cfg.NATS.MaxDeliver != 3 || cfg.NATS.MaxPayload != 1048576 {
 		t.Errorf("ints = %d/%d/%d, want 64/3/1048576", cfg.NATS.MaxAckPending, cfg.NATS.MaxDeliver, cfg.NATS.MaxPayload)
 	}
+	if cfg.NATS.StreamReplicas != 2 {
+		t.Errorf("StreamReplicas = %d, want 2", cfg.NATS.StreamReplicas)
+	}
 	if cfg.NATS.AckWait != 5*time.Minute || cfg.NATS.MaxAge != 12*time.Hour || cfg.NATS.DLQMaxAge != 72*time.Hour {
 		t.Errorf("durations = %s/%s/%s, want 5m/12h/72h", cfg.NATS.AckWait, cfg.NATS.MaxAge, cfg.NATS.DLQMaxAge)
 	}
 	// Zero-value default preserved: tuning left unset inherits natsq defaults.
 	if d := Defaults(); d.NATS.MaxAckPending != 0 || d.NATS.AckWait != 0 {
 		t.Errorf("Defaults() tuning fields must stay zero (inherit natsq): %+v", d.NATS)
+	}
+}
+
+func TestLoad_InvalidNATSStreamReplicas(t *testing.T) {
+	for _, value := range []string{"-1", "-3"} {
+		t.Run(value, func(t *testing.T) {
+			clearITERION(t)
+			t.Setenv("ITERION_NATS_STREAM_REPLICAS", value)
+			_, err := Load(LoadOptions{})
+			if err == nil {
+				t.Fatalf("expected error for ITERION_NATS_STREAM_REPLICAS=%s", value)
+			}
+			if !strings.Contains(err.Error(), "ITERION_NATS_STREAM_REPLICAS") {
+				t.Fatalf("error %q does not name ITERION_NATS_STREAM_REPLICAS", err)
+			}
+		})
+	}
+}
+
+// Zero is the documented "inherit the default" value for every numeric NATS
+// knob, and what NATS itself means by "server default" — rejecting it turned
+// a values file into a CrashLoopBackOff on both the server and the runner.
+func TestLoad_ZeroNATSStreamReplicasInheritsDefault(t *testing.T) {
+	for _, mode := range []string{"local", "cloud"} {
+		t.Run(mode, func(t *testing.T) {
+			clearITERION(t)
+			t.Setenv("ITERION_MODE", mode)
+			if mode == "cloud" {
+				t.Setenv("ITERION_NATS_URL", "nats://nats:4222")
+				t.Setenv("ITERION_MONGO_URI", "mongodb://mongo:27017")
+				t.Setenv("ITERION_S3_ENDPOINT", "http://minio:9000")
+				t.Setenv("ITERION_JWT_SECRET", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+				t.Setenv("ITERION_SECRETS_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+			}
+			t.Setenv("ITERION_NATS_STREAM_REPLICAS", "0")
+			cfg, err := Load(LoadOptions{})
+			if err != nil {
+				t.Fatalf("zero must load (natsq applies the default): %v", err)
+			}
+			if cfg.NATS.StreamReplicas != 0 {
+				t.Fatalf("StreamReplicas = %d, want 0 left for natsq to default", cfg.NATS.StreamReplicas)
+			}
+		})
 	}
 }

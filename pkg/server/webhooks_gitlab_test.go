@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -184,6 +185,293 @@ func TestGitLabWebhook_Idempotent(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected exactly one launch, got %d", calls)
+	}
+}
+
+// glReRequestMR builds the "Re-request review" delivery: an `update` whose
+// changes.reviewers stamps re_requested on one reviewer. updatedAt salts the
+// idempotency key (one delivery per click); state exercises the open-MR gate.
+func glReRequestMRState(actor, reviewer, updatedAt, state string, reRequested bool) string {
+	return `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "` + actor + `"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "` + state + `", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "` + updatedAt + `", "last_commit": {"id": "sha1"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "` + reviewer + `", "re_requested": ` + map[bool]string{true: "true", false: "false"}[reRequested] + `}]}}
+	}`
+}
+
+func glReRequestMR(actor, reviewer, updatedAt string, reRequested bool) string {
+	return glReRequestMRState(actor, reviewer, updatedAt, "opened", reRequested)
+}
+
+// The forge-native re-review button: a reviewers change that (re-)requests a
+// review from iterion's own bot account launches the review bot — even on a
+// head the MR-open lane already claimed — and each click launches again.
+func TestGitLabWebhook_ReRequestReviewLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotVars = vars
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
+	cfg := glConfig()
+
+	// The open already claimed this head under the "mr|" key space…
+	w0 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w0, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w0.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("open: code=%d calls=%d", w0.Code, calls)
+	}
+
+	// …and the re-request still relaunches on that same head.
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted || calls != 2 {
+		t.Fatalf("re-request: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+	if gotVars["re_review"] != "true" || gotVars["head_sha"] != "sha1" {
+		t.Fatalf("re-request vars: %v", gotVars)
+	}
+
+	// The forge redelivering the SAME click (same updated_at) is a replay…
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if calls != 2 {
+		t.Fatalf("redelivery must not double-launch: calls=%d", calls)
+	}
+	// …but a SECOND click (new updated_at) on the same head reviews again.
+	w3 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 11:22:33 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w3.Code != http.StatusAccepted || calls != 3 {
+		t.Fatalf("second click: code=%d calls=%d", w3.Code, calls)
+	}
+}
+
+// The publish tail self-assigns the bot as reviewer after each review, and
+// GitLab echoes that PUT back as a reviewers change. The actor of that echo
+// is the bot itself — it must never trigger a review (the self-launch loop
+// this guard exists for). A change naming some OTHER reviewer is ordinary
+// MR housekeeping and stays filtered too.
+func TestGitLabWebhook_ReviewerChangeNotForBotFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
+		return login == "iterion-bot"
+	}
+	cfg := glConfig()
+
+	// Self-assign echo: the bot added ITSELF (actor = bot) → filtered.
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glReRequestMR("iterion-bot", "iterion-bot", "2026-09-01 10:00:00 UTC", false), gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("self-assign echo: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+
+	// A human requesting a review from ANOTHER human → filtered.
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("alice", "bob", "2026-09-01 10:05:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("other reviewer: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+}
+
+// Reviewer edits arrive freely on closed and merged MRs — a re-request there
+// must never burn a review run (mirror of the Note lane's closed-MR filter).
+func TestGitLabWebhook_ReRequestOnClosedMRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg := glConfig()
+	for _, state := range []string{"closed", "merged"} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glReRequestMRState("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", state, true), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+}
+
+// One GitLab `update` can be BOTH a push (oldrev) and a reviewers change.
+// With ReviewOnSync on, that event must ride the per-head resync key — else
+// the following pure resync on the same head reviews it a second time.
+func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
+	cfg := glConfig()
+	cfg.ReviewOnSync = true
+
+	pushWithReviewers := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "alice"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:00:00 UTC", "last_commit": {"id": "sha1"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
+	}`
+	pureResync := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "alice"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:00:05 UTC", "last_commit": {"id": "sha1"}}
+	}`
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), pushWithReviewers, gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("push+reviewers: code=%d calls=%d", w1.Code, calls)
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), pureResync, gitlab.EventHeaderMergeRequest))
+	if calls != 1 {
+		t.Fatalf("pure resync on the same head must dedupe against the first launch: calls=%d", calls)
+	}
+}
+
+// R7e050f: the button is a MANUAL trigger like /revi, and must ride the same
+// replier controls (AuthorizedRepliers / MinReplierRole). An unauthorized
+// click never launches — and never earns the hold-label exemption: with no
+// stub the production gate fail-closes on the missing forge token, which is
+// exactly the state this harness runs in.
+func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg := glConfig()
+
+	// Production gate, no stub: no forge token resolvable → refused, filtered.
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("unauthorized re-request must filter: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// An explicit refusal from the gate seam behaves identically.
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return false, "re-request review by unauthorized replier: mallory", nil
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:01:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("refused re-request must filter: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+
+	// An authz ERROR on a re-request-only delivery is a 502 so the forge
+	// redelivers (mirror of the note gate).
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return false, "", context.DeadlineExceeded
+	}
+	w3 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:02:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w3.Code != http.StatusBadGateway || calls != 0 {
+		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
+	}
+
+	// R34eb8c: when an automatic lane co-rides the event (push + reviewers
+	// diff, ReviewOnSync on), the same authz error must NOT strand it — the
+	// gesture is demoted and the resync launches.
+	cfg2 := glConfig()
+	cfg2.ReviewOnSync = true
+	coRiding := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "mallory"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:03:00 UTC", "last_commit": {"id": "sha-co"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
+	}`
+	w4 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w4, glReq(gitlabCtx(cfg2), coRiding, gitlab.EventHeaderMergeRequest))
+	if w4.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("authz error must not strand the co-riding resync: code=%d calls=%d body=%s", w4.Code, calls, w4.Body.String())
+	}
+}
+
+// The merge-gate resync lane shares the closed-MR rule with the re-request
+// lane (the round-1 guard's SIBLING term): a push to a closed/merged MR's
+// source branch still delivers the update hook and must not burn a review.
+// A payload WITHOUT a state stays fail-open — filtering it would strand the
+// required check on the new head.
+func TestGitLabWebhook_ResyncOnDeadMRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	cfg := glConfig()
+	cfg.ReviewOnSync = true
+
+	resync := func(state, sha string) string {
+		st := ""
+		if state != "" {
+			st = `"state": "` + state + `", `
+		}
+		return `{
+		  "object_kind": "merge_request",
+		  "user": {"username": "alice"},
+		  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+		  "object_attributes": {"iid": 7, "action": "update", ` + st + `"oldrev": "prev", "source_branch": "feature/x", "target_branch": "main",
+		    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+		    "last_commit": {"id": "` + sha + `"}}
+		}`
+	}
+	for _, state := range []string{"closed", "merged", "locked"} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), resync(state, "sha-"+state), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+	// Open and state-less payloads keep the gate following the head.
+	for i, state := range []string{"opened", ""} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), resync(state, fmt.Sprintf("sha-live-%d", i)), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusAccepted || calls != i+1 {
+			t.Fatalf("state=%q: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
 	}
 }
 

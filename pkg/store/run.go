@@ -1,10 +1,16 @@
 package store
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
@@ -103,6 +109,76 @@ type RunModelOverride struct {
 	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
 	Model    string `json:"model,omitempty" bson:"model,omitempty"`
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+}
+
+// RunFallbackEntry is one persisted stage of the launch's run-level
+// fallback chain — the doc twin of queue.RunFallbackEntry.
+type RunFallbackEntry struct {
+	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
+	Model    string `json:"model,omitempty" bson:"model,omitempty"`
+	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+}
+
+// RunFallback is the ordered persisted chain. New JSON and BSON documents
+// encode it as an array; both decoders also promote the legacy single-object
+// representation to a one-stage chain.
+type RunFallback []RunFallbackEntry
+
+func (f *RunFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("store: empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("store: invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []RunFallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("store: decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry RunFallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("store: decode legacy fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("store: fallback must be an object or array")
+	}
+}
+
+// UnmarshalBSONValue keeps legacy single-route run documents readable while
+// the canonical representation is an array.
+func (f *RunFallback) UnmarshalBSONValue(typ byte, data []byte) error {
+	switch bson.Type(typ) {
+	case bson.TypeNull:
+		*f = nil
+		return nil
+	case bson.TypeArray:
+		var entries []RunFallbackEntry
+		if err := bson.UnmarshalValue(bson.Type(typ), data, &entries); err != nil {
+			return fmt.Errorf("store: decode BSON fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case bson.TypeEmbeddedDocument:
+		var entry RunFallbackEntry
+		if err := bson.UnmarshalValue(bson.Type(typ), data, &entry); err != nil {
+			return fmt.Errorf("store: decode legacy BSON fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("store: BSON fallback must be an object or array, got %s", bson.Type(typ))
+	}
 }
 
 // NodeServed is the (backend, model) that actually served one LLM node.
@@ -284,6 +360,13 @@ type Run struct {
 	// executor at launch, never re-read from here. Empty when none, and
 	// left untouched on resume (resume doesn't re-supply them).
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// Fallback captures the launch-time run-level fallback chain (CLI
+	// `--fallback` / HTTP `fallback`) — the resume path's replay source,
+	// same doctrine as the budget ask: cloud resumes are often unattended
+	// auto-retries, so nothing else can re-state the route, and a dropped
+	// route silently strands the run on exactly the provider wall it was
+	// meant to escape.
+	Fallback RunFallback `json:"fallback,omitempty" bson:"fallback,omitempty"`
 	// NodesServed maps IR node id → last (backend, model) that served
 	// it. Display-only / post-hoc: makes a finished run self-describing
 	// without replaying events.jsonl. Empty for legacy runs and for
@@ -378,8 +461,19 @@ type Run struct {
 	UpdatedAt         time.Time      `json:"updated_at" bson:"updated_at"`
 	FinishedAt        *time.Time     `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
 	Error             string         `json:"error,omitempty" bson:"error,omitempty"`
-	Checkpoint        *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
-	ArtifactIndex     map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
+	// FailureCode is the machine-readable classification of Error —
+	// the cause of the CURRENT failure status (failed /
+	// failed_resumable / cancelled), cleared by every transition to a
+	// non-failure status. Empty for legacy runs and for writers not
+	// yet classified: empty means UNKNOWN, never "no failure". One
+	// documented exception to "follows Error exactly": the cloud
+	// resume-publish rollback restores the PRIOR code under its own
+	// rollback text — the code classifies the restored state, not the
+	// rollback message. See lifecycle.go (ADR-095) for the vocabulary
+	// and the open-world contract.
+	FailureCode   FailureCode    `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
+	ArtifactIndex map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
 	// WorkDir is the absolute filesystem path the run executes in
 	// (the per-run git worktree when Worktree is true, otherwise the
 	// engine's resolved cwd at start). Persisted so studio surfaces
@@ -416,6 +510,32 @@ type Run struct {
 	// missing. The studio surfaces this so the operator can run
 	// `git branch <name> <FinalCommit>` before the reflog expires.
 	FinalBranchError string `json:"final_branch_error,omitempty" bson:"final_branch_error,omitempty"`
+	// RoutingPolicy is the launch-frozen outcome contract (nil = none):
+	// what "success" and "blocked" mean for THIS run, where a success
+	// lands, and which actions a consumer may take automatically. It is
+	// resolved, validated and hashed at launch and never re-read from a
+	// mutable source afterwards — re-reading a team/repo setting at the
+	// terminal would let the contract of already-produced work change
+	// retroactively. Replayed from the run doc on resume, like
+	// ModelOverrides.
+	RoutingPolicy *RoutingPolicy `json:"routing_policy,omitempty" bson:"routing_policy,omitempty"`
+	// OutcomeSeq counts this run's terminal arrivals: every transition
+	// INTO finished / failed / failed_resumable / cancelled increments
+	// it (a redelivered run that dies again is a NEW episode). It is
+	// the stable per-episode key an outcome consumer needs — the
+	// event-derived RunOutcomeEventID cannot serve: it truncates
+	// UpdatedAt to the second (two episodes in one second collide) and
+	// every SaveRun refreshes UpdatedAt (the same episode re-read
+	// yields a new key).
+	OutcomeSeq int64 `json:"outcome_seq,omitempty" bson:"outcome_seq,omitempty"`
+	// The typed cause of the last terminal transition lives in
+	// FailureCode (ADR-095) — one taxonomy, not two.
+	// ContinuationState says who still owns this run's future after a
+	// terminal transition: a platform continuation (queue redelivery in
+	// flight, quota retry armed) or nobody (final). An outcome consumer
+	// must not act — resume, relaunch, route — while a continuation is
+	// pending; until now it had to GUESS from the error prose.
+	ContinuationState ContinuationState `json:"continuation_state,omitempty" bson:"continuation_state,omitempty"`
 	// MergedInto is the branch the engine fast-forwarded to FinalCommit
 	// after the run, or empty when the FF was skipped (dirty main,
 	// non-FF, branch divergence, opt-out, or detached HEAD at start).
@@ -431,10 +551,16 @@ type Run struct {
 	AutoMerge bool `json:"auto_merge,omitempty" bson:"auto_merge,omitempty"`
 	// MergeStatus tracks whether the merge has happened yet:
 	//   "pending"  — storage branch created, merge awaiting user action
+	//   "merging"  — a merge claim is held (one worker is performing it)
 	//   "merged"   — merge succeeded; MergedInto + MergedCommit are set
 	//   "skipped"  — explicit opt-out (merge_into="none") or no commits
 	//   "failed"   — auto-merge attempted but failed; user can retry
 	MergeStatus MergeStatus `json:"merge_status,omitempty" bson:"merge_status,omitempty"`
+	// MergeClaimedAt is stamped when a worker claims the merge
+	// (MergeStatus="merging"). A claim older than the staleness bound a
+	// caller passes to ClaimMerge is up for grabs again — the previous
+	// claimant crashed mid-merge and must not wedge the run forever.
+	MergeClaimedAt time.Time `json:"merge_claimed_at,omitempty" bson:"merge_claimed_at,omitempty"`
 	// MergedCommit is the SHA on the target branch after the merge.
 	// Equal to FinalCommit for "merge" (FF) strategy; a fresh squash
 	// commit SHA for "squash". Empty when not yet merged.
@@ -722,6 +848,102 @@ const (
 	MergeStrategyMerge  MergeStrategy = "merge"
 )
 
+// RoutingPolicy is a run's launch-frozen outcome contract. The
+// expressions speak the SAME language as the bot DSL's edge conditions
+// (pkg/dsl/expr), resolved against the terminal checkpoint's outputs —
+// the contract quotes the gates the bot already publishes instead of
+// inventing a parallel vocabulary.
+//
+// The consumer-side rule is strict: an expression whose path is absent
+// or whose value is not a bool NEVER yields an automatic action — it
+// escalates. "converged + nothing blocking" has no generic
+// representation across bots; only the contract knows the fields, so a
+// missing field is a contract violation, not a false.
+type RoutingPolicy struct {
+	// Version of the policy SCHEMA (this struct), for consumers that
+	// must refuse contracts newer than they understand.
+	Version int `json:"version" bson:"version"`
+	// SuccessWhen must evaluate to boolean true on the terminal
+	// checkpoint for the run to be an auto-merge candidate.
+	SuccessWhen string `json:"success_when" bson:"success_when"`
+	// BlockWhen: if ANY evaluates to boolean true — or fails to
+	// evaluate — the run never auto-merges, whatever SuccessWhen says.
+	// This is where a bot's explicit blockers (a pending re-baseline
+	// request, a re-anchor demand) are quoted.
+	BlockWhen []string `json:"block_when,omitempty" bson:"block_when,omitempty"`
+	// MergeInto is the branch a success lands on ("" = the run's
+	// RepoRef default).
+	MergeInto string `json:"merge_into,omitempty" bson:"merge_into,omitempty"`
+	// MergeStrategy for the landing ("" = squash default).
+	MergeStrategy MergeStrategy `json:"merge_strategy,omitempty" bson:"merge_strategy,omitempty"`
+	// AllowedActions bounds what a consumer may do automatically:
+	// "merge", "relaunch", "resume". Anything not listed escalates.
+	AllowedActions []string `json:"allowed_actions,omitempty" bson:"allowed_actions,omitempty"`
+	// MaxRelaunches caps automatic fresh relaunches across the run's
+	// lineage (0 = never relaunch automatically). Mirrors the explicit
+	// cap the forge-gate autofix reactor carries.
+	MaxRelaunches int `json:"max_relaunches,omitempty" bson:"max_relaunches,omitempty"`
+	// Hash pins the resolved contract: sha256 over the canonical JSON
+	// of every field above, computed at launch. A consumer records it
+	// with each decision so an audit can prove WHICH contract decided.
+	Hash string `json:"hash,omitempty" bson:"hash,omitempty"`
+}
+
+// ComputeHash returns the canonical content hash of the policy (all
+// fields except Hash itself, JSON-marshalled — struct field order is
+// fixed, so the encoding is canonical).
+func (p *RoutingPolicy) ComputeHash() string {
+	if p == nil {
+		return ""
+	}
+	c := *p
+	c.Hash = ""
+	// Canonical: the action SET is order-insensitive — sort a copy so
+	// [merge relaunch] and [relaunch merge] are the same contract.
+	c.AllowedActions = append([]string(nil), p.AllowedActions...)
+	slices.Sort(c.AllowedActions)
+	b, err := json.Marshal(&c)
+	if err != nil {
+		// Marshalling a plain struct of strings/ints cannot fail;
+		// guard anyway rather than hash garbage.
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// ContinuationState enumerates who owns a run's future after a
+// terminal transition. Empty means the transition predates the typed
+// bookkeeping (or the writer did not know) — consumers must treat it
+// as unknown, never as final.
+type ContinuationState string
+
+const (
+	// ContinuationRedeliveryPending: the queue still holds the message
+	// (NAK'd); a runner will pick the run back up without anyone asking.
+	ContinuationRedeliveryPending ContinuationState = "redelivery_pending"
+	// ContinuationRetryArmed: a scheduled retry (quota window parking)
+	// will resume the run at RetryState.RetryAfter.
+	ContinuationRetryArmed ContinuationState = "retry_armed"
+	// ContinuationFinal: no platform continuation exists — acting on
+	// this run is now the consumer's decision.
+	ContinuationFinal ContinuationState = "final"
+)
+
+// RunOutcomeMeta is the typed WHY of a status transition, persisted
+// with it: the failure classification (ADR-095's Run.FailureCode — one
+// taxonomy, not a parallel terminal_code) and the continuation
+// ownership. Writers that know pass it; the store clears both fields
+// on transitions that cannot carry them, so stale metadata can never
+// describe a newer outcome. Continuation is a RUNNER-side statement —
+// the engine does not know the queue topology, so engine failure paths
+// persist code only (continuation stays unknown until the runner
+// promotes it at the actual NAK / retry-arm / park).
+type RunOutcomeMeta struct {
+	Code         FailureCode
+	Continuation ContinuationState
+}
+
 // MergeStatus enumerates the lifecycle of the merge step independently
 // from the overall RunStatus — a finished run may still have a pending
 // merge if AutoMerge was off.
@@ -732,6 +954,13 @@ const (
 	MergeStatusMerged  MergeStatus = "merged"
 	MergeStatusSkipped MergeStatus = "skipped"
 	MergeStatusFailed  MergeStatus = "failed"
+	// MergeStatusMerging is the claim state: exactly one worker holds
+	// the right to perform the merge (ClaimMerge is a compare-and-set,
+	// so two server replicas cannot both build a squash for the same
+	// run). Every persisted exit from this state goes through
+	// UpdateRunMergeIf, so a claimant that lost its claim (staleness
+	// steal) cannot overwrite the outcome of the worker that took over.
+	MergeStatusMerging MergeStatus = "merging"
 	// MergeStatusConflicted means `git merge --squash` produced
 	// content conflicts and the worktree is currently in the
 	// conflicted state (UU paths, markers on disk). The operator
@@ -740,6 +969,31 @@ const (
 	// status flips to "merged".
 	MergeStatusConflicted MergeStatus = "conflicted"
 )
+
+// RunMergeUpdate is the full merge bookkeeping written by one merge
+// transition. UpdateRunMergeIf persists it atomically, conditioned on
+// the current MergeStatus — the single choke point every merge-side
+// writer goes through, so a racing writer cannot clobber a state
+// another worker already landed (in particular: nobody can overwrite
+// "merged"). Empty string fields are cleared on the run, mirroring the
+// omitempty semantics a full SaveRun would have.
+type RunMergeUpdate struct {
+	Status              MergeStatus
+	MergedCommit        string
+	MergedInto          string
+	MergeStrategy       MergeStrategy
+	PendingMergeMessage string
+	PendingMergeInto    string
+	// ExpectClaimedAt scopes an exit from "merging" to ONE claim: when
+	// non-zero, the CAS additionally requires the persisted
+	// MergeClaimedAt to equal it (the token ClaimMerge returned). A
+	// claimant whose claim was stolen for staleness then matches
+	// nothing — it cannot consume the live claimant's claim, so a late
+	// failure write can never overwrite the state of the worker that
+	// took over. Zero skips the check (exits from non-merging states,
+	// which carry no claim).
+	ExpectClaimedAt time.Time
+}
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
 // StateRef names a blob in BackendSessionStore. Empty StateRef means the

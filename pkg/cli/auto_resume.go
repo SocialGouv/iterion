@@ -229,7 +229,7 @@ func autoResumeLoop(
 			logger.Warn("auto-resume: load run %s: %v — stopping", runID, loadErr)
 			return err
 		}
-		if r.Status != store.RunStatusFailedResumable {
+		if !r.Status.CanAutoResume() {
 			return err
 		}
 

@@ -450,7 +450,7 @@ capture implementations converge — a risk that did not materialise.
 ### Environment defects found (in the target's baseline harness, not the bot)
 
 5. **MySQL socket truncated at 107 characters.** `struct sockaddr_un.sun_path` is capped;
-   `~/.iterion/projects/<bot>/worktrees/<uuid>/.state/poss/mysql/mysqld.sock` is 109. The kernel
+   `~/.iterion/projects/<bot>/worktrees/<uuid>/.state/<repo>/mysql/mysqld.sock` is 109. The kernel
    truncates silently, mysqld listens somewhere the client never looks, the baseline never boots.
    Invisible on a dev checkout (71 characters). → socket moved to a short `/tmp` path keyed by a
    hash of the repo path, plus an explicit length guard.
@@ -458,7 +458,7 @@ capture implementations converge — a risk that did not materialise.
    start; at worst it captures the first one's application and produces a net that looks valid
    and describes a different tree. This happened — a dev instance was left running during a run.
    → ports derived from the repo path like the socket, effective URL published to
-   `../.state/poss/baseline-url.txt`.
+   `../.state/<repo>/baseline-url.txt`.
 
 None of these six was findable by review. All required a real run.
 

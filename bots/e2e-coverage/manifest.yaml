@@ -1,7 +1,8 @@
 name: e2e-coverage
 display_name: Endy
 icon: 🕸️
-version: 0.1.0
+version: 0.2.0
+## 0.2.0 — cross-model plan phase (ADR-091) ahead of the campaign; budget +30m/+$15 to fund it
 ## 0.1.0 — initial release (ADR-058 v2 shape, sibling of test-coverage).
 ## ONE adaptive `campaign` agent drives an application's FEATURE-level
 ## e2e coverage to complete, anchored on a committed feature×coverage

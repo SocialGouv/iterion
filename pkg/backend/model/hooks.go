@@ -993,6 +993,9 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 		"reason":        info.Reason,
 		"attempts":      info.Attempts,
 	}
+	if info.FallbackIndex != nil {
+		data["fallback_index"] = *info.FallbackIndex
+	}
 	if info.Cooldown {
 		data["cooldown"] = true
 	}

@@ -397,7 +397,7 @@ func handleLocalRunGet(ctx context.Context, s *Server, raw json.RawMessage) (str
 	if r.MergeStatus != "" {
 		view["merge_status"] = string(r.MergeStatus)
 	}
-	view["resumable"] = r.Status == store.RunStatusFailedResumable || r.Status == store.RunStatusCancelled || r.Status.IsPaused()
+	view["resumable"] = r.Status.CanOperatorResume()
 
 	// Liveness of a "running" doc: the run flock is the oracle (held ⇔
 	// some live process is executing the run; the OS drops it on any
@@ -718,7 +718,7 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 	if err != nil {
 		return "", false, err
 	}
-	if !r.Status.IsPaused() && r.Status != store.RunStatusFailedResumable && r.Status != store.RunStatusCancelled {
+	if !r.Status.CanOperatorResume() {
 		return "", false, fmt.Errorf("run %s has status %s — only paused, failed_resumable or cancelled runs can be resumed", r.ID, r.Status)
 	}
 	filePath := s.resolvePath(args.FilePath)

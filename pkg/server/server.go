@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -78,6 +79,13 @@ type Server struct {
 	userNotify       *usernotify.Dispatcher
 	pushSink         *webpush.Sink
 	userNotifyCancel func()
+	// opsAlerts is the operator-alert dispatcher when alerts are
+	// configured (nil otherwise) — the outcome router's escalation
+	// channel rides its NotifyOperator.
+	opsAlerts *alert.OpsDispatcher
+	// opsAlertsCancel detaches the operator-alert dispatcher's bus
+	// subscription on Close.
+	opsAlertsCancel func()
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
@@ -168,6 +176,8 @@ type Server struct {
 	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
 	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
 	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
+	botVars         *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore    platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots   *platformcfg.Resolver[platformBotSet]
@@ -207,6 +217,23 @@ type Server struct {
 	// deterministic instant to assert NextFire jumps to the expected slot).
 	// nil → time.Now().UTC().
 	scheduleClock func() time.Time
+	// gateClock overrides the wall clock the merge-gate sweeper measures its
+	// lookback window by (test seam — a test cannot wait an hour to reach the
+	// last pass over a run). nil → time.Now().UTC().
+	gateClock func() time.Time
+	// sweepDegraded brackets the orphan sweeper's degradation episode
+	// (edge-triggered Warn on entry, Info on recovery). The two failing
+	// stages are tracked as INDEPENDENT flags because they recover on
+	// different evidence — a clean scan vs a cleanly probed candidate —
+	// and a probe episode additionally closes after a bounded run of
+	// clean passes (a healthy fleet may never re-produce a stale
+	// candidate: a latched flag lies more than an optimistic close,
+	// which simply re-warns on the next failure). Owned by the single
+	// sweeper goroutine; no lock.
+	sweepDegraded        bool
+	sweepDegradedByScan  bool
+	sweepDegradedByProbe bool
+	sweepCleanPasses     int
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →
@@ -235,6 +262,22 @@ type Server struct {
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the
 	// provisioned forge Connection). nil → realIterionBotAuthor.
 	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
+	// webhookIterionBotReviewRequest overrides the "does this event ask
+	// iterion's own forge identity for a review" check behind the
+	// forge-native re-request-review trigger (test seam — the real impl
+	// resolves the provisioned forge Connection and probes the parser
+	// predicate with its logins). nil → realIterionBotReviewRequest.
+	webhookIterionBotReviewRequest func(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool
+	// webhookReviewRequestGate overrides the replier authorization of the
+	// re-request-review lane (test seam — the real impl resolves the bot's
+	// forge token and applies the same AuthorizedRepliers/MinReplierRole
+	// controls as every other manual trigger). nil →
+	// realWebhookReviewRequestGate.
+	webhookReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p gitlab.Parsed, botID string) (authorized bool, reason string, err error)
+	// webhookPRForgeReviewRequestGate is the GitHub/Forgejo twin of
+	// webhookReviewRequestGate (test seam). nil →
+	// realWebhookPRForgeReviewRequestGate.
+	webhookPRForgeReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (authorized bool, reason string, err error)
 	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.
@@ -316,6 +359,8 @@ type Server struct {
 	gateReconcileCancel func()
 	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
 	gateAutofixCancel func()
+	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
+	outcomeRouterCancel func()
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin
@@ -326,6 +371,12 @@ type Server struct {
 	// handler resolves a connection's merge-gate client (head-SHA lookup +
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
+
+	// forgeReviewerAssignerFor is a test seam overriding how the
+	// publish-review handler resolves a connection's reviewer self-assign
+	// capability (nil result = capability absent). Nil field → real admin
+	// client via forgeAdminFor.
+	forgeReviewerAssignerFor func(ctx context.Context, conn forge.Connection) forge.ReviewerAssigner
 
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
@@ -452,6 +503,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		botSources:        cfg.BotSources,
 		botRolesStore:     cfg.BotRolesSettings,
 		sandboxCfgStore:   cfg.SandboxSettings,
+		botVarsStore:      cfg.BotVarsSettings,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,
@@ -467,6 +519,14 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
 	// every consumer falls back to its hardcoded/env default.
 	s.botRoles = platformcfg.NewResolver(cfg.BotRolesSettings, logger.Warn)
+	if cfg.BotVarsResolver != nil {
+		// Shared with the ir.SetEnvOverlay hook (cmd wiring): ONE resolver,
+		// so the admin PUT's Invalidate reaches this replica's own
+		// expansions immediately, not after the TTL.
+		s.botVars = cfg.BotVarsResolver
+	} else {
+		s.botVars = platformcfg.NewResolver(cfg.BotVarsSettings, logger.Warn)
+	}
 	if cfg.SandboxResolver != nil {
 		// Shared with the cloud publisher (cmd wiring): ONE resolver
 		// instance, so the admin PUT's Invalidate reaches publish-time

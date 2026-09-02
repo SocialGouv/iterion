@@ -399,6 +399,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/bot-vars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/bot-vars */
+        get: operations["getAdminSettingsBotVars"];
+        /** PUT /api/admin/settings/bot-vars */
+        put: operations["putAdminSettingsBotVars"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/sandbox": {
         parameters: {
             query?: never;
@@ -1537,6 +1555,23 @@ export interface paths {
         };
         /** GET /api/memory/usage */
         get: operations["getMemoryUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/model-capabilities */
+        get: operations["getModelCapabilities"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2950,6 +2985,25 @@ export interface paths {
         put?: never;
         /** POST /api/runs/{id}/rewind */
         post: operations["postRunsByIdRewind"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/route-decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/route-decisions */
+        get: operations["getRunsByIdRouteDecisions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5468,6 +5522,16 @@ export interface components {
             private: boolean;
             web_url?: string;
         };
+        RoutingPolicy: {
+            allowed_actions?: string[];
+            block_when?: string[];
+            hash?: string;
+            max_relaunches?: number;
+            merge_into?: string;
+            merge_strategy?: string;
+            success_when: string;
+            version: number;
+        };
         RunBudget: {
             max_cost_usd?: number;
             max_duration?: string;
@@ -5484,12 +5548,14 @@ export interface components {
             bundle_display_name?: string;
             bundle_name?: string;
             checkpoint?: components["schemas"]["Checkpoint"];
+            continuation_state?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];
             error?: string;
+            failure_code?: string;
             fallbacks_used?: components["schemas"]["FallbackUsage"][];
             file_path?: string;
             final_branch?: string;
@@ -5515,11 +5581,13 @@ export interface components {
             nodes_served?: {
                 [key: string]: components["schemas"]["NodeServed"];
             };
+            outcome_seq?: number;
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
             project_path?: string;
             queue_position?: number;
+            routing_policy?: components["schemas"]["RoutingPolicy"];
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
@@ -5571,6 +5639,7 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             error?: string;
+            failure_code?: string;
             file_path?: string;
             final_branch?: string;
             final_branch_error?: string;
@@ -5804,6 +5873,19 @@ export interface components {
         loginReq: {
             email: string;
             password: string;
+        };
+        modelCapabilitiesResponse: {
+            context_window: number;
+            input_cost_per_m: number;
+            max_output_tokens: number;
+            model: string;
+            output_cost_per_m: number;
+            provider?: string;
+            reasoning?: boolean;
+            source: string;
+            spec: string;
+            temperature?: boolean;
+            tool_call?: boolean;
         };
         orgView: {
             created_at?: string;
@@ -6533,6 +6615,42 @@ export interface operations {
         };
     };
     putAdminSettingsBotRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsBotVars: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsBotVars: {
         parameters: {
             query?: never;
             header?: never;
@@ -8029,6 +8147,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getModelCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelCapabilitiesResponse"];
+                };
             };
         };
     };
@@ -9715,6 +9853,26 @@ export interface operations {
         };
     };
     postRunsByIdRewind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdRouteDecisions: {
         parameters: {
             query?: never;
             header?: never;

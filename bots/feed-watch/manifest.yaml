@@ -1,7 +1,7 @@
 name: feed-watch
 display_name: Vigie
 icon: 🔭
-version: 1.4.1
+version: 1.6.0
 description: |
   Universal feed-watch + digest bot (Huginn-style veille pipeline as a
   single bot). Two run modes over one file-backed state in the target
@@ -18,7 +18,9 @@ description: |
   dedups against the previously sent digests, ranks by importance and
   writes ONE chat-ready markdown message; a deterministic tool POSTs it
   to the configured Mattermost/Slack incoming webhooks and clears
-  exactly the digested items from the queue.
+  exactly the digested items from the queue. A digest above a sink's
+  per-message budget is delivered as consecutive numbered messages, so
+  the channel gets all of it rather than a cut version.
 
   Everything workspace-specific (categories, feeds, editorial guidance
   and language, webhook sinks, cadences) lives in the target repo's

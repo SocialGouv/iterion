@@ -164,20 +164,34 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 		}
 	}
 
-	// Checkpoint info (for paused runs).
-	if r.Checkpoint != nil {
+	// Checkpoint info. The checkpoint survives every status transition
+	// (ADR-095), so it is shown whenever it carries an anchor — on a
+	// queued run it is where a cloud resume will restart, on a failed
+	// run it is where the post-mortem starts, on a running run it is
+	// the last boundary. Only the WORDING is status-gated: "Paused at"
+	// would misreport a non-paused run.
+	if r.Checkpoint != nil && r.Checkpoint.NodeID != "" {
 		p.Blank()
 		p.Header("Checkpoint")
-		p.KV("Paused at", r.Checkpoint.PausedNodeID())
-		p.KV("Interaction", r.Checkpoint.InteractionID)
-
-		// Show pending interaction questions.
-		inter, err := s.LoadInteraction(context.Background(), opts.RunID, r.Checkpoint.InteractionID)
-		if err == nil && len(inter.Questions) > 0 {
-			p.Blank()
-			p.Line("  Questions:")
-			for k, v := range inter.Questions {
-				p.Line("    %s: %v", k, v)
+		nodeLabel := "Node"
+		nodeID := r.Checkpoint.NodeID
+		if r.Status.IsPaused() {
+			nodeLabel = "Paused at"
+			nodeID = r.Checkpoint.PausedNodeID()
+		}
+		p.KV(nodeLabel, nodeID)
+		// Stricter than CarriesPausePointer (paused ∨ queued) on
+		// purpose: on a queued run the form is not actionable — the
+		// answers already travel in the queue message.
+		if r.Status.IsPaused() && r.Checkpoint.InteractionID != "" {
+			p.KV("Interaction", r.Checkpoint.InteractionID)
+			inter, err := s.LoadInteraction(context.Background(), opts.RunID, r.Checkpoint.InteractionID)
+			if err == nil && len(inter.Questions) > 0 {
+				p.Blank()
+				p.Line("  Questions:")
+				for k, v := range inter.Questions {
+					p.Line("    %s: %v", k, v)
+				}
 			}
 		}
 	}

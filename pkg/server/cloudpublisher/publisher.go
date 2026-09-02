@@ -119,7 +119,10 @@ type TeamResolver interface {
 type Publisher struct {
 	nats       *natsq.Conn
 	publishRun func(context.Context, *queue.RunMessage) error
-	cancelRun  func(string) error
+	// publishRetryDelays is nil in production (the bounded default below).
+	// Tests replace it with zero delays while exercising the same choke point.
+	publishRetryDelays []time.Duration
+	cancelRun          func(string) error
 	// maxPayload reports the NATS server-negotiated max message size so
 	// the offload path can size a RunMessage against it. Nil (the default
 	// in unit tests) disables IR offload — the message is published as-is.
@@ -870,6 +873,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
 		ModelOverrides: runModelOverrides(spec.ModelOverrides),
+		// The launch-frozen outcome contract, same replay-from-the-doc
+		// doctrine: consumers read it from the run, never from a
+		// mutable setting.
+		RoutingPolicy: spec.RoutingPolicy,
+		// The run-level fallback chain, same doctrine: stamped raw so the
+		// resume path replays it, and mirrored onto the RunMessage below
+		// so the claiming runner applies it.
+		Fallback: runFallbackOf(spec.Fallback),
 		// The raw budget ask, same doctrine as the model pins above: the
 		// run doc is the single source the resume path replays from. The
 		// clamped/effective figure is NOT what is stamped — the resume
@@ -1010,6 +1021,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// doc is display-only — the studio would show an override the
 		// delegates never honoured.
 		ModelOverrides: queueModelOverrides(spec.ModelOverrides),
+		// The run-level fallback chain rides the wire for the same reason:
+		// a chain only persisted on the doc is display-only, and this one
+		// exists precisely for unattended cloud runs hitting a provider's
+		// usage window.
+		Fallback: queueFallbackOf(spec.Fallback),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -1073,9 +1089,8 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: load run %s: %w", runID, err)
 	}
-	switch r.Status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
-		return nil // already terminal
+	if !r.Status.CanBeCancelled() {
+		return nil // already settled
 	}
 	// CAS on the cancellable statuses. A SubmitResume that races this
 	// call can flip queued → running between our LoadRun and the
@@ -1083,11 +1098,16 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	// silently overwrite the in-flight resume back to cancelled with
 	// no visible warning. The expectedFrom set lists every status we
 	// consider cancellable here.
-	cancellable := []store.RunStatus{
-		store.RunStatusQueued,
-		store.RunStatusRunning,
-		store.RunStatusPausedWaitingHuman,
-		store.RunStatusFailedResumable,
+	// The cloud publisher owns the queue AND the doc, so its reach is
+	// the full canonical set — including paused_operator (once missing
+	// here, which made an operator-paused cloud run un-cancellable) and
+	// queued (this surface can retract a queued attempt; the engine's
+	// narrower CAS cannot).
+	var cancellable []store.RunStatus
+	for _, st := range store.AllRunStatuses {
+		if st.CanBeCancelled() {
+			cancellable = append(cancellable, st)
+		}
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "cancelled"
@@ -1095,7 +1115,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	if prior := strings.TrimSpace(r.Error); prior != "" {
 		reason += " (was " + string(r.Status) + ": " + prior + ")"
 	}
-	changed, err := p.store.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, reason, cancellable)
+	changed, err := p.store.UpdateRunStatusIfCoded(ctx, runID, store.RunStatusCancelled, reason, store.FailureCancelled, cancellable)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: flip status: %w", err)
 	}
@@ -1105,8 +1125,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 		// should surface for the operator to retry.
 		r2, _ := p.store.LoadRun(ctx, runID)
 		if r2 != nil {
-			switch r2.Status {
-			case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
+			if !r2.Status.CanBeCancelled() {
 				return nil
 			}
 			return fmt.Errorf("cloudpublisher: cancel raced (status now %s) — retry", r2.Status)
@@ -1148,12 +1167,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
-	switch priorStatus {
-	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		// Valid resume source states. The runview layer validates first, but
-		// SubmitResume repeats the boundary check because another request may
-		// have changed the row since that read.
-	default:
+	// The runview layer validates first, but SubmitResume repeats the
+	// boundary check because another request may have changed the row
+	// since that read.
+	if !priorStatus.CanOperatorResume() {
 		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
 	}
 
@@ -1182,13 +1199,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		if republished {
 			return
 		}
+		// Restore the prior failure classification alongside its text —
+		// the queued claim cleared both. A publish failure gets its own
+		// text but keeps the prior code: the run is back in the state
+		// whose cause that code classifies.
 		runErr := prior.Error
 		if retErr != nil {
 			runErr = fmt.Sprintf("queue resume: %v", retErr)
 		}
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
-		if _, rbErr := p.store.UpdateRunStatusIf(rollbackCtx, spec.RunID, priorStatus, runErr,
+		if _, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
 			[]store.RunStatus{store.RunStatusQueued}); rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}
@@ -1253,6 +1274,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A resumed attempt must honour the SAME pins the launch declared —
 		// replayed from the run doc, the single source the launch stamped.
 		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
+		// The fallback chain is replayed from the doc for the same reason:
+		// the auto-retry that follows a usage-window park is exactly the
+		// publication that must still carry the rescue chain.
+		Fallback: queueFallbackFromRun(prior.Fallback),
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
@@ -1283,6 +1308,75 @@ func (p *Publisher) publish(ctx context.Context, msg *queue.RunMessage) error {
 	if err := p.offloadOversizedIR(ctx, msg); err != nil {
 		return err
 	}
+	return p.publishWithRetry(ctx, msg)
+}
+
+const publishRetryWindow = 10 * time.Second
+
+var defaultPublishRetryDelays = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	750 * time.Millisecond,
+}
+
+// publishWithRetry is the single retry choke point for cloud launches and
+// resumes. RunMessage's Nats-Msg-Id stays stable across attempts, so a publish
+// whose acknowledgement was lost is absorbed by JetStream deduplication.
+func (p *Publisher) publishWithRetry(ctx context.Context, msg *queue.RunMessage) error {
+	retryCtx, cancel := context.WithTimeout(ctx, publishRetryWindow)
+	defer cancel()
+
+	delays := p.publishRetryDelays
+	if delays == nil {
+		delays = defaultPublishRetryDelays
+	}
+	attempts := len(delays) + 1
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		// PublishRun owns its 5s acknowledgement deadline. Do not impose a
+		// shorter outer attempt timeout: cancelling only the ack wait after the
+		// broker accepted the message can turn a successful publish into retries
+		// and finally a false QUEUE_UNAVAILABLE response.
+		lastErr = p.publishOnce(retryCtx, msg)
+		if lastErr == nil {
+			return nil
+		}
+		// A caller cancellation is not a queue outage and must retain its
+		// cancellation semantics. PublishRun's own deadline, on the other
+		// hand, is a transient NATS timeout and is retried below.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !natsq.IsTransientPublishError(lastErr) {
+			return lastErr
+		}
+		if attempt == attempts || retryCtx.Err() != nil {
+			break
+		}
+		delay := delays[attempt-1]
+		if p.logger != nil {
+			p.logger.Warn("cloudpublisher: queue publish attempt %d/%d failed transiently: %v — retrying in %s", attempt, attempts, lastErr, delay)
+		}
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-retryCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return &runview.QueueUnavailableError{Cause: lastErr}
+		}
+	}
+	return &runview.QueueUnavailableError{Cause: lastErr}
+}
+
+func (p *Publisher) publishOnce(ctx context.Context, msg *queue.RunMessage) error {
 	if p.publishRun != nil {
 		return p.publishRun(ctx, msg)
 	}
@@ -1638,6 +1732,51 @@ func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
 	}
+}
+
+// runFallbackOf converts the launch's run-level fallback chain into the
+// persisted run-doc form (the resume path's replay source). Targetless
+// stages are omitted so override-less launches stay byte-identical.
+func runFallbackOf(entries []runview.FallbackEntry) store.RunFallback {
+	var out store.RunFallback
+	for _, e := range entries {
+		if e.Backend == "" && e.Model == "" && e.Provider == "" {
+			continue
+		}
+		out = append(out, store.RunFallbackEntry{
+			Backend: e.Backend, Model: e.Model, Provider: e.Provider,
+		})
+	}
+	return out
+}
+
+// queueFallbackOf puts the launch's run-level fallback chain on the wire.
+func queueFallbackOf(entries []runview.FallbackEntry) queue.RunFallback {
+	var out queue.RunFallback
+	for _, e := range entries {
+		if e.Backend == "" && e.Model == "" && e.Provider == "" {
+			continue
+		}
+		out = append(out, queue.RunFallbackEntry{
+			Backend: e.Backend, Model: e.Model, Provider: e.Provider,
+		})
+	}
+	return out
+}
+
+// queueFallbackFromRun replays a run doc's persisted fallback chain onto
+// a resume publication.
+func queueFallbackFromRun(entries store.RunFallback) queue.RunFallback {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make(queue.RunFallback, 0, len(entries))
+	for _, f := range entries {
+		out = append(out, queue.RunFallbackEntry{
+			Backend: f.Backend, Model: f.Model, Provider: f.Provider,
+		})
+	}
+	return out
 }
 
 // queueOverridesFromRun replays a run doc's persisted pins onto a resume

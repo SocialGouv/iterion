@@ -152,6 +152,13 @@ func TestGateReconcile_AbstainsWhenItCannotRead(t *testing.T) {
 // Most runs owe nothing. Touching a PR for one of those would be a bug of its
 // own — the reconciler would be posting checks nobody asked for.
 func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
+	// The half-configured shape: gate_context still pinned, gate DISABLED by
+	// an explicit gate_enabled pin. The run never owed a verdict — a
+	// synthetic failure here would manufacture the deadlock the pin avoids.
+	gateOff := gatingInputs()
+	gateOff["gate_enabled"] = "false"
+	gateOffBool := gatingInputs()
+	gateOffBool["gate_enabled"] = false
 	for _, tc := range []struct {
 		name   string
 		inputs map[string]any
@@ -159,6 +166,8 @@ func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
 		{"no publish grant", map[string]any{"pr_url": "https://github.com/o/r/pull/42"}},
 		{"no pr", map[string]any{forgePublishVarToken: "tok-gate"}},
 		{"nothing at all", map[string]any{}},
+		{"gate disabled by pin", gateOff},
+		{"gate disabled by bool pin", gateOffBool},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}

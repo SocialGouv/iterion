@@ -108,6 +108,90 @@ func TestGitHubWebhook_HappyPath(t *testing.T) {
 	}
 }
 
+// ghReviewRequested builds a `review_requested` delivery (the GitHub
+// "Request review" / "Re-request review" gesture) targeting `reviewer`.
+func ghReviewRequested(sender, reviewer, updatedAt string) string {
+	return `{
+	  "action": "review_requested", "number": 7,
+	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "requested_reviewer": {"login": "` + reviewer + `"},
+	  "pull_request": {"number": 7, "title": "Add X", "body": "desc",
+	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open", "updated_at": "` + updatedAt + `",
+	    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+	  "sender": {"login": "` + sender + `"}
+	}`
+}
+
+// The forge-native re-review button, GitHub side: a review_requested action
+// naming iterion's own account launches the review bot — even on a head the
+// PR-open lane already claimed. One naming anyone else stays filtered, and
+// the bot re-requesting (its own API write echoing back) never self-triggers.
+func TestGitHubWebhook_ReviewRequestedLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotVars = vars
+		return "run-7", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
+		return login == "iterion-bot"
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
+	cfg, pt := ghConfig(t, s)
+
+	// The open claims the head under the ordinary key space…
+	w0 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w0, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w0.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("open: code=%d calls=%d", w0.Code, calls)
+	}
+
+	// …and the re-request still relaunches on that same head.
+	w1 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w1, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w1.Code != http.StatusAccepted || calls != 2 {
+		t.Fatalf("re-request: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+	if gotVars["re_review"] != "true" || gotVars["head_sha"] != "abc123" {
+		t.Fatalf("re-request vars: %v", gotVars)
+	}
+
+	// Re-request targeting a human reviewer → filtered.
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), ghReviewRequested("alice", "bob", "2026-09-01T10:05:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w2.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("other reviewer: code=%d calls=%d", w2.Code, calls)
+	}
+
+	// The bot as ACTOR (its own re-request write echoing back) → filtered.
+	w3 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w3, ghReq(ghCtx(cfg), ghReviewRequested("iterion-bot", "iterion-bot", "2026-09-01T10:10:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w3.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("bot actor: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
+	}
+
+	// A re-request on a CLOSED or MERGED PR never burns a run — reviewer
+	// edits arrive freely on dead PRs.
+	for _, state := range []string{"closed", "merged"} {
+		closed := strings.Replace(ghReviewRequested("alice", "iterion-bot", "2026-09-01T11:00:00Z"), `"state": "open"`, `"state": "`+state+`"`, 1)
+		if closed == ghReviewRequested("alice", "iterion-bot", "2026-09-01T11:00:00Z") {
+			t.Fatal("fixture state replacement did not apply")
+		}
+		wc := httptest.NewRecorder()
+		s.handleGitHubWebhook(wc, ghReq(ghCtx(cfg), closed, prforge.EventHeaderPullRequest, pt))
+		if wc.Code != http.StatusOK || calls != 2 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, wc.Code, calls, wc.Body.String())
+		}
+	}
+}
+
 // ghTicketPR: a same-repo PR (head.repo == base repo) that closes an issue.
 const ghTicketPR = `{
   "action": "opened", "number": 9,
@@ -665,6 +749,110 @@ func TestGitHubWebhook_BotNotAllowed(t *testing.T) {
 	}
 	if got := w.Body.String(); !strings.Contains(got, webhooks.StatusFiltered) {
 		t.Fatalf("bot not allowed: want filtered status, got %s", got)
+	}
+}
+
+// R6a15fe: the GitHub/Forgejo re-request lane rides the same replier gate as
+// its GitLab twin — with no stub the production gate fail-closes on the
+// missing forge token, an explicit refusal filters, and an authz ERROR 502s
+// only when the click was the delivery's sole reason (R34eb8c).
+func TestGitHubWebhook_ReviewRequestedUnauthorizedFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg, pt := ghConfig(t, s)
+
+	// Production gate, no stub: no forge token → refused, filtered.
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("mallory", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("unauthorized: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// Authz error on a re-request-only delivery → 502 (forge redelivers).
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return false, "", context.DeadlineExceeded
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), ghReviewRequested("mallory", "iterion-bot", "2026-09-01T10:01:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w2.Code != http.StatusBadGateway || calls != 0 {
+		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+}
+
+// R0c3aab: the replier gate runs AFTER the event/project/author scope filter
+// — an out-of-scope delivery must never cost a forge API call nor be able to
+// 502 the endpoint. And when the gate demotes the gesture, the hold label it
+// had provisionally waived is re-applied.
+func TestGitHubWebhook_ReviewRequestScopeFilterBeforeGate(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var launches, gateCalls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launches++
+		return "run1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		gateCalls++
+		return false, "", context.DeadlineExceeded // would 502 if ever reached
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ProjectAllowlist = []string{"other/repo"} // acme/widgets is out of scope
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T12:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || launches != 0 {
+		t.Fatalf("out-of-scope must filter: code=%d launches=%d body=%s", w.Code, launches, w.Body.String())
+	}
+	if gateCalls != 0 {
+		t.Fatalf("out-of-scope delivery reached the forge authz gate (%d calls) — scope filters must run first", gateCalls)
+	}
+	// (The demote+hold-label re-apply branch is defensive here: on prforge
+	// the review_requested / synchronize / opened actions are mutually
+	// exclusive, so a demoted gesture never co-rides an admissible lane.
+	// The reachable version of that path is the GitLab lane's, covered by
+	// TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered.)
+}
+
+// The gate-resync lane shares the closed-PR rule with the re-request lane
+// (its sibling term): a push to a closed/merged PR's branch still delivers
+// `synchronize` and must not burn a review. A payload WITHOUT a state stays
+// fail-open — filtering it would strand the required check on the new head.
+func TestGitHubWebhook_ResyncOnDeadPRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run1", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	sync := strings.Replace(ghOpenPR, `"action": "opened"`, `"action": "synchronize"`, 1)
+	for _, state := range []string{"closed", "merged"} {
+		body := strings.Replace(sync, `"state": "open"`, `"state": "`+state+`"`, 1)
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+	// A state-less payload keeps the gate following the head.
+	stateless := strings.Replace(sync, ` "state": "open",`, ``, 1)
+	if stateless == sync {
+		t.Fatal("fixture state removal did not apply")
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), stateless, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("stateless resync must stay reviewable: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
 	}
 }
 

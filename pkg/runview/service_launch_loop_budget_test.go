@@ -39,6 +39,12 @@ tool deliver:
   output: deliver_out
 
 workflow loop_budget_demo:
+  ## The nodes run printf; the run needs neither a git checkout of the repo
+  ## this test lives in (worktree defaults to auto) nor its toolchain
+  ## (repo_devbox defaults to on). Both are pure latency here, and latency
+  ## is what turns a bounded wait into a flake.
+  worktree: none
+  repo_devbox: off
   budget:
     max_tokens: 10000
   entry: work

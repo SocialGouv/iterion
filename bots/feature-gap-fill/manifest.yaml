@@ -1,7 +1,8 @@
 name: feature-gap-fill
 display_name: Fini
 icon: 🧩
-version: 2.0.1
+version: 2.1.0
+## 2.1.0 — cross-model plan phase (ADR-091): plan_topology→plan→plan_review→plan_gate→plan_revise ahead of the campaign; budget +30m/+$15 to fund it
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; the target repo's toolchain
 ## comes from its own devcontainer/devbox.json.

@@ -136,6 +136,66 @@ cases the derivation does not cover.
 Repo admins keep their merge-queue bypass, so a stuck gate is never a hard
 block for an admin.
 
+## Disabling the gate per repo — first review only, re-review on demand
+
+Some repos want the opposite posture: reviews as **advisory comments only**,
+with the automatic review on MR/PR open the only automatic one and every
+re-review a deliberate human gesture (budget-frugal — no run per push). One
+operator pin buys the whole posture. On the integration's launch vars
+(`launch_vars` on the repo-bots API, or the studio integration settings):
+
+```json
+{ "gate_enabled": "false" }
+```
+
+Two properties of the pin worth knowing before setting it:
+
+- it is **repo-wide**: the operator var layer applies to every co-enabled
+  bot, so pinning it to quiet one gating bot also releases head-tracking
+  for the others on that repo;
+- the release is **logged at Warn** at the moment it becomes definitive
+  (a provision that drops a previously-forced `review_on_sync`), and any
+  later launch-vars update that replaces the map WITHOUT the pin silently
+  restores the gating posture (fail-safe direction — the gate follows the
+  head again);
+- the derivation only rewrites **unpinned** syncs: a `review_on_sync` an
+  operator set explicitly through the webhook API is provenance-pinned
+  (`review_on_sync_pinned`) and never silently replaced in either
+  direction — so per-push advisory reviews WITHOUT a gate (sync pinned
+  true + `gate_enabled: "false"`) is expressible and survives
+  re-provisions.
+
+What the pin disarms, end to end:
+
+- the bot's publish step skips the commit status — no verdict context ever
+  lands on a head;
+- the server-side gate machinery never arms: the in-flight `pending` claim
+  at launch, the reconciler, the sweeper and the auto-fix lane all read the
+  SAME pin (`forge.GateValueDisables`) — so even the half-configured shape
+  (gate disabled while a stale `gate_context` pin remains) claims nothing
+  and paints no synthetic failure; dropping the `gate_context` pin as well
+  is still the clean form;
+- provisioning **stops forcing `review_on_sync`** — and releases one it had
+  forced earlier ([`pkg/forge/orchestrator.go`](../pkg/forge/orchestrator.go),
+  `operatorGateDisabled`). The forced sync exists solely to keep a REQUIRED
+  check alive across pushes; with the gate off it would only burn a review
+  per push. The pin survives re-provisions, unlike a bare
+  `review_on_sync: false` PATCH on the webhook config (which the next
+  provision's derivation would overwrite).
+
+Re-review stays on demand through two gestures, both exempt from the
+hold-label pause (a deliberate manual trigger, like any `/command`):
+
+- a **`/revi` comment** on the MR/PR;
+- the forge-native **"Re-request review" button** on iterion's bot reviewer
+  (see [webhooks.md](webhooks.md#re-request-review)). On GitLab the publish
+  step self-assigns the bot as an MR reviewer after each review precisely so
+  this button exists; each click re-reviews the current head, even twice on
+  the same head.
+
+Removing the pin restores the gating posture: the next provision re-derives
+`review_on_sync: true` from the `statuses` scope.
+
 ### GitHub merge queues
 
 A merge queue tests a synthetic `merge_group` SHA, not the PR head that Revi
@@ -371,8 +431,10 @@ context that will never arrive, and no error appears on the run, the PR or the
 check. That is worse than a red check, because nothing points at the cause.
 
 It happened twice in one day in production. A rolling deploy drained a review
-mid-flight (the lame-duck drain is not deployed, so a rollout cancels in-flight
-runs). Separately, a bot bug made the publish step skip on every run, so
+mid-flight (at the time the lame-duck drain was not deployed, so a rollout
+cancelled in-flight runs; the chart has rendered `config.runner.drainMode`
+since 3.78.0 — see docs/probes-and-graceful-shutdown.md). Separately, a bot
+bug made the publish step skip on every run, so
 `revi/review` stopped landing repo-wide and every pull request became
 unmergeable — with every other check green.
 

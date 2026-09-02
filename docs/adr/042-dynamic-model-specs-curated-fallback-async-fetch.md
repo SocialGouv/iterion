@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-23
 - **Authors**: Featurly
-- **Code**: [pkg/backend/model/modelspecs.go](../../pkg/backend/model/modelspecs.go), [pkg/backend/model/capabilities.go](../../pkg/backend/model/capabilities.go)
+- **Code**: [pkg/backend/modelspecs/modelspecs.go](../../pkg/backend/modelspecs/modelspecs.go), [pkg/backend/model/capabilities.go](../../pkg/backend/model/capabilities.go)
 
 ## Context
 
@@ -130,8 +130,15 @@ still needing the curated fallback for models newer than the build.
   brand-new models), but the cleaner seam if a second alias appears is a
   `canonicalProvider(provider, modelID)` normalization before lookup, keeping
   the index 1:1.
-- **Pricing/max-output are cached but not yet surfaced.** `ModelCapabilities`
-  has no fields for them; they are parsed and persisted for future use.
+- **Pricing/max-output are surfaced and consumed** (2026-08-27). The
+  follow-through that closed this: `ModelCapabilities` carries
+  `InputCostPerM` / `OutputCostPerM` / `MaxOutputTokens`; the registry moved
+  to the leaf package `pkg/backend/modelspecs` (ADR-093) so
+  `pkg/backend/cost` can read it; the estimator prices from the published
+  pair as the tier BETWEEN claw's live registry and the committed static
+  table, taking it only when both rates are positive; and the studio's three
+  model pickers caption their selection through
+  `GET /api/model-capabilities`.
 - **Rechallenge if a second source or fuzzy matching is needed.** Adding
   LiteLLM or id normalization should keep the merge-over-curated contract
   intact.

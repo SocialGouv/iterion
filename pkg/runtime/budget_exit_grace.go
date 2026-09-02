@@ -80,6 +80,25 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	if rs == nil || rs.budget == nil {
 		return "", false
 	}
+	// A parallel branch never gets the grace — every branch, not only one
+	// carrying a branch-local loop. The allowance is a run-wide ratio and
+	// sibling spend lands on the same shared budget concurrently, so no
+	// branch can tell whether its own next node still fits inside it.
+	if rs.branchLocal {
+		return "", false
+	}
+	return e.withinSharedBudgetGrace(rs.budget)
+}
+
+// withinSharedBudgetGrace is the policy predicate shared by the normal
+// pre-exec gate and the failed-resume preflight. The latter deliberately
+// returns without finalizing when this is true so the rebuilt run reaches
+// checkBudgetBeforeExec, which emits the ordinary grace events and keeps the
+// same bounded forward-only behavior as an uninterrupted run.
+func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok bool) {
+	if e == nil || b == nil {
+		return "", false
+	}
 	// The "no further ITERATION can start" half of the safety argument
 	// is the loop guard's, not the grace's — and that guard is an
 	// operator escape hatch (`loop_budget_guard: off`,
@@ -87,30 +106,20 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
 	//
-	// A parallel branch never gets it either — every branch, not only one
-	// carrying a branch-local loop. The allowance is a run-wide ratio and
-	// sibling spend lands on the same shared budget concurrently, so no
-	// branch can tell whether its own next node still fits inside it
-	// (the same reason predictive loop pricing is disabled there).
-	// Refused branches surface as budget_exceeded events and failed
-	// branch results; wait_all fails the run, best_effort tolerates them
-	// by declaration. The wait_all death keeps the ErrBudgetExceeded
-	// sentinel (processConvergence) so it reads as BUDGET_EXCEEDED to the
-	// operator and as terminal to the cloud runner's ack carve-out.
-	if !e.loopBudgetGuardEnabled() || rs.branchLocal {
+	if !e.loopBudgetGuardEnabled() {
 		return "", false
 	}
 	// An externally-imposed cap (platform ceiling, pool donor allowance —
 	// ir.Budget.CapImposed) is an absolute promise to a third party: no
 	// grace, the declared figure IS the wall.
-	if rs.budget.capIsImposed() {
+	if b.capIsImposed() {
 		return "", false
 	}
 	ratio := budgetExitGraceRatio()
 	if ratio <= 0 {
 		return "", false
 	}
-	return rs.budget.exitGraceRoom(ratio)
+	return b.exitGraceRoom(ratio)
 }
 
 // GracedRemainingDuration is the wall-clock room left before the GRACED

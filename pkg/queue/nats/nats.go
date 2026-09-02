@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -53,9 +54,10 @@ const (
 	SubjectEventsFmt = "iterion.events.%s.%s" // source, tenant
 )
 
-// Default retention values from plan §C.2.
+// Default stream topology and retention values from plan §C.2.
 const (
-	DefaultStreamMaxAge = 24 * time.Hour
+	DefaultStreamMaxAge   = 24 * time.Hour
+	DefaultStreamReplicas = 1
 	// DefaultStreamMaxRetry is the consumer's MaxDeliver — how many times a
 	// message is redelivered before it parks in the DLQ. A run in flight
 	// renews its ack every HeartbeatInterval (InProgress), so this budget is
@@ -100,15 +102,16 @@ const (
 
 // Config carries the connection settings for the cloud queue.
 type Config struct {
-	URL          string        // nats://host:port — required
-	StreamName   string        // default StreamRuns
-	DLQStream    string        // default StreamRunsDLQ
-	KVBucket     string        // default KVRunLocks
-	ConsumerName string        // default ConsumerRunners
-	MaxAge       time.Duration // default 24h
-	DLQMaxAge    time.Duration // default 7d
-	MaxDeliver   int           // default DefaultStreamMaxRetry (8)
-	AckWait      time.Duration // default DefaultAckWait (10m)
+	URL            string        // nats://host:port — required
+	StreamName     string        // default StreamRuns
+	DLQStream      string        // default StreamRunsDLQ
+	KVBucket       string        // default KVRunLocks
+	StreamReplicas int           // default 1
+	ConsumerName   string        // default ConsumerRunners
+	MaxAge         time.Duration // default 24h
+	DLQMaxAge      time.Duration // default 7d
+	MaxDeliver     int           // default DefaultStreamMaxRetry (8)
+	AckWait        time.Duration // default DefaultAckWait (10m)
 	// SchemaMismatchDelay is the delayed-Nak interval used by runners during
 	// mixed-schema rollouts. It also contributes to RedeliveryWindow so the
 	// orphan sweeper never races a legitimately bouncing message.
@@ -138,6 +141,25 @@ type Conn struct {
 // Nak, which an operator may configure above AckWait. The server's orphan
 // sweeper derives its queued-staleness cutoff from the larger interval so it
 // never flips a message that is still legitimately waiting for redelivery.
+// QueueBacklog reports how many messages wait on the durable consumer —
+// work that exists and nobody has fetched. The server's orphan sweeper
+// reads it to tell "the message is gone" (a real orphan) from "every
+// runner is busy" (a run waiting its turn, which must not be flipped).
+func (c *Conn) QueueBacklog(ctx context.Context) (uint64, error) {
+	// Read the durable consumer's info directly: CreateOrUpdateConsumer
+	// would work too (it is idempotent) but a read must not carry the
+	// power to rewrite the consumer's config on a sweeper tick.
+	cons, err := c.js.Consumer(ctx, c.cfg.StreamName, c.cfg.ConsumerName)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+	}
+	return info.NumPending, nil
+}
+
 func (c *Conn) RedeliveryWindow() time.Duration {
 	interval := c.cfg.AckWait
 	if c.cfg.SchemaMismatchDelay > interval {
@@ -154,6 +176,9 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("queue/nats: URL is required")
 	}
 	cfg = applyDefaults(cfg)
+	if cfg.StreamReplicas < 1 {
+		return nil, fmt.Errorf("queue/nats: stream replicas %d invalid (want >= 1)", cfg.StreamReplicas)
+	}
 
 	nc, err := nats.Connect(cfg.URL,
 		nats.MaxReconnects(-1),
@@ -250,38 +275,58 @@ func (c *Conn) MaxPayload() int64 { return c.nc.MaxPayload() }
 // self-healing — if an operator deletes a stream by mistake the next
 // pod start brings it back.
 func (c *Conn) EnsureSchema(ctx context.Context) error {
-	if _, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:       c.cfg.StreamName,
-		Subjects:   []string{SubjectRuns},
-		Retention:  jetstream.WorkQueuePolicy,
-		MaxAge:     c.cfg.MaxAge,
-		Storage:    jetstream.FileStorage,
-		Duplicates: 5 * time.Minute, // window for Nats-Msg-Id dedup
-	}); err != nil {
-		return fmt.Errorf("queue/nats: stream %s: %w", c.cfg.StreamName, err)
-	}
-
-	if _, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:      c.cfg.DLQStream,
-		Subjects:  []string{SubjectRunsDLQ},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    c.cfg.DLQMaxAge,
-		Storage:   jetstream.FileStorage,
-	}); err != nil {
-		return fmt.Errorf("queue/nats: stream %s: %w", c.cfg.DLQStream, err)
-	}
-
-	kv, err := c.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:  c.cfg.KVBucket,
-		TTL:     c.cfg.LockTTL,
-		History: 1,
-	})
+	kv, err := ensureSchema(ctx, c.js, c.cfg)
 	if err != nil {
-		return fmt.Errorf("queue/nats: kv %s: %w", c.cfg.KVBucket, err)
+		return err
 	}
+	slog.Info("jetstream schema pinned",
+		"stream", c.cfg.StreamName, "dlq", c.cfg.DLQStream,
+		"kv_bucket", c.cfg.KVBucket, "replicas", c.cfg.StreamReplicas)
 	c.kv = kv
 
 	return nil
+}
+
+type schemaManager interface {
+	CreateOrUpdateStream(context.Context, jetstream.StreamConfig) (jetstream.Stream, error)
+	CreateOrUpdateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error)
+}
+
+func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (jetstream.KeyValue, error) {
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:       cfg.StreamName,
+		Subjects:   []string{SubjectRuns},
+		Retention:  jetstream.WorkQueuePolicy,
+		MaxAge:     cfg.MaxAge,
+		Storage:    jetstream.FileStorage,
+		Replicas:   cfg.StreamReplicas,
+		Duplicates: 5 * time.Minute, // window for Nats-Msg-Id dedup
+	}); err != nil {
+		return nil, fmt.Errorf("queue/nats: stream %s: %w", cfg.StreamName, err)
+	}
+
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      cfg.DLQStream,
+		Subjects:  []string{SubjectRunsDLQ},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    cfg.DLQMaxAge,
+		Storage:   jetstream.FileStorage,
+		Replicas:  cfg.StreamReplicas,
+	}); err != nil {
+		return nil, fmt.Errorf("queue/nats: stream %s: %w", cfg.DLQStream, err)
+	}
+
+	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   cfg.KVBucket,
+		TTL:      cfg.LockTTL,
+		History:  1,
+		Replicas: cfg.StreamReplicas,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("queue/nats: kv %s: %w", cfg.KVBucket, err)
+	}
+
+	return kv, nil
 }
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
@@ -614,6 +659,9 @@ func applyDefaults(c Config) Config {
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = KVRunLocks
+	}
+	if c.StreamReplicas == 0 {
+		c.StreamReplicas = DefaultStreamReplicas
 	}
 	if c.ConsumerName == "" {
 		c.ConsumerName = ConsumerRunners

@@ -38,6 +38,12 @@ type SentStore interface {
 	// within ClaimGrace (someone is actively on it) — WITHOUT claiming
 	// it. The sweep's cheap pre-check that skips the per-run store load.
 	IsMarked(ctx context.Context, key string) (bool, error)
+	// WasDelivered reports whether key was CONFIRMED delivered — strictly
+	// narrower than IsMarked (a pending claim inside ClaimGrace is marked
+	// but not delivered). Consumers that certify side-state off another
+	// claim's outcome (the ops dispatcher's transition markers) must read
+	// this, never IsMarked: certifying a pending claim races its Unmark.
+	WasDelivered(ctx context.Context, key string) (bool, error)
 }
 
 // ClaimGrace is how long a pending (unconfirmed) claim shields its episode
@@ -102,4 +108,10 @@ func (m *MemSentStore) IsMarked(_ context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	return rec.Delivered || m.now().UTC().Sub(rec.SentAt) < ClaimGrace, nil
+}
+
+func (m *MemSentStore) WasDelivered(_ context.Context, key string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.keys[key].Delivered, nil
 }

@@ -102,14 +102,14 @@ type ExecutorSpec struct {
 	// explicitly and win over the node's DSL backend:/model:, so a run can
 	// re-target the bot per node-group without editing the .bot. Empty = no-op.
 	ModelOverrides model.ModelOverrides
-	// RunFallback is the operator's single run-level fallback route
-	// (studio Launch row / CLI --fallback). Zero value = none.
+	// RunFallback is the operator's ordered run-level fallback chain
+	// (studio Launch row / CLI --fallback). Empty = none.
 	//
 	// BuildExecutor materialises it onto the compiled workflow's eligible
 	// agent nodes rather than handing it to the executor privately, so it
 	// passes the same safety screen as an authored route and is visible
 	// to the pre-run analyses the engine runs on the SAME *ir.Workflow.
-	RunFallback ir.Fallback
+	RunFallback []ir.Fallback
 	// BotID is the stable bundle/bot identifier used to qualify
 	// structured visibility=bot memory. Empty falls back to Workflow.Name.
 	BotID string
@@ -265,22 +265,20 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.RunID == "" {
 		return nil, fmt.Errorf("runview: run ID is required")
 	}
-	// Materialise the operator's launch-time fallback route onto the
+	if spec.Logger == nil {
+		spec.Logger = iterlog.NewFromEnv(os.Stderr)
+	}
+	// Materialise the operator's launch-time fallback chain onto the
 	// compiled workflow BEFORE anything reads it. The engine is
 	// constructed from the same *ir.Workflow, so writing it here is what
 	// lets the sandbox bind-mount, the parallel-branch admission and the
 	// fan_out_each guard all see the route — and what subjects it to the
 	// same refusals the compiler applies to an authored one.
 	//
-	// A refused node keeps its primary and the operator is told; the
-	// route is never silently taken.
+	// A refused stage is skipped and the operator is told; later stages
+	// continue through the same screen and are never silently taken.
 	for _, refusal := range ir.ApplyRunFallback(spec.Workflow, spec.RunFallback) {
-		if spec.Logger != nil {
-			spec.Logger.Warn("run-level fallback not applied — %s", refusal)
-		}
-	}
-	if spec.Logger == nil {
-		spec.Logger = iterlog.NewFromEnv(os.Stderr)
+		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}
 
 	reg := model.NewRegistry()
@@ -561,14 +559,14 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (
 	for name, server := range wf.ResolvedMCPServers {
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
-			expandedArgs[i] = os.ExpandEnv(a)
+			expandedArgs[i] = ir.ExpandEnvWithDefault(a)
 		}
 		catalog[name] = &mcp.ServerConfig{
 			Name:      server.Name,
 			Transport: mcp.FromIRTransport(server.Transport),
-			Command:   os.ExpandEnv(server.Command),
+			Command:   ir.ExpandEnvWithDefault(server.Command),
 			Args:      expandedArgs,
-			URL:       os.ExpandEnv(server.URL),
+			URL:       ir.ExpandEnvWithDefault(server.URL),
 			Headers:   server.Headers,
 			// Env is already fully resolved at catalog-build time (plugin
 			// {{config.*}} placeholders expanded by loadPluginServers) — copy
@@ -641,7 +639,7 @@ func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
 //
 // Returns (nil, nil) when the env var is empty.
 func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
-	spec := strings.TrimSpace(os.Getenv("ITERION_LLM_CLASSIFIER_MODEL"))
+	spec := strings.TrimSpace(ir.LookupEnv("ITERION_LLM_CLASSIFIER_MODEL"))
 	if spec == "" {
 		return nil, nil
 	}

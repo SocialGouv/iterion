@@ -48,6 +48,7 @@ func (s *Server) registerRunRoutes() {
 	// Per-node file changes — "an iterion node is like a commit".
 	s.mux.HandleFunc("GET /api/runs/{id}/nodes/{node}/changes", s.handleGetRunNodeChanges)
 	s.mux.HandleFunc("GET /api/runs/{id}/nodes/{node}/diff", s.handleGetRunNodeFileDiff)
+	s.mux.HandleFunc("GET /api/runs/{id}/route-decisions", s.handleListRouteDecisions)
 	s.mux.HandleFunc("GET /api/runs/{id}/review/scope", s.handleGetRunReviewScope)
 	s.mux.HandleFunc("GET /api/runs/{id}/review/diff", s.handleGetRunReviewDiff)
 	// Workspace-relative file stream for the review panel's media players

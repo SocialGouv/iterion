@@ -38,17 +38,18 @@ const SchemaVersion = 1
 // Collection names. Plan §D pins these so monitoring dashboards and
 // migration tooling can rely on them.
 const (
-	colRuns         = "runs"
-	colEvents       = "events"
-	colRunSeq       = "run_seq"
-	colRunLogs      = "run_logs"
-	colInteractions = "interactions"
-	colUserMessages = "user_messages"
-	colRunGitMeta   = "run_gitmeta"
-	colRunPlans     = "run_plans"
-	colRunNotes     = "run_notes"
-	colRunTurns     = "run_turns"
-	colRunTags      = "run_tags"
+	colRuns           = "runs"
+	colRouteDecisions = "run_route_decisions"
+	colEvents         = "events"
+	colRunSeq         = "run_seq"
+	colRunLogs        = "run_logs"
+	colInteractions   = "interactions"
+	colUserMessages   = "user_messages"
+	colRunGitMeta     = "run_gitmeta"
+	colRunPlans       = "run_plans"
+	colRunNotes       = "run_notes"
+	colRunTurns       = "run_turns"
+	colRunTags        = "run_tags"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -102,6 +103,7 @@ type Store struct {
 	client             *mongo.Client
 	db                 *mongo.Database
 	runs               *mongo.Collection
+	routeDecisions     *mongo.Collection
 	events             *mongo.Collection
 	runSeq             *mongo.Collection
 	runLogs            *mongo.Collection
@@ -211,6 +213,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		client:             cli,
 		db:                 db,
 		runs:               db.Collection(colRuns),
+		routeDecisions:     db.Collection(colRouteDecisions),
 		events:             db.Collection(colEvents),
 		runSeq:             db.Collection(colRunSeq),
 		runLogs:            db.Collection(colRunLogs),
@@ -331,6 +334,15 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// events collection: unique (run_id, seq) is the race safety net.
 	// (tenant_id, run_id, seq) accelerates change-stream filters
 	// without breaking the existing seq-only sort.
+	// One decision per (run, episode): the unique key IS the router's
+	// idempotence — a re-offered episode trips the duplicate and stops.
+	if _, err := s.routeDecisions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "outcome_seq", Value: 1}}, Options: options.Index().SetName("run_episode_unique").SetUnique(true)},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "claimed_at", Value: -1}}, Options: options.Index().SetName("tenant_claimed_desc")},
+	}); err != nil {
+		return fmt.Errorf("store/mongo: route decision indexes: %w", err)
+	}
+
 	eventIdx := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "type", Value: 1}}, Options: options.Index().SetName("run_type")},

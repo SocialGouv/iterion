@@ -1396,7 +1396,9 @@ func TestFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Checkpoint != nil {
-		t.Fatalf("late abandoned branch restored stale checkpoint: %+v", run.Checkpoint)
+	// ADR-095 keeps the trunk's last checkpoint after termination. The
+	// abandoned branch must not replace it with its retired parallel epoch.
+	if run.Checkpoint != nil && run.Checkpoint.Parallel != nil {
+		t.Fatalf("late abandoned branch restored stale parallel checkpoint: %+v", run.Checkpoint)
 	}
 }

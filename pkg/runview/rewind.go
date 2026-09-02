@@ -436,9 +436,13 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 
 	run.Status = store.RunStatusCancelled
-	// Clear the stale failure message: the run is no longer "failed at
-	// verify", it is parked at the pivot awaiting a fresh execution.
+	// Clear the stale failure message AND its typed code: the run is no
+	// longer "failed at verify", it is parked at the pivot awaiting a
+	// fresh execution — a synthetic parking carries no failure
+	// classification (ADR-095), and SaveRun below is a full-document
+	// overwrite that would otherwise resurrect the pre-claim code.
 	run.Error = ""
+	run.FailureCode = ""
 	run.Checkpoint = cp
 	run.UpdatedAt = time.Now().UTC()
 	// Re-apply the stamp the claim performed. `run` was loaded BEFORE the

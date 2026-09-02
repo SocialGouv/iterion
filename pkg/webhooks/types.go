@@ -172,6 +172,16 @@ type Config struct {
 	// gate_enabled var + a required-check ruleset listing revi/review.
 	ReviewOnSync bool `bson:"review_on_sync,omitempty" json:"review_on_sync,omitempty"`
 
+	// ReviewOnSyncPinned records that an operator set ReviewOnSync
+	// EXPLICITLY through the webhook API (either value). Provisioning's
+	// gating derivation then leaves ReviewOnSync alone in BOTH directions —
+	// it neither forces it on for a statuses-scope bot nor releases it on a
+	// gate_enabled=false pin. An explicit operator choice is never silently
+	// replaced (CLAUDE.md principle 1); without the pin, ReviewOnSync is
+	// presumed derivation-owned. Clearable via the same PATCH
+	// (review_on_sync_pinned: false) to hand the field back.
+	ReviewOnSyncPinned bool `bson:"review_on_sync_pinned,omitempty" json:"review_on_sync_pinned,omitempty"`
+
 	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
 	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
 	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary

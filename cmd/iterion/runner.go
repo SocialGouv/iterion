@@ -16,9 +16,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -96,6 +98,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		StreamName:          cfg.NATS.Stream,
 		DLQStream:           cfg.NATS.DLQStream,
 		KVBucket:            cfg.NATS.KVBucket,
+		StreamReplicas:      cfg.NATS.StreamReplicas,
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
@@ -226,6 +229,21 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	usageCapSource := usagecap.NewResolver(
 		usagecap.NewMongoSettingsStore(st.DB()), usageCapEnvPolicy,
 		usagecap.WithWarnLogger(logger.Warn))
+	// Bot-var settings (platformcfg FamilyBotVars) reach every
+	// ${ITERION_X:-default} expansion the runner performs — model pins,
+	// reasoning effort, tunables — through the ir overlay. Installed once
+	// at boot; each claimed run sees the values within the resolver TTL,
+	// no restart. Precedence: setting > pod env > .bot default.
+	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](
+		platformcfg.NewMongoBotVars(st.DB()), logger.Warn)
+	ir.SetEnvOverlay(func(name string) (string, bool) {
+		rec := botVarsResolver.Get(context.Background())
+		if rec == nil {
+			return "", false
+		}
+		v, ok := rec.Vars[name]
+		return v, ok
+	})
 	// The schema is ensured unconditionally: a cap disabled in env can be
 	// armed at runtime through the settings record, and the readings
 	// ledger must exist by then.

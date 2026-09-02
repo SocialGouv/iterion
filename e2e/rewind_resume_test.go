@@ -31,7 +31,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 
 	// Pass 1: verify fails execution (a transient-style error, NOT the
 	// `fail` terminal node — reaching that is intentional termination and
-	// produces a non-resumable `failed` with the checkpoint cleared), so
+	// produces a non-resumable `failed` (the checkpoint is preserved — ADR-095)), so
 	// the run lands failed_resumable anchored on `verify`.
 	exec := newScenarioExecutor()
 	exec.on("verify", func(_ map[string]any) (map[string]any, error) {

@@ -236,11 +236,21 @@ type Config struct {
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
 	SandboxSettings  platformcfg.Store[platformcfg.Sandbox]
+	// BotVarsSettings is the bot-variable override family: DB-resolved
+	// values for the `${ITERION_X:-default}` expansions bots declare, so
+	// re-tuning a bot (model pin, reasoning effort) is a settings write,
+	// not a Helm change + rollout. Nil keeps env-only expansion.
+	BotVarsSettings platformcfg.Store[platformcfg.BotVars]
 	// SandboxResolver, when non-nil, is the SHARED TTL resolver over
 	// SandboxSettings, also handed to the cloud publisher — one instance,
 	// so the admin PUT's Invalidate reaches publish-time pinning on the
 	// same replica. Nil (tests/local) builds a private one.
 	SandboxResolver *platformcfg.Resolver[platformcfg.Sandbox]
+	// BotVarsResolver, when non-nil, is the SHARED TTL resolver over
+	// BotVarsSettings, also installed as ir.SetEnvOverlay by the cmd
+	// wiring — one instance, so the admin PUT's Invalidate reaches the
+	// same replica's expansions immediately. Nil builds a private one.
+	BotVarsResolver *platformcfg.Resolver[platformcfg.BotVars]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode
@@ -401,6 +411,14 @@ type Config struct {
 	// NotifiableRuns is the reconciliation sweep's scan seam (the Mongo
 	// store's ListNotifiableRuns). nil → no sweep (bus-only delivery).
 	NotifiableRuns usernotify.ListNotifiableRuns
+
+	// AlertsWebhookURL enables the OPERATOR alert dispatcher
+	// (alert.OpsDispatcher): parked/failed runs from the runner pods
+	// delivered to a deployment webhook (Mattermost/Slack shape) — the
+	// cloud twin of the in-process alert Manager, which only sees local
+	// runs. Requires NotificationSent (the episode-claim store) to dedup
+	// across replicas and against the sweep; empty ⇒ feature off.
+	AlertsWebhookURL string
 
 	// CloudBoardFor returns a tenant-scoped board store for cloud mode (a
 	// boardmongo.Store). When set, a board-mode slash-command materialises a

@@ -2007,3 +2007,31 @@ func walkRefsBound(n node, bound map[string]bool, fn func(Ref)) {
 		walkRefsBound(v.body, nb, fn)
 	}
 }
+
+// IsBoolAlgebraOverRefs reports whether the AST is a pure boolean
+// combination of path references: refs combined by "!", "&&", "||" and
+// parentheses, nothing else — no literals, comparisons, arithmetic,
+// indexing or combinators. Consumers whose evaluation must be STRICT
+// (a policy contract where an absent field must never coerce into a
+// verdict) restrict their grammar to this shape: every leaf is then a
+// ref they can pre-resolve and type-check individually, which the
+// truthy coercion inside "!"/"&&"/"||" would otherwise defeat.
+func (a *AST) IsBoolAlgebraOverRefs() bool {
+	if a == nil || a.root == nil {
+		return false
+	}
+	return isBoolAlgebraNode(a.root)
+}
+
+func isBoolAlgebraNode(n node) bool {
+	switch t := n.(type) {
+	case pathNode:
+		return true
+	case *unaryNode:
+		return t.op == "!" && isBoolAlgebraNode(t.child)
+	case *binaryNode:
+		return (t.op == "&&" || t.op == "||") && isBoolAlgebraNode(t.left) && isBoolAlgebraNode(t.right)
+	default:
+		return false
+	}
+}

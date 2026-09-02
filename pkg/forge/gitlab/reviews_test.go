@@ -139,3 +139,91 @@ func TestGitLabCreatePullReview_TotalFailureSurfaces(t *testing.T) {
 		t.Fatal("nothing landed — must surface an error, never fake success")
 	}
 }
+
+var _ forge.ReviewerAssigner = (*AdminClient)(nil)
+
+// AddSelfAsPullReviewer is a read-modify-write: GitLab's reviewer_ids PUT
+// replaces the whole set, so the humans already on it must ride along —
+// and a bot already present must produce no write at all.
+func TestGitLabAddSelfAsPullReviewer(t *testing.T) {
+	reviewers := []map[string]any{{"id": float64(12), "username": "carol"}}
+	var puts []map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 575, "username": "iterion-bot"})
+	})
+	mux.HandleFunc("GET /api/v4/projects/grp%2Fproj/merge_requests/9", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"reviewers": reviewers})
+	})
+	mux.HandleFunc("PUT /api/v4/projects/grp%2Fproj/merge_requests/9", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		puts = append(puts, body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"iid": 9})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+	if err := c.AddSelfAsPullReviewer(context.Background(), "grp/proj", 9); err != nil {
+		t.Fatal(err)
+	}
+	if len(puts) != 1 {
+		t.Fatalf("puts=%d", len(puts))
+	}
+	ids := puts[0]["reviewer_ids"].([]any)
+	if len(ids) != 2 || ids[0] != float64(12) || ids[1] != float64(575) {
+		t.Fatalf("reviewer union must keep carol and append the bot: %v", ids)
+	}
+
+	// Already a reviewer → idempotent no-op, no second PUT.
+	reviewers = append(reviewers, map[string]any{"id": float64(575), "username": "iterion-bot"})
+	if err := c.AddSelfAsPullReviewer(context.Background(), "grp/proj", 9); err != nil {
+		t.Fatal(err)
+	}
+	if len(puts) != 1 {
+		t.Fatalf("already-present must not write: puts=%d", len(puts))
+	}
+}
+
+// Two decode traps around the read-modify-write, both of which must refuse
+// loudly instead of writing:
+//   - a 200 /user body without an `id` decodes to 0, and GitLab reads a 0 in
+//     reviewer_ids as "add nobody" — the PUT would be a silent no-op logged
+//     as success;
+//   - a merge-request body without a `reviewers` field means the read half
+//     saw nothing, and the replace-PUT would wipe reviewers it couldn't see.
+func TestGitLabAddSelfAsPullReviewer_RefusesBlindWrites(t *testing.T) {
+	run := func(userBody, mrBody string) (puts int, err error) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(userBody))
+		})
+		mux.HandleFunc("GET /api/v4/projects/g%2Fp/merge_requests/1", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(mrBody))
+		})
+		mux.HandleFunc("PUT /api/v4/projects/g%2Fp/merge_requests/1", func(w http.ResponseWriter, r *http.Request) {
+			puts++
+			_, _ = w.Write([]byte(`{}`))
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+		c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+		err = c.AddSelfAsPullReviewer(context.Background(), "g/p", 1)
+		return puts, err
+	}
+
+	if puts, err := run(`{"message":"401 Unauthorized"}`, `{"reviewers":[]}`); err == nil || puts != 0 {
+		t.Fatalf("id-less /user body must refuse, not PUT a 0: puts=%d err=%v", puts, err)
+	}
+	if puts, err := run(`{"id":575,"username":"bot"}`, `{}`); err == nil || puts != 0 {
+		t.Fatalf("reviewers-less MR body must refuse the replace-write: puts=%d err=%v", puts, err)
+	}
+	if puts, err := run(`{"id":575,"username":"bot"}`, `{"reviewers":null}`); err == nil || puts != 0 {
+		t.Fatalf("null reviewers must refuse the replace-write: puts=%d err=%v", puts, err)
+	}
+	// And the honest empty set still writes.
+	if puts, err := run(`{"id":575,"username":"bot"}`, `{"reviewers":[]}`); err != nil || puts != 1 {
+		t.Fatalf("empty reviewer set is a real read — must write: puts=%d err=%v", puts, err)
+	}
+}

@@ -48,6 +48,16 @@ export default function MergeStatusBadge({
       </span>
     );
   }
+  if (status === "merging") {
+    return (
+      <span
+        className="ml-2 px-1.5 py-0.5 rounded bg-info-soft text-info-fg"
+        title="A worker holds the merge claim; the record updates when it completes."
+      >
+        merge in progress…
+      </span>
+    );
+  }
   if (status === "conflicted") {
     return (
       <span

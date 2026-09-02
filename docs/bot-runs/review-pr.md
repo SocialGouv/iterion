@@ -8,6 +8,50 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-01 — four passes as closure judge of an adversarial loop (runs 01a05daf / 01a05e57 / 01a05e6f)
+
+- Status: **validated** — Revi as the external reviewer closing a `::loop`
+  on the re-request-review + gate-opt-out engine work (PR #604, follow-up
+  PR #608).
+- Versions: iterion cloud prod v3.83.1→v3.84.0 · bot `review-pr` (webhook
+  lane on github.com/SocialGouv/iterion, mono topology, `revi/review`
+  required by the merge queue).
+- Method: the PRs went through 3 parallel adversarial subagents + 1
+  verification agent BEFORE each Revi pass; Revi reviewed what that
+  internal loop had already declared clean. 4 passes total (open +
+  re-review-on-push on #604; open + re-review on #608).
+- Result: **every pass found real defects the internal loop had missed; 0
+  false positives across all four.** Retained findings, each
+  mutation-proven red before fixing: R7e050f (the new GitLab
+  re-request lane bypassed the replier authorization gate `/revi` has),
+  R6a15fe (the SAME gap on the twin prforge/GitHub lane — the internal
+  loop had fixed GitLab only), R34eb8c (an authz ERROR 502'd the delivery
+  and stranded a co-riding gate resync), R0c3aab (the authz gate ran
+  before the scope filters, spending forge calls on out-of-scope events),
+  R68edf4 (comments describing the pre-gate behaviour on both lanes).
+  Passes 1–2 folded into #604 before merge (`c5eb31847`); passes 3–4
+  shipped as #608.
+- Value: the external-family pass is what caught the **twin-site class
+  miss** three separate times (a guard added to one lane but not its
+  structural sibling). Four internal agents staring at the same diff
+  shared the same blind spot; Revi did not.
+- Findings / misses: none of Revi's findings were noise. Its one
+  over-reach (fear of "review-per-push returning through
+  AddedReviewers") was refuted by a live GitLab payload probe rather
+  than argued — a push emits no reviewers diff.
+- Engine hardening: whole feature is engine work; see #604/#608. One
+  operational gotcha surfaced by Revi's own machinery: **its pending
+  claim ejects a PR from the merge queue** — the `mirror-revi-verdict`
+  job read `revi/review=pending` on #608's head (a re-review was in
+  flight after a usage-cap unblock) and rejected the queue entry twice.
+  Don't enqueue while a re-review is pending on the head; re-enqueue
+  once the verdict lands.
+- Lessons for next run: keep Revi as the closure judge of adversarial
+  loops — it is measurably a different failure-mode detector than N
+  same-family internal agents. Two passes stalled on
+  `USAGE_LIMIT_BLOCKED` at 99% of the weekly window; the runtime-mutable
+  cap (`iterion remote admin caps set`) unblocked them without a deploy.
+
 ## 2026-08-13 — first review on a self-hosted GitLab, and the two engine gaps it surfaced (runs 019ffad9 / 019ffadb / 019ffb04)
 
 - Status: **validated on the direct-launch path** (webhook lanes still blocked

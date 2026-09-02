@@ -34,6 +34,24 @@ func NewCoordinator(db *mongo.Database) *Coordinator {
 // StoreFor returns a tenant-scoped board store (for claim/transition/release).
 func (c *Coordinator) StoreFor(tenant string) *Store { return New(c.db, tenant) }
 
+// DistinctEffectTenants lists the tenants holding non-terminal trigger-effect
+// rows. The effect drain unions this with the subscription-derived tenant
+// list: a tenant whose LAST board subscription was disabled after rows were
+// materialized must still have those rows executed (or parked) — otherwise
+// they hibernate until a re-enable fires days-old events at once.
+func (c *Coordinator) DistinctEffectTenants(ctx context.Context) ([]string, error) {
+	res := c.db.Collection(EffectsCollection).Distinct(ctx, "tenant_id",
+		bson.M{"state": bson.M{"$in": bson.A{"pending", "claimed"}}})
+	if err := res.Err(); err != nil {
+		return nil, fmt.Errorf("boardmongo: distinct effect tenants: %w", err)
+	}
+	var vals []string
+	if err := res.Decode(&vals); err != nil {
+		return nil, fmt.Errorf("boardmongo: decode effect tenants: %w", err)
+	}
+	return vals, nil
+}
+
 // ListEligible returns up to `limit` UNCLAIMED issues whose state is in
 // `eligible`, across every tenant, in the requested update order:
 // oldest-updated first (newestFirst=false) for the dispatch tick — FIFO

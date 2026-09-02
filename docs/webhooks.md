@@ -92,6 +92,9 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   flag) deliberately do **not** re-trigger — auto-review on every push was
   found too noisy; cf.
   [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
+  An `update` whose `changes.reviewers` **(re-)requests a review from
+  iterion's own bot account** is the exception — the re-request-review
+  button; see <a href="#re-request-review">below</a>.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
   /revi" mid-text never triggers (anti-oscillation guard;
@@ -236,6 +239,61 @@ recent findings under the **`prior_review`** var — so Billy starts from
 that review instead of re-deriving it (best-effort: with no prior review,
 Billy reviews the diff from scratch;
 [pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
+
+### <a name="re-request-review"></a>On-demand re-review: the "Re-request review" button
+
+Alongside `/revi`, the forge-native **"Re-request review" button** is a
+second on-demand re-review gesture — the one non-comment surface a product
+developer already knows. Clicking it on iterion's bot reviewer (or adding
+the bot to the reviewer set in the first place) relaunches the review bot on
+the MR/PR's current head:
+
+- **GitLab** — a `merge_request` `update` whose `changes.reviewers` carries
+  `re_requested: true` on the bot's account (GitLab ≥ 18.5,
+  [gitlab-org/gitlab!205274](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/205274)),
+  or simply shows the bot newly added (the only expressible form on older
+  GitLab). To make the button exist, the server's publish step
+  **self-assigns the bot as an MR reviewer** after each posted review
+  ([forge.ReviewerAssigner](../pkg/forge/reviews.go) — read-modify-write,
+  never dropping human reviewers; best-effort, a miss only costs the
+  button).
+- **GitHub / Forgejo** — a `pull_request` event with action
+  `review_requested` whose `requested_reviewer` is iterion's identity.
+  That identity is the **App bot login only** (`<app_slug>[bot]`): a
+  PAT/OAuth connection's account may be a HUMAN's, and treating it as the
+  bot would turn an ordinary human-to-human review request into an LLM
+  launch (and disarm the anti-loop actor guard). In practice the lane is
+  therefore **currently inert on both**: a GitHub App cannot be a PR
+  reviewer at all (forge restriction), and a Forgejo connection never
+  carries an App slug (there is no Forgejo App kind) — `/revi` is the
+  on-demand path there. The wiring exists so a future bot-account
+  connection kind lights it up without touching the handlers; **GitLab is
+  the button forge today.**
+
+Semantics, shared with `/revi` (deliberate manual gesture):
+
+- **exempt from the hold-label pause** — the label pauses *automation*;
+- **repeatable** — each click is its own delivery (the idempotency key is
+  salted with the MR/PR `updated_at`), so re-requesting twice on the same
+  head reviews twice; forge redeliveries of the same click stay deduped;
+- **open PRs/MRs only** — reviewer edits arrive freely on closed/merged
+  ones and never burn a run;
+- **replier-gated like `/revi`** — the click is authorized through the
+  same `authorized_repliers` allowlist / `min_replier_role` project-role
+  gate (default developer) as every other manual trigger. "The forge
+  gates reviewer edits" is not enough: GitLab lets an MR AUTHOR edit
+  their own MR's reviewers without holding a project role, which would
+  hand a fork contributor a repeatable trigger. An unauthorized click is
+  demoted — the delivery rides whatever automatic lane still admits it
+  (with the hold label honoured) or is filtered;
+- **never self-triggering** — a reviewers change whose *actor* is the bot
+  itself (the self-assign echoing back) is filtered
+  ([pkg/server/webhooks_common.go:isIterionBotReviewRequest](../pkg/server/webhooks_common.go)).
+
+Pairs with the per-repo gate opt-out (`gate_enabled: "false"` pinned on the
+integration's launch vars): first review automatic on open, every re-review
+a button click or a `/revi` — see
+[merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand).
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 

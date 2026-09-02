@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -267,6 +269,7 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	notifyInputs := map[string]any{
 		"message_markdown": "**digest**", "sinks": plan["sinks"], "dry_run": true,
 		"category": "demo", "digest_title": "Demo Watch",
+		"max_message_chars": 14000, "max_messages": 5,
 	}
 	out, stderr, err = runPy(t, ws, subScript(t, notifyScript, notifyInputs, ""))
 	if err != nil {
@@ -303,6 +306,11 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	}
 	if out["posted"] != true || out["delivered"].(float64) != 1 {
 		t.Fatalf("notify = %v", out)
+	}
+	// A digest under the budget stays ONE message with no part marker —
+	// the split path must not touch the nominal case.
+	if out["parts"].(float64) != 1 || out["posts"].(float64) != 1 {
+		t.Fatalf("short digest must be a single unsplit post: %v", out)
 	}
 	if gotBody["channel"] != "#demo" || gotBody["text"] != "**digest**" {
 		t.Fatalf("webhook payload = %v", gotBody)
@@ -669,5 +677,402 @@ func TestFeedWatch_FetchProxyAware(t *testing.T) {
 	}
 	if strings.Contains(stderr2, "SSRF-unsafe") {
 		t.Fatalf("public feed host must not be rejected as SSRF behind a proxy, got:\n%s", stderr2)
+	}
+}
+
+// longDigest builds a digest of `blocks` blank-line-separated entries in
+// the real shape the synthesis emits (one link-bearing line per entry).
+func longDigest(blocks int) string {
+	parts := make([]string, 0, blocks)
+	for i := 0; i < blocks; i++ {
+		parts = append(parts, fmt.Sprintf(
+			"**[Story %02d](https://example.com/%02d)** — %s",
+			i, i, strings.Repeat("takeaway sentence ", 12)))
+	}
+	return "Headline of the day\n\n" + strings.Join(parts, "\n\n")
+}
+
+// partMarker matches the "_(i/n)_" (or the truncated variant) footer the
+// notify node appends to every message of a split digest.
+var partMarker = regexp.MustCompile(`\n\n_\(\d+/\d+[^)]*\)_$`)
+
+// notifySink is a webhook stand-in accumulating every payload it receives,
+// in order, optionally failing from the Nth post of a given channel on.
+type notifySink struct {
+	mu       sync.Mutex
+	bodies   []map[string]any
+	failFrom map[string]int // channel → 1-based post index that starts failing
+	seen     map[string]int
+}
+
+func newNotifySink() *notifySink {
+	return &notifySink{failFrom: map[string]int{}, seen: map[string]int{}}
+}
+
+func (s *notifySink) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		ch, _ := body["channel"].(string)
+		s.seen[ch]++
+		if n, ok := s.failFrom[ch]; ok && s.seen[ch] >= n {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		s.bodies = append(s.bodies, body)
+		fmt.Fprint(w, "ok")
+	}
+}
+
+// texts returns the received message texts for one channel, in order.
+func (s *notifySink) texts(channel string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var got []string
+	for _, b := range s.bodies {
+		if ch, _ := b["channel"].(string); ch == channel {
+			got = append(got, b["text"].(string))
+		}
+	}
+	return got
+}
+
+// TestFeedWatch_NotifySplitsLongDigest drives the REAL notify script: a
+// digest above a sink's per-message budget is delivered as consecutive
+// numbered messages carrying ALL of it — the failure this replaces cut the
+// digest at 14000 chars and pointed its chat readers at run artifacts they
+// cannot open. Covers the per-sink budget override, the max_messages
+// ceiling, and the intra-sink partial failure.
+func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "feed-watch/main.bot")
+	script := feedWatchTool(t, wf, "notify").Script
+
+	// run posts `msg` to `sinks` through the real script and returns the
+	// node output plus the recording sink.
+	run := func(t *testing.T, msg string, sinks []any, maxChars, maxMessages int, sink *notifySink) (map[string]any, error) {
+		t.Helper()
+		srv := httptest.NewServer(sink.handler())
+		defer srv.Close()
+		secret := filepath.Join(t.TempDir(), "webhooks.json")
+		if err := os.WriteFile(secret, []byte(`{"w1": "`+srv.URL+`", "w2": "`+srv.URL+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, stderr, err := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+			"message_markdown": msg, "sinks": sinks, "dry_run": false,
+			"category": "demo", "digest_title": "Demo Watch",
+			"max_message_chars": maxChars, "max_messages": maxMessages,
+		}, secret))
+		if err != nil && stderr != "" {
+			t.Logf("notify stderr: %s", stderr)
+		}
+		return out, err
+	}
+
+	// reassemble strips the part markers and re-joins, so the assertion is
+	// "the channel received the whole digest", not "it received something".
+	reassemble := func(t *testing.T, got []string) string {
+		t.Helper()
+		var body []string
+		for i, m := range got {
+			stripped := partMarker.ReplaceAllString(m, "")
+			if stripped == m && len(got) > 1 {
+				t.Fatalf("message %d/%d carries no part marker: %q", i+1, len(got), tail(m))
+			}
+			body = append(body, stripped)
+		}
+		return strings.Join(body, "\n\n")
+	}
+
+	t.Run("whole digest arrives in numbered parts", func(t *testing.T) {
+		msg := longDigest(20)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		out, err := run(t, msg, sinks, 1200, 0, sink)
+		if err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) < 3 {
+			t.Fatalf("a %d-char digest at a 1200-char budget must split into several messages, got %d", len(msg), len(got))
+		}
+		if int(out["parts"].(float64)) != len(got) || int(out["posts"].(float64)) != len(got) {
+			t.Fatalf("output must account for every message: parts=%v posts=%v, posted %d", out["parts"], out["posts"], len(got))
+		}
+		if out["posted"] != true || out["delivered"].(float64) != 1 {
+			t.Fatalf("a fully delivered sink must count as delivered: %v", out)
+		}
+		for i, m := range got {
+			if len(m) > 1200 {
+				t.Fatalf("message %d is %d chars, over the 1200 budget", i+1, len(m))
+			}
+			if !strings.HasSuffix(m, fmt.Sprintf("_(%d/%d)_", i+1, len(got))) {
+				t.Fatalf("message %d marker wrong: %q", i+1, tail(m))
+			}
+		}
+		if body := reassemble(t, got); body != msg {
+			t.Fatalf("content lost in the split:\nwant %d chars, got %d chars", len(msg), len(body))
+		}
+	})
+
+	t.Run("per-sink max_chars splits each channel to its own budget", func(t *testing.T) {
+		msg := longDigest(20)
+		sinks := []any{
+			map[string]any{"webhook": "w1", "channel": "#wide"},
+			map[string]any{"webhook": "w2", "channel": "#narrow", "max_chars": 900},
+		}
+		sink := newNotifySink()
+		out, err := run(t, msg, sinks, 4000, 0, sink)
+		if err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		wide, narrow := sink.texts("#wide"), sink.texts("#narrow")
+		if len(narrow) <= len(wide) {
+			t.Fatalf("the narrower sink must take more messages: wide=%d narrow=%d", len(wide), len(narrow))
+		}
+		if out["delivered"].(float64) != 2 {
+			t.Fatalf("both sinks fully delivered, got %v", out)
+		}
+		for _, m := range narrow {
+			if len(m) > 900 {
+				t.Fatalf("a #narrow message is %d chars, over its own 900 budget", len(m))
+			}
+		}
+		if body := reassemble(t, narrow); body != msg {
+			t.Fatal("the narrow sink did not receive the whole digest")
+		}
+		if body := reassemble(t, wide); body != msg {
+			t.Fatal("the wide sink did not receive the whole digest")
+		}
+	})
+
+	t.Run("a section heading is not stranded at the end of a part", func(t *testing.T) {
+		// Sized so the "also seen" header lands EXACTLY on a boundary:
+		// at a 500-char budget an entry (400) plus the header (20) fits,
+		// the next entry does not — so without the fix the header closes
+		// message 1 while its items open message 2.
+		entry := strings.Repeat("mot ", 100)
+		msg := strings.Join([]string{entry, "### Egalement vus", entry, entry}, "\n\n")
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		if _, err := run(t, msg, sinks, 500, 0, sink); err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) < 2 {
+			t.Fatalf("expected a split, got %d message(s)", len(got))
+		}
+		for i, m := range got[:len(got)-1] {
+			last := strings.TrimSpace(partMarker.ReplaceAllString(m, ""))
+			if idx := strings.LastIndex(last, "\n\n"); idx >= 0 {
+				last = last[idx+2:]
+			}
+			if strings.HasPrefix(strings.TrimSpace(last), "#") {
+				t.Fatalf("message %d ends on an orphaned heading: %q", i+1, last)
+			}
+		}
+		if body := reassemble(t, got); body != msg {
+			t.Fatal("moving the heading must not lose or duplicate content")
+		}
+	})
+
+	// Truncation is the quietest way this node can drop content: the ceiling
+	// removes the tail parts BEFORE any POST, so every sink reports a
+	// complete send and the queue would be consumed for items whose text
+	// never left. The channel only sees a notice pointing at run artifacts
+	// its readers cannot open. What fits is still posted — but the run must
+	// FAIL so the queue survives and the items are re-digested.
+	t.Run("max_messages ceiling posts what fits, says so, and keeps the queue", func(t *testing.T) {
+		msg := longDigest(20)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		_, err := run(t, msg, sinks, 1200, 2, sink)
+		if err == nil {
+			t.Fatal("a truncated digest must not report success — the queue would be consumed for items that never left")
+		}
+		got := sink.texts("#demo")
+		if len(got) != 2 {
+			t.Fatalf("max_messages=2 must post exactly 2 messages, got %d", len(got))
+		}
+		if !strings.Contains(got[1], "digest truncated") {
+			t.Fatalf("the capped tail must be announced, got: %q", tail(got[1]))
+		}
+		if strings.Contains(got[0], "digest truncated") {
+			t.Fatal("only the LAST message announces the truncation")
+		}
+	})
+
+	// The capped last message carries the LONGEST marker there is (the
+	// truncation notice). A reserve sized for the ordinary "_(i/n)_" puts it
+	// over the budget — and the budget exists to stay under the platform's
+	// hard post limit, so that POST is the one the platform rejects.
+	// The input is a single unbroken line on purpose: only the hard-cut path
+	// packs a part to exactly `limit - reserve`, where the shortfall shows.
+	// Block-separated text leaves slack that hides it.
+	t.Run("no message exceeds the budget, marker included", func(t *testing.T) {
+		msg := strings.Repeat("x", 9000)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		// Truncation keeps the queue, so this run fails by design; what is
+		// under test is what reached the channel before it did.
+		if _, err := run(t, msg, sinks, 1200, 3, sink); err == nil {
+			t.Fatal("a truncated digest must not report success")
+		}
+		got := sink.texts("#demo")
+		if len(got) != 3 {
+			t.Fatalf("expected 3 capped messages, got %d", len(got))
+		}
+		if !strings.Contains(got[2], "digest truncated") {
+			t.Fatalf("the capped tail must be announced: %q", tail(got[2]))
+		}
+		for i, m := range got {
+			if len(m) > 1200 {
+				t.Fatalf("message %d/%d is %d chars, over the 1200 budget: %q",
+					i+1, len(got), len(m), tail(m))
+			}
+		}
+	})
+
+	// `posted` is not "something went out" — it is the QUEUE-CONSUMPTION
+	// signal (`notify -> commit_state when posted`), and commit_state clears
+	// the delivered snapshots from pending.jsonl. Returning it true on a
+	// partial delivery ends the run GREEN having permanently dropped whatever
+	// never left: the channel gets part 1 of 5 and the rest is gone from the
+	// queue forever. Louder-to-quieter than failing, and it contradicts the
+	// splitting's whole purpose. A replay may duplicate what already landed —
+	// a duplicate is recoverable, a lost digest is not.
+	t.Run("a part failure stops the sink AND refuses to consume the queue", func(t *testing.T) {
+		msg := longDigest(20)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#flaky"}}
+		sink := newNotifySink()
+		sink.failFrom["#flaky"] = 2 // part 1 lands, part 2 onwards 500s
+		out, err := run(t, msg, sinks, 1200, 0, sink)
+		if err == nil {
+			t.Fatalf("a sink that got part 1 of n must NOT report success — the queue would be consumed and the tail lost: %v", out)
+		}
+		if got := sink.texts("#flaky"); len(got) != 1 {
+			t.Fatalf("delivery must stop at the first failed part, got %d message(s)", len(got))
+		}
+	})
+
+	// The same defect predates splitting: with two sinks, one served used to
+	// be enough to consume the queue for both, so the second channel lost the
+	// digest silently. One predicate closes both.
+	t.Run("one sink of two is not a delivery", func(t *testing.T) {
+		msg := "# Demo Watch\n\nshort enough to fit in one message"
+		sinks := []any{
+			map[string]any{"webhook": "w1", "channel": "#ok"},
+			map[string]any{"webhook": "w2", "channel": "#down"},
+		}
+		sink := newNotifySink()
+		sink.failFrom["#down"] = 1 // this channel never accepts anything
+		out, err := run(t, msg, sinks, 4000, 0, sink)
+		if err == nil {
+			t.Fatalf("one sink of two served must not consume the queue for both: %v", out)
+		}
+		if got := sink.texts("#ok"); len(got) != 1 {
+			t.Fatalf("the healthy sink must still have been served, got %d", len(got))
+		}
+	})
+
+	t.Run("every part failing fails the run", func(t *testing.T) {
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#dead"}}
+		sink := newNotifySink()
+		sink.failFrom["#dead"] = 1
+		if _, err := run(t, longDigest(20), sinks, 1200, 0, sink); err == nil {
+			t.Fatal("a delivery that reached nobody must fail the run (safe to resume)")
+		}
+	})
+}
+
+// tail returns the last 120 chars of s for readable failure messages.
+func tail(s string) string {
+	if len(s) <= 120 {
+		return s
+	}
+	return "…" + s[len(s)-120:]
+}
+
+// TestFeedWatch_OverflowItemsSurviveCommit: snapshot_ids must name only
+// the items actually handed to the LLM. Before the fix, load_pending
+// snapshotted the WHOLE queue and then truncated to max_items, so
+// commit_state purged overflow items that were never synthesized nor
+// published — silent data loss on any backlog larger than max_items.
+func TestFeedWatch_OverflowItemsSurviveCommit(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "feed-watch/main.bot")
+	ws, _ := feedWatchWorkspace(t)
+
+	// Seed 5 pending items, newest-first ids i5..i1 by ts.
+	cdir := filepath.Join(ws, ".feed-watch", "demo")
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for i := 1; i <= 5; i++ {
+		lines = append(lines, fmt.Sprintf(`{"id":"i%d","title":"t%d","url":"https://x.test/%d","ts":%d}`, i, i, i, 1000+i))
+	}
+	if err := os.WriteFile(filepath.Join(cdir, "pending.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := runPlan(t, wf, ws, "digest", "demo")
+	loadScript := feedWatchTool(t, wf, "load_pending").Script
+	loadInputs := map[string]any{
+		"category": "demo", "editorial": plan["editorial"], "digest_title": plan["digest_title"],
+		"sinks": plan["sinks"], "workspace": ws, "state_dir": ".feed-watch", "max_items": 3,
+		"silence_alert_days": 3,
+	}
+	pending, stderr, err := runPy(t, ws, subScript(t, loadScript, loadInputs, ""))
+	if err != nil {
+		t.Fatalf("load_pending failed: %v\nstderr: %s", err, stderr)
+	}
+	if pending["items_count"].(float64) != 3 || pending["overflow_count"].(float64) != 2 {
+		t.Fatalf("load_pending = %v items / %v overflow, want 3/2", pending["items_count"], pending["overflow_count"])
+	}
+	snapshot := pending["snapshot_ids"].([]any)
+	if len(snapshot) != 3 {
+		t.Fatalf("snapshot_ids must name only the items handed to the LLM: %v", snapshot)
+	}
+	got := map[string]bool{}
+	for _, id := range snapshot {
+		got[id.(string)] = true
+	}
+	// Newest 3 by ts are i5,i4,i3; the overflow (i1,i2) must NOT be
+	// snapshotted, or commit_state would purge them unpublished.
+	for _, want := range []string{"i5", "i4", "i3"} {
+		if !got[want] {
+			t.Fatalf("snapshot_ids missing %s: %v", want, snapshot)
+		}
+	}
+	if got["i1"] || got["i2"] {
+		t.Fatalf("overflow items leaked into snapshot_ids: %v", snapshot)
+	}
+
+	commitScript := feedWatchTool(t, wf, "commit_state").Script
+	commitInputs := map[string]any{
+		"category": "demo", "snapshot_ids": snapshot, "message_markdown": "**digest**",
+		"headline": "Demo headline", "state_commit": false, "workspace": ws, "state_dir": ".feed-watch",
+	}
+	out, stderr, err := runPy(t, ws, subScript(t, commitScript, commitInputs, ""))
+	if err != nil {
+		t.Fatalf("commit_state failed: %v\nstderr: %s", err, stderr)
+	}
+	if out["cleared"].(float64) != 3 {
+		t.Fatalf("cleared = %v, want 3", out["cleared"])
+	}
+	raw, err := os.ReadFile(filepath.Join(cdir, "pending.jsonl"))
+	if err != nil {
+		t.Fatalf("pending.jsonl gone after commit: %v", err)
+	}
+	kept := strings.Count(strings.TrimSpace(string(raw)), "\n") + 1
+	if kept != 2 || !strings.Contains(string(raw), `"i1"`) || !strings.Contains(string(raw), `"i2"`) {
+		t.Fatalf("overflow items must survive the commit, pending.jsonl = %s", raw)
 	}
 }

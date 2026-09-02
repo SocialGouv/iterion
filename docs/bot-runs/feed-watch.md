@@ -4,6 +4,84 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-08-31 — the five silent Monday digests, and the cross-family fallback born from them (runs 01a05667…/01a05690…, canary 01a058a5)
+
+- Status: **resolved** (same-day delivery) + fallback shipped and proven live
+- Versions: bot 1.5.0 → 1.6.0 (platform override v2 → v3) · iterion v3.77.1 → v3.78.0
+
+### The outage
+
+All five Monday-morning digests (cyber daily + ia/tsjs/gopyrust/java weekly,
+06:00–06:45 UTC) parked `failed_resumable` on `synthesize`: **iterion's own
+usage cap**, not the provider wall — a DB settings record from 08-29 pinned
+the weekly cap at 70% hard while the Anthropic seven-day window sat at 79%.
+Collects passed (no LLM call). First diagnostic reflex that worked:
+`/healthz` echoes the effective `usage_cap` — a silent digest morning starts
+there, not in the bot.
+
+Remediation: cap raised to 90 (runtime PUT, ≤30s), the five runs resumed
+**one by one** (each restarts at `synthesize`; the pending queue is
+checkpointed) — all five delivered to Mattermost within the hour (2 sinks
+each, no partials). The Saturday cyber digest (run `01a04c1a`, parked at the
+older 95% cap) was **cancelled, not resumed**: its queue had already been
+drained by Sunday's digest (`01a05140`, 41 items) and Monday's, so a resume
+would have double-posted.
+
+### Two real defects found on the way
+
+- **Overflow data loss (fixed in 1.6.0):** `load_pending` snapshotted the
+  WHOLE queue before truncating to `max_items`, and `commit_state` clears
+  every snapshot id — so any backlog larger than `max_items` had its
+  overflow purged unpublished. Surfaced by the cross-family plan review,
+  confirmed by reading; `snapshot_ids` is now built after the cut and the
+  overflow stays queued. (Operational guard while the fix rolls out: check
+  `overflow_count` in a parked run's `load_pending` output — the run's
+  checkpoint (`iterion remote api GET /api/runs/<id>` →
+  `.run.checkpoint.outputs.load_pending.overflow_count`) or its
+  `node_finished` event; the cloud `/api/runs/{id}/artifacts` surface
+  comes back empty for these runs — before resuming it.)
+- **The codex forfait was dead on the platform, silently.** A one-node
+  claw+`openai/gpt-5.5` probe 401'd ("token invalidated") from the pod while
+  the same session worked locally. Root causes, in order of discovery: the
+  platform record shared ONE OpenAI session with the operator's laptop
+  (rotating refresh tokens make dual-client use self-destructive — each
+  refresh invalidates the other holder), and a **stale team-tier codex
+  record** (08-27, plan-review era) outranked every platform fix. Fix: a
+  DEDICATED `codex login` session for the deployment (`CODEX_HOME=<tmp> codex
+  login`, uploaded via `admin llm oauth set codex --from-file`), and the
+  team-tier codex record deleted so resolution falls through to the platform
+  tier. One session, one record, one refresher. The probe then answered
+  "pong" from the pod.
+
+### The fallback (bot 1.6.0 + engine v3.78.0)
+
+`synthesize` now declares `gpt_forfait` (`claw` + `openai/gpt-5.5`,
+`on: [usage_window]`): a closed Anthropic window degrades the digest to the
+codex forfait instead of parking it for days. The blocker was engine-side —
+sandboxed claw refused ANY gated node, and `synthesize` carries the
+anti-injection `permission: deny`. v3.78.0 carries the policy across the IPC
+as a pre-task envelope (fail-closed on a mixed fleet; only ask-capable
+policies remain refused).
+
+**Proven live under natural conditions** (canary 01a058a5, `dry_run=true`,
+window at 90% = cap 90, no cap fiddling): `usage_cap` event on synthesize →
+`model_fallback {claude_code→claw, usage_window}` → output stamped
+`_fallback_used: true` / `_served_by: gpt_forfait` → link firewall passed →
+`notify {posted:false, dry_run:true}`. The deny gate rode the IPC into the
+sandbox runner. Zero side effects (no post, `state_commit=false`).
+
+### Lessons for next run
+
+- The bot ships as a **platform override** (v3): a git commit alone does NOT
+  reach the prod schedules — `iterion remote admin bots push bots/feed-watch`
+  is the delivery, and the relative `file_path` on a run is the tell.
+- `dry_run=true` + `state_commit=false` is the right canary shape: real
+  synthesize, real fallback, nothing delivered, queue intact.
+- Never resume a digest run whose later siblings already delivered
+  (double-post); never blind-resume after a partial delivery either.
+- A "forfait restant" claim is per-credential-tier: check team-tier records
+  before concluding the platform tier serves the run.
+
 ## 2026-08-19 — the veille came back, and the bot learned to report its own silence
 
 - Status: **resolved** (the 13→18 outage) + hardening shipped

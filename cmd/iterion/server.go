@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -245,6 +246,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		StreamName:          cfg.NATS.Stream,
 		DLQStream:           cfg.NATS.DLQStream,
 		KVBucket:            cfg.NATS.KVBucket,
+		StreamReplicas:      cfg.NATS.StreamReplicas,
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
@@ -326,6 +328,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	})
 
 	sandboxResolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
+	// Bot-var settings reach ${ITERION_X:-default} expansion through the
+	// ir overlay — installed once at boot, shared with the admin PUT's
+	// Invalidate so this replica's own compile-time previews see a
+	// mutation immediately. Precedence: setting > pod env > .bot default.
+	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](stores.botVars, logger.Warn)
+	ir.SetEnvOverlay(func(name string) (string, bool) {
+		rec := botVarsResolver.Get(context.Background())
+		if rec == nil {
+			return "", false
+		}
+		v, ok := rec.Vars[name]
+		return v, ok
+	})
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -396,33 +411,39 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	var pushSubs usernotifywebpush.SubscriptionStore
 	var notifPrefs usernotify.PrefsStore
-	var notifSent usernotify.SentStore
-	var notifiableRuns usernotify.ListNotifiableRuns
+	// The episode-claim store + terminal-run window scan serve BOTH
+	// notification families — user web push (gated on VAPID keys below)
+	// and the operator-alert dispatcher (gated on the alerts webhook URL)
+	// — so they are built whenever the Mongo store is, not only when web
+	// push is on.
+	sentStore := usernotify.NewMongoSentStore(st.DB())
+	if sErr := sentStore.EnsureSchema(rootCtx); sErr != nil {
+		return fmt.Errorf("server: ensure sent notifications schema: %w", sErr)
+	}
+	notifSent := sentStore
+	notifiableRuns := func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
+		refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
+		if lErr != nil {
+			return nil, lErr
+		}
+		out := make([]usernotify.RunRef, 0, len(refs))
+		for _, ref := range refs {
+			out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
+		}
+		return out, nil
+	}
 	if cfg.WebPush.Enabled() {
 		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
 		prefsStore := usernotify.NewMongoPrefsStore(st.DB())
-		sentStore := usernotify.NewMongoSentStore(st.DB())
 		for name, ensure := range map[string]func(context.Context) error{
 			"push subscriptions": subsStore.EnsureSchema,
 			"notification prefs": prefsStore.EnsureSchema,
-			"sent notifications": sentStore.EnsureSchema,
 		} {
 			if sErr := ensure(rootCtx); sErr != nil {
 				return fmt.Errorf("server: ensure %s schema: %w", name, sErr)
 			}
 		}
-		pushSubs, notifPrefs, notifSent = subsStore, prefsStore, sentStore
-		notifiableRuns = func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
-			refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
-			if lErr != nil {
-				return nil, lErr
-			}
-			out := make([]usernotify.RunRef, 0, len(refs))
-			for _, ref := range refs {
-				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
-			}
-			return out, nil
-		}
+		pushSubs, notifPrefs = subsStore, prefsStore
 	}
 
 	// The studio Home "Bots" panel lists first-class bots via /api/examples
@@ -513,6 +534,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PluginSources:          stores.pluginSources,
 		BotSources:             stores.botSources,
 		BotRolesSettings:       stores.botRoles,
+		BotVarsSettings:        stores.botVars,
+		BotVarsResolver:        botVarsResolver,
 		SandboxSettings:        stores.sandboxCfg,
 		SandboxResolver:        sandboxResolver,
 		WebhookConfigs:         stores.webhooks.Configs,
@@ -538,6 +561,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		NotificationPrefs:      notifPrefs,
 		NotificationSent:       notifSent,
 		NotifiableRuns:         notifiableRuns,
+		AlertsWebhookURL:       cfg.Alerts.Webhook.URL,
 		WebPushVAPIDPublicKey:  cfg.WebPush.VAPIDPublicKey,
 		WebPushVAPIDPrivateKey: cfg.WebPush.VAPIDPrivateKey,
 		WebPushSubscriber:      cfg.WebPush.Subscriber,
@@ -617,6 +641,7 @@ type cloudStores struct {
 	usageCapSettings *usagecap.MongoSettingsStore
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
+	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -646,6 +671,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
+		botVars:          platformcfg.NewMongoBotVars(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas

@@ -122,7 +122,7 @@ const (
 	DiagInvalidPermission       DiagCode = "C110" // permission: value not one of off|ask|deny (error)
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
-	DiagGatedCLIBackendSandbox  DiagCode = "C136" // an external-hook backend (grok/kimi) carries a gate but the workflow does not opt out of the sandbox (warning)
+	DiagGatedCLIBackendSandbox  DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
 	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	DiagFileFieldNotHuman       DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)

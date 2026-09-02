@@ -166,8 +166,10 @@ iterion remote api GET /api/teams/<team-id>/oauth/connections
 
 ## Activating the cross-model plan review (one credential, nothing else)
 
-The campaign bots (feature-dev, app-dev, branch-improve-loop,
-whole-improve-loop) carry an opt-in **peer-reviewed plan phase**
+The plan-phase campaign bots (feature-dev, app-dev,
+branch-improve-loop, whole-improve-loop, feature-gap-fill,
+test-coverage, e2e-coverage — the authoritative list is
+`bots/plan_phase_test.go`) carry an opt-in **peer-reviewed plan phase**
 ([ADR-091](adr/091-fallback-skip-route-and-plan-peer-review.md)): a
 cross-family reviewer (default `claw` + `openai/gpt-5.6-sol`) critiques
 the plan before the campaign implements. `plan_review: auto` resolves at
@@ -201,7 +203,7 @@ all — the bots' `auto` default then reads as off, fail-safe.) Mid-run peer-for
 `--var plan_review_policy=wait|skip` (wait = the run parks
 failed_resumable and the usage-window retry resumes it when the window
 reopens; skip = continue without the review, loudly stamped).
-All four campaign bots default to `skip` — the peer is an optional
+All plan-phase campaign bots default to `skip` — the peer is an optional
 enrichment, and a dead second-family credential must never park a
 campaign (`wait` is the per-run deliberate-spend opt-in). Gotcha:
 the ChatGPT-forfait wire gates models by the codex-cli `version:` header

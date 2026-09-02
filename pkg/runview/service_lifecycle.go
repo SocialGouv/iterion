@@ -261,7 +261,7 @@ func (s *Service) reconcileOrphans() {
 		if r2.Checkpoint != nil {
 			newStatus = store.RunStatusFailedResumable
 		}
-		if err := s.store.UpdateRunStatus(ctx, id, newStatus, ReasonProcessOrphaned); err != nil {
+		if err := s.store.UpdateRunStatusCoded(ctx, id, newStatus, ReasonProcessOrphaned, store.FailureProcessOrphaned); err != nil {
 			s.logger.Warn("runview: reconcile %s: %v", id, err)
 		} else {
 			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
@@ -563,7 +563,7 @@ func (s *Service) markInterrupted(runID string) {
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, reason); err != nil {
+	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, reason, store.FailureInterrupted); err != nil {
 		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
 	}
 }
@@ -612,7 +612,7 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	// entry — either way the studio can offer the resume button.
 	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
-	if err := s.store.UpdateRunStatus(context.Background(), runID, newStatus, reason); err != nil {
+	if err := s.store.UpdateRunStatusCoded(context.Background(), runID, newStatus, reason, store.FailureProcessOrphaned); err != nil {
 		_ = lock.Unlock()
 		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
 	}

@@ -216,6 +216,203 @@ func TestProvision_NoGatingBotLeavesReviewOnSyncAlone(t *testing.T) {
 	}
 }
 
+// operatorGateDisabled must mirror the gating bots' own truthy test exactly:
+// the release tracks "will the bot post a status?". Three truthiness tables
+// exist along this var's path (this predicate, the runtime bool coercion,
+// the bot's publish check) — any explicit pin the bot won't read as truthy
+// leaves it silent, and a silent bot with forced re-review is the
+// deadlock-at-full-cost shape. Absent key = derivation untouched.
+func TestOperatorGateDisabled_MirrorsBotTruthiness(t *testing.T) {
+	if operatorGateDisabled(nil) || operatorGateDisabled(map[string]string{}) {
+		t.Error("absent key must not disable")
+	}
+	for _, v := range []string{"true", "1", "yes", "on", " TRUE ", "On"} {
+		if operatorGateDisabled(map[string]string{"gate_enabled": v}) {
+			t.Errorf("%q affirmatively enables the gate — must not disable", v)
+		}
+	}
+	// Everything else leaves the bot silent (coerced false, or passed raw
+	// and failing the bot's truthy test) — the sync must be released.
+	for _, v := range []string{"false", "0", "no", "off", "", "banana"} {
+		if !operatorGateDisabled(map[string]string{"gate_enabled": v}) {
+			t.Errorf("%q leaves the bot silent — the forced sync must be released", v)
+		}
+	}
+}
+
+// An operator pin of gate_enabled=false turns the review bot advisory-only —
+// no commit status is ever posted — so the statuses-scope derivation must not
+// force re-review-on-sync: the forced sync exists solely to keep a REQUIRED
+// check alive across pushes. First-review-only + on-demand re-review is the
+// budget posture the pin buys.
+func TestProvision_GateDisabledPinKeepsReviewOnSyncOff(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+		LaunchVars: map[string]string{"gate_enabled": "false"},
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	if cfg.ReviewOnSync {
+		t.Error("gate_enabled=false pinned → no status to keep alive → re-review on sync must stay off")
+	}
+
+	// Removing the pin restores the derivation: the gate is back, so the
+	// status must follow the head again.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+		LaunchVars: map[string]string{},
+	}); err != nil {
+		t.Fatalf("re-provision without pin: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config 2: %v", err)
+	}
+	if !after.ReviewOnSync {
+		t.Error("pin removed → the gating derivation must force re-review on sync back on")
+	}
+}
+
+// The production shape of the same decision: the repo is ALREADY provisioned
+// with the forced sync, and the operator disables the gate afterwards. The
+// update reaches the short-circuit path, so the backfill is what must release
+// the sync — an explicit pin is a decision in both directions.
+func TestProvision_GateDisabledPinReleasesExistingReviewOnSync(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if cfg, err := o.Webhooks.Get(ctx, res.WebhookID); err != nil || !cfg.ReviewOnSync {
+		t.Fatalf("precondition: gating bot forces sync on (err=%v)", err)
+	}
+
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+		LaunchVars: map[string]string{"gate_enabled": "false"},
+	}); err != nil {
+		t.Fatalf("re-provision with gate pin off: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	if after.ReviewOnSync {
+		t.Error("operator disabled the gate — the forced re-review on sync must be released with it")
+	}
+	if after.OperatorLaunchVars["gate_enabled"] != "false" {
+		t.Errorf("the pin itself must land on the config, got %v", after.OperatorLaunchVars)
+	}
+}
+
+// Rf2f99f: an operator's EXPLICIT review_on_sync choice (pinned by the
+// webhook API) is never silently replaced by the gating derivation — in
+// either direction. Advisory-reviews-on-every-push-without-a-gate
+// (sync=true pinned + gate_enabled=false) survives a re-provision, and a
+// pinned sync=false on a gating repo is not silently re-forced on.
+func TestProvision_PinnedReviewOnSyncIsNeverRewritten(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+		LaunchVars: map[string]string{"gate_enabled": "false"},
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	// The operator explicitly turns per-push advisory reviews ON, gate off —
+	// the shape the webhook PATCH produces (value + pin).
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	cfg.ReviewOnSync = true
+	cfg.ReviewOnSyncPinned = true
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Short-circuit re-provision (settings save) must not release it…
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+		LaunchVars: map[string]string{"gate_enabled": "false"},
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ReviewOnSync || !after.ReviewOnSyncPinned {
+		t.Fatalf("pinned sync=true silently released: %+v", after)
+	}
+
+	// …and a full-path re-provision (bot-set change) must carry it over too.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot", "dep-guard"}, ActorID: "u1",
+		LaunchVars: map[string]string{"gate_enabled": "false"},
+	}); err != nil {
+		t.Fatalf("full re-provision: %v", err)
+	}
+	after2, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after2.ReviewOnSync || !after2.ReviewOnSyncPinned {
+		t.Fatalf("pinned sync=true lost on the full provision path: %+v", after2)
+	}
+
+	// The mirror direction: a pinned sync=false on a GATING repo (no gate
+	// pin) must not be silently re-forced on by the derivation.
+	cfg2, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2.ReviewOnSync = false
+	cfg2.ReviewOnSyncPinned = true
+	if err := o.Webhooks.Update(ctx, cfg2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot", "dep-guard"}, ActorID: "u1",
+		LaunchVars: map[string]string{},
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	after3, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after3.ReviewOnSync {
+		t.Fatal("pinned sync=false silently re-forced on — the historic 'must not have it re-enabled under them' hole")
+	}
+}
+
 // Provision rebuilds the webhook config as a whole literal, so anything an
 // operator set only on the config is wiped by the next enable. That drift
 // already bit review_on_sync and launch_vars; overlap is the third field of

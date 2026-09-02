@@ -475,7 +475,7 @@ workflow — so adding a language or harness style needs no DSL edit.
   tests). Endy's axis is the FEATURE-level e2e completeness of the
   whole application, made checkable by the matrix.
 - **Triggers**: e2e, e2e-coverage, end-to-end, coverage-matrix, e2e-tests, regression-net, feature-coverage
-- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
 - **Path**: `bots/e2e-coverage/main.bot`
 
 ### `evolve` — Evoly
@@ -563,7 +563,7 @@ without re-architecting what already works.
   bot, OR manually via --var gap_spec='<spec>' when an operator wants to
   close a specific gap on a feature. Prefer feature_dev when the work is
   greenfield (no existing partial implementation to preserve).
-- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
 
 ### `feed-watch` — Vigie
@@ -583,7 +583,9 @@ web_fetches the top articles to ground the takeaways, semantically
 dedups against the previously sent digests, ranks by importance and
 writes ONE chat-ready markdown message; a deterministic tool POSTs it
 to the configured Mattermost/Slack incoming webhooks and clears
-exactly the digested items from the queue.
+exactly the digested items from the queue. A digest above a sink's
+per-message budget is delivered as consecutive numbered messages, so
+the channel gets all of it rather than a cut version.
 
 Everything workspace-specific (categories, feeds, editorial guidance
 and language, webhook sinks, cadences) lives in the target repo's
@@ -607,7 +609,7 @@ schemes by default (opt into internal feeds with
   synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
   → webhook scenario one-for-one. Not for one-shot research questions
   (use a plain research bot) and it never edits code.
-- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `silence_alert_days` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `max_message_chars` (int), `max_messages` (int), `mode` (string), `scratch_dir` (string), `silence_alert_days` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
 
 ### `golden-master` — Goldy
@@ -736,7 +738,7 @@ redefine what judges it, because a golden master dies by re-baselining. The
   there. Do NOT use it to decide WHAT to modernise: the programme is a human
   decision recorded in the contract, and the lot DAG in particular encodes
   compatibility knowledge that cannot be re-derived from the tree.
-- **Vars**: `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/modernize/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
@@ -1136,7 +1138,7 @@ not in the workflow — so adding a language needs no DSL edit.
   feature-dev — though feature-dev already writes tests for the feature
   it ships). Testy's job is coverage of code that already exists.
 - **Triggers**: test, tests, testing, coverage, test-coverage, unit-test, add-tests, augment-tests
-- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
 - **Path**: `bots/test-coverage/main.bot`
 
 ### `ultra11y` — Ally

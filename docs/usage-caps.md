@@ -108,7 +108,28 @@ Semantics that stay put:
 - **Verification without DB access.** `/healthz` (and `/readyz`) echo the
   EFFECTIVE policy plus a `usage_cap_source` marker (`env`, `db` or
   `db+env`) — curl it after a change and watch the new number appear within
-  the propagation bound.
+  the propagation bound. This is also the FIRST diagnostic for "a scheduled
+  bot posted nothing this morning": every LLM-bearing run failing on
+  `usage cap: <window> at N% ≥ M%` while zero-LLM runs (collectors) pass is
+  the cap's signature, and `/healthz` names the ceiling in one curl. Grep
+  the `usage cap:` substring, NOT `rate_limited`: a workflow whose every
+  path reaches a model is refused before its first node by the runner
+  pre-flight and carries the bare reason (no `rate_limited` prefix, no node
+  id), while a workflow with a model-free path is let through and stops
+  mid-run with `rate_limited (<backend>): usage cap: …`. Measured on the
+  2026-08-31 Vigie outage, where a 70% DB record was the whole story — and
+  where the morning's first signal, the 04:00 docs-refresh run, was the
+  pre-flight shape.
+- **Don't wait for the silent morning: wire the operator webhook.** With
+  `ITERION_ALERTS_WEBHOOK_URL` set on the server deployment, every run that
+  parks `failed_resumable` (usage cap, provider window — with the armed
+  retry's reset ETA) or fails hard produces ONE message on the webhook
+  (Mattermost/Slack `{"text": ...}` shape), deduped across replicas and
+  backed by a 2-minute reconciliation sweep, with a `/runs/<id>` deep link.
+  The five silent Monday digests would have been five messages at 06:0x
+  instead of a manual discovery hours later. (This is the cloud
+  `alert.OpsDispatcher`; the same env var also feeds the in-process alert
+  Manager for local runs.)
 - **Settings reads fail toward the last-known value** (env defaults before
   the first successful read), retried once per TTL window: a settings-store
   blip changes nothing abruptly in either direction.
@@ -271,5 +292,9 @@ kubectl -n iterion annotate scaledobject iterion-runner \
   autoscaling.keda.sh/paused-replicas-                  # thaw
 ```
 
-Cancel in-flight runs *before* freezing: a pod killed mid-run ends
-`failed` (not resumable), where a cancel checkpoints it.
+In-flight runs survive the freeze: a scaled-down pod SIGTERMs into the
+lame-duck drain (`ErrRunInterrupted` → `failed_resumable`, auto-resumed
+when capacity returns), and even a SIGKILL leaves the run to the orphan
+sweeper, which flips it to `failed_resumable` within minutes. Cancel
+first only when you do NOT want the run to come back after the thaw —
+a cancel is terminal until an explicit resume.

@@ -197,6 +197,9 @@ Backend rules:
   boundary with an empty `tools:` list, is refused (C176); and a claw
   route whose declared tools claw cannot resolve is refused too (C135 —
   the list is inert on a CLI primary but load-bearing on the route).
+  A sandboxed claw route CAN serve a gated node when the policy is
+  deny-shaped (the policy crosses the sandbox IPC); only an ask-capable
+  policy (mode `ask`, or any `ask:` rule) is refused there — C136 warns.
   See ADR-087.
 
 Session-mode notes:

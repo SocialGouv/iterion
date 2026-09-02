@@ -115,8 +115,14 @@ type RunStore interface {
 	SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error
 	ClearSubbotChild(ctx context.Context, parentRunID, key string) error
 
-	// Status & checkpoint
+	// Status & checkpoint. The Coded variants carry the typed
+	// FailureCode (ADR-095) in the SAME write as the status — never a
+	// separate read-modify-write; the plain forms delegate with an
+	// empty (unknown) code. Every transition to a non-failure status
+	// clears the code, which is the invariant that keeps a resumed run
+	// from lying about a past failure.
 	UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error
+	UpdateRunStatusCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode) error
 	// UpdateRunStatusIf is a compare-and-set on the status field: the
 	// write only lands when the current status is in expectedFrom.
 	// Returns changed=true when the write applied, false when the
@@ -124,13 +130,45 @@ type RunStore interface {
 	// firing concurrently with a Resume republish). Used by the
 	// cloud publisher to avoid stomping on raced state transitions.
 	UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (changed bool, err error)
+	UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (changed bool, err error)
+	// UpdateRunOutcome is the typed status transition: UpdateRunStatusIf
+	// plus the outcome metadata (failure classification + continuation
+	// ownership) persisted atomically with it. nil expectedFrom makes
+	// the write unconditional. This is the RUNNER-side choke point that
+	// stops the class of "the run document says failed_resumable and
+	// nothing else" — a consumer reads WHY and WHO owns the continuation
+	// from the document, not from event-prose archaeology. Engine paths
+	// keep the code-only writers below (the engine cannot know the queue
+	// topology, so it never states a continuation — F3 of the
+	// adversarial gate).
+	UpdateRunOutcome(ctx context.Context, id string, status RunStatus, runErr string, meta RunOutcomeMeta, expectedFrom []RunStatus) (changed bool, err error)
+	// ClaimMerge is the compare-and-set entry to the merge state
+	// machine: it flips MergeStatus to "merging" and stamps
+	// MergeClaimedAt, iff the current status is claimable — "",
+	// "pending", "failed", "skipped" or "conflicted", or a "merging"
+	// whose MergeClaimedAt is before staleBefore or unset (the previous
+	// claimant crashed; a wedged claim must not block the run forever).
+	// Returns the status the run held before the claim so an aborted
+	// attempt can restore it, plus the claim token (the exact
+	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
+	// every exit so a stolen claim cannot consume its successor's), and
+	// claimed=false (with the current status) when someone else holds a
+	// fresh claim or the run is already merged.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
+	// UpdateRunMergeIf is the compare-and-set exit from the merge state
+	// machine: it persists upd's merge fields iff the current
+	// MergeStatus is in expectedFrom (empty string matches an unset
+	// field). Returns changed=false when the state drifted — the caller
+	// lost its claim or raced another writer — in which case nothing
+	// was written.
+	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
-	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
 	// FailRunTerminal is FailRunResumable's terminal counterpart: status
 	// failed (no auto-resume) but the checkpoint is kept so the run stays
 	// rewindable on an explicit operator action.
-	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
 
 	// Events (append-only, monotonic seq per run)
 	AppendEvent(ctx context.Context, runID string, evt Event) (*Event, error)

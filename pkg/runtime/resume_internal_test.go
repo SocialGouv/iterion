@@ -336,10 +336,12 @@ func TestCurrentLoopIterationPath_FallbackToEdgeMembership(t *testing.T) {
 // to `running`, and the claim helpers mutate their OWN copy of the record
 // (UpdateRunStatusIf → loadRunRaw), never the caller's. Saving that stale
 // in-memory snapshot verbatim silently undid the claim: the run persisted
-// as cancelled/paused_* for its whole execution, the Checkpoint and
-// FinishedAt the `running` transition deliberately clears came back, and
-// the duplicate-resume guard fell — a second concurrent resume would find
-// a resumable status, win its CAS, and spawn a second engine on one run id.
+// as cancelled/paused_* for its whole execution, the FinishedAt the
+// `running` transition deliberately clears came back, and the
+// duplicate-resume guard fell — a second concurrent resume would find a
+// resumable status, win its CAS, and spawn a second engine on one run id.
+// (The Checkpoint survives every transition — ADR-095 §5 — so it is not
+// part of that argument; the test asserts the restamp preserves it too.)
 func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 	ctx := context.Background()
 	st := tmpStore(t)
@@ -376,8 +378,8 @@ func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 			"letting a second concurrent resume claim the same run",
 			got.Status, store.RunStatusRunning)
 	}
-	if got.Checkpoint != nil {
-		t.Errorf("checkpoint resurrected (%+v) — the running transition clears it", got.Checkpoint)
+	if got.Checkpoint == nil || got.Checkpoint.NodeID != "implement" {
+		t.Errorf("checkpoint lost across the restamp (%+v) — the running claim PRESERVES the resume point, and the restamp must not drop it either", got.Checkpoint)
 	}
 	if got.FinishedAt != nil {
 		t.Errorf("finished_at resurrected (%v) — the studio duration ticker freezes on it", got.FinishedAt)
@@ -388,5 +390,223 @@ func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 	}
 	if got.WorkflowHash != "hash-new" {
 		t.Errorf("workflow_hash = %q, want %q", got.WorkflowHash, "hash-new")
+	}
+}
+
+// The pause pointer is consumed by the resume that uses it: right
+// after resumeFromPause's claim, a checkpoint write clearing the
+// interaction evidence must land — since the checkpoint survives the
+// running claim (ADR-095), leaving a stale InteractionID would route a
+// LATER park's resume back into the pause path and overwrite the
+// operator's answers with empty ones (silently crossing the human
+// gate). The oracle is POSITIONAL — the FIRST checkpoint write after
+// the claim must be the consumption itself: an "any write with an empty
+// pointer" oracle is satisfied by every ordinary boundary write
+// (buildCheckpoint never sets InteractionID), so it goes green the
+// moment the fixture grows a downstream node, fix present or not. The
+// fixture deliberately HAS one (gate → calc → end) to keep the oracle
+// honest against that failure mode.
+func TestResumeFromPauseConsumesThePausePointer(t *testing.T) {
+	base := tmpStore(t)
+	spy := &checkpointSpyStore{RunStore: base}
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-consume", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-consume", cp); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{store: spy, workflow: &ir.Workflow{Name: "wf", Nodes: map[string]ir.Node{
+		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	run, err := base.LoadRun(ctx, "run-consume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rerr := e.resumeFromPause(ctx, run, map[string]any{"approve": "YES"}); rerr != nil {
+		t.Logf("resumeFromPause returned: %v", rerr)
+	}
+	if len(spy.ops) < 2 || spy.ops[0] != "claim:running" {
+		t.Fatalf("op sequence %v — the resume must CLAIM (CAS to running) before anything else, or a second concurrent resume spawns a duplicate engine", spy.ops)
+	}
+	if len(spy.writes) == 0 {
+		t.Fatal("no checkpoint write at all")
+	}
+	w := spy.writes[0]
+	if w.NodeID != "gate" || w.InteractionID != "" || len(w.InteractionQuestions) != 0 {
+		t.Fatalf("first checkpoint write after the claim is %+v; want the gate checkpoint with the pause pointer cleared — a park before the consumption would replay interaction I1 and overwrite the operator's answers", w)
+	}
+	if spy.ops[1] != "checkpoint:gate:interaction=" {
+		t.Fatalf("op sequence %v — the consumption must be the claim's immediate successor", spy.ops)
+	}
+}
+
+// Same contract, applied to the OTHER resume path out of a human pause:
+// the review gate. resumeFromPause returns into resumeReviewGate before
+// the single-shot machinery, so its claim must consume the pointer too —
+// the shared claimForResume helper is what holds both paths to it.
+func TestReviewGateConsumesThePausePointer(t *testing.T) {
+	base := tmpStore(t)
+	spy := &checkpointSpyStore{RunStore: base}
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-review", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-review", cp); err != nil {
+		t.Fatal(err)
+	}
+	hn := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, MaxTurns: 3}
+	hn.Interaction = ir.InteractionReview
+	e := &Engine{store: spy, workflow: &ir.Workflow{Name: "wf", Nodes: map[string]ir.Node{
+		"gate": hn,
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	run, err := base.LoadRun(ctx, "run-review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rerr := e.resumeFromPause(ctx, run, map[string]any{
+		"__review_action": "request_changes",
+	}); rerr != nil {
+		t.Logf("resumeFromPause returned: %v", rerr)
+	}
+	if len(spy.ops) < 2 || spy.ops[0] != "claim:running" {
+		t.Fatalf("op sequence %v — the review-gate resume must CLAIM before anything else", spy.ops)
+	}
+	if len(spy.writes) == 0 {
+		t.Fatal("no checkpoint write at all")
+	}
+	w := spy.writes[0]
+	if w.NodeID != "gate" || w.InteractionID != "" || len(w.InteractionQuestions) != 0 {
+		t.Fatalf("first checkpoint write after the review-gate claim is %+v; want the gate checkpoint with the pause pointer cleared — a status-only park in that window leaves interaction I1 live, and Resume's queued router sends the re-entry straight back into the review dialogue", w)
+	}
+}
+
+// checkpointSpyStore records every SaveCheckpoint payload and every
+// running-claim CAS, in one ordered op log — the consumption canaries
+// assert the SEQUENCE (claim first, consumption second), guarding the
+// choke point on both its promises: no second engine on the run, and
+// no live pointer left behind it.
+type checkpointSpyStore struct {
+	store.RunStore
+	writes []store.Checkpoint
+	ops    []string
+}
+
+func (s *checkpointSpyStore) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
+	if cp != nil {
+		s.writes = append(s.writes, *cp)
+		s.ops = append(s.ops, "checkpoint:"+cp.NodeID+":interaction="+cp.InteractionID)
+	}
+	return s.RunStore.SaveCheckpoint(ctx, id, cp)
+}
+
+func (s *checkpointSpyStore) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, runErr string, expectedFrom []store.RunStatus) (bool, error) {
+	if status == store.RunStatusRunning {
+		s.ops = append(s.ops, "claim:running")
+	}
+	return s.RunStore.UpdateRunStatusIf(ctx, id, status, runErr, expectedFrom)
+}
+
+// The pause pointer that NO resume consumes: cancelling a run parked on
+// a human gate is a status-only flip, and since a transition preserves
+// the checkpoint (ADR-095 §5) the pointer used to survive onto the
+// cancelled run. On cloud, SubmitResume CASes cancelled → queued with no
+// answers (RequiresResumeAnswers is false for cancelled, so the UI shows
+// no form), and Resume's queued router — which arbitrates on pointer
+// presence alone — sent it into resumeFromPause: the gate was crossed
+// with an empty answer, silently. The store's transition normalization
+// (CarriesPausePointer) now consumes the pointer at the cancel, so the
+// queued router routes to resumeFromFailure and the gate re-asks.
+func TestCancelledPausePointerDoesNotCrossTheGateOnCloudResume(t *testing.T) {
+	base := tmpStore(t)
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-cloudgate", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-cloudgate", cp); err != nil {
+		t.Fatal(err)
+	}
+	// Operator cancel: exactly the status-only flip CancelInactive performs.
+	if err := base.UpdateRunStatus(ctx, "run-cloudgate", store.RunStatusCancelled, "cancelled by operator"); err != nil {
+		t.Fatal(err)
+	}
+	// Cloud resume: the publisher CASes cancelled → queued BEFORE a runner
+	// claims the message (SubmitResume), and the runner calls Resume with
+	// the message's answers — empty for a cancelled run.
+	if ok, err := base.UpdateRunStatusIf(ctx, "run-cloudgate", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusCancelled}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	e := &Engine{store: base, workflow: &ir.Workflow{Name: "wf", Entry: "gate", Nodes: map[string]ir.Node{
+		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	if rerr := e.Resume(ctx, "run-cloudgate", nil); rerr != nil {
+		t.Logf("Resume returned: %v", rerr)
+	}
+	after, err := base.LoadRun(ctx, "run-cloudgate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status == store.RunStatusFinished {
+		t.Fatalf("the human gate was CROSSED with an empty answer: cancelled run resumed on cloud went straight to finished (outputs gate=%v)", after.Checkpoint.Outputs["gate"])
+	}
+	if after.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("status = %q, want paused_waiting_human — the resumed gate must re-ask, not silently pass", after.Status)
+	}
+}
+
+// The POSITIVE half of CarriesPausePointer — queued is in the predicate
+// so a cloud resume of a HUMAN pause still routes into the answers path
+// (the operator's answers ride the queue message). If the hop stopped
+// preserving the pointer, this resume would silently re-ask instead of
+// recording them. Twin of the negative canary above; the oracle is the
+// RECORDED ANSWER, not just the status.
+func TestQueuedHopRecordsTheOperatorsAnswers(t *testing.T) {
+	base := tmpStore(t)
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-queuedgate", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-queuedgate", cp); err != nil {
+		t.Fatal(err)
+	}
+	// SubmitResume: paused → queued before a runner claims the message.
+	if ok, err := base.UpdateRunStatusIf(ctx, "run-queuedgate", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	e := &Engine{store: base, workflow: &ir.Workflow{Name: "wf", Entry: "gate", Nodes: map[string]ir.Node{
+		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	// The runner's Resume with the message's answers.
+	if rerr := e.Resume(ctx, "run-queuedgate", map[string]any{"approve": "YES"}); rerr != nil {
+		t.Logf("Resume returned: %v", rerr)
+	}
+	after, err := base.LoadRun(ctx, "run-queuedgate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("status=%s outputs[gate]=%v", after.Status, after.Checkpoint.Outputs["gate"])
+	if after.Status == store.RunStatusPausedWaitingHuman {
+		t.Fatalf("the cloud resume of a human pause RE-ASKED instead of recording the answers: status=%s", after.Status)
+	}
+	if got := after.Checkpoint.Outputs["gate"]; got == nil || got["approve"] != "YES" {
+		t.Fatalf("the operator's answer was not recorded on the gate output: %v", got)
 	}
 }

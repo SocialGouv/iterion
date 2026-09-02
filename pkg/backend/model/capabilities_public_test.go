@@ -4,20 +4,15 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
-// withGlobalSpecs swaps the process-wide registry for the duration of a test.
-func withGlobalSpecs(t *testing.T, r *specRegistry) {
-	t.Helper()
-	old := specs
-	specs = r
-	t.Cleanup(func() { specs = old })
-}
-
 func TestResolveCapabilities_CuratedSourceWhenAggregatorEmpty(t *testing.T) {
-	// Enabled registry but with no fetched specs → curated must be the source.
-	withGlobalSpecs(t, newTestRegistry(t, "http://127.0.0.1:0"))
+	// Enabled registry but with no specs → curated must be the source.
+	seedSpecs(t, nil)
 
 	rc := ResolveCapabilities("anthropic", "glm-5.2")
 	if rc.Source != SourceCurated {
@@ -35,18 +30,10 @@ func TestResolveCapabilities_CuratedSourceWhenAggregatorEmpty(t *testing.T) {
 }
 
 func TestResolveCapabilities_AggregatorSourceWhenFetched(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
-	}))
-	defer srv.Close()
+	seedSpecs(t, map[string]modelspecs.Spec{
+		"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutputTokens: 64000, InputCostPerM: 3, OutputCostPerM: 15},
+	})
 
-	r := newTestRegistry(t, srv.URL)
-	if err := r.refresh(context.Background()); err != nil {
-		t.Fatalf("refresh: %v", err)
-	}
-	withGlobalSpecs(t, r)
-
-	// claude-sonnet-4-6 is in the fixture → aggregator-sourced, 1M context.
 	rc := ResolveCapabilities("anthropic", "claude-sonnet-4-6")
 	if rc.Source != SourceAggregator {
 		t.Errorf("Source = %q, want %q", rc.Source, SourceAggregator)
@@ -63,9 +50,7 @@ func TestResolveCapabilities_AggregatorSourceWhenFetched(t *testing.T) {
 }
 
 func TestResolveCapabilities_DisabledRegistryIsCurated(t *testing.T) {
-	r := newTestRegistry(t, "http://127.0.0.1:0")
-	r.enabled = false
-	withGlobalSpecs(t, r)
+	t.Cleanup(modelspecs.SetDefault(modelspecs.New(modelspecs.Options{Disabled: true})))
 
 	rc := ResolveCapabilities("anthropic", "claude-sonnet-4-6")
 	if rc.Source != SourceCurated {
@@ -90,11 +75,15 @@ func TestResolveSpec_MalformedSpec(t *testing.T) {
 
 func TestRefreshModelSpecs_UpdatesGlobalRegistry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
+		_, _ = w.Write([]byte(`{"anthropic":{"models":{"claude-sonnet-4-6":{"limit":{"context":1000000,"output":64000},"cost":{"input":3,"output":15}}}}}`))
 	}))
 	defer srv.Close()
 
-	withGlobalSpecs(t, newTestRegistry(t, srv.URL))
+	t.Cleanup(modelspecs.SetDefault(modelspecs.New(modelspecs.Options{
+		URL:         srv.URL,
+		CachePath:   filepath.Join(t.TempDir(), "model-specs-cache.json"),
+		NoAutoFetch: true,
+	})))
 
 	// Before refresh: nothing fetched → curated source.
 	if got := ResolveCapabilities("anthropic", "claude-sonnet-4-6").Source; got != SourceCurated {
@@ -118,5 +107,26 @@ func TestKnownModelSpecs_AllParseable(t *testing.T) {
 		if _, _, err := ParseModelSpec(spec); err != nil {
 			t.Errorf("KnownModelSpecs entry %q does not parse: %v", spec, err)
 		}
+	}
+}
+
+// Max output reaches the operator-facing view only through the aggregator —
+// there is no curated table of completion caps — so the two states worth
+// pinning are "the aggregator knows it" and "nothing does".
+func TestResolveCapabilities_MaxOutputTokens(t *testing.T) {
+	seedSpecs(t, map[string]modelspecs.Spec{
+		"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, MaxOutputTokens: 64000},
+	})
+
+	rc := ResolveCapabilities("anthropic", "claude-sonnet-4-6")
+	if rc.MaxOutputTokens != 64000 {
+		t.Errorf("MaxOutputTokens = %d, want 64000 (aggregator)", rc.MaxOutputTokens)
+	}
+
+	// A model the aggregator does not carry reports zero — unknown, never
+	// "uncapped".
+	miss := ResolveCapabilities("openai", "o3")
+	if miss.MaxOutputTokens != 0 {
+		t.Errorf("curated-only MaxOutputTokens = %d, want 0", miss.MaxOutputTokens)
 	}
 }

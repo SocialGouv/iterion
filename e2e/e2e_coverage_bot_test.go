@@ -349,14 +349,15 @@ func TestE2ECoverage_EventTrace(t *testing.T) {
 	}
 }
 
-// TestE2ECoverage_Structural pins the v2 IR shape: campaign entry, the two
-// adaptive agents, the deterministic verify_run tool + gate compute, and the
-// single bounded continuation loop.
+// TestE2ECoverage_Structural pins the v2 IR shape: the plan-phase gate as
+// entry (ADR-091 — it routes straight to campaign when plan_review resolved
+// off), the two adaptive agents, the deterministic verify_run tool + gate
+// compute, and the single bounded continuation loop.
 func TestE2ECoverage_Structural(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 
-	if wf.Entry != "campaign" {
-		t.Errorf("workflow entry = %q, want %q (the inventory is the campaign's own first move)", wf.Entry, "campaign")
+	if wf.Entry != "plan_topology" {
+		t.Errorf("workflow entry = %q, want %q (the plan-phase gate; off → straight to campaign, the inventory as its own first move)", wf.Entry, "plan_topology")
 	}
 	for _, id := range []string{"campaign", "verify_build"} {
 		node, ok := wf.Nodes[id]

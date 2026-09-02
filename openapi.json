@@ -1482,6 +1482,45 @@
         ],
         "type": "object"
       },
+      "RoutingPolicy": {
+        "properties": {
+          "allowed_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "block_when": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "max_relaunches": {
+            "type": "integer"
+          },
+          "merge_into": {
+            "type": "string"
+          },
+          "merge_strategy": {
+            "type": "string"
+          },
+          "success_when": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "success_when"
+        ],
+        "type": "object"
+      },
       "RunBudget": {
         "properties": {
           "max_cost_usd": {
@@ -1531,6 +1570,9 @@
           "checkpoint": {
             "$ref": "#/components/schemas/Checkpoint"
           },
+          "continuation_state": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -1543,6 +1585,9 @@
             "$ref": "#/components/schemas/DeploymentReport"
           },
           "error": {
+            "type": "string"
+          },
+          "failure_code": {
             "type": "string"
           },
           "fallbacks_used": {
@@ -1613,6 +1658,9 @@
             },
             "type": "object"
           },
+          "outcome_seq": {
+            "type": "integer"
+          },
           "parent_node_id": {
             "type": "string"
           },
@@ -1627,6 +1675,9 @@
           },
           "queue_position": {
             "type": "integer"
+          },
+          "routing_policy": {
+            "$ref": "#/components/schemas/RoutingPolicy"
           },
           "shard_count": {
             "type": "integer"
@@ -1797,6 +1848,9 @@
             "type": "string"
           },
           "error": {
+            "type": "string"
+          },
+          "failure_code": {
             "type": "string"
           },
           "file_path": {
@@ -2587,6 +2641,53 @@
         "required": [
           "email",
           "password"
+        ],
+        "type": "object"
+      },
+      "modelCapabilitiesResponse": {
+        "properties": {
+          "context_window": {
+            "type": "integer"
+          },
+          "input_cost_per_m": {
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_cost_per_m": {
+            "type": "number"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "temperature": {
+            "type": "boolean"
+          },
+          "tool_call": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "spec",
+          "model",
+          "source",
+          "context_window",
+          "max_output_tokens",
+          "input_cost_per_m",
+          "output_cost_per_m"
         ],
         "type": "object"
       },
@@ -3657,6 +3758,32 @@
           }
         },
         "summary": "PUT /api/admin/settings/bot-roles",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/settings/bot-vars": {
+      "get": {
+        "operationId": "getAdminSettingsBotVars",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/bot-vars",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsBotVars",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/bot-vars",
         "tags": [
           "admin"
         ]
@@ -5020,6 +5147,27 @@
         "summary": "GET /api/memory/usage",
         "tags": [
           "memory"
+        ]
+      }
+    },
+    "/api/model-capabilities": {
+      "get": {
+        "operationId": "getModelCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelCapabilitiesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/model-capabilities",
+        "tags": [
+          "model-capabilities"
         ]
       }
     },
@@ -6997,6 +7145,30 @@
           "runs"
         ]
       }
+    },
+    "/api/runs/{id}/route-decisions": {
+      "get": {
+        "operationId": "getRunsByIdRouteDecisions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/route-decisions",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/runs/{id}/session-board": {
       "get": {

@@ -82,7 +82,10 @@ defaults regardless of tenant credentials.
    closing the standing `review_mode` queued-run gap. An empty bundle
    (runner env fallback, unknowable at publish) injects nothing.
 
-4. **The plan phase in the four campaign bots.** Opt-in by resolution:
+4. **The plan phase in the campaign bots** (the four originals;
+   extended 2026-08-30 to feature-gap-fill / test-coverage /
+   e2e-coverage — the authoritative list is `bots/plan_phase_test.go`).
+   Opt-in by resolution:
    `plan_topology` (compute) → `plan` (author, claude family, read-only)
    → `plan_review` (peer, `claw` + `openai/gpt-5.6-sol` by default,
    read-only tools, carrying the skip route) → `plan_gate` (compute
@@ -234,12 +237,14 @@ Two of the decisions above met a real run and moved
   foresee) deactivate the route with a warning rather than failing the
   node — a broken fallback gate must not take down the primary it backs
   up. The compile-time vars-only check makes this path exceptional.
-- The four bots' `plan_review` default is `auto`: hosts with one family
+- The plan-phase bots' `plan_review` default is `auto`: hosts with one family
   see no behaviour change; hosts (or cloud tenants) with two get the
   peer-reviewed plan automatically. Activation on the prod instance is
   exactly one credential provisioning
   ([docs/cloud-llm-credentials.md](../cloud-llm-credentials.md)).
-- Extending the phase to the other campaign bots is a bundle change
+- Extending the phase to another campaign bot is a bundle change
   (copy the fragment; add the bot to `bots/plan_phase_test.go`), no
-  engine PR — tracked as follow-on work once the pattern is
-  dogfood-proven.
+  engine PR — done 2026-08-30 for feature-gap-fill / test-coverage /
+  e2e-coverage after the dogfood proof; docs-refresh (loop re-enters
+  through its scan pipeline), modernize (lot system) and adr-cartograph
+  (manifest-driven) were deliberately left out.

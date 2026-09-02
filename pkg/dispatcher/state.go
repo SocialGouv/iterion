@@ -68,6 +68,13 @@ type state struct {
 	// dispatch proceeds, or pruned when the issue leaves the candidate set.
 	// Actor-goroutine-owned; no mutex needed.
 	lastRunHoldWarned map[string]string
+	// degradedWarned dedups the Warn for decision-changing degradations
+	// (run store unreachable, unreadable run record): the FIRST failure of
+	// an episode warns, repeats stay Debug, and recovery clears the key
+	// with an Info. Without it these paths logged Debug only — invisible
+	// at production log levels while they silently changed dispatch
+	// decisions. Actor-goroutine-owned; no mutex needed.
+	degradedWarned map[string]bool
 }
 
 func newState() *state {
@@ -78,6 +85,7 @@ func newState() *state {
 		tombstones:        map[string]struct{}{},
 		dispatchSkips:     map[string]DispatchSkipView{},
 		lastRunHoldWarned: map[string]string{},
+		degradedWarned:    map[string]bool{},
 	}
 }
 
@@ -122,7 +130,14 @@ type runningEntry struct {
 	LastEventAt               time.Time
 	LastEventName             string
 	Attempt                   int
-	Cancel                    context.CancelFunc
+	// Cancel tears down the run's context WITH a cause. The cause is the
+	// contract with the engine's interruption classifier
+	// (runtime.handleContextDoneWithCheckpoint): runtime.ErrRunInterrupted
+	// marks an INTERNAL stop (stall reap, external state change, dispatcher
+	// shutdown) and persists failed_resumable so the ticket auto-resumes;
+	// a nil cause is an OPERATOR cancel and persists terminal `cancelled`,
+	// which the dispatcher never auto-resumes.
+	Cancel context.CancelCauseFunc
 
 	// CancelIssuedAt is non-zero once reconcileStalled has called
 	// Cancel(); subsequent ticks suppress the cancel + warn re-spam

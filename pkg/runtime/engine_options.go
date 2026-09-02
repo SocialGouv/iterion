@@ -312,6 +312,13 @@ func WithModelOverrides(o []store.RunModelOverride) EngineOption {
 	return func(e *Engine) { e.modelOverrides = o }
 }
 
+// WithRoutingPolicy pins the launch-frozen outcome contract on the
+// engine; it is persisted on the run doc at start (same
+// replay-from-the-doc doctrine as the model pins).
+func WithRoutingPolicy(p *store.RoutingPolicy) EngineOption {
+	return func(e *Engine) { e.routingPolicy = p }
+}
+
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
 // instead of causing an error.
