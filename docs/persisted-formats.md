@@ -94,6 +94,19 @@ old binary's `SaveRun` drops the fields entirely (rewinding the episode key
 for its consumers), so a release adding an `outcome_seq` CONSUMER must ship
 only after the fleet fully carries the writer.
 
+`routing_policy` is the run's **launch-frozen outcome contract** — what
+success and blocked mean for THIS run, where a success lands, which actions a
+consumer may take automatically, and the sha256 `hash` pinning the resolved
+contract so a decision can be audited against it. Absent means "no contract",
+and a run with no contract is never routed automatically. It is store-owned
+in the strong sense: the persisted value **wins over whatever a later save
+carries**, and the first-write window stays open only while the run has not
+produced yet (`Status.CountsAgainstLaunchLimit()`). Re-reading a mutable team
+or repo setting at the terminal — or attaching a contract to already-terminal
+work — would decide already-produced work retroactively. Resume replays it
+from the document, like `model_overrides`. Field-by-field reference:
+[outcome-router.md](outcome-router.md#the-contract--routing_policy).
+
 `nodes_served` maps each LLM node's id to the last `(backend, model)` that
 served it (`model` is the provider-reported effective model; `declared_model`
 is what the node asked for). It is the run-record half of making a finished
