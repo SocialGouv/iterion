@@ -107,11 +107,12 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// re-review, only on an OPEN PR (reviewer edits arrive freely on
 	// closed/merged ones). Never when the actor IS the bot: its own
 	// reviewer-write echoing back must not launch a review of itself. The
-	// identity matched is iterionBotLogins — on GitHub/Forgejo that is the
-	// App bot login only (a PAT/OAuth account may be a HUMAN's), and a
-	// GitHub App cannot be a reviewer at all, so on GitHub this lane stays
-	// inert and `/revi` is the on-demand path. The gesture is PROVISIONAL
-	// until the replier gate below the scope filter confirms it (R6a15fe).
+	// identity matched is iterionBotLogins — the connection-derived App bot
+	// login PLUS cfg.ReviewRequestLogins, and on GitHub only the latter can
+	// arm the lane (a GitHub App cannot be a requested reviewer at all; a
+	// PAT/OAuth account may be a HUMAN's, so it is never derived either).
+	// The gesture is PROVISIONAL until the replier gate below the scope
+	// filter confirms it (R6a15fe).
 	reviewRequested := strings.EqualFold(p.State, "open") &&
 		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
 		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin)
@@ -127,9 +128,15 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
 	// — the operator's escape hatch to pause automation on one PR. Placed before
 	// any launch decision so it covers all of them. A human can still trigger a
-	// bot manually via a `/command` — and a review re-request is the same
-	// deliberate gesture, so it is exempt too.
-	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+	// bot manually via a `/command`.
+	//
+	// A review re-request is NOT exempt, unlike a command. The forge emits the
+	// same event for a CODEOWNERS auto-request, which needs no permission from
+	// the requester and carries no field distinguishing it from a click — so
+	// "a re-request is a deliberate human gesture" is not a property this
+	// handler can rely on. And the label's whole purpose is to freeze every
+	// automation on one PR: an operator who set it has to be able to trust it.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 
@@ -188,9 +195,9 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Deliberately AFTER the event/project/author scope filter (R0c3aab):
 	// an out-of-scope delivery must never cost a forge API call, nor be
 	// able to 502 the endpoint. An unauthorized click DEMOTES the gesture —
-	// the delivery then rides whatever automatic lane still admits it, with
-	// the hold label RE-APPLIED (it was provisionally waived under the
-	// gesture's authority) — or is filtered. An authz ERROR demotes too
+	// the delivery then rides whatever automatic lane still admits it, or
+	// is filtered (the hold gate already ran unconditionally above — the
+	// re-request has no exemption to lose). An authz ERROR demotes too
 	// when an automatic lane co-rides the event (R34eb8c — a transient
 	// members-API failure must not strand a merge-gate resync), and 502s
 	// only when the click was the delivery's sole reason (so the forge
@@ -223,9 +230,9 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 				return
 			}
 		}
-		if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
-			return
-		}
+		// No post-demote hold re-check here: the hold gate above runs
+		// unconditionally (the re-request lost its exemption — see the
+		// CODEOWNERS rationale there), so a held PR never reaches this block.
 	}
 
 	// Iterion-bot guard: a PR opened by iterion's OWN forge bot (Doki/Willy/
@@ -275,12 +282,48 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// exclusive by action (review_requested vs synchronize) — the guard pins
 	// the invariant against a forge overloading one action with both.
 	if reviewRequested && !gateResync {
-		// A deliberate re-request must relaunch even on a head the auto-review
-		// already claimed — and again on a second click. The PR's updated_at
-		// salts the key so each click is its own delivery; "rereq|" keeps it
-		// disjoint from the open/resync space. re_review marks the posted
-		// summary like the `/revi` comment path does.
-		idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+		// With the identity in CODEOWNERS — the setup this lane targets — a
+		// single PR open delivers BOTH `opened` and an automatic
+		// `review_requested`, and an unconditionally salted key would launch
+		// a second full review of a head whose review just started (2× spend
+		// per PR, two runs racing on one commit status). The payload cannot
+		// tell that auto-request from a click, but the STATE can. Three-way
+		// choice on the ordinary per-head claim:
+		//   - claimed and still in flight → the request is already being
+		//     served; collapse this delivery onto it (filtered, with the
+		//     reason in the audit row);
+		//   - claimed and finished → the ordinary re-review gesture: salt
+		//     with updated_at so each click is its own delivery, disjoint
+		//     "rereq|" space, and again on a second click;
+		//   - unclaimed → first review of this head: keep the per-head key,
+		//     so a concurrent or late `opened` for the same head dedupes
+		//     against it instead of double-launching (order-independent).
+		// re_review marks the posted summary like the `/revi` comment path.
+		//
+		// Under an explicit `overlap: supersede` the collapse is SKIPPED and
+		// the click salts unconditionally: that policy is the operator saying
+		// "newest request wins", so the launch tail's supersede pass cancels
+		// the stale run and the fresh one replaces it — collapsing would
+		// silently override that choice. The CODEOWNERS double is then
+		// bounded by that policy, not eliminated: an auto-request landing
+		// after the open's launch supersedes it, while a tight concurrent
+		// pair can briefly double-run (the supersede pass only sees
+		// LAUNCHED rows, not one still in its accepted window) — the
+		// pre-existing supersede semantics, not a new exposure.
+		if overlapSupersedes(cfg) {
+			idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+		} else {
+			claimed, inFlight := s.headReviewClaim(ctx, cfg, rules, idemBase)
+			if inFlight {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+					"re-request collapsed — a review of this head is already in flight")
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+			if claimed {
+				idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+			}
+		}
 		extra["re_review"] = "true"
 	}
 

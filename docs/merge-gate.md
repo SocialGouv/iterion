@@ -183,15 +183,20 @@ What the pin disarms, end to end:
   `review_on_sync: false` PATCH on the webhook config (which the next
   provision's derivation would overwrite).
 
-Re-review stays on demand through two gestures, both exempt from the
-hold-label pause (a deliberate manual trigger, like any `/command`):
+Re-review stays on demand through two gestures — with different hold-label
+postures:
 
-- a **`/revi` comment** on the MR/PR;
+- a **`/revi` comment** on the MR/PR — exempt from the hold-label pause, like
+  any `/command`: a comment is unambiguously a deliberate human trigger;
 - the forge-native **"Re-request review" button** on iterion's bot reviewer
-  (see [webhooks.md](webhooks.md#re-request-review)). On GitLab the publish
-  step self-assigns the bot as an MR reviewer after each review precisely so
-  this button exists; each click re-reviews the current head, even twice on
-  the same head.
+  (see [webhooks.md](webhooks.md#re-request-review)) — **vetoed by the hold
+  label**: the forge emits the same event for a CODEOWNERS auto-request,
+  which needs no permission from the requester and carries nothing to tell it
+  from a click, so the lane cannot claim a command's deliberateness (the
+  rationale lives with the lane in webhooks.md). On GitLab the publish step
+  self-assigns the bot as an MR reviewer after each review precisely so this
+  button exists; each click re-reviews the current head, even twice on the
+  same head.
 
 Removing the pin restores the gating posture: the next provision re-derives
 `review_on_sync: true` from the `statuses` scope.

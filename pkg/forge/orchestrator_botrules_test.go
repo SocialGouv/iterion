@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -516,5 +517,119 @@ func TestProvision_NoOpReprovisionBackfillsBotRules(t *testing.T) {
 	}
 	if len(fa.hooks) != hooksBefore {
 		t.Errorf("backfill must not touch the forge hook")
+	}
+}
+
+// A re-provision rebuilds the whole webhook Config, so a field it neither
+// stamps nor carries is reset the next time any bot is toggled on the repo —
+// and the PATCH endpoint that sets these has no ProvisionedBy guard, so they
+// are settable precisely on the managed configs it rebuilds. The armed review
+// identity is one of them: losing it disarms the 🔁 button in silence.
+func TestProvision_ReprovisionKeepsOperatorWebhookSettings(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What an operator sets the documented way (PATCH /webhooks/{id}).
+	cfg.ReviewRequestLogins = []string{"iterion-bot"}
+	cfg.AuthorizedRepliers = []string{"alice"}
+	cfg.MonthlyCallLimit = 500
+	cfg.AutoImplementOnOpen = true
+	cfg.KeyOverrides = map[string]string{"anthropic": "key-1"}
+	cfg.RetryMaxAttempts = 3
+	cfg.RateLimit = webhooks.Rate{Rate: 10, Burst: 200}
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Any later bot change re-provisions the repo.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard", "gate-bot"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(after.ReviewRequestLogins, []string{"iterion-bot"}) {
+		t.Errorf("review_request_logins = %v, want [iterion-bot] — the 🔁 lane silently disarmed", after.ReviewRequestLogins)
+	}
+	if !slices.Equal(after.AuthorizedRepliers, []string{"alice"}) {
+		t.Errorf("authorized_repliers = %v, want [alice]", after.AuthorizedRepliers)
+	}
+	if after.MonthlyCallLimit != 500 || after.RetryMaxAttempts != 3 || !after.AutoImplementOnOpen {
+		t.Errorf("monthly=%d retries=%d auto_implement=%v", after.MonthlyCallLimit, after.RetryMaxAttempts, after.AutoImplementOnOpen)
+	}
+	if after.KeyOverrides["anthropic"] != "key-1" {
+		t.Errorf("key_overrides = %v, want the operator's BYOK pin", after.KeyOverrides)
+	}
+	if after.RateLimit != (webhooks.Rate{Rate: 10, Burst: 200}) {
+		t.Errorf("rate_limit = %+v, want the operator's raise — a reset silently 429s deliveries", after.RateLimit)
+	}
+	// The bot set is what a provision DOES recompute — it must not be frozen.
+	if !after.AllowsBot("gate-bot") {
+		t.Error("the newly enabled bot must be permitted — the carry must not freeze the bot scope")
+	}
+}
+
+// R51dbee: MinReplierRole is merged stricter-of, never overwritten — the
+// provision stamps a manifest-derived floor, but an operator's RAISE is a
+// security control every replier gate reads, and a bot toggle must not
+// silently lower it.
+func TestCarryOperatorWebhookSettings_MinReplierRoleStricterOf(t *testing.T) {
+	// Operator raised the floor above the derived value: the raise survives.
+	cfg := webhooks.Config{MinReplierRole: "developer"}
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{MinReplierRole: "maintainer"})
+	if cfg.MinReplierRole != "maintainer" {
+		t.Fatalf("operator raise lost on re-provision: %q", cfg.MinReplierRole)
+	}
+	// Manifest floor higher than anything the operator set ("" reads as
+	// developer): the floor stands.
+	cfg = webhooks.Config{MinReplierRole: "maintainer"}
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{})
+	if cfg.MinReplierRole != "maintainer" {
+		t.Fatalf("manifest floor must stand over an unset previous: %q", cfg.MinReplierRole)
+	}
+	// Equal ranks ("" == developer): the derivation's value stands unchanged.
+	cfg = webhooks.Config{MinReplierRole: "developer"}
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{})
+	if cfg.MinReplierRole != "developer" {
+		t.Fatalf("equal ranks must keep the derived value: %q", cfg.MinReplierRole)
+	}
+	// R948c68: a never-set prev ("") must NOT discard a manifest's deliberate
+	// sub-developer floor — the gates read "" as developer (rank 3), but the
+	// derivation ranks "" as zero, so "reporter" here was legitimately won.
+	cfg = webhooks.Config{MinReplierRole: "reporter"}
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{})
+	if cfg.MinReplierRole != "reporter" {
+		t.Fatalf("unset prev must defer to a sub-developer derived floor: %q", cfg.MinReplierRole)
+	}
+}
+
+// R8a3f4e: Enabled is the operator's per-repo kill switch — a re-provision
+// (any bot toggle) must not silently re-arm the inbound lanes it paused.
+func TestCarryOperatorWebhookSettings_EnabledKillSwitchSurvives(t *testing.T) {
+	cfg := webhooks.Config{Enabled: true} // what the provision literal stamps
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{Enabled: false})
+	if cfg.Enabled {
+		t.Fatal("a re-provision must not re-arm a webhook the operator disabled")
+	}
+	cfg = webhooks.Config{Enabled: true}
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{Enabled: true})
+	if !cfg.Enabled {
+		t.Fatal("an enabled webhook must stay enabled through re-provision")
 	}
 }

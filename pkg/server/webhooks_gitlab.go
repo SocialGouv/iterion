@@ -132,10 +132,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// gate — the button must too. "The forge gates who may edit reviewers"
 	// is not sufficient: GitLab lets an MR AUTHOR edit their own MR's
 	// reviewers without holding a project role, which would hand a fork
-	// contributor a repeatable, hold-label-exempt trigger. An unauthorized
-	// click simply DEMOTES reviewRequested — the delivery then rides
-	// whatever lane still admits it (resync) or is filtered, with the
-	// hold-label exemption gone along with the gesture's authority.
+	// contributor a repeatable trigger. An unauthorized click simply
+	// DEMOTES reviewRequested — the delivery then rides whatever lane
+	// still admits it (resync) or is filtered. (The hold gate below runs
+	// unconditionally either way: a re-request has no exemption.)
 	if reviewRequested {
 		gate := s.webhookReviewRequestGate
 		if gate == nil {
@@ -169,10 +169,11 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the MR
-	// vetoes the auto-review. Same escape hatch as the GitHub PR path. An
-	// AUTHORIZED re-request is exempt like the `/command` lanes: the label
-	// pauses automation, not a deliberate manual trigger.
-	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+	// vetoes the auto-review. Same escape hatch as the GitHub PR path.
+	// A re-request is NOT exempt: the label freezes every automation on one
+	// MR, and that promise is what makes it usable at all (see the GitHub
+	// lane for the auto-request case the exemption could not tell apart).
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 
