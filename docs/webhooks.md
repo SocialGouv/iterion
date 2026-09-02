@@ -100,6 +100,16 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   flag) deliberately do **not** re-trigger — auto-review on every push was
   found too noisy; cf.
   [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
+  **`review_on_sync` inverts that**, on purpose: it opts a push-to-MR back
+  into review so a required merge-gate status re-evaluates on the new head
+  (`gateResync` at
+  [webhooks_gitlab.go:94](../pkg/server/webhooks_gitlab.go), OR'd into
+  `reviewable` at :109), and never on a closed/merged MR. Provisioning
+  derives `review_on_sync: true` by itself for any repo where a co-enabled
+  bot declares the `statuses` scope, so **on a provisioned gating repo the
+  noisy-push default is off** — see
+  [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand)
+  for turning it back off.
   An `update` whose `changes.reviewers` **(re-)requests a review from
   iterion's own bot account** is the exception — the re-request-review
   button; see <a href="#re-request-review">below</a>.
@@ -503,6 +513,33 @@ across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
 | `gh\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
+| `rereq\|` / `gh\|rereq\|` / `fj\|rereq\|` | the per-head tuple **plus the subject's `updated_at`** | each click of the "Re-request review" button → fresh launch, even on a head the auto-review already claimed |
+
+The `rereq|` space is not taken unconditionally, because one PR open
+delivers **both** `opened` and an automatic CODEOWNERS `review_requested`,
+and salting every re-request would double-launch the reviewer on every PR.
+The choice is three-way against the ordinary per-head claim
+(`headReviewClaim`), and it is the *whole* fan-out that decides:
+
+- **every** matching bot's claim still in flight → collapse the delivery
+  (recorded `filtered`, "a review of this head is already in flight"). One
+  not-live rule — finished, `launch_error`, or never claimed — declines the
+  collapse and the delivery salts instead, so a bot still owed its review
+  gets it;
+- claimed and settled → take the `rereq|` space salted with `updated_at`:
+  the ordinary click, repeatable;
+- never claimed → keep the per-head key, so a reordered `opened` +
+  `review_requested` pair dedupes against itself either way round.
+
+An explicit `overlap: supersede` **skips the collapse entirely** and salts
+unconditionally: that policy is the operator saying "newest request wins",
+so the launch tail cancels the stale run rather than dropping the click. A
+store read error fails toward the salted key — a possible duplicate review,
+never a dead button.
+
+On GitLab the open itself never double-fires, so the `rereq|` key is taken
+whenever a request is not also a gate resync (a push carrying a reviewers
+diff already reviews that head under the per-head key).
 
 Terminal (non-launched) rows — `invalid`, `filtered`, `quota_exceeded`,
 `rate_limited`, `launch_error` — get a **random UUID** as their
@@ -637,12 +674,13 @@ provision, so pin those on the integration
 
 | Key | Default | Meaning |
 |---|---|---|
+| `enabled` | `true` | The **per-repo automation kill switch**. `PATCH {"enabled": false}` makes every inbound delivery answer `410 webhook disabled` before any parse or launch ([pkg/server/middleware_webhook.go:99-102](../pkg/server/middleware_webhook.go)) — the way to pause *all* of a repo's lanes at once without deprovisioning it. It survives a re-provision (see above), so re-enabling a bot on the repo does not silently re-arm what you paused; re-arming is the same `PATCH` that paused it. Distinct from `hold_labels`, which vetoes one PR/issue at a time. |
 | `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
-| `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
+| `operator_launch_vars` | — | **Not settable here** — its only writer is the forge orchestrator, which mirrors the *integration's* `launch_vars` onto the config; set it via the repo-bots API ([forge-integrations.md](forge-integrations.md)). Applied **last** of the var layers (base < `launch_vars` < bot rule vars < these), so it is the repo's own choice and always wins — which is what lets a repo pin a shared `gate_context`. Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. On a **provisioned** webhook the provision re-stamps every enabled bot's own secret name (its manifest `forge.secret`, default `forge_token`) to the connection's managed token — that re-stamp is how a credential rotation lands — and the carry skips any key it stamped. So a pin on one of those names lasts only until the next bot toggle; a pin on any other name is carried forward. |
-| `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
+| `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. *Implementation status: **not settable today** — the four fields are absent from `webhookConfigReq` and from the provision literal, so the read side (`Config.RetryPolicy()`) always sees the zero value and this layer contributes nothing. Needs the setter (native:b74df493); the [cloud schedules](scheduling.md) surface has the same four fields fully wired.* |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
 | `block_fork_prs` | `false` | Persisted but **never read** by any launch path — see [merge-gate.md](merge-gate.md) for what actually guards fork PRs, which differs by provider. |
 
