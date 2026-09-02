@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.88.0](https://github.com/SocialGouv/iterion/compare/v3.87.0...v3.88.0) (2026-09-02)
+
+### Features
+
+* **cli:** a command to stand a credential pool up, and a forfait blob that fails where the file name is known ([#600](https://github.com/SocialGouv/iterion/issues/600)) ([d87ff60](https://github.com/SocialGouv/iterion/commit/d87ff608f6c47d2a3a6e935f415b358a0312739e))
+
+    <details><summary>why</summary>
+
+    Two gaps found while actually setting a pool up on a live instance:
+
+    </details>
+
+### Bug Fixes
+
+* **delegate:** a fair-usage refusal parks the run and feeds the credential skip — not the node's answer ([#610](https://github.com/SocialGouv/iterion/issues/610)) ([dade12e](https://github.com/SocialGouv/iterion/commit/dade12e7626a94ee8af8c7a103470711f5afe27e))
+
+    <details><summary>why</summary>
+
+    Measured 2026-09-02: a provider account under a fair-usage frequency restriction refused EVERY request with a ~330-char relayed 429. The one-liner length cap kept isRateLimitMessage from seeing it, so the refusal text became the agent's output (a campaign node 'finished' with the error as its work_remaining); two modernize lots burned ~7h each overnight and two rites spun full passes on it in minutes.
+
+    </details>
+
 ## [3.87.0](https://github.com/SocialGouv/iterion/compare/v3.86.1...v3.87.0) (2026-09-02)
 
 ### Features
