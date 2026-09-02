@@ -195,9 +195,9 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Deliberately AFTER the event/project/author scope filter (R0c3aab):
 	// an out-of-scope delivery must never cost a forge API call, nor be
 	// able to 502 the endpoint. An unauthorized click DEMOTES the gesture —
-	// the delivery then rides whatever automatic lane still admits it, with
-	// the hold label RE-APPLIED (it was provisionally waived under the
-	// gesture's authority) — or is filtered. An authz ERROR demotes too
+	// the delivery then rides whatever automatic lane still admits it, or
+	// is filtered (the hold gate already ran unconditionally above — the
+	// re-request has no exemption to lose). An authz ERROR demotes too
 	// when an automatic lane co-rides the event (R34eb8c — a transient
 	// members-API failure must not strand a merge-gate resync), and 502s
 	// only when the click was the delivery's sole reason (so the forge
@@ -304,9 +304,12 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		// the click salts unconditionally: that policy is the operator saying
 		// "newest request wins", so the launch tail's supersede pass cancels
 		// the stale run and the fresh one replaces it — collapsing would
-		// silently override that choice. The CODEOWNERS double resolves
-		// there too: the auto-request supersedes the open's run, one
-		// survivor.
+		// silently override that choice. The CODEOWNERS double is then
+		// bounded by that policy, not eliminated: an auto-request landing
+		// after the open's launch supersedes it, while a tight concurrent
+		// pair can briefly double-run (the supersede pass only sees
+		// LAUNCHED rows, not one still in its accepted window) — the
+		// pre-existing supersede semantics, not a new exposure.
 		if overlapSupersedes(cfg) {
 			idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
 		} else {

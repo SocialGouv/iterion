@@ -273,10 +273,11 @@ func prforgeBaseURLFromRef(ref string) (baseURL, refusal string) {
 // GitHub/Forgejo lane — the same replier controls as the `/command` gate
 // (allowlist OR CollaboratorPermission ≥ the webhook's min_replier_role).
 // R6a15fe: the GitLab twin was gated in R7e050f for exactly this reason
-// ("the forge gates reviewer edits" is not an authorization story); this
-// lane is inert today (no connection shape can be a requested reviewer),
-// but wiring kept for a future connection kind must not arrive ungated.
-// Fail-closed on token resolution, like the GitLab twin.
+// ("the forge gates reviewer edits" is not an authorization story) — and
+// the lane is LIVE here: cfg.ReviewRequestLogins arms it with a User
+// identity (GitHub grants "request review" at the Triage role, below the
+// write floor this gate enforces). Fail-closed on token resolution, like
+// the GitLab twin.
 func (s *Server) realWebhookPRForgeReviewRequestGate(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (bool, string, error) {
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil || token == "" {

@@ -1027,6 +1027,9 @@ func managedSecretName(conn *Connection) string {
 // Deliberately NOT carried: the bot scope (BotIDs / WildcardBots /
 // DefaultBotID / BotRules / CommandMap), the allowlists and the routing table —
 // those are what a provision exists to recompute from the enabled bots.
+// Name is provision-owned (provisionedWebhookName) and LaunchVars threads
+// through the RepoIntegration (the operator-settings resolution above), so
+// neither belongs here.
 //
 // INVARIANT: a field listed here must have NO ProvisionRequest input. The
 // carry is an unconditional overwrite placed after the literal, so the day one
@@ -1036,6 +1039,13 @@ func managedSecretName(conn *Connection) string {
 // exceptions, each commented in place: RateLimit (zero means never set) and
 // MinReplierRole (a provision-derived floor merged stricter-of).
 func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
+	// Enabled is the operator's per-repo kill switch (PATCH {"enabled":false}
+	// → every inbound delivery answers 410) — a re-provision must not
+	// silently re-arm the lanes it paused. Safe to carry unconditionally:
+	// this function only runs when a previous config exists, so the
+	// provision literal's Enabled:true still governs first creation, and
+	// re-enabling goes through the same PATCH that paused it.
+	cfg.Enabled = prev.Enabled
 	cfg.ReviewRequestLogins = prev.ReviewRequestLogins
 	cfg.AuthorizedRepliers = prev.AuthorizedRepliers
 	cfg.KeyOverrides = prev.KeyOverrides

@@ -132,10 +132,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// gate — the button must too. "The forge gates who may edit reviewers"
 	// is not sufficient: GitLab lets an MR AUTHOR edit their own MR's
 	// reviewers without holding a project role, which would hand a fork
-	// contributor a repeatable, hold-label-exempt trigger. An unauthorized
-	// click simply DEMOTES reviewRequested — the delivery then rides
-	// whatever lane still admits it (resync) or is filtered, with the
-	// hold-label exemption gone along with the gesture's authority.
+	// contributor a repeatable trigger. An unauthorized click simply
+	// DEMOTES reviewRequested — the delivery then rides whatever lane
+	// still admits it (resync) or is filtered. (The hold gate below runs
+	// unconditionally either way: a re-request has no exemption.)
 	if reviewRequested {
 		gate := s.webhookReviewRequestGate
 		if gate == nil {

@@ -618,3 +618,18 @@ func TestCarryOperatorWebhookSettings_MinReplierRoleStricterOf(t *testing.T) {
 		t.Fatalf("unset prev must defer to a sub-developer derived floor: %q", cfg.MinReplierRole)
 	}
 }
+
+// R8a3f4e: Enabled is the operator's per-repo kill switch — a re-provision
+// (any bot toggle) must not silently re-arm the inbound lanes it paused.
+func TestCarryOperatorWebhookSettings_EnabledKillSwitchSurvives(t *testing.T) {
+	cfg := webhooks.Config{Enabled: true} // what the provision literal stamps
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{Enabled: false})
+	if cfg.Enabled {
+		t.Fatal("a re-provision must not re-arm a webhook the operator disabled")
+	}
+	cfg = webhooks.Config{Enabled: true}
+	carryOperatorWebhookSettings(&cfg, webhooks.Config{Enabled: true})
+	if !cfg.Enabled {
+		t.Fatal("an enabled webhook must stay enabled through re-provision")
+	}
+}
