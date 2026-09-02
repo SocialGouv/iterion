@@ -148,7 +148,8 @@ re-reviews on `/revi`), and calls `forge_reply`. Reuses the
 
 ## Build order
 
-A1 note parsing ✓ · A2 handler + auth (role-gate + allowlist, org-default +
-per-webhook override) + loop-guard · A3 conversation injection · A4
+A1 note parsing ✓ · A2 handler + auth (role-gate + allowlist, manifest
+floor + per-command override + operator PATCH) + loop-guard · A3
+conversation injection · A4
 `forge.reply` capability/tool · A5 `revi-converse` bot. Each is incremental
 on the existing spine; A2 is the core (events + authorization).
