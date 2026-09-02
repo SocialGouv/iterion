@@ -420,6 +420,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/bots/{slug}/fork` | super-admin | Seed the override from the baked bundle (`{from}`) |
 | `GET/PUT` | `/api/admin/settings/bot-roles` | super-admin | Webhook role→bot bindings (merge semantics; `null` clears a field) |
 | `GET/PUT` | `/api/admin/settings/sandbox` | super-admin | `sandbox: auto` fallback image override |
+| `GET/PUT` | `/api/admin/settings/bot-vars` | super-admin | DB-backed overrides for a bot's `${ITERION_X:-default}` expansions (model pins, reasoning effort, tunables) — resolved before the pod env, so a bot is re-tuned without a rollout. CLI: `iterion remote admin vars set NAME VALUE` ([platform-bots.md](platform-bots.md)) |
 
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 [pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
