@@ -163,15 +163,46 @@ by signed state + an agent-binding cookie:
 Both write routes also carry the repo's **operator-owned** settings —
 `launch_vars`, `overlap`, `hold_labels`, `label_allowlist`,
 `auto_fix_on_gate_failure`. They live on the integration because provisioning
-rebuilds the whole webhook config from the manifests: anything set only on that
-config is wiped by the next enable/update — **except** the operator-only
-webhook fields with no integration half (`review_request_logins`,
-`authorized_repliers`, `key_overrides`, rate/monthly limits, …), which the
-rebuild carries forward from the previous config precisely because the webhook
-PATCH is their only storage (see `carryOperatorWebhookSettings`). Omitting a
-field keeps the stored value; an explicit empty list clears it.
-`label_allowlist` is the one that decides which freshly-applied issue label
-dispatches the implementer (empty = any label does).
+rebuilds the whole webhook config from the manifests: anything set only on
+that config is wiped by the next enable/update. Omitting a field keeps the
+stored value; an explicit empty list clears it. `label_allowlist` is the one
+that decides which freshly-applied issue label dispatches the implementer
+(empty = any label does).
+
+The exception is the operator-only webhook fields that have **no integration
+half** — the webhook `PATCH` is their only storage, so
+[`carryOperatorWebhookSettings`](../pkg/forge/orchestrator.go) copies them
+forward from the previous config on every re-provision:
+
+- **carried verbatim** — `enabled` (the per-repo kill switch: a webhook an
+  operator paused answers `410` inbound and **stays paused** through a bot
+  toggle; re-arming is the same `PATCH` that paused it),
+  `review_request_logins`, `authorized_repliers`, `key_overrides`,
+  `monthly_call_limit`, `auto_implement_on_open`, `branch_improve_as_pr`,
+  `block_fork_prs`, the four `retry_*` fields, and the `last_used_at`
+  liveness stamp (without it every re-provision would erase the one field
+  that tells a silent hook from an idle repo);
+- **`rate_limit`** — carried only when the previous config had one: the zero
+  value means "never set", and there the provision's default (`rate 1 /
+  burst 10`) stands;
+- **`min_replier_role`** — merged, **stricter of the two**. The provision
+  stamps a manifest-derived floor (the max requirement across the enabled
+  bots); an operator's *raise* is a security control every replier gate
+  reads, so it survives, while a value *below* the floor does not. An unset
+  previous value defers to the derivation, since a manifest may legitimately
+  land a sub-developer floor;
+- **`secret_overrides`** — merged **per key**, and the provision owns the
+  keys it derives from the enabled bots (re-stamping them is how a token
+  rotation lands). A pin on some *other* name is carried; a pin on an
+  enabled bot's own secret name (default `forge_token`) is replaced.
+
+Everything else on the config is provision-owned and recomputed: `name`, the
+bot set (`bot_ids` / `default_bot_id` / `bot_rules` / `command_map`), the
+`project_` / `event_` / `author_allowlist` triple, and `launch_vars` (the
+manifest union — the integration's own `launch_vars` land in
+`operator_launch_vars`, which is why they are a separate key). The carry runs
+only on the **update** branch, so first creation keeps the provision
+literal's defaults.
 
 ## Provider support
 
