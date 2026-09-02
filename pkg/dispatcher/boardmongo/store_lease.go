@@ -357,8 +357,21 @@ const unleasedClaimHorizon = 24 * time.Hour
 func reclaimableLease(cutoff time.Time) []bson.M {
 	return []bson.M{
 		{"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff}},
-		{"issue.claimleaseuntil": bson.M{"$in": bson.A{time.Time{}, nil}},
-			"issue.updatedat": bson.M{"$lt": cutoff.Add(-unleasedClaimHorizon)}},
+		UnleasedArm(cutoff),
+	}
+}
+
+// UnleasedArm is the second arm on its own: a claim carrying NO lease,
+// untouched for a long time. It is exported because it names a distinct
+// POPULATION, not just half a query — the cards a mixed-fleet write
+// stripped of their lease. Their holder can no longer renew, write, or
+// even release, so nothing recovers them except a sweep that goes
+// looking; and since a rolling deploy is what creates them, that sweep
+// cannot be the one behind the reaper gate, which ships off.
+func UnleasedArm(cutoff time.Time) bson.M {
+	return bson.M{
+		"issue.claimleaseuntil": bson.M{"$in": bson.A{time.Time{}, nil}},
+		"issue.updatedat":       bson.M{"$lt": cutoff.Add(-unleasedClaimHorizon)},
 	}
 }
 

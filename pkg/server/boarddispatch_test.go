@@ -33,6 +33,7 @@ type fakeBoardCoord struct {
 	renews   map[string]int
 	epochs   map[string]int64
 	expired  []boardmongo.ExpiredCandidate
+	unleased []boardmongo.ExpiredCandidate
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -162,6 +163,23 @@ func (f *fakeBoardCoord) ListAbandonedRecoveryClaims(_ context.Context, markerPr
 		}
 		if !strings.HasPrefix(e.Claim.Prev.Marker, markerPrefix) {
 			continue
+		}
+		e.Claim.State = f.states[e.Claim.IssueID]
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// ListUnleasedClaims: the fake honours the contract that matters here —
+// only claims whose candidate carries no lease-derived evidence, which
+// the tests seed explicitly via unleased.
+func (f *fakeBoardCoord) ListUnleasedClaims(_ context.Context, _ time.Time, limit int) ([]boardmongo.ExpiredCandidate, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]boardmongo.ExpiredCandidate, 0, len(f.unleased))
+	for _, e := range f.unleased {
+		if limit > 0 && len(out) >= limit {
+			break
 		}
 		e.Claim.State = f.states[e.Claim.IssueID]
 		out = append(out, e)
@@ -1299,21 +1317,13 @@ func TestCloudReaper_BootSweepFreesAbandonedRecoveryClaims(t *testing.T) {
 			Prev:    tracker.ClaimToken{Marker: dispatcher.ReaperMarker("old-replica"), Epoch: 7},
 		},
 	}}
-	// An ordinary owner's expired claim must be left alone: this sweep
-	// repairs the watchdog's own leftovers, it is not a second watchdog.
-	f.claimed["c-ordinary"] = "some-pod"
-	f.epochs["c-ordinary"] = 2
-	f.states["c-ordinary"] = native.StateInProgress
-	f.expired = append(f.expired, boardmongo.ExpiredCandidate{
-		Tenant: "t1",
-		Claim: tracker.ExpiredClaim{
-			IssueID: "c-ordinary",
-			Prev:    tracker.ClaimToken{Marker: "some-pod", Epoch: 2},
-		},
-	})
-
+	// Gate ON: the reaper is running, so the sweep disposes properly —
+	// releasing bare would take the repair away from the reaper, whose
+	// listing cannot see a cleared claim.
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "on")
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
 		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
 	// Drive run() itself, not the method: what matters is that STARTUP
 	// performs the sweep. Calling the helper directly would pass with the
 	// wiring removed — the whole defect being that nothing invoked it.
@@ -1332,9 +1342,6 @@ func TestCloudReaper_BootSweepFreesAbandonedRecoveryClaims(t *testing.T) {
 	if got := f.states["c-abandoned"]; got != native.StateReady {
 		t.Fatalf("a card whose watchdog crashed must be returned to the pool, not just unclaimed: state=%q, want %q",
 			got, native.StateReady)
-	}
-	if got := f.claimed["c-ordinary"]; got != "some-pod" {
-		t.Fatalf("an ordinary owner's claim is the watchdog's business, not this sweep's: now %q", got)
 	}
 }
 
@@ -1355,6 +1362,7 @@ func TestCloudReaper_BootSweepHonoursTheDisposition(t *testing.T) {
 			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("crashed-replica"), Epoch: 4},
 		},
 	}}
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "on")
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
 		"replica-new", 1, iterlog.Nop())
 	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
@@ -1401,6 +1409,7 @@ func TestCloudReaper_BootSweepAsksForItsOwnPopulation(t *testing.T) {
 		},
 	})
 
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "on")
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
 		"replica-new", 1, iterlog.Nop())
 	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
@@ -1410,5 +1419,96 @@ func TestCloudReaper_BootSweepAsksForItsOwnPopulation(t *testing.T) {
 	if _, held := f.claimed["c-abandoned"]; held {
 		t.Fatal("the abandoned recovery claim sat behind 120 ordinary ones and was never reached — " +
 			"the sweep filtered a capped batch instead of asking for its own population")
+	}
+}
+
+// TestCloudReaper_GateOffSweepNeverFilesTerminal: ITERION_BOARD_CLAIM_REAPER
+// is the lever an operator pulls when they judge the watchdog itself
+// wrong. A boot sweep that keeps applying the decision table with the
+// gate off makes that lever meaningless — and the dispositions it
+// applies are TERMINAL: `done` promotes dependents, after which Reopen
+// refuses. The residue may be dropped; the decision may not be taken.
+func TestCloudReaper_GateOffSweepNeverFilesTerminal(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-gated"] = dispatcher.ReaperMarker("crashed-replica")
+	f.epochs["c-gated"] = 2
+	f.states["c-gated"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-gated", LastRunID: "run-done",
+			Prev: tracker.ClaimToken{Marker: dispatcher.ReaperMarker("crashed-replica"), Epoch: 2},
+		},
+	}}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFinished}, nil
+	}
+
+	d.sweepAbandonedRecoveryClaims(context.Background())
+
+	if got := f.states["c-gated"]; got == native.StateDone || got == native.StateBlocked {
+		t.Fatalf("with the watchdog gated off the sweep filed the card TERMINALLY (%q) — the rollback lever "+
+			"must stop the decisions, and this one promotes dependents and cannot be reopened", got)
+	}
+	if _, held := f.claimed["c-gated"]; held {
+		t.Fatalf("the residue must still be dropped: card is held by %q", f.claimed["c-gated"])
+	}
+	// And an ordinary dead owner's claim is the WATCHDOG's business, not
+	// this sweep's: the sweep exists to remove what a watchdog left, and
+	// with the gate off nothing else may touch a card.
+	f.claimed["c-ordinary"] = "some-pod"
+	f.epochs["c-ordinary"] = 2
+	f.states["c-ordinary"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-ordinary",
+			Prev:    tracker.ClaimToken{Marker: "some-pod", Epoch: 2},
+		},
+	}}
+	d.sweepAbandonedRecoveryClaims(context.Background())
+	if got := f.claimed["c-ordinary"]; got != "some-pod" {
+		t.Fatalf("an ordinary owner's claim is the watchdog's business, not this sweep's: now %q", got)
+	}
+}
+
+// TestCloudReaper_BootSweepFreesUnleasedClaims: the second population a
+// disabled reaper abandons. A mixed-fleet write strips a LIVE claim of
+// its lease and its fence; from then on the holder cannot renew, cannot
+// write, and cannot even release its own card, and no listing reaches it
+// except this sweep. A rolling deploy is what creates that state, so the
+// repair cannot sit behind the gate — which ships off during exactly the
+// release that introduces the fields.
+func TestCloudReaper_BootSweepFreesUnleasedClaims(t *testing.T) {
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	f := newFakeBoardCoord()
+	f.claimed["c-stripped"] = "podA-1"
+	f.epochs["c-stripped"] = 0 // the fence field went with the lease
+	f.states["c-stripped"] = native.StateInProgress
+	f.unleased = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-stripped", State: native.StateInProgress,
+			Prev: tracker.ClaimToken{Marker: "podA-1", Epoch: 0},
+		},
+	}}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) { return nil, store.ErrRunNotFound }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.run(ctx)
+
+	if _, held := f.claimed["c-stripped"]; held {
+		t.Fatalf("a claim stripped of its lease by a mixed-fleet write must be freed at startup: still held by %q "+
+			"— its holder is fenced out of its own card and cannot release it, and the only other listing that "+
+			"reaches it is behind the gate this release ships off", f.claimed["c-stripped"])
+	}
+	// Released, not decided: the watchdog is off.
+	if got := f.states["c-stripped"]; got != native.StateInProgress {
+		t.Fatalf("the gated-off sweep must not decide, card moved to %q", got)
 	}
 }

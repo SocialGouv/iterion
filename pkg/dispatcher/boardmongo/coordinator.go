@@ -198,9 +198,11 @@ func (c *Coordinator) ListAbandonedRecoveryClaims(ctx context.Context, markerPre
 		if len(out) >= limit {
 			break
 		}
-		filter := bson.M{"issue.claim": bson.M{
-			"$gte": markerPrefix, "$lt": prefixUpperBound(markerPrefix),
-		}}
+		upper, uerr := prefixUpperBound(markerPrefix)
+		if uerr != nil {
+			return nil, uerr
+		}
+		filter := bson.M{"issue.claim": bson.M{"$gte": markerPrefix, "$lt": upper}}
 		for k, v := range arm {
 			filter[k] = v
 		}
@@ -224,16 +226,49 @@ func (c *Coordinator) ListAbandonedRecoveryClaims(ctx context.Context, markerPre
 
 // prefixUpperBound is the exclusive end of a string-prefix range: the
 // last byte incremented, so the scan stays an index range rather than a
-// regex the planner cannot bound.
-func prefixUpperBound(prefix string) string {
+// regex the planner cannot bound. A prefix with no upper bound (empty,
+// or all 0xFF) has no such range — returning the prefix itself would
+// silently match NOTHING, so it is an error the caller must see.
+func prefixUpperBound(prefix string) (string, error) {
 	b := []byte(prefix)
 	for i := len(b) - 1; i >= 0; i-- {
 		if b[i] < 0xFF {
 			b[i]++
-			return string(b[:i+1])
+			return string(b[:i+1]), nil
 		}
 	}
-	return prefix
+	return "", fmt.Errorf("boardmongo: marker prefix %q has no upper bound — a prefix range built from it would match nothing", prefix)
+}
+
+// ListUnleasedClaims lists claims that carry no lease at all and have
+// been untouched for the un-leased horizon — cross-tenant, for the
+// startup repair. This is the OTHER thing a disabled reaper leaves
+// behind: not its own recovery claims (ListAbandonedRecoveryClaims) but
+// ordinary claims a mixed-fleet write stripped of their lease. Their
+// holder is fenced out of its own card and cannot even release it, so
+// without this listing the card is claimed for ever — and it is a
+// rolling deploy, the thing this rollout PLANS for, that creates them.
+func (c *Coordinator) ListUnleasedClaims(ctx context.Context, cutoff time.Time, limit int) ([]ExpiredCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	filter := UnleasedArm(cutoff)
+	filter["issue.claim"] = bson.M{"$gt": ""}
+	cur, err := c.coll.Find(ctx, filter,
+		options.Find().SetSort(bson.D{{Key: "issue.updatedat", Value: 1}}).SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: list un-leased claims: %w", err)
+	}
+	var docs []issueDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("boardmongo: decode un-leased claims: %w", err)
+	}
+	out := make([]ExpiredCandidate, 0, len(docs))
+	for _, d := range docs {
+		iss := d.Issue
+		out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: native.ExpiredClaimFrom(&iss)})
+	}
+	return out, nil
 }
 
 // ReclaimExpired delegates the CAS transfer to the tenant-scoped store.

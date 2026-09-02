@@ -1,7 +1,9 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -491,4 +493,131 @@ func TestReapOne_DoesNotStealFromAFreshClaim(t *testing.T) {
 		t.Fatalf("a claim taken one lease ago with its stamp still in flight must not be transferred: "+
 			"now held by %q — the worker may be alive and its fenced writes are about to start failing", after.Claim)
 	}
+}
+
+// TestReapOne_LatchDoesNotFlapOnAMixedBatch: the run-read latch reports
+// the store's health on its edges, so it must only be fed by cards that
+// actually consulted the store. A card with no run recorded
+// short-circuits before it — letting that clear the latch makes it flap
+// on any mixed batch and announce a recovery nothing observed, which is
+// the storm it exists to prevent, half of it false.
+func TestReapOne_LatchDoesNotFlapOnAMixedBatch(t *testing.T) {
+	c, board, _ := newReaperHarness(t)
+	var buf bytes.Buffer
+	c.logger = iterlog.New(iterlog.LevelWarn, &buf)
+
+	// Alternate: with a run (the store is consulted and fails, since the
+	// harness passes a nil store below) and without one.
+	for i, runID := range []string{"run-a", "", "run-b", ""} {
+		iss, err := board.Create(native.Issue{Title: "card", State: native.StateInProgress})
+		if err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+		if _, err := board.Claim(iss.ID, "dead-host"); err != nil {
+			t.Fatalf("Claim %d: %v", i, err)
+		}
+		if runID != "" {
+			if err := board.SetLastRun(iss.ID, runID, "/tmp"); err != nil {
+				t.Fatalf("SetLastRun %d: %v", i, err)
+			}
+		}
+	}
+	at := time.Now().Add(2 * native.ClaimLeaseDuration)
+	cands, err := board.ListExpiredClaimCandidates(at, 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, cd := range cands {
+		// nil store: exactly what reapExpiredClaims passes when store.New fails.
+		c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), nil, cd, at)
+	}
+
+	cannot := strings.Count(buf.String(), "cannot read runs")
+	again := strings.Count(buf.String(), "can read runs again")
+	if again > 0 {
+		t.Fatalf("the latch announced %d recovery(ies) the store never made (and flapped: %d failure lines) — "+
+			"a card with no run never consulted the store and must not clear the latch", again, cannot)
+	}
+	if cannot != 1 {
+		t.Fatalf("the failure must be reported once on its edge, got %d lines", cannot)
+	}
+}
+
+// TestShutdown_RevertsBeforeReleasing: every other write path in this
+// package transitions first and releases last, because a release opens
+// the card to the next claimant immediately. Shutdown did the reverse and
+// had to UNFENCE its revert to make it land — and the revert's own guard
+// ("is the card still in the running column?") cannot tell OUR
+// in_progress from a successor's, so a shutting-down daemon could drag a
+// card back into the launch column while a fresh run was already on it.
+func TestShutdown_RevertsBeforeReleasing(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	adapter := native.NewAdapter(board)
+	rec := &orderRecordingTracker{Tracker: adapter, leaser: adapter}
+	c := &Dispatcher{
+		tracker: rec, leaser: rec, logger: iterlog.Nop(), hostMarker: "host-1",
+		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
+		ws: newWsBridge(iterlog.Nop()),
+	}
+	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
+
+	iss, err := board.Create(native.Issue{Title: "in flight at shutdown", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tok, err := board.Claim(iss.ID, "host-1")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if _, err := board.SetStateOwned(iss.ID, native.StateInProgress, tok); err != nil {
+		t.Fatalf("SetStateOwned: %v", err)
+	}
+	c.state.running[iss.ID] = &runningEntry{
+		IssueID: iss.ID, Identifier: "i1", TransitionedFromState: native.StateReady,
+		claim: StartClaimSession(c.leaser, iss.ID, tok, func(string, ...any) {}, nil),
+	}
+
+	c.shutdown()
+
+	if len(rec.ops) < 2 || !strings.HasPrefix(rec.ops[0], "state:") {
+		t.Fatalf("shutdown must transition BEFORE releasing, got %v", rec.ops)
+	}
+	if rec.ops[len(rec.ops)-1] != "release" {
+		t.Fatalf("the release must be last, got %v", rec.ops)
+	}
+}
+
+// orderRecordingTracker records the order of the board operations a
+// shutdown performs. It delegates everything to the real adapter, so the
+// semantics under test are production's.
+type orderRecordingTracker struct {
+	tracker.Tracker
+	leaser tracker.ClaimLeaser
+	ops    []string
+}
+
+func (r *orderRecordingTracker) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	return r.leaser.ClaimLease(ctx, id, marker)
+}
+func (r *orderRecordingTracker) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return r.leaser.RenewClaim(ctx, id, tok)
+}
+func (r *orderRecordingTracker) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	r.ops = append(r.ops, "release")
+	return r.leaser.ReleaseOwned(ctx, id, tok)
+}
+func (r *orderRecordingTracker) UpdateStateOwned(ctx context.Context, id, state string, tok tracker.ClaimToken) error {
+	r.ops = append(r.ops, "state:"+state)
+	return r.leaser.UpdateStateOwned(ctx, id, state, tok)
+}
+func (r *orderRecordingTracker) Release(ctx context.Context, id, marker string) error {
+	r.ops = append(r.ops, "release")
+	return r.Tracker.Release(ctx, id, marker)
+}
+func (r *orderRecordingTracker) UpdateState(ctx context.Context, id, state string) error {
+	r.ops = append(r.ops, "state:"+state)
+	return r.Tracker.UpdateState(ctx, id, state)
 }

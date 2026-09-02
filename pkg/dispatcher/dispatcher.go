@@ -500,15 +500,16 @@ func (c *Dispatcher) shutdown() {
 			r.Cancel(runtime.ErrRunInterrupted)
 		}
 		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Transition FIRST, release LAST — the order the finish worker and
+		// the parked reconciler both keep, and for the same reason: a
+		// release opens the card to the next claimant immediately, and the
+		// revert's own guard ("is it still in_progress?") cannot tell OUR
+		// in_progress from a SUCCESSOR's. Releasing first therefore let a
+		// shutting-down daemon drag a card back into the launch column
+		// while a fresh run was already working it. Fenced, so a claim
+		// that moved on refuses the revert instead of clobbering it.
+		c.revertTransition(relCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget, r.claim)
 		c.releaseClaimSess(relCtx, r.IssueID, r.Identifier, r.claim)
-		// Revert the in-progress transition (best-effort) so tickets
-		// snap back to their source state for the next daemon start.
-		// Without this, an operator-triggered Ctrl+C would leave every
-		// in-flight ticket in `in_progress`, hidden from the next
-		// daemon's eligible candidate list until manually dragged back.
-		// NOTE: the release above already dropped our claim, so the
-		// revert is deliberately UNFENCED — the fence would refuse it.
-		c.revertTransition(relCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget, nil)
 		relCancel()
 		c.stopClaimSession(r)
 	}

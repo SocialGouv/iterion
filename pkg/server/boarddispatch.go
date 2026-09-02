@@ -38,6 +38,7 @@ type boardCoordinator interface {
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
 	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ListAbandonedRecoveryClaims(ctx context.Context, markerPrefix string, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ListUnleasedClaims(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
 	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 }
 
@@ -466,6 +467,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	// The local twin gets this from its boot sweep's pid probe; cloud has
 	// no such sweep, so it needs its own.
 	d.sweepAbandonedRecoveryClaims(ctx)
+	d.sweepUnleasedClaims(ctx)
 	var lastReap time.Time
 	for {
 		d.tick(ctx)
@@ -491,31 +493,121 @@ func (d *boardDispatcher) run(ctx context.Context) {
 func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
 	// ONE clock for the listing and for the CAS beneath it: the lease is
 	// stamped server-side, so measuring it with this pod's clock is the
-	// hole reapCutoff exists to close — and splitting them here would
-	// make the CAS refuse what the listing just produced, reporting
-	// "claim moved on" for a claim that did not move.
+	// hole reapCutoff exists to close.
 	now := d.reapCutoff(ctx)
-	cands, err := d.coord.ListAbandonedRecoveryClaims(ctx, dispatcher.ReaperMarkerPrefix(), now, 100)
+	cands, err := d.coord.ListAbandonedRecoveryClaims(ctx, dispatcher.ReaperMarkerPrefix(), now, sweepBatch)
 	if err != nil {
 		d.warn("recovery-claim sweep: %v", err)
 		return
 	}
+	if len(cands) == 0 {
+		return
+	}
+	if len(cands) == sweepBatch {
+		// A full batch means there are probably more, and NOTHING else can
+		// reach them: a recovery claim carries a fresh lease, so it sorts
+		// behind every ordinary one in the reaper's own listing. Say so
+		// rather than let the remainder wait for the next pod restart —
+		// a silent cap reads as "all handled".
+		d.warn("recovery-claim sweep: batch of %d was full — more abandoned claims remain and only another sweep reaches them",
+			sweepBatch)
+	}
+	// What this sweep may do depends on the gate, because the gate is what
+	// an operator pulls when they judge the watchdog itself wrong.
+	//
+	//   gate ON  — the reaper is running and would reach these cards
+	//              anyway; dispose properly (reapOne re-judges, files or
+	//              returns to the pool, then releases). Releasing bare
+	//              here would take the repair away from it: a cleared
+	//              claim is invisible to its listing.
+	//   gate OFF — the watchdog must not DECIDE. Drop the residue it left
+	//              (the recovery claim) and nothing more, restoring the
+	//              card to exactly what it was before a watchdog touched
+	//              it. That card may well be stranded — but it was
+	//              stranded by its own dead owner, and repairing it is the
+	//              watchdog's job, which is precisely what is switched
+	//              off. Filing it `done`/`blocked` here would be worse
+	//              than not repairing it: those are terminal, they promote
+	//              dependents, and Reopen then refuses.
+	gated := dispatcher.ClaimReaperEnabled()
+	swept := 0
 	for _, cand := range cands {
-		// Dispose through the ONE path that knows what a card needs —
-		// releasing bare is what the local twin can afford (its running
-		// column is itself eligible) and what this surface cannot: a card
-		// freed in in_progress is reachable by no cloud net, and clearing
-		// the claim also hides it from the reaper, which filters on a
-		// non-empty claim. reapOne re-judges, files or returns to the
-		// pool, and releases — and because the marker is already a
-		// recovery one, its conservation bound resolves to "release".
-		d.reapOne(ctx, cand, now)
+		if gated {
+			d.reapOne(ctx, cand, now)
+			swept++
+			continue
+		}
+		if d.releaseAbandonedRecoveryClaim(ctx, cand, now) {
+			swept++
+		}
+	}
+	d.warn("recovery-claim sweep: handled %d claim(s) left behind by a crashed watchdog (%s=%s)",
+		swept, dispatcher.ClaimReaperEnvName(), map[bool]string{true: "on", false: "off"}[gated])
+}
+
+// sweepUnleasedClaims is the OTHER half of "what a disabled reaper leaves
+// behind". A mixed-fleet write strips a live claim of its lease and its
+// fence; from then on the holder cannot renew, cannot write, and cannot
+// even release — and no listing reaches the card except this one. Since a
+// rolling deploy is exactly what creates that state, the repair cannot
+// sit behind the reaper gate, which ships off during the very release
+// that introduces the fields.
+//
+// It only ever RELEASES: the horizon is a full day, so any session that
+// held the card has long since latched lost and stopped. Deciding the
+// card's disposition is the watchdog's business, and the watchdog may be
+// switched off.
+func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context) {
+	now := d.reapCutoff(ctx)
+	cands, err := d.coord.ListUnleasedClaims(ctx, now, sweepBatch)
+	if err != nil {
+		d.warn("un-leased claim sweep: %v", err)
+		return
+	}
+	freed := 0
+	for _, cand := range cands {
+		if d.releaseAbandonedRecoveryClaim(ctx, cand, now) {
+			freed++
+		}
+	}
+	if freed > 0 {
+		d.warn("un-leased claim sweep: freed %d card(s) whose claim lost its lease to a mixed-fleet write — "+
+			"their holders had been fenced out of their own cards", freed)
 	}
 }
 
+// releaseAbandonedRecoveryClaim drops a recovery claim without judging
+// the card — the gate-off behaviour. It still goes through a transfer:
+// releasing needs ownership, and the CAS is what makes two replicas
+// sweeping at once elect one winner.
+func (d *boardDispatcher) releaseAbandonedRecoveryClaim(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) bool {
+	tok, _, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID,
+		cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
+	if err != nil {
+		if !errors.Is(err, tracker.ErrClaimConflict) {
+			d.warn("recovery-claim sweep reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		}
+		return false
+	}
+	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+		d.warn("recovery-claim sweep release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		return false
+	}
+	d.warn("recovery-claim sweep freed %s/%s (was held under %q by a watchdog that never came back); "+
+		"the card keeps state %q — with the watchdog gated off, nothing decides for it",
+		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State)
+	return true
+}
+
+// errNoRunLoader marks the wiring gap that makes the watchdog unable to
+// judge anything — reported through the same edge-triggered latch as a
+// failing store, since the consequence for every card is identical.
+var errNoRunLoader = errors.New("no run loader wired")
+
 // noteRunReadFailure reports the run store's health on its EDGES: the
 // transition into failure (every card conserved from here) and back out
-// of it. A per-card line would bury both.
+// of it. A per-card line would bury both — the batch is a hundred cards,
+// once a minute, per replica.
 func (d *boardDispatcher) noteRunReadFailure(tenant string, err error) {
 	if err == nil {
 		if d.runReadFailure {
@@ -531,7 +623,7 @@ func (d *boardDispatcher) noteRunReadFailure(tenant string, err error) {
 	}
 }
 
-// reapCutoff resolves the instant an expired lease is measured against.
+// reapCutoff resolves the instant an expired lease is measured against.// reapCutoff resolves the instant an expired lease is measured against.
 // The lease itself is stamped from the DATABASE clock, so measuring it
 // with this pod's clock re-opens from the other end the very hole that
 // stamping closed: a replica running fast would see live leases as
@@ -597,6 +689,11 @@ func (d *boardDispatcher) reapExpiredClaims(ctx context.Context, now time.Time) 
 // by an operator is not a runaway.
 const watchdogRunCeiling = 20
 
+// sweepBatch bounds one recovery-claim sweep. A full batch is reported,
+// never silently truncated: nothing but this sweep can reach the
+// remainder.
+const sweepBatch = 100
+
 func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) {
 	var run *store.Run
 	var runErr error
@@ -605,7 +702,10 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			// Without a run loader the table cannot be consulted —
 			// conserve (the read-error row), and say so: a watchdog that
 			// silently cannot decide is the failure mode this exists for.
-			d.warn("claim watchdog: no run loader wired — keeping %s/%s untouched", cand.Tenant, cand.Claim.IssueID)
+			// Same shape as the read failure below, so the same latch: a
+			// missing loader conserves EVERY card on EVERY pass, and one
+			// line per card would bury the one that matters.
+			d.noteRunReadFailure(cand.Tenant, errNoRunLoader)
 			return
 		}
 		run, runErr = d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)

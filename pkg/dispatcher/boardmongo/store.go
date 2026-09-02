@@ -115,6 +115,14 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 		// issue.state), so without this the reaper is the exact COLLSCAN
 		// + non-indexed-sort that index's own comment exists to avoid.
 		// Partial on a non-empty claim: only claimed cards carry a lease.
+		// (claim, lease): the recovery sweep SELECTS a marker namespace as
+		// a prefix range, and without a claim-leading index that range is
+		// a residual filter after the fetch — 20k documents examined to
+		// return none, at every pod boot, precisely in the state the gate
+		// being off produces (expired claims accumulating unbounded).
+		{Keys: bson.D{{Key: "issue.claim", Value: 1}, {Key: "issue.claimleaseuntil", Value: 1}},
+			Options: options.Index().SetName("claim_then_lease").
+				SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
 		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}}, Options: options.Index().
 			SetName("claim_lease_until").
 			SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},

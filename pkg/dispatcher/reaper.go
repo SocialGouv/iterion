@@ -121,7 +121,10 @@ func (c *Dispatcher) reapExpiredClaims(ctx context.Context, reaper tracker.Claim
 	var runs *store.FilesystemRunStore
 	if c.storeDir != "" {
 		if s, serr := store.New(c.storeDir, store.WithLogger(c.logger)); serr != nil {
-			c.logger.Warn("dispatcher: claim watchdog cannot open the run store: %v — every candidate conserves this pass", serr)
+			// Same condition, same latch: this repeats every pass for as
+			// long as the store is unopenable, and two mechanisms for one
+			// cause is how the noise comes back.
+			c.noteRunReadFailure(serr)
 		} else {
 			runs = s
 		}
@@ -133,6 +136,14 @@ func (c *Dispatcher) reapExpiredClaims(ctx context.Context, reaper tracker.Claim
 
 func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, runs *store.FilesystemRunStore, cand tracker.ExpiredClaim, now time.Time) {
 	run, runErr := c.loadRunForReap(ctx, runs, cand.LastRunID)
+	if cand.LastRunID != "" {
+		// Only a card that HAS a run reports on the store's health: a card
+		// without one short-circuits before the store is touched, so
+		// letting it clear the latch announces a recovery nothing
+		// observed — and on a mixed batch the latch then flaps, emitting
+		// the very storm it exists to prevent, half of it false.
+		c.noteRunReadFailure(runErr)
+	}
 	cfg := c.cfg.Load()
 	card := StuckCard{
 		State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates(),
@@ -142,17 +153,9 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// row is deliberately not consulted here — refusing the transfer would
 	// make its own bound unreachable and leave the card held for ever.
 	if pre := DecideTransfer(run, runErr, card); pre.Action == StuckKeep {
-		if runErr != nil {
-			// The twin of the cloud path's edge-triggered notice: an
-			// unreadable run conserves EVERY card, and at Debug that is
-			// invisible in production — the silent-decline failure this
-			// programme exists to end.
-			c.noteRunReadFailure(runErr)
-		}
 		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, pre.Reason)
 		return
 	}
-	c.noteRunReadFailure(nil)
 	var dec StuckDecision
 	// TRANSFER first (the F9 order): the CAS re-verifies the claim is
 	// still exactly what we listed AND still expired — anything that
