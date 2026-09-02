@@ -15,10 +15,18 @@ This document covers **inbound** webhooks — external events arriving on
 > **Integrations** tab connects the forge once (OAuth or PAT) and
 > **provisions the hook + token + this webhook config for you** when you
 > enable a bot — see [forge-integrations.md](forge-integrations.md). Such
-> configs carry a `provisioned_by` marker, render read-only here, and
-> reject direct delete/rotate (409) — manage them from Integrations. The
-> manual path remains for the Generic JSON trigger and for webhooks you
-> want to own by hand.
+> configs carry a `provisioned_by` marker and reject direct **delete** and
+> **rotate** (409) — remove or re-mint them from Integrations, which
+> re-pushes the token to the forge hook in the same operation. **`PATCH`
+> stays open on them, deliberately**: it is the only storage for the
+> operator-only keys that have no integration half
+> ([below](#other-config-keys-settable-through-the-crud-api)), and it is
+> what arms `review_request_logins` on the very repos the re-request lane
+> exists for. What a `PATCH` sets there is durable — re-provisioning
+> carries those keys forward — but the *selection* fields it rebuilds
+> (`bot_ids`, the allowlists, `launch_vars`) are not yours to pin on the
+> config. The manual path remains for the Generic JSON trigger and for
+> webhooks you want to own by hand.
 
 Four providers are wired: GitLab (incl. `/revi` re-review command),
 GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
@@ -166,7 +174,13 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `author_association` ∈ OWNER/MEMBER/COLLABORATOR (decoded from the
   payload, no API call), OR live `CollaboratorPermission` ≥
   **`min_author_role`** (gitlab vocabulary, `""` → developer ≡ write;
-  needs a `forge_token` binding). Unknown = untrusted (**fail-closed** —
+  needs a `forge_token` binding). *Implementation status: that threshold
+  is **not settable** today — `min_author_role` is absent from
+  `webhookConfigReq` and from the forge provision literal, so every
+  webhook reads the `""` default. Raising it needs the setter
+  (native:b63d7e66); until then the effective bar is developer ≡ write,
+  and the way to be stricter is the static `author_allowlist`.* Unknown =
+  untrusted (**fail-closed** —
   this is the budget boundary against drive-by issues, unlike the
   fail-open org quotas). An untrusted author's delivery filters (200,
   visible reason) and the issue's board card parks with
@@ -606,13 +620,28 @@ enum is `inline|summary`, default `inline`).
 All live on [pkg/webhooks/types.go:Config](../pkg/webhooks/types.go) and
 are accepted by `POST` / `PATCH`:
 
+On a **provisioned** webhook this `PATCH` is these keys' only storage, and
+what it writes is durable: re-provisioning — which any bot toggle on the repo
+triggers — rebuilds the config from the manifests but copies them forward
+([`carryOperatorWebhookSettings`](../pkg/forge/orchestrator.go)). So an armed
+`review_request_logins` is not disarmed by enabling one more bot, and an
+`enabled: false` pause is not silently re-armed. Three are not plain copies:
+`rate_limit` is carried only if the previous config had one (the zero value
+means "never set", where the provision's `rate 1 / burst 10` stands),
+`min_replier_role` keeps the **stricter** of the operator's value and the
+enabled bots' manifest floor, and `secret_overrides` merges **per key** (see
+its row below). The *selection* fields are the opposite case — `bot_ids`,
+`launch_vars` and the four allowlists are recomputed from the manifests every
+provision, so pin those on the integration
+([forge-integrations.md](forge-integrations.md)), not here.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
 | `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
-| `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
+| `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. On a **provisioned** webhook the provision re-stamps every enabled bot's own secret name (its manifest `forge.secret`, default `forge_token`) to the connection's managed token — that re-stamp is how a credential rotation lands — and the carry skips any key it stamped. So a pin on one of those names lasts only until the next bot toggle; a pin on any other name is carried forward. |
 | `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
 | `block_fork_prs` | `false` | Persisted but **never read** by any launch path — see [merge-gate.md](merge-gate.md) for what actually guards fork PRs, which differs by provider. |
