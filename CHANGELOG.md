@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.94.0](https://github.com/SocialGouv/iterion/compare/v3.93.0...v3.94.0) (2026-09-02)
+
+### Features
+
+* add generation-aware zero-interruption rollouts ([#628](https://github.com/SocialGouv/iterion/issues/628)) ([53c4b61](https://github.com/SocialGouv/iterion/commit/53c4b61e5aade022efc92239710e6d498cf056ba))
+
 ## [3.93.0](https://github.com/SocialGouv/iterion/compare/v3.92.0...v3.93.0) (2026-09-02)
 
 ### Features
