@@ -72,6 +72,12 @@ decide whether to hedge a figure or state it.
    contributor's lent credential while the tenant holds a usable key of its
    own would take a donation nobody needed.
 
+Steps 2 and 3 **skip a forfait the provider is currently refusing**, which is
+what lets a tenant that owns an exhausted subscription reach step 4
+([the fallback chain](cloud-llm-credentials.md#the-tiers-are-a-fallback-chain-not-a-fixed-first-choice)).
+If no later tier fills that wire, the skipped forfait is restored — so a run
+never loses a credential to the skip, it only gains a chance at a better one.
+
 Order within the pool (`poolWantOrder`): subscriptions first — `claude_code`
 (a lent Claude forfait runs natively there), then `codex` — and only then
 metered keys, provider by provider. Spending someone's real money is the
@@ -240,9 +246,14 @@ GitHub and is already a member — with the default audience they can both
 lend and borrow, with no extra setup.
 
 ```sh
-# A contributor lending a metered key instead of a subscription:
-iterion remote api-keys create --provider anthropic --name mine --from-file ~/key
-iterion remote pool share --source api_key --ref anthropic   --key-id <id from `iterion remote api-keys list`> --max-usd-day 3
+# A contributor lending a metered key instead of a subscription. The key must
+# be PERSONAL: `--scope me` is required on BOTH commands, because `api-keys`
+# defaults to `--scope team`, and a team key is the team's to spend — the
+# pledge refuses it with 403 "that key is not yours to lend — only a personal
+# key can be pooled".
+iterion remote api-keys create --scope me --provider anthropic --name mine --from-file ~/key
+iterion remote api-keys list --scope me    # the id of the key to lend
+iterion remote pool share --source api_key --ref anthropic --key-id <id> --max-usd-day 3
 
 # 1. Operator: create/enable the pool for the org (default audience:
 #    the org's own teams only). Creating one REQUIRES --enabled stated
