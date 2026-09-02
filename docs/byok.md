@@ -44,7 +44,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `tenant_id` | owning org; every store call is tenant-filtered (fail-closed) |
 | `scope_team` | the team the key belongs to |
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
-| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:50-63](../pkg/secrets/byok.go#L50)) |
+| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:69-88, the `Provider` consts](../pkg/secrets/byok.go#L69)) |
 | `name` | human label |
 | `last4` / `fingerprint` | shown in UI; the key itself is never returned |
 | `sealed_secret` | the ciphertext (`SealAPIKey(sealer, keyID, plaintext)`); JSON-hidden (`json:"-"`) |
@@ -52,9 +52,9 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `last_used_at` | best-effort observability (`MarkUsed`, fired detached off the launch path) |
 | `expires_at` | optional |
 
-- Interface: `ApiKeyStore` (Create/Get/Update/Delete/ListByTeam/ListByUser/MarkUsed/ClearDefault) — [byok.go:112](../pkg/secrets/byok.go#L112).
+- Interface: `ApiKeyStore` (Create/Get/Update/Delete/ListByTeam/ListByUser/MarkUsed/ClearDefault) — [byok.go:140, `type ApiKeyStore interface`](../pkg/secrets/byok.go#L140).
 - Backings: `MongoApiKeyStore` (prod) + `MemoryApiKeyStore` (tests).
-- Wired in the server at [cmd/iterion/server.go:193](../cmd/iterion/server.go#L193) (`NewMongoApiKeyStore(st.DB())` + `EnsureSchema`), handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
+- Wired in the server at [cmd/iterion/server.go:665](../cmd/iterion/server.go#L665) (`NewMongoApiKeyStore(st.DB())` + `EnsureSchema`), handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
 
 The plaintext is sealed with the server's `Sealer` before it touches
 Mongo, and is only unsealed transiently inside `resolveAndSealCredentials`
@@ -63,7 +63,7 @@ events, artifacts, or returned by the API.
 
 ## Resolution — `secrets.Resolve`
 
-[pkg/secrets/byok.go:168](../pkg/secrets/byok.go#L168):
+[pkg/secrets/byok.go:205, `func Resolve`](../pkg/secrets/byok.go#L205):
 
 ```go
 Resolve(ctx, store, teamID, userID string,
@@ -78,7 +78,7 @@ Two passes over the keys visible from `(teamID, userID)`:
    `keyOverrides`, pin that exact key (must be visible + the right
    provider). This is the per-webhook override hook.
 2. **Pass 2 — priority walk.** For any provider not already pinned, take
-   the first key in `keyRank` order ([byok.go:234](../pkg/secrets/byok.go#L234)):
+   the first key in `keyRank` order ([byok.go:270, `keyRank`](../pkg/secrets/byok.go#L270)):
 
    | rank | key |
    |---|---|
@@ -88,19 +88,27 @@ Two passes over the keys visible from `(teamID, userID)`:
    | 3 | org other key |
    | 99 | another user's personal key — **never applies** |
 
-The publisher calls it for `allKnownProviders` ([publisher.go:138](../pkg/server/cloudpublisher/publisher.go#L138)) and seals whatever resolved into the run bundle.
+The publisher calls it for `allKnownProviders` ([publisher.go:254, `allKnownProviders`](../pkg/server/cloudpublisher/publisher.go#L254)) and seals whatever resolved into the run bundle.
 
 ## Where the publisher uses it
 
-[pkg/server/cloudpublisher/publisher.go:167](../pkg/server/cloudpublisher/publisher.go#L167)
+[pkg/server/cloudpublisher/publisher.go:335](../pkg/server/cloudpublisher/publisher.go#L335)
 `resolveAndSealCredentials`, step 1 ("BYOK API keys",
-[L189](../pkg/server/cloudpublisher/publisher.go#L189)):
+[L359](../pkg/server/cloudpublisher/publisher.go#L359)):
 
 ```go
-resolved, _ := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID,
-                               allKnownProviders, nil /* keyOverrides */, p.sealer)
+// overrides is built just above from the launching webhook's
+// keyOverrides (provider name → api_key id); nil when there are none.
+resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID,
+                                 allKnownProviders, overrides, p.sealer)
 for prov, r := range resolved { bundle.APIKeys[prov] = string(r.Plaintext) }
 ```
+
+BYOK is **step 1** of five, and every later step fills only the wires it
+left empty — which is why a team key shadows a connected OAuth-forfait on
+the same wire. The full chain, including the window-closed skip that makes
+it a fallback chain rather than a fixed order, is in
+[cloud-llm-credentials.md](cloud-llm-credentials.md#the-tiers-are-a-fallback-chain-not-a-fixed-first-choice).
 
 The bundle is sealed under a fresh `secrets_ref`; the runner unseals it
 and stamps `bundle.APIKeys` into ctx ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go)).
@@ -127,7 +135,7 @@ sealed BYOK map.
 | `PATCH /api/teams/{id}/api-keys/{key_id}` | rename / promote to default |
 | `DELETE /api/teams/{id}/api-keys/{key_id}` | revoke |
 
-Create body ([byok_routes.go:132](../pkg/server/byok_routes.go#L132)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true }`. The server seals `secret` and stores only the ciphertext + `last4`.
+Create body ([byok_routes.go:41, `createApiKeyReq`](../pkg/server/byok_routes.go#L41)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true }`. The server seals `secret` and stores only the ciphertext + `last4`.
 
 Studio UI: Settings → API Keys ([studio/src/views/SettingsDialog/ApiKeysTab.tsx](../studio/src/views/SettingsDialog/ApiKeysTab.tsx), [studio/src/api/byok.ts](../studio/src/api/byok.ts)). Cloud accounts use the sibling [account API-key page](../studio/src/views/account/ApiKeys.tsx).
 
