@@ -197,10 +197,19 @@ Removing the pin restores the gating posture: the next provision re-derives
 `review_on_sync: true` from the `statuses` scope.
 
 **Reading back whether the pin took.** `GET /api/teams/{id}/webhooks`
-serialises the config, and two fields answer it — with one JSON trap:
-both are `omitempty` bools, so **absence means `false`**, not "unknown".
+serialises the config. Read `operator_launch_vars`: it carries the pin
+verbatim (mirrored onto the config at provision) and is the authority BOTH
+consumers read — the `review_on_sync` derivation and the gate machinery's
+own `runGateDisabled`. `"gate_enabled": "false"` there is the answer.
+
+Two neighbouring fields say what the pin *did*, with one JSON trap: they
+are `omitempty` bools, so **absence means `false`**, not "unknown".
 
 - `review_on_sync` — `true` = a push still re-reviews; absent = released.
+  It is a *consequence*, not the pin: in the sync-pinned-true +
+  `gate_enabled: "false"` shape described above (advisory reviews on every
+  push, no gate) it reads `true` while the gate is off, so it answers
+  "does a push re-review", never "is the gate armed".
 - `review_on_sync_pinned` — whether an explicitly-PATCHed sync is
   provenance-protected from the derivation (see above).
 
