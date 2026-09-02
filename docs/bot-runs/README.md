@@ -66,7 +66,7 @@ first bilan for a bot lands.
 | Wikky | `wiki-gen` | navigable OKF wiki generator/maintainer | [wiki-gen.md](wiki-gen.md) |
 | Prody | `product-docs` | functional (business-audience) product docs, docs repo ← N source repos | [product-docs.md](product-docs.md) |
 | Revi | `review-pr` | read-only reviewer (mono default; cross-family dual opt-in) | [review-pr.md](review-pr.md) |
-| Revi (converse) | `revi-converse` | conversational PR follow-up | _not yet_ |
+| Revi (converse) | `revi-converse` | conversational PR follow-up | [revi-converse.md](revi-converse.md) |
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |
 | Depsy | `sec-audit-deps` | supply-chain SCA audit (real Trivy CVE floor; other malware/ecosystem signals remain partial) | [sec-audit-deps.md](sec-audit-deps.md) |
 | Shieldy | `supply-shield` | global supply-chain MALWARE shield (diff-scoped, PR/push-driven) | [supply-shield.md](supply-shield.md) |
