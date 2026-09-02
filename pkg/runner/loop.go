@@ -554,6 +554,15 @@ type Config struct {
 	// an immediate Nak burns it in seconds (issue #481). 0 →
 	// natsq.SchemaMismatchNakDelay.
 	SchemaMismatchDelay time.Duration
+	// RunnerEpoch is this pod's immutable rollout generation. A message from a
+	// higher generation is refused in decodeOrTerm before any execution-side
+	// effect. EpochMismatchDelay controls its delayed redelivery.
+	RunnerEpoch        uint64
+	EpochMismatchDelay time.Duration
+	// HighWaterEpoch and Superseded are startup-gate observations surfaced in
+	// probes. A superseded runner is never passed to Run by the entrypoint.
+	HighWaterEpoch uint64
+	Superseded     bool
 	// DrainMode governs SIGTERM handling. "complete" (default, the
 	// lame-duck posture): stop fetching new runs but let the in-flight run
 	// finish naturally before exiting — a rolling deploy interrupts

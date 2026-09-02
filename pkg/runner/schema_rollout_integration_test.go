@@ -26,6 +26,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -49,6 +50,69 @@ func schemaRolloutNATSURI(t *testing.T) string {
 	return uri
 }
 
+func TestEpochRolloutOldRunnerDefersToNewRunner(t *testing.T) {
+	uri := schemaRolloutNATSURI(t)
+	conn, _ := schemaRolloutConn(t, uri)
+	ctx := context.Background()
+	runID := fmt.Sprintf("run-future-epoch-%d", time.Now().UnixNano())
+	wire := &queue.RunMessage{
+		V:              queue.SchemaVersion,
+		RunnerEpoch:    1,
+		RunID:          runID,
+		WorkflowName:   "wf-epoch-rollout",
+		IRCompiled:     json.RawMessage(`{}`),
+		TenantID:       "tenant-epoch",
+		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	payload, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload, jetstream.WithMsgID(runID)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	cons, err := conn.NewConsumer(ctx)
+	if err != nil {
+		t.Fatalf("consumer: %v", err)
+	}
+	mreg := metrics.New()
+	old := &Runner{cfg: Config{
+		NATS:               conn,
+		Logger:             iterlog.Nop(),
+		RunnerEpoch:        0,
+		EpochMismatchDelay: schemaRolloutTestNakDelay,
+		Metrics:            mreg,
+	}}
+	d1, err := cons.Fetch(ctx, 5*time.Second)
+	if err != nil {
+		t.Fatalf("old-runner fetch: %v", err)
+	}
+	if msg, ok := old.decodeOrTerm(d1); ok || msg != nil {
+		t.Fatal("epoch-0 runner admitted an epoch-1 message")
+	}
+	if old.Health().Busy {
+		t.Fatal("future-epoch rejection registered an in-flight run")
+	}
+	rec := httptest.NewRecorder()
+	mreg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if body := rec.Body.String(); !strings.Contains(body, `iterion_runner_admission_rejected_total{reason="future_epoch"} 1`) {
+		t.Fatalf("future-epoch rejection counter missing:\n%s", body)
+	}
+
+	d2, err := cons.Fetch(ctx, 5*time.Second)
+	if err != nil {
+		t.Fatalf("new-runner fetch after delayed Nak: %v", err)
+	}
+	newer := &Runner{cfg: Config{NATS: conn, Logger: iterlog.Nop(), RunnerEpoch: 1}}
+	msg, ok := newer.decodeOrTerm(d2)
+	if !ok || msg == nil || msg.RunnerEpoch != 1 {
+		t.Fatalf("epoch-1 runner decode = (%+v, %t), want accepted epoch 1", msg, ok)
+	}
+	if err := d2.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+}
+
 // schemaRolloutConn wires a Conn with a MaxDeliver of 2 so the exhaustion
 // path is one redelivery away, on streams/buckets unique to this test run
 // (leftovers from a previous run on a reused broker must not overlap).
@@ -58,16 +122,18 @@ func schemaRolloutConn(t *testing.T, uri string) (*natsq.Conn, string) {
 	stream := "ITERION_RUNS_TEST_" + suffix
 	dlq := "ITERION_RUNS_DLQ_TEST_" + suffix
 	kv := "test-run-locks-" + suffix
+	rolloutKV := "test-runner-rollout-" + suffix
 	conn, err := natsq.Connect(context.Background(), natsq.Config{
-		URL:          uri,
-		StreamName:   stream,
-		DLQStream:    dlq,
-		KVBucket:     kv,
-		ConsumerName: "test-runners-" + suffix,
-		MaxDeliver:   2,
-		AckWait:      2 * time.Second,
-		MaxAge:       time.Hour,
-		Logger:       iterlog.Nop(),
+		URL:             uri,
+		StreamName:      stream,
+		DLQStream:       dlq,
+		KVBucket:        kv,
+		RolloutKVBucket: rolloutKV,
+		ConsumerName:    "test-runners-" + suffix,
+		MaxDeliver:      2,
+		AckWait:         2 * time.Second,
+		MaxAge:          time.Hour,
+		Logger:          iterlog.Nop(),
 	})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -78,6 +144,7 @@ func schemaRolloutConn(t *testing.T, uri string) (*natsq.Conn, string) {
 		_ = conn.JetStream().DeleteStream(ctx, stream)
 		_ = conn.JetStream().DeleteStream(ctx, dlq)
 		_ = conn.JetStream().DeleteKeyValue(ctx, kv)
+		_ = conn.JetStream().DeleteKeyValue(ctx, rolloutKV)
 		conn.Close()
 	})
 	return conn, dlq

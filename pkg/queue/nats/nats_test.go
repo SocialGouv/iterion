@@ -50,6 +50,9 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.KVBucket != KVRunLocks {
 		t.Errorf("KVBucket: got %q want %q", got.KVBucket, KVRunLocks)
 	}
+	if got.RolloutKVBucket != KVRolloutEpochs {
+		t.Errorf("RolloutKVBucket: got %q want %q", got.RolloutKVBucket, KVRolloutEpochs)
+	}
 	if got.StreamReplicas != DefaultStreamReplicas {
 		t.Errorf("StreamReplicas: got %d want %d", got.StreamReplicas, DefaultStreamReplicas)
 	}
@@ -71,6 +74,9 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.SchemaMismatchDelay != SchemaMismatchNakDelay {
 		t.Errorf("SchemaMismatchDelay: got %v want %v", got.SchemaMismatchDelay, SchemaMismatchNakDelay)
 	}
+	if got.EpochMismatchDelay != EpochMismatchNakDelay {
+		t.Errorf("EpochMismatchDelay: got %v want %v", got.EpochMismatchDelay, EpochMismatchNakDelay)
+	}
 	if got.MaxAckPending != DefaultMaxAckPending {
 		t.Errorf("MaxAckPending: got %d want %d", got.MaxAckPending, DefaultMaxAckPending)
 	}
@@ -91,6 +97,7 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		StreamName:          "X",
 		DLQStream:           "Y",
 		KVBucket:            "Z",
+		RolloutKVBucket:     "R",
 		StreamReplicas:      3,
 		ConsumerName:        "C",
 		MaxAge:              1 * time.Hour,
@@ -98,6 +105,8 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		MaxDeliver:          42,
 		AckWait:             30 * time.Second,
 		SchemaMismatchDelay: 45 * time.Second,
+		EpochMismatchDelay:  3 * time.Minute,
+		RunnerEpoch:         9,
 		MaxAckPending:       12,
 		LockTTL:             15 * time.Second,
 		Logger:              logger,
@@ -130,11 +139,19 @@ func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
 	if len(wantStreams) != 0 {
 		t.Errorf("missing stream configs: %v", wantStreams)
 	}
-	if len(recorder.kvs) != 1 {
-		t.Fatalf("KV configs: got %d want 1", len(recorder.kvs))
+	if len(recorder.kvs) != 2 {
+		t.Fatalf("KV configs: got %d want 2", len(recorder.kvs))
 	}
-	if got := recorder.kvs[0].Replicas; got != 3 {
-		t.Errorf("KV replicas: got %d want 3", got)
+	for _, kv := range recorder.kvs {
+		if got := kv.Replicas; got != 3 {
+			t.Errorf("KV %s replicas: got %d want 3", kv.Bucket, got)
+		}
+	}
+	if recorder.kvs[0].TTL == 0 {
+		t.Errorf("run-lock KV must retain its lease TTL")
+	}
+	if recorder.kvs[1].TTL != 0 {
+		t.Errorf("rollout KV TTL = %s, want no TTL", recorder.kvs[1].TTL)
 	}
 }
 
@@ -145,19 +162,21 @@ func TestConnect_RejectsInvalidStreamReplicas(t *testing.T) {
 	}
 }
 
-func TestRedeliveryWindowAccountsForSchemaMismatchDelay(t *testing.T) {
+func TestRedeliveryWindowAccountsForAdmissionDelays(t *testing.T) {
 	cases := []struct {
-		name  string
-		ack   time.Duration
-		delay time.Duration
-		want  time.Duration
+		name   string
+		ack    time.Duration
+		schema time.Duration
+		epoch  time.Duration
+		want   time.Duration
 	}{
-		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 80 * time.Minute},
-		{"schema delay is larger", time.Minute, 2 * time.Minute, 16 * time.Minute},
+		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 2 * time.Minute, 80 * time.Minute},
+		{"schema delay is larger", time.Minute, 3 * time.Minute, 2 * time.Minute, 24 * time.Minute},
+		{"epoch delay is larger", time.Minute, 30 * time.Second, 4 * time.Minute, 32 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.delay}}
+			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.schema, EpochMismatchDelay: tc.epoch}}
 			if got := c.RedeliveryWindow(); got != tc.want {
 				t.Errorf("RedeliveryWindow() = %v, want %v", got, tc.want)
 			}

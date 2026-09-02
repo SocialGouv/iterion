@@ -55,6 +55,17 @@ they honour the env vars too.
 Both are a default, never a cage: `ITERION_LOG_FORMAT=human` on a
 runner pod and `ITERION_LOG_FORMAT=json` on a CLI invocation both work.
 
+Rollout fencing adds two bounded-cardinality Prometheus signals:
+
+- `iterion_runner_admission_rejected_total{reason="future_epoch"}` counts
+  deliveries an old runner delayed before any execution side effect;
+- `iterion_rollout_epoch_regression_total{component="server|runner"}` counts
+  process starts below the persistent epoch high-water mark.
+
+Epoch numbers are exposed in `/healthz` and `/readyz` JSON as `epoch` and
+`high_water_epoch`; they are deliberately not Prometheus labels on run
+metrics, which would create unbounded historical series.
+
 The format holds for the WHOLE process, not just its own lines. A run's
 per-run logger (the one teed into `run.log` and the studio console) is a
 `WithWriter` fork of the process logger, so it keeps the format, the

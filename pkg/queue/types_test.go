@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -11,6 +12,7 @@ import (
 func TestRunMessage_RoundTripJSON(t *testing.T) {
 	src := RunMessage{
 		V:              SchemaVersion,
+		RunnerEpoch:    7,
 		RunID:          "run_abc",
 		WorkflowName:   "demo",
 		WorkflowHash:   "sha256:deadbeef",
@@ -31,6 +33,9 @@ func TestRunMessage_RoundTripJSON(t *testing.T) {
 	}
 	if dst.RunID != "run_abc" {
 		t.Errorf("RunID: got %q", dst.RunID)
+	}
+	if dst.RunnerEpoch != 7 {
+		t.Errorf("RunnerEpoch: got %d want 7", dst.RunnerEpoch)
 	}
 	if dst.BackendConfig.Default != BackendClaw {
 		t.Errorf("BackendConfig.Default: got %q", dst.BackendConfig.Default)
@@ -233,8 +238,10 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=11 (2026-08-30) expands Fallback to an ordered chain. Producers emit
 	// an array; the new decoder still promotes a v10 object to one stage, so
 	// the dual-accept window advances to MinSchemaVersion=10.
-	if SchemaVersion != 11 {
-		t.Errorf("SchemaVersion = %d, want 11 (bump intentionally)", SchemaVersion)
+	// v=12 (2026-09-02) adds the runner rollout epoch. A stale consumer must
+	// reject it rather than silently ignore the fence.
+	if SchemaVersion != 12 {
+		t.Errorf("SchemaVersion = %d, want 12 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -243,7 +250,7 @@ func TestSchemaVersionConstant(t *testing.T) {
 
 // TestValidate_DualAcceptWindow pins the rollout guarantee the latest bump
 // relies on: a v10 payload (published by a not-yet-upgraded server, or
-// queued before the deploy) still validates on a v11 consumer, while
+// queued before the deploy) still validates on a v12 consumer, while
 // anything outside [MinSchemaVersion, SchemaVersion] is rejected as the
 // TRANSIENT ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {
@@ -267,6 +274,48 @@ func TestValidate_DualAcceptWindow(t *testing.T) {
 		if !errors.Is(err, ErrSchemaVersion) {
 			t.Errorf("v=%d: want ErrSchemaVersion, got %v", v, err)
 		}
+	}
+}
+
+func TestRunMessage_LegacyEpochDefaultsToZero(t *testing.T) {
+	for _, version := range []int{10, 11} {
+		var msg RunMessage
+		raw := fmt.Sprintf(`{"v":%d,"run_id":"r1","workflow_name":"w","ir_compiled":{}}`, version)
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("v%d unmarshal: %v", version, err)
+		}
+		if msg.RunnerEpoch != 0 {
+			t.Errorf("v%d RunnerEpoch = %d, want bootstrap epoch 0", version, msg.RunnerEpoch)
+		}
+		if err := msg.Validate(); err != nil {
+			t.Errorf("v%d validate: %v", version, err)
+		}
+	}
+}
+
+func TestV11ConsumerFixtureRejectsV12EpochMessage(t *testing.T) {
+	raw, err := json.Marshal(RunMessage{V: SchemaVersion, RunnerEpoch: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodeV11 := func(payload []byte) error {
+		var envelope struct {
+			V int `json:"v"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return err
+		}
+		const v11SchemaVersion = 11
+		if envelope.V != v11SchemaVersion {
+			return fmt.Errorf("%w: v11 fixture received v%d", ErrSchemaVersion, envelope.V)
+		}
+		return nil
+	}
+	if err := decodeV11(raw); !errors.Is(err, ErrSchemaVersion) {
+		t.Fatalf("v11 fixture error = %v, want ErrSchemaVersion", err)
+	}
+	if !bytes.Contains(raw, []byte(`"runner_epoch":1`)) {
+		t.Fatalf("v12 payload omitted the generation fence: %s", raw)
 	}
 }
 

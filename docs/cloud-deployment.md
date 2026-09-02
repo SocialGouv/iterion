@@ -306,6 +306,51 @@ them:
 > the mixed-version window also needs the drained-queue-or-DLQ-replay
 > procedure in [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md).
 
+### Generation-aware rollout
+
+The chart uses `RollingUpdate` with `maxSurge: 100%` and
+`maxUnavailable: 0` for both server and runner Deployments. This prepares a
+full replacement capacity before Kubernetes removes old pods. It is an SLO
+mechanism, not the correctness boundary: HPA/KEDA can scale ReplicaSets
+proportionally, and JetStream `NumPending` does not count work already
+delivered to busy runners.
+
+The correctness boundary is `config.rollout.runnerEpoch`:
+
+- the server stamps the epoch on every launch, resume, webhook, schedule and
+  retry publication;
+- a runner accepts historical messages (`messageEpoch <= selfEpoch`) and
+  delayed-Naks a future epoch before metrics, span, lease or `running` state;
+- the last rejected delivery is parked on the DLQ and the queued attempt is
+  changed to `failed_resumable`, using the same recovery path as a schema
+  mismatch;
+- a persistent no-TTL JetStream KV bucket (`iterion-runner-rollout`, key
+  `epoch.high-water`) prevents a newly started lower-epoch process from
+  publishing or consuming. Its `/readyz` reports `503 superseded` while
+  `/healthz` remains live for diagnosis.
+
+The epoch and `epochMismatchDelay` are rendered as **literal environment
+values in each PodTemplate**, not in the shared ConfigMap. This is essential:
+if KEDA creates a pod from an old ReplicaSet after the ConfigMap has changed,
+that pod must retain epoch N instead of impersonating N+1.
+
+Bootstrap in two releases:
+
+1. Ship wire v12 and all fencing code with `runnerEpoch: 0`, following the
+   queue-schema runbook. Confirm every server and runner probe reports epoch 0.
+2. In a later release, set `runnerEpoch: 1`. Thereafter increment it whenever
+   runner execution code changes; server-only changes may retain the current
+   epoch.
+
+`epochMismatchDelay` defaults to `2m`. Maintain
+`delay × (MaxDeliver - 1)` above the worst observed cold-readiness time for
+the replacement fleet. For a latency-sensitive KEDA rollout, temporarily
+raise `minReplicaCount`; that buys capacity but does not replace the fence.
+
+An epoch rollback is intentionally rejected. Do not use `helm rollback` to a
+release with a lower value. Restore an older, fence-aware image as a **new
+release with a higher epoch**. Messages from earlier epochs remain accepted.
+
 All three arrive as the same signal, SIGTERM, so one mechanism covers them
 all. What happens to a run a runner is executing is governed by
 **`config.runner.drainMode`**:

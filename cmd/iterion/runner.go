@@ -102,6 +102,8 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
+		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
 		MaxDeliver:          cfg.NATS.MaxDeliver,
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
@@ -147,6 +149,21 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: start metrics: %w", err)
 	}
 	defer func() { _ = metrics.ShutdownServer(metricsSrv) }()
+
+	selfEpoch, highWaterEpoch := natsConn.RunnerEpoch()
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("runner").Inc()
+		health.Set(func() runner.Health {
+			return runner.Health{
+				Superseded:     true,
+				Epoch:          selfEpoch,
+				HighWaterEpoch: highWaterEpoch,
+			}
+		})
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch regression detected — staying live but non-ready; no queue consumer started")
+		<-rootCtx.Done()
+		return nil
+	}
 
 	// 4b. BYOK / OAuth wire-up. The runner consumes sealed bundles
 	//     keyed by RunMessage.SecretsRef; the master key MUST match
@@ -282,6 +299,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		DrainMode:           cfg.Runner.DrainMode,
 		DrainTimeout:        cfg.Runner.DrainTimeout,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		RunnerEpoch:         selfEpoch,
+		HighWaterEpoch:      highWaterEpoch,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
 		Logger:              logger,
 		Metrics:             mreg,
 		RunSecrets:          runSecretsStore,

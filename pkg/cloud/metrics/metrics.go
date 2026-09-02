@@ -37,11 +37,13 @@ type Registry struct {
 	MongoChangeStreamLagS prometheus.Gauge
 
 	// --- Runner-side metrics -------------------------------------
-	NATSPendingMessages    prometheus.Gauge
-	WorkspaceCloneDuration prometheus.Histogram
-	LLMTokensTotal         *prometheus.CounterVec // backend, model, direction
-	LLMCostUSDTotal        *prometheus.CounterVec // backend, model
-	RunnerHeartbeatErrors  prometheus.Counter
+	NATSPendingMessages     prometheus.Gauge
+	WorkspaceCloneDuration  prometheus.Histogram
+	LLMTokensTotal          *prometheus.CounterVec // backend, model, direction
+	LLMCostUSDTotal         *prometheus.CounterVec // backend, model
+	RunnerHeartbeatErrors   prometheus.Counter
+	RunnerAdmissionRejected *prometheus.CounterVec // reason (future_epoch)
+	RolloutEpochRegression  *prometheus.CounterVec // component (server|runner)
 
 	// --- Control-plane metrics ------------------------------------
 	// Deliberately NO tenant labels anywhere (cardinality discipline);
@@ -128,6 +130,14 @@ func New() *Registry {
 		Name: "iterion_runner_heartbeat_errors_total",
 		Help: "Number of NATS KV lease refresh failures encountered while a run was in flight.",
 	})
+	r.RunnerAdmissionRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_runner_admission_rejected_total",
+		Help: "Run-message admissions rejected before execution, by bounded reason token.",
+	}, []string{"reason"})
+	r.RolloutEpochRegression = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_rollout_epoch_regression_total",
+		Help: "Processes started below the persistent runner-epoch high-water mark.",
+	}, []string{"component"})
 
 	r.WebhookDeliveriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_webhook_deliveries_total",
@@ -187,6 +197,7 @@ func New() *Registry {
 		r.WSConnections, r.MongoChangeStreamLagS,
 		r.NATSPendingMessages, r.WorkspaceCloneDuration,
 		r.LLMTokensTotal, r.LLMCostUSDTotal, r.RunnerHeartbeatErrors,
+		r.RunnerAdmissionRejected, r.RolloutEpochRegression,
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
 		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth,

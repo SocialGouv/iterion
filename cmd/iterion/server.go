@@ -250,6 +250,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
+		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
 		MaxDeliver:          cfg.NATS.MaxDeliver,
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
@@ -279,6 +281,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Prometheus registry: built early so cloudpublisher + runstream
 	// + the run-console WS handler all share the same registry.
 	mreg := metrics.New()
+	selfEpoch, highWaterEpoch := natsConn.RunnerEpoch()
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live but non-ready; run publication is fenced")
+	}
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
@@ -522,6 +529,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		LaunchPublisher:        pub,
 		StreamSource:           streamSrc,
 		Mode:                   string(iterconfig.ModeCloud),
+		RunnerEpoch:            selfEpoch,
+		HighWaterEpoch:         highWaterEpoch,
+		Superseded:             natsConn.Superseded(),
 		AuthService:            authStack.authSvc,
 		AuthSigner:             authStack.signer,
 		OIDCRegistry:           registry,

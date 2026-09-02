@@ -8,10 +8,10 @@ ordering alone is not sufficient (issue #481).
 
 ## Wire compatibility policy
 
-- **Strict equality.** A consumer rejects any `v` it does not recognise, in
-  both directions: a v7 runner rejects v8 messages *and* a v8 runner rejects
-  v7 messages still sitting in the queue. There is no "forward-compatible"
-  read.
+- **Explicit compatibility window.** A consumer accepts only
+  `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
+  directions. The current v12 consumer accepts v10/v11 backlog explicitly;
+  this is not implicit forward compatibility.
 - **Server first.** Deploy the server (producer) before the runners. The new
   server is the only side that can start emitting the new version; runners
   that don't speak it yet hold those messages (see below) instead of
@@ -60,6 +60,30 @@ Since #481, a version mismatch is transient and recoverable:
    never left `queued` with no recovery path.
 3. A DLQ replay re-publishes the **exact original bytes**, so a parked v8
    message replays correctly once runners run v8.
+
+## v12 runner-epoch bootstrap
+
+Schema v12 adds `runner_epoch`. A stale v11 runner must reject v12; if it
+ignored the field it could execute work after its generation was superseded.
+A v12 runner treats v10/v11 messages with no field as epoch 0.
+
+Do not combine the schema bump and first non-zero epoch:
+
+1. **Release A:** deploy v12 with `config.rollout.runnerEpoch: 0`, using Path
+   A (recommended) or Path B below. Verify all server and runner probes show
+   `epoch: 0`.
+2. **Release B:** set the epoch to 1. New publishers stamp epoch 1. Old v12
+   runners delayed-Nak those messages; new runners accept both epoch 0 and 1.
+
+Epoch refusals use their own `ITERION_RUNNER_EPOCH_MISMATCH_DELAY` (default
+2m), but share the final DLQ + `failed_resumable` disposition. Both mismatch
+delays feed `RedeliveryWindow()` so the orphan sweeper cannot race a message
+legitimately waiting for a compatible runner.
+
+The persistent rollout high-water mark makes an epoch decrease non-ready and
+blocks run publication/consumption. A rollback is therefore a roll-forward:
+re-release the previous fence-aware image with an epoch greater than the
+current high-water mark. Never restore a lower-epoch Helm revision directly.
 
 > **This section describes runner builds from v8 onward.** A pre-#481 (v7
 > or older) runner answers a mismatch with an immediate bare `Nak()`: it

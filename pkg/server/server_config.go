@@ -352,6 +352,13 @@ type Config struct {
 	// that don't set it.
 	Mode string
 
+	// RunnerEpoch is the generation stamped on every published RunMessage.
+	// Superseded keeps a regressive pod live but out of Service; the queue
+	// backend also rejects publication as a second line of defence.
+	RunnerEpoch    uint64
+	HighWaterEpoch uint64
+	Superseded     bool
+
 	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose
 	// X-Forwarded-For headers we believe. Empty (the default) means
 	// we never trust forwarded headers — audit IPs come from

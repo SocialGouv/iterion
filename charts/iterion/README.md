@@ -45,9 +45,9 @@ groups:
 |---|---|
 | `mode` | `local` (single-pod studio + PVC) vs `cloud` (the platform) |
 | `image` | Repository/tag/pullPolicy — one image for server + runner |
-| `server` | Replicas, resources, command/args, metrics port |
-| `runner` | Pool enable/replicas/resources, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods) |
-| `config` | Non-secret env: `mongo.*`, `nats.*`, `s3.*`, `runner.*`, `auth.*` (public half: publicUrl, cookies, TTLs, signupMode, OIDC client ids), `smtp.*` (host/port/from — enables invitations + password-reset email), `orgDefaults.*` (platform-wide launch limits → `ITERION_ORG_DEFAULT_*`), `log.*` |
+| `server` | Replicas, full-surge `strategy`, resources, command/args, metrics port |
+| `runner` | Pool enable/replicas/resources, full-surge `strategy`, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods) |
+| `config` | Non-secret env: `rollout.*` (monotonic runner epoch), `mongo.*`, `nats.*`, `s3.*`, `runner.*`, `auth.*` (public half: publicUrl, cookies, TTLs, signupMode, OIDC client ids), `smtp.*` (host/port/from — enables invitations + password-reset email), `orgDefaults.*` (platform-wide launch limits → `ITERION_ORG_DEFAULT_*`), `log.*` |
 | `secrets` | Four bundles, each `create:` (chart-rendered, dev) or `existingSecret:` (sealed-secrets / external-secrets, prod): `llm` (fallback provider keys), `storage` (S3 creds), `auth` (`ITERION_JWT_SECRET`, `ITERION_SECRETS_KEY`, bootstrap admin, OIDC client secrets, `completionWebhookSecret`, `webpush` VAPID keypair), `smtp` (relay credentials, server-only) |
 | `service` / `ingress` | Exposure; pair ingress TLS with your issuer |
 | `probes` | `/healthz` liveness, `/readyz` readiness (Mongo/NATS/S3 pings) |
@@ -57,6 +57,13 @@ groups:
 | `mongodb` / `nats` / `minio` | Bundled sub-charts (dev). **The bundled Mongo defaults to `auth.enabled: false` — dev only**, flip it or use an external URI for anything shared |
 
 ## Upgrade notes
+
+- **Generation-aware rollout** — first ship wire v12 with
+  `config.rollout.runnerEpoch: 0`, then raise it to `1` in a separate release.
+  Increment it for runner-code rollouts. Never `helm rollback` to a lower
+  epoch: re-release the older image with a higher epoch. The value and its
+  mismatch delay are literal PodTemplate envs so an old ReplicaSet scaled by
+  HPA/KEDA cannot inherit the new generation through the shared ConfigMap.
 
 - **SMTP** (`config.smtp.*` + `secrets.smtp`) — new; absent = email
   disabled (flows degrade gracefully, the UI hides forgot-password).
