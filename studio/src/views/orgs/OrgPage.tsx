@@ -30,13 +30,14 @@ import {
 import { type OrgRole } from "@/api/auth";
 import { createOrgTeam } from "@/api/orgs";
 import { fmtBytes, fmtUSD, getOrgUsage } from "@/api/usage";
+import GovernanceTab from "@/views/orgs/GovernanceTab";
 import SSOTab from "@/views/teams/tabs/SSOTab";
 import UsageTab from "@/views/teams/tabs/UsageTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
 
 const ORG_ROLES: OrgRole[] = ["member", "admin", "owner"];
 
-type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing";
+type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing" | "governance";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Members + invitations" },
@@ -45,6 +46,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "usage", label: "Usage" },
   { id: "audit", label: "Audit log" },
   { id: "billing", label: "Plan + quotas" },
+  { id: "governance", label: "Governance" },
 ];
 
 export default function OrgPage() {
@@ -116,6 +118,7 @@ export default function OrgPage() {
           {tab === "usage" && <UsageTab orgID={org.org_id} />}
           {tab === "audit" && <AuditTab orgID={org.org_id} canManage={canManage} />}
           {tab === "billing" && <OrgBilling orgID={org.org_id} />}
+          {tab === "governance" && <GovernanceTab orgID={org.org_id} canManage={canManage} />}
         </main>
       </div>
     </div>

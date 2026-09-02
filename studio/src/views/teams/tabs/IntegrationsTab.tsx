@@ -11,6 +11,7 @@ import {
   listForgeIntegrations,
   listForgeOAuthApps,
 } from "@/api/forgeConnections";
+import { listTeamProvisionApprovals } from "@/api/orgGovernance";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -54,6 +55,13 @@ export default function IntegrationsTab({
     queryKey: ["forge-oauth-apps", teamID],
     queryFn: () => listForgeOAuthApps(teamID),
   });
+  // Provisioning requests parked for the org admin's approval (resolves []
+  // on servers without the feature or orgs without the flag).
+  const pendingApprovalsQuery = useQuery({
+    queryKey: ["team-provision-approvals", teamID],
+    queryFn: () => listTeamProvisionApprovals(teamID),
+  });
+  const pendingApprovals = pendingApprovalsQuery.data ?? [];
   const connections = connectionsQuery.data ?? [];
   const integrations = integrationsQuery.data ?? [];
   const oauthApps = oauthAppsQuery.data ?? [];
@@ -116,6 +124,7 @@ export default function IntegrationsTab({
     void queryClient.invalidateQueries({ queryKey: ["forge-connections", teamID] });
     void queryClient.invalidateQueries({ queryKey: ["forge-integrations", teamID] });
     void queryClient.invalidateQueries({ queryKey: ["forge-oauth-apps", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["team-provision-approvals", teamID] });
   };
 
   useEffect(() => {
@@ -169,6 +178,21 @@ export default function IntegrationsTab({
         repoEnabled={integrations.length > 0}
         canManage={canManage}
       />
+
+      {pendingApprovals.length > 0 && (
+        <InlineBanner tone="warning" layout="inline">
+          <div className="space-y-1">
+            <div className="font-medium">Awaiting org approval</div>
+            {pendingApprovals.map((a) => (
+              <div key={a.id} className="text-xs">
+                <span className="font-mono">{a.repo_full_name}</span> — bots:{" "}
+                {a.bot_ids.join(", ")}. Nothing is provisioned on the forge until an
+                org admin approves this request.
+              </div>
+            ))}
+          </div>
+        </InlineBanner>
+      )}
 
       {/* Repo-centric summary first: repositories are the operator's
           mental model; connections are plumbing one section below. */}
