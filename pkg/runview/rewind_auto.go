@@ -598,7 +598,7 @@ func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 	// them as one truncates the body and skips the router promotion.
 	inSources := map[string]map[string]bool{}
 	for _, e := range wf.Edges {
-		if e == nil {
+		if e == nil || e.IsBoundedIteration() {
 			continue
 		}
 		if inSources[e.To] == nil {

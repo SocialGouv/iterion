@@ -104,6 +104,41 @@ workflow fanout:
   merge -> done
 `
 
+const fanOutLocalLoopBot = `schema out:
+  value: string
+  again: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: out
+
+router split:
+  mode: fan_out_all
+
+agent refine:
+  model: "claude-opus-4-7"
+  output: out
+
+agent once:
+  model: "claude-opus-4-7"
+  output: out
+
+agent merge:
+  model: "claude-opus-4-7"
+  output: out
+  await: wait_all
+
+workflow fanout_local_loop:
+  entry: survey
+  survey -> split
+  split -> refine
+  split -> once
+  refine -> refine as retry(3) when again
+  refine -> merge else
+  once -> merge
+  merge -> done
+`
+
 // seedRun writes a bot fixture plus a run parked with the given
 // checkpoint, and returns the service, store, and run id.
 func seedRun(t *testing.T, botSrc string, cp *store.Checkpoint, status store.RunStatus) (*Service, store.RunStore, string) {
@@ -529,6 +564,15 @@ func TestRewind_PromotesFanOutBodyToRouter(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "merge",
 		Outputs: outputsOf("survey", "split", "branch_a", "branch_b", "merge"),
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:    "split",
+			InvocationKey:   "split@root",
+			PendingBranchID: "branch_split_branch_a",
+			PendingNodeID:   "branch_a",
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch_split_branch_a": {BranchID: "branch_split_branch_a", CurrentNodeID: "branch_a"},
+			},
+		},
 	}
 	svc, st, runID := seedRun(t, fanOutBot, cp, store.RunStatusFailedResumable)
 
@@ -558,6 +602,70 @@ func TestRewind_PromotesFanOutBodyToRouter(t *testing.T) {
 	}
 	if run.Checkpoint.NodeID != "split" {
 		t.Errorf("checkpoint anchored on %q, want split", run.Checkpoint.NodeID)
+	}
+	if run.Checkpoint.Parallel != nil {
+		t.Errorf("parallel checkpoint survived fan-out rewind: %+v", run.Checkpoint.Parallel)
+	}
+}
+
+func TestRewind_PromotesInFlightBranchOutputToRouter(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "split",
+		Outputs: outputsOf("survey", "split"),
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:    "split",
+			InvocationKey:   "split@root",
+			PendingBranchID: "branch_split_branch_a",
+			PendingNodeID:   "branch_a",
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch_split_branch_a": {
+					BranchID:      "branch_split_branch_a",
+					CurrentNodeID: "branch_a",
+					Outputs:       outputsOf("branch_a"),
+				},
+				"branch_split_branch_b": {
+					BranchID:      "branch_split_branch_b",
+					CurrentNodeID: "branch_b",
+					Outputs:       outputsOf("branch_b"),
+				},
+			},
+		},
+	}
+	svc, st, runID := seedRun(t, fanOutBot, cp, store.RunStatusPausedWaitingHuman)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "branch_a"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.NodeID != "split" || result.PromotedFrom != "branch_a" {
+		t.Fatalf("rewind target = %q promoted from %q, want split from branch_a", result.NodeID, result.PromotedFrom)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if run.Checkpoint.Parallel != nil {
+		t.Errorf("parallel checkpoint survived in-flight branch rewind: %+v", run.Checkpoint.Parallel)
+	}
+}
+
+func TestRewind_PromotesBranchLocalLoopHeadToRouter(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "merge",
+		Outputs: outputsOf("survey", "split", "refine", "once", "merge"),
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:  "split",
+			InvocationKey: "split@root",
+		},
+	}
+	svc, _, runID := seedRun(t, fanOutLocalLoopBot, cp, store.RunStatusFailedResumable)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "refine"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.NodeID != "split" || result.PromotedFrom != "refine" {
+		t.Fatalf("rewind target = %q promoted from %q, want split from refine", result.NodeID, result.PromotedFrom)
 	}
 }
 

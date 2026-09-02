@@ -405,7 +405,7 @@ func (e *Engine) resolveEachPath(path []string, sc resolveScope) any {
 		return nil
 	}
 	coll := e.resolveForeachCollection(fe, sc)
-	idx := sc.rs.loopCounters[foreachCounterKey(name)]
+	idx := runStateIterationCounters(sc.rs)[foreachCounterKey(name)]
 	count := len(coll)
 	switch path[1] {
 	case "item":
@@ -462,14 +462,14 @@ func (e *Engine) resolveLoopPath(path []string, rs *runState) any {
 	loopName := path[0]
 	switch path[1] {
 	case "iteration":
-		return int64(rs.loopCounters[loopName])
+		return int64(runStateIterationCounters(rs)[loopName])
 	case "max":
 		if l, ok := e.workflow.Loops[loopName]; ok {
 			return int64(e.resolveLoopMax(l, rs))
 		}
 		return nil
 	case "previous_output":
-		return drillPath(rs.loopPreviousOutput[loopName], path[2:])
+		return drillPath(loopPreviousOutputView(rs)[loopName], path[2:])
 	}
 	return nil
 }
@@ -611,9 +611,9 @@ func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
 	}
 	return &model.TemplateData{
 		Outputs:            rs.outputs,
-		LoopCounters:       rs.loopCounters,
+		LoopCounters:       runStateIterationCounters(rs),
 		LoopMaxIterations:  loopMax,
-		LoopPreviousOutput: rs.loopPreviousOutput,
+		LoopPreviousOutput: loopPreviousOutputView(rs),
 		Artifacts:          rs.artifacts,
 		RunID:              rs.runID,
 		Attachments:        rs.attachments,

@@ -645,7 +645,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		}
 		pausedNode := ""
 		if runMeta.Checkpoint != nil {
-			pausedNode = runMeta.Checkpoint.NodeID
+			pausedNode = runMeta.Checkpoint.PausedNodeID()
 		}
 		promoted, promoteErr := s.promoteAnswerUploads(ctx, id, pausedNode, answers, req.Attachments)
 		if promoteErr != nil {

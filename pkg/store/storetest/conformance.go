@@ -63,6 +63,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
+	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
@@ -86,6 +87,80 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_parallel_checkpoint"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{
+		NodeID:        "dispatch",
+		InteractionID: "interaction-1",
+		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:                "dispatch",
+			InvocationKey:               "dispatch@outer=2",
+			PendingBranchID:             "branch_dispatch_0",
+			PendingNodeID:               "gate",
+			PendingInteractionID:        "interaction-1",
+			PendingInteractionQuestions: map[string]any{"approved": "bool"},
+			ArtifactAllocations:         map[string]int{"branch/gate/outer=2": 3},
+			NextArtifactVersion:         map[string]int{"gate": 4},
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch_dispatch_0": {
+					BranchID:           "branch_dispatch_0",
+					StartNodeID:        "work",
+					CurrentNodeID:      "gate",
+					Outputs:            map[string]map[string]any{"work": {"result": "ok"}},
+					Artifacts:          map[string]map[string]any{"report": {"path": "report.md"}},
+					ArtifactVersions:   map[string]int{"work": 2},
+					LoopCounters:       map[string]int{"retry": 1},
+					LoopPreviousOutput: map[string]map[string]any{"retry": {"result": "before"}},
+					LoopCurrentOutput:  map[string]map[string]any{"retry": {"result": "after"}},
+					LoopBudgetMarks:    map[string]map[string]float64{"retry": {"tokens": 12}},
+					SelectedIncoming: map[string][]store.IncomingEdge{
+						"gate": {{From: "work", To: "gate", Condition: "ready"}},
+					},
+					CostUSD:        1.25,
+					ResumeAnswers:  map[string]any{"approved": true},
+					ResumeAnswered: true,
+				},
+			},
+		},
+	}
+	if err := s.SaveCheckpoint(ctx, runID, cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.Parallel == nil {
+		t.Fatalf("parallel checkpoint missing after round-trip: %+v", r.Checkpoint)
+	}
+	if r.Checkpoint.FiredEvents["ready"]["value"] != "ok" {
+		t.Fatalf("fired events after round-trip = %#v", r.Checkpoint.FiredEvents)
+	}
+	got := r.Checkpoint.Parallel
+	branch := got.Branches["branch_dispatch_0"]
+	if got.InvocationKey != "dispatch@outer=2" || got.PendingNodeID != "gate" || got.NextArtifactVersion["gate"] != 4 {
+		t.Fatalf("parallel metadata after round-trip = %+v", got)
+	}
+	if branch == nil || branch.CurrentNodeID != "gate" || branch.Outputs["work"]["result"] != "ok" || branch.LoopCounters["retry"] != 1 {
+		t.Fatalf("branch checkpoint after round-trip = %+v", branch)
+	}
+	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
+		t.Fatalf("branch nested state after round-trip = %+v", branch)
+	}
+	// The daily-cap ledger key is monotonic-max and process-local sequence
+	// numbers restart on resume, so the branch's cumulative spend must survive
+	// the round-trip or the resumed pass's cost is silently discarded.
+	if branch.CostUSD != 1.25 {
+		t.Fatalf("branch cost after round-trip = %v, want 1.25", branch.CostUSD)
+	}
 }
 
 func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {

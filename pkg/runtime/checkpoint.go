@@ -8,8 +8,20 @@ import (
 
 // buildCheckpoint creates a Checkpoint from the current runState.
 func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
+	cp := buildCheckpointWithoutParallel(rs, nodeID)
+	if rs.parallel != nil {
+		cp.Parallel = rs.parallel.snapshot()
+	}
+	return cp
+}
+
+// buildCheckpointWithoutParallel builds the trunk portion of a checkpoint.
+// Parallel callers already hold one authoritative snapshot and attach it
+// themselves; keeping that path separate avoids deep-copying every branch a
+// second time only to overwrite the copy immediately.
+func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoint {
 	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes := rs.budget.Snapshot()
-	return &store.Checkpoint{
+	cp := &store.Checkpoint{
 		NodeID:             nodeID,
 		Outputs:            rs.outputs,
 		LoopCounters:       rs.loopCounters,
@@ -30,9 +42,11 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		BudgetUnpricedTokens:   unpricedTokens,
 		BudgetUnpricedNodes:    unpricedNodes,
 		CostUSDTotal:           rs.costUSDTotal,
+		FiredEvents:            rs.events.snapshot(),
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
 		BackendSessionStateRef: rs.pauseSessionRef,
 	}
+	return cp
 }
 
 // cloneMap returns a shallow copy of m (nil in → nil out).

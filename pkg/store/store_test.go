@@ -1461,6 +1461,25 @@ func TestSaveCheckpointRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCheckpointPausedNodeID(t *testing.T) {
+	if got := (*Checkpoint)(nil).PausedNodeID(); got != "" {
+		t.Fatalf("nil checkpoint paused node = %q", got)
+	}
+	sequential := &Checkpoint{NodeID: "review"}
+	if got := sequential.PausedNodeID(); got != "review" {
+		t.Fatalf("sequential paused node = %q, want review", got)
+	}
+	parallel := &Checkpoint{
+		NodeID: "dispatch",
+		Parallel: &ParallelCheckpoint{
+			PendingNodeID: "branch_gate",
+		},
+	}
+	if got := parallel.PausedNodeID(); got != "branch_gate" {
+		t.Fatalf("parallel paused node = %q, want branch_gate", got)
+	}
+}
+
 // failed_resumable must RETAIN the checkpoint (the resume entry point).
 // This is the behaviour that makes a failed run recoverable.
 func TestFailRunResumable(t *testing.T) {

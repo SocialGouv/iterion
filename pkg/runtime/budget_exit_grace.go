@@ -80,6 +80,13 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	if rs == nil || rs.budget == nil {
 		return "", false
 	}
+	// A parallel branch never gets the grace — every branch, not only one
+	// carrying a branch-local loop. The allowance is a run-wide ratio and
+	// sibling spend lands on the same shared budget concurrently, so no
+	// branch can tell whether its own next node still fits inside it.
+	if rs.branchLocal {
+		return "", false
+	}
 	return e.withinSharedBudgetGrace(rs.budget)
 }
 
@@ -98,6 +105,7 @@ func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok 
 	// ITERION_LOOP_BUDGET_GUARD). With it lifted a graced run can take a
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
+	//
 	if !e.loopBudgetGuardEnabled() {
 		return "", false
 	}

@@ -58,14 +58,19 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	if dag {
 		mode = "fan_out_each_dag"
 	}
+	resumingInvocation := e.resumingParallelInvocation(rs, routerNodeID)
 
-	// Emit router node_started.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
-		"kind":      "router",
-		"mode":      mode,
-		"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
-	}); err != nil {
-		return "", err
+	// The initial invocation owns the router lifecycle pair. Resume still
+	// rebuilds the pass-through output and item plan below, but does not create
+	// a spurious new router execution in the timeline.
+	if !resumingInvocation {
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
+			"kind":      "router",
+			"mode":      mode,
+			"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	// Router is a pass-through: its base output = its input from incoming edges.
@@ -89,11 +94,13 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Emit router node_finished with the resolved cardinality.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
-		"count": len(items),
-		"dag":   dag,
-	}); err != nil {
-		return "", err
+	if !resumingInvocation {
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
+			"count": len(items),
+			"dag":   dag,
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	// The single outgoing template edge (validated at compile time).
@@ -114,6 +121,10 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	// Empty array: nothing to fan out. Continue straight to the convergence
 	// point (with an empty aggregate) rather than failing the run.
 	if len(items) == 0 {
+		// No invocation is launched. A checkpoint restored before `over:` was
+		// re-resolved must not survive this exit or it would attach its stale
+		// pending branch gate to an unrelated later pause.
+		rs.parallel = nil
 		rs.outputs[routerNodeID]["count"] = 0
 		if convergence == "" {
 			// No reconvergence node: the template subgraph runs ONCE with
@@ -161,6 +172,14 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	parentArtifacts := copyOutputs(rs.artifacts)
+	starts := make(map[string]string, len(items))
+	for i := range items {
+		starts[fmt.Sprintf("branch_%s_%d", routerNodeID, i)] = tmplEdge.To
+	}
+	parallel, err := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	if err != nil {
+		return "", err
+	}
 
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
@@ -173,6 +192,9 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	runBranch := func(i int) *branchResult {
 		item := items[i]
 		branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
+		if err := parallel.waitResumeTurn(branchCtx, branchID); err != nil {
+			return &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: e.wrapContextErr(err)}
+		}
 		perBranchOutputs := copyOutputs(rs.outputs)
 		if perBranchOutputs[routerNodeID] == nil {
 			perBranchOutputs[routerNodeID] = make(map[string]any)
@@ -191,15 +213,20 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 			}
 		}
 		defer slot.release()
-		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot)
+		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot, parallel)
 	}
 
-	// finishBranch applies the shared post-branch cancellation policy.
+	// finishBranch applies the shared post-branch cancellation policy, then
+	// frees any sibling parked on this branch's resume barrier — a no-op unless
+	// it was the answered branch and it exited before its successor cursor.
 	finishBranch := func(result *branchResult) {
 		if result != nil && result.err != nil {
-			if errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
+			if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
 				cancelBranches()
 			}
+		}
+		if result != nil {
+			parallel.releaseResumeWaiters(result.branchID)
 		}
 		resultsCh <- result
 	}
@@ -211,6 +238,8 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 				branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
 				defer func() {
 					if r := recover(); r != nil {
+						parallel.releaseResumeWaiters(branchID)
+						cancelBranches()
 						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
 					}
 				}()
@@ -235,6 +264,8 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 				closeDone := func() { once.Do(func() { close(done[i]) }) }
 				defer func() {
 					if r := recover(); r != nil {
+						parallel.releaseResumeWaiters(branchID)
+						cancelBranches()
 						atomic.StoreInt32(&failed[i], 1)
 						closeDone()
 						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
@@ -283,8 +314,12 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		expectedIDs[i] = fmt.Sprintf("branch_%s_%d", routerNodeID, i)
 	}
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, expectedIDs, rs, routerNodeID, "fan_out_each")
+	parallel.retire()
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
+	}
+	if err := pausedBranchError(results); err != nil {
+		return "", err
 	}
 
 	// Determine convergence (prefer branch-reported join; mirror execFanOut).
@@ -310,8 +345,16 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 	if convergenceNodeID == "" {
-		if isBestEffort && allTerminatedAtDone(results) {
-			return e.processConvergenceTerminal(rs, results)
+		if allTerminatedAtDone(results) && (isBestEffort || convergence == "") {
+			strategy := ir.AwaitWaitAll
+			if isBestEffort {
+				strategy = ir.AwaitBestEffort
+			}
+			next, err := e.processConvergenceTerminal(rs, results, strategy)
+			if err == nil {
+				rs.parallel = nil
+			}
+			return next, err
 		}
 		convergenceNodeID = convergence
 		if convergenceNodeID == "" {
@@ -319,7 +362,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 
-	return e.processConvergence(rs, convergenceNodeID, results)
+	next, err := e.processConvergence(rs, convergenceNodeID, results)
+	if err == nil {
+		rs.parallel = nil
+	}
+	return next, err
 }
 
 // buildFanOutDAG resolves the per-item dependency graph for DAG scheduling.

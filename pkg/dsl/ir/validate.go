@@ -17,11 +17,13 @@ func (c *compiler) validate(w *Workflow) {
 
 	c.validateInheritAtConvergence(w)
 	c.validatePersistNotInFanOut(w)
+	c.validateHumanModesInExecBranch(w)
 	c.validateEdgeRouting(w)
 	c.validateRoundRobinEdges(w)
 	c.validateLLMRouterEdges(w)
 	c.validateFanOutEachEdges(w)
 	c.validateBoundedIterationInExecBranch(w)
+	c.validateImplicitCollectorMigration(w)
 	c.validateConditionFields(w)
 	c.validateExprTypes(w)
 	c.validateDuplicateWithKeys(w)

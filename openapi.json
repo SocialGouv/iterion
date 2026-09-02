@@ -105,6 +105,104 @@
         ],
         "type": "object"
       },
+      "BranchCheckpoint": {
+        "properties": {
+          "artifact_versions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "current_node_id": {
+            "type": "string"
+          },
+          "join_node_id": {
+            "type": "string"
+          },
+          "loop_budget_marks": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "loop_counters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "loop_current_output": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "loop_previous_output": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "resume_answered": {
+            "type": "boolean"
+          },
+          "resume_answers": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "selected_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "start_node_id": {
+            "type": "string"
+          },
+          "terminal_node_id": {
+            "type": "string"
+          },
+          "terminated_at_done": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "start_node_id"
+        ],
+        "type": "object"
+      },
       "Checkpoint": {
         "properties": {
           "artifact_versions": {
@@ -149,6 +247,13 @@
           },
           "cost_usd_total": {
             "type": "number"
+          },
+          "fired_events": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
           },
           "interaction_id": {
             "type": "string"
@@ -210,6 +315,9 @@
               "type": "object"
             },
             "type": "object"
+          },
+          "parallel": {
+            "$ref": "#/components/schemas/ParallelCheckpoint"
           },
           "round_robin_counters": {
             "additionalProperties": {
@@ -935,6 +1043,53 @@
           "org_slug",
           "org_role",
           "teams"
+        ],
+        "type": "object"
+      },
+      "ParallelCheckpoint": {
+        "properties": {
+          "artifact_allocations": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "branches": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BranchCheckpoint"
+            },
+            "type": "object"
+          },
+          "invocation_key": {
+            "type": "string"
+          },
+          "next_artifact_version": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "pending_branch_id": {
+            "type": "string"
+          },
+          "pending_interaction_id": {
+            "type": "string"
+          },
+          "pending_interaction_questions": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "pending_node_id": {
+            "type": "string"
+          },
+          "router_node_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "router_node_id",
+          "invocation_key",
+          "branches"
         ],
         "type": "object"
       },

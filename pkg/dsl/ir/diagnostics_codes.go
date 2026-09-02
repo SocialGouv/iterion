@@ -144,9 +144,10 @@ const (
 	DiagAwaitAnswersNoTimeout DiagCode = "C241" // await_answers node with no `timeout:` (error — the no-silent-infinity invariant)
 	DiagAwaitAnswersBadFrom   DiagCode = "C242" // await_answers `from:` names a node that is missing or not interaction: async (warning — it can only ever time out)
 	DiagPersistInFanOut       DiagCode = "C243" // session: persist on a node inside a fan_out_all / fan_out_each / llm-multi body (error — v1 is trunk-only)
-	// Parallel-branch bodies (fan_out_all / fan_out_each / llm multi) run
-	// through execBranch, which has no local loop counters. C244 refuses a
-	// bounded-iteration edge (loop or foreach) whose source sits in that
-	// body; the runtime skip of IsBoundedIteration() is defence in depth.
-	DiagLoopInExecBranch DiagCode = "C244"
+	// Parallel-branch diagnostics. C244 protects ownership boundaries while
+	// allowing one branch to own private bounded iteration. C245 keeps the
+	// trunk-only review and llm_or_human orchestration from becoming inert.
+	DiagLoopInExecBranch      DiagCode = "C244"
+	DiagHumanModeInExecBranch DiagCode = "C245"
+	DiagImplicitCollectorMove DiagCode = "C246" // bounded predecessor used to elect an implicit collector that now executes per branch (warning)
 )

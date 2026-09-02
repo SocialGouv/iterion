@@ -236,6 +236,9 @@ export interface CheckpointBudget {
 export type RunCheckpoint = CheckpointBudget & {
   node_id?: string;
   interaction_id?: string;
+  parallel?: {
+    pending_node_id?: string;
+  };
   [key: string]: unknown;
 };
 

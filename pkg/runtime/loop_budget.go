@@ -99,7 +99,7 @@ func ValidateLoopBudgetGuardMode(v string) error {
 // exit path with what it has banked. The exceeded and hard-limit checks
 // stay as the backstop for a single node that overruns on its own.
 func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetVerdict {
-	if !e.loopBudgetGuardEnabled() {
+	if !e.loopBudgetGuardEnabled() || rs.branchLocal {
 		return nil
 	}
 	axes := rs.budget.Axes()
