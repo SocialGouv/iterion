@@ -26,7 +26,7 @@ linked references.
 | Reuse and extension | Bundles, recipes/presets, project/global skills, plugins, MCP servers, marketplace entries, command-output rewriters, and bot/repository `devbox.json` toolchains. |
 | Automation | Host schedules, tracker dispatcher, native-board events, run-completion chains, forge/generic webhooks, and the event-driven trigger spine. |
 | Cloud control plane | Organization → team tenancy, SSO/password auth, PATs, BYOK and bound secrets, audit and quotas, repo-first forge integrations, NATS-queued runners, MongoDB/S3 persistence, and the typed `iterion remote` CLI. |
-| Maintained bots | 27 bundles live under `bots/`; nine general-purpose bots are embedded for zero-config dispatcher use. See the [catalogue](examples.md). |
+| Maintained bots | 35 bundles live under `bots/`; nine general-purpose bots are embedded for zero-config dispatcher use. See the [catalogue](examples.md). |
 
 ## End-to-end execution
 
@@ -111,7 +111,7 @@ diagnostic ranges are under [references/](references/dsl-grammar.md).
 | `pi` | Explicit opt-in | Multi-provider pi coding agent. RPC mode provides tool events, steering, provider-computed cost, the shared permission gate, async questions, and Iterion MCP tools through the embedded extension; print mode is the reduced fallback. |
 | `kimi` | Explicit opt-in | Moonshot Kimi Code CLI through the generic CLI-agent protocol. Sessions are observable but resume/fork is not wired. |
 | `grok` | Explicit opt-in | xAI Grok Build CLI through the same seam. This is distinct from `claw` calling the xAI HTTP API. Sessions are observable but resume/fork is not wired. |
-| `codex` | Supported, explicit opt-in | Codex CLI through the pinned Agent SDK, with native tools, sandbox, ChatGPT OAuth, images, sessions and structured output. |
+| `codex` | Supported, explicit opt-in | Codex CLI through the pinned Agent SDK, with native tools, sandbox, ChatGPT OAuth, images, sessions and structured output. Hosted Web search is the one native tool the DSL can actually switch: `tools: [web_search]` turns it on, because it has a real config switch where the rest stay ambient. Needs Codex CLI ≥ 0.103.0. |
 
 Automatic selection considers `claude_code` and `claw` in that order when the
 workflow, node, launch override, and environment do not choose a backend. Pi,
@@ -149,7 +149,11 @@ The security posture is explicit rather than implied:
   pre-built image and reject inline builds.
 - The tool-permission gate defaults to `off`. `ask` and `deny` add a
   deterministic boundary shared by `claude_code`, `claw`, and pi RPC mode;
-  rule lists use Claude-Code-style `Tool(pattern)` syntax.
+  rule lists use Claude-Code-style `Tool(pattern)` syntax. Kimi and Grok are
+  admitted for `deny` only — their gate is an external PreToolUse hook
+  process, which can hard-block a call but cannot pause the run to ask. A
+  route that could not enforce a declared gate is refused at compile time
+  rather than left inert.
 - Named and file secrets are resolved at execution sinks and sealed at rest.
   Local stores use the OS keychain or a key file; cloud runs receive a sealed,
   run-bound credential bundle.
@@ -197,6 +201,19 @@ Runs can start from:
 - native-board transitions and run-completion subscriptions;
 - authenticated GitHub, GitLab, Forgejo/Gitea, or generic inbound webhooks.
 
+What happens when a run ENDS can also be contracted. A launch may freeze a
+routing policy onto the run — `success_when`, `block_when`, the landing branch
+and strategy, the actions it permits, and a hash pinning the resolved
+contract — which the outcome router reads once per terminal episode to decide
+merge, relaunch, or escalate. The reading is strict and escalation is the
+default: an unreadable expression, a contract newer than the reader, or an
+action the policy does not allow all land on a human rather than on a merge.
+Decisions are claimed and recorded so an audit can replay which contract
+decided. The router is off unless `ITERION_OUTCOME_ROUTER=on`, needs a store
+carrying the decision registry, and takes an activation watermark at boot so
+flipping it on cannot retro-route history. See
+[outcome router](outcome-router.md).
+
 The studio projects these primitives into repository views, the native board,
 the global pipeline board, automations, integrations, run trees, human gates,
 and the live run console. The typed remote CLI covers the same cloud domains;
@@ -241,8 +258,9 @@ can evolve before a stable compatibility promise. In particular:
   Foundry are available through `claw` but are not claimed as equally tested.
 - Local and cloud stores share interfaces and run semantics, not a single
   physical persistence format.
-- Sandbox activation, restrictive egress, and the permission gate are opt-in;
-  operators must select the posture appropriate to their threat model.
+- Restrictive egress and the permission gate are opt-in (the sandbox itself is
+  on by default at the product entry points); operators must select the
+  posture appropriate to their threat model.
 - Kubernetes sandboxes cannot consume host state or build images at run time.
 
 Point-in-time ADRs, audits, plans, and bot-run bilans explain how the current
