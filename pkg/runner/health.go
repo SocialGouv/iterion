@@ -49,6 +49,11 @@ type Health struct {
 	Draining bool `json:"draining"`
 	// Busy reports that a run is being processed right now.
 	Busy bool `json:"busy"`
+	// Superseded means the pod's literal epoch is below the durable fleet
+	// high-water mark. It remains live for diagnosis but can never be ready.
+	Superseded     bool   `json:"superseded"`
+	Epoch          uint64 `json:"epoch"`
+	HighWaterEpoch uint64 `json:"high_water_epoch"`
 	// SinceLastTick is the age of the last consume-loop iteration.
 	// Meaningless while Busy (the loop is blocked on the run by design).
 	SinceLastTick time.Duration `json:"-"`
@@ -66,9 +71,12 @@ func (r *Runner) Health() Health {
 	r.mu.Unlock()
 
 	h := Health{
-		Draining:   r.draining.Load(),
-		Busy:       busy,
-		StaleAfter: r.livenessStaleAfter(),
+		Draining:       r.draining.Load(),
+		Busy:           busy,
+		Superseded:     r.cfg.Superseded,
+		Epoch:          r.cfg.RunnerEpoch,
+		HighWaterEpoch: r.cfg.HighWaterEpoch,
+		StaleAfter:     r.livenessStaleAfter(),
 	}
 	// Run stamps a tick before anything else, so a non-zero tick IS the
 	// started signal — no second flag to keep in sync with it.
@@ -96,7 +104,7 @@ func (h Health) Alive() bool {
 // runner answers false for the whole (up to DrainTimeout) lame-duck, which
 // is what makes `kubectl get pods` distinguish a pod finishing its run
 // from a fresh one.
-func (h Health) Ready() bool { return h.Started && !h.Draining }
+func (h Health) Ready() bool { return h.Started && !h.Draining && !h.Superseded }
 
 // tick records a consume-loop iteration for the liveness probe.
 func (r *Runner) tick() { r.lastTick.Store(time.Now().UnixNano()) }
@@ -124,12 +132,14 @@ func (p *HealthProvider) get() (Health, bool) {
 }
 
 type healthBody struct {
-	Status   string `json:"status"`
-	Version  string `json:"version,omitempty"`
-	Commit   string `json:"commit,omitempty"`
-	Busy     bool   `json:"busy"`
-	Draining bool   `json:"draining"`
-	IdleFor  string `json:"idle_for,omitempty"`
+	Status         string `json:"status"`
+	Version        string `json:"version,omitempty"`
+	Commit         string `json:"commit,omitempty"`
+	Busy           bool   `json:"busy"`
+	Draining       bool   `json:"draining"`
+	Epoch          uint64 `json:"epoch"`
+	HighWaterEpoch uint64 `json:"high_water_epoch"`
+	IdleFor        string `json:"idle_for,omitempty"`
 }
 
 // LivenessHandler serves the runner's /healthz. It stays 200 while the
@@ -161,7 +171,9 @@ func (p *HealthProvider) ReadinessHandler() http.Handler {
 		}
 		if !h.Ready() {
 			status := "starting"
-			if h.Draining {
+			if h.Superseded {
+				status = "superseded"
+			} else if h.Draining {
 				status = "draining"
 			}
 			writeHealth(w, http.StatusServiceUnavailable, status, h)
@@ -173,11 +185,13 @@ func (p *HealthProvider) ReadinessHandler() http.Handler {
 
 func writeHealth(w http.ResponseWriter, code int, status string, h Health) {
 	body := healthBody{
-		Status:   status,
-		Version:  appinfo.Version,
-		Commit:   appinfo.Commit,
-		Busy:     h.Busy,
-		Draining: h.Draining,
+		Status:         status,
+		Version:        appinfo.Version,
+		Commit:         appinfo.Commit,
+		Busy:           h.Busy,
+		Draining:       h.Draining,
+		Epoch:          h.Epoch,
+		HighWaterEpoch: h.HighWaterEpoch,
 	}
 	if h.Started && !h.Busy {
 		body.IdleFor = h.SinceLastTick.Round(time.Second).String()

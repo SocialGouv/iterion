@@ -86,6 +86,24 @@ func TestHealthReadyFalseWhileDraining(t *testing.T) {
 	}
 }
 
+func TestHealthProviderReportsSupersededEpoch(t *testing.T) {
+	t.Parallel()
+	p := &HealthProvider{}
+	p.Set(func() Health {
+		return Health{Superseded: true, Epoch: 4, HighWaterEpoch: 6}
+	})
+	code, body := probe(t, p.ReadinessHandler())
+	if code != http.StatusServiceUnavailable || body.Status != "superseded" {
+		t.Fatalf("superseded /readyz = %d %q, want 503 superseded", code, body.Status)
+	}
+	if body.Epoch != 4 || body.HighWaterEpoch != 6 {
+		t.Fatalf("probe epochs = %d/%d, want 4/6", body.Epoch, body.HighWaterEpoch)
+	}
+	if liveCode, _ := probe(t, p.LivenessHandler()); liveCode != http.StatusOK {
+		t.Fatalf("superseded /healthz = %d, want 200", liveCode)
+	}
+}
+
 // The metrics listener binds before runner.New (a port conflict must
 // surface at boot). Until the health source is published the probes must
 // say "starting" — not lie with a 200 on readiness, which is exactly the

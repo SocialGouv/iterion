@@ -306,8 +306,80 @@ them:
 > the mixed-version window also needs the drained-queue-or-DLQ-replay
 > procedure in [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md).
 
-All three arrive as the same signal, SIGTERM, so one mechanism covers them
-all. What happens to a run a runner is executing is governed by
+### Generation-aware rollout
+
+The chart uses `RollingUpdate` with `maxSurge: 100%` and
+`maxUnavailable: 0` for both server and runner Deployments. This prepares a
+full replacement capacity before Kubernetes removes old pods. It is an SLO
+mechanism, not the correctness boundary: HPA/KEDA can scale ReplicaSets
+proportionally, and JetStream `NumPending` does not count work already
+delivered to busy runners.
+
+The correctness boundary is `config.rollout.runnerEpoch`:
+
+- the server stamps the epoch on every launch, resume, webhook, schedule and
+  retry publication;
+- a runner accepts historical messages (`messageEpoch <= selfEpoch`) and
+  delayed-Naks a future epoch before metrics, span, lease or `running` state;
+- the last rejected delivery is parked on the DLQ and the queued attempt is
+  changed to `failed_resumable`, using the same recovery path as a schema
+  mismatch;
+- a persistent no-TTL JetStream KV bucket (`iterion-runner-rollout`, key
+  `epoch.high-water`) prevents a newly started lower-epoch process from
+  publishing or consuming. Its `/readyz` reports `503 superseded` while
+  `/healthz` remains live for diagnosis.
+
+`Connect` only observes that mark. A process claims (and, if needed, advances)
+it after all dependencies and listeners have been proven, immediately before
+serving or fetching. Queue publication and delivery remain fenced until that
+late claim succeeds. A broken epoch-bump release therefore cannot poison the
+mark and prevent the healthy previous generation from restarting.
+
+The epoch and `epochMismatchDelay` are rendered as **literal environment
+values in each PodTemplate**, not in the shared ConfigMap. This is essential:
+if KEDA creates a pod from an old ReplicaSet after the ConfigMap has changed,
+that pod must retain epoch N instead of impersonating N+1.
+
+Bootstrap in two releases:
+
+1. Ship wire v12 and all fencing code with `runnerEpoch: 0`, following the
+   queue-schema runbook. Confirm every server and runner probe reports epoch 0.
+2. In a later release, set `runnerEpoch: 1`. Thereafter increment it whenever
+   runner execution code changes; server-only changes may retain the current
+   epoch.
+
+`epochMismatchDelay` defaults to `2m`. Maintain
+`delay × (MaxDeliver - 1)` above the worst observed cold-readiness time for
+the replacement fleet. For a latency-sensitive KEDA rollout, temporarily
+raise `minReplicaCount`; that buys capacity but does not replace the fence.
+
+An epoch rollback is intentionally rejected. Do not use `helm rollback` to a
+release with a lower value. Restore an older, fence-aware image as a **new
+release with a higher epoch**. Messages from earlier epochs remain accepted.
+
+**Break glass for a mis-set or corrupt mark.** The high-water mark is
+deliberately monotonic, so normal rollback cannot repair a typo such as
+`runnerEpoch: 100` instead of `10`; a non-decimal value stored in the KV also
+makes every process fail while reading it. Quiesce the installation before
+resetting it: suspend HPA/KEDA reconciliation, scale **both** the server and
+runner Deployments to zero, and verify that no pod capable of claiming the mark
+remains. Then delete only the mark key:
+
+```sh
+nats kv del <rollout-kv-bucket> epoch.high-water
+```
+
+The default rollout bucket is `iterion-runner-rollout`. When
+`ITERION_NATS_KV_BUCKET` / `config.nats.kvBucket` is customised, the rollout
+bucket is `<kvBucket>-rollout`. Correct `runnerEpoch` in the deployment source
+before restoring autoscaling and replicas; otherwise the bad value is claimed
+again immediately. This procedure intentionally stops new submissions and
+executions, so use it only when rolling forward with a higher epoch is not
+possible.
+
+Autoscaling, node turnover and a deploy all arrive as the same signal,
+SIGTERM, so one mechanism covers them all. What happens to a run a runner is
+executing is governed by
 **`config.runner.drainMode`**:
 
 - **`complete`** (default — *lame-duck*): on SIGTERM the runner stops

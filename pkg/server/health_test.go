@@ -42,6 +42,21 @@ func TestHealthzAlwaysOK(t *testing.T) {
 	}
 }
 
+func TestReadyzRejectsSupersededEpoch(t *testing.T) {
+	t.Parallel()
+	srv := New(Config{RunnerEpoch: 3, HighWaterEpoch: 5, Superseded: true}, iterlog.New(iterlog.LevelError, nil))
+	code, payload := probeHealth(t, srv, "/readyz")
+	if code != http.StatusServiceUnavailable || payload.Status != "superseded" {
+		t.Fatalf("/readyz = %d %q, want 503 superseded", code, payload.Status)
+	}
+	if payload.Epoch != 3 || payload.HighWaterEpoch != 5 {
+		t.Fatalf("probe epochs = %d/%d, want 3/5", payload.Epoch, payload.HighWaterEpoch)
+	}
+	if code, payload := probeHealth(t, srv, "/healthz"); code != http.StatusOK || payload.Status != "ok" {
+		t.Fatalf("/healthz = %d %q, want 200 ok", code, payload.Status)
+	}
+}
+
 // The health envelope echoes the usage-cap policy so an operator can
 // verify the cap actually reached the deployment — the enforcement is
 // env-only and was otherwise observable nowhere.

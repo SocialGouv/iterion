@@ -42,7 +42,11 @@ const (
 	SubjectCancelFmt = "iterion.cancel.%s" // %s = run_id
 	SubjectHeartFmt  = "iterion.heartbeat.%s"
 	KVRunLocks       = "iterion-run-locks"
-	ConsumerRunners  = "iterion-runners"
+	KVRolloutEpochs  = "iterion-runner-rollout"
+	// JetStream KV keys cannot contain '/', so this is the KV-safe spelling
+	// of the logical `epoch/high-water` rollout key.
+	RunnerEpochHighWaterKey = "epoch.high-water"
+	ConsumerRunners         = "iterion-runners"
 
 	// Trigger event bus (pkg/eventbus NATSBus). A fan-out NOTIFICATION
 	// stream, kept deliberately separate from the run WORK queue above:
@@ -98,24 +102,30 @@ const (
 	// is parked on the DLQ with an actionable run status (recoverable via
 	// /api/admin/dlq) rather than silently dropped.
 	SchemaMismatchNakDelay = 30 * time.Second
+	// EpochMismatchNakDelay gives a cold replacement fleet enough time to
+	// become ready before the shared consumer spends its delivery budget.
+	EpochMismatchNakDelay = 2 * time.Minute
 )
 
 // Config carries the connection settings for the cloud queue.
 type Config struct {
-	URL            string        // nats://host:port — required
-	StreamName     string        // default StreamRuns
-	DLQStream      string        // default StreamRunsDLQ
-	KVBucket       string        // default KVRunLocks
-	StreamReplicas int           // default 1
-	ConsumerName   string        // default ConsumerRunners
-	MaxAge         time.Duration // default 24h
-	DLQMaxAge      time.Duration // default 7d
-	MaxDeliver     int           // default DefaultStreamMaxRetry (8)
-	AckWait        time.Duration // default DefaultAckWait (10m)
+	URL             string        // nats://host:port — required
+	StreamName      string        // default StreamRuns
+	DLQStream       string        // default StreamRunsDLQ
+	KVBucket        string        // default KVRunLocks
+	RolloutKVBucket string        // default KVRolloutEpochs (persistent, no TTL)
+	StreamReplicas  int           // default 1
+	ConsumerName    string        // default ConsumerRunners
+	MaxAge          time.Duration // default 24h
+	DLQMaxAge       time.Duration // default 7d
+	MaxDeliver      int           // default DefaultStreamMaxRetry (8)
+	AckWait         time.Duration // default DefaultAckWait (10m)
 	// SchemaMismatchDelay is the delayed-Nak interval used by runners during
 	// mixed-schema rollouts. It also contributes to RedeliveryWindow so the
 	// orphan sweeper never races a legitimately bouncing message.
 	SchemaMismatchDelay time.Duration // default SchemaMismatchNakDelay (30s)
+	EpochMismatchDelay  time.Duration // default EpochMismatchNakDelay (2m)
+	RunnerEpoch         uint64        // shared publisher/runner generation
 	// MaxAckPending caps fleet-wide in-flight (delivered-unacked) runs on the
 	// shared consumer; 0 → DefaultMaxAckPending. Keep ≥ max runner pods.
 	MaxAckPending int
@@ -128,11 +138,15 @@ type Config struct {
 // it; the runner takes a single Conn at boot and shares it between
 // the consumer goroutine and any cancel-subject subscribers.
 type Conn struct {
-	nc     *nats.Conn
-	js     jetstream.JetStream
-	kv     jetstream.KeyValue
-	cfg    Config
-	logger *iterlog.Logger
+	nc             *nats.Conn
+	js             jetstream.JetStream
+	kv             jetstream.KeyValue
+	rolloutKV      epochKV
+	cfg            Config
+	logger         *iterlog.Logger
+	highWaterEpoch uint64
+	superseded     bool
+	epochClaimed   bool
 }
 
 // RedeliveryWindow is the worst-case time a healthy queued message can
@@ -164,6 +178,9 @@ func (c *Conn) RedeliveryWindow() time.Duration {
 	interval := c.cfg.AckWait
 	if c.cfg.SchemaMismatchDelay > interval {
 		interval = c.cfg.SchemaMismatchDelay
+	}
+	if c.cfg.EpochMismatchDelay > interval {
+		interval = c.cfg.EpochMismatchDelay
 	}
 	return time.Duration(c.cfg.MaxDeliver) * interval
 }
@@ -199,6 +216,13 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		nc.Close()
 		return nil, err
 	}
+	highWater, superseded, err := observeRunnerEpoch(ctx, c.rolloutKV, cfg.RunnerEpoch)
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("queue/nats: observe runner epoch: %w", err)
+	}
+	c.highWaterEpoch = highWater
+	c.superseded = superseded
 	// Install the W3C TraceContext propagator once per process so
 	// PublishRun + Delivery.PropagateTraceTo can stay in the hot path
 	// (plan §F T-41).
@@ -263,6 +287,20 @@ func (c *Conn) JetStream() jetstream.JetStream { return c.js }
 // can layer a CAS lease on top of it without re-resolving the bucket.
 func (c *Conn) KV() jetstream.KeyValue { return c.kv }
 
+// RunnerEpoch reports this process' configured generation and the latest
+// durable high-water mark observed by Connect or ClaimRunnerEpoch.
+func (c *Conn) RunnerEpoch() (self, highWater uint64) {
+	if c == nil {
+		return 0, 0
+	}
+	return c.cfg.RunnerEpoch, c.highWaterEpoch
+}
+
+// Superseded reports that this process is below the durable high-water mark
+// observed by Connect or ClaimRunnerEpoch. Such a process stays alive for
+// honest probes but may neither publish nor consume run messages.
+func (c *Conn) Superseded() bool { return c != nil && c.superseded }
+
 // MaxPayload returns the server-negotiated maximum message size (bytes)
 // this connection will accept, or 0 when unknown / not connected. The
 // cloud publisher reads it to decide when a RunMessage's compiled IR must
@@ -275,14 +313,16 @@ func (c *Conn) MaxPayload() int64 { return c.nc.MaxPayload() }
 // self-healing — if an operator deletes a stream by mistake the next
 // pod start brings it back.
 func (c *Conn) EnsureSchema(ctx context.Context) error {
-	kv, err := ensureSchema(ctx, c.js, c.cfg)
+	resources, err := ensureSchema(ctx, c.js, c.cfg)
 	if err != nil {
 		return err
 	}
 	slog.Info("jetstream schema pinned",
 		"stream", c.cfg.StreamName, "dlq", c.cfg.DLQStream,
-		"kv_bucket", c.cfg.KVBucket, "replicas", c.cfg.StreamReplicas)
-	c.kv = kv
+		"kv_bucket", c.cfg.KVBucket, "rollout_kv_bucket", c.cfg.RolloutKVBucket,
+		"replicas", c.cfg.StreamReplicas)
+	c.kv = resources.runLocks
+	c.rolloutKV = resources.rollout
 
 	return nil
 }
@@ -292,7 +332,12 @@ type schemaManager interface {
 	CreateOrUpdateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error)
 }
 
-func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (jetstream.KeyValue, error) {
+type schemaResources struct {
+	runLocks jetstream.KeyValue
+	rollout  jetstream.KeyValue
+}
+
+func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:       cfg.StreamName,
 		Subjects:   []string{SubjectRuns},
@@ -302,7 +347,7 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (jetstream.
 		Replicas:   cfg.StreamReplicas,
 		Duplicates: 5 * time.Minute, // window for Nats-Msg-Id dedup
 	}); err != nil {
-		return nil, fmt.Errorf("queue/nats: stream %s: %w", cfg.StreamName, err)
+		return schemaResources{}, fmt.Errorf("queue/nats: stream %s: %w", cfg.StreamName, err)
 	}
 
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
@@ -313,7 +358,7 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (jetstream.
 		Storage:   jetstream.FileStorage,
 		Replicas:  cfg.StreamReplicas,
 	}); err != nil {
-		return nil, fmt.Errorf("queue/nats: stream %s: %w", cfg.DLQStream, err)
+		return schemaResources{}, fmt.Errorf("queue/nats: stream %s: %w", cfg.DLQStream, err)
 	}
 
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
@@ -323,10 +368,19 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (jetstream.
 		Replicas: cfg.StreamReplicas,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("queue/nats: kv %s: %w", cfg.KVBucket, err)
+		return schemaResources{}, fmt.Errorf("queue/nats: kv %s: %w", cfg.KVBucket, err)
 	}
 
-	return kv, nil
+	rolloutKV, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   cfg.RolloutKVBucket,
+		History:  1,
+		Replicas: cfg.StreamReplicas,
+	})
+	if err != nil {
+		return schemaResources{}, fmt.Errorf("queue/nats: rollout kv %s: %w", cfg.RolloutKVBucket, err)
+	}
+
+	return schemaResources{runLocks: kv, rollout: rolloutKV}, nil
 }
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
@@ -337,6 +391,15 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (jetstream.
 // stable when the same message object is retried, yet unique per resume
 // attempt created by SubmitResume.
 func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstream.PubAck, error) {
+	// This is the single stamping point for launch, resume, scheduler,
+	// webhook and retry paths. Callers cannot accidentally publish a message
+	// with the PodTemplate's epoch omitted or stale.
+	if err := c.stampRunnerEpoch(msg); err != nil {
+		return nil, err
+	}
+	if c.nc == nil {
+		return nil, fmt.Errorf("queue/nats: connection not initialised")
+	}
 	if err := msg.Validate(); err != nil {
 		return nil, fmt.Errorf("queue/nats: invalid RunMessage: %w", err)
 	}
@@ -478,6 +541,7 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func(
 // publishes (the server) doesn't pay the cost of consumer setup.
 type Consumer struct {
 	cons   jetstream.Consumer
+	owner  *Conn
 	cfg    Config
 	logger *iterlog.Logger
 }
@@ -493,6 +557,23 @@ type Consumer struct {
 // stale pod is replaced). CreateOrUpdate applies the current MaxAckPending
 // to the existing durable, so a deploy lifts the cap on the live consumer.
 func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
+	if err := c.requireRunnerEpochClaim(); err != nil {
+		return nil, err
+	}
+	return c.PrepareConsumer(ctx)
+}
+
+// PrepareConsumer creates or updates the durable pull consumer without
+// opening the run-delivery gate. The runner entrypoint uses it as its final
+// fallible dependency check before ClaimRunnerEpoch, then hands the inert
+// consumer to runner.New. Fetching must not begin until the claim succeeds.
+func (c *Conn) PrepareConsumer(ctx context.Context) (*Consumer, error) {
+	if c == nil {
+		return nil, fmt.Errorf("queue/nats: connection not initialised")
+	}
+	if c.js == nil {
+		return nil, fmt.Errorf("queue/nats: connection not initialised")
+	}
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.cfg.StreamName, jetstream.ConsumerConfig{
 		Durable:       c.cfg.ConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -505,12 +586,18 @@ func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: consumer: %w", err)
 	}
-	return &Consumer{cons: cons, cfg: c.cfg, logger: c.logger}, nil
+	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
 }
 
 // Fetch pulls a single ready message, blocking up to wait. Returns
 // (nil, ErrNoMessage) when the wait elapses without a delivery.
 func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery, error) {
+	if cons == nil || cons.owner == nil {
+		return nil, fmt.Errorf("queue/nats: consumer not initialised")
+	}
+	if err := cons.owner.requireRunnerEpochClaim(); err != nil {
+		return nil, err
+	}
 	// Respect caller cancellation before either phase. FetchNoWait
 	// takes no context (SDK shape) and can stall on a partitioned
 	// NATS for the connection RTT even though loopCtx may already
@@ -660,6 +747,16 @@ func applyDefaults(c Config) Config {
 	if c.KVBucket == "" {
 		c.KVBucket = KVRunLocks
 	}
+	if c.RolloutKVBucket == "" {
+		if c.KVBucket == KVRunLocks {
+			c.RolloutKVBucket = KVRolloutEpochs
+		} else {
+			// A custom run-lock bucket normally denotes another installation
+			// sharing the same NATS account. Keep its epoch authority isolated
+			// without adding a second operator knob.
+			c.RolloutKVBucket = c.KVBucket + "-rollout"
+		}
+	}
 	if c.StreamReplicas == 0 {
 		c.StreamReplicas = DefaultStreamReplicas
 	}
@@ -680,6 +777,9 @@ func applyDefaults(c Config) Config {
 	}
 	if c.SchemaMismatchDelay == 0 {
 		c.SchemaMismatchDelay = SchemaMismatchNakDelay
+	}
+	if c.EpochMismatchDelay == 0 {
+		c.EpochMismatchDelay = EpochMismatchNakDelay
 	}
 	if c.MaxAckPending == 0 {
 		c.MaxAckPending = DefaultMaxAckPending

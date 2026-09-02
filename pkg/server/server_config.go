@@ -352,6 +352,18 @@ type Config struct {
 	// that don't set it.
 	Mode string
 
+	// RunnerEpoch is the generation stamped on every published RunMessage.
+	// Superseded keeps a regressive pod live but out of Service and prevents
+	// ListenAndServe from starting background workers; the queue backend also
+	// rejects publication as a second line of defence.
+	RunnerEpoch    uint64
+	HighWaterEpoch uint64
+	Superseded     bool
+	// ClaimRunnerEpoch runs after the HTTP listener has bound but before the
+	// server starts any background worker or accepts traffic. It returns the
+	// final durable rollout state for this process. Nil is the local-mode path.
+	ClaimRunnerEpoch func() (highWater uint64, superseded bool, err error)
+
 	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose
 	// X-Forwarded-For headers we believe. Empty (the default) means
 	// we never trust forwarded headers — audit IPs come from

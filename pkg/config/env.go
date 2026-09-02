@@ -84,6 +84,12 @@ func loadEnv(cfg *Config) error {
 	if err := lookupDuration("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", &cfg.Runner.SchemaMismatchDelay); err != nil {
 		return err
 	}
+	if err := lookupUint64("ITERION_RUNNER_EPOCH", &cfg.Rollout.RunnerEpoch); err != nil {
+		return err
+	}
+	if err := lookupDuration("ITERION_RUNNER_EPOCH_MISMATCH_DELAY", &cfg.Rollout.EpochMismatchDelay); err != nil {
+		return err
+	}
 
 	delay, err := ShutdownDelayFromEnv(cfg.Server.ShutdownDelay)
 	if err != nil {
@@ -195,6 +201,22 @@ func lookupInt(key string, dst *int) error {
 		return nil
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	*dst = n
+	return nil
+}
+
+// lookupUint64 overlays a non-negative base-10 integer. The rollout epoch is
+// deliberately unsigned so a regressive value cannot survive parsing and be
+// reinterpreted later.
+func lookupUint64(key string, dst *uint64) error {
+	v, ok := lookup(key)
+	if !ok {
+		return nil
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
 	if err != nil {
 		return fmt.Errorf("%s: %w", key, err)
 	}

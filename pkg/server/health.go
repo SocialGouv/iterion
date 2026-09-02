@@ -15,11 +15,13 @@ import (
 
 // healthResponse is the JSON envelope returned by /healthz and /readyz.
 type healthResponse struct {
-	Status  string            `json:"status"`            // "ok" or "degraded"
-	Mode    string            `json:"mode"`              // "local" or "cloud"
-	Version string            `json:"version,omitempty"` // build version
-	Commit  string            `json:"commit,omitempty"`  // build commit
-	Checks  map[string]string `json:"checks,omitempty"`  // per-dependency status (cloud only)
+	Status         string            `json:"status"`            // "ok" or "degraded"
+	Mode           string            `json:"mode"`              // "local" or "cloud"
+	Version        string            `json:"version,omitempty"` // build version
+	Commit         string            `json:"commit,omitempty"`  // build commit
+	Epoch          uint64            `json:"epoch"`
+	HighWaterEpoch uint64            `json:"high_water_epoch"`
+	Checks         map[string]string `json:"checks,omitempty"` // per-dependency status (cloud only)
 	// UsageCap echoes the EFFECTIVE usage-cap policy — the DB-backed
 	// runtime settings laid over the ITERION_USAGE_CAP_* env defaults
 	// (env-only when no settings store is wired). Config, not a secret —
@@ -95,6 +97,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		Mode:           s.deployMode(),
 		Version:        appinfo.Version,
 		Commit:         appinfo.Commit,
+		Epoch:          s.cfg.RunnerEpoch,
+		HighWaterEpoch: s.cfg.HighWaterEpoch,
 		UsageCap:       capPolicy,
 		UsageCapSource: capSource,
 	})
@@ -116,8 +120,19 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		Mode:           s.deployMode(),
 		Version:        appinfo.Version,
 		Commit:         appinfo.Commit,
+		Epoch:          s.cfg.RunnerEpoch,
+		HighWaterEpoch: s.cfg.HighWaterEpoch,
 		UsageCap:       capPolicy,
 		UsageCapSource: capSource,
+	}
+
+	// A regressive generation must never re-enter the Service, even if all
+	// dependencies are healthy. Keep liveness green so operators can inspect
+	// the explicit status instead of watching an opaque CrashLoop.
+	if s.cfg.Superseded {
+		resp.Status = "superseded"
+		writeHealthJSON(w, http.StatusServiceUnavailable, resp)
+		return
 	}
 
 	// Lame-duck first, and without touching a single dependency: this pod

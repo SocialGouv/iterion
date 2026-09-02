@@ -86,16 +86,21 @@ import (
 // both the v10 object and the v11 array, while producers always emit the
 // array. A v10 runner must reject the new payload rather than run with a
 // partially decoded rescue policy.
+// v=12 (2026-09-02): added RunnerEpoch, the generation fence that prevents a
+// stale runner from admitting work published after a rollout cutover. New
+// consumers continue to accept v10/v11 messages as epoch 0; older consumers
+// must reject v12 because ignoring the field would fail the fence open.
 //
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
-// v10 → v11 is additive from the new consumer's perspective: its custom
-// decoder promotes the v10 fallback object to a one-stage chain.
+// v10 → v12 is additive from the new consumer's perspective: its custom
+// decoder promotes the v10 fallback object to a one-stage chain and a missing
+// runner_epoch decodes to the bootstrap epoch 0.
 const MinSchemaVersion = 10
 
 // RunMessage is the JSON envelope published on
@@ -106,6 +111,7 @@ const MinSchemaVersion = 10
 // Field order is stable to keep readable JSON diffs in tests.
 type RunMessage struct {
 	V            int             `json:"v"`
+	RunnerEpoch  uint64          `json:"runner_epoch,omitempty"`
 	RunID        string          `json:"run_id"`
 	WorkflowName string          `json:"workflow_name"`
 	WorkflowHash string          `json:"workflow_hash"`
@@ -435,6 +441,7 @@ func (m *RunMessage) Validate() error {
 // status instead of leaving it `queued` in silence (issue #481).
 type Envelope struct {
 	V              int    `json:"v"`
+	RunnerEpoch    uint64 `json:"runner_epoch,omitempty"`
 	RunID          string `json:"run_id"`
 	TenantID       string `json:"tenant_id"`
 	OwnerID        string `json:"owner_id,omitempty"`
