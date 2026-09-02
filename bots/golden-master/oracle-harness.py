@@ -1172,8 +1172,18 @@ def extension_verdict(ws, gm_rel, base):
     audits nothing.
     """
     def git(*args):
+        # surrogateescape, not "replace": a reference blob that is not valid
+        # UTF-8 raised UnicodeDecodeError here and took the whole mode down
+        # with a traceback, so every legitimate extension in the run was
+        # refused with an opaque message (executed: a refs/ file carrying
+        # 0xff). It failed closed, but "refused, not crashed" is this file's
+        # own standard. The escape is LOSSLESS and round-trippable — distinct
+        # bytes stay distinct strings — which is what "replace" would break:
+        # it maps every bad byte onto one character, and two ledgers differing
+        # only there would compare EQUAL, weakening the append-only check.
         p = subprocess.run(["git", "-C", ws] + list(args),
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True,
+                           errors="surrogateescape", timeout=120)
         return p.returncode, p.stdout, p.stderr
 
     def at(ref, path):
