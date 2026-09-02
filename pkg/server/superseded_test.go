@@ -29,10 +29,15 @@ func TestSupersededServerServesDiagnosticsWithoutStartingWorkers(t *testing.T) {
 		MemoryStore: cloudsched.NewMemoryStore(),
 		listDue:     make(chan struct{}, 1),
 	}
+	claimCalled := make(chan struct{}, 1)
 	srv := New(Config{
-		Bind:          "127.0.0.1",
-		Port:          0,
-		Superseded:    true,
+		Bind:        "127.0.0.1",
+		Port:        0,
+		RunnerEpoch: 3,
+		ClaimRunnerEpoch: func() (uint64, bool, error) {
+			claimCalled <- struct{}{}
+			return 5, true, nil
+		},
 		ScheduledBots: store,
 	}, iterlog.New(iterlog.LevelError, nil))
 
@@ -47,6 +52,29 @@ func TestSupersededServerServesDiagnosticsWithoutStartingWorkers(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /healthz status = %d, want 200", resp.StatusCode)
+	}
+	select {
+	case <-claimCalled:
+	default:
+		t.Fatal("rollout claim was not called")
+	}
+
+	resp, err = client.Get("http://" + srv.Addr() + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz status = %d, want 503", resp.StatusCode)
+	}
+
+	resp, err = client.Get("http://" + srv.Addr() + "/api/server-info")
+	if err != nil {
+		t.Fatalf("GET superseded API: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET superseded API status = %d, want 503", resp.StatusCode)
 	}
 
 	select {

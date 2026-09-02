@@ -77,6 +77,23 @@ func TestReconcileRunnerEpochRetriesRevisionConflict(t *testing.T) {
 	}
 }
 
+func TestObserveRunnerEpochDoesNotAdvance(t *testing.T) {
+	kv := &memoryEpochKV{value: []byte("1"), rev: 4, exists: true}
+	high, stale, err := observeRunnerEpoch(context.Background(), kv, 9)
+	if err != nil || high != 1 || stale {
+		t.Fatalf("observe = high %d stale %t err %v, want 1 false nil", high, stale, err)
+	}
+	if string(kv.value) != "1" || kv.rev != 4 {
+		t.Fatalf("observe mutated KV to value %q rev %d", kv.value, kv.rev)
+	}
+
+	empty := &memoryEpochKV{}
+	high, stale, err = observeRunnerEpoch(context.Background(), empty, 9)
+	if err != nil || high != 0 || stale || empty.exists {
+		t.Fatalf("observe missing = high %d stale %t exists %t err %v, want 0 false false nil", high, stale, empty.exists, err)
+	}
+}
+
 func TestReconcileRunnerEpochMonotonic(t *testing.T) {
 	kv := &memoryEpochKV{}
 	for _, tc := range []struct {
@@ -135,8 +152,18 @@ func TestReconcileRunnerEpochRejectsCorruptHighWaterMark(t *testing.T) {
 }
 
 func TestStampRunnerEpochAndSupersededFence(t *testing.T) {
-	conn := &Conn{cfg: Config{RunnerEpoch: 8}}
+	kv := &memoryEpochKV{value: []byte("7"), rev: 1, exists: true}
+	conn := &Conn{cfg: Config{RunnerEpoch: 8}, rolloutKV: kv}
 	msg := &queue.RunMessage{RunnerEpoch: 1}
+	if err := conn.stampRunnerEpoch(msg); !errors.Is(err, ErrRunnerEpochUnclaimed) {
+		t.Fatalf("pre-claim stamp error = %v, want ErrRunnerEpochUnclaimed", err)
+	}
+	if string(kv.value) != "7" {
+		t.Fatalf("pre-claim stamp advanced high-water to %q", kv.value)
+	}
+	if err := conn.ClaimRunnerEpoch(context.Background()); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
 	if err := conn.stampRunnerEpoch(msg); err != nil {
 		t.Fatal(err)
 	}

@@ -287,10 +287,17 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build events bus: %w", err)
 	}
+	// Prove the durable consumer can be created before advancing the rollout
+	// high-water mark. The handle is inert until Runner.Run starts fetching.
+	preparedConsumer, err := natsConn.PrepareConsumer(rootCtx)
+	if err != nil {
+		return fmt.Errorf("runner: prepare queue consumer: %w", err)
+	}
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                natsConn,
+		PreparedConsumer:    preparedConsumer,
 		Events:              eventsBus,
 		Store:               st,
 		RunnerID:            runnerID,
@@ -327,7 +334,22 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)
 	}
+
+	// Claim only after every fallible dependency and the inert consumer have
+	// been wired. A broken epoch-bump release therefore cannot poison the
+	// durable mark and fence the still-healthy previous generation.
+	if err := natsConn.ClaimRunnerEpoch(rootCtx); err != nil {
+		return fmt.Errorf("runner: claim rollout epoch: %w", err)
+	}
+	selfEpoch, highWaterEpoch = natsConn.RunnerEpoch()
+	r.SetRolloutState(selfEpoch, highWaterEpoch, natsConn.Superseded())
 	health.Set(r.Health)
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("runner").Inc()
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch superseded while bootstrapping — staying live but non-ready; no queue consumer started")
+		<-rootCtx.Done()
+		return nil
+	}
 
 	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck
 	// (let the in-flight run finish) or interrupt (cancel + checkpoint for

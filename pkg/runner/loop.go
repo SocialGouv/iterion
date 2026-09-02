@@ -540,7 +540,12 @@ func dispatchTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, action d
 
 // Config is the runner bootstrap.
 type Config struct {
-	NATS              *natsq.Conn
+	NATS *natsq.Conn
+	// PreparedConsumer, when non-nil, is a durable consumer whose creation was
+	// already proven by the entrypoint before it claims the rollout epoch. It
+	// remains inert until Run starts fetching. Nil preserves the convenient
+	// NewConsumer path for local callers and tests.
+	PreparedConsumer  *natsq.Consumer
 	Store             store.RunStore
 	RunnerID          string
 	WorkDir           string        // base directory for per-run workspaces
@@ -815,9 +820,13 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		cfg.WorkDir = os.TempDir()
 	}
 
-	cons, err := cfg.NATS.NewConsumer(ctx)
-	if err != nil {
-		return nil, err
+	cons := cfg.PreparedConsumer
+	if cons == nil {
+		var err error
+		cons, err = cfg.NATS.NewConsumer(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Run-completion webhook notifier. ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1
 	// relaxes the SSRF guard for self-hosted deployments whose callback
@@ -832,6 +841,18 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		notify.WithAllowPrivate(allowPrivate),
 		notify.WithSigningSecret(secret))
 	return &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}, nil
+}
+
+// SetRolloutState publishes the final epoch claim into runner health just
+// before the entrypoint exposes the Runner to probes or starts Run. It must be
+// called before concurrent use.
+func (r *Runner) SetRolloutState(self, highWater uint64, superseded bool) {
+	if r == nil {
+		return
+	}
+	r.cfg.RunnerEpoch = self
+	r.cfg.HighWaterEpoch = highWater
+	r.cfg.Superseded = superseded
 }
 
 // Run drains the queue until ctx is cancelled. Each iteration fetches

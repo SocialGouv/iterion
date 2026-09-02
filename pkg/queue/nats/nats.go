@@ -141,11 +141,12 @@ type Conn struct {
 	nc             *nats.Conn
 	js             jetstream.JetStream
 	kv             jetstream.KeyValue
-	rolloutKV      jetstream.KeyValue
+	rolloutKV      epochKV
 	cfg            Config
 	logger         *iterlog.Logger
 	highWaterEpoch uint64
 	superseded     bool
+	epochClaimed   bool
 }
 
 // RedeliveryWindow is the worst-case time a healthy queued message can
@@ -215,10 +216,10 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		nc.Close()
 		return nil, err
 	}
-	highWater, superseded, err := reconcileRunnerEpoch(ctx, c.rolloutKV, cfg.RunnerEpoch)
+	highWater, superseded, err := observeRunnerEpoch(ctx, c.rolloutKV, cfg.RunnerEpoch)
 	if err != nil {
 		nc.Close()
-		return nil, fmt.Errorf("queue/nats: reconcile runner epoch: %w", err)
+		return nil, fmt.Errorf("queue/nats: observe runner epoch: %w", err)
 	}
 	c.highWaterEpoch = highWater
 	c.superseded = superseded
@@ -286,8 +287,8 @@ func (c *Conn) JetStream() jetstream.JetStream { return c.js }
 // can layer a CAS lease on top of it without re-resolving the bucket.
 func (c *Conn) KV() jetstream.KeyValue { return c.kv }
 
-// RunnerEpoch reports this process' configured generation and the durable
-// high-water mark observed at startup.
+// RunnerEpoch reports this process' configured generation and the latest
+// durable high-water mark observed by Connect or ClaimRunnerEpoch.
 func (c *Conn) RunnerEpoch() (self, highWater uint64) {
 	if c == nil {
 		return 0, 0
@@ -295,9 +296,9 @@ func (c *Conn) RunnerEpoch() (self, highWater uint64) {
 	return c.cfg.RunnerEpoch, c.highWaterEpoch
 }
 
-// Superseded reports that this process started below the durable high-water
-// mark. Such a process stays alive for honest probes but may neither publish
-// nor consume run messages.
+// Superseded reports that this process is below the durable high-water mark
+// observed by Connect or ClaimRunnerEpoch. Such a process stays alive for
+// honest probes but may neither publish nor consume run messages.
 func (c *Conn) Superseded() bool { return c != nil && c.superseded }
 
 // MaxPayload returns the server-negotiated maximum message size (bytes)
@@ -540,6 +541,7 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func(
 // publishes (the server) doesn't pay the cost of consumer setup.
 type Consumer struct {
 	cons   jetstream.Consumer
+	owner  *Conn
 	cfg    Config
 	logger *iterlog.Logger
 }
@@ -555,11 +557,19 @@ type Consumer struct {
 // stale pod is replaced). CreateOrUpdate applies the current MaxAckPending
 // to the existing durable, so a deploy lifts the cap on the live consumer.
 func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
+	if err := c.requireRunnerEpochClaim(); err != nil {
+		return nil, err
+	}
+	return c.PrepareConsumer(ctx)
+}
+
+// PrepareConsumer creates or updates the durable pull consumer without
+// opening the run-delivery gate. The runner entrypoint uses it as its final
+// fallible dependency check before ClaimRunnerEpoch, then hands the inert
+// consumer to runner.New. Fetching must not begin until the claim succeeds.
+func (c *Conn) PrepareConsumer(ctx context.Context) (*Consumer, error) {
 	if c == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
-	}
-	if c.superseded {
-		return nil, fmt.Errorf("%w: self=%d high_water=%d", ErrRunnerEpochSuperseded, c.cfg.RunnerEpoch, c.highWaterEpoch)
 	}
 	if c.js == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
@@ -576,12 +586,18 @@ func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: consumer: %w", err)
 	}
-	return &Consumer{cons: cons, cfg: c.cfg, logger: c.logger}, nil
+	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
 }
 
 // Fetch pulls a single ready message, blocking up to wait. Returns
 // (nil, ErrNoMessage) when the wait elapses without a delivery.
 func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery, error) {
+	if cons == nil || cons.owner == nil {
+		return nil, fmt.Errorf("queue/nats: consumer not initialised")
+	}
+	if err := cons.owner.requireRunnerEpochClaim(); err != nil {
+		return nil, err
+	}
 	// Respect caller cancellation before either phase. FetchNoWait
 	// takes no context (SDK shape) and can stall on a partitioned
 	// NATS for the connection RTT even though loopCtx may already

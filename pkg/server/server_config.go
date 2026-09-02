@@ -359,6 +359,10 @@ type Config struct {
 	RunnerEpoch    uint64
 	HighWaterEpoch uint64
 	Superseded     bool
+	// ClaimRunnerEpoch runs after the HTTP listener has bound but before the
+	// server starts any background worker or accepts traffic. It returns the
+	// final durable rollout state for this process. Nil is the local-mode path.
+	ClaimRunnerEpoch func() (highWater uint64, superseded bool, err error)
 
 	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose
 	// X-Forwarded-For headers we believe. Empty (the default) means

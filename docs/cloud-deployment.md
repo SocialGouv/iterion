@@ -329,6 +329,12 @@ The correctness boundary is `config.rollout.runnerEpoch`:
   publishing or consuming. Its `/readyz` reports `503 superseded` while
   `/healthz` remains live for diagnosis.
 
+`Connect` only observes that mark. A process claims (and, if needed, advances)
+it after all dependencies and listeners have been proven, immediately before
+serving or fetching. Queue publication and delivery remain fenced until that
+late claim succeeds. A broken epoch-bump release therefore cannot poison the
+mark and prevent the healthy previous generation from restarting.
+
 The epoch and `epochMismatchDelay` are rendered as **literal environment
 values in each PodTemplate**, not in the shared ConfigMap. This is essential:
 if KEDA creates a pod from an old ReplicaSet after the ConfigMap has changed,
@@ -351,8 +357,9 @@ An epoch rollback is intentionally rejected. Do not use `helm rollback` to a
 release with a lower value. Restore an older, fence-aware image as a **new
 release with a higher epoch**. Messages from earlier epochs remain accepted.
 
-All three arrive as the same signal, SIGTERM, so one mechanism covers them
-all. What happens to a run a runner is executing is governed by
+Autoscaling, node turnover and a deploy all arrive as the same signal,
+SIGTERM, so one mechanism covers them all. What happens to a run a runner is
+executing is governed by
 **`config.runner.drainMode`**:
 
 - **`complete`** (default — *lame-duck*): on SIGTERM the runner stops

@@ -248,6 +248,26 @@ func TestRunnerEpochHighWaterRejectsLiveRegression(t *testing.T) {
 		_ = current.JetStream().DeleteKeyValue(cleanupCtx, cfg.RolloutKVBucket)
 		current.Close()
 	})
+	if _, highWater := current.RunnerEpoch(); highWater != 0 {
+		t.Fatalf("Connect advanced high-water to %d before the late claim", highWater)
+	}
+	rolloutKV, err := current.JetStream().KeyValue(ctx, cfg.RolloutKVBucket)
+	if err != nil {
+		t.Fatalf("open rollout KV: %v", err)
+	}
+	if _, err := rolloutKV.Get(ctx, natsq.RunnerEpochHighWaterKey); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("high-water exists before late claim: %v", err)
+	}
+	prepared, err := current.PrepareConsumer(ctx)
+	if err != nil {
+		t.Fatalf("prepare consumer before claim: %v", err)
+	}
+	if _, err := prepared.Fetch(ctx, time.Millisecond); !errors.Is(err, natsq.ErrRunnerEpochUnclaimed) {
+		t.Fatalf("prepared consumer fetched before claim: %v", err)
+	}
+	if err := current.ClaimRunnerEpoch(ctx); err != nil {
+		t.Fatalf("claim current epoch: %v", err)
+	}
 
 	cfg.RunnerEpoch = 8
 	regressive, err := natsq.Connect(ctx, cfg)
@@ -292,6 +312,10 @@ func schemaRolloutConn(t *testing.T, uri string) (*natsq.Conn, string) {
 	})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
+	}
+	if err := conn.ClaimRunnerEpoch(context.Background()); err != nil {
+		conn.Close()
+		t.Fatalf("claim rollout epoch: %v", err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

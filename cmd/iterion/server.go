@@ -299,19 +299,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Seed the hosted marketplace from the image's bot catalog (bots/, or
-	// ITERION_MARKETPLACE_SEED_PATHS) so the public Marketplace view lists
-	// iterion's first-class bots out of the box. Best-effort + idempotent;
-	// user-submitted (git/upload) entries are never clobbered. No-op when
-	// the registry is disabled or the catalog isn't shipped in the image.
-	if stores.marketplace != nil {
-		if n, sErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); sErr != nil {
-			logger.Warn("cloud: marketplace seed failed: %v", sErr)
-		} else if n > 0 {
-			logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
-		}
-	}
-
 	// The auth stack is built before the publisher so the publisher can
 	// resolve team → org for spend attribution (RunMessage.OrgID).
 	authStack, err := buildAuthStack(rootCtx, cfg, st, stores, logger)
@@ -514,24 +501,48 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv := server.New(server.Config{
-		Port:                   serverOpts.port,
-		Bind:                   serverOpts.bind,
-		Bots:                   server.BotsConfig{Paths: botsPaths},
-		ExamplesDir:            examplesDir,
-		WorkDir:                serverOpts.dir,
-		Store:                  st,
-		CloudBoardFor:          func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
-		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
-		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),
-		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),
-		OrgPurgeSweeper:        orgPurgeSweeper,
-		Alerts:                 alertSettings,
-		LaunchPublisher:        pub,
-		StreamSource:           streamSrc,
-		Mode:                   string(iterconfig.ModeCloud),
-		RunnerEpoch:            selfEpoch,
-		HighWaterEpoch:         highWaterEpoch,
-		Superseded:             natsConn.Superseded(),
+		Port:                  serverOpts.port,
+		Bind:                  serverOpts.bind,
+		Bots:                  server.BotsConfig{Paths: botsPaths},
+		ExamplesDir:           examplesDir,
+		WorkDir:               serverOpts.dir,
+		Store:                 st,
+		CloudBoardFor:         func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
+		CloudBoardCoordinator: boardmongo.NewCoordinator(st.DB()),
+		TriggerStore:          trigger.NewMongoSubscriptionStore(st.DB()),
+		ScheduledBots:         cloudsched.NewMongoStore(st.DB()),
+		OrgPurgeSweeper:       orgPurgeSweeper,
+		Alerts:                alertSettings,
+		LaunchPublisher:       pub,
+		StreamSource:          streamSrc,
+		Mode:                  string(iterconfig.ModeCloud),
+		RunnerEpoch:           selfEpoch,
+		HighWaterEpoch:        highWaterEpoch,
+		Superseded:            natsConn.Superseded(),
+		ClaimRunnerEpoch: func() (uint64, bool, error) {
+			wasSuperseded := natsConn.Superseded()
+			if err := natsConn.ClaimRunnerEpoch(rootCtx); err != nil {
+				return 0, false, err
+			}
+			self, highWater := natsConn.RunnerEpoch()
+			superseded := natsConn.Superseded()
+			if superseded && !wasSuperseded {
+				mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
+				logger.WithFields(map[string]any{"self_epoch": self, "high_water_epoch": highWater}).Error("server: epoch superseded while bootstrapping — entering diagnostic-only mode")
+			}
+			// Seed only after the final claim. An older process may have looked
+			// current at Connect and become superseded while wiring; letting it
+			// seed earlier could downgrade the hosted catalog after the new image
+			// had already populated it.
+			if !superseded && stores.marketplace != nil {
+				if n, seedErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); seedErr != nil {
+					logger.Warn("cloud: marketplace seed failed: %v", seedErr)
+				} else if n > 0 {
+					logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
+				}
+			}
+			return highWater, superseded, nil
+		},
 		AuthService:            authStack.authSvc,
 		AuthSigner:             authStack.signer,
 		OIDCRegistry:           registry,

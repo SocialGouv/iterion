@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +46,21 @@ func (s *Server) ListenAndServe() error {
 	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
 		s.cfg.Port = tcpAddr.Port
 	}
+	// The listener bind is the last fallible boot step. Only now may a new
+	// generation advance the durable high-water mark: a bad dependency,
+	// configuration, metrics bind, or HTTP bind must leave the previous
+	// generation restartable. No request or background worker can race this
+	// callback because Serve has not started yet.
+	if s.cfg.ClaimRunnerEpoch != nil {
+		highWater, superseded, claimErr := s.cfg.ClaimRunnerEpoch()
+		if claimErr != nil {
+			_ = ln.Close()
+			close(s.addrReady)
+			return fmt.Errorf("server: claim rollout epoch: %w", claimErr)
+		}
+		s.cfg.HighWaterEpoch = highWater
+		s.cfg.Superseded = superseded
+	}
 	close(s.addrReady)
 	// A process that started below the durable rollout high-water mark is
 	// deliberately kept alive so /healthz and /readyz explain why the pod is
@@ -54,6 +71,16 @@ func (s *Server) ListenAndServe() error {
 	// out of the Service and the queue layer remains the publication backstop.
 	if s.cfg.Superseded {
 		s.logger.Error("server: superseded epoch — background workers disabled; serving diagnostics only")
+		s.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/healthz":
+				s.handleHealthz(w, r)
+			case "/readyz":
+				s.handleReadyz(w, r)
+			default:
+				http.Error(w, "server generation superseded", http.StatusServiceUnavailable)
+			}
+		})
 		return s.server.Serve(ln)
 	}
 	// Sweep abandoned upload staging dirs in the background. Without

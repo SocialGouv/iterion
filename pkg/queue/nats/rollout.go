@@ -16,17 +16,32 @@ import (
 // entrypoints and API layers can surface the condition without string matching.
 var ErrRunnerEpochSuperseded = errors.New("queue/nats: runner epoch superseded")
 
+// ErrRunnerEpochUnclaimed marks a connection whose process has not completed
+// bootstrap and claimed its configured generation yet. Run queue operations
+// stay fenced until ClaimRunnerEpoch succeeds.
+var ErrRunnerEpochUnclaimed = errors.New("queue/nats: runner epoch not claimed")
+
 func (c *Conn) stampRunnerEpoch(msg *queue.RunMessage) error {
+	if err := c.requireRunnerEpochClaim(); err != nil {
+		return err
+	}
+	if msg == nil {
+		return fmt.Errorf("queue/nats: invalid RunMessage: queue: nil RunMessage")
+	}
+	msg.RunnerEpoch = c.cfg.RunnerEpoch
+	return nil
+}
+
+func (c *Conn) requireRunnerEpochClaim() error {
 	if c == nil {
 		return fmt.Errorf("queue/nats: connection not initialised")
 	}
 	if c.superseded {
 		return fmt.Errorf("%w: self=%d high_water=%d", ErrRunnerEpochSuperseded, c.cfg.RunnerEpoch, c.highWaterEpoch)
 	}
-	if msg == nil {
-		return fmt.Errorf("queue/nats: invalid RunMessage: queue: nil RunMessage")
+	if !c.epochClaimed {
+		return fmt.Errorf("%w: self=%d observed_high_water=%d", ErrRunnerEpochUnclaimed, c.cfg.RunnerEpoch, c.highWaterEpoch)
 	}
-	msg.RunnerEpoch = c.cfg.RunnerEpoch
 	return nil
 }
 
@@ -36,6 +51,28 @@ type epochKV interface {
 	Get(context.Context, string) (jetstream.KeyValueEntry, error)
 	Create(context.Context, string, []byte, ...jetstream.KVCreateOpt) (uint64, error)
 	Update(context.Context, string, []byte, uint64) (uint64, error)
+}
+
+// observeRunnerEpoch reads the durable high-water mark without mutating it.
+// Connect uses this to reject generations that are already stale while
+// leaving a prospective epoch bump harmless until the process has completed
+// every other fallible bootstrap step.
+func observeRunnerEpoch(ctx context.Context, kv epochKV, self uint64) (highWater uint64, superseded bool, err error) {
+	if kv == nil {
+		return 0, false, fmt.Errorf("rollout KV is not initialised")
+	}
+	entry, err := kv.Get(ctx, RunnerEpochHighWaterKey)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read high-water mark: %w", err)
+	}
+	observed, err := strconv.ParseUint(strings.TrimSpace(string(entry.Value())), 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("parse high-water mark %q: %w", entry.Value(), err)
+	}
+	return observed, self < observed, nil
 }
 
 // reconcileRunnerEpoch creates or monotonically advances the high-water mark.
@@ -80,4 +117,26 @@ func reconcileRunnerEpoch(ctx context.Context, kv epochKV, self uint64) (highWat
 			}
 		}
 	}
+}
+
+// ClaimRunnerEpoch creates or advances the durable high-water mark after the
+// caller has completed bootstrap. It is intentionally separate from Connect:
+// a release that cannot bind its listeners or wire its dependencies must not
+// permanently fence the still-healthy previous generation.
+//
+// Callers must invoke this before publishing runs or starting a queue
+// consumer. The operation is idempotent and a concurrent higher claim turns
+// this connection into a superseded one without lowering the mark.
+func (c *Conn) ClaimRunnerEpoch(ctx context.Context) error {
+	if c == nil || c.rolloutKV == nil {
+		return fmt.Errorf("queue/nats: rollout KV is not initialised")
+	}
+	highWater, superseded, err := reconcileRunnerEpoch(ctx, c.rolloutKV, c.cfg.RunnerEpoch)
+	if err != nil {
+		return fmt.Errorf("queue/nats: claim runner epoch: %w", err)
+	}
+	c.highWaterEpoch = highWater
+	c.superseded = superseded
+	c.epochClaimed = true
+	return nil
 }
