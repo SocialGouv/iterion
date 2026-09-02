@@ -244,3 +244,177 @@ func TestGitHubWebhook_ReviewThreadReplyPreLaneConfigInert(t *testing.T) {
 		t.Fatalf("pre-lane config must filter until re-provision: code=%d calls=%d", w.Code, calls)
 	}
 }
+
+// Every inline comment of a bot review echoes back as a thread-OPENING
+// pull_request_review_comment (no in_reply_to): nobody can already be in a
+// thread this comment creates, so the lane filters it from the payload
+// alone — no store read, no forge fetch, the gate is never invoked.
+func TestGitHubWebhook_ReviewThreadTopLevelCommentFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	launches, gates := 0, 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launches++
+		return "run-x", nil
+	}
+	s.webhookPRForgeReviewReplyGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedReviewComment, string) (bool, string, string, error) {
+		gates++
+		return true, "", "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.EventAllowlist = []string{"issue_comment", "pull_request", "pull_request_review_comment"}
+
+	body := `{
+  "action": "created",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "comment": {"id": 9001, "body": "inline note on a diff line",
+    "html_url": "https://github.com/acme/widgets/pull/7#discussion_r9001",
+    "path": "pkg/x/y.go", "user": {"login": "alice"}},
+  "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
+    "html_url": "https://github.com/acme/widgets/pull/7",
+    "head": {"sha": "abc123", "ref": "feature/x"}, "base": {"ref": "main"}},
+  "sender": {"login": "alice"}
+}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderReviewComment, pt))
+	if w.Code != http.StatusOK || launches != 0 || gates != 0 {
+		t.Fatalf("thread-opening comment must filter payload-only: code=%d launches=%d gates=%d", w.Code, launches, gates)
+	}
+}
+
+// fakeThreadAPI drives reviewReplyGateWithAPI without a forge.
+type fakeThreadAPI struct {
+	comments  []forge.PRReviewComment
+	listErr   error
+	perm      string
+	permErr   error
+	permCalls int
+}
+
+func (f *fakeThreadAPI) WhoAmI(context.Context) (forge.Identity, error) {
+	return forge.Identity{}, nil
+}
+func (f *fakeThreadAPI) CollaboratorPermission(context.Context, string, string) (string, error) {
+	f.permCalls++
+	return f.perm, f.permErr
+}
+func (f *fakeThreadAPI) GetPullRequest(context.Context, string, int) (forge.PullRef, error) {
+	return forge.PullRef{}, nil
+}
+func (f *fakeThreadAPI) ListPRReviewComments(context.Context, string, int) ([]forge.PRReviewComment, error) {
+	return f.comments, f.listErr
+}
+
+// The REAL gate core (not the handler stub): thread-membership filter,
+// bot-in-thread classification, allowlist vs role authorization, and error
+// propagation, on a fake thread API.
+func TestReviewReplyGateWithAPI(t *testing.T) {
+	newGateServer := func(t *testing.T) *Server {
+		s := newWebhookTestServer(t)
+		s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
+			return login == "revi-bot"
+		}
+		return s
+	}
+	p := prforge.ParsedReviewComment{ProjectPath: "acme/widgets", PRNumber: 7, CommentID: 9002, ThreadRootID: 9001, AuthorLogin: "alice"}
+	botThread := []forge.PRReviewComment{
+		{ID: 9001, Author: "revi-bot", Body: "the SSRF is reachable", CreatedAt: "2026-09-02T10:00:00Z"},
+		{ID: 9002, InReplyTo: 9001, Author: "alice", Body: "why?", CreatedAt: "2026-09-02T10:05:00Z"},
+		{ID: 777, Author: "mallory", Body: "unrelated thread", CreatedAt: "2026-09-02T09:00:00Z"},
+	}
+
+	t.Run("allowlist authorizes without a role probe", func(t *testing.T) {
+		s := newGateServer(t)
+		api := &fakeThreadAPI{comments: botThread}
+		ok, transcript, reason, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || !ok || reason != "allowlist" {
+			t.Fatalf("ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("allowlist path must not probe the role: %d calls", api.permCalls)
+		}
+		if !strings.Contains(transcript, "revi-bot (you, the bot)") || !strings.Contains(transcript, "the SSRF is reachable") {
+			t.Fatalf("transcript must label the bot's anchor: %q", transcript)
+		}
+		if strings.Contains(transcript, "unrelated thread") {
+			t.Fatalf("transcript leaked another thread: %q", transcript)
+		}
+	})
+
+	t.Run("role gate", func(t *testing.T) {
+		s := newGateServer(t)
+		ok, _, reason, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, &fakeThreadAPI{comments: botThread, perm: "write"})
+		if err != nil || !ok || reason != "role" {
+			t.Fatalf("write>=developer must pass: ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		ok, _, reason, err = s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, &fakeThreadAPI{comments: botThread, perm: "read"})
+		if err != nil || ok || !strings.HasPrefix(reason, "replier not authorized") {
+			t.Fatalf("read<developer must refuse: ok=%v reason=%q err=%v", ok, reason, err)
+		}
+	})
+
+	t.Run("human-only thread never triggers", func(t *testing.T) {
+		s := newGateServer(t)
+		api := &fakeThreadAPI{comments: []forge.PRReviewComment{
+			{ID: 9001, Author: "bob", Body: "top-level human note"},
+			{ID: 9002, InReplyTo: 9001, Author: "alice", Body: "why?"},
+		}}
+		ok, _, reason, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || ok || !strings.HasPrefix(reason, "not a bot review thread") {
+			t.Fatalf("ok=%v reason=%q err=%v", ok, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("thread gate must refuse before any authz probe: %d calls", api.permCalls)
+		}
+	})
+
+	t.Run("infra errors propagate", func(t *testing.T) {
+		s := newGateServer(t)
+		if _, _, _, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{}, p, &fakeThreadAPI{listErr: fmt.Errorf("boom")}); err == nil {
+			t.Fatal("list error must propagate, not filter")
+		}
+		if _, _, _, err := s.reviewReplyGateWithAPI(context.Background(), webhooks.Config{}, p, &fakeThreadAPI{comments: botThread, permErr: fmt.Errorf("boom")}); err == nil {
+			t.Fatal("permission error must propagate, not filter")
+		}
+	})
+}
+
+// classifyReviewThread invariants the gate's security half rests on: the
+// trigger comment can never self-certify the thread as the bot's, and the
+// transcript obeys the shared anchor+newest cap.
+func TestClassifyReviewThread(t *testing.T) {
+	isBot := func(login string) bool { return login == "revi-bot" }
+	p := prforge.ParsedReviewComment{CommentID: 9002, ThreadRootID: 9001}
+
+	t.Run("trigger comment never counts as the bot", func(t *testing.T) {
+		botInThread, _ := classifyReviewThread([]forge.PRReviewComment{
+			{ID: 9001, Author: "bob", Body: "human root"},
+			{ID: 9002, InReplyTo: 9001, Author: "revi-bot", Body: "trigger itself"},
+		}, p, isBot)
+		if botInThread {
+			t.Fatal("a bot-authored trigger must not certify its own thread")
+		}
+	})
+
+	t.Run("transcript capped by the shared budget", func(t *testing.T) {
+		big := strings.Repeat("x", 4000)
+		comments := []forge.PRReviewComment{{ID: 9001, Author: "revi-bot", Body: "anchor: " + big}}
+		for i := int64(0); i < 6; i++ {
+			comments = append(comments, forge.PRReviewComment{ID: 9100 + i, InReplyTo: 9001, Author: "alice", Body: big})
+		}
+		botInThread, transcript := classifyReviewThread(comments, p, isBot)
+		if !botInThread {
+			t.Fatal("bot anchor must certify the thread")
+		}
+		if len(transcript) > maxThreadContextChars {
+			t.Fatalf("transcript exceeds the shared cap: %d > %d", len(transcript), maxThreadContextChars)
+		}
+		if !strings.Contains(transcript, "earlier notes omitted") {
+			t.Fatalf("over-budget transcript must carry the omission marker")
+		}
+		if !strings.HasPrefix(transcript, "revi-bot (you, the bot)") {
+			t.Fatalf("the thread anchor must be kept first: %q", transcript[:80])
+		}
+	})
+}

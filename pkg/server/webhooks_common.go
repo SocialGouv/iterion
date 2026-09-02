@@ -316,6 +316,34 @@ func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, 
 	return false
 }
 
+// iterionBotAuthorPredicate gives the same verdict as isIterionForgeBotAuthor
+// as a cheap per-login comparator, for call sites that classify MANY logins in
+// one delivery (a review-thread walk): the connection store is read once, not
+// once per login. Honours the webhookIterionBotAuthor test seam.
+func (s *Server) iterionBotAuthorPredicate(ctx context.Context, cfg webhooks.Config) func(string) bool {
+	if s.webhookIterionBotAuthor != nil {
+		return func(login string) bool { return s.webhookIterionBotAuthor(ctx, cfg, login) }
+	}
+	logins := iterionBotLogins(cfg, forge.Connection{})
+	if conn, ok := s.webhookForgeConnection(ctx, cfg); ok {
+		// The full set: iterionBotLogins starts from the configured
+		// identities, so this supersedes the zero-connection list.
+		logins = iterionBotLogins(cfg, conn)
+	}
+	return func(login string) bool {
+		login = strings.TrimSpace(login)
+		if login == "" {
+			return false
+		}
+		for _, l := range logins {
+			if strings.EqualFold(login, l) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // iterionBotLogins is THE definition of "iterion's own identity on this
 // webhook's forge" — the single set both consumers read: the bot-author
 // skip (is this event's actor the bot?) and the re-request-review trigger

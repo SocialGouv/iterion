@@ -23,8 +23,11 @@ entries there:
 - **Reply to an inline suggestion** (`pull_request_review_comment`,
   action created): `handlePRForgeReviewThreadReply`
   ([pkg/server/webhooks_prforge.go](../pkg/server/webhooks_prforge.go))
-  filters (open PR, event/project allowlists), runs the loop-guard
-  FIRST and without forge I/O (`isIterionForgeBotAuthor` — the bot's
+  filters (open PR, event/project allowlists), drops thread-OPENING
+  comments from the payload alone (`in_reply_to` empty ⇒ nobody is in
+  that thread yet — every inline comment of a bot review echoes back
+  as one, so this spares the whole fetch), runs the loop-guard next,
+  still without forge I/O (`isIterionForgeBotAuthor` — the bot's
   own answer echoes back as this very event), requires the converse
   bot in the webhook scope (`roleBots().ReviConverse` +
   `cfg.AllowsBot`), then gates: the thread is fetched
@@ -32,7 +35,9 @@ entries there:
   comment by the bot identity — a human↔human thread never triggers —
   and the replier must clear `authorized_repliers` or
   `min_replier_role`. The launch carries `converse_question` (the
-  reply body), `thread_context` (the thread transcript) and
+  reply body), `thread_context` (the thread transcript, bot entries
+  labelled, capped by the same 16k anchor+newest budget as the GitLab
+  lane — `webhooks.CapTranscript`) and
   `discussion_id` = the **thread root** comment id — exactly what
   GitHub's `/pulls/{n}/comments/{id}/replies` endpoint wants (the
   bot's `forge-reply.md` §4). Idempotency: one launch per reply

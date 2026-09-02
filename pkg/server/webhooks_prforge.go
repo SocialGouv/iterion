@@ -388,8 +388,17 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 		filtered("out of scope (not a new open-PR review comment / event / project)")
 		return
 	}
-	// Loop-guard FIRST and without forge I/O: the converse bot answers with
-	// the same PAT identity, so its own reply echoes back as this event.
+	// A thread-opening comment roots its own thread: nobody — the bot
+	// included — is in that thread yet, so it can never be a reply to the
+	// bot. Decidable from the payload alone, before any I/O; every inline
+	// comment of a bot review echoes back as one of these.
+	if p.ThreadRootID == p.CommentID {
+		filtered("thread-opening comment (not a reply)")
+		return
+	}
+	// Loop-guard next, still without forge I/O: the converse bot answers
+	// with the same PAT identity, so its own reply echoes back as this
+	// event.
 	if s.isIterionForgeBotAuthor(ctx, cfg, p.AuthorLogin) {
 		filtered("self reply (loop-guard)")
 		return
@@ -463,11 +472,7 @@ func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext st
 }
 
 // realWebhookPRForgeReviewReplyGate is the production reply gate: resolve
-// the bot's forge token, fetch the PR's review comments, keep only the
-// reply's thread, and authorize BOTH halves — the thread must be one of
-// iterion's own (a comment by the bot identity in it; a human↔human thread
-// never triggers), and the replier must clear the allowlist or the webhook's
-// MinReplierRole. Returns the thread transcript for the bot's grounding.
+// the bot's forge token and hand the thread work to reviewReplyGateWithAPI.
 // ok=false + reason for benign refusals; err only for infra failure.
 func (s *Server) realWebhookPRForgeReviewReplyGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedReviewComment, botID string) (bool, string, string, error) {
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
@@ -483,33 +488,59 @@ func (s *Server) realWebhookPRForgeReviewReplyGate(ctx context.Context, cfg webh
 	if !ok {
 		return false, "", "review-thread conversations are not supported on this provider yet", nil
 	}
+	return s.reviewReplyGateWithAPI(ctx, cfg, p, api)
+}
+
+// reviewReplyGateWithAPI is the token-free core of the reply gate — split
+// from the wrapper so tests drive it with a fake thread API. It fetches the
+// PR's review comments, keeps only the reply's thread, and authorizes BOTH
+// halves: the thread must be one of iterion's own (a comment by the bot
+// identity in it; a human↔human thread never triggers), and the replier must
+// clear the allowlist or the webhook's MinReplierRole. Returns the thread
+// transcript for the bot's grounding.
+func (s *Server) reviewReplyGateWithAPI(ctx context.Context, cfg webhooks.Config, p prforge.ParsedReviewComment, api prforgeReviewThreadAPI) (bool, string, string, error) {
 	comments, err := api.ListPRReviewComments(ctx, p.ProjectPath, int(p.PRNumber))
 	if err != nil {
 		return false, "", "", err
 	}
-	var transcript strings.Builder
-	botInThread := false
-	for _, c := range comments {
-		if c.ID != p.ThreadRootID && c.InReplyTo != p.ThreadRootID {
-			continue
-		}
-		if c.ID != p.CommentID && s.isIterionForgeBotAuthor(ctx, cfg, c.Author) {
-			botInThread = true
-		}
-		fmt.Fprintf(&transcript, "%s (%s):\n%s\n---\n", c.Author, c.CreatedAt, strings.TrimSpace(c.Body))
-	}
+	botInThread, transcript := classifyReviewThread(comments, p, s.iterionBotAuthorPredicate(ctx, cfg))
 	if !botInThread {
 		return false, "", "not a bot review thread (no iterion comment in it)", nil
 	}
 	if prforgeInAllowlist(cfg.AuthorizedRepliers, p.AuthorLogin) {
-		return true, transcript.String(), "allowlist", nil
+		return true, transcript, "allowlist", nil
 	}
 	perm, err := api.CollaboratorPermission(ctx, p.ProjectPath, p.AuthorLogin)
 	if err != nil {
 		return false, "", "", err
 	}
 	if prforgePermRank(perm) >= replierMinRoleRank(cfg.MinReplierRole) {
-		return true, transcript.String(), "role", nil
+		return true, transcript, "role", nil
 	}
 	return false, "", "replier not authorized: " + p.AuthorLogin, nil
+}
+
+// classifyReviewThread keeps only the reply's thread out of the PR's review
+// comments and decides the gate's thread half: whether the bot identity
+// participates in it — the trigger comment itself never counts, so a thread
+// where only the human's reply exists stays untriggerable — plus the
+// transcript, bot entries labelled and the whole capped by the same
+// anchor+newest budget as the GitLab twin (maxThreadContextChars).
+func classifyReviewThread(comments []forge.PRReviewComment, p prforge.ParsedReviewComment, isBot func(string) bool) (bool, string) {
+	botInThread := false
+	rendered := make([]string, 0, len(comments))
+	for _, c := range comments {
+		if c.ID != p.ThreadRootID && c.InReplyTo != p.ThreadRootID {
+			continue
+		}
+		who := c.Author
+		if isBot(c.Author) {
+			if c.ID != p.CommentID {
+				botInThread = true
+			}
+			who += " (you, the bot)"
+		}
+		rendered = append(rendered, fmt.Sprintf("%s (%s):\n%s", who, c.CreatedAt, strings.TrimSpace(c.Body)))
+	}
+	return botInThread, webhooks.CapTranscript(rendered, maxThreadContextChars)
 }
