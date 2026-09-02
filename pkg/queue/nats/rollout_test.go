@@ -13,10 +13,11 @@ import (
 )
 
 type memoryEpochKV struct {
-	mu     sync.Mutex
-	value  []byte
-	rev    uint64
-	exists bool
+	mu           sync.Mutex
+	value        []byte
+	rev          uint64
+	exists       bool
+	conflictOnce bool
 }
 
 type memoryEpochEntry struct {
@@ -56,12 +57,24 @@ func (m *memoryEpochKV) Create(_ context.Context, _ string, value []byte, _ ...j
 func (m *memoryEpochKV) Update(_ context.Context, _ string, value []byte, revision uint64) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.conflictOnce {
+		m.conflictOnce = false
+		return 0, jetstream.ErrKeyRevisionMismatch
+	}
 	if !m.exists || revision != m.rev {
-		return 0, jetstream.ErrKeyExists
+		return 0, jetstream.ErrKeyRevisionMismatch
 	}
 	m.rev++
 	m.value = append([]byte(nil), value...)
 	return m.rev, nil
+}
+
+func TestReconcileRunnerEpochRetriesRevisionConflict(t *testing.T) {
+	kv := &memoryEpochKV{value: []byte("1"), rev: 1, exists: true, conflictOnce: true}
+	high, stale, err := reconcileRunnerEpoch(context.Background(), kv, 2)
+	if err != nil || high != 2 || stale {
+		t.Fatalf("reconcile after CAS conflict = high %d stale %t err %v, want 2 false nil", high, stale, err)
+	}
 }
 
 func TestReconcileRunnerEpochMonotonic(t *testing.T) {

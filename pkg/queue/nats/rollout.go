@@ -71,7 +71,7 @@ func reconcileRunnerEpoch(ctx context.Context, kv epochKV, self uint64) (highWat
 		default:
 			if _, updateErr := kv.Update(ctx, RunnerEpochHighWaterKey, want, entry.Revision()); updateErr == nil {
 				return self, false, nil
-			} else if errors.Is(updateErr, jetstream.ErrKeyExists) {
+			} else if errors.Is(updateErr, jetstream.ErrKeyRevisionMismatch) {
 				// Another process won the CAS. Re-read: it may have advanced
 				// above us, in which case this process is now superseded.
 				continue

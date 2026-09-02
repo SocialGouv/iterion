@@ -113,6 +113,161 @@ func TestEpochRolloutOldRunnerDefersToNewRunner(t *testing.T) {
 	}
 }
 
+func TestEpochRolloutFinalDeliveryIsRecoverable(t *testing.T) {
+	uri := schemaRolloutNATSURI(t)
+	conn, _ := schemaRolloutConn(t, uri)
+	ctx := context.Background()
+	runID := fmt.Sprintf("run-future-epoch-final-%d", time.Now().UnixNano())
+	tenantID := "tenant-epoch-final"
+	publishedAt := time.Now().UTC()
+
+	fs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := fs.SaveRun(ctx, &store.Run{
+		FormatVersion: store.RunFormatVersion,
+		ID:            runID,
+		WorkflowName:  "wf-epoch-final",
+		Status:        store.RunStatusQueued,
+		CreatedAt:     publishedAt,
+		UpdatedAt:     publishedAt,
+		TenantID:      tenantID,
+		OwnerID:       "owner-epoch-final",
+	}); err != nil {
+		t.Fatalf("save queued run: %v", err)
+	}
+
+	wire := &queue.RunMessage{
+		V:              queue.SchemaVersion,
+		RunnerEpoch:    1,
+		RunID:          runID,
+		WorkflowName:   "wf-epoch-final",
+		IRCompiled:     json.RawMessage(`{}`),
+		TenantID:       tenantID,
+		OwnerID:        "owner-epoch-final",
+		PublishedAtRFC: publishedAt.Format(time.RFC3339Nano),
+	}
+	payload, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload, jetstream.WithMsgID(runID)); err != nil {
+		t.Fatalf("publish future-epoch payload: %v", err)
+	}
+	cons, err := conn.NewConsumer(ctx)
+	if err != nil {
+		t.Fatalf("consumer: %v", err)
+	}
+	r := &Runner{cfg: Config{
+		NATS:               conn,
+		Store:              fs,
+		Logger:             iterlog.Nop(),
+		RunnerEpoch:        0,
+		EpochMismatchDelay: schemaRolloutTestNakDelay,
+	}}
+
+	d1, err := cons.Fetch(ctx, 5*time.Second)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if msg, ok := r.decodeOrTerm(d1); ok || msg != nil {
+		t.Fatal("epoch-0 runner admitted epoch-1 first delivery")
+	}
+	d2, err := cons.Fetch(ctx, 5*time.Second)
+	if err != nil {
+		t.Fatalf("final fetch: %v", err)
+	}
+	if got := d2.NumDelivered(); got != 2 {
+		t.Fatalf("final NumDelivered = %d, want 2", got)
+	}
+	if msg, ok := r.decodeOrTerm(d2); ok || msg != nil {
+		t.Fatal("epoch-0 runner admitted epoch-1 final delivery")
+	}
+	if _, err := cons.Fetch(ctx, 300*time.Millisecond); !errors.Is(err, natsq.ErrNoMessage) {
+		t.Fatalf("future-epoch delivery remained after Term: %v", err)
+	}
+
+	run, err := fs.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load parked run: %v", err)
+	}
+	if run.Status != store.RunStatusFailedResumable {
+		t.Fatalf("run status = %q, want %q", run.Status, store.RunStatusFailedResumable)
+	}
+	if !strings.Contains(run.Error, "runner epoch mismatch") || !strings.Contains(run.Error, "epoch 1") {
+		t.Fatalf("run error %q must name the epoch mismatch and recovery generation", run.Error)
+	}
+	parked, _, err := conn.ListDLQ(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list DLQ: %v", err)
+	}
+	if len(parked) != 1 {
+		t.Fatalf("DLQ holds %d messages, want 1", len(parked))
+	}
+	_, raw, err := conn.PeekDLQ(ctx, parked[0].Seq)
+	if err != nil {
+		t.Fatalf("peek DLQ: %v", err)
+	}
+	if string(raw) != string(payload) {
+		t.Fatalf("epoch DLQ payload altered:\n got %s\nwant %s", raw, payload)
+	}
+	env, err := queue.PeekEnvelope(raw)
+	if err != nil || env.RunnerEpoch != 1 {
+		t.Fatalf("parked envelope epoch = %d (err %v), want 1", env.RunnerEpoch, err)
+	}
+}
+
+func TestRunnerEpochHighWaterRejectsLiveRegression(t *testing.T) {
+	uri := schemaRolloutNATSURI(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	cfg := natsq.Config{
+		URL:             uri,
+		StreamName:      "ITERION_RUNS_EPOCH_TEST_" + suffix,
+		DLQStream:       "ITERION_RUNS_EPOCH_DLQ_TEST_" + suffix,
+		KVBucket:        "test-epoch-run-locks-" + suffix,
+		RolloutKVBucket: "test-epoch-high-water-" + suffix,
+		ConsumerName:    "test-epoch-runners-" + suffix,
+		MaxDeliver:      2,
+		AckWait:         2 * time.Second,
+		MaxAge:          time.Hour,
+		RunnerEpoch:     9,
+		Logger:          iterlog.Nop(),
+	}
+	current, err := natsq.Connect(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect current epoch: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = current.JetStream().DeleteStream(cleanupCtx, cfg.StreamName)
+		_ = current.JetStream().DeleteStream(cleanupCtx, cfg.DLQStream)
+		_ = current.JetStream().DeleteKeyValue(cleanupCtx, cfg.KVBucket)
+		_ = current.JetStream().DeleteKeyValue(cleanupCtx, cfg.RolloutKVBucket)
+		current.Close()
+	})
+
+	cfg.RunnerEpoch = 8
+	regressive, err := natsq.Connect(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect regressive epoch: %v", err)
+	}
+	defer regressive.Close()
+	self, highWater := regressive.RunnerEpoch()
+	if self != 8 || highWater != 9 || !regressive.Superseded() {
+		t.Fatalf("regressive state = self %d high-water %d superseded %t, want 8 9 true", self, highWater, regressive.Superseded())
+	}
+	msg := &queue.RunMessage{V: queue.SchemaVersion, RunID: "must-not-publish"}
+	if _, err := regressive.PublishRun(ctx, msg); !errors.Is(err, natsq.ErrRunnerEpochSuperseded) {
+		t.Fatalf("regressive publish error = %v, want ErrRunnerEpochSuperseded", err)
+	}
+	if _, err := regressive.NewConsumer(ctx); !errors.Is(err, natsq.ErrRunnerEpochSuperseded) {
+		t.Fatalf("regressive consumer error = %v, want ErrRunnerEpochSuperseded", err)
+	}
+}
+
 // schemaRolloutConn wires a Conn with a MaxDeliver of 2 so the exhaustion
 // path is one redelivery away, on streams/buckets unique to this test run
 // (leftovers from a previous run on a reused broker must not overlap).
