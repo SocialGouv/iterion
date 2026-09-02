@@ -145,21 +145,36 @@ func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff tim
 	if limit <= 0 {
 		limit = 100
 	}
-	cur, err := c.coll.Find(ctx, bson.M{
-		"issue.claim":           bson.M{"$gt": ""},
-		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
-	}, options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).SetLimit(int64(limit)))
-	if err != nil {
-		return nil, fmt.Errorf("boardmongo: list expired claims (cross-tenant): %w", err)
-	}
-	var docs []issueDoc
-	if err := cur.All(ctx, &docs); err != nil {
-		return nil, fmt.Errorf("boardmongo: decode expired claims (cross-tenant): %w", err)
-	}
-	out := make([]ExpiredCandidate, 0, len(docs))
-	for _, d := range docs {
-		iss := d.Issue
-		out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: native.ExpiredClaimFrom(&iss)})
+	// The SAME two arms as the tenant-scoped listing (reclaimableLease),
+	// queried separately for the same two reasons: a candidate this
+	// produces must be one ReclaimExpired can accept, and positive
+	// evidence (an expired lease) must not be starved by claims that
+	// merely lack one. This is the listing the CLOUD reaper calls —
+	// teaching only the Store left the un-leased recovery path dead on
+	// the twin that has no boot sweep to fall back on.
+	out := make([]ExpiredCandidate, 0, limit)
+	for _, arm := range reclaimableLease(cutoff) {
+		if len(out) >= limit {
+			break
+		}
+		filter := bson.M{"issue.claim": bson.M{"$gt": ""}}
+		for k, v := range arm {
+			filter[k] = v
+		}
+		cur, err := c.coll.Find(ctx, filter,
+			options.Find().SetSort(bson.D{{Key: "issue.claimleaseuntil", Value: 1}}).
+				SetLimit(int64(limit-len(out))))
+		if err != nil {
+			return nil, fmt.Errorf("boardmongo: list expired claims (cross-tenant): %w", err)
+		}
+		var docs []issueDoc
+		if err := cur.All(ctx, &docs); err != nil {
+			return nil, fmt.Errorf("boardmongo: decode expired claims (cross-tenant): %w", err)
+		}
+		for _, d := range docs {
+			iss := d.Issue
+			out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: native.ExpiredClaimFrom(&iss)})
+		}
 	}
 	return out, nil
 }

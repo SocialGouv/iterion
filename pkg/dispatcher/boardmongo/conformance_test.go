@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -1075,5 +1076,69 @@ func TestCoordinatorServerNow(t *testing.T) {
 	}
 	if delta := time.Since(got); delta > time.Minute || delta < -time.Minute {
 		t.Fatalf("ServerNow = %s, more than a minute from this host's clock (%s) — not a plausible server instant", got, delta)
+	}
+}
+
+// TestCoordinatorSeesTheUnleasedArm: the CLOUD reaper lists through the
+// Coordinator, not the tenant-scoped Store. When only the Store learned
+// the un-leased recovery arm, the recovery path the strict fence cites as
+// its justification was dead on the twin that has no boot sweep — a card
+// whose lease field an older binary dropped stayed held by a dead pod for
+// ever, and nothing but a database edit could free it.
+func TestCoordinatorSeesTheUnleasedArm(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_coordarm_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dc()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	if err := boardmongo.EnsureSchema(ctx, db); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	st := boardmongo.New(db, "tenant-coordarm")
+	coord := boardmongo.NewCoordinator(db)
+
+	ghost, err := st.Create(native.Issue{Title: "lease dropped by an old binary", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	issues := db.Collection(boardmongo.IssuesCollection)
+	if _, err := issues.UpdateOne(ctx, bson.M{"_id": ghost.ID}, bson.M{
+		"$set":   bson.M{"issue.claim": "dead-pod", "issue.updatedat": time.Now().Add(-72 * time.Hour)},
+		"$unset": bson.M{"issue.claimleaseuntil": "", "issue.claimepoch": ""},
+	}); err != nil {
+		t.Fatalf("seed the ghost: %v", err)
+	}
+
+	cands, err := coord.ListExpiredClaimCandidates(ctx, time.Now(), 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates (cross-tenant): %v", err)
+	}
+	var found *tracker.ExpiredClaim
+	for i := range cands {
+		if cands[i].Claim.IssueID == ghost.ID {
+			found = &cands[i].Claim
+		}
+	}
+	if found == nil {
+		t.Fatal("the cloud reaper's own listing must reach a claim carrying no lease — otherwise the card is " +
+			"held by a dead pod for ever, and cloud has no boot sweep to free it")
+	}
+	// And what it lists, the transfer must accept.
+	if _, _, err := coord.ReclaimExpired(ctx, "tenant-coordarm", ghost.ID, found.Prev, "reaper:probe", time.Now()); err != nil {
+		t.Fatalf("the transfer must accept a candidate the cross-tenant listing produced, got %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -1256,5 +1257,53 @@ func TestCloudReaper_DoesNotStealFromAFreshClaim(t *testing.T) {
 	d.reapExpiredClaims(context.Background(), time.Now())
 	if _, held := f.claimed["c-fresh"]; held {
 		t.Fatal("past the stamp window the card must be freed: a stamp that never arrived is not a live worker")
+	}
+}
+
+// TestCloudReaper_BootSweepFreesAbandonedRecoveryClaims: conserving a
+// card holds it under `reaper:<host>` for one lease, and only the NEXT
+// watchdog pass releases it. Turning the gate off inside that window —
+// the documented rollback lever — would otherwise strand the card under
+// a marker nothing else in cloud releases, which is the opposite of what
+// a rollback is for.
+func TestCloudReaper_BootSweepFreesAbandonedRecoveryClaims(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-abandoned"] = dispatcher.ReaperMarker("old-replica")
+	f.epochs["c-abandoned"] = 7
+	f.states["c-abandoned"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-abandoned",
+			Prev:    tracker.ClaimToken{Marker: dispatcher.ReaperMarker("old-replica"), Epoch: 7},
+		},
+	}}
+	// An ordinary owner's expired claim must be left alone: this sweep
+	// repairs the watchdog's own leftovers, it is not a second watchdog.
+	f.claimed["c-ordinary"] = "some-pod"
+	f.epochs["c-ordinary"] = 2
+	f.states["c-ordinary"] = native.StateInProgress
+	f.expired = append(f.expired, boardmongo.ExpiredCandidate{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-ordinary",
+			Prev:    tracker.ClaimToken{Marker: "some-pod", Epoch: 2},
+		},
+	})
+
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil },
+		"replica-new", 1, iterlog.Nop())
+	// Drive run() itself, not the method: what matters is that STARTUP
+	// performs the sweep. Calling the helper directly would pass with the
+	// wiring removed — the whole defect being that nothing invoked it.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.run(ctx)
+
+	if _, held := f.claimed["c-abandoned"]; held {
+		t.Fatalf("a recovery claim nobody came back for must be freed, still held by %q", f.claimed["c-abandoned"])
+	}
+	if got := f.claimed["c-ordinary"]; got != "some-pod" {
+		t.Fatalf("an ordinary owner's claim is the watchdog's business, not this sweep's: now %q", got)
 	}
 }

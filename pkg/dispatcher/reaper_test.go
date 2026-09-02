@@ -459,3 +459,36 @@ func TestReapOne_ParkedCardIsNotHeldForever(t *testing.T) {
 			"invisible to the dispatch poll and unclaimable, and in cloud nothing else frees it", after2.Claim)
 	}
 }
+
+// TestReapOne_DoesNotStealFromAFreshClaim is the LOCAL half of the
+// anti-steal guard — it had none, which is how the guard could exist in
+// two copies with each twin covering only one. A worker whose run stamp
+// has not landed yet is alive: transferring bumps the epoch and closes
+// the fence on the card it is still working.
+func TestReapOne_DoesNotStealFromAFreshClaim(t *testing.T) {
+	c, board, _ := newReaperHarness(t)
+	iss, err := board.Create(native.Issue{Title: "stamp in flight", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := board.Claim(iss.ID, "live-host-7"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	// No SetLastRun: the stamp is best-effort and lands after the launch.
+	// One missed beat is enough for the lease to lapse.
+	at := time.Now().Add(native.ClaimLeaseDuration + time.Minute)
+	cands, err := board.ListExpiredClaimCandidates(at, 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, cd := range cands {
+		if cd.IssueID == iss.ID {
+			c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cd, at)
+		}
+	}
+	after, _ := board.Get(iss.ID)
+	if after.Claim != "live-host-7" {
+		t.Fatalf("a claim taken one lease ago with its stamp still in flight must not be transferred: "+
+			"now held by %q — the worker may be alive and its fenced writes are about to start failing", after.Claim)
+	}
+}

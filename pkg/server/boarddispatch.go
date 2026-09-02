@@ -100,9 +100,11 @@ type boardDispatcher struct {
 	sem      chan struct{}
 	logger   *iterlog.Logger
 	wg       sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
-	// clockFallbackWarned makes the degraded-clock notice edge-triggered:
-	// a per-pass warn would be a log storm at the watchdog's cadence.
-	clockFallbackWarned bool
+	// clockFallbackReason latches WHICH degradation was last reported, so
+	// the notice stays edge-triggered (a per-pass warn is a log storm at
+	// the watchdog's cadence) without a change of cause going unsaid —
+	// an operator reading a stale reason is looking at the wrong problem.
+	clockFallbackReason string
 }
 
 // newBoardDispatcher wires a cloud board dispatcher with sensible defaults.
@@ -451,6 +453,14 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	// it happens to share a loop with: a lease measured in minutes has no
 	// use for a five-second sweep, and the difference is a cross-tenant
 	// query plus a server-clock round trip per replica, twelve times over.
+	// Independently of the gate: free recovery claims nobody came back
+	// for. The watchdog holds a card under `reaper:<host>` for one lease
+	// when it conserves it, and only the NEXT pass releases it — so
+	// turning the gate off in that window (the documented rollback lever)
+	// would strand the card under a marker nothing else in cloud releases.
+	// The local twin gets this from its boot sweep's pid probe; cloud has
+	// no such sweep, so it needs its own.
+	d.sweepAbandonedRecoveryClaims(ctx)
 	var lastReap time.Time
 	for {
 		d.tick(ctx)
@@ -466,6 +476,37 @@ func (d *boardDispatcher) run(ctx context.Context) {
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// sweepAbandonedRecoveryClaims releases expired claims still held under a
+// watchdog's own recovery marker. Runs ONCE at startup and never behind
+// the reaper gate: its whole purpose is to repair the state a disabled
+// reaper would otherwise leave behind for ever.
+func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context) {
+	cands, err := d.coord.ListExpiredClaimCandidates(ctx, d.reapCutoff(ctx), 100)
+	if err != nil {
+		d.warn("recovery-claim sweep: %v", err)
+		return
+	}
+	for _, cand := range cands {
+		if !dispatcher.IsReaperMarker(cand.Claim.Prev.Marker) {
+			continue
+		}
+		tok, _, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID,
+			cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), time.Now())
+		if err != nil {
+			if !errors.Is(err, tracker.ErrClaimConflict) {
+				d.warn("recovery-claim sweep reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+			}
+			continue
+		}
+		if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+			d.warn("recovery-claim sweep release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+			continue
+		}
+		d.warn("recovery-claim sweep freed %s/%s, abandoned under %q — a watchdog conserved it and never came back",
+			cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker)
 	}
 }
 
@@ -490,8 +531,8 @@ func (d *boardDispatcher) reapCutoff(ctx context.Context) time.Time {
 		// Edge-triggered like the zero branch below: a store hiccup at the
 		// watchdog's cadence would otherwise be a log storm, which is the
 		// noise that hides the next real signal.
-		if !d.clockFallbackWarned {
-			d.clockFallbackWarned = true
+		if d.clockFallbackReason != "unavailable" {
+			d.clockFallbackReason = "unavailable"
 			d.warn("claim watchdog: server clock unavailable (%v) — measuring leases against this pod's clock", err)
 		}
 		return local
@@ -501,13 +542,13 @@ func (d *boardDispatcher) reapCutoff(ctx context.Context) time.Time {
 		// claimed either, so a skewed cutoff has nothing to steal — but say
 		// it once rather than never: silence here reads as "the server
 		// clock is in use" when it is not.
-		if !d.clockFallbackWarned {
-			d.clockFallbackWarned = true
+		if d.clockFallbackReason != "empty" {
+			d.clockFallbackReason = "empty"
 			d.warn("claim watchdog: no document to read the server clock from — measuring leases against this pod's clock until one exists")
 		}
 		return local
 	}
-	d.clockFallbackWarned = false
+	d.clockFallbackReason = ""
 	return srv
 }
 
@@ -560,6 +601,14 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	// its own bound unreachable — and in cloud there is no boot sweep to
 	// free the card later, so "held" means held for ever.
 	if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
+		if runErr != nil {
+			// A read error is not a normal abstention: it conserves EVERY
+			// candidate, every pass, for as long as the store misbehaves.
+			// Debug would be invisible in production — the failure mode
+			// this whole programme exists to end.
+			d.warn("claim watchdog cannot read the run for %s/%s (%v) — conserving the card",
+				cand.Tenant, cand.Claim.IssueID, runErr)
+		}
 		return
 	}
 	var dec dispatcher.StuckDecision

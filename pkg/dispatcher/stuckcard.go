@@ -141,13 +141,16 @@ func DecideStuckCard(run *store.Run, runErr error, card StuckCard) StuckDecision
 		// a card already in the running column with no run id is not
 		// evidence of death — it is evidence of nothing, and freeing it
 		// would put a second run against a worker that may be alive.
-		if card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen {
+		if stampMayStillLand(card) {
 			return StuckDecision{StuckKeep,
 				"no run recorded, but the card was claimed moments ago and is in the running column — the stamp is best-effort and lands after the launch, so freeing it now could double-launch"}
 		}
 		return StuckDecision{StuckReleaseOnly, "claim held but no run was ever recorded — the claimant died pre-launch"}
 	}
-	if d := decideByStatus(run); d.Action == StuckRepark || d.Action == StuckReleaseOnly {
+	// Only Repark reaches here: a nil run (the ReleaseOnly row) returned
+	// above. Freeing a parked card whose claimant died pre-launch is
+	// correct anyway — nothing will pick it up where it sits.
+	if d := decideByStatus(run); d.Action == StuckRepark {
 		// Returning a card to the pool only makes sense if the card IS in
 		// the pool's reach. Parked somewhere deliberate (awaiting_input,
 		// review, a hold whose whole brake is the retained claim) it is not
@@ -181,13 +184,24 @@ func DecideTransfer(run *store.Run, runErr error, card StuckCard) StuckDecision 
 	// status rows still speak, because those are the ones about liveness.
 	inPool.State, inPool.RunningState = "", ""
 	d := DecideStuckCard(run, runErr, inPool)
-	if run == nil && card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen {
-		// The one liveness row that needs the card: a stamp may still be
-		// in flight, and transferring would steal from a live worker.
+	// The one liveness row that needs the card, re-applied because the
+	// neutralisation above disarmed it: a stamp may still be in flight,
+	// and transferring would steal from a live worker. Same predicate as
+	// the table's — recopying it is how the two drift, and how each twin
+	// ended up covering only one of the copies.
+	if runErr == nil && run == nil && stampMayStillLand(card) {
 		return StuckDecision{StuckKeep,
 			"no run recorded, but the card was claimed moments ago and is in the running column — the stamp is best-effort and lands after the launch, so taking the claim now could steal from a live worker"}
 	}
 	return d
+}
+
+// stampMayStillLand: the card is in the running column and was claimed
+// recently enough that its run stamp — written after the launch, and
+// best-effort — could still be on its way. ONE definition, read by both
+// the table and the pre-transfer decision.
+func stampMayStillLand(card StuckCard) bool {
+	return card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen
 }
 
 // parkedOutOfPool: the card is neither running nor in a column it would
