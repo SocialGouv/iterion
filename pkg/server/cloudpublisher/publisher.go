@@ -861,13 +861,25 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey 
 		if r.Status != usagecap.StatusRejected || !r.Fresh(now, usagecap.DefaultMaxAge) {
 			continue
 		}
-		// Windows usagecap itself never blocks on are no evidence here
-		// either: a rejected OVERAGE reading is about the pay-as-you-go
-		// money channel, and an unknown window must not be folded into
-		// a rule that was never meant to govern it (usagecap.FamilyOf's
-		// own contract). The store is populated unfiltered, so the
-		// filter has to live at the consumer.
-		if usagecap.FamilyOf(r.Window) == usagecap.FamilyNone {
+		// ONE window is excluded, and only one: OVERAGE is the
+		// pay-as-you-go MONEY channel, not subscription quota — which is
+		// why usagecap leaves it uncapped and why the wire reports its
+		// state in its own overageStatus field. A refusal there says
+		// nothing about the plan's own windows.
+		//
+		// Every OTHER window counts, named or not. Routing this through
+		// usagecap.FamilyOf would look tidier and be wrong twice: it
+		// answers a different question (which windows an OPERATOR's
+		// percentage cap governs — the very policy this function
+		// deliberately ignores), and its FamilyNone default would also
+		// swallow the status-only shape the wire explicitly allows
+		// (RateLimitInfo.Status is mandatory, RateLimitType is
+		// `omitempty` — "a rejected can arrive with no utilization and
+		// no reset instant") plus any window a future CLI names,
+		// discarding the provider's own refusal for want of a name. An
+		// unnamed refusal is bounded anyway: carrying no ResetsAt, it
+		// stops blocking when the reading itself goes stale.
+		if r.Window == usagecap.WindowOverage {
 			continue
 		}
 		reopen := r.ResetsAt

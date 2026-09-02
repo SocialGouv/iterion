@@ -129,21 +129,13 @@ func TestForfaitWindowClosed_staysConservative(t *testing.T) {
 			},
 		},
 		{
-			// usagecap itself never blocks on overage (it is the
-			// pay-as-you-go MONEY channel, bounded by budget flags, not
-			// quota) — a rejected overage reading is no refusal evidence.
-			name: "rejected overage window is not quota evidence",
+			// The ONE excluded window: overage is the pay-as-you-go
+			// MONEY channel, bounded by the budget flags and left
+			// uncapped by usagecap on purpose. A refusal there is not
+			// evidence about the subscription's own quota windows.
+			name: "rejected overage window is money, not quota evidence",
 			reading: usagecap.Reading{
 				Window: usagecap.WindowOverage, Status: usagecap.StatusRejected, Utilization: 1,
-				ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now(),
-			},
-		},
-		{
-			// FamilyOf's contract: an unknown window is not silently
-			// folded into a rule that was never meant to govern it.
-			name: "rejected unknown window is not quota evidence",
-			reading: usagecap.Reading{
-				Window: usagecap.Window("five_minute_burst"), Status: usagecap.StatusRejected, Utilization: 1,
 				ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now(),
 			},
 		},
@@ -155,6 +147,36 @@ func TestForfaitWindowClosed_staysConservative(t *testing.T) {
 			meterSays(t, f, fp, c.reading)
 			if got := bundleToken(t, f, "run-conservative"); !contains(got, "sk-ant-tenant-own") {
 				t.Fatalf("the tenant's own forfait must still be used, got %q", got)
+			}
+		})
+	}
+}
+
+// A refusal the provider did not attach a WINDOW NAME to is still a
+// refusal. The wire makes `status` mandatory and `rateLimitType`
+// optional (claudesdk.RateLimitInfo: "a rejected can arrive with no
+// utilization and no reset instant"), and a future CLI may name a window
+// this build has never heard of — so the skip must not require the name.
+// Guards the filter against being widened back to usagecap.FamilyOf,
+// whose FamilyNone default swallows both shapes.
+func TestForfaitWindowClosed_refusalWithoutAKnownWindowStillSkips(t *testing.T) {
+	for _, window := range []usagecap.Window{"", "five_minute_burst"} {
+		name := string(window)
+		if name == "" {
+			name = "status-only (no rateLimitType on the wire)"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+			fp := withTenantForfait(t, f, "sk-ant-tenant-own")
+			meterSays(t, f, fp, usagecap.Reading{
+				Window: window, Status: usagecap.StatusRejected, ObservedAt: time.Now(),
+			})
+			got := bundleToken(t, f, "run-unnamed-window")
+			if contains(got, "sk-ant-tenant-own") {
+				t.Fatalf("a refused forfait was handed over because its window had no known name: %q", got)
+			}
+			if !contains(got, "sk-ant-donated") {
+				t.Fatalf("expected the fall-through to the pool, got %q", got)
 			}
 		})
 	}
