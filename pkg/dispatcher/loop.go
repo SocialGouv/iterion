@@ -388,13 +388,20 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// would leave an unjournalled live claim — exactly the stranding the
 	// journal exists to prevent.
 	c.claims.Record(claimEntry{IssueID: iss.ID, Identifier: iss.Identifier, Marker: c.hostMarker, ClaimedAt: time.Now().UTC()})
-	if err := c.tracker.Claim(ctx, iss.ID, c.hostMarker); err != nil {
+	var claimTok tracker.ClaimToken
+	var claimErr error
+	if c.leaser != nil {
+		claimTok, claimErr = c.leaser.ClaimLease(ctx, iss.ID, c.hostMarker)
+	} else {
+		claimErr = c.tracker.Claim(ctx, iss.ID, c.hostMarker)
+	}
+	if claimErr != nil {
 		c.claims.Remove(iss.ID)
-		if errors.Is(err, tracker.ErrClaimConflict) {
+		if errors.Is(claimErr, tracker.ErrClaimConflict) {
 			c.logger.Info("dispatcher: %s already claimed elsewhere, skipping", iss.Identifier)
 			return
 		}
-		c.logger.Warn("dispatcher: claim %s: %v", iss.Identifier, err)
+		c.logger.Warn("dispatcher: claim %s: %v", iss.Identifier, claimErr)
 		return
 	}
 
@@ -439,6 +446,16 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		attempt,
 		cancel,
 	)
+	if c.leaser != nil {
+		// The heartbeat spans dispatch through the finish worker's last
+		// write (it rides finishPlan out of the actor). On loss: cancel
+		// the worker via the actor — its fenced writes are refused
+		// already; the cancel just stops it burning spend toward them.
+		issueID := iss.ID
+		entry.claim = startClaimSession(c.leaser, issueID, claimTok, c.logger.Warn, func(error) {
+			c.postCmd(cmdClaimLost{issueID: issueID})
+		})
+	}
 
 	spec := c.buildSpec(cfg, iss, runID, entry.WorkspacePath, attempt, entry)
 	spec.ResumeFromRunID = resumeFromRunID

@@ -28,10 +28,11 @@ type fakeBoardCoord struct {
 	states   map[string]string
 	claimErr map[string]error
 	stateErr map[string]error
+	renews   map[string]int
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
-	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}, stateErr: map[string]error{}}
+	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}, stateErr: map[string]error{}, renews: map[string]int{}}
 }
 
 // ListEligible honours the real coordinator's contract — unclaimed cards in
@@ -88,6 +89,40 @@ func (f *fakeBoardCoord) Release(_ context.Context, _, id, _ string) error {
 	delete(f.claimed, id)
 	f.mu.Unlock()
 	return nil
+}
+
+// The fenced family mirrors the real coordinator's contract: writes land
+// only while the token's marker still holds the claim; a superseded token
+// gets tracker.ErrClaimConflict. renews counts heartbeats for the
+// heartbeat test.
+func (f *fakeBoardCoord) RenewClaim(_ context.Context, _, id string, tok tracker.ClaimToken) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renews[id]++
+	if f.claimed[id] != tok.Marker {
+		return tracker.ErrClaimConflict
+	}
+	return nil
+}
+
+func (f *fakeBoardCoord) SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error {
+	f.mu.Lock()
+	held := f.claimed[id] == tok.Marker
+	f.mu.Unlock()
+	if !held {
+		return tracker.ErrClaimConflict
+	}
+	return f.SetState(ctx, tenant, id, state)
+}
+
+func (f *fakeBoardCoord) ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error {
+	f.mu.Lock()
+	holder, ok := f.claimed[id]
+	f.mu.Unlock()
+	if ok && holder != tok.Marker {
+		return tracker.ErrClaimConflict
+	}
+	return f.Release(ctx, tenant, id, tok.Marker)
 }
 
 func readyCard(id, bot string) boardmongo.Candidate {

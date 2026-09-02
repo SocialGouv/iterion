@@ -112,3 +112,20 @@ func (c *Coordinator) SetState(_ context.Context, tenant, id, state string) erro
 func (c *Coordinator) Release(_ context.Context, tenant, id, marker string) error {
 	return c.StoreFor(tenant).Release(id, marker)
 }
+
+// RenewClaim / SetStateOwned / ReleaseOwned are the fenced delegates the
+// cloud dispatcher's claim session uses: every write is a CAS on the
+// ownership token, so a replica whose claim was superseded finds typed
+// refusals instead of clobbering the new owner.
+func (c *Coordinator) RenewClaim(_ context.Context, tenant, id string, tok tracker.ClaimToken) error {
+	return c.StoreFor(tenant).RenewClaim(id, tok)
+}
+
+func (c *Coordinator) SetStateOwned(_ context.Context, tenant, id, state string, tok tracker.ClaimToken) error {
+	_, err := c.StoreFor(tenant).SetStateOwned(id, state, tok)
+	return err
+}
+
+func (c *Coordinator) ReleaseOwned(_ context.Context, tenant, id string, tok tracker.ClaimToken) error {
+	return c.StoreFor(tenant).ReleaseOwned(id, tok)
+}

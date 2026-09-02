@@ -51,7 +51,12 @@ type Options struct {
 type Dispatcher struct {
 	cfg     atomic.Pointer[Config]
 	tracker tracker.Tracker
-	runner  Runner
+	// leaser is the tracker's claim-lease capability, resolved ONCE at
+	// construction. nil for forge trackers (label-based claims carry no
+	// record to fence) — announced in the log at startup, never a silent
+	// no-op (the ClaimLeaser contract).
+	leaser tracker.ClaimLeaser
+	runner Runner
 
 	// snapshot holds the most-recently-published immutable Snapshot. The
 	// actor is the sole writer (via fireSnapshot); Snapshot() reads it
@@ -164,6 +169,11 @@ func New(opts Options) (*Dispatcher, error) {
 		done:       make(chan struct{}),
 		ws:         newWsBridge(opts.Logger),
 		claims:     newClaimJournal(opts.StoreDir, opts.Logger),
+	}
+	if l, ok := opts.Tracker.(tracker.ClaimLeaser); ok {
+		c.leaser = l
+	} else {
+		opts.Logger.Info("dispatcher: tracker %T has no claim-lease capability — lease heartbeats and the claim watchdog are disabled for this tracker (label-based claims cannot be fenced)", opts.Tracker)
 	}
 	c.cfg.Store(opts.Config)
 	// Seed the published snapshot so Snapshot() never reads a nil pointer

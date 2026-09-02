@@ -24,6 +24,14 @@ type boardCoordinator interface {
 	Claim(ctx context.Context, tenant, id, marker string) (tracker.ClaimToken, error)
 	SetState(ctx context.Context, tenant, id, state string) error
 	Release(ctx context.Context, tenant, id, marker string) error
+	// The fenced family: RenewClaim is the heartbeat processCard runs for
+	// as long as it holds the card (its poll-to-terminal has NO upper
+	// bound, so "the claim window is short" is false by construction);
+	// the Owned writes are CAS on the token so a superseded replica's
+	// late writes are refused, never landed.
+	RenewClaim(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
+	SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error
+	ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
 }
 
 // errCardPaused marks a processBoardCard error whose run parked on a
@@ -123,29 +131,57 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 		default:
 			return claimed // no free slots; the rest wait for the next tick
 		}
-		// The token is not yet threaded through processBoardCard's writes —
-		// that wiring (heartbeat session + fenced writes) is the next commit
-		// of the watchdog chantier; discarding it here keeps today's
-		// behaviour exactly.
-		if _, err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
+		tok, err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker)
+		if err != nil {
 			<-d.sem // claim lost (another replica won, or conflict) — release the slot
 			continue
 		}
 		claimed++
 		d.wg.Add(1)
-		errtrack.Go("server.boardDispatch.processCard", func() { d.processCard(ctx, c) })
+		errtrack.Go("server.boardDispatch.processCard", func() { d.processCard(ctx, c, tok) })
 	}
 	return claimed
 }
 
-func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidate) {
+func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidate, tok tracker.ClaimToken) {
 	defer d.wg.Done()
 	defer func() { <-d.sem }()
-	// Move to in-progress for board visibility (best-effort).
-	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.inProgressState); err != nil {
+
+	// Heartbeat for the WHOLE hold: the poll-to-terminal below has no
+	// upper bound (a long run is normal), so without renewal every card
+	// held longer than one lease would read as reapable. On a superseded
+	// claim: cancel the poll — the fenced writes below are refused
+	// already; the cancel stops this replica working a card it no longer
+	// owns.
+	cardCtx, cancelCard := context.WithCancel(ctx)
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		t := time.NewTicker(native.ClaimLeaseDuration / 3)
+		defer t.Stop()
+		for {
+			select {
+			case <-cardCtx.Done():
+				return
+			case <-t.C:
+				if err := d.coord.RenewClaim(cardCtx, c.Tenant, c.Issue.ID, tok); err != nil {
+					if errors.Is(err, tracker.ErrClaimConflict) {
+						d.warn("card %s/%s claim superseded mid-hold — stopping this replica's worker: %v", c.Tenant, c.Issue.ID, err)
+						cancelCard()
+						return
+					}
+					d.warn("card %s/%s lease renewal failed (retrying next beat): %v", c.Tenant, c.Issue.ID, err)
+				}
+			}
+		}
+	}()
+	defer func() { cancelCard(); <-hbDone }()
+
+	// Move to in-progress for board visibility (best-effort, fenced).
+	if err := d.coord.SetStateOwned(cardCtx, c.Tenant, c.Issue.ID, d.inProgressState, tok); err != nil {
 		d.warn("card %s/%s → in_progress: %v", c.Tenant, c.Issue.ID, err)
 	}
-	runErr := d.process(ctx, c.Tenant, c.Issue)
+	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState
 	if runErr != nil {
 		// A pause is not a failure: route the card to the awaiting-input
@@ -157,10 +193,14 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 			d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
 		}
 	}
-	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, final); err != nil {
+	// Final writes on the PARENT ctx: a superseded claim cancelled
+	// cardCtx, and these fenced writes must still run to be REFUSED
+	// loudly (typed conflict in the log) rather than die on a dead ctx
+	// reading as a store outage.
+	if err := d.coord.SetStateOwned(ctx, c.Tenant, c.Issue.ID, final, tok); err != nil {
 		d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
 	}
-	if err := d.coord.Release(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
+	if err := d.coord.ReleaseOwned(ctx, c.Tenant, c.Issue.ID, tok); err != nil {
 		d.warn("card %s/%s release: %v", c.Tenant, c.Issue.ID, err)
 	}
 }

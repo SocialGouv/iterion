@@ -350,6 +350,29 @@ const (
 // these fields plus dispatcher-immutables (c.tracker, c.logger, c.hostMarker).
 // This is the anti-race boundary for ADR-028 Step 3: cfg-derived transition
 // targets are captured here on the actor, never re-read by the worker.
+// cmdClaimLost is posted by a claimSession whose lease renewal found the
+// claim superseded: another owner (a reaper's recovery claim, a manual
+// re-claim) holds the card now. The only correct behaviour is to stop
+// the local worker — its fenced writes would all be refused anyway, and
+// letting the run keep burning tokens toward refusals helps nobody. The
+// cancel cause is ErrRunInterrupted (an INTERNAL stop): the run persists
+// failed_resumable, and whoever owns the card decides what happens next.
+type cmdClaimLost struct {
+	issueID string
+}
+
+func (m cmdClaimLost) apply(c *Dispatcher, _ context.Context) {
+	r, ok := c.state.running[m.issueID]
+	if !ok || r.Cancel == nil {
+		return
+	}
+	if r.CancelIssuedAt.IsZero() {
+		c.logger.Warn("dispatcher: %s claim superseded while the run was live (run=%s) — cancelling the worker", r.Identifier, r.RunID)
+		r.Cancel(runtime.ErrRunInterrupted)
+		r.CancelIssuedAt = time.Now().UTC()
+	}
+}
+
 type finishPlan struct {
 	kind           finishKind
 	issueID        string
@@ -361,6 +384,10 @@ type finishPlan struct {
 	attemptCount   int    // r.Attempt+1, for give-up logging only
 	runID          string // for give-up logging only
 	runErrText     string // for give-up logging only
+	// session is the claim's heartbeat, carried into the worker so it
+	// outlives the actor's entry and stops only AFTER the last write
+	// (release). nil when the tracker has no lease backend.
+	session *claimSession
 }
 
 // finishRun is the actor-goroutine-side teardown for a running entry.
@@ -428,6 +455,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
 			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket (a cancelled last_run still holds it; use --clear-last-run)")
 		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch (a cancelled last_run still holds the ticket; use --clear-last-run).", r.Identifier, r.RunID)
+		c.stopClaimSession(r)
 		c.fireSnapshot()
 		return
 	}
@@ -442,6 +470,10 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// retained claim already blocks re-dispatch either way).
 		c.moveToAwaitingInput(issueID, r.Identifier)
 		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — moved to awaiting-input, kept claimed, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
+		// The claim is deliberately RETAINED (ADR-014) but the heartbeat
+		// stops: a parked claim is protected by the reaper's paused-run
+		// exemption, not by a lease no live worker could renew anyway.
+		c.stopClaimSession(r)
 		c.fireSnapshot()
 		return
 	}
@@ -537,6 +569,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
 			"run cancelled by the operator — resume it explicitly to continue; the ticket stays held")
 		c.logger.Info("dispatcher: %s cancelled by the operator (run=%s) — NOT retried; the ticket stays held until an explicit resume", r.Identifier, r.RunID)
+		c.stopClaimSession(r)
 		c.fireSnapshot()
 		return
 	case errors.Is(err, context.Canceled):
@@ -590,8 +623,19 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	// could read the slot as used while Release is in flight. The paused
 	// branch above already publishes before returning; the worker reads only
 	// the immutable plan, so publishing first is safe.
+	plan.session = r.claim
 	c.fireSnapshot()
 	c.launchFinish(plan)
+}
+
+// stopClaimSession detaches and stops an entry's lease heartbeat on the
+// park/hold paths (claim retained, no worker left to renew for). Runs on
+// the actor; Stop is quick (the session goroutine exits on the signal).
+func (c *Dispatcher) stopClaimSession(r *runningEntry) {
+	if r.claim != nil {
+		r.claim.Stop()
+		r.claim = nil
+	}
 }
 
 // exhausted reports whether a failing issue has reached the configured
@@ -685,6 +729,11 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 	}
 
 	c.releaseClaim(relCtx, plan.issueID, plan.identifier)
+	if plan.session != nil {
+		// After the LAST write — stopping earlier would let the lease
+		// lapse exactly while this worker was still writing.
+		plan.session.Stop()
+	}
 }
 
 // releaseClaim releases the tracker claim, tolerating the benign races where
