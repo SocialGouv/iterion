@@ -139,6 +139,22 @@ func (a *Adapter) UpdateStateOwned(ctx context.Context, id, newState string, tok
 	return err
 }
 
+// SetLastRunOwned / SetAwaitingInputOwned / SetGaveUpOwned are the fenced
+// forms of the setter pass-throughs below — same regression-guard rule:
+// a store method without its Adapter pass-through fails silently at the
+// optional-interface assertion.
+func (a *Adapter) SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error {
+	return a.store.SetLastRunOwned(id, runID, workdir, tok)
+}
+
+func (a *Adapter) SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error {
+	return a.store.SetAwaitingInputOwned(id, v, tok)
+}
+
+func (a *Adapter) SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error {
+	return a.store.SetGaveUpOwned(id, g, tok)
+}
+
 // Release delegates to the store.
 func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 	if err := ctx.Err(); err != nil {

@@ -924,7 +924,7 @@ func (c *Dispatcher) buildRunningEntry(
 	// A fresh dispatch (incl. a re-dispatch of a previously-parked issue)
 	// supersedes any prior pause — clear the denormalized awaiting-input
 	// badge so the card doesn't show a stale ⏸ while the new run executes.
-	c.setAwaitingInput(iss.ID, false)
+	c.setAwaitingInput(iss.ID, false, entry.claim)
 	return entry
 }
 
@@ -993,7 +993,7 @@ func (c *Dispatcher) runDispatchSetup(plan dispatchSetupPlan) (created bool, ok 
 	// revert. Moved off the actor in ADR-028 Step 4.
 	var transitionedFrom string
 	if target := plan.runningTarget; target != "" && plan.sourceState != target {
-		if err := c.tracker.UpdateState(plan.runCtx, plan.issueID, target); err != nil {
+		if err := c.fencedUpdateState(plan.runCtx, plan.issueID, target, plan.entry.claim); err != nil {
 			if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
 				c.logger.Warn("dispatcher: in-progress transition %s: %v", plan.identifier, err)
 			}
@@ -1266,7 +1266,7 @@ func (c *Dispatcher) postCmd(command cmd) {
 // detached call sites (finishRun, shutdown) callers should pass a
 // short-budget context.Background()-derived ctx so an actor-shutdown
 // doesn't short-circuit the revert.
-func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, sourceState, currentTarget string) {
+func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, sourceState, currentTarget string, sess *claimSession) {
 	if sourceState == "" {
 		return
 	}
@@ -1294,7 +1294,7 @@ func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, 
 			return
 		}
 	}
-	if err := c.tracker.UpdateState(ctx, issueID, sourceState); err != nil {
+	if err := c.fencedUpdateState(ctx, issueID, sourceState, sess); err != nil {
 		if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
 			c.logger.Warn("dispatcher: revert state %s → %s: %v", identifier, sourceState, err)
 		}

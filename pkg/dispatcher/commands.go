@@ -450,8 +450,8 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// strands invisibly: claimed, no live worker, no badge, and
 		// absent from the snapshot's running and retry tables.
 		c.stampLastRun(issueID, r)
-		c.setAwaitingInput(issueID, true)
-		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.setAwaitingInput(issueID, true, r.claim)
+		c.moveToAwaitingInput(issueID, r.Identifier, r.claim)
 		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
 			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket (a cancelled last_run still holds it; use --clear-last-run)")
 		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch (a cancelled last_run still holds the ticket; use --clear-last-run).", r.Identifier, r.RunID)
@@ -462,13 +462,13 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 
 	if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
 		c.stampLastRun(issueID, r)
-		c.setAwaitingInput(issueID, true)
+		c.setAwaitingInput(issueID, true, r.claim)
 		// Move the card into the dedicated "awaiting input" column so the
 		// board shows "this pipeline needs me" at the column level (not only
 		// the per-card badge). Best-effort: a custom board without the state,
 		// or an external tracker that rejects it, keeps the card in place (the
 		// retained claim already blocks re-dispatch either way).
-		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.moveToAwaitingInput(issueID, r.Identifier, r.claim)
 		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — moved to awaiting-input, kept claimed, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
 		// The claim is deliberately RETAINED (ADR-014) but the heartbeat
 		// stops: a parked claim is protected by the reaper's paused-run
@@ -515,7 +515,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	case err == nil:
 		// A clean terminal run is no longer awaiting input — clear the
 		// denormalized board badge (best-effort HINT; see setAwaitingInput).
-		c.setAwaitingInput(issueID, false)
+		c.setAwaitingInput(issueID, false, r.claim)
 		// Honesty guard: a "clean" finish with no commit produced nothing
 		// directly mergeable, yet the transition below still moves the
 		// issue to CompletedState (default "review") — where an operator
@@ -699,22 +699,22 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 
 	switch plan.kind {
 	case finishCompleted:
-		c.maybeTransitionToCompleted(relCtx, plan.issueID, plan.identifier, plan.runningTarget, plan.completedState)
+		c.maybeTransitionToCompleted(relCtx, plan.issueID, plan.identifier, plan.runningTarget, plan.completedState, plan.session)
 	case finishRevert:
 		// Revert the in-progress transition so the next retry/dispatch tick
 		// sees the issue eligible again from its source state. Without it the
 		// issue would sit in `in_progress` (no longer eligible) until the
 		// operator dragged it back.
-		c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget)
+		c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
 	case finishGiveUp:
-		if err := c.tracker.UpdateState(relCtx, plan.issueID, plan.failedState); err != nil {
+		if err := c.fencedUpdateState(relCtx, plan.issueID, plan.failedState, plan.session); err != nil {
 			// The board can't represent "failed" (state undefined, transition
 			// rejected, or a transient tracker error) — preserve the legacy
 			// unbounded retry rather than freeze the ticket: revert to the
 			// source state and KEEP the retry finishRun optimistically
 			// scheduled (no cmdDropRetry).
 			c.logger.Warn("dispatcher: %s exhausted %d attempts but the move to failed state %q failed (%v) — keeping retry behaviour", plan.identifier, plan.attemptCount, plan.failedState, err)
-			c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget)
+			c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
 		} else {
 			// Terminal move succeeded — the give-up is final, so drop the
 			// optimistic retry guard the actor scheduled.
@@ -728,7 +728,7 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 		}
 	}
 
-	c.releaseClaim(relCtx, plan.issueID, plan.identifier)
+	c.releaseClaimSess(relCtx, plan.issueID, plan.identifier, plan.session)
 	if plan.session != nil {
 		// After the LAST write — stopping earlier would let the lease
 		// lapse exactly while this worker was still writing.
@@ -750,6 +750,34 @@ func (c *Dispatcher) releaseClaim(ctx context.Context, issueID, identifier strin
 	// Drop the journal entry even on the benign races above — in all of
 	// them the claim is no longer ours to recover at the next boot.
 	c.claims.Remove(issueID)
+}
+
+// fencedUpdateState routes a state move through the claim fence when a
+// session token is available (UpdateStateOwned), else the legacy path.
+// The fence is what makes a superseded holder's late move a typed
+// refusal instead of a clobber; sites with no token (unclaimed-card
+// reconcilers, legacy trackers) keep the unfenced semantics they had.
+func (c *Dispatcher) fencedUpdateState(ctx context.Context, issueID, state string, sess *claimSession) error {
+	if sess != nil && c.leaser != nil {
+		return c.leaser.UpdateStateOwned(ctx, issueID, state, sess.Token())
+	}
+	return c.tracker.UpdateState(ctx, issueID, state)
+}
+
+// releaseClaimSess is releaseClaim through the fence when a session
+// exists. The benign races (already gone, superseded) stay benign: in
+// both, the claim is no longer ours to release.
+func (c *Dispatcher) releaseClaimSess(ctx context.Context, issueID, identifier string, sess *claimSession) {
+	if sess != nil && c.leaser != nil {
+		if err := c.leaser.ReleaseOwned(ctx, issueID, sess.Token()); err != nil &&
+			!errors.Is(err, tracker.ErrNotFound) &&
+			!errors.Is(err, tracker.ErrClaimConflict) {
+			c.logger.Warn("dispatcher: release %s: %v", identifier, err)
+		}
+		c.claims.Remove(issueID)
+		return
+	}
+	c.releaseClaim(ctx, issueID, identifier)
 }
 
 // stampLastRun records the (run_id, workdir) pair on the tracker
@@ -775,6 +803,16 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 	if workdir == "" {
 		workdir = r.WorkspacePath
 	}
+	if r.claim != nil {
+		if owned, ok := c.tracker.(interface {
+			SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
+		}); ok {
+			if err := owned.SetLastRunOwned(issueID, r.RunID, workdir, r.claim.Token()); err != nil {
+				c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
+			}
+			return
+		}
+	}
 	if err := setter.SetLastRun(issueID, r.RunID, workdir); err != nil {
 		c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
 	}
@@ -792,7 +830,17 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 // HINT — a console-only resume the dispatcher never observes leaves the
 // flag stale until the next card touch corrects it; the modal's
 // authoritative check stays getRun(last_run_id).status.
-func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
+func (c *Dispatcher) setAwaitingInput(issueID string, v bool, sess *claimSession) {
+	if sess != nil {
+		if owned, ok := c.tracker.(interface {
+			SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
+		}); ok {
+			if err := owned.SetAwaitingInputOwned(issueID, v, sess.Token()); err != nil {
+				c.logger.Warn("dispatcher: set awaiting-input on %s: %v", issueID, err)
+			}
+			return
+		}
+	}
 	setter, ok := c.tracker.(interface {
 		SetAwaitingInput(id string, v bool) error
 	})
@@ -838,6 +886,16 @@ func (c *Dispatcher) stampGiveUp(plan finishPlan) {
 		Attempts: plan.attemptCount,
 		At:       time.Now().UTC(),
 	}
+	if plan.session != nil {
+		if owned, ok := c.tracker.(interface {
+			SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimToken) error
+		}); ok {
+			if err := owned.SetGaveUpOwned(plan.issueID, stamp, plan.session.Token()); err != nil {
+				c.logger.Warn("dispatcher: stamp give-up on %s: %v", plan.identifier, err)
+			}
+			return
+		}
+	}
 	if err := setter.SetGaveUp(plan.issueID, stamp); err != nil {
 		c.logger.Warn("dispatcher: stamp give-up on %s: %v", plan.identifier, err)
 	}
@@ -848,8 +906,8 @@ func (c *Dispatcher) stampGiveUp(plan finishPlan) {
 // external tracker that rejects the transition leaves the card in place — the
 // retained claim already blocks re-dispatch, so this is a display-only
 // refinement, never load-bearing.
-func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) bool {
-	if err := c.tracker.UpdateState(context.Background(), issueID, native.StateAwaitingInput); err != nil {
+func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string, sess *claimSession) bool {
+	if err := c.fencedUpdateState(context.Background(), issueID, native.StateAwaitingInput, sess); err != nil {
 		c.logger.Info("dispatcher: %s stays in place (no awaiting-input column): %v", identifier, err)
 		return false
 	}
@@ -873,7 +931,7 @@ func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) bool {
 // config.go; this helper is just the application path. Detached
 // ctx is the caller's relCtx so a winding-down dispatcher still
 // completes the move (parallels the Release path).
-func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, identifier, runningTarget, completed string) {
+func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, identifier, runningTarget, completed string, sess *claimSession) {
 	if completed == "" || completed == runningTarget {
 		return
 	}
@@ -892,7 +950,7 @@ func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, id
 		// Workflow (or operator) already moved the state. Honor it.
 		return
 	}
-	if err := c.tracker.UpdateState(ctx, issueID, completed); err != nil {
+	if err := c.fencedUpdateState(ctx, issueID, completed, sess); err != nil {
 		if errors.Is(err, tracker.ErrTransitionRejected) || errors.Is(err, tracker.ErrNotSupported) {
 			c.logger.Info("dispatcher: %s stayed in %s (tracker rejected move to %q): %v", identifier, runningTarget, completed, err)
 			return

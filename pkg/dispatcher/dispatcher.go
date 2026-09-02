@@ -487,14 +487,17 @@ func (c *Dispatcher) shutdown() {
 			r.Cancel(runtime.ErrRunInterrupted)
 		}
 		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		c.releaseClaim(relCtx, r.IssueID, r.Identifier)
+		c.releaseClaimSess(relCtx, r.IssueID, r.Identifier, r.claim)
 		// Revert the in-progress transition (best-effort) so tickets
 		// snap back to their source state for the next daemon start.
 		// Without this, an operator-triggered Ctrl+C would leave every
 		// in-flight ticket in `in_progress`, hidden from the next
 		// daemon's eligible candidate list until manually dragged back.
-		c.revertTransition(relCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget)
+		// NOTE: the release above already dropped our claim, so the
+		// revert is deliberately UNFENCED — the fence would refuse it.
+		c.revertTransition(relCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget, nil)
 		relCancel()
+		c.stopClaimSession(r)
 	}
 	for _, e := range c.state.retries {
 		if e.Timer != nil {
