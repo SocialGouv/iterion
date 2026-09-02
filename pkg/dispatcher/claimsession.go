@@ -45,10 +45,10 @@ type claimSession struct {
 	done     chan struct{}
 }
 
-// startClaimSession begins heartbeating. leaser must be non-nil; the
+// StartClaimSession begins heartbeating. leaser must be non-nil; the
 // caller decides what "no lease backend" means (it logs once and runs
 // legacy, per the ClaimLeaser contract).
-func startClaimSession(leaser tracker.ClaimLeaser, issueID string, tok tracker.ClaimToken,
+func StartClaimSession(leaser tracker.ClaimLeaser, issueID string, tok tracker.ClaimToken,
 	warn func(string, ...any), onLost func(error)) *claimSession {
 	s := &claimSession{
 		issueID:  issueID,

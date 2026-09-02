@@ -31,13 +31,7 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 		if iss.Claim == "" || iss.ClaimLeaseUntil.IsZero() || !iss.ClaimLeaseUntil.Before(cutoff) {
 			continue
 		}
-		out = append(out, tracker.ExpiredClaim{
-			IssueID:    iss.ID,
-			Identifier: shortIdentifier(iss.ID),
-			State:      iss.State,
-			LastRunID:  iss.LastRunID,
-			Prev:       tracker.ClaimToken{Marker: iss.Claim, Epoch: iss.ClaimEpoch},
-		})
+		out = append(out, ExpiredClaimFrom(iss))
 	}
 	return out, nil
 }
@@ -76,4 +70,18 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 		return tracker.ClaimToken{}, err
 	}
 	return tracker.ClaimToken{Marker: marker, Epoch: iss.ClaimEpoch}, nil
+}
+
+// ExpiredClaimFrom maps an issue onto the reaper candidate shape — one
+// definition shared by the FS store here, the tenant-scoped Mongo store,
+// and the cross-tenant coordinator, so a field added to ExpiredClaim is
+// wired once instead of three times.
+func ExpiredClaimFrom(iss *Issue) tracker.ExpiredClaim {
+	return tracker.ExpiredClaim{
+		IssueID:    iss.ID,
+		Identifier: shortIdentifier(iss.ID),
+		State:      iss.State,
+		LastRunID:  iss.LastRunID,
+		Prev:       tracker.ClaimToken{Marker: iss.Claim, Epoch: iss.ClaimEpoch},
+	}
 }

@@ -155,33 +155,17 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 
 	// Heartbeat for the WHOLE hold: the poll-to-terminal below has no
 	// upper bound (a long run is normal), so without renewal every card
-	// held longer than one lease would read as reapable. On a superseded
-	// claim: cancel the poll — the fenced writes below are refused
-	// already; the cancel stops this replica working a card it no longer
-	// owns.
+	// held longer than one lease would read as reapable. Reuse the SAME
+	// claimSession primitive the local dispatcher uses (cadence, conflict
+	// vs transient semantics, "two missed beats of slack" invariant — all
+	// defined once) through a tenant-binding adapter; onLost cancels the
+	// poll, since the fenced writes below are refused already and the
+	// cancel just stops this replica working a card it no longer owns.
 	cardCtx, cancelCard := context.WithCancel(ctx)
-	hbDone := make(chan struct{})
-	go func() {
-		defer close(hbDone)
-		t := time.NewTicker(native.ClaimLeaseDuration / 3)
-		defer t.Stop()
-		for {
-			select {
-			case <-cardCtx.Done():
-				return
-			case <-t.C:
-				if err := d.coord.RenewClaim(cardCtx, c.Tenant, c.Issue.ID, tok); err != nil {
-					if errors.Is(err, tracker.ErrClaimConflict) {
-						d.warn("card %s/%s claim superseded mid-hold — stopping this replica's worker: %v", c.Tenant, c.Issue.ID, err)
-						cancelCard()
-						return
-					}
-					d.warn("card %s/%s lease renewal failed (retrying next beat): %v", c.Tenant, c.Issue.ID, err)
-				}
-			}
-		}
-	}()
-	defer func() { cancelCard(); <-hbDone }()
+	sess := dispatcher.StartClaimSession(
+		coordLeaser{coord: d.coord, tenant: c.Tenant},
+		c.Issue.ID, tok, d.warn, func(error) { cancelCard() })
+	defer func() { cancelCard(); sess.Stop() }()
 
 	// Move to in-progress for board visibility (best-effort, fenced).
 	if err := d.coord.SetStateOwned(cardCtx, c.Tenant, c.Issue.ID, d.inProgressState, tok); err != nil {
@@ -458,7 +442,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	defer t.Stop()
 	reaperOn := dispatcher.ClaimReaperEnabled()
 	if reaperOn {
-		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", "ITERION_BOARD_CLAIM_REAPER")
+		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", dispatcher.ClaimReaperEnvName())
 	}
 	for {
 		d.tick(ctx)
@@ -796,4 +780,27 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		case <-ticker.C:
 		}
 	}
+}
+
+// coordLeaser binds a tenant onto the cross-tenant coordinator so the
+// tenant-agnostic claimSession heartbeat can renew a cloud card's lease.
+// Only RenewClaim is exercised by the session; the rest satisfy the
+// tracker.ClaimLeaser interface (the cloud never calls them through it —
+// its board writes go through the fenced coord methods directly).
+type coordLeaser struct {
+	coord  boardCoordinator
+	tenant string
+}
+
+func (l coordLeaser) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return l.coord.RenewClaim(ctx, l.tenant, id, tok)
+}
+func (l coordLeaser) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	return l.coord.Claim(ctx, l.tenant, id, marker)
+}
+func (l coordLeaser) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return l.coord.ReleaseOwned(ctx, l.tenant, id, tok)
+}
+func (l coordLeaser) UpdateStateOwned(ctx context.Context, id, newState string, tok tracker.ClaimToken) error {
+	return l.coord.SetStateOwned(ctx, l.tenant, id, newState, tok)
 }

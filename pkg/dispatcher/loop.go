@@ -452,7 +452,7 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		// the worker via the actor — its fenced writes are refused
 		// already; the cancel just stops it burning spend toward them.
 		issueID := iss.ID
-		entry.claim = startClaimSession(c.leaser, issueID, claimTok, c.logger.Warn, func(error) {
+		entry.claim = StartClaimSession(c.leaser, issueID, claimTok, c.logger.Warn, func(error) {
 			c.postCmd(cmdClaimLost{issueID: issueID})
 		})
 	}

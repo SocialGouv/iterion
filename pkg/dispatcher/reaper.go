@@ -33,6 +33,11 @@ const (
 	claimReaperBatch    = 100
 )
 
+// ClaimReaperEnvName is the fleet-gate env var, exported so the cloud
+// board dispatcher references the one constant instead of re-literalling
+// the name in its startup log.
+func ClaimReaperEnvName() string { return claimReaperEnv }
+
 // ClaimReaperEnabled reads the fleet gate (shared with the cloud board
 // dispatcher's reaper — one switch, both surfaces).
 func ClaimReaperEnabled() bool {

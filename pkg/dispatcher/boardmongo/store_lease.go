@@ -80,15 +80,10 @@ func (s *Store) ReleaseOwned(id string, tok tracker.ClaimToken) error {
 		return fmt.Errorf("boardmongo: release owned: %w", err)
 	}
 	if res.MatchedCount == 0 {
-		iss, gerr := s.get(ctx, id)
-		if gerr != nil {
-			return gerr
-		}
-		if iss.Claim == "" {
+		if iss, gerr := s.get(ctx, id); gerr == nil && iss.Claim == "" {
 			return nil // already released — the desired state
 		}
-		return fmt.Errorf("%w: issue now held by %q (epoch %d, token epoch %d)",
-			tracker.ErrClaimConflict, iss.Claim, iss.ClaimEpoch, tok.Epoch)
+		return s.ownedRefused(ctx, id, tok)
 	}
 	return s.emit(native.Event{Type: native.EvtIssueReleased, IssueID: id,
 		Payload: map[string]any{"marker": tok.Marker}})
@@ -260,13 +255,8 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 	}
 	out := make([]tracker.ExpiredClaim, 0, len(docs))
 	for _, d := range docs {
-		out = append(out, tracker.ExpiredClaim{
-			IssueID:    d.Issue.ID,
-			Identifier: d.Issue.ID,
-			State:      d.Issue.State,
-			LastRunID:  d.Issue.LastRunID,
-			Prev:       tracker.ClaimToken{Marker: d.Issue.Claim, Epoch: d.Issue.ClaimEpoch},
-		})
+		iss := d.Issue
+		out = append(out, native.ExpiredClaimFrom(&iss))
 	}
 	return out, nil
 }
@@ -278,20 +268,15 @@ func (s *Store) ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]track
 func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	filter := bson.M{
-		"_id": id, "tenant_id": s.tenant,
-		"issue.claim":           prev.Marker,
-		"issue.claimleaseuntil": bson.M{"$gt": time.Time{}, "$lt": cutoff},
-	}
-	if prev.Epoch == 0 {
-		filter["issue.claimepoch"] = bson.M{"$in": bson.A{int64(0), nil}}
-	} else {
-		filter["issue.claimepoch"] = prev.Epoch
-	}
+	// The fencing precondition is exactly ownedFilter's (claim == prev,
+	// legacy-epoch handling included — one definition of "how a
+	// zero epoch matches") plus the still-expired lease bound.
+	filter := s.ownedFilter(id, prev)
+	filter["issue.claimleaseuntil"] = bson.M{"$gt": time.Time{}, "$lt": cutoff}
 	res := s.issues.FindOneAndUpdate(ctx, filter,
 		leaseStampPipeline(bson.M{
 			"issue.claim":      marker,
-			"issue.claimepoch": bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}},
+			"issue.claimepoch": bumpEpochExpr(),
 			"issue.claimedat":  "$$NOW",
 			"issue.updatedat":  "$$NOW",
 		}),

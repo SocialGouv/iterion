@@ -158,13 +158,8 @@ func (c *Coordinator) ListExpiredClaimCandidates(ctx context.Context, cutoff tim
 	}
 	out := make([]ExpiredCandidate, 0, len(docs))
 	for _, d := range docs {
-		out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: tracker.ExpiredClaim{
-			IssueID:    d.Issue.ID,
-			Identifier: d.Issue.ID,
-			State:      d.Issue.State,
-			LastRunID:  d.Issue.LastRunID,
-			Prev:       tracker.ClaimToken{Marker: d.Issue.Claim, Epoch: d.Issue.ClaimEpoch},
-		}})
+		iss := d.Issue
+		out = append(out, ExpiredCandidate{Tenant: d.Tenant, Claim: native.ExpiredClaimFrom(&iss)})
 	}
 	return out, nil
 }

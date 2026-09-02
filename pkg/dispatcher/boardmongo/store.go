@@ -108,6 +108,16 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 			{Key: "issue.claim", Value: 1},
 			{Key: "issue.updatedat", Value: 1},
 		}, Options: options.Index().SetName("eligible_by_updated")},
+		// Serves the claim watchdog's expired-lease query (leaseUntil
+		// range + sort), cross-tenant every minute per replica. Leading
+		// with issue.claimleaseuntil makes it an index range scan; the
+		// eligible_by_updated index above CANNOT serve it (it leads with
+		// issue.state), so without this the reaper is the exact COLLSCAN
+		// + non-indexed-sort that index's own comment exists to avoid.
+		// Partial on a non-empty claim: only claimed cards carry a lease.
+		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}}, Options: options.Index().
+			SetName("claim_lease_until").
+			SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("boardmongo: ensure issues index: %w", err)
@@ -457,7 +467,7 @@ func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": ""},
 		leaseStampPipeline(bson.M{
 			"issue.claim":      marker,
-			"issue.claimepoch": bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}},
+			"issue.claimepoch": bumpEpochExpr(),
 			"issue.claimedat":  "$$NOW",
 			"issue.updatedat":  "$$NOW",
 		}),
@@ -497,6 +507,14 @@ func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 		return tracker.ClaimToken{}, gerr
 	}
 	return tracker.ClaimToken{}, fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
+}
+
+// bumpEpochExpr is the aggregation expression that advances the fencing
+// counter — the value that kills a dead owner's late writes. One
+// definition, shared by the two writers that acquire a fresh claim
+// (Claim phase 1 and ReclaimExpired's transfer).
+func bumpEpochExpr() bson.M {
+	return bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}}
 }
 
 // leaseStampPipeline builds the update pipeline that stamps the claim
