@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.91.0](https://github.com/SocialGouv/iterion/compare/v3.90.0...v3.91.0) (2026-09-02)
+
+### Features
+
+* **usagecap:** an auth-rejected credential becomes skip evidence — the third refusal family ([#624](https://github.com/SocialGouv/iterion/issues/624)) ([b7f2ef0](https://github.com/SocialGouv/iterion/commit/b7f2ef00eccb51a84ac49a3c414504907a49c154))
+
+    <details><summary>why</summary>
+
+    Re-resolution is already universal server-side (SubmitResume and the retry sweeper both re-resolve), yet a structurally-broken credential kept condemning run after run: it filled its slot on every resolution, gated the pool and platform tiers off, and its failure produced NO evidence for the credential-tier skip to act on. Quota refusals have a family, frequency refusals have a family — the provider rejecting the credential ITSELF had none.
+
+    </details>
+
 ## [3.90.0](https://github.com/SocialGouv/iterion/compare/v3.89.0...v3.90.0) (2026-09-02)
 
 ### Features
