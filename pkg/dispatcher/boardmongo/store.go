@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -290,11 +291,67 @@ func (s *Store) List(filter native.ListFilter) ([]*native.Issue, error) {
 	return out, nil
 }
 
-// replace persists the issue and stamps UpdatedAt.
+// issueFieldKeys are the BSON keys THIS binary knows on the nested
+// issue subdocument, derived from the struct once at init so a new
+// field can never be forgotten here. The derivation reproduces the
+// driver's naming exactly: the bson tag head when present, else the
+// lowercased field name (native.Issue carries no bson tags today).
+var issueFieldKeys = func() []string {
+	t := reflect.TypeOf(native.Issue{})
+	keys := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		name := strings.ToLower(f.Name)
+		if tag, ok := f.Tag.Lookup("bson"); ok {
+			head := strings.Split(tag, ",")[0]
+			if head == "-" {
+				continue
+			}
+			if head != "" {
+				name = head
+			}
+		}
+		keys = append(keys, name)
+	}
+	return keys
+}()
+
+// replace persists the issue via targeted $set/$unset of the keys THIS
+// binary knows — never a full-document ReplaceOne: in a mixed fleet a
+// replace from an older binary silently erased every field a newer one
+// had added to the subdocument (a claim lease wiped this way turns a
+// live, expirable claim into a permanently stuck legacy one). Unknown
+// (future) fields survive; a known field the struct no longer emits is
+// still $unset, so for everything this binary owns the semantics match
+// the replace it supersedes.
 func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
 	expireGiveUp(iss)
-	_, err := s.issues.ReplaceOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, issueDoc{ID: iss.ID, Tenant: s.tenant, Issue: *iss})
+	raw, err := bson.Marshal(iss)
 	if err != nil {
+		return fmt.Errorf("boardmongo: marshal issue: %w", err)
+	}
+	var m bson.M
+	if err := bson.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("boardmongo: remarshal issue: %w", err)
+	}
+	set := bson.M{}
+	for k, v := range m {
+		set["issue."+k] = v
+	}
+	unset := bson.M{}
+	for _, k := range issueFieldKeys {
+		if _, ok := m[k]; !ok {
+			unset["issue."+k] = ""
+		}
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	if _, err := s.issues.UpdateOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, update); err != nil {
 		return fmt.Errorf("boardmongo: replace issue: %w", err)
 	}
 	return nil

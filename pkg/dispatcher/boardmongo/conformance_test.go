@@ -581,6 +581,19 @@ func TestMongoStore_Conformance(t *testing.T) {
 	if eerr != nil {
 		t.Fatalf("ListEligible: %v", eerr)
 	}
+	// The Coordinator is cross-tenant BY DESIGN, and this suite shares one
+	// database: ready+unclaimed residue from the earlier per-tenant suites
+	// (tenant-1's cards) legitimately shows up here. Scope the assertions
+	// to this section's own tenants — a real attribution bug still fails
+	// on the per-title tenant checks below.
+	coordTenants := map[string]bool{"ca": true, "cb": true}
+	filtered := elig[:0:0]
+	for _, c := range elig {
+		if coordTenants[c.Tenant] {
+			filtered = append(filtered, c)
+		}
+	}
+	elig = filtered
 	gotTitles := map[string]string{}
 	for _, c := range elig {
 		gotTitles[c.Issue.Title] = c.Tenant
@@ -608,12 +621,18 @@ func TestMongoStore_Conformance(t *testing.T) {
 	if elig[0].Issue.Title != "ready-a" || elig[1].Issue.Title != "ready-b" {
 		t.Errorf("oldest-first order = [%s, %s], want [ready-a, ready-b]", elig[0].Issue.Title, elig[1].Issue.Title)
 	}
-	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 1, true)
+	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 50, true)
 	if derr != nil {
 		t.Fatalf("ListEligible newest-first: %v", derr)
 	}
-	if len(desc) != 1 || desc[0].Issue.Title != "ready-b" {
-		t.Errorf("newest-first capped window = %v, want the freshest card ready-b", desc)
+	var descOwn []boardmongo.Candidate
+	for _, c := range desc {
+		if coordTenants[c.Tenant] {
+			descOwn = append(descOwn, c)
+		}
+	}
+	if len(descOwn) == 0 || descOwn[0].Issue.Title != "ready-b" {
+		t.Errorf("newest-first order = %v, want the freshest card ready-b first", descOwn)
 	}
 }
 
