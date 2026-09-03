@@ -18,13 +18,19 @@ import (
 )
 
 // SchemaVersion is incremented at every breaking change to the wire
-// payload. Producers always set RunMessage.V = SchemaVersion;
-// consumers reject any V they don't recognise so that a
-// rolling-upgrade always upgrades the server first (which then never
-// emits an unsupported version).
+// payload. Producers always set RunMessage.V = SchemaVersion; consumers
+// reject any V outside [MinSchemaVersion, SchemaVersion], so a rolling
+// upgrade must roll the PERMISSIVE side first — see the ordering bullet
+// below.
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
-//   - Deploy the server (producer) first, then the runners. A mismatch in
+//   - Roll the side that must already tolerate the other FIRST. Ordinarily
+//     that is the runners: while MinSchemaVersion(new) <= SchemaVersion(old
+//     server), new runners still admit what the old server emits, so nothing
+//     is ever rejected. Deploy the server first only when a bump RAISES
+//     MinSchemaVersion past the old server's version — there new runners
+//     would reject the queued backlog, and the runbook's drain/replay paths
+//     apply. A mismatch in
 //     either direction is TRANSIENT, never terminal: the consumer holds the
 //     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
 //     on the DLQ with the run document flipped to an actionable status —
@@ -71,10 +77,12 @@ import (
 // silently serves STALE code/skills for an overridden bot — the exact façade
 // the platform-override feature exists to prevent. Consumers accept BOTH v8
 // and v9 (MinSchemaVersion): the change is purely additive, so a NEW runner
-// consumes old queued v8 messages. (The reverse still holds the standard
-// policy: a pre-bump runner rejects v9, so the server-first ordering — or a
-// same-release roll of both — remains required; dual-accept removes only
-// the stranded-v8-message half of the window.)
+// consumes old queued v8 messages. (The reverse does not hold — a pre-bump
+// runner rejects v9 — which is exactly why the permissive side, the runners,
+// goes first: dual-accept closes the stranded-v8-message half of the window,
+// and rolling runners first closes the other half by never letting a v9
+// message meet a v8-only consumer. An earlier revision of this note read
+// "server-first ordering remains required"; that was the pre-window rule.)
 //
 // v=10 (2026-08-29): added Fallback so the operator's single run-level
 // fallback route (`--fallback` / launch `fallback`) reaches the runner.

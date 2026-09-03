@@ -98,16 +98,28 @@ current high-water mark. Never restore a lower-epoch Helm revision directly.
 
 ## Deploy ordering: which side rolls first
 
-Ordering is decided by ONE question — **does the new runner's accepted window
-still cover what the old server publishes?** In symbols, comparing the two
-builds you are moving between:
+Ordering is decided by ONE question — **can the new runner still admit
+everything it may be handed?** Admission is decided per MESSAGE, against
+`env.V` ([pkg/runner/loop_nats.go](../pkg/runner/loop_nats.go)), with no
+notion of who published it, and the stream retains messages for `MaxAge`
+(default 24h). So the test is against the oldest version still **resident in
+the stream**, which is normally the old server's but is not the same thing:
 
-    MinSchemaVersion(new runner) <= SchemaVersion(old server)
+    MinSchemaVersion(new runner) <= oldest V still queued
+
+`SchemaVersion(old server)` is the right proxy whenever the queue holds
+nothing older than what that server emits — true after a quiet period, and
+true by construction when `MinSchemaVersion` is unchanged. It is **not** true
+for a bump that RAISES `MinSchemaVersion` less than `MaxAge` after the
+previous rollout: v11 messages published 20h ago are still resident, and a
+v13 runner with `Min` raised to 12 rejects them even though `12 <= 12` holds
+against the server. `MinSchemaVersion` has advanced before (it was 8 during
+v9), so check the queue rather than assume.
 
 ### Runner-first, when that holds
 
-It holds for any bump that stays inside the compatibility window, which is the
-ordinary case since #481 introduced one (`MinSchemaVersion` 10 has trailed
+It holds for any bump that leaves `MinSchemaVersion` alone — the ordinary
+case since #481 introduced a window (`MinSchemaVersion` 10 has trailed
 `SchemaVersion` by several versions ever since). Roll the **runners first**:
 
 - new runners accept `[Min(new) … Max(new)]`, so the old server's vN messages
@@ -116,13 +128,20 @@ ordinary case since #481 introduced one (`MinSchemaVersion` 10 has trailed
   publishing vN;
 - then roll the server. Every runner already accepts vN+1.
 
-The rejection window is **zero**, so no maintenance window and no DLQ replay
-are needed — Path A and Path B both become unnecessary.
+Nothing is rejected in either direction, so no maintenance window and no DLQ
+replay are needed — Path A and Path B both become unnecessary.
 
-Doing it the other way round is what costs: a vN+1 server publishing into a
-vN-only fleet gets every delivery delayed-Naked, and a run is parked
-`failed_resumable` once MaxDeliver is spent — ~4 minutes at the defaults
-(8 × 30s), typically less than a full runner Deployment roll.
+Doing it the other way round turns that certainty into a race: a vN+1 server
+publishing into a vN-only fleet gets every delivery delayed-Naked until a
+new-version runner is Ready. With the chart's `maxSurge: 100%` /
+`maxUnavailable: 0` that is usually early in the roll — the 30s delay exists
+precisely to stretch the 8-delivery budget over ~4 minutes and cover a
+rolling restart (see *What a mixed fleet does* above, and the constant's own
+justification in [pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go)). What
+matters is time-to-first-Ready-new-runner, not the full roll, which under
+`drainMode: complete` can take hours. A fleet whose new pods are slow to
+become Ready spends the budget and parks the run `failed_resumable`.
+Runner-first removes that race instead of timing it.
 
 ### Server-first, when it does not
 
@@ -147,10 +166,17 @@ helm upgrade iterion ./charts/iterion \
 helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
 ```
 
-Swap the two `--set` values for the server-first case. If your deploy pipeline
-sequences Deployments itself, use it instead — the requirement is only that the
-side which must be permissive is Ready before the side which changes what it
-emits.
+**The snippet above is the runner-first order — do not copy it verbatim for
+Path A or Path B below.** Both are the server-first case and need the two
+`--set` values swapped (server on `<new-tag>`, `runner.image` held on the old
+one in phase 1). Getting that backwards on Path B is the destructive
+direction: it rolls the runners into a queue full of vN messages they reject,
+and per Path B step 5 those parked messages are **unreplayable** — recovery
+is a per-run resume plus a DLQ delete.
+
+If your deploy pipeline sequences Deployments itself, use it instead — the
+requirement is only that the side which must be permissive is Ready before the
+side which changes what it emits.
 
 > Measured on the v11 → v12 cutover (2026-09-02, prod: 12 runner pods, 3 server
 > pods, live traffic including a run executing across the runner roll).
@@ -179,8 +205,12 @@ later bump as well.
    window follow Path B — which, for v7 → v8, they cannot: keep the window.
 2. Wait for the queue to drain: `iterion_nats_pending_messages` = 0 and no
    `queued` runs older than the AckWait window.
-3. Deploy the server (vN+1), then roll the runners (vN+1) — per the
-   two-phase chart upgrade above.
+3. Deploy the server (vN+1), then roll the runners (vN+1) — the two-phase
+   chart upgrade above **with its two `--set` values swapped**, since that
+   snippet is written runner-first. (Once step 2 has drained the queue to
+   zero, ordering is in fact moot — nothing is left for either side to
+   reject. Keep the server-first order anyway so the step reads the same in
+   both paths.)
 4. Sanity-check: one launch end-to-end, DLQ depth 0.
 
 ### Path B — DLQ identification + replay after cutover
@@ -192,8 +222,11 @@ v7 → v8 cutover itself the outgoing runners are pre-#481 builds: they bare-
 empty DLQ and a run stuck `queued` — the exact loss #481 closes. **Do not
 run Path B for v7 → v8; use Path A.**
 
-1. Deploy the server (vN+1) first, then roll the runners (two-phase upgrade
-   above). During the window, stale runners hold vN+1 messages via delayed
+1. Deploy the server (vN+1) first, then roll the runners — the two-phase
+   upgrade above **with its two `--set` values swapped**, since that snippet
+   is written runner-first and this path is the one where the wrong order
+   parks messages that step 5 cannot replay. During the window, stale runners
+   hold vN+1 messages via delayed
    Naks; after MaxDeliver they park them on the DLQ and flip the runs to
    `failed_resumable`.
 2. Once **all** runners run vN+1, list the DLQ and identify the parked

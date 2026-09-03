@@ -303,8 +303,12 @@ them:
 
 > **Schema bump?** If the deploy changes the queue wire version
 > (`pkg/queue/types.go` `SchemaVersion`), pod turnover is the *easy* half —
-> the mixed-version window also needs the drained-queue-or-DLQ-replay
-> procedure in [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md).
+> the mixed-version window is governed by
+> [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md). Read
+> its *Deploy ordering* section first: a bump that leaves `MinSchemaVersion`
+> alone is a runner-first rollout that rejects nothing and needs neither a
+> drained queue nor a DLQ replay; those two procedures are for a bump that
+> RAISES `MinSchemaVersion` past what is still queued.
 
 ### Generation-aware rollout
 
