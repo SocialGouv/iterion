@@ -988,15 +988,25 @@ func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID stri
 }
 
 // SetRunCredFingerprints stamps the sealed credentials' audit identities
-// on the run document (see RunStore). Load-modify-save, like the other
-// fs-side patches: the filesystem store has no partial update.
-func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error {
-	r, err := s.LoadRun(ctx, runID)
+// on the run document (see RunStore). Locked read-modify-write, like
+// every other targeted fs patch (PatchRunSteering et al.): a public
+// LoadRun + SaveRun pair holds no lock ACROSS the two, so a concurrent
+// status or checkpoint write landing between them is lost to the stale
+// full document — the inherent SaveRun hazard the Patch family exists to
+// dodge. Reachable on resume, where the queued CAS precedes the stamp.
+// Mongo's twin is a single $set, so this is what keeps the two backends
+// telling the same story.
+func (s *FilesystemRunStore) SetRunCredFingerprints(_ context.Context, runID string, fingerprints []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(runID)
 	if err != nil {
 		return err
 	}
 	r.CredFingerprints = fingerprints
-	return s.SaveRun(ctx, r)
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
 }
 
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped

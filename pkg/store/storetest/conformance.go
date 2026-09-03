@@ -2546,6 +2546,16 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 		t.Errorf("alive(empty) = %d/%v, want 0", n, err)
 	}
 
+	// The stamp bumps updated_at, like every other targeted patch — the
+	// two backends must not diverge on it (mongo $sets it; the fs store
+	// has to do so by hand). Sleeping past BSON's millisecond resolution
+	// is what makes the comparison strict on both.
+	before, err := s.LoadRun(ctx, "fp_run2")
+	if err != nil {
+		t.Fatalf("LoadRun fp_run2: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+
 	// Re-stamp replaces wholesale: a resume that resolved different
 	// credentials must not keep metering the old ones.
 	if err := s.SetRunCredFingerprints(ctx, "fp_run2", []string{"fp-anthropic"}); err != nil {
@@ -2556,5 +2566,33 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-anthropic", ""); err != nil || n != 2 {
 		t.Errorf("alive(fp-anthropic) after re-stamp = %d/%v, want 2", n, err)
+	}
+	if after, err := s.LoadRun(ctx, "fp_run2"); err != nil {
+		t.Fatalf("LoadRun fp_run2 after re-stamp: %v", err)
+	} else if !after.UpdatedAt.After(before.UpdatedAt) {
+		t.Errorf("UpdatedAt after re-stamp = %v, want strictly later than %v", after.UpdatedAt, before.UpdatedAt)
+	}
+
+	// The COUNT is deliberately not tenant-scoped: a platform key serves
+	// every tenant on ONE ceiling, so a run in another tenant holding the
+	// same credential must count. Stamped from its own tenant's context —
+	// the stamp IS tenant-scoped, unlike the count it feeds.
+	otherCtx := store.WithIdentity(context.Background(), "other-team", "_test")
+	if _, err := s.CreateRun(otherCtx, "fp_other_tenant", "demo", nil); err != nil {
+		t.Fatalf("CreateRun cross-tenant: %v", err)
+	}
+	or, err := s.LoadRun(otherCtx, "fp_other_tenant")
+	if err != nil {
+		t.Fatalf("LoadRun cross-tenant: %v", err)
+	}
+	or.Status = store.RunStatusRunning
+	if err := s.SaveRun(otherCtx, or); err != nil {
+		t.Fatalf("SaveRun cross-tenant: %v", err)
+	}
+	if err := s.SetRunCredFingerprints(otherCtx, "fp_other_tenant", []string{"fp-zai"}); err != nil {
+		t.Fatalf("SetRunCredFingerprints cross-tenant: %v", err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 2 {
+		t.Errorf("alive(fp-zai) across tenants = %d/%v, want 2 — one ceiling serves every tenant", n, err)
 	}
 }
