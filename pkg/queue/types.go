@@ -25,12 +25,15 @@ import (
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
 //   - Roll the side that must already tolerate the other FIRST. Ordinarily
-//     that is the runners: while MinSchemaVersion(new) <= SchemaVersion(old
-//     server), new runners still admit what the old server emits, so nothing
-//     is ever rejected. Deploy the server first only when a bump RAISES
-//     MinSchemaVersion past the old server's version — there new runners
-//     would reject the queued backlog, and the runbook's drain/replay paths
-//     apply. A mismatch in
+//     that is the runners: while MinSchemaVersion(new) is at or below the
+//     oldest V still RESIDENT in the stream, new runners admit everything
+//     they may be handed, so nothing is ever rejected. SchemaVersion(old
+//     server) is the usual proxy for that, but only a proxy — admission is
+//     per message, and the stream retains MaxAge (24h), so a bump that RAISES
+//     MinSchemaVersion within that window can still meet older queued
+//     messages. Deploy the server first when MinSchemaVersion rises past what
+//     is still queued: there new runners would reject the backlog, and the
+//     runbook's drain/replay paths apply. A mismatch in
 //     either direction is TRANSIENT, never terminal: the consumer holds the
 //     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
 //     on the DLQ with the run document flipped to an actionable status —

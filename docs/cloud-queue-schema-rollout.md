@@ -3,8 +3,14 @@
 How to ship a `queue.RunMessage` schema bump (`pkg/queue/types.go`,
 `SchemaVersion`) without executing a payload with silently dropped semantics,
 and without losing runs while the server and runner fleets run mixed
-versions. This runbook is **mandatory** for every schema bump — deployment
-ordering alone is not sufficient (issue #481).
+versions. Read it before every schema bump.
+
+Ordering carries most of the weight, but you have to pick the right one:
+roll the **permissive** side first, and the drain/replay paths below are for
+the bump where no ordering can help. See *Deploy ordering* for the test.
+(Before #481 there was no compatibility window and no recoverable mismatch,
+so ordering alone genuinely was not sufficient — that is the era the
+drain/replay paths were written for.)
 
 ## Wire compatibility policy
 
@@ -167,12 +173,30 @@ helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
 ```
 
 **The snippet above is the runner-first order — do not copy it verbatim for
-Path A or Path B below.** Both are the server-first case and need the two
-`--set` values swapped (server on `<new-tag>`, `runner.image` held on the old
-one in phase 1). Getting that backwards on Path B is the destructive
-direction: it rolls the runners into a queue full of vN messages they reject,
-and per Path B step 5 those parked messages are **unreplayable** — recovery
-is a per-run resume plus a DLQ delete.
+Path A or Path B below.** Those are the server-first case; it is a different
+command, not a swap of the two values (`image.tag` takes a tag,
+`runner.image` a full reference, so exchanging them renders an invalid image):
+
+```bash
+# SERVER-FIRST — Path A step 3 and Path B step 1 only.
+# Phase 1 — roll the server, holding the runners on the OLD image.
+helm upgrade iterion ./charts/iterion \
+  --set image.tag=<new-tag> \
+  --set runner.image=ghcr.io/socialgouv/iterion:<old-tag>
+
+# Phase 2 — once the server is Ready on <new-tag>, release the runners.
+helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
+```
+
+Getting that backwards on Path B is the destructive direction: it rolls the
+runners into a queue full of vN messages they reject, and per Path B step 5
+those parked messages are **unreplayable** — recovery is a per-run resume
+plus a DLQ delete.
+
+Both snippets assume `image.digest` is unset. A values-pinned digest **wins
+over `image.tag`**, so these `--set image.tag=` phases become silent no-ops;
+pin the phase's digest instead (see
+[cloud-deployment.md](cloud-deployment.md#pinning-the-image)).
 
 If your deploy pipeline sequences Deployments itself, use it instead — the
 requirement is only that the side which must be permissive is Ready before the
@@ -205,12 +229,12 @@ later bump as well.
    window follow Path B — which, for v7 → v8, they cannot: keep the window.
 2. Wait for the queue to drain: `iterion_nats_pending_messages` = 0 and no
    `queued` runs older than the AckWait window.
-3. Deploy the server (vN+1), then roll the runners (vN+1) — the two-phase
-   chart upgrade above **with its two `--set` values swapped**, since that
-   snippet is written runner-first. (Once step 2 has drained the queue to
-   zero, ordering is in fact moot — nothing is left for either side to
-   reject. Keep the server-first order anyway so the step reads the same in
-   both paths.)
+3. Deploy the server (vN+1), then roll the runners (vN+1) — the **SERVER-FIRST
+   snippet** above, not the runner-first one. (If step 1 held a real
+   maintenance window and step 2 reached zero, ordering is moot here: nothing
+   is left for either side to reject. It is not moot when step 1 was skipped
+   and launches continued, which the step explicitly allows — so follow the
+   order regardless.)
 4. Sanity-check: one launch end-to-end, DLQ depth 0.
 
 ### Path B — DLQ identification + replay after cutover
@@ -222,11 +246,10 @@ v7 → v8 cutover itself the outgoing runners are pre-#481 builds: they bare-
 empty DLQ and a run stuck `queued` — the exact loss #481 closes. **Do not
 run Path B for v7 → v8; use Path A.**
 
-1. Deploy the server (vN+1) first, then roll the runners — the two-phase
-   upgrade above **with its two `--set` values swapped**, since that snippet
-   is written runner-first and this path is the one where the wrong order
-   parks messages that step 5 cannot replay. During the window, stale runners
-   hold vN+1 messages via delayed
+1. Deploy the server (vN+1) first, then roll the runners — the **SERVER-FIRST
+   snippet** above, not the runner-first one. This is the path where the wrong
+   order parks messages that step 5 cannot replay. During the window, stale
+   runners hold vN+1 messages via delayed
    Naks; after MaxDeliver they park them on the DLQ and flip the runs to
    `failed_resumable`.
 2. Once **all** runners run vN+1, list the DLQ and identify the parked
