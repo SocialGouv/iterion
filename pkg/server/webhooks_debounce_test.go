@@ -585,21 +585,31 @@ func TestSyncDebounce_RetryChainIsBoundedAndAudited(t *testing.T) {
 // next MONTH — parking the row that long buys nothing (the head is
 // stale long before) and hides the loss, so it is terminal.
 func TestDeferRetryWait(t *testing.T) {
-	if wait, ok := deferRetryWait(nil, 0); !ok || wait != webhookDeferRetryBase {
+	now := time.Now().UTC()
+	if wait, ok := deferRetryWait(nil, 0, now); !ok || wait != webhookDeferRetryBase {
 		t.Fatalf("a plain launch failure must retry at the base delay, got %s ok=%v", wait, ok)
 	}
-	if wait, ok := deferRetryWait(&launchDenial{retryAfter: 90 * time.Second}, 0); !ok || wait != 90*time.Second {
+	if wait, ok := deferRetryWait(&launchDenial{retryAfter: 90 * time.Second}, 0, now); !ok || wait != 90*time.Second {
 		t.Fatalf("the denial's own Retry-After must floor the wait, got %s ok=%v", wait, ok)
 	}
-	if wait, ok := deferRetryWait(&launchDenial{retryAfter: time.Hour}, 0); !ok || wait != webhookDeferRetryMax {
+	if wait, ok := deferRetryWait(&launchDenial{retryAfter: time.Hour}, 0, now); !ok || wait != webhookDeferRetryMax {
 		t.Fatalf("the wait must stay capped, got %s ok=%v", wait, ok)
 	}
-	if _, ok := deferRetryWait(nil, webhookDeferMaxAttempts-1); ok {
+	if _, ok := deferRetryWait(nil, webhookDeferMaxAttempts-1, now); ok {
 		t.Fatal("the chain must be bounded by the attempt cap")
 	}
-	monthly := &launchDenial{resetAt: nextMonthStart(time.Now().UTC())}
-	if _, ok := deferRetryWait(monthly, 0); ok {
+	// The horizon is measured against the SWEEP's clock: a monthly reset
+	// is terminal whatever the wall clock says.
+	monthly := &launchDenial{resetAt: nextMonthStart(now)}
+	if _, ok := deferRetryWait(monthly, 0, now); ok {
 		t.Fatal("a monthly-cap denial must be terminal, not parked for weeks")
+	}
+	if _, ok := deferRetryWait(monthly, 0, now.Add(-90*24*time.Hour)); ok {
+		t.Fatal("the horizon must read the injected clock, not time.Now")
+	}
+	// A reset INSIDE the cadence is still waited out.
+	if _, ok := deferRetryWait(&launchDenial{resetAt: now.Add(time.Minute)}, 0, now); !ok {
+		t.Fatal("a near reset must stay retryable")
 	}
 }
 

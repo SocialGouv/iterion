@@ -396,7 +396,7 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		}
 	}
 	if failed != "" {
-		if wait, ok := deferRetryWait(denial, d.Attempts); ok {
+		if wait, ok := deferRetryWait(denial, d.Attempts, now); ok {
 			// NOT delete: the forge was answered `202 deferred` minutes ago,
 			// so it will never redeliver, and the immediate lane's recovery —
 			// hand the denial's 4xx back and let the forge retry — does not
@@ -442,12 +442,15 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 // is the next month) is refused outright: parking a row for weeks buys
 // nothing — the head it reviews is stale long before then — and hides
 // the loss behind a row that will silently no-op.
-func deferRetryWait(denial *launchDenial, attempts int) (time.Duration, bool) {
+func deferRetryWait(denial *launchDenial, attempts int, now time.Time) (time.Duration, bool) {
 	if attempts+1 >= webhookDeferMaxAttempts {
 		return 0, false
 	}
+	// Measured against the SWEEP's clock, not the wall's: the sweep takes
+	// an injectable now, and reading time.Now here would make the horizon
+	// answer a different question than the FireAt arithmetic beside it.
 	if denial != nil && !denial.resetAt.IsZero() &&
-		time.Until(denial.resetAt) > webhookDeferRetryHorizon {
+		denial.resetAt.Sub(now) > webhookDeferRetryHorizon {
 		return 0, false
 	}
 	// Exponential from the sweep cadence, floored by the denial's own
