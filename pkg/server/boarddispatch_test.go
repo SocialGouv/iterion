@@ -2503,9 +2503,9 @@ func (d *driftingCoord) statusHook() {
 		return
 	}
 	d.once = true
-	d.fakeBoardCoord.mu.Lock()
-	d.fakeBoardCoord.states[d.id] = d.to
-	d.fakeBoardCoord.mu.Unlock()
+	d.mu.Lock()
+	d.states[d.id] = d.to
+	d.mu.Unlock()
 }
 
 // TestBoardDispatcher_ReconcilerDoesNotOverwriteAnOperatorDrag: the

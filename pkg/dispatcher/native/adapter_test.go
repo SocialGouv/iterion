@@ -223,4 +223,3 @@ func TestAdapterUpdateState(t *testing.T) {
 
 // Compile-time assertion that *Adapter satisfies tracker.Tracker.
 var _ tracker.Tracker = (*native.Adapter)(nil)
-
