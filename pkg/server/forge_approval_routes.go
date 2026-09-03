@@ -90,8 +90,14 @@ func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id
 		httpError(w, http.StatusConflict, "%s", err.Error())
 		return
 	}
+	// Dual-write, like approve/reject: the team trail carries the request
+	// for its members, and the ORG trail is what the approver reads — a
+	// request only visible team-side never surfaces in Org → Audit.
 	s.auditTenant(r, teamID, "forge.provision.approval_requested", "provision_approval", a.ID, map[string]any{
 		"repo": a.RepoFullName, "bots": a.BotIDs, "org_id": orgID,
+	})
+	s.auditOrg(r, orgID, "forge.provision.approval_requested", "provision_approval", a.ID, map[string]any{
+		"repo": a.RepoFullName, "bots": a.BotIDs, "team_id": teamID,
 	})
 	writeJSONStatus(w, http.StatusAccepted, map[string]any{
 		"pending_approval": true,

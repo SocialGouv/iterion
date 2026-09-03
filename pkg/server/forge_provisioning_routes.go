@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 func (s *Server) registerForgeProvisioningRoutes() {
@@ -112,7 +113,26 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	if orgID != "" {
 		req.Repo = strings.TrimSpace(req.Repo)
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, "", false, nil)
+		// This endpoint is ALSO the add-bots path for an already-connected
+		// repo (Provision merges when the integration exists). Record which
+		// case this request is — id + bot-set snapshot — or the approve-time
+		// staleness check would mistake an add-bots request for a new-repo
+		// one and refuse it forever. A store error here fails closed like
+		// the gate itself; only a clean not-found means "new repo".
+		integrationID, baseBots := "", []string(nil)
+		if s.forgeIntegrations != nil {
+			ri, ierr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, req.Repo)
+			switch {
+			case ierr == nil:
+				integrationID, baseBots = ri.ID, ri.BotIDs
+			case errors.Is(ierr, forge.ErrIntegrationNotFound):
+				// genuinely new repo
+			default:
+				httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ierr)
+				return
+			}
+		}
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -413,6 +433,36 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// bounded stored policy widens. An empty stored value already means
 	// allow (the historical default), so that transition changes nothing.
 	if req.Overlap == "allow" && ri.Overlap != "" && ri.Overlap != "allow" {
+		return true
+	}
+	return false
+}
+
+// webhookPatchExpandsSurface is expandsProvisionSurface's twin for the
+// generic webhook CRUD: a MANAGED (forge-provisioned) config carries the
+// same automation switches the approval gate parks, and PATCHing them
+// directly would bypass the org's decision (found live by review round 3).
+// Same doctrine: only EXPANSIONS are caught; tightenings stay direct.
+func webhookPatchExpandsSurface(cfg webhooks.Config, req webhookConfigReq) bool {
+	if req.BotIDs != nil && addsBots(cfg.BotIDs, req.BotIDs) {
+		return true
+	}
+	if req.WildcardBots != nil && *req.WildcardBots && !cfg.WildcardBots {
+		return true
+	}
+	if req.HoldLabels != nil && removesAny(cfg.HoldLabels, req.HoldLabels) {
+		return true
+	}
+	if req.LabelAllowlist != nil && len(cfg.LabelAllowlist) > 0 &&
+		(len(req.LabelAllowlist) == 0 || addsBots(cfg.LabelAllowlist, req.LabelAllowlist)) {
+		return true
+	}
+	// The zero-touch implement-on-open lane, turned ON.
+	if req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen && !cfg.AutoImplementOnOpen {
+		return true
+	}
+	if req.Overlap != nil && strings.TrimSpace(*req.Overlap) == "allow" &&
+		cfg.Overlap != "" && cfg.Overlap != "allow" {
 		return true
 	}
 	return false

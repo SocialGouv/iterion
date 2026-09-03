@@ -284,6 +284,49 @@ func TestProvisionApproval_UpdateExpansionOnly(t *testing.T) {
 	}
 }
 
+// The generic webhook CRUD must not bypass the org gate: an EXPANDING
+// patch on a MANAGED config is refused toward the integrations API, while
+// a tightening one stays direct.
+func TestProvisionApproval_ManagedWebhookPatchGuard(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	// Provision as org admin → managed webhook exists.
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+
+	patch := func(ctx context.Context, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := forgeReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+res.WebhookID, body, "t1")
+		req.SetPathValue("webhook_id", res.WebhookID)
+		s.handleUpdateWebhook(rec, req)
+		return rec
+	}
+
+	// Team admin adding a bot through the webhook CRUD → refused (409).
+	if rec := patch(teamAdminCtx(), `{"bot_ids":["review-pr","dep-guard"]}`); rec.Code != http.StatusConflict {
+		t.Fatalf("expanding webhook patch should 409: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// Turning the zero-touch implement lane on → refused too.
+	if rec := patch(teamAdminCtx(), `{"auto_implement_on_open":true}`); rec.Code != http.StatusConflict {
+		t.Fatalf("auto-implement ON should 409: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// A tightening (adding a hold label) stays direct.
+	if rec := patch(teamAdminCtx(), `{"hold_labels":["hold"]}`); rec.Code != http.StatusOK {
+		t.Fatalf("tightening webhook patch should pass: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// The org admin edits freely.
+	if rec := patch(orgAdminCtx(), `{"bot_ids":["review-pr","dep-guard"]}`); rec.Code != http.StatusOK {
+		t.Fatalf("org admin webhook patch should pass: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOrgSettings_RequireProvisionApproval(t *testing.T) {
 	s, _, done := newApprovalTestServer(t)
 	defer done()
