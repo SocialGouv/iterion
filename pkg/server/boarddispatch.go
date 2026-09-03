@@ -1086,11 +1086,12 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		acted = true
 		return
 	}
+	filed := true
 	switch dec.Action {
 	case dispatcher.StuckComplete:
-		d.fileReapedCard(ctx, cand, card, d.doneState, tok, tracker.ReasonRunFinished)
+		filed = d.fileReapedCard(ctx, cand, card, d.doneState, tok, tracker.ReasonRunFinished)
 	case dispatcher.StuckFail:
-		d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
+		filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
 	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
 		// Unlike the local dispatcher — where the running column is itself
 		// eligible, so a bare release re-arms the card — this tick only
@@ -1121,10 +1122,24 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			// this filing (a descriptive reason here re-armed a spend on the
 			// very card the ceiling exists to stop paying for; and a fleet's
 			// N-1 pods classify only the marker-derived reason as machine).
-			d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "")
+			filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "")
 		case len(d.eligible) > 0:
-			d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
+			filed = d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
 		}
+	}
+	if !filed {
+		// The write this arm's own comment calls mandatory ("the return to
+		// the pool must be WRITTEN, under the recovery token, before the
+		// release below") did not land. Releasing anyway produces exactly
+		// the outcome that comment names unacceptable: an in_progress card
+		// with no claim, which no cloud net picks up — sweepParked lists
+		// awaiting_input only, and there is no board retry sweeper. Keep
+		// the recovery claim; its lease expires, so the next pass re-judges
+		// and retries the write.
+		d.warn("claim watchdog keeps %s/%s claimed: its %s filing did not land, and releasing it un-filed "+
+			"strands the card where no cloud sweep reaches it — retried at the next lease",
+			cand.Tenant, cand.Claim.IssueID, dec.Action)
+		return
 	}
 	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
 		d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
@@ -1144,23 +1159,30 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 // run_failed — descriptive, the downstream chain fires as it would have
 // for the living owner); "" for reparks into a launch column, which stay
 // under the machine watchdog provenance (firing there re-arms a spend).
-func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, target string, tok tracker.ClaimToken, reason string) {
+//
+// It reports whether the disposition IS SETTLED — written, or declined by
+// the shared guard, which is itself a decision. Only then may the caller
+// release; the twin's contract, for the same reason.
+func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, target string, tok tracker.ClaimToken, reason string) bool {
 	if !dispatcher.ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
 		if card.State != target {
 			d.warn("claim watchdog leaves %s/%s in %q (moved out of %q deliberately — not overwriting it with %q)",
 				cand.Tenant, cand.Claim.IssueID, card.State, card.RunningState, target)
 		}
-		return
+		return true
 	}
 	if reason != "" {
 		if err := d.coord.SetStateOwnedReason(ctx, cand.Tenant, cand.Claim.IssueID, target, tok, reason); err != nil {
 			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, target, err)
+			return false
 		}
-		return
+		return true
 	}
 	if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, target, tok); err != nil {
 		d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, target, err)
+		return false
 	}
+	return true
 }
 
 func (d *boardDispatcher) warn(format string, args ...any) {

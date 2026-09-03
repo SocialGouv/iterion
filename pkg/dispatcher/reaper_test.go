@@ -1230,3 +1230,61 @@ func TestReapOne_DeletedRunIsProofOfAbsence(t *testing.T) {
 			"conserved every pass with no exit: never released, never eligible", got.Claim)
 	}
 }
+
+// failingStateLeaser fails every fenced state write, delegating the rest.
+// It deliberately does NOT implement UpdateStateOwnedReason, so
+// fileStuckCard takes its plain UpdateStateOwned branch.
+type failingStateLeaser struct {
+	tracker.ClaimLeaser
+	released bool
+}
+
+func (f *failingStateLeaser) UpdateStateOwned(context.Context, string, string, tracker.ClaimToken) error {
+	return errors.New("board write refused")
+}
+
+func (f *failingStateLeaser) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	f.released = true
+	return f.ClaimLeaser.ReleaseOwned(ctx, id, tok)
+}
+
+// TestReapOne_FailedFilingKeepsTheClaim: transfer-before-act exists so a
+// card is never freed before its disposition is decided — but the
+// disposition also has to LAND. fileStuckCard swallowed every write
+// error and reapOne released regardless, logging "reclaimed … (state →
+// complete)" as if it had. A transient store error or a custom board's
+// rejection therefore turned a proven FINISHED card into an unclaimed
+// one with no filing: ShouldFileStuckCard admits a card still sitting in
+// a launch column, launch columns are eligible, so the next tick mints a
+// second run for work already delivered.
+//
+// Keeping the recovery claim is the safe half: it carries a fresh lease,
+// so the next pass re-judges and retries the write.
+func TestReapOne_FailedFilingKeepsTheClaim(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-delivered", store.RunStatusFinished)
+	cand := seedClaimedCard(t, board, "run-delivered")
+	failing := &failingStateLeaser{ClaimLeaser: c.leaser}
+	c.leaser = failing
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand,
+		time.Now().Add(2*native.ClaimLeaseDuration))
+
+	if failing.released {
+		t.Fatal("the claim was released although the done-filing failed — the card is unclaimed, unfiled and " +
+			"back in an eligible column: the next tick launches a second run for delivered work")
+	}
+	got, err := board.Get(cand.IssueID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Claim == "" {
+		t.Fatal("card left unclaimed after a failed filing")
+	}
+	if !IsReaperMarker(got.Claim) {
+		t.Fatalf("card claim = %q, want the recovery marker — the retry must run under the watchdog's own lease", got.Claim)
+	}
+	if got.State == native.StateDone {
+		t.Fatal("precondition broken: the filing was supposed to fail")
+	}
+}

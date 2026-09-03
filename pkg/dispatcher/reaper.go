@@ -192,16 +192,29 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 		c.keepAfterTransfer(ctx, cand, tok, dec)
 		return
 	}
+	filed := true
 	switch dec.Action {
 	case StuckComplete:
-		c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok, tracker.ReasonRunFinished)
+		filed = c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok, tracker.ReasonRunFinished)
 	case StuckFail:
-		c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, tracker.ReasonRunFailed)
+		filed = c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, tracker.ReasonRunFailed)
 	case StuckRepark, StuckReleaseOnly:
 		// The release below is the whole action: the card re-enters the
 		// eligible pool, and for Repark the retry machinery resumes the
 		// RECORDED run (resolveRunID + lastRunHoldBeforeClaim), never a
 		// fresh sibling.
+	}
+	if !filed {
+		// The disposition did NOT land. Releasing now would drop a proven
+		// finished/failed card back into the pool WITHOUT its filing — and
+		// ShouldFileStuckCard admits a card still sitting in a launch
+		// column, which is eligible, so the very next tick mints a second
+		// run for work that was already delivered. Keep the recovery claim
+		// instead: it carries a fresh lease, so the next pass re-judges and
+		// retries the write, loudly, under its own bound.
+		c.logger.Warn("dispatcher: claim watchdog keeps %s claimed: its %s filing did not land, and releasing it "+
+			"un-filed would re-dispatch delivered work — retried at the next lease", cand.Identifier, dec.Action)
+		return
 	}
 	if err := c.leaser.ReleaseOwned(ctx, cand.IssueID, tok); err != nil {
 		c.logger.Warn("dispatcher: claim watchdog release %s: %v", cand.Identifier, err)
@@ -216,16 +229,22 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 
 // fileStuckCard performs the terminal filing half of a disposition,
 // under the recovery token, gated by the shared ShouldFileStuckCard
-// predicate (the cloud reaper reads the same one). Failures are logged,
-// never fatal: the claim is released either way, so a card is never left
-// owned by a dead worker's ghost.
-func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken, reason string) {
+// predicate (the cloud reaper reads the same one).
+//
+// It reports whether the disposition IS SETTLED — either written, or
+// legitimately unnecessary because the guard declined it. Only then may
+// the caller release: a failed write plus a release turns a proven
+// finished card into an unclaimed, re-dispatchable one, which is a
+// duplicate run for delivered work.
+func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken, reason string) bool {
 	if !ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
 		if target != "" && target != card.RunningState && card.State != target {
 			c.logger.Info("dispatcher: claim watchdog leaves %s in %q (moved out of %q deliberately — not overwriting it with %q)",
 				cand.Identifier, card.State, card.RunningState, target)
 		}
-		return
+		// Declining to write IS the disposition here, so the card is
+		// settled and the claim must come off.
+		return true
 	}
 	// A TERMINAL filing carries the run's own verdict (run_finished /
 	// run_failed — descriptive, non-machine): the card's downstream chain
@@ -248,12 +267,15 @@ func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClai
 	}); ok && reason != "" {
 		if err := rr.UpdateStateOwnedReason(ctx, cand.IssueID, target, tok, reason); err != nil {
 			c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
+			return false
 		}
-		return
+		return true
 	}
 	if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, target, tok); err != nil {
 		c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
+		return false
 	}
+	return true
 }
 
 // keepAfterTransfer handles a decision that flipped to Keep once the

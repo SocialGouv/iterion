@@ -2371,3 +2371,48 @@ func TestCloudReaper_DeletedRunIsProofOfAbsence(t *testing.T) {
 			"pass with no exit: never released, never eligible, and no cloud sweep reaches it", held)
 	}
 }
+
+// TestCloudReaper_FailedFilingKeepsTheClaim is the cloud twin of the
+// local reaper's failed-filing test, and the cloud arm's own comment
+// already states the invariant it broke: "the return to the pool must be
+// WRITTEN, under the recovery token, before the release below", because
+// "releasing an in_progress card here frees the claim and strands the
+// card: no cloud net picks it up". fileReapedCard returned nothing and
+// swallowed the write error, and reapOne released regardless — producing
+// exactly the stranding that comment names.
+func TestCloudReaper_FailedFilingKeepsTheClaim(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-strand"] = "dead-pod"
+	f.epochs["c-strand"] = 2
+	f.states["c-strand"] = native.StateInProgress
+	f.stateErr["c-strand"] = errors.New("board write refused")
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-strand", LastRunID: "run-resumable",
+			ClaimedAt: time.Now().Add(-4 * native.ClaimLeaseDuration),
+			Prev:      tracker.ClaimToken{Marker: "dead-pod", Epoch: 2},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) {
+		return &store.Run{ID: "run-resumable", Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+
+	f.mu.Lock()
+	held := f.claimed["c-strand"]
+	state := f.states["c-strand"]
+	f.mu.Unlock()
+	if held == "" {
+		t.Fatal("the claim was released although the repark write failed — the card sits in in_progress with " +
+			"no claim and no cloud sweep reaches it (sweepParked lists awaiting_input only)")
+	}
+	if !dispatcher.IsReaperMarker(held) {
+		t.Fatalf("card claim = %q, want the recovery marker so the next lease retries the write", held)
+	}
+	if state != native.StateInProgress {
+		t.Fatalf("precondition broken: the filing was supposed to fail, state = %q", state)
+	}
+}
