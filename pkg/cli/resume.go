@@ -210,7 +210,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	pausedNode := ""
 	if r.Checkpoint != nil {
-		pausedNode = r.Checkpoint.NodeID
+		pausedNode = r.Checkpoint.PausedNodeID()
 	}
 
 	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile)
@@ -342,7 +342,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		}
 		p.KV("Workflow", wf.Name)
 		if r.Checkpoint != nil {
-			p.KV("Node", r.Checkpoint.NodeID)
+			p.KV("Node", r.Checkpoint.PausedNodeID())
 		}
 		if resumingFromFailure {
 			p.KV("Resuming from", "failed (re-executing failed node)")

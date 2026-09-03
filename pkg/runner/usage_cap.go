@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -29,39 +30,82 @@ import (
 // The operator's ceiling therefore inherits, for free, the one property
 // that matters — a capped run is not lost, it is waiting.
 
-// usageCapKey identifies the credential whose windows a run draws on.
-//
-// A tenant that brought its own subscription must not be blocked by what
-// another tenant spent, and runs that fall back to the deployment's own
-// credential must be pooled together — they really are one meter. The run's
-// resolved credentials answer both: a bundle carrying an Anthropic key or
-// OAuth dir the TENANT resolved is the tenant's own; anything else —
-// including a bundle slot the publisher filled from the DB-backed platform
-// tier, which rides the bundle exactly like a tenant credential but is the
-// deployment's single meter — is the platform's.
-func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
-	scope := usagecap.ScopePlatform
-	credFP := ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
-			!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
-		tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
-			!creds.IsPlatformSourced(delegate.BackendClaudeCode)
-		if tenantOwnKey || tenantOwnOAuth {
-			scope = usagecap.TenantScope(msg.TenantID)
-		}
-		// The meter follows the CREDENTIAL: same preference order as the
-		// delegate (a ctx API key outranks an OAuth dir), so the
-		// fingerprint names the credential the run will actually spend.
-		// A rotated token therefore opens a fresh meter instead of
-		// inheriting the readings of the account it replaced.
-		if fp := creds.Fingerprint(string(secrets.ProviderAnthropic)); fp != "" {
-			credFP = fp
-		} else if fp := creds.Fingerprint(delegate.BackendClaudeCode); fp != "" {
-			credFP = fp
+// runCredKeys is the per-run credential identity the meter draws on: the
+// scope (tenant-own vs platform) plus one fingerprint per credential SHAPE
+// the bundle holds. A reading is keyed by the shape the node actually
+// exercised — the delegate stamps its provider-routing label on each
+// Reading (usagecap.Reading.Source) — because a bundle may carry both a
+// z.ai token and an Anthropic key, and a node pinned `provider: anthropic`
+// spends the Anthropic key while the bundle-default precedence points at
+// z.ai. Charging that refusal to the z.ai fingerprint would make the
+// evidence-based skip park the healthy key and keep the frozen one.
+type runCredKeys struct {
+	scope       string
+	zaiFP       string
+	anthropicFP string
+	oauthFP     string
+}
+
+// usageCapCredKeys reads the run's resolved credentials once. Scope: a
+// bundle carrying any credential the TENANT resolved is the tenant's own;
+// anything else — including a slot the publisher filled from the DB-backed
+// platform tier, which rides the bundle exactly like a tenant credential
+// but is the deployment's single meter — is the platform's.
+func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
+	k := runCredKeys{scope: usagecap.ScopePlatform}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return k
+	}
+	tenantOwnZai := creds.APIKey(secrets.ProviderZAI) != "" &&
+		!creds.IsPlatformSourced(string(secrets.ProviderZAI))
+	tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
+		!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
+	tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
+		!creds.IsPlatformSourced(delegate.BackendClaudeCode)
+	if tenantOwnZai || tenantOwnKey || tenantOwnOAuth {
+		k.scope = usagecap.TenantScope(msg.TenantID)
+	}
+	k.zaiFP = creds.Fingerprint(string(secrets.ProviderZAI))
+	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
+	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
+	return k
+}
+
+// forSource keys a reading under the credential its session actually ran
+// on. The source labels are providerFingerprint's vocabulary: a facade URL
+// is the z.ai token, "anthropic-direct" the Anthropic API key,
+// "anthropic-oauth" the OAuth dir. An empty label (older binary) and
+// "anthropic-env" (inherited pod env — no bundle credential at all) fall
+// back to the bundle-default precedence: z.ai AUTH_TOKEN over an Anthropic
+// API key over an OAuth dir, anthropicCredEnvForCLI's contract. A rotated
+// token therefore opens a fresh meter instead of inheriting the readings
+// of the account it replaced.
+func (k runCredKeys) forSource(source string) string {
+	fp := ""
+	switch {
+	case strings.HasPrefix(source, "facade:") && k.zaiFP != "":
+		fp = k.zaiFP
+	case source == "anthropic-direct" && k.anthropicFP != "":
+		fp = k.anthropicFP
+	case source == "anthropic-oauth" && k.oauthFP != "":
+		fp = k.oauthFP
+	default:
+		if k.zaiFP != "" {
+			fp = k.zaiFP
+		} else if k.anthropicFP != "" {
+			fp = k.anthropicFP
+		} else if k.oauthFP != "" {
+			fp = k.oauthFP
 		}
 	}
-	return usagecap.Key(delegate.BackendClaudeCode, scope, credFP)
+	return usagecap.Key(delegate.BackendClaudeCode, k.scope, fp)
+}
+
+// usageCapKey is the run's DEFAULT credential key — what the pre-flight
+// consults before any node has run (no session, so no source label yet).
+func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
+	return usageCapCredKeys(ctx, msg).forSource("")
 }
 
 // usageGuardFor builds the guard for one run: the machine-wide policy
@@ -80,12 +124,17 @@ func (r *Runner) usageGuardFor(ctx context.Context, msg *queue.RunMessage, logge
 	if pol, static := r.cfg.UsageCapSource.(usagecap.StaticPolicy); static && !usagecap.Policy(pol).Enabled() {
 		return nil
 	}
-	key := usageCapKey(ctx, msg)
+	keys := usageCapCredKeys(ctx, msg)
 	store := r.cfg.UsageCaps
 	return usagecap.NewGuardWithSource(r.cfg.UsageCapSource, func(reading usagecap.Reading) {
 		if store == nil {
 			return
 		}
+		// Keyed per reading, not per run: the session's provider-routing
+		// label names the credential the node actually spent, and a run
+		// whose nodes pin different providers must not charge one key's
+		// refusal to another's meter.
+		key := keys.forSource(reading.Source)
 		// Detached: the reading that stops a run arrives exactly as that
 		// run's context is about to be cancelled, and it is the single
 		// most valuable thing to publish.

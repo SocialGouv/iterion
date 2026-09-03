@@ -2093,12 +2093,11 @@ func TestBudgetGraceRefusedOnImposedCap(t *testing.T) {
 	}
 }
 
-// TestBudgetGraceCoversFanOut pins the parallel path: the sequential
-// boundary graces a run past its cap, and the design deliberately allows
-// the graced walk to reach ANY forward node — including a fan-out. The
-// branch scheduler's own budget checks must consult the same grace, or
-// the run dies at the first router.
-func TestBudgetGraceCoversFanOut(t *testing.T) {
+// TestBudgetGraceStopsBeforeFanOutBranches pins the parallel safety rule:
+// branch-local predictive loop pricing is disabled because sibling spend is
+// shared, so its exit-grace safety argument does not hold. A graced trunk may
+// reach the router, but no branch node may start past the declared cap.
+func TestBudgetGraceStopsBeforeFanOutBranches(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_grace_fanout",
 		Entry: "work",
@@ -2139,10 +2138,66 @@ func TestBudgetGraceCoversFanOut(t *testing.T) {
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 	if err := eng.Run(context.Background(), "run-grace-fanout", nil); err != nil {
-		t.Fatalf("a graced run died at its fan-out: %v", err)
+		t.Fatalf("best_effort terminal convergence should report failed branches in output, got: %v", err)
 	}
-	if got := branches.Load(); got != 2 {
-		t.Fatalf("expected both branches to run under the grace, got %d", got)
+	if got := branches.Load(); got != 0 {
+		t.Fatalf("%d branch nodes ran under an unsafe exit grace", got)
+	}
+}
+
+// TestBudgetGraceFanOutWaitAllKeepsBudgetSentinel pins the stop-path SHAPE of
+// the rule above under wait_all. Every branch is refused on the spent budget,
+// so the run dies at convergence — and that death must still be a
+// BUDGET_EXCEEDED carrying ErrBudgetExceeded. The cloud runner's terminal-ack
+// carve-out matches the sentinel; a naked convergence error goes back to
+// JetStream as retryable and loops resume/refail against the same spent cap.
+func TestBudgetGraceFanOutWaitAllKeepsBudgetSentinel(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_fanout_wait_all",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"branch_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_a"}},
+			"branch_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_b"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "work", To: "router"},
+			{From: "router", To: "branch_a"},
+			{From: "router", To: "branch_b"},
+			{From: "branch_a", To: "collect"},
+			{From: "branch_b", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	for _, b := range []string{"branch_a", "branch_b", "collect"} {
+		exec.on(b, func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		})
+	}
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-grace-fanout-wait-all", nil)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("wait_all fan-out death on a spent budget = %v, want ErrBudgetExceeded", err)
+	}
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeBudgetExceeded {
+		t.Fatalf("error = %#v, want a RuntimeError coded BUDGET_EXCEEDED", err)
 	}
 }
 

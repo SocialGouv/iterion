@@ -80,15 +80,15 @@ Inside the body: `{{each.scan.item}}` (drills into object fields, e.g.
   `each.<name>.empty == true`; gate with `when not each.<name>.empty` if the
   body must not run on an empty list.
 - `as foreach` and `as <loop>` are mutually exclusive on one edge (**C118**).
-- Neither form may originate inside a `fan_out_all`, `fan_out_each`, or llm `multi: true` body (**C244**): parallel branches have no local loop counters. A back-edge from the join into a body node is the same class. On a multi-edge fan the walk stops at structural joins, not at a loop head elected only by its own back-edge; on `fan_out_each` that election is a real join. A loop after a non-elected `await:` in a sibling branch is not claimed. Put a per-item retry in a `subbot`, or wrap the *router* from the join.
+- Both forms may be wholly contained in a `fan_out_all`, `fan_out_each`, or llm `multi: true` body. The branch/item owns its counter, snapshots, outputs, artifact versions, and checkpoint cursor. **C244** applies only when the cycle crosses the router/collector boundary, crosses siblings, or otherwise lacks one unambiguous branch owner.
 
 ## `subbot` — run another `.bot` as a node
 
 A `subbot` node runs a child `.bot` as a **real nested run** in the same store.
-Because it is a full run (not a fan-out branch) the child **may contain loops** —
-which is exactly why a per-element quality chain with retry loops is expressed
-as a subbot rather than inlined into a `fan_out_each` branch (inlining is
-**C244**).
+Because it is a full run, the child has independent isolation and budget
+boundaries. Bounded retries and human gates can also be inlined directly in a
+`fan_out_each` branch; a subbot is no longer required solely to obtain local
+counters or resumability.
 
 ```
 subbot run_ticket:

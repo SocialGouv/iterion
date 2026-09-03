@@ -297,6 +297,18 @@ the hours this one spent.
   scrubbing, and the smoke tests. Read it when a deployment needs to answer
   "what crashed, how often, since which release" or "where did the time go".
 
+## Work tracking & session methodology — read AGENTS.md
+
+The cross-agent working contract — the [GitHub project
+board](https://github.com/orgs/SocialGouv/projects/203) as the truth for
+ongoing work, the session phases (plan & align → dev in `dogfood` or
+`direct` mode → close with evidence), and the multi-session claim rule —
+lives in **[AGENTS.md](AGENTS.md)**, deliberately as the single source: it
+is the file every agent harness reads natively (Codex, pi, …), and pi
+injects both AGENTS.md and CLAUDE.md on every call, so duplicating the
+contract here would pay its token cost twice. Read AGENTS.md at the start
+of every session, before picking work.
+
 ## Development setup
 
 The repo uses **devbox** (Go, go-task, Node 24, watchexec, xorg, …) and

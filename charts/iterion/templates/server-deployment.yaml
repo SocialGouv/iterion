@@ -14,6 +14,10 @@ spec:
   replicas: {{ .Values.server.replicas }}
   {{- end }}
   {{- end }}
+  {{- if eq .Values.mode "cloud" }}
+  strategy:
+    {{- toYaml .Values.server.strategy | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" . | nindent 6 }}
@@ -64,6 +68,13 @@ spec:
               containerPort: {{ .Values.server.metricsPort }}
               protocol: TCP
             {{- end }}
+          # Literal PodTemplate values are load-bearing: an old ReplicaSet
+          # scaled after the ConfigMap changes must keep its old epoch.
+          env:
+            - name: ITERION_RUNNER_EPOCH
+              value: {{ .Values.config.rollout.runnerEpoch | int64 | quote }}
+            - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY
+              value: {{ .Values.config.rollout.epochMismatchDelay | quote }}
           envFrom:
             - configMapRef:
                 name: {{ include "iterion.fullname" . }}-config

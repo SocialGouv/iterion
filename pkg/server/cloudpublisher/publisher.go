@@ -24,9 +24,11 @@ import (
 
 	"os"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -96,6 +98,12 @@ type Config struct {
 	// default) at publish time so the pinned value rides the RunMessage.
 	// Nil → the runner keeps its own env/built-in resolution.
 	SandboxImage func(context.Context) string
+	// UsageCaps, when non-nil, is the shared record of what the fleet has
+	// learned about each subscription's own quota windows (pkg/usagecap,
+	// written by every runner). The launch consults it to skip a forfait
+	// whose window is CLOSED, which is what lets the run fall through to
+	// the next credential tier instead of parking for a reset.
+	UsageCaps usagecap.Store
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -141,6 +149,7 @@ type Publisher struct {
 	pluginSources  *pluginsource.Resolver
 	sandboxImage   func(context.Context) string
 	credPool       *credpool.Broker
+	usageCaps      usagecap.Store
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -233,6 +242,7 @@ func New(cfg Config) (*Publisher, error) {
 		pluginSources:  cfg.PluginSources,
 		sandboxImage:   cfg.SandboxImage,
 		credPool:       cfg.CredPool,
+		usageCaps:      cfg.UsageCaps,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -346,6 +356,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		PlatformSourced:    map[string]bool{},
 	}
 
+	// Refused-but-only keys, per provider, remembered across the tiers for
+	// the restore step — the api-key twin of skippedForfaits below.
+	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
+
 	// 1. BYOK API keys.
 	if p.apiKeys != nil {
 		// Per-webhook key overrides (provider name → api_key id) take
@@ -357,7 +371,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				overrides[secrets.Provider(prov)] = keyID
 			}
 		}
-		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer)
+		// Evidence-based skip: a key the provider freshly refused is
+		// passed over so the priority walk yields the next key of that
+		// provider — the BYOK tier becomes an ordered fallback chain.
+		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer,
+			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID))
 		if err != nil {
 			return credResolution{}, fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
@@ -369,6 +387,26 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 			bundle.APIKeys[prov] = string(r.Plaintext)
 			usedIDs = append(usedIDs, r.KeyID)
+		}
+		// A provider whose EVERY key was refused resolves to nothing under
+		// the predicate. Remember what an unfiltered walk would have chosen:
+		// if the end of the resolution finds that wire still empty — no
+		// second key, no forfait, no pool grant, no platform credential —
+		// the refused key is restored, because a run that makes one refused
+		// call parks on a durable usage-window retry, while a run published
+		// with an empty wire fails on a no-credential auth error nothing
+		// retries (or silently spends the runner pod's ambient env).
+		if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
+			fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, refused, overrides, p.sealer, nil)
+			if ferr != nil {
+				p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
+			}
+			for prov, r := range fallback {
+				if len(r.Plaintext) == 0 {
+					continue
+				}
+				skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID}
+			}
 		}
 		// Bumping last_used_at is best-effort observability, not on
 		// the launch's critical path. Fire it detached with a short
@@ -468,6 +506,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    cron) whose owner is a synthetic identity with no personal
 	//    forfait. The runner falls back to env when neither an API key
 	//    nor an OAuth bundle is present.
+	skippedForfaits := map[string]skippedForfait{}
 	if p.oauthForfait != nil {
 		addOAuth := func(ownerKey, label string) {
 			if ownerKey == "" {
@@ -486,6 +525,24 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 				if err != nil {
 					p.logger.Warn("cloudpublisher: unseal oauth %s/%s: %v", rec.UserID, rec.Kind, err)
+					continue
+				}
+				// A forfait whose provider window is CLOSED is not a
+				// usable credential: handing it to the run means one LLM
+				// call, a rate-limit refusal, and a park until the window
+				// resets — up to a week on the weekly one — while another
+				// tier (a second forfait, the pool) could have served it
+				// immediately. Skipping it here is what makes the tiers a
+				// FALLBACK CHAIN rather than a fixed first choice.
+				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec); !until.IsZero() {
+					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
+						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+					// Remembered: if the end of the resolution finds the
+					// wire still empty, this forfait is restored — a
+					// parked run with a durable retry beats a stuck one.
+					if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
+						skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint}
+					}
 					continue
 				}
 				bundle.OAuthCredentials[string(rec.Kind)] = payload
@@ -532,7 +589,46 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle)
+		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys)
+	}
+
+	// A skipped credential is only an improvement when some other tier
+	// could actually serve its wire. If nothing did — no second key, no
+	// second forfait, no pool grant, no platform credential — restore it:
+	// the run then parks on the provider refusal with a DURABLE
+	// usage-window retry, instead of failing on a no-credential auth
+	// error nothing retries. Keys before forfaits, in allKnownProviders
+	// order, matching both the delegate's precedence on a shared wire and
+	// the deterministic-winner rule of fillFromPlatform.
+	if len(skippedForfaits) > 0 || len(skippedAPIKeys) > 0 {
+		taken := map[string]bool{}
+		for prov := range bundle.APIKeys {
+			taken[secrets.WireFamily(string(prov))] = true
+		}
+		for kind := range bundle.OAuthCredentials {
+			taken[secrets.WireFamily(kind)] = true
+		}
+		for _, prov := range allKnownProviders {
+			sk, ok := skippedAPIKeys[prov]
+			if !ok || taken[secrets.WireFamily(string(prov))] {
+				continue
+			}
+			bundle.APIKeys[prov] = sk.plaintext
+			if sk.platform {
+				bundle.PlatformSourced[string(prov)] = true
+			}
+			taken[secrets.WireFamily(string(prov))] = true
+			p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov)
+		}
+		for kind, sf := range skippedForfaits {
+			if taken[secrets.WireFamily(kind)] {
+				continue
+			}
+			bundle.OAuthCredentials[kind] = sf.payload
+			setOAuthFingerprint(&bundle, kind, sf.fp)
+			taken[secrets.WireFamily(kind)] = true
+			p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
+		}
 	}
 
 	// Record which review families the resolved credentials back — every
@@ -623,7 +719,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey) {
 	if p.sealer == nil {
 		return
 	}
@@ -647,7 +743,8 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 		}
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
-			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer)
+			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer,
+				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 			} else {
@@ -681,6 +778,27 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 					})
 				}
 			}
+			// This tier is the last DB-backed one and the runner's env
+			// backstop is invisible from here, so a refused platform key
+			// must not vanish outright — the rule the OAuth branch below
+			// states verbatim. It is remembered for the restore step
+			// instead, behind any tenant key of the same provider, whose
+			// restore takes precedence.
+			if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
+				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", refused, nil, p.sealer, nil)
+				if ferr != nil {
+					p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
+				}
+				for prov, r := range fallback {
+					if len(r.Plaintext) == 0 {
+						continue
+					}
+					if _, seen := skippedAPIKeys[prov]; seen {
+						continue
+					}
+					skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, platform: true}
+				}
+			}
 		}
 	}
 
@@ -699,6 +817,12 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 			if !fillable(string(rec.Kind)) {
 				continue
 			}
+			// Deliberately NO window skip here: the platform tier is the
+			// last DB-backed tier, and the runner's env backstop is
+			// invisible from the publisher. Skipping a refused platform
+			// forfait could only trade a self-healing park (one refused
+			// call, durable usage-window retry) for a possibly-stuck run
+			// with no credential at all.
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
@@ -736,6 +860,167 @@ var poolWantOrder = func() []credpool.Credential {
 	}
 	return out
 }()
+
+// skippedForfait remembers a window-closed forfait so the end of the
+// resolution can restore it when no other tier served its wire.
+type skippedForfait struct {
+	payload []byte
+	fp      string
+}
+
+// skippedAPIKey is a provider's refused-but-only key, held back by the
+// evidence predicate and restored when no other tier served its wire.
+// platform marks the deployment's own key so the restore keeps its
+// PlatformSourced metering scope.
+type skippedAPIKey struct {
+	plaintext string
+	keyID     string
+	platform  bool
+}
+
+// providersWithoutKey returns the subset of provs that filled no API-key
+// slot — the candidates for the refused-key fallback lookup.
+func providersWithoutKey(provs []secrets.Provider, apiKeys map[secrets.Provider]string) []secrets.Provider {
+	var missing []secrets.Provider
+	for _, prov := range provs {
+		if apiKeys[prov] == "" {
+			missing = append(missing, prov)
+		}
+	}
+	return missing
+}
+
+// usageCapLookupTimeout bounds the meter read on the launch path — the
+// same ceiling the runner puts on the identical call. The meter is an
+// optimisation; a slow store must not hold a launch.
+const usageCapLookupTimeout = 5 * time.Second
+
+// forfaitWindowClosed reports when a forfait's provider window is closed
+// (and why), or the zero time when it is usable.
+//
+// The ONLY evidence that closes a window is the provider's own refusal: a
+// fresh StatusRejected reading. The operator's percentage caps are
+// deliberately not consulted — a cap is a ceiling on THIS deployment's
+// spending, not evidence the provider would refuse, and skipping on it
+// would push work onto a donor (or the platform's own meter) to keep a
+// tenant under its own budget. A provider refusal, conversely, needs no
+// operator policy to be true — so the skip also works on a deployment
+// that never configured a cap.
+//
+// Everything uncertain means "usable", because a wrong skip spends
+// somebody else's quota for a subscription that would have worked:
+//   - no store wired, or no fingerprint ⇒ usable (nothing to judge with);
+//   - no reading for this credential ⇒ usable ("nothing learned yet"
+//     is the store's documented meaning for an unknown key);
+//   - a STALE reading ⇒ usable (Fresh already encodes "past its own
+//     reset", so a window that reopened stops blocking by itself);
+//   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord) (time.Time, string) {
+	backend := usageBackendForKind(rec.Kind)
+	scope := usagecap.ScopePlatform
+	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
+		scope = usagecap.TenantScope(tenantID)
+	}
+	return p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+}
+
+// refusedUntil is the ONE evidence reading shared by every credential-skip
+// site (the oauth-forfait tiers and the BYOK api-key walk): it reports when
+// fresh provider refusals against this credential lapse, or the zero time
+// when the credential is usable. label is for the lookup-failure log only.
+func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope string, fingerprint, label string) (time.Time, string) {
+	if p.usageCaps == nil || fingerprint == "" || backend == "" {
+		return time.Time{}, ""
+	}
+	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
+	defer cancel()
+	readings, err := p.usageCaps.Latest(lctx, usagecap.Key(backend, scope, fingerprint))
+	if err != nil {
+		// The meter is an optimisation; its failure must not change which
+		// credential a run gets.
+		p.logger.Warn("cloudpublisher: usage-cap lookup for %s/%s: %v", label, fingerprint, err)
+		return time.Time{}, ""
+	}
+	now := time.Now()
+	// When several windows are refused, the one that reopens LAST rules:
+	// the credential stays unusable until every refusal has lapsed.
+	var until time.Time
+	var why string
+	for _, r := range readings {
+		if r.Status != usagecap.StatusRejected || !r.Fresh(now, usagecap.DefaultMaxAge) {
+			continue
+		}
+		// Windows usagecap itself never blocks on are no evidence here
+		// either: a rejected OVERAGE reading is about the pay-as-you-go
+		// money channel, and an unknown window must not be folded into
+		// a rule that was never meant to govern it (usagecap.FamilyOf's
+		// own contract). The store is populated unfiltered, so the
+		// filter has to live at the consumer.
+		if usagecap.FamilyOf(r.Window) == usagecap.FamilyNone {
+			continue
+		}
+		reopen := r.ResetsAt
+		if reopen.IsZero() {
+			// A refusal with no reset instant is trusted only for the
+			// reading's own staleness bound.
+			reopen = r.ObservedAt.Add(usagecap.DefaultMaxAge)
+		}
+		if reopen.After(until) {
+			until = reopen
+			// Frequency and auth are refusals, not windows with a fill
+			// level — "(0% used)" on them would read as a contradiction.
+			switch r.Window {
+			case usagecap.WindowAuth:
+				why = "provider rejected the credential itself (auth failure)"
+			case usagecap.WindowFrequency:
+				why = "provider refused the account's request rate (fair-usage)"
+			default:
+				why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
+			}
+		}
+	}
+	return until, why
+}
+
+// usageBackendForKind maps a forfait kind to the meter backend the runner
+// records under. "" for a kind whose windows are not metered.
+func usageBackendForKind(kind secrets.OAuthKind) string {
+	if kind == secrets.OAuthKindClaudeCode {
+		return delegate.BackendClaudeCode
+	}
+	return ""
+}
+
+// usageBackendForProvider maps a BYOK api-key provider to the meter backend
+// its refusals are recorded under. Anthropic-shaped keys (the real one and
+// the z.ai facade) are spent by claude_code sessions, so that is where the
+// runner meters them. "" for a provider with no metered evidence — those
+// keys are never skipped.
+func usageBackendForProvider(prov secrets.Provider) string {
+	switch prov {
+	case secrets.ProviderAnthropic, secrets.ProviderZAI:
+		return delegate.BackendClaudeCode
+	}
+	return ""
+}
+
+// apiKeyUsable builds the Resolve predicate for one resolution: a key with
+// fresh provider-refusal evidence under its fingerprint is skipped, and the
+// priority walk hands the NEXT key of that provider over — the ordered
+// fallback the 2026-09-02 fair-usage freeze was routed around by hand.
+// Everything uncertain means "usable", same contract as refusedUntil.
+func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string) func(secrets.ApiKey) bool {
+	return func(k secrets.ApiKey) bool {
+		backend := usageBackendForProvider(k.Provider)
+		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider))
+		if until.IsZero() {
+			return true
+		}
+		p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
+			k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
+		return false
+	}
+}
 
 // providerOfWant maps a want back to the LLM provider it authenticates
 // against, so a run that pinned its models can be matched to donations it

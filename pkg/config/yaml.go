@@ -37,6 +37,7 @@ type yamlConfig struct {
 	Mongo   *yamlMongoConfig   `yaml:"mongo"`
 	S3      *yamlS3Config      `yaml:"s3"`
 	Runner  *yamlRunnerConfig  `yaml:"runner"`
+	Rollout *yamlRolloutConfig `yaml:"rollout"`
 	Server  *yamlServerConfig  `yaml:"server"`
 	Metrics *yamlMetricsConfig `yaml:"metrics"`
 	Log     *yamlLogConfig     `yaml:"log"`
@@ -138,6 +139,11 @@ type yamlRunnerConfig struct {
 	SchemaMismatchDelay *string `yaml:"schema_mismatch_delay"`
 }
 
+type yamlRolloutConfig struct {
+	RunnerEpoch        *uint64 `yaml:"runner_epoch"`
+	EpochMismatchDelay *string `yaml:"epoch_mismatch_delay"`
+}
+
 type yamlServerConfig struct {
 	ShutdownDelay    *string `yaml:"shutdown_delay"`
 	ShutdownTeardown *string `yaml:"shutdown_teardown"`
@@ -233,6 +239,18 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 				return fmt.Errorf("runner.schema_mismatch_delay: %w", err)
 			}
 			cfg.Runner.SchemaMismatchDelay = d
+		}
+	}
+	if y.Rollout != nil {
+		if y.Rollout.RunnerEpoch != nil {
+			cfg.Rollout.RunnerEpoch = *y.Rollout.RunnerEpoch
+		}
+		if y.Rollout.EpochMismatchDelay != nil {
+			d, err := time.ParseDuration(*y.Rollout.EpochMismatchDelay)
+			if err != nil {
+				return fmt.Errorf("rollout.epoch_mismatch_delay: %w", err)
+			}
+			cfg.Rollout.EpochMismatchDelay = d
 		}
 	}
 	if y.Server != nil {

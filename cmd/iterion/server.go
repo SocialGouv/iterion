@@ -263,6 +263,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
+		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
 		MaxDeliver:          cfg.NATS.MaxDeliver,
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
@@ -292,6 +294,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Prometheus registry: built early so cloudpublisher + runstream
 	// + the run-console WS handler all share the same registry.
 	mreg := metrics.New()
+	selfEpoch, highWaterEpoch := natsConn.RunnerEpoch()
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live in diagnostic-only mode; background workers and run publication are fenced")
+	}
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
@@ -303,19 +310,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	stores, err := buildCloudStores(rootCtx, st, logger)
 	if err != nil {
 		return err
-	}
-
-	// Seed the hosted marketplace from the image's bot catalog (bots/, or
-	// ITERION_MARKETPLACE_SEED_PATHS) so the public Marketplace view lists
-	// iterion's first-class bots out of the box. Best-effort + idempotent;
-	// user-submitted (git/upload) entries are never clobbered. No-op when
-	// the registry is disabled or the catalog isn't shipped in the image.
-	if stores.marketplace != nil {
-		if n, sErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); sErr != nil {
-			logger.Warn("cloud: marketplace seed failed: %v", sErr)
-		} else if n > 0 {
-			logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
-		}
 	}
 
 	// The auth stack is built before the publisher so the publisher can
@@ -370,6 +364,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
 		CredPool:         credBroker,
+		// The fleet's shared meter: a forfait the provider has refused is
+		// skipped at launch so the run falls through to the next
+		// credential tier instead of parking for a reset it could have
+		// avoided. Evidence-only — the operator's cap policy is the
+		// runner's business, not the launch's.
+		UsageCaps: usagecap.NewMongoStore(st.DB()),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
 		SandboxImage: func(ctx context.Context) string {
@@ -526,15 +526,42 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// (cloudBoardFor's inner pin only checks the bare factory). The
 		// real net is runtime: boardNow warns on any non-FS board without
 		// a server clock, so a wrapper degrades LOUDLY, never silently.
-		CloudBoardFor:          cloudBoardFor(st),
-		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
-		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),
-		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),
-		OrgPurgeSweeper:        orgPurgeSweeper,
-		Alerts:                 alertSettings,
-		LaunchPublisher:        pub,
-		StreamSource:           streamSrc,
-		Mode:                   string(iterconfig.ModeCloud),
+		CloudBoardFor:         cloudBoardFor(st),
+		CloudBoardCoordinator: boardmongo.NewCoordinator(st.DB()),
+		TriggerStore:          trigger.NewMongoSubscriptionStore(st.DB()),
+		ScheduledBots:         cloudsched.NewMongoStore(st.DB()),
+		OrgPurgeSweeper:       orgPurgeSweeper,
+		Alerts:                alertSettings,
+		LaunchPublisher:       pub,
+		StreamSource:          streamSrc,
+		Mode:                  string(iterconfig.ModeCloud),
+		RunnerEpoch:           selfEpoch,
+		HighWaterEpoch:        highWaterEpoch,
+		Superseded:            natsConn.Superseded(),
+		ClaimRunnerEpoch: func() (uint64, bool, error) {
+			wasSuperseded := natsConn.Superseded()
+			if err := natsConn.ClaimRunnerEpoch(rootCtx); err != nil {
+				return 0, false, err
+			}
+			self, highWater := natsConn.RunnerEpoch()
+			superseded := natsConn.Superseded()
+			if superseded && !wasSuperseded {
+				mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
+				logger.WithFields(map[string]any{"self_epoch": self, "high_water_epoch": highWater}).Error("server: epoch superseded while bootstrapping — entering diagnostic-only mode")
+			}
+			// Seed only after the final claim. An older process may have looked
+			// current at Connect and become superseded while wiring; letting it
+			// seed earlier could downgrade the hosted catalog after the new image
+			// had already populated it.
+			if !superseded && stores.marketplace != nil {
+				if n, seedErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); seedErr != nil {
+					logger.Warn("cloud: marketplace seed failed: %v", seedErr)
+				} else if n > 0 {
+					logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
+				}
+			}
+			return highWater, superseded, nil
+		},
 		AuthService:            authStack.authSvc,
 		AuthSigner:             authStack.signer,
 		OIDCRegistry:           registry,

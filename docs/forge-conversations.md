@@ -1,4 +1,4 @@
-# Forge conversations — replying to the bot (GitLab notes → run → in-thread reply)
+# Forge conversations — replying to the bot (forge threads → run → in-thread reply)
 
 How an authorized forge user "talks back" to a bot (reply to its review,
 ask a question, or `/revi` for a re-review) and gets a response **in the
@@ -10,9 +10,64 @@ DSL stays small.
 
 Status: A1 (note parsing), A2 (handler + authz + loop-guard +
 reply-in-thread trigger), A3 (conversation vars incl. the fetched thread
-transcript as `thread_context`) and A5 (`revi-converse`) are shipped.
+transcript as `thread_context`) and A5 (`revi-converse`) are shipped —
+on **GitLab** (notes) and on **GitHub** (review threads, below).
 A4 (`forge.reply` capability) is the remaining deferred step — the reply
 POST is skill-based (`curl`) until then.
+
+## GitHub — replying inside a review thread
+
+GitHub splits PR comments across two wire events, so the lane has two
+entries there:
+
+- **Reply to an inline suggestion** (`pull_request_review_comment`,
+  action created): `handlePRForgeReviewThreadReply`
+  ([pkg/server/webhooks_prforge.go](../pkg/server/webhooks_prforge.go))
+  filters (open PR, event/project allowlists), drops thread-OPENING
+  comments from the payload alone (`in_reply_to` empty ⇒ nobody is in
+  that thread yet — every inline comment of a bot review echoes back
+  as one, so this spares the whole fetch), drops fork PRs the same
+  payload-only way (`IsCrossRepo` — the base clone URL and the head
+  ref would not name one repository), runs the loop-guard next,
+  still without forge I/O (`isIterionForgeBotAuthor` — the bot's
+  own answer echoes back as this very event), requires the converse
+  bot in the webhook scope (`roleBots().ReviConverse` +
+  `cfg.AllowsBot`), then gates: the thread is fetched
+  (`ListPRReviewComments` — newest-first capped pagination, handed
+  back chronological, so a long-lived PR's cap never blinds the gate
+  on the thread just replied to) and must contain a
+  comment by the bot identity — a human↔human thread never triggers —
+  and the replier must clear `authorized_repliers` or
+  `min_replier_role`. The launch carries `converse_question` (the
+  reply body), `thread_context` (the thread transcript, bot entries
+  labelled, capped by the same 16k anchor+newest budget as the GitLab
+  lane — `webhooks.CapTranscript`) and
+  `discussion_id` = the **thread root** comment id — exactly what
+  GitHub's `/pulls/{n}/comments/{id}/replies` endpoint wants (the
+  bot's `forge-reply.md` §4). Idempotency: one launch per reply
+  comment (`rc|…` key space).
+- **`/revi <question>` as a plain PR comment** (`issue_comment`): no
+  special-casing — the generic command registry routes it. The
+  manifests declare complementary disambiguators
+  (`review-pr` `when_args_empty`, `revi-converse` `when_args_present`
+  + `args_var: converse_question`), the provision derives the
+  two-route `command_map`, and `ResolveCommandRoute` picks by args
+  presence. Bare `/revi` stays a re-review.
+
+Enablement is provisioning, not code: the review-thread firehose is
+its OWN normalized manifest event, `pull_request_review_comment`
+([pkg/forge/event_map.go](../pkg/forge/event_map.go)), declared by
+`revi-converse` — deliberately NOT folded into `pull_request_comment`,
+which nine catalog bots declare: one submitted review fires one wire
+delivery per inline comment, each charged against the webhook rate
+bucket and the org monthly quota before any handler filters it, so
+only a repo whose `bot_ids` actually include the conversational bot
+subscribes that volume. A (re-)provision with the converse bot
+subscribes the hook and regenerates the config's `event_allowlist`
+together; webhooks provisioned without it stay inert on review-thread
+replies. Forgejo is deliberately not wired yet (its dispatch never
+routes the event, and the normalized event maps to no Forgejo native
+event).
 
 ## Model — stateless, the thread is the state
 

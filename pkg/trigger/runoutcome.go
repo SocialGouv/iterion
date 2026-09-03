@@ -102,6 +102,7 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 		if r.Checkpoint != nil {
 			nodeID = r.Checkpoint.NodeID
 			if r.Status.IsPaused() {
+				nodeID = r.Checkpoint.PausedNodeID()
 				interactionID = r.Checkpoint.InteractionID
 			}
 		}

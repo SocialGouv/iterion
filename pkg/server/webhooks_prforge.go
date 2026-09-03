@@ -273,10 +273,11 @@ func prforgeBaseURLFromRef(ref string) (baseURL, refusal string) {
 // GitHub/Forgejo lane — the same replier controls as the `/command` gate
 // (allowlist OR CollaboratorPermission ≥ the webhook's min_replier_role).
 // R6a15fe: the GitLab twin was gated in R7e050f for exactly this reason
-// ("the forge gates reviewer edits" is not an authorization story); this
-// lane is inert today (no connection shape can be a requested reviewer),
-// but wiring kept for a future connection kind must not arrive ungated.
-// Fail-closed on token resolution, like the GitLab twin.
+// ("the forge gates reviewer edits" is not an authorization story) — and
+// the lane is LIVE here: cfg.ReviewRequestLogins arms it with a User
+// identity (GitHub grants "request review" at the Triage role, below the
+// write floor this gate enforces). Fail-closed on token resolution, like
+// the GitLab twin.
 func (s *Server) realWebhookPRForgeReviewRequestGate(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (bool, string, error) {
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil || token == "" {
@@ -335,19 +336,248 @@ func prforgePermRank(perm string) int {
 
 // replierMinRoleRank maps a MinReplierRole (gitlab vocabulary) to a rank.
 // Empty defaults to "developer" (matching the GitLab gate default), which
-// equals a GitHub "write" collaborator.
+// equals a GitHub "write" collaborator. Thin delegate: the table lives in
+// pkg/webhooks so the provision carry's stricter-of merge reads the same
+// ordering as the gates.
 func replierMinRoleRank(role string) int {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "owner":
-		return 5
-	case "maintainer":
-		return 4
-	case "developer", "":
-		return 3
-	case "reporter":
-		return 2
-	case "guest":
-		return 1
+	return webhooks.ReplierRoleRank(role)
+}
+
+// ---------------------------------------------------------------------------
+// Review-thread conversations (GitHub) — reply to a Revi suggestion, get an
+// in-thread answer. The GitHub twin of the GitLab note reply-in-thread lane
+// (docs/forge-conversations.md); Forgejo is NOT wired yet (its dispatch never
+// routes the event here).
+// ---------------------------------------------------------------------------
+
+// prforgeReviewThreadAPI extends the replier surface with the thread fetch
+// the reply gate needs. github.AdminClient satisfies it; the Forgejo client
+// deliberately does not (the lane is GitHub-only until Forgejo's
+// review-comment API is validated).
+type prforgeReviewThreadAPI interface {
+	prforgeReplierAPI
+	ListPRReviewComments(ctx context.Context, repo string, number int) ([]forge.PRReviewComment, error)
+}
+
+// handlePRForgeReviewThreadReply routes a pull_request_review_comment event
+// (a reply inside a PR review thread) to the converse bot when the thread is
+// one of iterion's own: replying to a Revi suggestion IS the question, no
+// slash-command needed. Mirrors the GitLab note lane's reply-in-thread half.
+// Every benign refusal is a 200/filtered so the forge never auto-disables
+// the hook.
+func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, provider webhooks.Provider, body []byte, payloadHash, srcIP string) {
+	p, err := prforge.ParseReviewComment(body)
+	if err != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, webhookEventMeta{Kind: "review_comment"}, webhooks.StatusFiltered, payloadHash, srcIP, "invalid pull_request_review_comment payload")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
 	}
-	return 3
+	meta := prforgeReviewCommentMeta(p)
+	filtered := func(reason string) {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+	}
+	// The allowlist must name the event (or be empty = zero-config): configs
+	// provisioned before this lane carry ["issue_comment","pull_request"]
+	// and stay inert until re-provisioned WITH the converse bot —
+	// pull_request_review_comment is its own normalized manifest event,
+	// declared by the converse bot alone (not folded into
+	// pull_request_comment), so only its presence in bot_ids makes the
+	// re-provision subscribe the hook and regenerate the allowlist.
+	if p.Action != "created" || p.PRState != "open" ||
+		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request_review_comment", "pull_request_review_comment") ||
+		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
+		filtered("out of scope (not a new open-PR review comment / event / project)")
+		return
+	}
+	// A thread-opening comment roots its own thread: nobody — the bot
+	// included — is in that thread yet, so it can never be a reply to the
+	// bot. Decidable from the payload alone, before any I/O; every inline
+	// comment of a bot review echoes back as one of these.
+	if p.ThreadRootID == p.CommentID {
+		filtered("thread-opening comment (not a reply)")
+		return
+	}
+	// Fork guard, payload-only: on a fork PR the launch pair (base repo's
+	// CloneURL + head-repo SourceBranch) does not name one repository — the
+	// checkout would miss, or silently hit a same-named BASE branch and the
+	// bot would answer grounded in the wrong code. Same posture as the PR
+	// auto lane: filtered.
+	if p.IsCrossRepo() {
+		filtered("fork PR — review-thread replies are same-repo only")
+		return
+	}
+	// Loop-guard next, still without forge I/O: the converse bot answers
+	// with the same PAT identity, so its own reply echoes back as this
+	// event.
+	if s.isIterionForgeBotAuthor(ctx, cfg, p.AuthorLogin) {
+		filtered("self reply (loop-guard)")
+		return
+	}
+	// ONE role snapshot: the enable-gate and the launch below must name the
+	// same converse bot.
+	converseBot := s.roleBots().ReviConverse
+	if !s.canRouteToConverseBot(cfg, converseBot) {
+		filtered("converse bot not enabled on this webhook")
+		return
+	}
+	gate := s.webhookPRForgeReviewReplyGate
+	if gate == nil {
+		gate = s.realWebhookPRForgeReviewReplyGate
+	}
+	authorized, threadContext, reason, aerr := gate(ctx, cfg, provider, p, converseBot)
+	if aerr != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
+		httpError(w, http.StatusBadGateway, "authorization check failed")
+		return
+	}
+	if !authorized {
+		filtered(reason)
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("webhooks: %s review-thread reply %s#%d by %s authorized (%s)", provider, p.ProjectPath, p.PRNumber, p.AuthorLogin, reason)
+	}
+	vars := applyWebhookVarLayers(buildPRForgeReviewReplyVars(p, threadContext, nil), cfg)
+	// Idempotency: one launch per reply comment; "rc|" keeps the key space
+	// disjoint from the pr|/cmd| paths.
+	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("rc|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.RepoID, p.SubjectID())))
+	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, converseBot, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+}
+
+// prforgeReviewCommentMeta builds the delivery-audit meta for a review-thread
+// reply.
+func prforgeReviewCommentMeta(p prforge.ParsedReviewComment) webhookEventMeta {
+	return webhookEventMeta{
+		Kind:         "review_comment",
+		Action:       "comment",
+		ProjectPath:  p.ProjectPath,
+		SubjectID:    p.SubjectID(),
+		SubjectURL:   p.PRURL,
+		SubjectSHA:   p.HeadSHA,
+		SenderHandle: p.AuthorLogin,
+	}
+}
+
+// buildPRForgeReviewReplyVars composes the converse launch vars for a
+// review-thread reply: the PR context (reviewPRVars) + the conversation vars
+// the converse bot declares. discussion_id is the THREAD ROOT comment id —
+// exactly what GitHub's /pulls/{n}/comments/{id}/replies endpoint wants (see
+// bots/revi-converse/skills/forge-reply.md §4). No re_review flag: a reply
+// is a question, never a fresh review.
+func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext string, launchVars map[string]string) map[string]string {
+	question := strings.TrimSpace(p.CommentBody)
+	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.PRTitle+"\n\n"+p.PRBody), launchVars, map[string]string{
+		"source_branch":     p.SourceBranch,
+		"head_sha":          p.HeadSHA,
+		"conversation_mode": "reply",
+		"discussion_id":     fmt.Sprintf("%d", p.ThreadRootID),
+		"trigger_note":      p.CommentBody,
+		"replier":           p.AuthorLogin,
+		"converse_question": question,
+	})
+	if threadContext != "" {
+		vars["thread_context"] = threadContext
+	}
+	return vars
+}
+
+// realWebhookPRForgeReviewReplyGate is the production reply gate: resolve
+// the bot's forge token and hand the thread work to reviewReplyGateWithAPI.
+// ok=false + reason for benign refusals; err only for infra failure.
+func (s *Server) realWebhookPRForgeReviewReplyGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedReviewComment, botID string) (bool, string, string, error) {
+	token, terr := s.resolveForgeToken(ctx, cfg, botID)
+	if terr != nil || token == "" {
+		return false, "", "no forge token resolved (configure a forge_token binding)", nil
+	}
+	baseURL := strings.TrimSpace(cfg.ForgeBaseURL)
+	if baseURL == "" {
+		return false, "", "no forge base url on this webhook", nil
+	}
+	client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
+	api, ok := client.(prforgeReviewThreadAPI)
+	if !ok {
+		return false, "", "review-thread conversations are not supported on this provider yet", nil
+	}
+	return s.reviewReplyGateWithAPI(ctx, cfg, p, api)
+}
+
+// reviewReplyGateWithAPI is the token-free core of the reply gate — split
+// from the wrapper so tests drive it with a fake thread API. It fetches the
+// PR's review comments, keeps only the reply's thread, and authorizes BOTH
+// halves: the thread must be one of iterion's own (a comment by the bot
+// identity in it; a human↔human thread never triggers), and the replier must
+// clear the allowlist or the webhook's MinReplierRole. Returns the thread
+// transcript for the bot's grounding.
+func (s *Server) reviewReplyGateWithAPI(ctx context.Context, cfg webhooks.Config, p prforge.ParsedReviewComment, api prforgeReviewThreadAPI) (bool, string, string, error) {
+	isBot, haveIdentity := s.iterionBotAuthorPredicate(ctx, cfg)
+	// The connection-derived set can be legitimately empty (a GitHub
+	// PAT/OAuth connection names no [bot] identity). The identity that
+	// actually POSTS our reviews is the token's own — resolve it like the
+	// GitLab twin (CurrentUser) and union it in, so the lane lives on those
+	// connections. WhoAmI failing on an App installation token is fine: the
+	// [bot] slug already covers that shape.
+	if id, werr := api.WhoAmI(ctx); werr == nil && strings.TrimSpace(id.Login) != "" {
+		tokenLogin, base := id.Login, isBot
+		isBot = func(login string) bool { return base(login) || strings.EqualFold(login, tokenLogin) }
+		haveIdentity = true
+	}
+	if !haveIdentity {
+		// Fail closed with an honest reason — "not a bot review thread"
+		// would misdiagnose a dead identity resolution as a human thread.
+		return false, "", "bot identity unresolved; cannot classify reply", nil
+	}
+	// The completing half of the handler's loop-guard: that one reads the
+	// connection-derived set only, which on a PAT/OAuth connection is empty
+	// — yet the token identity resolved above is exactly who the bot's own
+	// in-thread answer posts as. Without this check that answer walks the
+	// whole gate, authorizes itself (the posting account has write), and
+	// the conversation answers itself forever.
+	if isBot(p.AuthorLogin) {
+		return false, "", "self reply (loop-guard, token identity)", nil
+	}
+	comments, err := api.ListPRReviewComments(ctx, p.ProjectPath, int(p.PRNumber))
+	if err != nil {
+		return false, "", "", err
+	}
+	botInThread, transcript := classifyReviewThread(comments, p, isBot)
+	if !botInThread {
+		return false, "", "not a bot review thread (no iterion comment in it)", nil
+	}
+	if prforgeInAllowlist(cfg.AuthorizedRepliers, p.AuthorLogin) {
+		return true, transcript, "allowlist", nil
+	}
+	perm, err := api.CollaboratorPermission(ctx, p.ProjectPath, p.AuthorLogin)
+	if err != nil {
+		return false, "", "", err
+	}
+	if prforgePermRank(perm) >= replierMinRoleRank(cfg.MinReplierRole) {
+		return true, transcript, "role", nil
+	}
+	return false, "", "replier not authorized: " + p.AuthorLogin, nil
+}
+
+// classifyReviewThread keeps only the reply's thread out of the PR's review
+// comments and decides the gate's thread half: whether the bot identity
+// participates in it — the trigger comment itself never counts, so a thread
+// where only the human's reply exists stays untriggerable — plus the
+// transcript, bot entries labelled and the whole capped by the same
+// anchor+newest budget as the GitLab twin (maxThreadContextChars).
+func classifyReviewThread(comments []forge.PRReviewComment, p prforge.ParsedReviewComment, isBot func(string) bool) (bool, string) {
+	botInThread := false
+	rendered := make([]string, 0, len(comments))
+	for _, c := range comments {
+		if c.ID != p.ThreadRootID && c.InReplyTo != p.ThreadRootID {
+			continue
+		}
+		who := c.Author
+		if isBot(c.Author) {
+			if c.ID != p.CommentID {
+				botInThread = true
+			}
+			who += " (you, the bot)"
+		}
+		rendered = append(rendered, fmt.Sprintf("%s (%s):\n%s", who, c.CreatedAt, strings.TrimSpace(c.Body)))
+	}
+	return botInThread, webhooks.CapTranscript(rendered, maxThreadContextChars)
 }

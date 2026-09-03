@@ -63,6 +63,28 @@ const (
 	// subscription quota, and the budget flags (--max-cost-usd) are what
 	// bound money.
 	WindowOverage Window = "overage"
+	// WindowFrequency is not a provider window at all: it is an
+	// account-level refusal of the REQUEST RATE (a fair-usage policy, a
+	// frequency restriction) relayed as an error rather than as window
+	// telemetry, so it never carries a reset instant. It exists as a
+	// window name so the refusal can be recorded as meter evidence: the
+	// credential-tier skip needs a fresh StatusRejected reading to route
+	// around a credential the provider will not serve, and freshness for
+	// a reading with no reset instant is already bounded by ObservedAt.
+	WindowFrequency Window = "frequency"
+	// WindowAuth is not a provider window either: it is the provider
+	// REJECTING THE CREDENTIAL ITSELF — a dead token, an expired OAuth
+	// record, a malformed secret. Like WindowFrequency it exists as a
+	// window name so the refusal can be recorded as meter evidence: the
+	// credential-tier skip is the only consumer, and without this
+	// evidence a structurally-broken credential keeps filling its slot
+	// on every re-resolution, gating the pool and platform tiers off
+	// behind a credential that can never serve (five consecutive
+	// dead-on-arrival fleets were the lived cost). No reset instant —
+	// a dead credential does not heal on a schedule — so freshness is
+	// bounded by ObservedAt, giving a cheap periodic re-probe in case
+	// an operator rotated the secret in place.
+	WindowAuth Window = "auth"
 )
 
 // Family groups the windows that share one operator-facing cap. An
@@ -72,6 +94,17 @@ type Family string
 const (
 	FamilyFiveHour Family = "5h"
 	FamilyWeek     Family = "week"
+	// FamilyAccount governs no operator cap today (Policy.For of an
+	// unconfigured family is inert), but it is NOT FamilyNone: a
+	// frequency refusal is real provider evidence, and the consumers
+	// that filter evidence on "does a cap family govern this window"
+	// must see it.
+	FamilyAccount Family = "account"
+	// FamilyCredential mirrors FamilyAccount for WindowAuth: no
+	// operator cap governs it (an unconfigured family is inert in the
+	// guard), but it is real provider evidence the credential-tier
+	// skip must see — FamilyNone would filter it out at the consumer.
+	FamilyCredential Family = "credential"
 	// FamilyNone marks a window no cap applies to.
 	FamilyNone Family = ""
 )
@@ -83,6 +116,10 @@ func FamilyOf(w Window) Family {
 		return FamilyFiveHour
 	case WindowSevenDay, WindowSevenDayOpus, WindowSevenDaySonnet, WindowSevenDayOverageIncluded:
 		return FamilyWeek
+	case WindowFrequency:
+		return FamilyAccount
+	case WindowAuth:
+		return FamilyCredential
 	default:
 		// Includes WindowOverage and any window a future CLI adds: an
 		// unknown window is not silently folded into a cap that was never
@@ -186,6 +223,15 @@ type Reading struct {
 	ResetsAt time.Time
 	// ObservedAt is when iterion saw the reading.
 	ObservedAt time.Time
+	// Source is the delegate's provider-routing label for the session
+	// that produced this reading (providerFingerprint: "facade:<url>",
+	// "anthropic-direct", "anthropic-oauth", "anthropic-env"). It lets
+	// the publisher key the reading under the credential the node
+	// ACTUALLY spent — a node pinned `provider: anthropic` must not
+	// charge its refusal to the z.ai key sharing the bundle. Empty on
+	// readings from older binaries; consumers fall back to the bundle's
+	// default precedence then. Never carries a secret.
+	Source string
 }
 
 // Provider status values.

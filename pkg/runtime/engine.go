@@ -245,9 +245,9 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 //     (fanOutPlan.parentOutputs via copyOutputs) and write only into
 //     their own branchResult; the merge back into rs happens
 //     mono-thread in processConvergence after collection;
-//   - the explicitly synchronized exceptions are branchLedgerSeq
-//     (atomic), budget (SharedBudget, internal mutex), events
-//     (runEvents, internal mutex) and resourceSemaphores (channels).
+//   - the explicitly synchronized exceptions are budget
+//     (SharedBudget, internal mutex), events (runEvents, internal
+//     mutex) and resourceSemaphores (channels).
 //
 // Two rules keep this sound — breaking either introduces a silent data
 // race the compiler cannot catch:
@@ -309,14 +309,32 @@ type runState struct {
 	// consumed, per enforced budget dimension, when that loop was entered
 	// or last crossed its back-edge. Persisted on the checkpoint, so a
 	// resumed run keeps measuring across the pause.
-	loopBudgetMarks    map[string]loopBudgetMark
-	roundRobinCounters map[string]int
+	loopBudgetMarks map[string]loopBudgetMark
+	// branchLocal disables predictive loop pricing against the shared run
+	// budget. Concurrent sibling spend cannot price one branch's iteration;
+	// the shared 90% pre-exec and hard limits remain authoritative.
+	branchLocal bool
+	// enclosingLoopCounters is the immutable trunk loop path at fan-out
+	// entry. Branch-local counters remain private in loopCounters; execution
+	// identity and model iteration compose both maps.
+	enclosingLoopCounters map[string]int
+	// enclosingLoopPreviousOutput is the trunk (or outer-branch) snapshot
+	// of {{loop.<name>.previous_output}} at fan-out entry. It is not
+	// persisted on the branch cursor: C244 already forbids a branch-local
+	// loop from reusing an enclosing name, so resolvers compose this map
+	// with the branch-private loopPreviousOutput without collision.
+	enclosingLoopPreviousOutput map[string]map[string]any
+	roundRobinCounters          map[string]int
 	// selectedIncoming records, per destination node, the incoming edges
 	// routing actually selected for the current visit of that node. Fan-out
 	// branches keep a private copy on branchResult so concurrent writers
 	// cannot race this map; the trunk copies the join union at
 	// processConvergence. Re-seeded at resume from Checkpoint.SelectedIncoming.
 	selectedIncoming map[string][]store.IncomingEdge
+	// parallel is non-nil while the trunk is parked on a fan-out router.
+	// Branch goroutines mutate it only through its mutex-protected helpers;
+	// the trunk clears/replaces it at router invocation boundaries.
+	parallel *parallelExecutionState
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
@@ -391,14 +409,6 @@ type runState struct {
 	// and incremented on the post-exec path (recordAndCheckBudget);
 	// recorded into the shared daily ledger via Engine.dailyCap.
 	costUSDTotal float64
-
-	// branchLedgerSeq hands each execBranch invocation a unique suffix for
-	// its daily-cap ledger key. Without it, a fan-out INSIDE a loop reuses
-	// the same "<runID>#<branchID>" key every iteration (branchID encodes
-	// router+index, not the iteration), and the ledger's monotonic-max would
-	// keep only the single costliest iteration instead of summing them.
-	// Atomic: incremented concurrently from parallel branch goroutines.
-	branchLedgerSeq atomic.Uint64
 
 	// nodeAttempts counts prior failed attempts per (nodeID, ErrorCode)
 	// so the recovery dispatcher can apply per-class retry budgets and

@@ -46,6 +46,7 @@ type Config struct {
 	Redis   RedisConfig   `yaml:"redis"`
 	S3      S3Config      `yaml:"s3"`
 	Runner  RunnerConfig  `yaml:"runner"`
+	Rollout RolloutConfig `yaml:"rollout"`
 	Server  ServerConfig  `yaml:"server"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Log     LogConfig     `yaml:"log"`
@@ -343,6 +344,14 @@ type RunnerConfig struct {
 	SchemaMismatchDelay time.Duration `yaml:"schema_mismatch_delay"`
 }
 
+// RolloutConfig is the shared generation fence used by both the cloud
+// publisher and the runner fleet. RunnerEpoch is monotonic once enabled: an
+// older value is rejected against the persistent JetStream high-water mark.
+type RolloutConfig struct {
+	RunnerEpoch        uint64        `yaml:"runner_epoch"`
+	EpochMismatchDelay time.Duration `yaml:"epoch_mismatch_delay"`
+}
+
 // ServerConfig holds server-specific settings.
 type ServerConfig struct {
 	// ShutdownDelay is the lame-duck window on SIGTERM: /readyz answers
@@ -406,6 +415,10 @@ func Defaults() Config {
 			// Mirrors natsq.SchemaMismatchNakDelay (kept literal here so
 			// pkg/config stays free of the NATS client dependency).
 			SchemaMismatchDelay: 30 * time.Second,
+		},
+		Rollout: RolloutConfig{
+			RunnerEpoch:        0,
+			EpochMismatchDelay: 2 * time.Minute,
 		},
 		Server: ServerConfig{
 			ShutdownDelay:    5 * time.Second,
@@ -617,6 +630,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Runner.SchemaMismatchDelay < 0 {
 		return fmt.Errorf("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY %s invalid (want >= 0)", c.Runner.SchemaMismatchDelay)
+	}
+	if c.Rollout.EpochMismatchDelay < 0 {
+		return fmt.Errorf("ITERION_RUNNER_EPOCH_MISMATCH_DELAY %s invalid (want >= 0)", c.Rollout.EpochMismatchDelay)
 	}
 
 	switch c.Sandbox.Default {

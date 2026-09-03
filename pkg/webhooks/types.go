@@ -162,6 +162,26 @@ type Config struct {
 	// triage+ rights on the forge, which IS the approval gesture.
 	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
+	// ReviewRequestLogins names the review identities whose (re-)request the
+	// on-demand re-review lane answers, IN ADDITION to the one derived from the
+	// webhook's forge connection. It is what makes that lane reachable on
+	// GitHub at all: a GitHub App cannot be a requested reviewer, so the button
+	// only exists for a User account — and the review must be POSTED by that
+	// same account for the forge to clear the pending request and re-arm it,
+	// which is what a `pat` connection to a dedicated bot user gives.
+	//
+	// EXPLICIT ONLY, never derived from the connection's account: the PAT
+	// connect path stamps whatever token was pasted, typically a maintainer's
+	// own, and deriving would turn every ordinary reviewer ping addressed to
+	// that human into a bot run — the reasoning isIterionForgeBotAuthor already
+	// applies when it refuses to trust AccountLogin on GitHub.
+	//
+	// The logins join iterionBotLogins, so BOTH halves of the identity read the
+	// same set: the lane answers their request, and the actor guard recognises
+	// their own PRs and their own reviewer-writes. An identity only one half
+	// knew would launch on the bot's own echo.
+	ReviewRequestLogins []string `bson:"review_request_logins,omitempty" json:"review_request_logins,omitempty"`
+
 	// ReviewOnSync, when true, re-runs the review bot on a PR "synchronize"
 	// (a push to the PR head), not only on opened/reopened. OFF by default
 	// (a push is normally on-demand re-review — see prforge.IsReviewable, kept
@@ -202,7 +222,15 @@ type Config struct {
 	ForgeBaseURL string `bson:"forge_base_url,omitempty" json:"forge_base_url,omitempty"`
 
 	// Limits.
-	RateLimit        Rate `bson:"rate_limit" json:"rate_limit"`
+	RateLimit Rate `bson:"rate_limit" json:"rate_limit"`
+	// RateLimitPinned records that an operator set RateLimit EXPLICITLY
+	// through the webhook API (create or PATCH). The re-provision carry
+	// preserves a pinned value — losing an operator's raise means
+	// deliveries silently 429. An UNPINNED value is presumed
+	// provisioner-owned: a re-provision moves it to the current
+	// provisioning default, so a default bump actually reaches existing
+	// webhooks instead of freezing each on the burst it was born with.
+	RateLimitPinned  bool `bson:"rate_limit_pinned,omitempty" json:"rate_limit_pinned,omitempty"`
 	MonthlyCallLimit int  `bson:"monthly_call_limit,omitempty" json:"monthly_call_limit,omitempty"` // 0 = inherit org
 
 	// OperatorLaunchVars are the per-repo overrides an operator pinned on the

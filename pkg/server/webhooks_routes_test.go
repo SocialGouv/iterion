@@ -484,3 +484,73 @@ func TestWebhookHoldLabelsRoundTrip(t *testing.T) {
 		t.Fatalf("hold_labels not clearable: %v", stored.HoldLabels)
 	}
 }
+
+// TestWebhookReviewRequestLoginsPatch pins the PATCH ingress for
+// review_request_logins. A managed webhook is created by the orchestrator
+// (Provision), never by POST — so PATCH is the ONLY writer that can arm the
+// re-request lane on the configs the feature exists for. Create-only would
+// make the field dead on every provisioned repo.
+func TestWebhookReviewRequestLoginsPatch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	ctx := superAdminCtx()
+
+	w := httptest.NewRecorder()
+	body := `{"name":"gh","bot_ids":["review-pr"],"review_request_logins":["iterion-bot"]}`
+	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks", body, "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Config webhooks.Config `json:"config"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !slices.Equal(created.Config.ReviewRequestLogins, []string{"iterion-bot"}) {
+		t.Fatalf("review_request_logins dropped on create: %v", created.Config.ReviewRequestLogins)
+	}
+
+	// PATCH replaces the set — arming a provisioned webhook after the fact.
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"review_request_logins":["revu-bot"]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch: code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := s.webhookConfigs.Get(context.Background(), created.Config.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !slices.Equal(stored.ReviewRequestLogins, []string{"revu-bot"}) {
+		t.Fatalf("review_request_logins not applied on patch: %v", stored.ReviewRequestLogins)
+	}
+
+	// An omitted field leaves it untouched (a PATCH of something else must
+	// not silently disarm the button)...
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"name":"renamed"}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch name: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !slices.Equal(stored.ReviewRequestLogins, []string{"revu-bot"}) {
+		t.Fatalf("an unrelated patch cleared review_request_logins: %v", stored.ReviewRequestLogins)
+	}
+
+	// ...and an explicit empty list disarms it.
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"review_request_logins":[]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch clear: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(stored.ReviewRequestLogins) != 0 {
+		t.Fatalf("review_request_logins not clearable: %v", stored.ReviewRequestLogins)
+	}
+}

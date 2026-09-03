@@ -39,20 +39,21 @@ func (s *Server) registerWebhookRoutes() {
 }
 
 type webhookConfigReq struct {
-	Name             *string  `json:"name,omitempty"`
-	Provider         *string  `json:"provider,omitempty"`
-	SignMode         *string  `json:"sign_mode,omitempty"`
-	Enabled          *bool    `json:"enabled,omitempty"`
-	BotIDs           []string `json:"bot_ids,omitempty"`
-	WildcardBots     *bool    `json:"wildcard_bots,omitempty"`
-	DefaultBotID     *string  `json:"default_bot_id,omitempty"`
-	ProjectAllowlist []string `json:"project_allowlist,omitempty"`
-	EventAllowlist   []string `json:"event_allowlist,omitempty"`
-	AuthorAllowlist  []string `json:"author_allowlist,omitempty"`
-	LabelAllowlist   []string `json:"label_allowlist,omitempty"`
-	HoldLabels       []string `json:"hold_labels,omitempty"`
-	BlockForkPRs     *bool    `json:"block_fork_prs,omitempty"`
-	ReviewOnSync     *bool    `json:"review_on_sync,omitempty"`
+	Name                *string  `json:"name,omitempty"`
+	Provider            *string  `json:"provider,omitempty"`
+	SignMode            *string  `json:"sign_mode,omitempty"`
+	Enabled             *bool    `json:"enabled,omitempty"`
+	BotIDs              []string `json:"bot_ids,omitempty"`
+	WildcardBots        *bool    `json:"wildcard_bots,omitempty"`
+	DefaultBotID        *string  `json:"default_bot_id,omitempty"`
+	ProjectAllowlist    []string `json:"project_allowlist,omitempty"`
+	EventAllowlist      []string `json:"event_allowlist,omitempty"`
+	AuthorAllowlist     []string `json:"author_allowlist,omitempty"`
+	LabelAllowlist      []string `json:"label_allowlist,omitempty"`
+	HoldLabels          []string `json:"hold_labels,omitempty"`
+	BlockForkPRs        *bool    `json:"block_fork_prs,omitempty"`
+	ReviewOnSync        *bool    `json:"review_on_sync,omitempty"`
+	ReviewRequestLogins []string `json:"review_request_logins,omitempty"`
 	// ReviewOnSyncPinned clears (false) or restates (true) the provenance
 	// pin an explicit review_on_sync set leaves behind; absent = derived
 	// from whether review_on_sync itself is being set.
@@ -267,10 +268,12 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		HoldLabels:          req.HoldLabels,
 		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
 		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
+		ReviewRequestLogins: req.ReviewRequestLogins,
 		ReviewOnSyncPinned:  req.ReviewOnSync != nil, // an explicit set at create is a decision too
 		Overlap:             overlapOrEmpty(req.Overlap),
 		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
 		RateLimit:           rate,
+		RateLimitPinned:     req.RateLimit != nil, // same rule as ReviewOnSyncPinned
 		LaunchVars:          req.LaunchVars,
 		KeyOverrides:        req.KeyOverrides,
 		SecretOverrides:     req.SecretOverrides,
@@ -466,6 +469,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit
+		cfg.RateLimitPinned = true
 	}
 	if req.MonthlyCallLimit != nil {
 		cfg.MonthlyCallLimit = *req.MonthlyCallLimit
@@ -489,6 +493,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AuthorizedRepliers != nil {
 		cfg.AuthorizedRepliers = req.AuthorizedRepliers
+	}
+	if req.ReviewRequestLogins != nil {
+		cfg.ReviewRequestLogins = req.ReviewRequestLogins
 	}
 	if req.MinReplierRole != nil {
 		cfg.MinReplierRole = *req.MinReplierRole

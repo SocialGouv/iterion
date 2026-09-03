@@ -539,7 +539,12 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ReviewOnSync:       reviewOnSync,
 		ReviewOnSyncPinned: reviewOnSyncPinned,
 		ForgeBaseURL:       conn.BaseURL(),
-		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
+		// The burst must absorb a full review fan-out: one submitted review
+		// fires one pull_request_review_comment delivery PER inline comment,
+		// near-simultaneously, and the bucket is charged BEFORE the handler
+		// can filter the echoes — overflow answers 429, which GitHub never
+		// redelivers and counts toward auto-disabling the hook.
+		RateLimit:          webhooks.Rate{Rate: 2, Burst: 60},
 		LaunchVars:         nilIfEmpty(launchVars),
 		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:            operatorOverlap,
@@ -565,6 +570,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		if hasPrevCfg {
 			cfg.CreatedAt = prevCfg.CreatedAt
 			cfg.CreatedBy = prevCfg.CreatedBy
+			carryOperatorWebhookSettings(&cfg, prevCfg)
 		}
 		cfg.RotatedAt = &now
 		if err := o.Webhooks.Update(ctx, cfg); err != nil {
@@ -1009,6 +1015,130 @@ func managedSecretName(conn *Connection) string {
 		short = short[:8]
 	}
 	return "forge_" + string(conn.Provider) + "_" + short
+}
+
+// carryOperatorWebhookSettings preserves the operator-settable webhook fields
+// this provision does NOT stamp. Re-provisioning rebuilds the whole Config
+// literal, so a field that is neither stamped from the integration nor carried
+// here is silently reset the next time any bot is enabled or disabled on the
+// repo — and the webhook PATCH endpoint that sets these has no ProvisionedBy
+// guard, so they are settable precisely on the managed configs this rebuilds.
+//
+// It is the complement of the operator-settings resolution above (LaunchVars /
+// Overlap / HoldLabels / LabelAllowlist), which threads through the
+// RepoIntegration because the provisioning API can also set those. These have
+// no integration half: preserving the previous config IS their storage.
+//
+// Deliberately NOT carried: the bot scope (BotIDs / WildcardBots /
+// DefaultBotID / BotRules / CommandMap), the allowlists and the routing table —
+// those are what a provision exists to recompute from the enabled bots.
+// Name is provision-owned (provisionedWebhookName) and LaunchVars threads
+// through the RepoIntegration (the operator-settings resolution above), so
+// neither belongs here.
+//
+// INVARIANT: a field listed here must have NO ProvisionRequest input. The
+// carry is an unconditional overwrite placed after the literal, so the day one
+// of these becomes settable through the provisioning API, it has to move to
+// the operator-settings resolution above (the LaunchVars / HoldLabels shape) or
+// the carry would silently override the caller. Two fields are CONDITIONAL
+// exceptions, each commented in place: RateLimit (zero means never set) and
+// MinReplierRole (a provision-derived floor merged stricter-of).
+// provisionRateDefaults are every RateLimit value the provisioner itself has
+// ever stamped on a config (current default last). The carry uses it to tell
+// a provisioner-owned value (migrates to the current default) from an
+// operator's pre-RateLimitPinned PATCH (adopted as pinned): nothing but the
+// provisioner and the PATCH route ever writes the field, so an unpinned
+// value outside this set can only be an operator's explicit choice.
+var provisionRateDefaults = []webhooks.Rate{
+	{Rate: 1, Burst: 10},
+	{Rate: 2, Burst: 60},
+}
+
+func isProvisionRateDefault(r webhooks.Rate) bool {
+	for _, d := range provisionRateDefaults {
+		if r == d {
+			return true
+		}
+	}
+	return false
+}
+
+func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
+	// Enabled is the operator's per-repo kill switch (PATCH {"enabled":false}
+	// → every inbound delivery answers 410) — a re-provision must not
+	// silently re-arm the lanes it paused. Safe to carry unconditionally:
+	// this function only runs when a previous config exists, so the
+	// provision literal's Enabled:true still governs first creation, and
+	// re-enabling goes through the same PATCH that paused it.
+	cfg.Enabled = prev.Enabled
+	cfg.ReviewRequestLogins = prev.ReviewRequestLogins
+	cfg.AuthorizedRepliers = prev.AuthorizedRepliers
+	cfg.KeyOverrides = prev.KeyOverrides
+	cfg.MonthlyCallLimit = prev.MonthlyCallLimit
+	cfg.AutoImplementOnOpen = prev.AutoImplementOnOpen
+	cfg.BranchImproveAsPR = prev.BranchImproveAsPR
+	cfg.BlockForkPRs = prev.BlockForkPRs
+	cfg.RetryUsageWindow = prev.RetryUsageWindow
+	cfg.RetryMaxAttempts = prev.RetryMaxAttempts
+	cfg.RetryMaxWait = prev.RetryMaxWait
+	cfg.RetryJitter = prev.RetryJitter
+	// The liveness stamp is written by MarkUsed with a $set; the rebuild
+	// REPLACES the whole document, so without this every re-provision erases
+	// "when did this webhook last receive anything" — the one field an
+	// operator reads to tell a silent hook from an idle repo.
+	cfg.LastUsedAt = prev.LastUsedAt
+
+	// Rate limit: enforced by the inbound middleware, so losing an operator's
+	// raise means deliveries silently 429 and reviews never launch — but an
+	// UNPINNED provisioner default, if carried, would freeze every existing
+	// webhook on the burst it was born with, making a default bump
+	// unreachable by re-provision (the review-comment fan-out needs the
+	// raised burst precisely on already-provisioned repos). So: an API-set
+	// value (RateLimitPinned, same rule as ReviewOnSyncPinned) survives the
+	// rebuild; a stored value the provisioner NEVER stamped can only be an
+	// operator's PATCH from before the pin existed — adopted as pinned
+	// rather than silently replaced (an explicit choice, raise or
+	// deliberate throttle alike); only recognized provisioner defaults
+	// migrate to the current one.
+	switch {
+	case prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}):
+		cfg.RateLimit = prev.RateLimit
+		cfg.RateLimitPinned = true
+	case !prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}) && !isProvisionRateDefault(prev.RateLimit):
+		cfg.RateLimit = prev.RateLimit
+		cfg.RateLimitPinned = true
+	default:
+		cfg.RateLimitPinned = prev.RateLimitPinned
+	}
+
+	// MinReplierRole: a conditional merge, never an overwrite — the provision
+	// stamps a manifest-derived FLOOR (the max requirement over the enabled
+	// bots), which a blind carry would override. But the field is also
+	// PATCH-settable with no ProvisionedBy guard, and an operator's RAISE is
+	// a security control every replier gate reads (`/command`, `/revi`, the
+	// re-request button); resetting it to the derived value on the next bot
+	// toggle silently lowers the floor. Keep the stricter of the two — with
+	// an unset prev deferring to the derivation: the gates read "" as
+	// developer, but the DERIVATION ranks "" as zero (webhookRoleRank) so a
+	// manifest may legitimately land a sub-developer floor, and a never-set
+	// prev must not discard it (R948c68).
+	if prev.MinReplierRole != "" &&
+		webhooks.ReplierRoleRank(prev.MinReplierRole) > webhooks.ReplierRoleRank(cfg.MinReplierRole) {
+		cfg.MinReplierRole = prev.MinReplierRole
+	}
+
+	// Secret overrides MERGE rather than replace: the provision owns the keys
+	// it derives from the enabled bots (rewriting them is how a rotation
+	// lands), while an operator's own pin — a bot posting under a different
+	// forge identity — has nowhere else to live.
+	for k, v := range prev.SecretOverrides {
+		if _, stamped := cfg.SecretOverrides[k]; !stamped {
+			if cfg.SecretOverrides == nil {
+				cfg.SecretOverrides = map[string]string{}
+			}
+			cfg.SecretOverrides[k] = v
+		}
+	}
 }
 
 func singleBotDefault(bots []string) string {

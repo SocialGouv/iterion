@@ -306,6 +306,20 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	for id := range cp.Outputs {
 		executed[id] = true
 	}
+	// Branch outputs have not reached cp.Outputs before convergence. Include
+	// every durable branch cursor so an in-flight body node is a valid explicit
+	// or --auto pivot; fanOutRouterFor below still promotes it to the router and
+	// applyRewind discards the whole Parallel checkpoint before replay.
+	if cp.Parallel != nil {
+		for _, branch := range cp.Parallel.Branches {
+			if branch == nil {
+				continue
+			}
+			for id := range branch.Outputs {
+				executed[id] = true
+			}
+		}
+	}
 	if cp.NodeID != "" {
 		executed[cp.NodeID] = true
 	}
@@ -338,7 +352,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// proof enough that its router did.
 	if !executed[pivot] {
 		return nil, fmt.Errorf("%w: %q (reached: %s)",
-			ErrRewindNodeNotReached, pivot, joinSorted(mapKeys(cp.Outputs)))
+			ErrRewindNodeNotReached, pivot, joinSorted(setKeys(executed)))
 	}
 	// A pivot inside a fan-out body is promoted to the router that
 	// orchestrates it. The checkpoint keeps one output per node id, so N
@@ -586,6 +600,11 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	// asked.
 	cp.InteractionID = ""
 	cp.InteractionQuestions = nil
+	// A pivot inside a fan-out is promoted to its router so every branch is
+	// replayed as one unit. Keeping its durable branch cursors would turn that
+	// replay into an immediate cache hit (and could retain an obsolete human
+	// interaction), so rewind always starts a fresh parallel invocation.
+	cp.Parallel = nil
 	// Drop backend rehydration so the pivot restarts from a clean
 	// conversation. Fork pins these from a turn checkpoint because it
 	// resumes mid-turn; a rewind wants the node re-run from scratch
@@ -865,10 +884,12 @@ func joinStatuses(ss []store.RunStatus) string {
 	return strings.Join(out, ", ")
 }
 
-func mapKeys(m map[string]map[string]any) []string {
+func setKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+	for k, present := range m {
+		if present {
+			out = append(out, k)
+		}
 	}
 	return out
 }

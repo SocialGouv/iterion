@@ -1096,6 +1096,80 @@ type Checkpoint struct {
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
 	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	// FiredEvents is the sticky run-scoped emit/wait registry. Persisting it
+	// prevents a resumed branch from waiting forever on an event emitted by a
+	// sibling whose durable cursor is already Completed and will not replay.
+	FiredEvents map[string]map[string]any `json:"fired_events,omitempty" bson:"fired_events,omitempty"`
+
+	// Parallel captures an in-flight fan-out invocation. The router remains
+	// the trunk checkpoint NodeID; each branch carries its own cursor and loop
+	// state so restart/resume can continue incomplete branches without
+	// replaying completed nodes or sharing iteration counters with siblings.
+	Parallel *ParallelCheckpoint `json:"parallel,omitempty" bson:"parallel,omitempty"`
+}
+
+// PausedNodeID returns the operator-facing node that owns the pending
+// interaction. Parallel checkpoints stay anchored on their router for exact
+// runtime resume, while the actual human gate is stored in PendingNodeID.
+func (c *Checkpoint) PausedNodeID() string {
+	if c == nil {
+		return ""
+	}
+	if c.Parallel != nil && c.Parallel.PendingNodeID != "" {
+		return c.Parallel.PendingNodeID
+	}
+	return c.NodeID
+}
+
+// ParallelCheckpoint is the durable state of one fan_out_all, fan_out_each,
+// or llm-multi invocation. InvocationKey includes the router's enclosing loop
+// path, distinguishing repeated visits to the same router deterministically.
+type ParallelCheckpoint struct {
+	RouterNodeID  string                       `json:"router_node_id" bson:"router_node_id"`
+	InvocationKey string                       `json:"invocation_key" bson:"invocation_key"`
+	Branches      map[string]*BranchCheckpoint `json:"branches" bson:"branches"`
+	// PendingBranchID/PendingNodeID identify the single interaction that
+	// paused the parent run. Empty during ordinary crash-recovery checkpoints.
+	PendingBranchID             string         `json:"pending_branch_id,omitempty" bson:"pending_branch_id,omitempty"`
+	PendingNodeID               string         `json:"pending_node_id,omitempty" bson:"pending_node_id,omitempty"`
+	PendingInteractionID        string         `json:"pending_interaction_id,omitempty" bson:"pending_interaction_id,omitempty"`
+	PendingInteractionQuestions map[string]any `json:"pending_interaction_questions,omitempty" bson:"pending_interaction_questions,omitempty"`
+	// Artifact allocations make a branch execution key idempotent across a
+	// restart. NextArtifactVersion is the allocator cursor per publishing node.
+	ArtifactAllocations map[string]int `json:"artifact_allocations,omitempty" bson:"artifact_allocations,omitempty"`
+	NextArtifactVersion map[string]int `json:"next_artifact_version,omitempty" bson:"next_artifact_version,omitempty"`
+}
+
+// BranchCheckpoint is a branch-private execution scope. Outputs contains only
+// values produced inside the branch; the immutable parent snapshot is rebuilt
+// by the router when the invocation resumes.
+type BranchCheckpoint struct {
+	BranchID           string                        `json:"branch_id" bson:"branch_id"`
+	StartNodeID        string                        `json:"start_node_id" bson:"start_node_id"`
+	CurrentNodeID      string                        `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
+	Outputs            map[string]map[string]any     `json:"outputs,omitempty" bson:"outputs,omitempty"`
+	Artifacts          map[string]map[string]any     `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
+	ArtifactVersions   map[string]int                `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
+	LoopCounters       map[string]int                `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
+	LoopPreviousOutput map[string]map[string]any     `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
+	LoopCurrentOutput  map[string]map[string]any     `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
+	LoopBudgetMarks    map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	SelectedIncoming   map[string][]IncomingEdge     `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
+	JoinNodeID         string                        `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
+	TerminalNodeID     string                        `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
+	Completed          bool                          `json:"completed,omitempty" bson:"completed,omitempty"`
+	TerminatedAtDone   bool                          `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	// CostUSD is this branch's cumulative LLM spend for the current
+	// invocation. The daily spend cap records per-branch spend under a
+	// monotonic-max ledger key, so a resumed branch must restart its
+	// accumulator from the persisted total rather than from zero —
+	// otherwise the post-resume nodes' spend is max()'d away.
+	CostUSD float64 `json:"cost_usd,omitempty" bson:"cost_usd,omitempty"`
+	// ResumeAnswers is populated transiently from the answered interaction.
+	// It is persisted before the resumed runner is claimed, so another crash
+	// in that window still has the answer needed to finish the human node.
+	ResumeAnswers  map[string]any `json:"resume_answers,omitempty" bson:"resume_answers,omitempty"`
+	ResumeAnswered bool           `json:"resume_answered,omitempty" bson:"resume_answered,omitempty"`
 }
 
 // IncomingEdge identifies a workflow edge that actually fired into a node

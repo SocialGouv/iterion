@@ -16,9 +16,9 @@ Read this when:
 | Surface | Endpoint | Answers 503 when | Never fails on |
 |---|---|---|---|
 | server | `GET /healthz` | never | anything — it is a mux-liveness signal only |
-| server | `GET /readyz` | draining, or a **critical** dependency is down | a non-critical dependency (reported as `degraded`, still 200) |
+| server | `GET /readyz` | draining, superseded rollout epoch, or a **critical** dependency is down | a non-critical dependency (reported as `degraded`, still 200) |
 | runner | `GET /healthz` (metrics port) | the idle consume loop stopped cycling | a run being in flight, however long |
-| runner | `GET /readyz` (metrics port) | starting, or draining | — |
+| runner | `GET /readyz` (metrics port) | starting, draining, or superseded rollout epoch | — |
 
 Both server endpoints ride the API port; both runner endpoints ride the
 metrics port (9090), which the chart already exposed. All four return a
@@ -201,6 +201,8 @@ Mongo is slow to accept connections; it is the only bound on boot time.
 | `server.terminationGracePeriodSeconds` | — | `60` | Hard bound before SIGKILL. |
 | `config.runner.drainMode` | `ITERION_RUNNER_DRAIN_MODE` | `complete` | `complete` finishes the in-flight run; `interrupt` checkpoints it. |
 | `config.runner.drainTimeout` | `ITERION_RUNNER_DRAIN_TIMEOUT` | `8h` | Lame-duck ceiling for a run. |
+| `config.rollout.runnerEpoch` | `ITERION_RUNNER_EPOCH` | `0` | Monotonic generation, rendered literally into both PodTemplates. |
+| `config.rollout.epochMismatchDelay` | `ITERION_RUNNER_EPOCH_MISMATCH_DELAY` | `2m` | Delayed redelivery while a newer runner fleet becomes ready. |
 
 Both variables are honoured by `iterion server` in either mode and by
 `iterion studio`. The **defaults** differ, though, because `iterion server`

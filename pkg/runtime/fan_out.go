@@ -39,11 +39,28 @@ func defaultBranchCancelGracePeriod() time.Duration {
 // branches for each outgoing edge, bounded by MaxParallelBranches.
 // It returns the next node ID to continue from (after the join).
 func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
-	if err := e.emitRouterPassThrough(rs, routerNodeID); err != nil {
-		return "", err
+	if e.resumingParallelInvocation(rs, routerNodeID) {
+		// The initial invocation already emitted the router lifecycle pair and
+		// persisted its pass-through output. A legacy/forced checkpoint missing
+		// that output can rebuild it without manufacturing another execution.
+		if rs.outputs[routerNodeID] == nil {
+			rs.outputs[routerNodeID] = e.buildNodeInputRS(routerNodeID, rs.scope())
+		}
+	} else {
+		if err := e.emitRouterPassThrough(rs, routerNodeID); err != nil {
+			return "", err
+		}
 	}
 
 	plan, err := e.prepareFanOut(rs, routerNodeID)
+	if err != nil {
+		return "", err
+	}
+	starts := make(map[string]string, len(plan.edges))
+	for _, edge := range plan.edges {
+		starts[fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)] = edge.To
+	}
+	parallel, err := e.ensureParallelInvocation(rs, routerNodeID, starts)
 	if err != nil {
 		return "", err
 	}
@@ -56,13 +73,21 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
 
-	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
+	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan, parallel)
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "fan_out")
+	parallel.retire()
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
 
-	return e.resolveConvergence(rs, routerNodeID, results, plan)
+	if err := pausedBranchError(results); err != nil {
+		return "", err
+	}
+	next, err := e.resolveConvergence(rs, routerNodeID, results, plan)
+	if err == nil {
+		rs.parallel = nil
+	}
+	return next, err
 }
 
 // fanOutPlan is the resolved launch plan for a fan_out_all router, computed
@@ -209,7 +234,7 @@ func (s *branchSlot) acquire(ctx context.Context) error {
 // doesn't block on a slot held by a doomed sibling). After execBranch it
 // cancels siblings when the branch tripped the budget (always) or failed
 // under wait_all (cancelOnFirstFailure).
-func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches context.CancelFunc, rs *runState, routerNodeID string, plan fanOutPlan) <-chan *branchResult {
+func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches context.CancelFunc, rs *runState, routerNodeID string, plan fanOutPlan, parallel *parallelExecutionState) <-chan *branchResult {
 	sem := make(chan struct{}, plan.maxParallel)
 	resultsCh := make(chan *branchResult, len(plan.edges))
 
@@ -222,6 +247,8 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			// would be unrecoverable.
 			defer func() {
 				if r := recover(); r != nil {
+					parallel.releaseResumeWaiters(branchID)
+					cancelBranches()
 					resultsCh <- &branchResult{
 						branchID: branchID,
 						outputs:  make(map[string]map[string]any),
@@ -229,6 +256,10 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 					}
 				}
 			}()
+			if err := parallel.waitResumeTurn(branchCtx, branchID); err != nil {
+				resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: e.wrapContextErr(err)}
+				return
+			}
 			// Acquire a slot, but bail if the fan-out is already cancelled
 			// (budget trip, sibling failure with wait_all, or parent cancel)
 			// — otherwise a branch queued behind maxParallel would block on a
@@ -248,21 +279,34 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			}
 			defer slot.release()
 
-			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence, slot)
+			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence, slot, parallel)
 			// Cancel siblings (they observe it via the ctx.Done() select at
 			// the top of their per-iteration loop) when this branch tripped
 			// the global budget — every fan_out regardless of await mode — or
 			// failed for any reason under wait_all (their results would be
 			// discarded anyway, so paying for them is pure waste).
 			if result != nil && result.err != nil {
-				if errors.Is(result.err, ErrBudgetExceeded) || plan.cancelOnFirstFailure {
+				if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || plan.cancelOnFirstFailure {
 					cancelBranches()
 				}
 			}
+			// Whatever the exit, siblings parked on this branch's resume
+			// barrier must not outlive it (a no-op unless it was the
+			// answered branch and it never reached its successor cursor).
+			parallel.releaseResumeWaiters(branchID)
 			resultsCh <- result
 		}(edge, branchID)
 	}
 	return resultsCh
+}
+
+func pausedBranchError(results []*branchResult) error {
+	for _, result := range results {
+		if result != nil && errors.Is(result.err, ErrRunPaused) {
+			return ErrRunPaused
+		}
+	}
+	return nil
 }
 
 // collectBranches drains one result per expected branch. It observes both the
@@ -388,8 +432,12 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 		}
 	}
 	if convergenceNodeID == "" {
-		if isBestEffort && allTerminatedAtDone(results) {
-			return e.processConvergenceTerminal(rs, results)
+		if allTerminatedAtDone(results) && (isBestEffort || plan.preComputedConvergence == "") {
+			strategy := ir.AwaitWaitAll
+			if isBestEffort {
+				strategy = ir.AwaitBestEffort
+			}
+			return e.processConvergenceTerminal(rs, results, strategy)
 		}
 		convergenceNodeID = plan.preComputedConvergence
 		if convergenceNodeID == "" {
@@ -402,8 +450,9 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 
 // allTerminatedAtDone reports whether every branch finished cleanly at
 // an *ir.DoneNode. Branches with err != nil count as non-terminating —
-// best_effort tolerates them but the all-done shortcut requires every
-// branch to have produced a terminal exit.
+// a terminal convergence requires every branch to have produced a clean
+// terminal exit, regardless of whether sibling failure policy was wait_all
+// or best_effort.
 func allTerminatedAtDone(results []*branchResult) bool {
 	if len(results) == 0 {
 		return false

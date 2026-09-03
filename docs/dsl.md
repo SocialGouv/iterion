@@ -699,9 +699,13 @@ src -> dst with {
 
 Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once each. `else` is the explicit fallback when no sibling guard matched. A quoted `when` uses the bounded expression language. In a `with` mapping, `{{input.field}}` is the source node's output (C034 checks that output schema); `{{vars.name}}` is a workflow variable; `{{outputs.node.field}}` names any prior node. There is no silent fallback from `input` to run-level inputs.
 
+Quoted `when` expressions are evaluated in parallel branch bodies as well as on the trunk, against that branch's private outputs, artifacts, loop state, and shared run variables. Migration note: older runtimes skipped expression-form edges inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branches, so an existing workflow may now take a guarded route that previously fell through to `else` or an unconditional edge.
+
 Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
 
-A loop or foreach whose source sits **inside** a `fan_out_all`, `fan_out_each`, or `llm` `multi: true` body is a compile error (**C244**): those subgraphs run as parallel branches with no local loop counters. A back-edge from the join *into* a body node (`join -> a1 as more`) is the same class — it elects the branch head as the join and the sibling swallows `wait_all`. On a multi-edge fan the walk stops at structural joins (`await:` or multiple non-iteration predecessors), not at a loop head elected only by its own back-edge (`a -> a as refine`, `impl -> review -> impl as fix`). On `fan_out_each` (one template path) that election is correct, so a trunk loop after the implicit collector is allowed. A loop after a non-elected `await:` in a sibling branch is a remaining `execBranch` hole (compile-ok, skipped at run time). A loop that wraps the fan-out from the join (`join -> router as outer(N)`) is on the trunk and is allowed. Per-item retry loops belong in a `subbot` until branch-local execution exists; see [composition/iteration/sub-bots](groups-iteration-subbots.md).
+A bounded loop or foreach may live wholly inside one `fan_out_all`, `fan_out_each`, or `llm` `multi: true` branch. Every branch/item owns independent counters, loop snapshots, outputs, artifact allocations, and a durable cursor; siblings may therefore finish after different numbers of iterations, and a restart or human pause resumes the same local scope without replaying completed iterations. The collector becomes ready only after those local lifecycles terminate, under the existing `wait_all` / `best_effort` policy.
+
+**C244** is reserved for iteration with no unambiguous owner: an iteration edge on the fan-out router, a back-edge from the collector into a body (`join -> a1 as more`), a cycle crossing sibling branches, or a shared-node shape owned by more than one branch. A loop that wraps the fan-out from the join (`join -> router as outer(N)`) remains a normal trunk loop. Use a `subbot` when independent budgets, workspace isolation, or a reusable capability boundary are desired—not merely to obtain per-item counters. See [composition/iteration/sub-bots](groups-iteration-subbots.md).
 
 Terminal targets `done` and `fail` are reserved and are never declared.
 
@@ -716,7 +720,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 
 ## Validation and references
 
-Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session: persist` in a fan-out body), and C244 (loop in a parallel-branch body); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
+Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session: persist` in a fan-out body), C244 (bounded iteration crossing a parallel-branch boundary), and C245 (trunk-only human mode in a parallel branch); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
 - [Readable grammar](references/dsl-grammar.md)
 - [Formal EBNF](grammar/iterion_v1.ebnf)

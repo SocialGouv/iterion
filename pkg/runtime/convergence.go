@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -27,12 +28,28 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 
 	// Collect failed branches metadata.
 	var failedBranches []map[string]any
+	// budgetFailures/otherFailures classify why the branches died. A budget
+	// refusal cancels its siblings (cancelOnFirstFailure), so a fan-out killed
+	// by a spent budget yields one budget error plus N cancellations — the
+	// cancellations carry no verdict of their own and must not mask it.
+	budgetFailures, otherFailures := 0, 0
+	var firstBudgetErr error
 	for _, r := range results {
 		if r.err != nil {
 			failedBranches = append(failedBranches, map[string]any{
 				"branch_id": r.branchID,
 				"error":     r.err.Error(),
 			})
+			switch {
+			case errors.Is(r.err, ErrBudgetExceeded):
+				budgetFailures++
+				if firstBudgetErr == nil {
+					firstBudgetErr = r.err
+				}
+			case errors.Is(r.err, context.Canceled), errors.Is(r.err, context.DeadlineExceeded), errors.Is(r.err, ErrRunCancelled):
+			default:
+				otherFailures++
+			}
 		}
 	}
 
@@ -40,6 +57,24 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	switch strategy {
 	case ir.AwaitWaitAll:
 		if len(failedBranches) > 0 {
+			if budgetFailures > 0 && otherFailures == 0 {
+				// A branch never gets the exit grace (withinBudgetGrace), so a
+				// fan-out reached on a spent budget refuses every branch and
+				// wait_all kills the run here. That death has to keep carrying
+				// the sentinel: the cloud runner's terminal-ack carve-out
+				// matches errors.Is(err, ErrBudgetExceeded), and a naked error
+				// goes back to JetStream as retryable — a resume/refail loop
+				// re-provisioning a sandbox to re-hit the same spent budget.
+				// It is also what tells the operator to raise the cap and
+				// resume rather than hunt a branch bug.
+				return "", &RuntimeError{
+					Code:    ErrCodeBudgetExceeded,
+					Message: fmt.Sprintf("convergence at %s (wait_all): %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, len(failedBranches), firstBudgetErr),
+					NodeID:  convergenceNodeID,
+					Hint:    "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace",
+					Cause:   ErrBudgetExceeded,
+				}
+			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
 				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
 			// When every failed branch carries the SAME typed code, the
@@ -114,11 +149,12 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	return convergenceNodeID, nil
 }
 
-// processConvergenceTerminal handles the best_effort all-done topology
-// (every branch ran to its own *ir.DoneNode and no branch failed).
+// processConvergenceTerminal handles an all-done topology (every branch ran
+// to its own *ir.DoneNode and no branch failed), including an implicit
+// wait_all fan whose bounded local cycle leaves no structural collector.
 // Merges branch outputs/artifacts into the run state and hands back one
 // of the terminal node IDs so the engine's main loop emits run_finished.
-func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult) (string, error) {
+func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult, strategy ir.AwaitMode) (string, error) {
 	for _, r := range results {
 		for nodeID, output := range r.outputs {
 			rs.outputs[nodeID] = output
@@ -142,7 +178,7 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 	// node as run_finished, so picking one is unambiguous.
 	terminal := results[0].terminalNodeID
 	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]any{
-		"strategy":       ir.AwaitBestEffort.String(),
+		"strategy":       strategy.String(),
 		"terminal_join":  true,
 		"branches_total": len(results),
 	}); err != nil {
@@ -162,6 +198,11 @@ func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) 
 	// Build in-degree map: count distinct sources per target.
 	inSources := make(map[string]map[string]bool)
 	for _, edge := range e.workflow.Edges {
+		// A branch-local loop back-edge is control flow inside one branch,
+		// never evidence that its head is a cross-branch collector.
+		if edge.IsBoundedIteration() {
+			continue
+		}
 		if _, ok := inSources[edge.To]; !ok {
 			inSources[edge.To] = make(map[string]bool)
 		}

@@ -262,6 +262,37 @@ func TestLoad_RunnerDrainDefaults(t *testing.T) {
 	if cfg.Runner.SchemaMismatchDelay != 30*time.Second {
 		t.Errorf("SchemaMismatchDelay default = %v, want 30s", cfg.Runner.SchemaMismatchDelay)
 	}
+	if cfg.Rollout.RunnerEpoch != 0 {
+		t.Errorf("RunnerEpoch default = %d, want 0", cfg.Rollout.RunnerEpoch)
+	}
+	if cfg.Rollout.EpochMismatchDelay != 2*time.Minute {
+		t.Errorf("EpochMismatchDelay default = %v, want 2m", cfg.Rollout.EpochMismatchDelay)
+	}
+}
+
+func TestLoad_RolloutEnv(t *testing.T) {
+	clearITERION(t)
+	t.Setenv("ITERION_RUNNER_EPOCH", "42")
+	t.Setenv("ITERION_RUNNER_EPOCH_MISMATCH_DELAY", "3m")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Rollout.RunnerEpoch != 42 || cfg.Rollout.EpochMismatchDelay != 3*time.Minute {
+		t.Fatalf("Rollout = %+v, want epoch 42 / delay 3m", cfg.Rollout)
+	}
+
+	clearITERION(t)
+	t.Setenv("ITERION_RUNNER_EPOCH", "-1")
+	if _, err := Load(LoadOptions{}); err == nil {
+		t.Fatal("negative runner epoch accepted")
+	}
+
+	clearITERION(t)
+	t.Setenv("ITERION_RUNNER_EPOCH_MISMATCH_DELAY", "-1s")
+	if _, err := Load(LoadOptions{}); err == nil {
+		t.Fatal("negative epoch mismatch delay accepted")
+	}
 }
 
 func TestLoad_RunnerSchemaMismatchDelayEnv(t *testing.T) {
@@ -487,6 +518,26 @@ runner:
 	}
 	if cfg.Runner.SchemaMismatchDelay != 2*time.Minute {
 		t.Errorf("Runner.SchemaMismatchDelay: got %v want 2m", cfg.Runner.SchemaMismatchDelay)
+	}
+}
+
+func TestLoad_YAMLRollout(t *testing.T) {
+	clearITERION(t)
+	path := filepath.Join(t.TempDir(), "rollout.yaml")
+	body := `
+rollout:
+  runner_epoch: 12
+  epoch_mismatch_delay: "4m"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{YAMLPath: path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Rollout.RunnerEpoch != 12 || cfg.Rollout.EpochMismatchDelay != 4*time.Minute {
+		t.Fatalf("Rollout = %+v, want epoch 12 / delay 4m", cfg.Rollout)
 	}
 }
 

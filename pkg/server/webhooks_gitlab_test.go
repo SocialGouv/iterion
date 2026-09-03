@@ -934,3 +934,40 @@ func TestGitLabWebhook_ConcurrentDuplicateReleasesQuota(t *testing.T) {
 		t.Fatalf("org monthly runs = %d, want 1 (loser must release its quota unit)", u.Runs)
 	}
 }
+
+// The hold label freezes EVERY automation on an MR, the re-request included —
+// same promise as the GitHub lane (the forge emits the same event for an
+// auto-request, so the click's deliberateness is not a property this handler
+// can rely on). The click here is AUTHORIZED: the veto must hold anyway.
+func TestGitLabWebhook_ReRequestRespectsHoldLabel(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	cfg := glConfig()
+	cfg.HoldLabels = []string{"iterion:hold"}
+
+	body := strings.Replace(
+		glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true),
+		`"project": {`, `"labels": [{"title": "iterion:hold"}], "project": {`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), body, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("held MR: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	rows, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 5)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("no delivery row recorded (%v)", err)
+	}
+	if !strings.Contains(rows[0].Error, "hold label") {
+		t.Fatalf("audit reason = %q, want the hold-label explanation", rows[0].Error)
+	}
+}

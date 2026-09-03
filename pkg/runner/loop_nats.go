@@ -37,7 +37,7 @@ func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool
 		// otherwise such a message takes the malformed branch below and
 		// is Termed away, which is exactly the loss #481 closes.
 		if env, envErr := delivery.Envelope(); envErr == nil && env.V > 0 && (env.V < queue.MinSchemaVersion || env.V > queue.SchemaVersion) {
-			r.handleSchemaMismatch(delivery, fmt.Errorf("%w: %d unsupported (want %d)", queue.ErrSchemaVersion, env.V, queue.SchemaVersion))
+			r.handleSchemaMismatch(delivery, fmt.Errorf("%w: %d unsupported (want %d–%d)", queue.ErrSchemaVersion, env.V, queue.MinSchemaVersion, queue.SchemaVersion))
 			return nil, false
 		}
 		r.cfg.Logger.Error("runner: decode delivery: %v", err)
@@ -50,14 +50,23 @@ func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool
 		}
 		return nil, false
 	}
+	if !runnerEpochAccepted(r.cfg.RunnerEpoch, msg.RunnerEpoch) {
+		r.handleEpochMismatch(delivery, msg)
+		return nil, false
+	}
 	return msg, true
+}
+
+func runnerEpochAccepted(selfEpoch, messageEpoch uint64) bool {
+	return messageEpoch <= selfEpoch
 }
 
 // handleSchemaMismatch answers a delivery whose schema version this build
 // does not recognise. That is the ordinary state of a rolling upgrade, in
 // EITHER direction: this pod may be behind a server that already publishes
 // the new version, or ahead of a queue that still holds messages published
-// before the cutover (strict equality rejects both — see issue #481).
+// before the cutover and now below this build's explicit compatibility
+// window (see issue #481).
 //
 // Two rules make the overlap safe:
 //
@@ -79,36 +88,109 @@ func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool
 //     rolling. Parked messages replay verbatim once the fleet speaks their
 //     version (see docs/cloud-queue-schema-rollout.md).
 func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error) {
-	logger := r.cfg.Logger
-	delay := r.cfg.SchemaMismatchDelay
+	r.handleAdmissionMismatch(delivery, admissionMismatchSchema, decodeErr, r.cfg.SchemaMismatchDelay)
+}
+
+func (r *Runner) handleEpochMismatch(delivery *natsq.Delivery, msg *queue.RunMessage) {
+	err := fmt.Errorf("message epoch %d is newer than runner epoch %d", msg.RunnerEpoch, r.cfg.RunnerEpoch)
+	r.handleAdmissionMismatch(delivery, admissionMismatchFutureEpoch, err, r.cfg.EpochMismatchDelay)
+}
+
+type admissionMismatchKind string
+
+const (
+	admissionMismatchSchema      admissionMismatchKind = "schema"
+	admissionMismatchFutureEpoch admissionMismatchKind = "future_epoch"
+)
+
+type admissionMismatchPlan struct {
+	reason         string
+	delay          time.Duration
+	final          bool
+	parkedRunError string
+}
+
+func planAdmissionMismatch(kind admissionMismatchKind, mismatchErr error, delay time.Duration, env queue.Envelope, delivered, maxDeliver int) admissionMismatchPlan {
 	if delay <= 0 {
-		delay = natsq.SchemaMismatchNakDelay
+		if kind == admissionMismatchFutureEpoch {
+			delay = natsq.EpochMismatchNakDelay
+		} else {
+			delay = natsq.SchemaMismatchNakDelay
+		}
 	}
-	if r.cfg.NATS == nil || delivery.NumDelivered() < r.cfg.NATS.MaxDeliver() {
-		logger.Warn("runner: %v — leaving it for a runner that speaks its version (this pod does not)", decodeErr)
-		if nakErr := delivery.NakWithDelay(delay); nakErr != nil {
-			logger.Warn("runner: nak after version mismatch: %v", nakErr)
+	plan := admissionMismatchPlan{
+		reason: string(kind),
+		delay:  delay,
+		final:  maxDeliver > 0 && delivered >= maxDeliver,
+		parkedRunError: fmt.Sprintf(
+			"schema version mismatch: %v (queue message v%d parked on DLQ — replay via /api/admin/dlq only once the runner fleet speaks schema v%d; otherwise resume this run, which re-publishes at the current schema version — see docs/cloud-queue-schema-rollout.md)",
+			mismatchErr, env.V, env.V,
+		),
+	}
+	if kind == admissionMismatchFutureEpoch {
+		plan.parkedRunError = fmt.Sprintf(
+			"runner epoch mismatch: %v (queue message epoch %d parked on DLQ — replay via /api/admin/dlq once the runner fleet accepts epoch %d; otherwise resume or relaunch this run at the current epoch — see docs/cloud-deployment.md)",
+			mismatchErr, env.RunnerEpoch, env.RunnerEpoch,
+		)
+	}
+	return plan
+}
+
+func (p admissionMismatchPlan) lostRunError(mismatchErr, parkErr error) string {
+	if p.reason == string(admissionMismatchFutureEpoch) {
+		return fmt.Sprintf("runner epoch mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", mismatchErr, parkErr)
+	}
+	return fmt.Sprintf("schema version mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", mismatchErr, parkErr)
+}
+
+// handleAdmissionMismatch is the common recoverable disposition for schema
+// and generation fences. Both conditions are expected during a mixed-fleet
+// rollout and both become explicit, resumable failures if MaxDeliver is spent.
+func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissionMismatchKind, mismatchErr error, delay time.Duration) {
+	logger := r.cfg.Logger
+	env, envErr := delivery.Envelope()
+	maxDeliver := 0
+	if r.cfg.NATS != nil {
+		maxDeliver = r.cfg.NATS.MaxDeliver()
+	}
+	delivered := delivery.NumDelivered()
+	plan := planAdmissionMismatch(kind, mismatchErr, delay, env, delivered, maxDeliver)
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunnerAdmissionRejected.WithLabelValues(plan.reason).Inc()
+	}
+	fields := map[string]any{
+		"reason":         plan.reason,
+		"run_id":         env.RunID,
+		"self_epoch":     r.cfg.RunnerEpoch,
+		"message_epoch":  env.RunnerEpoch,
+		"schema_version": env.V,
+		"delivery":       delivered,
+		"max_deliver":    maxDeliver,
+		"delay":          plan.delay.String(),
+	}
+	if !plan.final {
+		logger.WithFields(fields).WithField("action", "nak").Warn("runner: admission rejected: %v — leaving it for a compatible runner", mismatchErr)
+		if nakErr := delivery.NakWithDelay(plan.delay); nakErr != nil {
+			logger.Warn("runner: nak after %s admission rejection: %v", plan.reason, nakErr)
 		}
 		return
 	}
 
-	logger.Error("runner: %v — delivery budget exhausted (%d/%d), parking on DLQ",
-		decodeErr, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
+	logger.WithFields(fields).WithField("action", "park").Error("runner: admission rejected: %v — delivery budget exhausted, parking on DLQ", mismatchErr)
 	parkCtx, parkCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer parkCancel()
-	env, envErr := delivery.Envelope()
 	if envErr != nil {
 		logger.Warn("runner: envelope decode on final delivery: %v — run document cannot be flipped", envErr)
 	}
 	// Direction-neutral guidance: replay only helps when the fleet speaks
 	// the parked message's version; in the other direction (or if nothing
 	// was parked) resuming/relaunching re-publishes at the CURRENT version.
-	runErr := fmt.Sprintf("schema version mismatch: %v (queue message v%d parked on DLQ — replay via /api/admin/dlq only once the runner fleet speaks schema v%d; otherwise resume this run, which re-publishes at the current schema version — see docs/cloud-queue-schema-rollout.md)", decodeErr, env.V, env.V)
+	runErr := plan.parkedRunError
 	payloadParked := true
-	if perr := r.cfg.NATS.PublishDLQ(parkCtx, delivery, decodeErr.Error()); perr != nil {
+	if perr := r.cfg.NATS.PublishDLQ(parkCtx, delivery, mismatchErr.Error()); perr != nil {
 		payloadParked = false
-		logger.Error("runner: DLQ park after version mismatch failed: %v — queue entry lost with the budget spent", perr)
-		runErr = fmt.Sprintf("schema version mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", decodeErr, perr)
+		logger.Error("runner: DLQ park after %s admission rejection failed: %v — queue entry lost with the budget spent", plan.reason, perr)
+		runErr = plan.lostRunError(mismatchErr, perr)
 	}
 	// The flip is scoped by the tenant identity: a payload without
 	// tenant_id is logged, never written under an unfiltered (privileged)
@@ -149,7 +231,7 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt)
 		flipCancel()
 		if serr != nil {
-			logger.Warn("runner: schema-mismatch status flip for %s: %v", env.RunID, serr)
+			logger.Warn("runner: %s admission-rejection status flip for %s: %v", plan.reason, env.RunID, serr)
 		} else if changed {
 			// This delivery never acquired the run lease. Only the owner of this
 			// exact queued attempt may emit the terminal-shaped signals below;
@@ -164,7 +246,7 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		}
 	}
 	if termErr := delivery.Term(); termErr != nil {
-		logger.Warn("runner: term after schema-mismatch handling: %v", termErr)
+		logger.Warn("runner: term after %s admission rejection: %v", plan.reason, termErr)
 	}
 	if outcomeMsg != nil {
 		// A parked payload replays byte-for-byte with its original SecretsRef,
@@ -174,7 +256,7 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 			r.cfg.CredPool.ReleaseCaptured(context.Background(), poolRelease)
 		}
 		r.fireCompletionNotifier(outcomeMsg)
-		r.fireOutcomeEvent(outcomeMsg, decodeErr)
+		r.fireOutcomeEvent(outcomeMsg, mismatchErr)
 	}
 }
 

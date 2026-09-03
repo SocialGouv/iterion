@@ -18,13 +18,21 @@ import (
 )
 
 // SchemaVersion is incremented at every breaking change to the wire
-// payload. Producers always set RunMessage.V = SchemaVersion;
-// consumers reject any V they don't recognise so that a
-// rolling-upgrade always upgrades the server first (which then never
-// emits an unsupported version).
+// payload. Producers always set RunMessage.V = SchemaVersion; consumers
+// reject any V outside [MinSchemaVersion, SchemaVersion] in both directions,
+// so a rolling upgrade has to choose which side rolls first — see the
+// ordering bullet below.
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
-//   - Deploy the server (producer) first, then the runners. A mismatch in
+//   - Deploy the server (producer) first by default. Both orders can park a
+//     message; only one park is replayable. Old runners rejecting the new
+//     version park messages a DLQ replay fixes once the fleet is upgraded;
+//     new runners rejecting a version below their MinSchemaVersion park
+//     messages a replay can never fix (it re-publishes the same bytes). Roll
+//     the runners first only when nothing below MinSchemaVersion(new) can
+//     still be queued — automatic when the bump leaves MinSchemaVersion
+//     alone, otherwise a check against the queue, never against the old
+//     server's SchemaVersion. A mismatch in
 //     either direction is TRANSIENT, never terminal: the consumer holds the
 //     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
 //     on the DLQ with the run document flipped to an actionable status —
@@ -71,10 +79,13 @@ import (
 // silently serves STALE code/skills for an overridden bot — the exact façade
 // the platform-override feature exists to prevent. Consumers accept BOTH v8
 // and v9 (MinSchemaVersion): the change is purely additive, so a NEW runner
-// consumes old queued v8 messages. (The reverse still holds the standard
-// policy: a pre-bump runner rejects v9, so the server-first ordering — or a
-// same-release roll of both — remains required; dual-accept removes only
-// the stranded-v8-message half of the window.)
+// consumes old queued v8 messages. (The reverse does not hold — a pre-bump
+// runner rejects v9 — so the server-first ordering, or a same-release roll of
+// both, remains the default; dual-accept removes only the stranded-v8-message
+// half of the window. Rolling the runners first removes the other half, but
+// only when nothing below the new Min can still be queued: a runner-first roll
+// parks such a message UNREPLAYABLY, while a server-first one parks the new
+// version replayably. See the runbook's Deploy ordering section.)
 //
 // v=10 (2026-08-29): added Fallback so the operator's single run-level
 // fallback route (`--fallback` / launch `fallback`) reaches the runner.
@@ -86,16 +97,21 @@ import (
 // both the v10 object and the v11 array, while producers always emit the
 // array. A v10 runner must reject the new payload rather than run with a
 // partially decoded rescue policy.
+// v=12 (2026-09-02): added RunnerEpoch, the generation fence that prevents a
+// stale runner from admitting work published after a rollout cutover. New
+// consumers continue to accept v10/v11 messages as epoch 0; older consumers
+// must reject v12 because ignoring the field would fail the fence open.
 //
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
-// v10 → v11 is additive from the new consumer's perspective: its custom
-// decoder promotes the v10 fallback object to a one-stage chain.
+// v10 → v12 is additive from the new consumer's perspective: its custom
+// decoder promotes the v10 fallback object to a one-stage chain and a missing
+// runner_epoch decodes to the bootstrap epoch 0.
 const MinSchemaVersion = 10
 
 // RunMessage is the JSON envelope published on
@@ -106,6 +122,7 @@ const MinSchemaVersion = 10
 // Field order is stable to keep readable JSON diffs in tests.
 type RunMessage struct {
 	V            int             `json:"v"`
+	RunnerEpoch  uint64          `json:"runner_epoch,omitempty"`
 	RunID        string          `json:"run_id"`
 	WorkflowName string          `json:"workflow_name"`
 	WorkflowHash string          `json:"workflow_hash"`
@@ -435,6 +452,7 @@ func (m *RunMessage) Validate() error {
 // status instead of leaving it `queued` in silence (issue #481).
 type Envelope struct {
 	V              int    `json:"v"`
+	RunnerEpoch    uint64 `json:"runner_epoch,omitempty"`
 	RunID          string `json:"run_id"`
 	TenantID       string `json:"tenant_id"`
 	OwnerID        string `json:"owner_id,omitempty"`

@@ -538,6 +538,36 @@ jobs:
         run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - name: helm lint --strict (values-prod.yaml)
         run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+      # `helm lint` renders nothing image-shaped, and cloud-e2e only ever
+      # installs via image.tag — so without these two the digest branch of
+      # `iterion.image` is exercised by no CI job at all, and a refactor could
+      # drop it (or its shape guard) silently. A malformed digest is the case
+      # that matters: it renders a string helm accepts and only kubelet
+      # rejects, so the rollout stalls instead of failing.
+      - name: image.digest renders and rejects a malformed value
+        run: |
+          set -euo pipefail
+          digest="sha256:$(printf 'a%.0s' $(seq 64))"
+          # `--set image.tag=edge` also pins the documented precedence
+          # (digest wins), the property a refactor of the `if` is likeliest to
+          # invert. Render to a FILE: `grep -q` exits on its first match, which
+          # SIGPIPEs helm mid-write and, under `pipefail`, reddens the step on
+          # an assertion that actually passed.
+          helm template t charts/iterion --set image.tag=edge \
+            --set "image.digest=$digest" > /tmp/render-digest.yaml
+          grep -q "image: ghcr.io/socialgouv/iterion@$digest" /tmp/render-digest.yaml
+          # ...and that NOTHING still resolves through the tag. The render has
+          # two iterion.image containers (server + runner fallback) and grep -q
+          # stops at the first, so a refactor routing only one of them through
+          # the digest would otherwise still pass.
+          if grep -q "image: ghcr.io/socialgouv/iterion:edge" /tmp/render-digest.yaml; then
+            echo "::error::a container still resolved through image.tag despite image.digest being set"
+            exit 1
+          fi
+          if helm template t charts/iterion --set image.digest=deadbeef >/dev/null 2>&1; then
+            echo "::error::a malformed image.digest rendered instead of failing"
+            exit 1
+          fi
 
   golangci:
     # Curated golangci-lint pass (.golangci.yml): errcheck, govet,

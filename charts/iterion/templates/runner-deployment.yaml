@@ -1,7 +1,5 @@
 {{- if .Values.runner.enabled -}}
 # The runner Deployment is rendered only when runner.enabled=true.
-# The runner subcommand (T-29) and NATS consumer (T-25, T-27) must
-# ship before this can be turned on in production.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +8,8 @@ metadata:
     {{- include "iterion.labels" . | nindent 4 }}
     app.kubernetes.io/component: runner
 spec:
+  strategy:
+    {{- toYaml .Values.runner.strategy | nindent 4 }}
   {{- if not .Values.runner.keda.enabled }}
   replicas: {{ .Values.runner.replicas }}
   {{- end }}
@@ -85,8 +85,14 @@ spec:
           {{- end }}
           args:
             {{- toYaml .Values.runner.args | nindent 12 }}
-          {{- if or .Values.runner.sandbox.enabled .Values.runner.cache.enabled }}
           env:
+            # Literal PodTemplate values are load-bearing: KEDA/proportional
+            # scaling may create a new pod from an old ReplicaSet after the
+            # shared ConfigMap changed. That pod must retain epoch N.
+            - name: ITERION_RUNNER_EPOCH
+              value: {{ .Values.config.rollout.runnerEpoch | int64 | quote }}
+            - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY
+              value: {{ .Values.config.rollout.epochMismatchDelay | quote }}
             {{- if .Values.runner.sandbox.enabled }}
             # Downward API: ITERION_POD_IP is required for the kubernetes
             # sandbox driver's ProxyConfig() (pkg/sandbox/kubernetes), so
@@ -123,7 +129,6 @@ spec:
             - name: GOCACHE
               value: {{ printf "%s/go/build" .Values.runner.cache.mountPath | quote }}
             {{- end }}
-          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "iterion.fullname" . }}-config

@@ -3,6 +3,142 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.94.3](https://github.com/SocialGouv/iterion/compare/v3.94.2...v3.94.3) (2026-09-03)
+
+### Bug Fixes
+
+* **chart:** let image.digest pin the server, so one ReplicaSet is one build ([#637](https://github.com/SocialGouv/iterion/issues/637)) ([5334b2d](https://github.com/SocialGouv/iterion/commit/5334b2d5b0708deea52c50af4035776e517a2fbc)), closes [#636](https://github.com/SocialGouv/iterion/issues/636)
+
+    <details><summary>why</summary>
+
+    `iterion.image` could only build `repo:tag`, so "pin the server by digest" was not expressible at all — the operator's only lever was a tag, which is the thing that moves. `runner.image` is consumed verbatim and could already carry a digest; the shared server image had no equivalent seam.
+
+    </details>
+
+## [3.94.2](https://github.com/SocialGouv/iterion/compare/v3.94.1...v3.94.2) (2026-09-03)
+
+### Bug Fixes
+
+* **review-pr:** raise max_duration 45m → 90m ([#634](https://github.com/SocialGouv/iterion/issues/634)) ([3985c81](https://github.com/SocialGouv/iterion/commit/3985c81815bf06631801ca3c75ed50295657c0ad))
+
+    <details><summary>why</summary>
+
+    The cost cap (max_cost_usd) is the money guard; the duration cap only needs to catch a genuinely hung run. At 45m it killed real reviews mid-publish — a large diff or a usage-window retry walks past it while spending nothing, and the verdict a gate is waiting on dies with the run (observed 2026-09-02, round 7 of the pilot: converge refused at 92% of the duration axis, the review completed everywhere but the publish).
+
+    </details>
+
+## [3.94.1](https://github.com/SocialGouv/iterion/compare/v3.94.0...v3.94.1) (2026-09-03)
+
+### Bug Fixes
+
+* **mcp:** an ambient MCP server that cannot boot costs its tools, never the run ([#633](https://github.com/SocialGouv/iterion/issues/633)) ([2eedd4d](https://github.com/SocialGouv/iterion/commit/2eedd4db304da5241e07b460f4d4fadd66178bfe))
+
+    <details><summary>why</summary>
+
+    The claw splice added every active MCP server — including servers the node never named, inherited from the target repo's .mcp.json or the plugin catalog — as an mcp.<server>.* wildcard, and expandWildcards hard-failed the node when one of them could not boot. One token-less repo server (the repo-scoped sentry on runner pods, which have no SENTRY_ACCESS_TOKEN) therefore killed every claw node of a run at plan_review — observed 3× on 2026-09-02, neutralising the zero-touch fixer lane on this repo…
+
+    </details>
+
+## [3.94.0](https://github.com/SocialGouv/iterion/compare/v3.93.0...v3.94.0) (2026-09-02)
+
+### Features
+
+* add generation-aware zero-interruption rollouts ([#628](https://github.com/SocialGouv/iterion/issues/628)) ([53c4b61](https://github.com/SocialGouv/iterion/commit/53c4b61e5aade022efc92239710e6d498cf056ba))
+
+## [3.93.0](https://github.com/SocialGouv/iterion/compare/v3.92.0...v3.93.0) (2026-09-02)
+
+### Features
+
+* **webhooks:** GitHub review-thread conversations — reply to a suggestion, get an in-thread answer ([#626](https://github.com/SocialGouv/iterion/issues/626)) ([d4611df](https://github.com/SocialGouv/iterion/commit/d4611df0774ec14480167be9a4b8c5f69b0985b9))
+
+    <details><summary>why</summary>
+
+    Replying inside one of the bot's review threads on GitHub now launches the converse bot (roleBots().ReviConverse), which answers in the same thread — the GitHub half of the GitLab conversational lane (forge-conversations.md).
+
+    </details>
+
+## [3.92.0](https://github.com/SocialGouv/iterion/compare/v3.91.0...v3.92.0) (2026-09-02)
+
+### Features
+
+* **runtime:** support branch-local bounded loops ([#557](https://github.com/SocialGouv/iterion/issues/557)) ([c121be6](https://github.com/SocialGouv/iterion/commit/c121be668848689d6421984e8912b185872a1ab0))
+
+    <details><summary>why</summary>
+
+    The answered branch closed its siblings' resume barrier only through checkpointResumedBranch (the happy path) and the panic recovers. Any other exit between consuming ResumeAnswers and landing the successor cursor — an artifact write failure, an answer satisfying no outgoing edge, a C245/unknown-node guard after an edited source — left the barrier open; under best_effort nothing cancels the siblings and collectBranches only arms its grace timer after a cancellation, so the fan-out hung until…
+
+    </details>
+
+## [3.91.0](https://github.com/SocialGouv/iterion/compare/v3.90.0...v3.91.0) (2026-09-02)
+
+### Features
+
+* **usagecap:** an auth-rejected credential becomes skip evidence — the third refusal family ([#624](https://github.com/SocialGouv/iterion/issues/624)) ([b7f2ef0](https://github.com/SocialGouv/iterion/commit/b7f2ef00eccb51a84ac49a3c414504907a49c154))
+
+    <details><summary>why</summary>
+
+    Re-resolution is already universal server-side (SubmitResume and the retry sweeper both re-resolve), yet a structurally-broken credential kept condemning run after run: it filled its slot on every resolution, gated the pool and platform tiers off, and its failure produced NO evidence for the credential-tier skip to act on. Quota refusals have a family, frequency refusals have a family — the provider rejecting the credential ITSELF had none.
+
+    </details>
+
+## [3.90.0](https://github.com/SocialGouv/iterion/compare/v3.89.0...v3.90.0) (2026-09-02)
+
+### Features
+
+* **secrets:** several keys of one provider become an ordered fallback chain ([#612](https://github.com/SocialGouv/iterion/issues/612)) ([7ff4007](https://github.com/SocialGouv/iterion/commit/7ff4007c06ed7db256bbe824148e03d42735f89d))
+
+    <details><summary>why</summary>
+
+    Completes the credential chain the fair-usage freeze exposed: the BYOK tier resolved ONE fixed key per provider, so a key whose account the provider froze was resealed into every fresh launch until an operator removed it by hand (measured 2026-09-02: two removals, five cancels, three relaunch waves).
+
+    </details>
+
+## [3.89.0](https://github.com/SocialGouv/iterion/compare/v3.88.0...v3.89.0) (2026-09-02)
+
+### Features
+
+* **webhooks:** an explicitly named review identity lights the re-request lane on GitHub ([#605](https://github.com/SocialGouv/iterion/issues/605)) ([9ff26bc](https://github.com/SocialGouv/iterion/commit/9ff26bc47c2bc746911c7de1013c8bc3a7b4afce)), references [#604](https://github.com/SocialGouv/iterion/issues/604) [#608](https://github.com/SocialGouv/iterion/issues/608) [#608](https://github.com/SocialGouv/iterion/issues/608)
+
+    <details><summary>why</summary>
+
+    Rebuilt as one commit on main after #604 merged and #608 landed the GitHub/Forgejo replier gate there (convergent fix — both Revi loops demanded it); this is the remaining delta. Four Revi rounds on the PR (3→3→5→0 findings, all real) shaped it; every behaviour guard is mutation-verified.
+
+    </details>
+
+## [3.88.0](https://github.com/SocialGouv/iterion/compare/v3.87.0...v3.88.0) (2026-09-02)
+
+### Features
+
+* **cli:** a command to stand a credential pool up, and a forfait blob that fails where the file name is known ([#600](https://github.com/SocialGouv/iterion/issues/600)) ([d87ff60](https://github.com/SocialGouv/iterion/commit/d87ff608f6c47d2a3a6e935f415b358a0312739e))
+
+    <details><summary>why</summary>
+
+    Two gaps found while actually setting a pool up on a live instance:
+
+    </details>
+
+### Bug Fixes
+
+* **delegate:** a fair-usage refusal parks the run and feeds the credential skip — not the node's answer ([#610](https://github.com/SocialGouv/iterion/issues/610)) ([dade12e](https://github.com/SocialGouv/iterion/commit/dade12e7626a94ee8af8c7a103470711f5afe27e))
+
+    <details><summary>why</summary>
+
+    Measured 2026-09-02: a provider account under a fair-usage frequency restriction refused EVERY request with a ~330-char relayed 429. The one-liner length cap kept isRateLimitMessage from seeing it, so the refusal text became the agent's output (a campaign node 'finished' with the error as its work_remaining); two modernize lots burned ~7h each overnight and two rites spun full passes on it in minutes.
+
+    </details>
+
+## [3.87.0](https://github.com/SocialGouv/iterion/compare/v3.86.1...v3.87.0) (2026-09-02)
+
+### Features
+
+* **cloudpublisher:** skip a forfait whose window is closed — the credential tiers become a fallback chain ([#601](https://github.com/SocialGouv/iterion/issues/601)) ([e963626](https://github.com/SocialGouv/iterion/commit/e9636266188c27de7056b5de4e9b219c8baef122))
+
+    <details><summary>why</summary>
+
+    The tiers were a fixed first choice, not a chain: a run whose tenant (or the platform) holds an OAuth forfait was never eligible for any later tier, INCLUDING when that forfait's provider window was closed. The run got the exhausted credential, spent one LLM call to be refused, and parked until the window reset - up to a week on the weekly one - while a second forfait or the mutualised pool could have served it immediately.
+
+    </details>
+
 ## [3.86.1](https://github.com/SocialGouv/iterion/compare/v3.86.0...v3.86.1) (2026-09-01)
 
 ### Bug Fixes

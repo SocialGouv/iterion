@@ -812,7 +812,10 @@ func piMatchesRateLimitText(msg string) bool {
 // split a subscription-window exhaustion (waiting is the only cure) from a
 // plain throttle worth retrying soon, and to recover any reset instant.
 func piRateLimited(msg string) error {
-	kind, resetAt := classifyRateLimit(msg, time.Now())
+	// The window is dropped here: pi/claw refusals have no meter consumer
+	// (usageBackendForKind maps only the claude_code forfait), and this
+	// helper has no hook to record through.
+	kind, _, resetAt := classifyRateLimit(msg, time.Now())
 	return &ErrRateLimited{
 		Provider: BackendPi,
 		Kind:     kind,

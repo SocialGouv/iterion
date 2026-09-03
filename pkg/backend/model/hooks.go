@@ -976,6 +976,23 @@ func (h *storeHooks) onSessionDegraded(nodeID string, info SessionDegradedInfo) 
 		nodeID, info.BackendName, info.SessionID, info.Reason, errMsg)
 }
 
+// onMCPServerDegraded implements the OnMCPServerDegraded hook: it turns a
+// dropped ambient MCP server into a first-class store event.
+//
+// Warn-level: the node is about to run, but without the tools of a
+// server the environment (repo .mcp.json / plugin catalog) put in its
+// reach — the only other trace is a process log line.
+func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedInfo) {
+	data := map[string]any{
+		"server": info.Server,
+		"source": info.Source,
+	}
+	if info.Err != nil {
+		data["error"] = info.Err.Error()
+	}
+	h.emit(nodeID, store.EventMCPServerDegraded, data)
+}
+
 // onProviderFallback implements the OnProviderFallback hook: it turns a
 // chain fall-through into a first-class store event.
 //
@@ -1157,20 +1174,21 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnLLMRequest: h.onLLMRequest,
 		// OnLLMResponse is intentionally nil: response data surfaces through
 		// llm_step_finished events with richer per-step detail.
-		OnLLMRetry:         h.onLLMRetry,
-		OnLLMStepFinish:    h.onLLMStepFinish,
-		OnAssistantText:    h.onAssistantText,
-		OnUsageCap:         h.onUsageCap,
-		OnLLMTurnCapture:   h.onLLMTurnCapture,
-		OnLLMCompacted:     h.onLLMCompacted,
-		OnToolStarted:      h.onToolStarted,
-		OnToolCall:         h.onToolCall,
-		OnDelegateStarted:  h.onDelegateStarted,
-		OnDelegateFinished: h.onDelegateFinished,
-		OnDelegateError:    h.onDelegateError,
-		OnDelegateRetry:    h.onDelegateRetry,
-		OnProviderFallback: h.onProviderFallback,
-		OnSessionDegraded:  h.onSessionDegraded,
+		OnLLMRetry:          h.onLLMRetry,
+		OnLLMStepFinish:     h.onLLMStepFinish,
+		OnAssistantText:     h.onAssistantText,
+		OnUsageCap:          h.onUsageCap,
+		OnLLMTurnCapture:    h.onLLMTurnCapture,
+		OnLLMCompacted:      h.onLLMCompacted,
+		OnToolStarted:       h.onToolStarted,
+		OnToolCall:          h.onToolCall,
+		OnDelegateStarted:   h.onDelegateStarted,
+		OnDelegateFinished:  h.onDelegateFinished,
+		OnDelegateError:     h.onDelegateError,
+		OnDelegateRetry:     h.onDelegateRetry,
+		OnProviderFallback:  h.onProviderFallback,
+		OnSessionDegraded:   h.onSessionDegraded,
+		OnMCPServerDegraded: h.onMCPServerDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 	}

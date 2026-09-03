@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -314,6 +315,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// later resume can detect a credential change.
 	opts, currentFingerprint := b.setupCredsAndSession(ctx, task, opts)
 
+	// Stamp every usage reading with the provider-routing label of THIS
+	// session. One wrap here covers all three detection sites (the
+	// rate_limit_event stream and both text-relayed refusal paths): the
+	// consumer keys the reading under the credential the session actually
+	// ran on, not the bundle's default precedence.
+	task.Hooks.OnUsageWindow = stampUsageSource(task.Hooks.OnUsageWindow, currentFingerprint)
+
 	// Structured output handling. claude CLI >= 2.1 accepts --json-schema
 	// (WithOutputFormat) TOGETHER with --allowedTools in a single pass: the
 	// agent does its tool work and then calls the native StructuredOutput
@@ -507,14 +515,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// field" schema error — the exact masking that turns a dead credential into
 	// a wild goose chase through the structured-output machinery. Fail fast with
 	// a legible auth error. Non-transient (a retry can't revive a dead token).
-	if rm.Result != nil && isAuthErrorResult(*rm.Result) {
-		detail := strings.TrimSpace(*rm.Result)
+	if authErr := authFailureFast(rm.Result, task); authErr != nil {
 		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
-			task.NodeID, task.Iteration, detail)
-		return result, &ErrAuthFailed{
-			Provider: BackendClaudeCode,
-			Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", detail),
-		}
+			task.NodeID, task.Iteration, redactAuthRender(strings.TrimSpace(*rm.Result)))
+		return result, authErr
 	}
 
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
@@ -526,9 +530,20 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the executor's transient retry.
 	if rm.Result != nil && isRateLimitMessage(*rm.Result) {
 		detail := strings.TrimSpace(*rm.Result)
-		kind, resetAt := classifyRateLimit(detail, time.Now())
+		kind, window, resetAt := classifyRateLimit(detail, time.Now())
 		b.Logger.Warn("[%s#%d/claude-code] provider quota/rate-limit result (%s) — failing: %.120s",
 			task.NodeID, task.Iteration, kind, detail)
+		// Same evidence duty as the stream path: a text-relayed refusal
+		// that names a meter window must reach the store, or the
+		// credential-tier skip stays blind to it.
+		if window != "" && task.Hooks.OnUsageWindow != nil {
+			_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+				Window:     window,
+				Status:     usagecap.StatusRejected,
+				ObservedAt: time.Now().UTC(),
+				ResetsAt:   resetAt,
+			})
+		}
 		return result, &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
 	}
 

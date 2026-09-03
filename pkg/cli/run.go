@@ -822,7 +822,7 @@ func enrichPausedResult(s store.RunStore, runID string, result map[string]any) {
 		return
 	}
 	result["interaction_id"] = r.Checkpoint.InteractionID
-	result["node_id"] = r.Checkpoint.NodeID
+	result["node_id"] = r.Checkpoint.PausedNodeID()
 	if interaction, err := s.LoadInteraction(context.Background(), runID, r.Checkpoint.InteractionID); err == nil {
 		result["questions"] = interaction.Questions
 	}

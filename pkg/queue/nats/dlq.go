@@ -147,6 +147,12 @@ func (c *Conn) PeekDLQ(ctx context.Context, seq uint64) (DLQMessage, json.RawMes
 // with the DLQ sequence so JetStream's dedup window can't silently
 // swallow the replay (the original publish used the bare run id).
 func (c *Conn) RepublishDLQ(ctx context.Context, seq uint64) (string, error) {
+	if err := c.requireRunnerEpochClaim(); err != nil {
+		return "", err
+	}
+	if c.js == nil {
+		return "", fmt.Errorf("queue/nats: connection not initialised")
+	}
 	view, payload, err := c.PeekDLQ(ctx, seq)
 	if err != nil {
 		return "", err

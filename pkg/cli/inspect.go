@@ -174,10 +174,12 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 		p.Blank()
 		p.Header("Checkpoint")
 		nodeLabel := "Node"
+		nodeID := r.Checkpoint.NodeID
 		if r.Status.IsPaused() {
 			nodeLabel = "Paused at"
+			nodeID = r.Checkpoint.PausedNodeID()
 		}
-		p.KV(nodeLabel, r.Checkpoint.NodeID)
+		p.KV(nodeLabel, nodeID)
 		// Stricter than CarriesPausePointer (paused ∨ queued) on
 		// purpose: on a queued run the form is not actionable — the
 		// answers already travel in the queue message.

@@ -626,7 +626,19 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 				b.Logger.Warn("[%s#%d/claude-code] 🚦 rate-limit signal in assistant text — aborting: %s", task.NodeID, task.Iteration, truncate(tb.Text, 200))
 				cancelStream()
 				detail := strings.TrimSpace(tb.Text)
-				kind, resetAt := classifyRateLimit(detail, time.Now())
+				kind, window, resetAt := classifyRateLimit(detail, time.Now())
+				// A refusal relayed as text never reaches the meter the way
+				// a rate_limit_event does, so the credential-tier skip would
+				// stay blind to it at the next resolution. Record it when
+				// the shape names a window the evidence consumers know.
+				if window != "" && task.Hooks.OnUsageWindow != nil {
+					_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+						Window:     window,
+						Status:     usagecap.StatusRejected,
+						ObservedAt: time.Now().UTC(),
+						ResetsAt:   resetAt,
+					})
+				}
 				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
 			}
 			// Narration hook: surface the agent's mid-turn prose to the
@@ -840,16 +852,35 @@ var rateLimitSignals = []string{
 	"request rejected (429)",
 }
 
+// relayedAPIErrorPrefix opens the CLI's verbatim relay of an upstream
+// HTTP refusal. A block that STARTS with it is the provider talking, not
+// the agent: an agent quoting the message embeds it mid-paragraph.
+const relayedAPIErrorPrefix = "api error: request rejected (429)"
+
+// relayedAPIErrorMaxLen bounds the prefix-anchored acceptance. The
+// fair-usage refusal (~330 chars with its policy prose and request id)
+// is the longest relayed shape observed; anything past this is an agent
+// essay that happens to open with a quote.
+const relayedAPIErrorMaxLen = 600
+
 // isRateLimitMessage reports whether an assistant text block carries
 // a quota / rate-limit signal from the upstream provider. The text
 // length cap is load-bearing: real rate-limit notices are short
 // one-liners, whereas agents that reason aloud about rate limiting
 // produce much longer paragraphs that would false-positive otherwise.
+// One measured exception: the fair-usage refusal is a relayed API error
+// three times that long (four modernize/rite lanes burned their budgets
+// on it before it was recognised at all), so a block that BEGINS with
+// the relay prefix is accepted up to relayedAPIErrorMaxLen.
 func isRateLimitMessage(text string) bool {
-	if len(text) == 0 || len(text) > 200 {
+	if len(text) == 0 {
 		return false
 	}
 	lower := strings.ToLower(text)
+	if len(text) > 200 {
+		return len(text) <= relayedAPIErrorMaxLen &&
+			strings.HasPrefix(lower, relayedAPIErrorPrefix)
+	}
 	if hitYourLimitRe.MatchString(lower) {
 		return true
 	}
@@ -871,15 +902,45 @@ var usageWindowSignals = []string{
 	"usage limit reached",
 }
 
+// accountRefusalSignals mean the ACCOUNT's request rate is refused (a
+// fair-usage policy restriction), not that a metered window filled up.
+// The cure is the same as a shut window — this credential serves nothing
+// until the provider relents, so the run must park and the resolver must
+// route around it — but there is never a reset instant to parse, and the
+// meter evidence is recorded under WindowFrequency so the staleness
+// bound comes from the observation itself.
+var accountRefusalSignals = []string{
+	"fair usage policy",
+	"request frequency has been limited",
+}
+
 // classifyRateLimit refines a matched rate-limit message into
-// (Kind, ResetAt). All parsing is best-effort: an unrecognized shape
-// keeps Kind = transient and a zero ResetAt — never a hard failure.
-func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Time) {
+// (Kind, Window, ResetAt). Window names the meter window the refusal is
+// evidence against, "" when the shape maps to none — the caller records
+// a reading only when it does. All parsing is best-effort: an
+// unrecognized shape keeps Kind = transient and a zero ResetAt — never a
+// hard failure.
+func classifyRateLimit(text string, now time.Time) (kind string, window usagecap.Window, resetAt time.Time) {
 	lower := strings.ToLower(text)
-	if !isUsageWindowText(lower) {
-		return RateLimitKindTransient, time.Time{}
+	if isAccountRefusalText(lower) {
+		return RateLimitKindUsageWindow, usagecap.WindowFrequency, time.Time{}
 	}
-	return RateLimitKindUsageWindow, parseResetHint(lower, now)
+	if !isUsageWindowText(lower) {
+		return RateLimitKindTransient, "", time.Time{}
+	}
+	return RateLimitKindUsageWindow, "", parseResetHint(lower, now)
+}
+
+// isAccountRefusalText reports whether already-lowercased text carries an
+// account-rate refusal shape. Shared with isUsageWindowText's callers via
+// classifyRateLimit and the flattened-error fallback: one definition.
+func isAccountRefusalText(lower string) bool {
+	for _, sig := range accountRefusalSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // isUsageWindowText reports whether already-lowercased text carries one of the
@@ -895,7 +956,10 @@ func isUsageWindowText(lower string) bool {
 			return true
 		}
 	}
-	return false
+	// An account-rate refusal parks the same way a shut window does, so
+	// the flattened-error fallback must recognise it through the same
+	// single definition.
+	return isAccountRefusalText(lower)
 }
 
 // UsageWindowInFlattenedError recovers the window signal from an error whose
