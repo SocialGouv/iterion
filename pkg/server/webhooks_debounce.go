@@ -111,6 +111,7 @@ func (s *Server) shouldDeferSyncLaunch(gateResync bool) bool {
 func (s *Server) deferSyncLaunch(
 	ctx context.Context,
 	w http.ResponseWriter,
+	r *http.Request,
 	cfg webhooks.Config,
 	meta webhookEventMeta,
 	targets []forgeLaunchTarget,
@@ -145,11 +146,15 @@ func (s *Server) deferSyncLaunch(
 	if err := s.webhookDeferred.Upsert(ctx, d); err != nil {
 		// The park failed — launching immediately is strictly better than
 		// dropping the review (the pre-debounce behaviour, and the forge
-		// has already been promised a review of this head).
+		// has already been promised a review of this head). The INBOUND
+		// request rides along: this fallback still writes an HTTP response,
+		// and a launch-gate denial (monthly quota, cost cap, concurrency —
+		// routine on a busy tenant) reaches reflectAllowedOrigin, which
+		// dereferences it.
 		if s.logger != nil {
 			s.logger.Warn("webhooks: defer of %s %s failed (%v) — launching immediately instead", cfg.ID, meta.SubjectID, err)
 		}
-		s.insertAndLaunchWebhookMulti(ctx, w, nil, cfg, meta, targets, payloadHash, srcIP)
+		s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 		return
 	}
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusDeferred)

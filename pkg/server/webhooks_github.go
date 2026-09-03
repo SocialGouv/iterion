@@ -360,7 +360,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// volley of pushes costs one review of the final head (a re-request
 	// click stays immediate — a human is waiting on it).
 	if s.shouldDeferSyncLaunch(gateResync && !reviewRequested) {
-		s.deferSyncLaunch(ctx, w, cfg, meta, targets, payloadHash, srcIP)
+		s.deferSyncLaunch(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 		return
 	}
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)

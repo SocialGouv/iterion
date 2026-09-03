@@ -156,7 +156,16 @@ func (s *Server) allowedOrigins() []string {
 // reflectAllowedOrigin sets ACAO to the request's Origin if (and only if) it
 // is in the allowlist. Callers should always set Vary: Origin so caches don't
 // poison the response across origins.
+//
+// A nil request means the response is being written on behalf of no
+// inbound HTTP call (a background replay of a parked launch): there is no
+// Origin to reflect, and dereferencing here would turn a routine
+// launch-gate denial into a panicked connection. Belt to the callers'
+// braces — every one of them should be threading its own request.
 func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
+	if r == nil {
+		return
+	}
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.isAllowedOriginReq(r) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)

@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -147,6 +150,48 @@ func TestSyncDebounce_OpenLaunchesImmediately(t *testing.T) {
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), open, prforge.EventHeaderPullRequest, pt))
 	if len(*got) != 1 {
 		t.Fatalf("a PR open must launch immediately, got %v", botsOf(*got))
+	}
+}
+
+// failingDeferredStore refuses every park, driving deferSyncLaunch onto
+// its "launch immediately instead" fallback.
+type failingDeferredStore struct{ webhooks.DeferredLaunchStore }
+
+func (failingDeferredStore) Upsert(context.Context, webhooks.DeferredLaunch) error {
+	return errors.New("store down")
+}
+func (failingDeferredStore) ClaimDue(context.Context, time.Time, time.Duration, int) ([]webhooks.DeferredLaunch, error) {
+	return nil, nil
+}
+func (failingDeferredStore) Delete(context.Context, string, int64) error { return nil }
+
+// When the park fails, the defer lane falls back to launching inline —
+// and that fallback WRITES AN HTTP RESPONSE. A launch-gate denial
+// (monthly quota, cost cap, suspended team — routine on a busy tenant)
+// runs writeLaunchDenial → reflectAllowedOrigin, which dereferences the
+// request: handed nil, the forge got a dropped connection instead of an
+// answer and the delivery was lost with no delivery row to retry from.
+func TestSyncDebounce_ParkFailureDenialAnswersInsteadOfPanicking(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = failingDeferredStore{}
+	s.syncDebounce = 3 * time.Minute
+	fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	// A suspended team is the cheapest real denial gateLaunch produces.
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t1", Name: "t1", Slug: "t1", Status: identity.TeamStatusSuspended, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("a denied fallback launch must answer 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
