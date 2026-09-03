@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
@@ -304,5 +305,48 @@ func TestReflectAllowedOrigin_NilRequestIsNoop(t *testing.T) {
 	s.reflectAllowedOrigin(w, nil)
 	if h := w.Header().Get("Access-Control-Allow-Origin"); h != "" {
 		t.Fatalf("nil request must reflect nothing, got %q", h)
+	}
+}
+
+// The GitLab twin of the closed-PR purge (Rd26f8f): a push parks a
+// review, the MR merges inside the quiet window — the parked launch must
+// purge, not fire a full review of a dead merge request at T+3m.
+func TestSyncDebounce_GitLabMergedMRPurgesParkedLaunch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg := glConfig()
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	push := `{
+	  "object_kind": "merge_request",
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "last_commit": {"id": "sha1"}}
+	}`
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), push, gitlab.EventHeaderMergeRequest))
+	if w.Code != 202 {
+		t.Fatalf("synchronize must defer (202), got %d: %s", w.Code, w.Body.String())
+	}
+
+	merged := `{
+	  "object_kind": "merge_request",
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "merge", "state": "merged", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "last_commit": {"id": "sha1"}}
+	}`
+	w = httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), merged, gitlab.EventHeaderMergeRequest))
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(10*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("a merged MR's parked review must never fire, got %v", botsOf(*got))
 	}
 }

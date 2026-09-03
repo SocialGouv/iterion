@@ -127,7 +127,15 @@ func NewLLMEvaluator() *LLMEvaluator {
 // detector's first suggestion. Returns ErrNoSupervisorModel when none
 // resolve.
 func resolveModel(ctx context.Context, specModel, providerHint string) (string, error) {
-	if specModel != "" {
+	// The DSL pin may be an env form ("${ITERION_VIBE_MODEL_X:-a/b}") —
+	// expand it exactly like the executor expands a node's model
+	// (executor_build_task.go resolvedModel). Unexpanded, the raw string
+	// reaches ParseModelSpec, which splits at the first "/" into a
+	// garbage provider — every eval then soft-fails and supervision
+	// parks: a declared supervisor silently inert. An expansion that
+	// comes back empty (unset var, no default) falls through to the
+	// env/family resolution below, same as no pin at all.
+	if specModel = strings.TrimSpace(ir.ExpandEnvWithDefault(specModel)); specModel != "" {
 		return specModel, nil
 	}
 	if env := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
