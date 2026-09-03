@@ -597,7 +597,9 @@ func TestBoardNow_DegradationWarnsOnItsEdge(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	s := &Server{logger: iterlog.New(iterlog.LevelWarn, &buf)}
+	// LevelInfo: the recovery edge logs at Info (the parked-sweep
+	// sibling's level) and must be visible to this test.
+	s := &Server{logger: iterlog.New(iterlog.LevelInfo, &buf)}
 	cb := erroringClockBoard{BoardStore: board}
 	s.boardNow(cb)
 	s.boardNow(cb)
@@ -620,4 +622,25 @@ func TestBoardNow_DegradationWarnsOnItsEdge(t *testing.T) {
 	if warns := strings.Count(buf.String(), "no server clock"); warns != 1 {
 		t.Fatalf("a clock-dropping decorator warned %d time(s), want 1 — losing the method and the warn in the same move is the disarm this log exists to catch", warns)
 	}
+	// The RECOVERY edge is logged too: a clock that comes back silently
+	// leaves the last line on record saying the guard is degraded.
+	buf.Reset()
+	s.boardClockWarned = "mongo: server selection timeout"
+	s.boardNow(healthyClockBoard{BoardStore: board})
+	if got := strings.Count(buf.String(), "board clock recovered"); got != 1 {
+		t.Fatalf("clock recovery logged %d time(s), want 1: %q", got, buf.String())
+	}
+	buf.Reset()
+	s.boardNow(healthyClockBoard{BoardStore: board})
+	if buf.Len() != 0 {
+		t.Fatalf("a steady healthy clock must stay silent, got %q", buf.String())
+	}
+}
+
+type healthyClockBoard struct {
+	native.BoardStore
+}
+
+func (healthyClockBoard) ServerNow(context.Context) (time.Time, error) {
+	return time.Now().UTC(), nil
 }

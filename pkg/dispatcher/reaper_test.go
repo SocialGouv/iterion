@@ -1159,3 +1159,36 @@ func TestClaimSession_StopDoesNotWarnARenewalFailure(t *testing.T) {
 		t.Fatalf("Stop() logged a renewal failure with no failure: %q", buf.String())
 	}
 }
+
+// The provenance split keys on the TARGET, not only the decision: with
+// completed_state configured onto a launch column, a descriptive reason
+// would let the machine's own write fire a launch and spend a one-shot —
+// the exact re-armed spend the repark rule exists to prevent.
+func TestFileStuckCard_LaunchColumnTargetStaysMachine(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	// Self-inflicted but legal config: the "completed" column is also a
+	// launch column.
+	cfg := *c.cfg.Load()
+	cfg.Agent.CompletedState = native.StateReady
+	c.cfg.Store(&cfg)
+	mkRun(t, runs, "run-done-launch", store.RunStatusFinished)
+	cand := seedClaimedCard(t, board, "run-done-launch")
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
+
+	var last map[string]any
+	if err := board.ScanEvents(func(e *native.Event) bool {
+		if e.Type == native.EvtIssueState && e.IssueID == cand.IssueID {
+			last = e.Payload
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if last == nil {
+		t.Fatal("the filing emitted no state event")
+	}
+	if got, _ := last["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Fatalf("a filing INTO A LAUNCH COLUMN carries reason %q, want %q — a descriptive reason there re-arms a spend on a card nobody moved", got, tracker.ReasonWatchdog)
+	}
+}

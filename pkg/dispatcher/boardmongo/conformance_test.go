@@ -621,6 +621,45 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("an auto-promoted card's state event must carry %q, got %q — the twins diverge and the spine reads two truths from one close",
 			tracker.ReasonUnblocked, got)
 	}
+
+	// Fourth provenance row — the watchdog's TERMINAL filing (the
+	// REASONED fenced write). Both twins must expose SetStateOwnedReason
+	// and stamp the run's own DESCRIPTIVE verdict (run_finished — outside
+	// IsMachineReason, so the downstream chain fires exactly as it would
+	// for the living owner). The Mongo twin hand-builds this payload
+	// rather than sharing StateChangePayload, so without this row its
+	// next edit diverges silently.
+	rcard, err := store.Create(native.Issue{Title: "prov reasoned filing", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	rtok, err := store.Claim(rcard.ID, tracker.ReaperMarkerPrefix+"prov-host")
+	if err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	reasoned, ok := store.(interface {
+		SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*native.Issue, error)
+	})
+	if !ok {
+		t.Fatalf("store %T has no SetStateOwnedReason — the watchdog's terminal filings would silently degrade to machine provenance on this twin", store)
+	}
+	if _, err := reasoned.SetStateOwnedReason(rcard.ID, native.StateDone, rtok, tracker.ReasonRunFinished); err != nil {
+		t.Fatalf("provenance SetStateOwnedReason: %v", err)
+	}
+	rp := lastStatePayload(t, store, rcard.ID)
+	if got, _ := rp["reason"].(string); got != tracker.ReasonRunFinished {
+		t.Errorf("a reasoned terminal filing must be stamped %q, got %q — the chain a living owner would fire dies on this twin",
+			tracker.ReasonRunFinished, got)
+	}
+	if from, _ := rp["from"].(string); from != native.StateInProgress {
+		t.Errorf("reasoned filing payload from = %q, want %q", from, native.StateInProgress)
+	}
+	if to, _ := rp["to"].(string); to != native.StateDone {
+		t.Errorf("reasoned filing payload to = %q, want %q", to, native.StateDone)
+	}
+	if tracker.IsMachineReason(tracker.ReasonRunFinished) {
+		t.Error("run_finished must stay DESCRIPTIVE (not machine) — a machine reason swallows the chain the filing exists to fire")
+	}
 }
 
 // runBoardAdminSuite exercises the native.BoardAdmin config-mutation surface

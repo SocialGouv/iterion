@@ -532,14 +532,40 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 	touched := 0
 	for i := range all {
 		iss := all[i]
-		newLabels, changed := transform(iss.Labels)
-		if !changed {
-			continue
+		// CAS-guarded on the labels this sweep READ, re-read + re-transform
+		// on a miss: the sweep's listAll snapshot ages for the whole walk,
+		// and an unguarded write re-applied it — resurrecting a one-shot
+		// label the trigger spine had atomically consumed in the window
+		// (same class as Update; the transform is pure over labels, so the
+		// replay is exact).
+		wrote := false
+		for attempt := 0; attempt < 3; attempt++ {
+			newLabels, changed := transform(iss.Labels)
+			if !changed {
+				break
+			}
+			preLabels := append([]string(nil), iss.Labels...)
+			iss.Labels = newLabels
+			iss.UpdatedAt = time.Now().UTC()
+			matched, err := s.replaceGuarded(ctx, &iss, bson.M{"issue.labels": preLabels}, "labels")
+			if err != nil {
+				return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, eventType, err)
+			}
+			if matched {
+				wrote = true
+				break
+			}
+			fresh, err := s.get(ctx, iss.ID)
+			if err != nil {
+				if errors.Is(err, tracker.ErrNotFound) {
+					break // deleted mid-sweep — a benign race, like the FS twin
+				}
+				return touched, fmt.Errorf("boardmongo: re-read %s during %s: %w", iss.ID, eventType, err)
+			}
+			iss = *fresh
 		}
-		iss.Labels = newLabels
-		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss, "labels"); err != nil {
-			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, eventType, err)
+		if !wrote {
+			continue
 		}
 		evtPayload := map[string]any{"issue_id": iss.ID}
 		for k, v := range payload {

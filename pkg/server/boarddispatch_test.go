@@ -142,15 +142,20 @@ func (f *fakeBoardCoord) SetStateOwned(ctx context.Context, tenant, id, state st
 }
 
 // SetStateOwnedReason mirrors the real coordinator: same fenced write,
-// explicit reason recorded for assertions.
+// explicit reason recorded for assertions — AFTER the fence, so a
+// refused write records nothing (recording first made every future
+// f.reasons assertion pass on a write that never landed).
 func (f *fakeBoardCoord) SetStateOwnedReason(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken, reason string) error {
+	if err := f.SetStateOwned(ctx, tenant, id, state, tok); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	if f.reasons == nil {
 		f.reasons = map[string]string{}
 	}
 	f.reasons[id] = reason
 	f.mu.Unlock()
-	return f.SetStateOwned(ctx, tenant, id, state, tok)
+	return nil
 }
 
 func (f *fakeBoardCoord) ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error {
@@ -1296,6 +1301,14 @@ func TestCloudReaper_ReparkIsBounded(t *testing.T) {
 		t.Fatalf("past the repark ceiling the card must be filed, not relaunched: state=%q, want %q",
 			got, native.StateBlocked)
 	}
+	// The ceiling filing is the MACHINE's decision (the run is merely
+	// resumable — the living owner would have written nothing): it must
+	// stay under the marker-derived watchdog provenance. A descriptive
+	// reason here re-armed a spend on the very card the ceiling exists to
+	// stop paying for (t17-B-R1).
+	if got, has := f.reasons["c-loop"]; has {
+		t.Fatalf("the ceiling filing went through the reasoned writer with %q — the backstop of a spend loop must not fire a fixer lane", got)
+	}
 }
 
 // TestCloudReaper_CeilingSparesAHealthyCard: the spend backstop is
@@ -2163,6 +2176,57 @@ func TestBoardDispatcher_DrainedCardIsFiledOnceItsRunFails(t *testing.T) {
 
 	if got := f.states["native:1"]; got != native.StateBlocked {
 		t.Fatalf("the drained card's run failed terminally and the card is still %q — stranded for ever", got)
+	}
+}
+
+// TestBoardDispatcher_ContinuableCardIsFiledOnceItSettles: the continuable
+// arm leaves the card in_progress with the claim released — a shape no
+// eligible listing, no watchdog listing and no parked sweep covers. The
+// fork-adoption reconciler must file it once the pointer SETTLES (no
+// continuation owns its future) — and must keep its hands off while a
+// redelivery/armed retry does (the run's own next attempt resolves the
+// card).
+func TestBoardDispatcher_ContinuableCardIsFiledOnceItSettles(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       store.RunStatus
+		continuation store.ContinuationState
+		want         string
+	}{
+		{"failed_resumable settled", store.RunStatusFailedResumable, "", native.StateBlocked},
+		{"cancelled settled", store.RunStatusCancelled, "", native.StateBlocked},
+		{"retry armed keeps the card", store.RunStatusFailedResumable, store.ContinuationRetryArmed, native.StateInProgress},
+		{"redelivery pending keeps the card", store.RunStatusFailedResumable, store.ContinuationRedeliveryPending, native.StateInProgress},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeBoardCoord(readyCard("native:1", "feature-dev"))
+			d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+				return fmt.Errorf("run r1 ended %s: %w", tc.status, errCardContinuable)
+			}, "replica-A", 4, nil)
+			d.statusFor = func(_ context.Context, _, _ string) (store.RunStatus, error) {
+				return tc.status, nil
+			}
+			d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+				return &store.Run{ID: id, Status: tc.status, ContinuationState: tc.continuation}, nil
+			}
+			d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+			d.adoptRun = func(string, string, string, string) error { return nil }
+			d.tick(context.Background())
+			d.wg.Wait()
+			if got := f.states["native:1"]; got != d.inProgressState {
+				t.Fatalf("precondition: continuable arm must leave the card in_progress, got %q", got)
+			}
+			f.mu.Lock()
+			f.cands[0].Issue.LastRunID = "run-x"
+			f.cands[0].Issue.State = d.inProgressState
+			f.mu.Unlock()
+
+			d.sweepForkAdoptions(context.Background())
+
+			if got := f.states["native:1"]; got != tc.want {
+				t.Fatalf("card is %q, want %q — a settled continuable pointer strands the card for ever; an owned one must not be filed", got, tc.want)
+			}
+		})
 	}
 }
 

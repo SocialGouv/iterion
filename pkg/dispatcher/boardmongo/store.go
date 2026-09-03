@@ -377,16 +377,30 @@ var claimOwnedKeys = map[string]bool{
 // conformance suite's read-back assertions catch, where a clobber of
 // SOMEBODY ELSE'S write was invisible.
 func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...string) error {
+	_, err := s.replaceGuarded(ctx, iss, nil, changed...)
+	return err
+}
+
+// replaceGuarded is replace() with an optional CAS guard merged into the
+// filter, reporting whether the write MATCHED. A guard is how a
+// read-modify-write of a racy family (labels — the one the trigger
+// spine's one-shot consume depends on) detects that the document moved
+// under its snapshot instead of silently re-applying the stale value:
+// matched=false means the caller must re-read and re-apply its own
+// transform (the value it holds cannot be replayed — it embeds the
+// stale read). The ungarded form keeps replace()'s historical
+// semantics: a write to a deleted document is a silent no-op.
+func (s *Store) replaceGuarded(ctx context.Context, iss *native.Issue, guard bson.M, changed ...string) (bool, error) {
 	hadGaveUp := iss.GaveUp != nil
 	expireGiveUp(iss)
 	expired := hadGaveUp && iss.GaveUp == nil
 	raw, err := bson.Marshal(iss)
 	if err != nil {
-		return fmt.Errorf("boardmongo: marshal issue: %w", err)
+		return false, fmt.Errorf("boardmongo: marshal issue: %w", err)
 	}
 	var m bson.M
 	if err := bson.Unmarshal(raw, &m); err != nil {
-		return fmt.Errorf("boardmongo: remarshal issue: %w", err)
+		return false, fmt.Errorf("boardmongo: remarshal issue: %w", err)
 	}
 	known := map[string]bool{}
 	for _, k := range issueFieldKeys {
@@ -408,13 +422,13 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...strin
 		// mutation lost with no error, which is worse than the clobber
 		// this scoping replaced. Refuse it loudly.
 		if !known[k] {
-			return fmt.Errorf("boardmongo: replace: unknown issue field %q", k)
+			return false, fmt.Errorf("boardmongo: replace: unknown issue field %q", k)
 		}
 		if claimOwnedKeys[k] {
-			// The claim family belongs to the CAS writers alone; a caller
-			// naming it here would have its write silently dropped by the
-			// skip below — the very shape the loud refusal exists for.
-			return fmt.Errorf("boardmongo: replace: %q is claim-owned — use the fenced CAS writers", k)
+			// The claim family belongs to the CAS writers alone; without
+			// this refusal a caller naming it would have its write
+			// silently dropped.
+			return false, fmt.Errorf("boardmongo: replace: %q is claim-owned — use the fenced CAS writers", k)
 		}
 		keys[k] = true
 	}
@@ -425,28 +439,26 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...strin
 	// in the marshalled map.
 	set := bson.M{}
 	for k := range keys {
-		if claimOwnedKeys[k] {
-			continue
-		}
 		set["issue."+k] = m[k]
 	}
 	if len(set) == 0 {
-		return nil
+		return true, nil
+	}
+	filter := bson.M{"_id": iss.ID, "tenant_id": s.tenant}
+	for k, v := range guard {
+		filter[k] = v
 	}
 	update := bson.M{"$set": set}
-	if _, err := s.issues.UpdateOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, update); err != nil {
-		return fmt.Errorf("boardmongo: replace issue: %w", err)
+	res, err := s.issues.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("boardmongo: replace issue: %w", err)
 	}
-	return nil
+	return res.MatchedCount > 0, nil
 }
 
 func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	iss, err := s.get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	if p.Blockers != nil {
 		next := native.NormalizeBlockers(*p.Blockers)
 		if err := native.ValidateBlockers(s, id, next); err != nil {
@@ -454,6 +466,10 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 		}
 		// Normalize before applyPatch so the stored list is clean.
 		p.Blockers = &next
+	}
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	changed := applyPatch(iss, p, s.Board())
 	if len(changed.fields) == 0 {
@@ -463,6 +479,14 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 		return nil, changed.err
 	}
 	iss.UpdatedAt = time.Now().UTC()
+	// No labels guard here on purpose: a patch's label list is the
+	// caller's ABSOLUTE intent (boardops set_labels, the studio editor),
+	// so replaying it after a re-read yields the same write — the FS
+	// twin's serialization gives the identical outcome. The guarded
+	// retry lives where the snapshot carries no intent: the admin label
+	// sweeps (applyLabelRewrite). A stale absolute list that still names
+	// a consumed one-shot label re-arms it BY INTENT on both twins —
+	// that is the set_labels API shape, not a lost update.
 	if err := s.replace(ctx, iss, changed.fields...); err != nil {
 		return nil, err
 	}

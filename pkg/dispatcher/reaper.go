@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -232,6 +233,16 @@ func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClai
 	// reparks stay under the machine watchdog reason. A leaser without
 	// the reasoned form falls back to the marker-derived one — the
 	// conformance canary is what keeps both twins honest.
+	//
+	// Derived from the TARGET, not only the decision: with completed_state
+	// or failed_state configured onto a launch column, a descriptive
+	// reason would let the machine's own write fire a launch and spend a
+	// consume_labels one-shot — the exact re-armed spend the repark rule
+	// exists to prevent (the cloud twin passes "" for its repark by
+	// construction; this keeps the invariant target-shaped on both).
+	if slices.Contains(card.LaunchStates, target) {
+		reason = ""
+	}
 	if rr, ok := c.leaser.(interface {
 		UpdateStateOwnedReason(ctx context.Context, id, newState string, tok tracker.ClaimToken, reason string) error
 	}); ok && reason != "" {

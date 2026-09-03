@@ -173,6 +173,18 @@ resurrected label is indistinguishable from an operator's own write
 after the fact); the bound is the rolling window itself, which is why
 release N must fully drain the old ReplicaSet before N+1 turns any
 decision-making on.
+
+Two label-resurrection shapes are NOT bounded by that window, because
+they need no old binary. The admin label sweeps (rename/merge/delete)
+transform a `listAll` snapshot that ages for the whole walk; their write
+is CAS-guarded on the labels each card was read with and re-transformed
+on a miss, so a one-shot consumed mid-sweep stays consumed (this was a
+real same-version lost update, closed at the choke). What remains — on
+BOTH twins, deliberately — is intent: `set_labels` is an ABSOLUTE list,
+so a bot that composed its list from a read taken before the consume
+re-arms the trigger by stating it. That is the API's shape (one-shots
+are documented re-armable), not a lost update; an add/remove label
+operation is the follow-up that would remove the foot-gun.
 Release N+1, once no old binary can un-lease a claim, enables the
 reaper — and with it the full decision table over whatever the
 mixed-fleet window stranded. The other gate-independent releaser is the
@@ -185,17 +197,28 @@ pre-watchdog state, which is what the rollback lever promises.
 - The reaper reuses the existing event vocabulary (`EvtIssueClaimed` for
   a reclaim, `EvtIssueState` for a Reopen or a filing) rather than
   minting audit types. Consequence, pinned by test: a machine-caused
-  event — the enumerated `tracker.IsMachineReason` provenance every
-  machine writer stamps (`watchdog`, the schema migrations) — **fires no
-  effect at all**: not a launch, not a board promote, and no
-  `consume_labels` one-shot. A subscription is written for an operator's
-  (or a bot's) gesture; gating only the one-shot left the ordinary
-  launch open, and a column rename (one event per card) mass-launched a
-  run per card nobody moved. The events still FLOW (audit tails and
-  projections see every transition, actor blanked); only the effect
-  layer declines them. `unblocked` is deliberately NOT machine — the
-  auto-promote is the cascade of closing a card's blocker, and its
-  triggers keep firing. Reclaim audit lives in the monotone `ClaimEpoch`
+  event — the enumerated `tracker.IsMachineReason` provenance
+  (`watchdog`, the schema migrations) — **fires no effect at all**: not
+  a launch, not a board promote, and no `consume_labels` one-shot. A
+  subscription is written for an operator's (or a bot's) gesture; gating
+  only the one-shot left the ordinary launch open, and a column rename
+  (one event per card) mass-launched a run per card nobody moved. The
+  events still FLOW (audit tails and projections see every transition,
+  actor blanked); only the effect layer declines them. `unblocked` is
+  deliberately NOT machine — the auto-promote is the cascade of closing
+  a card's blocker, and its triggers keep firing.
+- **The provenance is split by what the write SAYS, not by who wrote
+  it.** The watchdog's TERMINAL filings carry the run's own descriptive
+  verdict (`run_finished` / `run_failed` — outside `IsMachineReason`),
+  so the card's downstream chain fires exactly as it would have for the
+  living owner: the watchdog merely writes what the run already decided.
+  Everything the machine DECIDES on its own — a repark into a launch
+  column, the run-ceiling filing (whose run is merely resumable, not
+  failed) — stays under the machine reason: firing there would re-arm a
+  spend on a card nobody moved. The rule is target-and-truth-shaped and
+  enforced on both twins (`fileStuckCard` blanks the reason for any
+  launch-column target; the cross-twin conformance suite pins the
+  reasoned write). Reclaim audit lives in the monotone `ClaimEpoch`
   and the Warn log line, not a separate event.
 - `reconcileStalled` stays the actor's in-memory authority over the local
   concurrency SLOT; the reaper is the authority over the persisted CLAIM.

@@ -448,17 +448,23 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	}
 	fork := newestFinishedIssueFork(forks, pointer)
 	if fork == nil {
-		// No fork to adopt. The FAILED verdict processCard would have
-		// written had it lived: a draining replica leaves its in-flight
-		// cards in the running column (never blocked — the run was still
-		// executing then), so a card whose pointer later reaches terminal
-		// FAILURE would otherwise sit in_progress for ever — not
-		// eligible, not claimed, reached by no sweep. Running-column
-		// only, like the finished arm: a blocked card or an operator
-		// move stays honoured, and resumable pointers keep their retry
-		// path.
-		if st == store.RunStatusFailed && c.Issue.State == d.inProgressState {
-			d.log("card %s/%s pointer run %s failed terminally with no adoptable fork — moving to %s", c.Tenant, c.Issue.ID, runID, d.blockedState)
+		// No fork to adopt. The verdict processCard would have written
+		// had it lived: a draining replica (and the continuable arm)
+		// leaves its in-flight cards in the running column, so a card
+		// whose pointer settles terminal would otherwise sit in_progress
+		// for ever — not eligible, not claimed, reached by no sweep.
+		// Files: terminal FAILURE, and a terminal-RESUMABLE pointer
+		// (failed_resumable, cancelled) once NO continuation owns its
+		// future — while a redelivery or an armed retry does, the run's
+		// own next attempt resolves the card, and filing it would write a
+		// verdict on continuable work. Running-column only, like the
+		// finished arm: a blocked card or an operator move stays honoured.
+		settled := st == store.RunStatusFailed ||
+			(st.IsTerminalResumable() &&
+				pointer.ContinuationState != store.ContinuationRedeliveryPending &&
+				pointer.ContinuationState != store.ContinuationRetryArmed)
+		if settled && c.Issue.State == d.inProgressState {
+			d.log("card %s/%s pointer run %s settled %s with no adoptable fork and no continuation — moving to %s", c.Tenant, c.Issue.ID, runID, st, d.blockedState)
 			if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.blockedState); err != nil {
 				d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.blockedState, err)
 			}
@@ -1051,7 +1057,13 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			d.warn("claim watchdog stops returning %s/%s to the pool: it has already carried %d runs — "+
 				"filing it as %s rather than paying for another",
 				cand.Tenant, cand.Claim.IssueID, cand.Claim.LifetimeRuns, d.blockedState)
-			d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
+			// Machine provenance ("" → the reaper marker derives watchdog),
+			// NOT run_failed: the run is failed_resumable — the living owner
+			// would have written nothing, so no downstream chain may fire on
+			// this filing (a descriptive reason here re-armed a spend on the
+			// very card the ceiling exists to stop paying for; and a fleet's
+			// N-1 pods classify only the marker-derived reason as machine).
+			d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "")
 		case len(d.eligible) > 0:
 			d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
 		}

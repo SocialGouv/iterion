@@ -436,6 +436,12 @@ func (s *Server) boardNow(board native.BoardStore) time.Time {
 		if reason != prev && reason != "" {
 			s.logger.Warn("pipeline admission: board clock unavailable (%s) — measuring the claim lease against this pod's clock", reason)
 		}
+		// The recovery edge is logged too — like its latch siblings
+		// (noteRunReadFailure): a clock that came back silently leaves the
+		// last message on record saying the guard is degraded.
+		if reason == "" && prev != "" {
+			s.logger.Info("pipeline admission: board clock recovered — the claim-lease guard measures against the server clock again")
+		}
 	}()
 	if sn, ok := board.(interface {
 		ServerNow(context.Context) (time.Time, error)
