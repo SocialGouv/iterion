@@ -1266,13 +1266,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 	// Stamp the sealed credentials' audit identities on the run document
 	// (never secrets): the per-key concurrency meter counts alive runs by
-	// them. Best-effort — a failed stamp degrades the ceiling toward
-	// uncapped (fail-open, like the meter), never the launch.
-	if len(creds.fingerprints) > 0 {
-		if serr := p.store.SetRunCredFingerprints(ctx, runID, creds.fingerprints); serr != nil {
-			p.logger.Warn("cloudpublisher: stamp cred fingerprints on run %s: %v", runID, serr)
-		}
-	}
+	// them. Carried on the in-memory Run so the single SaveRun below IS
+	// the write — the document does not exist yet at this point, and
+	// SaveRun's full-document replace would drop a separately-patched
+	// field anyway.
+	r.CredFingerprints = creds.fingerprints
 
 	// A run served by the pool may not spend more than what remains of its
 	// donor's allowance. This is the enforcement: the engine stops the run
@@ -1297,14 +1295,20 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 	}
 
-	if err := p.store.SaveRun(ctx, r); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
-	}
-
-	// 2. Build the RunMessage. We marshal the AST inline; p.publish then
-	//    offloads it out-of-band via an IRRef (T-42) if it would exceed
+	// 2. Build the RunMessage payload. We marshal the AST inline; p.publish
+	//    then offloads it out-of-band via an IRRef (T-42) if it would exceed
 	//    the NATS max_payload. The runner side re-parses + re-compiles, so
 	//    the wire payload is the AST File, not the compiled IR.
+	//
+	//    Both resolutions run BEFORE the run record is persisted, for the
+	//    same reason credential resolution does (1b): each can fail — an
+	//    unparseable source, a team plugin source that will not resolve —
+	//    and neither exit rolls a run doc back. A queued row stranded that
+	//    way HOLDS the concurrency slot of the credentials just stamped on
+	//    it (queued counts — see RunStatus.HoldsCredentialSlot), and the
+	//    orphan sweeper skips its queued pass entirely while the queue has
+	//    a backlog, so at MaxConcurrentRuns=1 one transient failure could
+	//    wedge that key indefinitely.
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return 0, err
@@ -1316,6 +1320,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
+
+	if err := p.store.SaveRun(ctx, r); err != nil {
+		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
+	}
+
 	msg := &queue.RunMessage{
 		V:             queue.SchemaVersion,
 		Contributions: contributions,
@@ -1577,11 +1586,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	// Re-stamp on resume: re-resolution may have picked different
 	// credentials, and a stale stamp meters a key this run no longer
-	// holds. Same best-effort contract as the launch-side stamp.
-	if len(creds.fingerprints) > 0 {
-		if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
-			p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
-		}
+	// holds. UNCONDITIONAL — an EMPTY re-resolution must CLEAR the prior
+	// stamp, not leave it metering a credential that is gone (the key was
+	// deleted or rotated, every candidate is at its ceiling, or the run
+	// degraded to the runner's env fallback). The run is transitioning
+	// through queued, a counted status, so a stale stamp would hold a
+	// slot on a key it demonstrably does not carry for its whole
+	// remaining alive life. Same best-effort contract as the launch-side
+	// stamp: a failed write degrades the ceiling, never the resume.
+	if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
+		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.

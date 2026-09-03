@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -323,10 +326,9 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	hr.Status = store.RunStatusRunning
 	_ = rs.SaveRun(ctx, hr)
 	_ = rs.SetRunCredFingerprints(ctx, "holder", []string{"fp-zai-a"})
-	// The run being resolved must pre-exist for the stamp.
-	if _, err := rs.CreateRun(ctx, "run-c1", "demo", nil); err != nil {
-		t.Fatalf("CreateRun: %v", err)
-	}
+	// No run doc for the run being resolved: resolution never stamps —
+	// only SubmitLaunch/SubmitResume do (see the publisher-level tests
+	// below), and the launch stamps a run that does not exist yet.
 
 	p := &Publisher{apiKeys: keys, usageCaps: usagecap.NewMemStore(), store: rs,
 		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: testLogger()}
@@ -353,5 +355,123 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("fingerprints = %v, want fp-zai-b harvested", creds.fingerprints)
+	}
+}
+
+// stampFixture wires a publisher over a real fs store with one BYOK key,
+// which is the whole dependency set the stamp needs. The publish stub
+// keeps the launch off NATS.
+func stampFixture(t *testing.T) (*Publisher, store.RunStore, context.Context) {
+	t.Helper()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team1", "owner1")
+	keys := secrets.NewMemoryApiKeyStore()
+	id := secrets.NewApiKeyID()
+	sealed, err := secrets.SealAPIKey(sealer, id, []byte("zai-secret"))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := keys.Create(ctx, secrets.ApiKey{ID: id, ScopeTeamID: "team1", Provider: secrets.ProviderZAI,
+		Name: "zai-a", SealedSecret: sealed, Fingerprint: "fp-zai-a", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	p := &Publisher{
+		store: rs, apiKeys: keys, usageCaps: usagecap.NewMemStore(),
+		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: testLogger(),
+		publishRun: func(context.Context, *queue.RunMessage) error { return nil },
+	}
+	return p, rs, ctx
+}
+
+const stampSource = "workflow demo:\n  start -> done\n"
+
+// The stamp has to land on the PERSISTED run document, through the real
+// launch path — the layer where the feature is wired. Asserting on
+// LoadRun (never the in-memory Run) is what catches a stamp written
+// before SubmitLaunch's single SaveRun, and any later full-document
+// write that would drop the field.
+func TestSubmitLaunch_stampsCredFingerprintsOnThePersistedRun(t *testing.T) {
+	p, rs, ctx := stampFixture(t)
+	spec := runview.LaunchSpec{FilePath: "demo.bot", Source: stampSource}
+	if _, err := p.SubmitLaunch(ctx, "run-stamp", spec, &ir.Workflow{Name: "demo"}, "hash"); err != nil {
+		t.Fatalf("SubmitLaunch: %v", err)
+	}
+	r, err := rs.LoadRun(ctx, "run-stamp")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(r.CredFingerprints) != 1 || r.CredFingerprints[0] != "fp-zai-a" {
+		t.Fatalf("persisted CredFingerprints = %v, want [fp-zai-a] — the meter is blind without it", r.CredFingerprints)
+	}
+	// And the meter actually sees it: the stamp exists for nothing else.
+	if n, err := rs.CountAliveRunsWithCredFingerprint(ctx, "fp-zai-a", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai-a) = %d/%v, want 1 — the launched run must hold its slot", n, err)
+	}
+}
+
+// A resume that re-resolves to NO credential must CLEAR the stamp. Left
+// standing, the previous attempt's fingerprints meter a key this run
+// demonstrably no longer holds, for its whole remaining alive life —
+// the exact failure pkg/store/iface.go's contract forbids.
+func TestSubmitResume_emptyReResolutionClearsTheStamp(t *testing.T) {
+	p, rs, ctx := stampFixture(t)
+	wf := &ir.Workflow{Name: "demo"}
+	spec := runview.LaunchSpec{FilePath: "demo.bot", Source: stampSource}
+	if _, err := p.SubmitLaunch(ctx, "run-clear", spec, wf, "hash"); err != nil {
+		t.Fatalf("SubmitLaunch: %v", err)
+	}
+	if err := rs.UpdateRunStatus(ctx, "run-clear", store.RunStatusFailedResumable, "needs retry"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	// The key is deleted between launch and resume — a rotation, or a
+	// revoked record. The resume re-resolves to nothing.
+	keys := p.apiKeys.(*secrets.MemoryApiKeyStore)
+	all, err := keys.ListByTeam(ctx, "team1", "owner1")
+	if err != nil || len(all) != 1 {
+		t.Fatalf("ListByTeam = %d keys/%v, want 1", len(all), err)
+	}
+	if err := keys.Delete(ctx, all[0].ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: "run-clear", Source: stampSource}, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	r, err := rs.LoadRun(ctx, "run-clear")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(r.CredFingerprints) != 0 {
+		t.Fatalf("CredFingerprints after an empty re-resolution = %v, want cleared — a stale stamp meters a key the run no longer holds", r.CredFingerprints)
+	}
+	if n, err := rs.CountAliveRunsWithCredFingerprint(ctx, "fp-zai-a", ""); err != nil || n != 0 {
+		t.Fatalf("alive(fp-zai-a) = %d/%v, want 0 — the deleted key's ceiling must have its headroom back", n, err)
+	}
+}
+
+// A launch that fails while building its queue payload must leave NO run
+// record behind. A stranded queued row HOLDS its stamped credentials'
+// concurrency slot (queued counts — RunStatus.HoldsCredentialSlot), and
+// the orphan sweeper skips its queued pass entirely while the queue has
+// a backlog: at MaxConcurrentRuns=1 that wedges the key.
+func TestSubmitLaunch_payloadFailureStrandsNoSlotHoldingRun(t *testing.T) {
+	p, rs, ctx := stampFixture(t)
+	// An unparseable source fails marshalIRFromSpec — the first of the
+	// two payload builds, and an exit that rolls nothing back.
+	spec := runview.LaunchSpec{FilePath: "demo.bot", Source: "workflow demo:\n  \x00 (\n"}
+	if _, err := p.SubmitLaunch(ctx, "run-strand", spec, &ir.Workflow{Name: "demo"}, "hash"); err == nil {
+		t.Fatal("SubmitLaunch must fail on an unparseable source")
+	}
+	if _, err := rs.LoadRun(ctx, "run-strand"); err == nil {
+		t.Fatal("a launch that never published must leave NO run record behind")
+	}
+	if n, err := rs.CountAliveRunsWithCredFingerprint(ctx, "fp-zai-a", ""); err != nil || n != 0 {
+		t.Fatalf("alive(fp-zai-a) = %d/%v, want 0 — a failed launch must hold no credential slot", n, err)
 	}
 }
