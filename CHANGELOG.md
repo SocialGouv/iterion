@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.97.0](https://github.com/SocialGouv/iterion/compare/v3.96.2...v3.97.0) (2026-09-03)
+
+### Features
+
+* **ir:** a codex fallback stage is refused at launch where the node will run sandboxed ([#648](https://github.com/SocialGouv/iterion/issues/648)) ([c820b54](https://github.com/SocialGouv/iterion/commit/c820b5445e60b75456eb962f4a04f33fda7d7ce1))
+
+    <details><summary>why</summary>
+
+    The codex CLI hard-errors on any non-noop sandbox driver at dispatch — so a codex stage on a sandboxed node fails EXACTLY when the fallback chain is needed, which is worse than not having it. ApplyRunFallback now resolves each node's effective sandbox mode (node override → workflow spec → the deployment's ITERION_SANDBOX_DEFAULT snapshot, threaded through ExecutorSpec from both the cloud runner and the local service) and refuses the stage with the same launch-time voice as the other C176…
+
+    </details>
+
 ## [3.96.2](https://github.com/SocialGouv/iterion/compare/v3.96.1...v3.96.2) (2026-09-03)
 
 ### Bug Fixes
