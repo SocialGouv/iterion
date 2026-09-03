@@ -508,6 +508,14 @@ func (s *Store) SetStateFrom(id, from, to string) (updated *Issue, changed bool,
 	if iss.State != from {
 		return cloneIssue(iss), false, nil
 	}
+	if from == to {
+		// Nothing to perform, so nothing was CHANGED. setStateLocked
+		// already no-ops on the same state, but returning true for it made
+		// the two twins disagree on the flag (Mongo returns false), and a
+		// caller that reads changed==false as a refusal — the shape this
+		// CAS invites — then behaved differently on each backend.
+		return cloneIssue(iss), false, nil
+	}
 	out, err := s.setStateLocked(iss, to, "")
 	if err != nil {
 		return nil, false, err

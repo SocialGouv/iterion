@@ -448,6 +448,14 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if _, _, err := store.SetStateFrom(sink.ID, native.StateDone, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) {
 		t.Fatalf("SetStateFrom out of terminal: want ErrTerminalStateExit, got %v", err)
 	}
+	// from == to performs nothing, so changed is FALSE on both twins. The
+	// flag answers "did this call move the card", and a caller reading
+	// false as a refusal — the shape a CAS invites, and what
+	// launchTicketNow now does — must not get a different answer per
+	// backend.
+	if _, changed, err := store.SetStateFrom(sink.ID, native.StateInProgress, native.StateInProgress); err != nil || changed {
+		t.Fatalf("SetStateFrom(x→x) = (changed=%t, %v), want a no-op reported as unchanged", changed, err)
+	}
 	// The sink guard must hold under CONCURRENCY, which is the only place
 	// it can be broken: a read-then-validate-then-unguarded-write is
 	// check-then-act, and the Mongo twin's ordinary SetState was exactly
