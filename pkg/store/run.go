@@ -313,6 +313,14 @@ type Run struct {
 	// runs. The studio surfaces parent/child relationships via these
 	// fields; aggregation is by polling children's terminal status.
 	ParentRunID string `json:"parent_run_id,omitempty" bson:"parent_run_id,omitempty"`
+
+	// CredFingerprints are the stable audit identities of the credentials
+	// the publisher sealed for this run (API-key and OAuth fingerprints —
+	// never secrets). Stamped at launch and RE-stamped at every resume,
+	// because re-resolution may pick different credentials. The per-key
+	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
+	// runs through this field.
+	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and
 	// non-subbot children.

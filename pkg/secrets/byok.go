@@ -134,6 +134,16 @@ type ApiKey struct {
 	LastUsedAt   *time.Time `bson:"last_used_at,omitempty" json:"last_used_at,omitempty"`
 	ExpiresAt    *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 	Fingerprint  string     `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// MaxConcurrentRuns caps how many ALIVE runs (queued or running) may
+	// hold this key at once; 0 means uncapped. Providers that enforce
+	// fair-usage frequency limits publish NO numeric bound to adapt to —
+	// the operator sets one here, and the resolver's usable-predicate
+	// walks past a key at its ceiling exactly like a refused one, so the
+	// next key or tier serves instead of tripping the provider. A SOFT
+	// cap by design: the refused-key restore still hands the key out when
+	// no other tier could serve its wire — progress beats the ceiling
+	// when the alternative is a run with no credential at all.
+	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
 }
 
 // ApiKeyStore is the persistence interface for BYOK records.
@@ -184,6 +194,10 @@ type Resolution struct {
 	Plaintext   []byte
 	SealedBlob  []byte
 	SourceScope string // "user" or "team" — for audit logging
+	// Fingerprint is the chosen key's stable audit identity, carried so
+	// the publisher can stamp the run document with the credentials it
+	// actually sealed (the concurrency meter counts alive runs by it).
+	Fingerprint string
 }
 
 // Resolve returns at most one ApiKey for each requested provider,
@@ -308,6 +322,7 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 		KeyID:       k.ID,
 		SealedBlob:  k.SealedSecret,
 		SourceScope: scope,
+		Fingerprint: k.Fingerprint,
 	}
 	if sealer == nil {
 		return r, true

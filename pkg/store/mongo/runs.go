@@ -673,6 +673,48 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // PatchRunSteering persists the live-steering state (loop grants +
 // absolute budget raises) with a partial $set, tenant-scoped. Partial:
 // nil inputs leave the stored field untouched.
+// SetRunCredFingerprints stamps the sealed credentials' audit identities
+// on the run document (see store.RunStore). Tenant-scoped like every
+// other targeted patch: the caller stamps a run it just persisted.
+func (s *Store) SetRunCredFingerprints(ctx context.Context, id string, fingerprints []string) error {
+	set := bson.M{"cred_fingerprints": fingerprints, "updated_at": time.Now().UTC()}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run cred fingerprints: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
+// CountAliveRunsWithCredFingerprint counts queued/running runs stamped
+// with fingerprint (see store.RunStore). Deliberately NO tenant filter —
+// a platform key serves every tenant on one ceiling.
+func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
+	if fingerprint == "" {
+		return 0, nil
+	}
+	holding := make([]string, 0, 2)
+	for _, st := range store.AllRunStatuses {
+		if st.HoldsCredentialSlot() {
+			holding = append(holding, string(st))
+		}
+	}
+	filter := notDeleted(bson.M{
+		"cred_fingerprints": fingerprint,
+		"status":            bson.M{"$in": holding},
+	})
+	if excludeRunID != "" {
+		filter["_id"] = bson.M{"$ne": excludeRunID}
+	}
+	n, err := s.runs.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
+	}
+	return int(n), nil
+}
+
 func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
 	set := bson.M{"updated_at": time.Now().UTC()}
 	if loopOverrides != nil {

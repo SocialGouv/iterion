@@ -2171,6 +2171,9 @@
           "last_used_at": {
             "type": "string"
           },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -2329,6 +2332,9 @@
         "properties": {
           "is_default": {
             "type": "boolean"
+          },
+          "max_concurrent_runs": {
+            "type": "integer"
           },
           "name": {
             "type": "string"
@@ -2973,6 +2979,9 @@
         "properties": {
           "is_default": {
             "type": "boolean"
+          },
+          "max_concurrent_runs": {
+            "type": "integer"
           },
           "name": {
             "type": "string"

@@ -5852,6 +5852,7 @@ export interface components {
             is_default: boolean;
             last4?: string;
             last_used_at?: string;
+            max_concurrent_runs?: number;
             name: string;
             provider: string;
             scope_user_id?: string;
@@ -5901,6 +5902,7 @@ export interface components {
         };
         createApiKeyReq: {
             is_default?: boolean;
+            max_concurrent_runs?: number;
             name: string;
             provider: string;
             secret: string;
@@ -6087,6 +6089,7 @@ export interface components {
         };
         updateApiKeyReq: {
             is_default?: boolean;
+            max_concurrent_runs?: number;
             name?: string;
             secret?: string;
         };

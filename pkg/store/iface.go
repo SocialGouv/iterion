@@ -67,6 +67,23 @@ type RunStore interface {
 	// scheduleID is empty.
 	ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error)
 
+	// Credential-concurrency meter (secrets.ApiKey.MaxConcurrentRuns).
+	//
+	// SetRunCredFingerprints stamps the run with the stable audit
+	// identities of the credentials the publisher sealed for it — never
+	// secrets. Re-stamped on every resume: re-resolution may pick
+	// different credentials, and a stale stamp would meter a key the run
+	// no longer holds.
+	//
+	// CountAliveRunsWithCredFingerprint counts runs in the queued or
+	// running states stamped with fingerprint, excluding excludeRunID
+	// (the run being resolved is already persisted and must not count
+	// itself toward its own ceiling). Deliberately NOT tenant-scoped:
+	// a platform key serves every tenant on one ceiling, and a tenant
+	// key's runs all live in one tenant anyway.
+	SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error
+	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
+
 	// PatchRunSteering persists the live-steering state (accumulated
 	// loop grants + absolute budget raises) on the run record so a
 	// resume re-applies them. nil map / nil raises leave the stored
