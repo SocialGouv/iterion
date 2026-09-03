@@ -535,12 +535,27 @@ in the `.bot`.
 
 The route is **materialised onto the compiled workflow** at launch, not
 resolved privately at dispatch. That is what subjects it to the same
-refusals as an authored route — an ungated crossing or a claw⇄CLI
-crossing on a tools-less node is **dropped with a warning**, never
-silently taken — and what makes it visible to the three pre-run
-analyses (sandbox bind-mount, parallel-branch admission, the
-`fan_out_each` guard). Without that, a flag could reach exactly the
-crossings the compiler refuses in the `.bot`.
+refusals as an authored route — an ungated crossing, a claw⇄CLI
+crossing on a tools-less node, or a **codex stage on a run that will be
+sandboxed** is **dropped with a warning**, never silently taken — and
+what makes it visible to the three pre-run analyses (sandbox
+bind-mount, parallel-branch admission, the `fan_out_each` guard).
+Without that, a flag could reach exactly the crossings the compiler
+refuses in the `.bot`.
+
+The codex refusal is the one worth knowing before you type the flag:
+codex's pinned SDK hard-errors on any non-noop sandbox driver at
+dispatch, so the stage would fail *exactly* when the chain is finally
+needed. It is screened on the backend the stage will actually **resolve**
+to — an env reference (`${FALLBACK_BACKEND:-codex}`) or a stage that
+leaves `backend` empty on a codex node is refused just like the literal
+— against the same sandbox verdict the engine itself computes. To keep a
+codex route, turn the sandbox off at a tier the engine reads: `sandbox:
+none` on the **workflow** block, `--sandbox none`, or
+`ITERION_SANDBOX_DEFAULT=none` (`ITERION_SANDBOX_OVERRIDE=none` on a
+runner pod, where the pod is already the isolation boundary). A
+per-*node* `sandbox:` is not one of them: the engine starts one sandbox
+per run.
 
 The route does **not** propagate into a `subbot:` child. A subbot is a
 different bot with its own routes, its own judges and its own permission
