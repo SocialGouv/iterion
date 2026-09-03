@@ -54,7 +54,7 @@ the tag points at then, with no rollout-history entry. Measured on prod
 v3.93.0 at once. A digest is the only reference that makes "one ReplicaSet =
 one build" true, which is what the per-PodTemplate rollout epoch assumes one
 layer up.
-*/}}
+
 A malformed digest must abort the render, not reach the cluster: a bad shape
 still concatenates into a syntactically fine string that helm lints happily
 and only kubelet rejects (`InvalidImageName`), so no pod ever starts — behind

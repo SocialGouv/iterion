@@ -548,8 +548,14 @@ jobs:
         run: |
           set -euo pipefail
           digest="sha256:$(printf 'a%.0s' $(seq 64))"
-          helm template t charts/iterion --set "image.digest=$digest" \
-            | grep -q "image: ghcr.io/socialgouv/iterion@$digest"
+          # `--set image.tag=edge` also pins the documented precedence
+          # (digest wins), the property a refactor of the `if` is likeliest to
+          # invert. Render to a FILE: `grep -q` exits on its first match, which
+          # SIGPIPEs helm mid-write and, under `pipefail`, reddens the step on
+          # an assertion that actually passed.
+          helm template t charts/iterion --set image.tag=edge \
+            --set "image.digest=$digest" > /tmp/render-digest.yaml
+          grep -q "image: ghcr.io/socialgouv/iterion@$digest" /tmp/render-digest.yaml
           if helm template t charts/iterion --set image.digest=deadbeef >/dev/null 2>&1; then
             echo "::error::a malformed image.digest rendered instead of failing"
             exit 1
