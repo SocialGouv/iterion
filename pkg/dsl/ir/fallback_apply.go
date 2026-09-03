@@ -176,14 +176,20 @@ func ParseRunFallbackFlag(arg string) (Fallback, error) {
 // naming WHERE the resolution came from, empty for a literal, so a
 // refusal about a `${...}` or inherited stage does not read as nonsense.
 //
-// The boundary, stated rather than implied: `ir` cannot see
-// ExecutorSpec.ModelOverrides (a --backend-for retarget) or the
-// credential auto-detection behind ITERION_BACKEND_PREFERENCE, so a node
-// reaching codex through either is invisible here. Both are blind spots
-// where the node's PRIMARY is codex too — a larger, separately unscreened
-// problem whose home is ClawExecutor.EffectiveBackendName, which already
-// exposes the full resolution to safety checks. Widening this screen to
-// them means moving it there, not re-deriving the chain in a leaf package.
+// The boundary, stated rather than implied — and `w.DefaultBackend` is
+// NOT the whole workflow-default tier. resolveBackendName consults, in
+// order, ExecutorSpec.ModelOverrides (a --backend-for retarget), the
+// node's own field, ExecutorSpec.Backend (the run-level `--backend` /
+// studio dropdown, which OUTRANKS `default_backend:` — it is installed
+// over it by model.WithDefaultBackend), then ITERION_DEFAULT_BACKEND,
+// then the credential auto-detection behind ITERION_BACKEND_PREFERENCE.
+// Of those, `ir` owns only the middle one and `default_backend:`, so a
+// node reaching codex through any of the other three is invisible here.
+// All three are blind spots where the node's PRIMARY is codex too — a
+// larger, separately unscreened problem whose home is
+// ClawExecutor.EffectiveBackendName, which already exposes the full
+// resolution to safety checks. Widening this screen to them means moving
+// it there, not re-deriving the chain in a leaf package.
 //
 // The "codex" literal is deliberate: importing delegate.BackendCodex
 // would put a backend dependency on a leaf package that has none.
