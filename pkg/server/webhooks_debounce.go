@@ -109,6 +109,26 @@ func deferSubjectKey(cfg webhooks.Config, meta webhookEventMeta) string {
 	return cfg.TenantID + "|" + cfg.ID + "|" + meta.ProjectPath + "|" + meta.SubjectID
 }
 
+// purgeDeferredForDeadSubject drops a parked launch whose pull request
+// just closed or merged. The counterpart of stopRunsForDeadPR for work
+// that has not started yet: without it the debounce REOPENS the waste
+// that function exists to end — push, merge within the quiet window, and
+// twenty seconds later the sweep clones the repo, reviews a diff nobody
+// will merge, and posts comments plus a revi/review status on a dead PR.
+// Merging within three minutes of the last push is the normal case on a
+// repo whose gate is already green.
+//
+// Unconditional (no generation CAS): the subject is over, so no payload
+// for it is worth launching, including one that re-arms a moment later.
+func (s *Server) purgeDeferredForDeadSubject(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta) {
+	if s.webhookDeferred == nil || meta.SubjectID == "" {
+		return
+	}
+	if err := s.webhookDeferred.DeleteBySubject(ctx, deferSubjectKey(cfg, meta)); err != nil {
+		s.warnf("webhooks: could not purge the parked review of the closed %s %s: %v", meta.ProjectPath, meta.SubjectID, err)
+	}
+}
+
 // shouldDeferSyncLaunch reports whether this delivery rides the debounce:
 // a synchronize-lane launch, with the store wired and a window configured.
 func (s *Server) shouldDeferSyncLaunch(gateResync bool) bool {

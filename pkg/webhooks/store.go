@@ -95,6 +95,12 @@ type DeferredLaunchStore interface {
 	// has nothing to retry it. Without this the first transient blip
 	// destroys the review outright.
 	RescheduleFailed(ctx context.Context, subjectKey string, generation int64, fireAt time.Time) error
+	// DeleteBySubject drops the subject's parked launch UNCONDITIONALLY —
+	// no generation CAS, because the caller has learnt the subject itself
+	// is over (the pull request closed or merged). No payload for it is
+	// worth launching any more, including one that re-arms a millisecond
+	// later. Missing rows are not an error.
+	DeleteBySubject(ctx context.Context, subjectKey string) error
 }
 
 // Limits are the monthly call caps applied to a delivery. Zero means

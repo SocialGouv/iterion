@@ -174,6 +174,20 @@ func (p Parsed) StateOpenOrUnknown() bool {
 	return p.State == "" || strings.EqualFold(p.State, "opened")
 }
 
+// IsClosed reports whether this delivery says the merge request is over —
+// merged or closed unmerged, which for a review are the same fact: there
+// is nothing left to judge. Mirrors prforge.Parsed.IsClosed: anchored on
+// the ACTION so an `update` whose payload happens to carry state=merged is
+// a race rather than a close event, and corroborated by the state so a
+// stale or reopened payload cannot end live work.
+func (p Parsed) IsClosed() bool {
+	switch strings.ToLower(strings.TrimSpace(p.Action)) {
+	case "close", "merge":
+		return strings.EqualFold(p.State, "closed") || strings.EqualFold(p.State, "merged")
+	}
+	return false
+}
+
 // SubjectID is the stable per-MR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
 	return "mr:" + strconv.FormatInt(p.MRIID, 10)

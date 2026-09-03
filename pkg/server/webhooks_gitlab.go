@@ -83,6 +83,17 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 	meta := gitlabMRMeta(p)
 
+	// A CLOSED or MERGED merge request ends the review it still owes. Only
+	// the PARKED half is handled here: a debounced review has not started,
+	// so nothing else can see it, and leaving it would have the sweep clone
+	// the repo minutes later to judge a diff nobody will merge and post its
+	// verdict on a dead MR — the very waste the debounce exists to cut.
+	// (Cancelling GitLab runs already IN FLIGHT is a separate, pre-existing
+	// gap: stopRunsForDeadPR is wired on the prforge lane only.)
+	if p.IsClosed() {
+		s.purgeDeferredForDeadSubject(ctx, cfg, meta)
+	}
+
 	// Filter: only review on open/reopen, allowed event + project.
 	// A filtered delivery returns 200 (a 4xx would make GitLab disable
 	// the webhook after repeated metadata-only edits).

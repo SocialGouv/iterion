@@ -242,6 +242,13 @@ func (s *MongoDeferredLaunchStore) Delete(ctx context.Context, subjectKey string
 	return nil
 }
 
+func (s *MongoDeferredLaunchStore) DeleteBySubject(ctx context.Context, subjectKey string) error {
+	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": subjectKey}); err != nil {
+		return fmt.Errorf("webhooks: delete deferred launch by subject: %w", err)
+	}
+	return nil
+}
+
 func (s *MongoDeferredLaunchStore) RescheduleFailed(ctx context.Context, subjectKey string, generation int64, fireAt time.Time) error {
 	// The generation filter IS the CAS: a push that re-armed the subject
 	// mid-retry bumped it, so this update matches nothing and the fresher

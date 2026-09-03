@@ -161,6 +161,13 @@ func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string,
 	return nil
 }
 
+func (s *MemoryDeferredLaunchStore) DeleteBySubject(_ context.Context, subjectKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rows, subjectKey)
+	return nil
+}
+
 func (s *MemoryDeferredLaunchStore) RescheduleFailed(_ context.Context, subjectKey string, generation int64, fireAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -212,6 +212,81 @@ func TestSyncDebounce_ParkedLaunchKeepsThePublishGrant(t *testing.T) {
 	}
 }
 
+// Push, then merge within the quiet window — the normal case on a repo
+// whose gate is already green. Without a purge the sweep still fires a
+// full review of a MERGED pull request twenty seconds later: it clones,
+// judges a diff nobody will merge, burns the very budget the debounce
+// exists to protect, and posts comments plus a revi/review status on a
+// dead PR. stopRunsForDeadPR cannot see the parked row — it has no run.
+func TestSyncDebounce_ClosedPRPurgesTheParkedReview(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.handleGitHubWebhook(httptest.NewRecorder(), ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	closed := `{
+	  "action": "closed", "number": 7,
+	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "pull_request": {"number": 7, "title": "T", "body": "b",
+	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "closed", "merged": true,
+	    "head": {"ref": "feature/x", "sha": "sha-1"}, "base": {"ref": "main"}},
+	  "sender": {"login": "alice"}
+	}`
+	s.handleGitHubWebhook(httptest.NewRecorder(), ghReq(ghCtx(cfg), closed, prforge.EventHeaderPullRequest, pt))
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("a merged PR must not get a parked review launched on it: %v", botsOf(*got))
+	}
+}
+
+// Same on GitLab: the debounce ships for both providers, so the purge must
+// too. (Cancelling GitLab runs already in flight stays a pre-existing gap.)
+func TestSyncDebounce_ClosedMRPurgesTheParkedReview_GitLab(t *testing.T) {
+	for _, tc := range []struct{ name, action, state string }{
+		{"merged", "merge", "merged"},
+		{"closed unmerged", "close", "closed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+			s.syncDebounce = 3 * time.Minute
+			got := fanoutLauncher(s)
+			cfg := glConfig()
+			cfg.ReviewOnSync = true
+			if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			mr := func(action, state, oldrev string) string {
+				return `{
+			  "object_kind": "merge_request",
+			  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+			  "object_attributes": {"iid": 7, "action": "` + action + `", "state": "` + state + `",
+			    "source_branch": "feature/x", "target_branch": "main",
+			    "oldrev": "` + oldrev + `",
+			    "title": "T", "description": "d", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+			    "last_commit": {"id": "sha-2"}}
+			}`
+			}
+			// A push to the MR head parks the review...
+			s.handleGitLabWebhook(httptest.NewRecorder(), glReq(gitlabCtx(cfg), mr("update", "opened", "sha-1"), "Merge Request Hook"))
+			// ...and the MR ends before the window elapses.
+			s.handleGitLabWebhook(httptest.NewRecorder(), glReq(gitlabCtx(cfg), mr(tc.action, tc.state, ""), "Merge Request Hook"))
+
+			s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+			if len(*got) != 0 {
+				t.Fatalf("a %s MR must not get a parked review launched on it: %v", tc.name, botsOf(*got))
+			}
+		})
+	}
+}
+
 // flakyConfigStore makes Get fail with a NON-not-found error (a decode
 // failure, a server-selection timeout) for the first n reads.
 type flakyConfigStore struct {

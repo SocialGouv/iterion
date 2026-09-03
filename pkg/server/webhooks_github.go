@@ -102,6 +102,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// through the delivery's ParentSubjectID, since a command records the
 	// COMMENT's id as its own subject.
 	if p.IsClosed() {
+		// A review parked by the push debounce has not started yet, so
+		// stopRunsForDeadPR cannot see it — drop it too, or the sweep
+		// launches a full review of this dead PR minutes from now.
+		s.purgeDeferredForDeadSubject(ctx, cfg, meta)
 		stopped := s.stopRunsForDeadPR(ctx, cfg, meta)
 		reason := "pull request closed — no runs to stop"
 		if stopped > 0 {
