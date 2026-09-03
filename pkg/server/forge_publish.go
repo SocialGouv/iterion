@@ -600,7 +600,16 @@ const (
 //
 // preferredConnID pins the connection (repo-targeted launches); empty falls
 // back to the team's repo integrations, then to a connection host match.
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+//
+// base is the ALREADY-RESOLVED public base URL (s.publicBaseURL for an HTTP
+// caller). It is a string rather than the *http.Request it used to be derived
+// from because not every launch has one: the push-debounce sweep replays a
+// parked delivery minutes after its request is gone, and a nil request on a
+// deployment with no PublicURL silently yields no grant at all — the run then
+// posts no review and no commit status, leaving the required check absent.
+// Resolving at the edge and CARRYING the answer is what keeps the two lanes
+// agreeing on scheme as well as host.
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, base string) map[string]string {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars
 	}
@@ -612,7 +621,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		// The caller pinned its own grant — don't overwrite.
 		return vars
 	}
-	base := s.publicBaseURL(r)
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no public base URL (set PublicURL); deterministic review publishing disabled for this launch")
@@ -688,7 +697,7 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 			fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
 		}
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, s.publicBaseURL(r))
 }
 
 // repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the

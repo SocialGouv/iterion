@@ -302,7 +302,9 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		SubjectURL:  prURL,
 		SubjectSHA:  pr.HeadSHA,
 	}
-	res := s.launchWebhookTarget(launchCtx, nil, cfg, meta, forgeLaunchTarget{
+	// No inbound request here (a background gate reaction): the configured
+	// PublicURL is the only base available, exactly as before.
+	res := s.launchWebhookTarget(launchCtx, s.publicBaseURL(nil), cfg, meta, forgeLaunchTarget{
 		BotID:   fixer,
 		IdemKey: idem,
 		Vars:    vars,

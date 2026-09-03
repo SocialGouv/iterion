@@ -187,6 +187,7 @@ func (s *MongoDeferredLaunchStore) Upsert(ctx context.Context, d DeferredLaunch)
 				"sender_handle": d.SenderHandle,
 				"payload_hash":  d.PayloadHash,
 				"source_ip":     d.SourceIP,
+				"public_base":   d.PublicBase,
 				"targets":       d.Targets,
 				// A fresh push re-arms even a subject mid-claim.
 				"claimed_until": time.Time{},

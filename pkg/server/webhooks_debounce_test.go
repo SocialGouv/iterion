@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -150,6 +152,63 @@ func TestSyncDebounce_OpenLaunchesImmediately(t *testing.T) {
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), open, prforge.EventHeaderPullRequest, pt))
 	if len(*got) != 1 {
 		t.Fatalf("a PR open must launch immediately, got %v", botsOf(*got))
+	}
+}
+
+// PublicURL is optional in this codebase — several paths deliberately
+// degrade without it — and on such a deployment the immediate lane derives
+// its publish base from the inbound delivery's own Host + TLS state. The
+// sweep has no request at all, so a parked review would launch with no
+// forge_publish_token: no PR comments, no revi/review commit status, a
+// required check absent on every synchronize. The base is resolved at park
+// time and CARRIED, scheme included.
+func TestSyncDebounce_ParkedLaunchKeepsThePublishGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tls      bool
+		wantBase string
+	}{
+		{"plain HTTP behind a proxy", false, "http://hooks.example"},
+		{"TLS terminated in-process", true, "https://hooks.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			s.cfg.PublicURL = "" // the deployment that must degrade gracefully
+			s.forgeConnections = forge.NewMemoryConnectionStore()
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
+			if err := s.forgeConnections.Create(context.Background(), forge.Connection{
+				ID: "conn1", TenantID: "t1", Provider: forge.ProviderGitHub,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+			s.syncDebounce = 3 * time.Minute
+			got := fanoutLauncher(s)
+			cfg, pt := ghConfig(t, s)
+			cfg.ReviewOnSync = true
+			if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+
+			req := ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt)
+			req.Host = "hooks.example"
+			if tc.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			s.handleGitHubWebhook(httptest.NewRecorder(), req)
+
+			s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+			if len(*got) != 1 {
+				t.Fatalf("want one parked launch, got %v", botsOf(*got))
+			}
+			vars := (*got)[0].vars
+			if vars[forgePublishVarToken] == "" {
+				t.Fatal("the parked review launched with NO publish grant — it would post no comments and no commit status")
+			}
+			if want := tc.wantBase + "/api/v1/forge/publish-review"; vars[forgePublishVarURL] != want {
+				t.Fatalf("publish url = %q, want %q (the base the inbound delivery resolved, scheme included)", vars[forgePublishVarURL], want)
+			}
+		})
 	}
 }
 

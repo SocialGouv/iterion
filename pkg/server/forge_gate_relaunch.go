@@ -155,7 +155,9 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// and folding them onto one key would deny the second its relaunch while
 	// filing a board card that names the wrong run.
 	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("gaterelaunch|%s|%s|%d|%s|%s", d.grant.TeamID, d.repo, d.number, d.pr.HeadSHA, botID)))
-	res := s.launchWebhookTarget(launchCtx, nil, cfg, meta, forgeLaunchTarget{
+	// No inbound request here (a background gate reaction): the configured
+	// PublicURL is the only base available, exactly as before.
+	res := s.launchWebhookTarget(launchCtx, s.publicBaseURL(nil), cfg, meta, forgeLaunchTarget{
 		BotID:   botID,
 		IdemKey: idem,
 		Vars:    vars,

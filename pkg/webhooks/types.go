@@ -592,6 +592,17 @@ type DeferredLaunch struct {
 	PayloadHash  string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
 	SourceIP     string `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
 
+	// PublicBase is the public base URL ("https://host") the inbound
+	// delivery resolved for this launch's forge-publish grant. Carried
+	// rather than re-derived because the sweep fires without a request:
+	// on a deployment with no PublicURL the immediate lane reads the
+	// delivery's own Host + TLS state and the sweep can read nothing, so
+	// the parked review would launch with no publish grant and post
+	// neither comments nor its commit status — the required check absent
+	// on every push. Not a secret (it is the address the forge already
+	// dialled); the grant TOKEN is minted at fire time, never parked.
+	PublicBase string `bson:"public_base,omitempty" json:"public_base,omitempty"`
+
 	Targets []DeferredTarget `bson:"targets" json:"targets"`
 }
 

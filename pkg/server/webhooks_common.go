@@ -692,7 +692,7 @@ func (s *Server) insertAndLaunchWebhook(
 	payloadHash string,
 	srcIP string,
 ) {
-	res := s.launchWebhookTarget(ctx, r, cfg, meta, forgeLaunchTarget{
+	res := s.launchWebhookTarget(ctx, s.publicBaseURL(r), cfg, meta, forgeLaunchTarget{
 		BotID: botID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
 	}, payloadHash, srcIP)
 	if res.Status == webhooks.StatusLaunched {
@@ -954,8 +954,9 @@ func (s *Server) insertAndLaunchWebhookMulti(
 
 	results := make([]webhookLaunchResult, 0, len(targets))
 	var firstDenial *launchDenial
+	publicBase := s.publicBaseURL(r)
 	for i, t := range targets {
-		res := s.launchWebhookTarget(ctx, r, cfg, meta, t, payloadHash, srcIP)
+		res := s.launchWebhookTarget(ctx, publicBase, cfg, meta, t, payloadHash, srcIP)
 		results = append(results, res)
 		if res.denial == nil {
 			continue
@@ -1014,9 +1015,14 @@ func (s *Server) insertAndLaunchWebhookMulti(
 // admission → delivery row → publish grant → launch → trigger-spine emit. It
 // writes no HTTP response and schedules no board projection, so it composes
 // for one bot or N.
+//
+// publicBase is the resolved public base URL the run's forge-publish grant is
+// addressed at — a STRING, not the request it came from: the push-debounce
+// sweep replays a parked delivery long after the request is gone, and it
+// carries the base its own inbound delivery resolved.
 func (s *Server) launchWebhookTarget(
 	ctx context.Context,
-	r *http.Request,
+	publicBase string,
 	cfg webhooks.Config,
 	meta webhookEventMeta,
 	t forgeLaunchTarget,
@@ -1150,7 +1156,7 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
+	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, publicBase)
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.

@@ -136,6 +136,10 @@ func (s *Server) deferSyncLaunch(
 		SenderHandle: meta.SenderHandle,
 		PayloadHash:  payloadHash,
 		SourceIP:     srcIP,
+		// Resolved HERE, while the inbound request still exists: on a
+		// deployment with no PublicURL it is the only way the sweep can
+		// address the run's forge-publish grant (see DeferredLaunch.PublicBase).
+		PublicBase: s.publicBaseURL(r),
 	}
 	for _, t := range targets {
 		d.Targets = append(d.Targets, webhooks.DeferredTarget{
@@ -235,7 +239,7 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		SenderHandle: d.SenderHandle,
 	}
 	for _, t := range d.Targets {
-		res := s.launchWebhookTarget(ctx, nil, cfg, meta, forgeLaunchTarget{
+		res := s.launchWebhookTarget(ctx, d.PublicBase, cfg, meta, forgeLaunchTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
 		}, d.PayloadHash, d.SourceIP)
