@@ -52,6 +52,14 @@ type ModelEntry struct {
 // read lock while RegisterModel takes a write lock. This avoids the race
 // condition that existed with the previous sync.Once approach where
 // RegisterModel wrote to maps without holding any lock after initialization.
+//
+// The lock guards the MAPS, not the entries they point at — and LookupModel
+// returns the *ModelEntry itself, which callers dereference after the read
+// lock is released (preflight.ModelTokenLimitForModel is one). So a
+// published entry is immutable: to change one, copy it, mutate the copy and
+// swap the map pointer under the write lock. Mutating reg.models[k] in place
+// races every reader still holding that pointer, and the mutex cannot see
+// the conflict.
 type ModelRegistry struct {
 	mu      sync.RWMutex
 	init    bool
