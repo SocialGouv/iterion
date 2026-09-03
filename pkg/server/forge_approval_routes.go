@@ -220,6 +220,23 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// CLAIM THE DECISION BEFORE ANY SIDE EFFECT. Delete is a first-writer-
+	// wins compare-and-delete in both stores (the memory store checks
+	// presence under its lock; Mongo's DeleteOneChecked reports a 0-count
+	// delete as not-found), so exactly one of N concurrent decisions gets
+	// past this line. Reading the record and deleting it AFTER provisioning
+	// let a reject return 204 — and write a "rejected" audit row — while an
+	// approve already in flight created the repo's hook for real, which is a
+	// straight violation of the decision invariant. Approve racing approve
+	// re-pushed the hook and re-minted the managed secret the same way.
+	if cerr := s.provisionApprovals.Delete(r.Context(), a.ID); cerr != nil {
+		if errors.Is(cerr, forge.ErrProvisionApprovalNotFound) {
+			httpError(w, http.StatusConflict, "this request was already approved or rejected")
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", cerr.Error())
+		return
+	}
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
 		TenantID:       a.TenantID,
 		ConnectionID:   a.ConnectionID,
@@ -235,13 +252,18 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		Replace:        a.Replace,
 	})
 	if err != nil {
-		// The request stays pending: a transient forge failure must not
-		// silently consume the approval — the admin retries or rejects.
+		// Release the claim: a transient forge failure must not silently
+		// consume the approval — the admin retries or rejects. Restoring the
+		// SAME id keeps the queue entry and its trail stable across the
+		// retry. (A crash between the claim and this restore loses the
+		// request; the team re-submits and the repo is untouched. That is
+		// the price of claiming before the side effect, and it is the safe
+		// direction: nothing was provisioned.)
+		if rerr := s.provisionApprovals.Create(r.Context(), a); rerr != nil && s.logger != nil {
+			s.logger.Warn("forge: provision approval %s failed and could not be restored to the queue: %v", a.ID, rerr)
+		}
 		s.writeForgeProvisionError(w, err)
 		return
-	}
-	if derr := s.provisionApprovals.Delete(r.Context(), a.ID); derr != nil && !errors.Is(derr, forge.ErrProvisionApprovalNotFound) && s.logger != nil {
-		s.logger.Warn("forge: provision approval %s executed but not deleted: %v", a.ID, derr)
 	}
 	s.auditOrg(r, orgID, "forge.provision.approved", "provision_approval", a.ID, map[string]any{
 		"repo": a.RepoFullName, "bots": res.BotIDs, "team_id": a.TenantID, "requested_by": a.RequestedBy,
@@ -290,7 +312,14 @@ func (s *Server) handleRejectProvision(w http.ResponseWriter, r *http.Request) {
 	}
 	// Body is optional on reject.
 	_ = decodeJSONOptional(r, &req)
+	// Same first-writer-wins claim as approve: losing the race must NOT
+	// record a rejection for a request another admin already approved (and
+	// provisioned for real).
 	if err := s.provisionApprovals.Delete(r.Context(), a.ID); err != nil {
+		if errors.Is(err, forge.ErrProvisionApprovalNotFound) {
+			httpError(w, http.StatusConflict, "this request was already approved or rejected")
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}

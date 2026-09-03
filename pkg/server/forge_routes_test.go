@@ -27,6 +27,12 @@ type mockGitLab struct {
 	nextHookID  int
 	createBody  map[string]any
 	deletedHook int
+	// enterHook/releaseHook pin a provision mid-flight: when set, the hook
+	// CREATE announces itself on enterHook and blocks on releaseHook. A test
+	// racing two decisions can then hold one inside the orchestrator's forge
+	// side effects while it drives the other.
+	enterHook   chan struct{}
+	releaseHook chan struct{}
 }
 
 func newMockGitLab() *mockGitLab { return &mockGitLab{hooks: map[int]map[string]any{}} }
@@ -43,6 +49,12 @@ func (m *mockGitLab) server() *httptest.Server {
 	})
 	// /api/v4/projects/{id}/hooks and /hooks/{hookID}
 	mux.HandleFunc("/api/v4/projects/group%2Fapi/hooks", func(w http.ResponseWriter, r *http.Request) {
+		// Park BEFORE taking the lock so the test's other request is free to
+		// touch the mock while this one is held.
+		if r.Method == http.MethodPost && m.enterHook != nil {
+			m.enterHook <- struct{}{}
+			<-m.releaseHook
+		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		switch r.Method {

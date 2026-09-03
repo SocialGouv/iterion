@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -632,6 +633,130 @@ func TestProvisionApproval_WebhookPatchCannotBypassGate(t *testing.T) {
 			t.Fatalf("gate must only cover PROVISIONED webhooks: code=%d", got)
 		}
 	})
+}
+
+// A decision must be claimed BEFORE any forge side effect. Reading the
+// record, provisioning, and deleting it afterwards left a window in which
+// a reject returned 204 — and wrote a "rejected" audit row — for a repo an
+// approve was already creating on the forge. The mock pins the approve
+// inside the hook CREATE so the window is real and the test deterministic.
+func TestProvisionApproval_DecisionIsClaimedBeforeSideEffects(t *testing.T) {
+	s, gl, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("enable should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	aid := approvalIDFrom(t, w)
+
+	gl.enterHook, gl.releaseHook = make(chan struct{}), make(chan struct{})
+	// Always unblock the pinned request, including on t.Fatalf: this defer
+	// is registered after the suite's srv.Close, so it runs BEFORE it.
+	// Without it a failing assertion leaves the mock handler parked and the
+	// test hangs to its 10-minute timeout instead of reporting.
+	var release sync.Once
+	releaseHook := func() { release.Do(func() { close(gl.releaseHook) }) }
+	defer releaseHook()
+
+	approved := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+		req.SetPathValue("approval_id", aid)
+		s.handleApproveProvision(rec, req)
+		approved <- rec.Code
+	}()
+
+	// The approve is now suspended mid-provision, past the point of no
+	// return: the hook is about to be created on the forge.
+	select {
+	case <-gl.enterHook:
+	case <-time.After(5 * time.Second):
+		t.Fatal("approve never reached the forge hook create")
+	}
+
+	// A second admin rejects in that window. It must NOT succeed — the
+	// decision is already claimed.
+	rec := httptest.NewRecorder()
+	req := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/reject", `{"reason":"race"}`, "o1")
+	req.SetPathValue("approval_id", aid)
+	s.handleRejectProvision(rec, req)
+	if rec.Code == http.StatusNoContent {
+		t.Fatalf("reject succeeded while an approve was provisioning the repo — the decision invariant is broken")
+	}
+
+	// A second APPROVE in the same window must not duplicate the forge work.
+	rec2 := httptest.NewRecorder()
+	req2 := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	req2.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(rec2, req2)
+	if rec2.Code == http.StatusOK {
+		t.Fatalf("a second approve executed the same request twice: code=%d", rec2.Code)
+	}
+
+	releaseHook()
+	if code := <-approved; code != http.StatusOK {
+		t.Fatalf("the winning approve should succeed: code=%d", code)
+	}
+
+	// Exactly one integration, and exactly one hook created on the forge.
+	if ints, _ := s.forgeIntegrations.ListByTenant(context.Background(), "t1"); len(ints) != 1 {
+		t.Fatalf("want exactly 1 integration, got %d", len(ints))
+	}
+	gl.mu.Lock()
+	hooks := len(gl.hooks)
+	gl.mu.Unlock()
+	if hooks != 1 {
+		t.Fatalf("want exactly 1 forge hook, got %d", hooks)
+	}
+}
+
+// A provision that FAILS must return the request to the queue: claiming
+// the decision up front must not silently consume it on a transient forge
+// error, or the admin has nothing left to retry or reject.
+func TestProvisionApproval_FailedProvisionStaysPending(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("enable should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	aid := approvalIDFrom(t, w)
+
+	// Break the provision: an unresolvable bot fails inside the orchestrator,
+	// after the claim.
+	a, err := s.provisionApprovals.Get(context.Background(), aid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.provisionApprovals.Delete(context.Background(), aid); err != nil {
+		t.Fatal(err)
+	}
+	a.BotIDs = []string{"no-such-bot"}
+	if err := s.provisionApprovals.Create(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	req := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	req.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(w, req)
+	if w.Code == http.StatusOK {
+		t.Fatalf("provision of an unresolvable bot should fail: code=%d body=%s", w.Code, w.Body.String())
+	}
+	got, err := s.provisionApprovals.Get(context.Background(), aid)
+	if err != nil {
+		t.Fatalf("a failed approve must leave the request in the queue: %v", err)
+	}
+	if got.ID != aid || got.RequestedBy != "teamadmin" {
+		t.Fatalf("the restored record must be the original: %+v", got)
+	}
 }
 
 func approvalIDFrom(t *testing.T, w *httptest.ResponseRecorder) string {
