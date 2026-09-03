@@ -870,8 +870,13 @@ func (d *boardDispatcher) loadRunForCard(ctx context.Context, cand boardmongo.Ex
 		return nil, errNoRunLoader
 	}
 	run, err := d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
-	if err != nil && errors.Is(err, store.ErrRunNotFound) {
-		run, err = nil, nil // a pruned run proves nothing is alive
+	if store.RunAbsent(err) {
+		// Pruned OR deliberately deleted (tombstone): both prove nothing
+		// is alive. Reading a tombstone as an unreadable store instead
+		// conserves the card for ever — the decision table returns
+		// StuckKeep on any read error and reapOne returns before the
+		// transfer, so the "conserved once" release is unreachable too.
+		run, err = nil, nil
 	}
 	return run, err
 }
@@ -1033,8 +1038,9 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			return false, true, errNoRunLoader
 		}
 		run, runErr = d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
-		if runErr != nil && errors.Is(runErr, store.ErrRunNotFound) {
-			run, runErr = nil, nil // pruned run proves nothing is alive
+		if store.RunAbsent(runErr) {
+			// Pruned or tombstoned: both prove nothing is alive.
+			run, runErr = nil, nil
 		}
 		runReadErr = runErr
 	}

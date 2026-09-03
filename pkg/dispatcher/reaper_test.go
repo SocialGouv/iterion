@@ -1192,3 +1192,41 @@ func TestFileStuckCard_LaunchColumnTargetStaysMachine(t *testing.T) {
 		t.Fatalf("a filing INTO A LAUNCH COLUMN carries reason %q, want %q — a descriptive reason there re-arms a spend on a card nobody moved", got, tracker.ReasonWatchdog)
 	}
 }
+
+// TestReapOne_DeletedRunIsProofOfAbsence: a card whose recorded run was
+// DELETED (a durable tombstone, not a missing directory) must be judged
+// the way a pruned one is — the run is provably gone, nothing is alive.
+// Reading ErrRunDeleted as an unreadable store instead conserves the
+// card FOREVER: DecideTransfer returns Keep on any read error, reapOne
+// returns before the transfer, so keepAfterTransfer's "conserved once"
+// release is unreachable too. The card stays claimed by a dead owner and
+// invisible to ListEligible, with no operator exit — and the branch's own
+// terminal-only delete guard makes exactly this population reachable
+// (only a terminal run may be deleted, and a terminal run under a stale
+// claim IS the watchdog's population). The sibling authority
+// lastRunHoldBeforeClaim already reads the tombstone as absence; two
+// authorities answering differently on the same input is the defect.
+func TestReapOne_DeletedRunIsProofOfAbsence(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	ctx := context.Background()
+	mkRun(t, runs, "run-tombstoned", store.RunStatusFinished)
+	if err := runs.DeleteRun(ctx, "run-tombstoned"); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := runs.LoadRun(ctx, "run-tombstoned"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Fatalf("precondition: want ErrRunDeleted, got %v", err)
+	}
+	cand := seedClaimedCard(t, board, "run-tombstoned")
+
+	c.reapOne(ctx, c.tracker.(tracker.ClaimReaper), runsFor(c), cand,
+		time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, err := board.Get(cand.IssueID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Claim != "" {
+		t.Fatalf("card still claimed by %q — a DELETED run reads as an unreadable store, so the card is "+
+			"conserved every pass with no exit: never released, never eligible", got.Claim)
+	}
+}

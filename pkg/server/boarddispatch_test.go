@@ -2335,3 +2335,39 @@ func TestShutdown_WaitsForTheBoardDispatcherDrain(t *testing.T) {
 		t.Fatalf("a drain cut at the deadline must be loud, got %q", buf2.String())
 	}
 }
+
+// TestCloudReaper_DeletedRunIsProofOfAbsence is the cloud twin of the
+// local reaper's tombstone test: ErrRunDeleted proves the run is gone
+// exactly as ErrRunNotFound does. Handling only the latter makes the
+// deleted-run card unreachable forever — DecideTransfer keeps on any
+// read error, so reapOne returns before the transfer and the
+// "conserved once" release never applies. The card stays under a dead
+// pod's claim, invisible to ListEligible, with no cloud net to free it.
+func TestCloudReaper_DeletedRunIsProofOfAbsence(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-tomb"] = "dead-pod"
+	f.epochs["c-tomb"] = 3
+	f.states["c-tomb"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-tomb", LastRunID: "run-tomb",
+			ClaimedAt: time.Now().Add(-4 * native.ClaimLeaseDuration),
+			Prev:      tracker.ClaimToken{Marker: "dead-pod", Epoch: 3},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, _ string) (*store.Run, error) {
+		return nil, fmt.Errorf("store/mongo: run run-tomb: %w", store.ErrRunDeleted)
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+
+	f.mu.Lock()
+	held, ok := f.claimed["c-tomb"]
+	f.mu.Unlock()
+	if ok {
+		t.Fatalf("card still claimed by %q — a DELETED run read as an unreadable store conserves it every "+
+			"pass with no exit: never released, never eligible, and no cloud sweep reaches it", held)
+	}
+}

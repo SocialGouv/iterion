@@ -515,10 +515,11 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 		return true
 	}
 	r, err := c.loadRunForDecision(rs, prev, "pre-claim hold check")
-	if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+	if store.RunAbsent(err) {
 		// Pruned, or deleted behind a durable tombstone — both PROVE the
-		// run is gone (the same reading as pipelineTicketLaunchable: the
-		// two authorities must answer alike on the same input).
+		// run is gone (the same reading as pipelineTicketLaunchable and
+		// the claim watchdog: every authority answers this shared
+		// predicate, or one bricks the card another would free).
 		return false
 	}
 	if err != nil {

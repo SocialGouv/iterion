@@ -332,9 +332,15 @@ func (c *Dispatcher) loadRunForReap(ctx context.Context, runs *store.FilesystemR
 	}
 	r, err := runs.LoadRun(ctx, runID)
 	if err != nil {
-		if errors.Is(err, store.ErrRunNotFound) {
-			// A recorded run whose document is gone (pruned) proves
-			// nothing is alive — same disposition as "no run".
+		if store.RunAbsent(err) {
+			// A recorded run whose document is gone — pruned, or deleted
+			// with a tombstone — proves nothing is alive: same disposition
+			// as "no run". Reading a tombstone as a transient read failure
+			// instead would conserve the card for ever (DecideStuckCard
+			// returns StuckKeep on any read error, and reapOne returns
+			// before the transfer, so keepAfterTransfer's "conserved once"
+			// bound never applies): the claim is never released and the
+			// card never re-enters ListEligible.
 			return nil, nil
 		}
 		return nil, err

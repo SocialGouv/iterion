@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -182,7 +181,7 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 	}
 	r, err := rs.LoadRun(ctx, iss.LastRunID)
 	if err != nil {
-		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+		if store.RunAbsent(err) {
 			// Pruned, or deleted behind a durable tombstone: both are
 			// PROOF of absence, not lack of information — refusing them
 			// bricked a ticket whose operator deleted its run, with no
