@@ -219,6 +219,17 @@ overrides `iterion.image` for the runner container, so phase 1's
 `--set runner.image=` must name a full reference and phase 2 must clear or
 advance it rather than rely on the shared tag.
 
+**Both snippets show only the flags that CHANGE — run each phase with the
+values files your install normally carries** (`-f values-prod.yaml`, …).
+`helm upgrade` merges the previous release's values only under
+`--reuse-values`, so a phase invoked with bare `--set` renders everything your
+files hold at its CHART default instead. On this chart that includes
+`config.rollout.runnerEpoch: 0`
+([values.yaml](../charts/iterion/values.yaml)) — an epoch DECREASE, which the
+high-water mark above makes permanently non-ready and which fences both
+publication and consumption. It is the one move the epoch section says never
+to make, and a copy-pasted phase makes it silently.
+
 If your deploy pipeline sequences Deployments itself, use it instead — the
 requirement is only that the two Deployments do not roll together.
 
