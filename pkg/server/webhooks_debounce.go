@@ -101,6 +101,26 @@ func (s *Server) shouldDeferSyncLaunch(gateResync bool) bool {
 	return gateResync && s.syncDebounce > 0 && s.webhookDeferred != nil
 }
 
+// dropReplayedTargets removes the targets whose idempotency key already
+// names a non-retryable delivery — launchWebhookTarget's step-1 replay
+// check, hoisted so the DEFER lane can apply it in the same order the
+// immediate lane does (replay BEFORE supersede). A prior
+// StatusLaunchError stays retryable there and here.
+func (s *Server) dropReplayedTargets(ctx context.Context, targets []forgeLaunchTarget) []forgeLaunchTarget {
+	if s.webhookDeliveries == nil {
+		return targets
+	}
+	fresh := make([]forgeLaunchTarget, 0, len(targets))
+	for _, t := range targets {
+		if prior, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, t.IdemKey); err == nil &&
+			prior.Status != webhooks.StatusLaunchError {
+			continue
+		}
+		fresh = append(fresh, t)
+	}
+	return fresh
+}
+
 // deferSyncLaunch parks the resolved targets for the quiet window and
 // answers the forge. The supersede pass runs NOW, not at fire time: a
 // run already reviewing a head this push just obsoleted should stop
@@ -115,6 +135,19 @@ func (s *Server) deferSyncLaunch(
 	payloadHash string,
 	srcIP string,
 ) {
+	// Replay guard FIRST, exactly as launchWebhookTarget orders it (step 1
+	// replay, step 1b supersede). A REDELIVERY of a synchronize whose
+	// parked launch already fired — an operator "Redeliver", a lost ack —
+	// would otherwise cancel the very run it launched, then re-park under
+	// the same idempotency key, which the sweep answers `duplicate`: the
+	// review is dead and nothing relaunches it, leaving the required check
+	// absent forever.
+	targets = s.dropReplayedTargets(ctx, targets)
+	if len(targets) == 0 {
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusDuplicate})
+		return
+	}
 	for _, t := range targets {
 		s.supersedeLiveRuns(ctx, cfg, meta, t.BotID)
 	}

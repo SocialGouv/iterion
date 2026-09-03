@@ -296,6 +296,62 @@ func TestSupersede_ScopedByProject(t *testing.T) {
 	}
 }
 
+// A REDELIVERY of a synchronize whose parked launch already fired must
+// not cancel the run it itself launched — the R0cca8b regression. The
+// immediate lane orders replay-check BEFORE supersede for exactly this
+// reason; the defer lane used to supersede first, so a redelivery
+// cancelled the live review, re-parked under the same idempotency key,
+// and the sweep answered `duplicate` — the review dead, the required
+// check absent forever, nothing left to retry it.
+func TestSyncDebounce_RedeliveryDoesNotKillItsOwnRun(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	var cancelled []string
+	s.webhookCancelRun = func(runID string) error {
+		cancelled = append(cancelled, runID)
+		return nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	cfg.Overlap = schedgate.OverlapSupersede
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deliver := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+		return w
+	}
+
+	deliver()
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 1 {
+		t.Fatalf("the parked launch must fire once, got %v", botsOf(*got))
+	}
+
+	// The redelivery: same event, same idempotency key, the run it
+	// launched still live.
+	w := deliver()
+	if w.Code != 200 {
+		t.Fatalf("a redelivery of an already-launched head must answer 200 duplicate, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp["status"] != webhooks.StatusDuplicate {
+		t.Fatalf("response = %s, want status=duplicate", w.Body.String())
+	}
+	if len(cancelled) != 0 {
+		t.Fatalf("a redelivery must not supersede the run it itself launched, cancelled %v", cancelled)
+	}
+	// And it parked nothing: no second launch, ever.
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(20*time.Minute))
+	if len(*got) != 1 {
+		t.Fatalf("the redelivery re-parked and re-fired: %v", botsOf(*got))
+	}
+}
+
 // A nil request through the denial-response path (the defer-failure
 // fallback fires with the inbound request now, but the guard is the
 // belt) must answer, never panic.
