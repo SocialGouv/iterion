@@ -221,7 +221,13 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 			return
 		}
 	}
-	s.auditApiKey(r, teamID, "created", keyID, map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""})
+	createMeta := map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""}
+	// Same reasoning as the update path: a key born with a ceiling records
+	// it. Omitted at 0, which is the uncapped default and not a decision.
+	if key.MaxConcurrentRuns > 0 {
+		createMeta["max_concurrent_runs"] = key.MaxConcurrentRuns
+	}
+	s.auditApiKey(r, teamID, "created", keyID, createMeta)
 	writeJSON(w, s.toApiKeyView(key))
 }
 
@@ -281,7 +287,15 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.auditApiKey(r, key.ScopeTeamID, "updated", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
+	meta := map[string]any{"name": key.Name, "rotated": req.Secret != nil}
+	// A ceiling change decides how much of a shared credential a tenant may
+	// consume, so the audit row has to carry the new value — recorded only
+	// when the request actually set it, so an unrelated rename does not read
+	// as a ceiling change.
+	if req.MaxConcurrentRuns != nil {
+		meta["max_concurrent_runs"] = *req.MaxConcurrentRuns
+	}
+	s.auditApiKey(r, key.ScopeTeamID, "updated", key.ID, meta)
 	writeJSON(w, s.toApiKeyView(key))
 }
 
