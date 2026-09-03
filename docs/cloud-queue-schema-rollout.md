@@ -222,27 +222,27 @@ overrides `iterion.image` for the runner container, so phase 1's
 `--set runner.image=` must name a full reference and phase 2 must clear or
 advance it rather than rely on the shared tag.
 
-**Both snippets show only the flags that CHANGE — run each phase with the
-values files your install normally carries** (`-f values-prod.yaml`, …).
-`helm upgrade` merges the previous release's values only under
-`--reuse-values`, so a phase invoked with bare `--set` renders everything your
-files hold at its CHART default instead. On this chart that includes
-`config.rollout.runnerEpoch: 0`
-([values.yaml](../charts/iterion/values.yaml)) — an epoch DECREASE, which the
-high-water mark above makes permanently non-ready and which fences both
-publication and consumption. It is the one move the epoch section says never
-to make, and a copy-pasted phase makes it silently.
+**Both snippets sequence the IMAGE only, and carry only the flags they show.**
+Both limits land on the same value, `config.rollout.runnerEpoch`:
+
+- A release that also **moves** it is not sequenced by them. It is a single
+  value rendered as a literal `ITERION_RUNNER_EPOCH` into BOTH PodTemplates
+  (server-deployment.yaml and runner-deployment.yaml), so phase 1 rolls both
+  Deployments and the ordering is void. Move the epoch in its own release —
+  which is what the two-release Release A / Release B protocol above already
+  prescribes — not in the same one as a schema bump.
+- A phase run with bare `--set` **resets** it. `helm upgrade` merges the
+  previous release's values only under `--reuse-values`, so everything your
+  values files hold renders at its chart default instead —
+  `runnerEpoch: 0` ([values.yaml](../charts/iterion/values.yaml)) included.
+  That is an epoch DECREASE: the high-water mark above makes such a process
+  permanently non-ready and fences it out of both publication and consumption,
+  and it is the one move the epoch section says never to make. Run each phase
+  with the values files your install normally deploys with
+  (`-f values-prod.yaml`, …).
 
 If your deploy pipeline sequences Deployments itself, use it instead — the
 requirement is only that the two Deployments do not roll together.
-
-**Both snippets sequence the IMAGE only.** A release that also moves
-`config.rollout.runnerEpoch` does not get sequenced by them: that is a single
-value rendered as a literal `ITERION_RUNNER_EPOCH` into BOTH PodTemplates
-(server-deployment.yaml and runner-deployment.yaml), so phase 1 rolls both
-Deployments. Move the epoch in its own release — which is what the two-release
-Release A / Release B protocol above already prescribes — not in the same one
-as a schema bump.
 
 > Measured on the v11 → v12 cutover (2026-09-02, prod: 12 runner pods, 3 server
 > pods, live traffic including a run executing across the runner roll).
