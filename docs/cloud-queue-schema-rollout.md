@@ -79,11 +79,13 @@ A v12 runner treats v10/v11 messages with no field as epoch 0.
 Do not combine the schema bump and first non-zero epoch:
 
 1. **Release A:** deploy v12 with `config.rollout.runnerEpoch: 0`. v11 → v12
-   leaves `MinSchemaVersion` at 10, so the runner-first precondition holds and
-   neither Path A nor Path B applies — see *Deploy ordering* below. Verify all
-   server and runner probes show `epoch: 0`. (Done in prod on 2026-09-02:
-   runner fleet, then server, DLQ untouched throughout — the measurement at
-   the end of *Deploy ordering*.)
+   leaves `MinSchemaVersion` at 10, so the runner-first precondition holds:
+   roll the **runners, then the server**, and neither Path A nor Path B is
+   needed — see *Deploy ordering* below. (Rolling server-first here is also
+   correct; the paths are only dispensable if you actually take the
+   runner-first order.) Verify all server and runner probes show `epoch: 0`.
+   (Done in prod on 2026-09-02 exactly that way: runner fleet, then server,
+   DLQ untouched throughout — the measurement at the end of *Deploy ordering*.)
 2. **Release B:** set the epoch to 1. New publishers stamp epoch 1. Old v12
    runners delayed-Nak those messages; new runners accept both epoch 0 and 1.
 
@@ -112,10 +114,10 @@ recoverable**, and that — not "which side rejects less" — is what decides.
 | **server** | old runners reject the new vN+1 | **replayable**: once every runner is new, `/api/admin/dlq/$SEQ/replay` re-publishes the same bytes and they are accepted |
 | **runners** | new runners reject anything still queued *below* `Min(new)` | **not replayable**: a replay re-publishes the same old bytes, the new fleet rejects them identically and re-parks (Path B step 5) — recovery is a per-run resume plus a DLQ delete |
 
-Server-first is therefore the safe default, and deliberately so: it was
-not for historical reasons: it puts the parking risk on the side that can be
-undone. The compatibility window narrowed *when* a mismatch happens; it did
-not change which mismatch is recoverable.
+Server-first is therefore the safe default, for that reason and not a
+historical one: it puts the parking risk on the side that can be undone. The
+compatibility window changed *how often* a mismatch happens; it did not change
+which mismatch is recoverable.
 
 **Runner-first is an optimization, valid under one condition:** that nothing
 below `Min(new runner)` can still be in the stream. Then new runners admit
@@ -242,11 +244,13 @@ parks the new version on the old fleet if no upgraded runner becomes Ready
 inside the delivery budget — Path A avoids that by draining first, Path B
 accepts it and replays afterwards.
 
-Both become unnecessary **only** when the runner-first precondition holds —
-nothing below `Min(new runner)` can still be queued, which is automatic when
-the bump leaves `MinSchemaVersion` alone. Then nothing is rejected in either
-direction, so there is nothing to drain or replay. See *Deploy ordering*
-above; do not infer that case from the old server's version alone. Path A's
+Both become unnecessary only when you **actually roll runner-first AND its
+precondition holds** — nothing below `Min(new runner)` can still be queued,
+which is automatic when the bump leaves `MinSchemaVersion` alone. Then nothing
+is rejected in either direction, so there is nothing to drain or replay. The
+precondition alone does not exempt you: a server-first roll still needs one of
+these paths whatever the precondition says. See *Deploy ordering* above, and
+do not infer the precondition from the old server's version alone. Path A's
 "recommended default" below is scoped to the bumps that still need a path.
 
 ### Path A — drained queue before cutover
