@@ -271,12 +271,17 @@ function TeamCapsRow({
       onError("Caps must be non-negative integers (0 = platform default).");
       return;
     }
+    // Submit ONLY the fields that changed: the server validates the
+    // platform ceiling per submitted field, so re-sending an unchanged
+    // stored value (e.g. a super-admin cap above the ceiling) would get
+    // this row rejected for a field the operator never touched.
+    const patch: { max_concurrent_runs?: number; launch_rate_per_min?: number } = {};
+    if (runsN !== (team.max_concurrent_runs ?? 0)) patch.max_concurrent_runs = runsN;
+    if (rateN !== (team.launch_rate_per_min ?? 0)) patch.launch_rate_per_min = rateN;
+    if (Object.keys(patch).length === 0) return;
     setBusy(true);
     try {
-      await updateOrgTeamCaps(orgID, team.id, {
-        max_concurrent_runs: runsN,
-        launch_rate_per_min: rateN,
-      });
+      await updateOrgTeamCaps(orgID, team.id, patch);
       onSaved();
     } catch (e) {
       onError(errorMessage(e));

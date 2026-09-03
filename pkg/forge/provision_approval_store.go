@@ -36,6 +36,11 @@ type ProvisionApproval struct {
 	// repo; the integration keeps serving its current bots while pending.
 	IntegrationID string `bson:"integration_id,omitempty" json:"integration_id,omitempty"`
 	Replace       bool   `bson:"replace,omitempty" json:"replace,omitempty"`
+	// BaseBotIDs snapshots the integration's bot set at park time (update
+	// requests only). Approve refuses (409) when the live set has since
+	// diverged: replaying the recorded request over a changed integration
+	// could silently resurrect a bot the team removed meanwhile.
+	BaseBotIDs []string `bson:"base_bot_ids,omitempty" json:"base_bot_ids,omitempty"`
 
 	// The optional per-repo settings of the original request, replayed
 	// verbatim on approval (forgeEnableReq semantics: nil leaves stored

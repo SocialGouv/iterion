@@ -256,6 +256,19 @@ func TestProvisionApproval_UpdateExpansionOnly(t *testing.T) {
 		t.Fatalf("auto-fix OFF should be direct: code=%d body=%s", w.Code, w.Body.String())
 	}
 
+	// A schedule change arms unattended recurring launches → parked, even
+	// with the bot set unchanged.
+	w = httptest.NewRecorder()
+	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, `{"bot_ids":["review-pr"],"schedule_crons":{"review-pr":"0 3 * * *"}}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("schedule change should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := s.provisionApprovals.Delete(context.Background(), approvalIDFrom(t, w)); err != nil {
+		t.Fatal(err)
+	}
+
 	// Adding a bot expands → parked.
 	w = httptest.NewRecorder()
 	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, `{"bot_ids":["review-pr","dep-guard"]}`, "t1")
@@ -301,6 +314,39 @@ func TestOrgSettings_RequireProvisionApproval(t *testing.T) {
 	}
 }
 
+// The gate FAILS CLOSED: when the team's parent org cannot be resolved
+// (store error — here a dangling OrgID), the request is refused (503),
+// never provisioned as if no approval were required.
+func TestProvisionApproval_GateFailsClosed(t *testing.T) {
+	s, gl, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	tm, err := s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm.OrgID = "ghost-org" // GetOrg will error
+	if err := s.authStore().UpdateTeam(context.Background(), tm); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unresolvable org should 503 (fail closed), got %d: %s", w.Code, w.Body.String())
+	}
+	gl.mu.Lock()
+	hooked := len(gl.hooks)
+	gl.mu.Unlock()
+	if hooked != 0 {
+		t.Fatalf("provisioned despite gate failure: %d hooks", hooked)
+	}
+	if ints, _ := s.forgeIntegrations.ListByTenant(context.Background(), "t1"); len(ints) != 0 {
+		t.Fatalf("integration created despite gate failure: %d", len(ints))
+	}
+}
+
 // Approving a request whose target the team tore down meanwhile must not
 // resurrect it: the approve answers 409 and the record stays for reject.
 func TestProvisionApproval_StaleTargetRefused(t *testing.T) {
@@ -325,7 +371,27 @@ func TestProvisionApproval_StaleTargetRefused(t *testing.T) {
 	}
 	aid := approvalIDFrom(t, w)
 
-	// The team deletes the integration before the org admin decides.
+	// PARTIAL teardown first: the live bot set diverges from the snapshot
+	// taken at park time (here via a direct store mutation, standing in for
+	// any change that raced the decision) — approve must refuse rather than
+	// resurrect what the team changed.
+	ri, err := s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ri.BotIDs = []string{"gate-bot"}
+	if err := s.forgeIntegrations.Update(context.Background(), ri); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	req = orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	req.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("diverged bot set should 409: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// FULL teardown: the team deletes the integration before the decision.
 	if err := s.forgeIntegrations.Delete(context.Background(), res.IntegrationID); err != nil {
 		t.Fatal(err)
 	}

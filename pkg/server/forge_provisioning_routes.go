@@ -112,7 +112,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	if orgID != "" {
 		req.Repo = strings.TrimSpace(req.Repo)
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, "", false)
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, "", false, nil)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -213,7 +213,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
 			HoldLabels:           req.HoldLabels,
 			LabelAllowlist:       req.LabelAllowlist,
-		}, ri.ID, true)
+		}, ri.ID, true, ri.BotIDs)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -399,6 +399,20 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// clearing a non-empty one — or adding a label to it — widens dispatch.
 	if req.LabelAllowlist != nil && len(ri.LabelAllowlist) > 0 &&
 		(len(req.LabelAllowlist) == 0 || addsBots(ri.LabelAllowlist, req.LabelAllowlist)) {
+		return true
+	}
+	// Any schedule change arms (or re-arms) unattended recurring launches.
+	// The stored cadence lives in the scheduler, not on the integration, so
+	// a tightening cannot be told apart here — park every non-empty set
+	// (fail toward approval, never past it).
+	if len(req.ScheduleCrons) > 0 {
+		return true
+	}
+	// Overlap: "allow" is the only unbounded concurrency policy (skip and
+	// supersede both cap the repo at one live run); moving to it from a
+	// bounded stored policy widens. An empty stored value already means
+	// allow (the historical default), so that transition changes nothing.
+	if req.Overlap == "allow" && ri.Overlap != "" && ri.Overlap != "allow" {
 		return true
 	}
 	return false

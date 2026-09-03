@@ -64,8 +64,9 @@ func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Iden
 
 // parkProvisionRequest records the pending request and answers the team
 // admin with 202 + the approval id. The caller has already validated the
-// request exactly as the direct path would.
-func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool) {
+// request exactly as the direct path would. baseBotIDs snapshots the
+// integration's live bot set for update requests (nil for new repos).
+func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, baseBotIDs []string) {
 	a := forge.ProvisionApproval{
 		ID:             uuid.NewString(),
 		OrgID:          orgID,
@@ -75,6 +76,7 @@ func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id
 		BotIDs:         req.BotIDs,
 		IntegrationID:  integrationID,
 		Replace:        replace,
+		BaseBotIDs:     baseBotIDs,
 		ScheduleCrons:  req.ScheduleCrons,
 		LaunchVars:     req.LaunchVars,
 		Overlap:        req.Overlap,
@@ -187,9 +189,27 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 	// re-provisioning it by surprise.
 	ctx := store.WithTenant(r.Context(), a.TenantID)
 	if a.IntegrationID != "" && s.forgeIntegrations != nil {
-		if ri, err := s.forgeIntegrations.Get(ctx, a.IntegrationID); err != nil || ri.TenantID != a.TenantID {
+		ri, err := s.forgeIntegrations.Get(ctx, a.IntegrationID)
+		if err != nil || ri.TenantID != a.TenantID {
 			httpError(w, http.StatusConflict,
 				"the integration this request updates no longer exists (the team removed it) — reject the request instead of approving it")
+			return
+		}
+		// A PARTIAL teardown counts too: replaying the recorded bot set over
+		// an integration whose bots changed since park time would silently
+		// re-add whatever the team removed meanwhile.
+		if !equalStringSets(ri.BotIDs, a.BaseBotIDs) {
+			httpError(w, http.StatusConflict,
+				"the integration's bot set changed since this request was parked — reject it and have the team re-submit against the current state")
+			return
+		}
+	}
+	// A NEW-repo request whose repo got provisioned meanwhile (e.g. by an
+	// org admin directly) must not silently REPLACE that integration.
+	if a.IntegrationID == "" && s.forgeIntegrations != nil {
+		if _, err := s.forgeIntegrations.GetByConnRepo(ctx, a.TenantID, a.ConnectionID, a.RepoFullName); err == nil {
+			httpError(w, http.StatusConflict,
+				"this repo was provisioned after the request was parked — reject the request; the team can submit an update against the existing integration")
 			return
 		}
 	}
@@ -230,6 +250,28 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		"repo": a.RepoFullName, "bots": res.BotIDs, "connection_id": a.ConnectionID, "approved_by": id.UserID,
 	})
 	writeJSON(w, res)
+}
+
+// equalStringSets compares two string slices as SETS (order-insensitive,
+// duplicates collapsed).
+func equalStringSets(a, b []string) bool {
+	as := make(map[string]bool, len(a))
+	for _, s := range a {
+		as[s] = true
+	}
+	bs := make(map[string]bool, len(b))
+	for _, s := range b {
+		bs[s] = true
+	}
+	if len(as) != len(bs) {
+		return false
+	}
+	for s := range as {
+		if !bs[s] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleRejectProvision(w http.ResponseWriter, r *http.Request) {
