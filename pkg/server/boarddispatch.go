@@ -26,6 +26,13 @@ type boardCoordinator interface {
 	Claim(ctx context.Context, tenant, id, marker string) (tracker.ClaimToken, error)
 	SetState(ctx context.Context, tenant, id, state string) error
 	SetStateWithReason(ctx context.Context, tenant, id, state, reason string) error
+	// SetStateFromReason is the tokenless CAS: the repair lands only if
+	// the card is still where the decision saw it. The reconcilers judge
+	// on a listing snapshot that ages across several round trips, so an
+	// unconditional write overwrites the operator who moved the card in
+	// that window — silently, and with a state (`blocked`) its own filing
+	// comment calls a one-way door.
+	SetStateFromReason(ctx context.Context, tenant, id, from, to, reason string) (bool, error)
 	Release(ctx context.Context, tenant, id, marker string) error
 	// The fenced family: RenewClaim is the heartbeat processCard runs for
 	// as long as it holds the card (its poll-to-terminal has NO upper
@@ -433,7 +440,12 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 			return
 		}
 		d.log("card %s/%s pointer run %s finished but the card was never filed — moving to %s", c.Tenant, c.Issue.ID, runID, d.doneState)
-		if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
+		// CAS on the state this decision was taken on: three round trips
+		// (reconcileDue, statusFor and — on the other arm — runFor/issueRuns)
+		// separate the listing from this write, and an operator who moved
+		// the card in that window must win. Same shape as the sibling
+		// repairs in this diff (board_forge's sync, fileFinishedTicket).
+		if _, err := d.coord.SetStateFromReason(ctx, c.Tenant, c.Issue.ID, c.Issue.State, d.doneState, ""); err != nil {
 			d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
 		}
 		return
@@ -496,22 +508,25 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 				pointer.ContinuationState != store.ContinuationRetryArmed)
 		if settled && c.Issue.State == d.inProgressState {
 			d.log("card %s/%s pointer run %s settled %s with no adoptable fork and no continuation — moving to %s", c.Tenant, c.Issue.ID, runID, st, d.blockedState)
-			var werr error
+			// A settled RESUMABLE is a decision the machine takes alone
+			// — since the continuable arm, the living owner files
+			// nothing for it, so there is no living-owner parity to
+			// honour: machine provenance, no chain fires, no assignee
+			// attribution (the ceiling arm's own rule; a bare tokenless
+			// write here spent a one-shot and signed the repair with the
+			// assignee's name). A terminal FAILURE is the opposite: the
+			// living owner would have filed blocked itself, so the chain
+			// fires as it would for them.
+			//
+			// Both take the CAS. This is the one-way door the comment
+			// above names, written on a state read three round trips ago
+			// — an operator who dragged the card out of the running
+			// column in that window must not find it stamped blocked.
+			reason := ""
 			if st == store.RunStatusFailedResumable {
-				// A settled RESUMABLE is a decision the machine takes
-				// alone — since the continuable arm, the living owner
-				// files nothing for it, so there is no living-owner
-				// parity to honour: machine provenance, no chain fires,
-				// no assignee attribution (the ceiling arm's own rule;
-				// tokenless SetState here spent a one-shot and signed
-				// the repair with the assignee's name).
-				werr = d.coord.SetStateWithReason(ctx, c.Tenant, c.Issue.ID, d.blockedState, tracker.ReasonWatchdog)
-			} else {
-				// Terminal FAILURE: the living owner would have filed
-				// blocked itself — the chain fires as it would for them.
-				werr = d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.blockedState)
+				reason = tracker.ReasonWatchdog
 			}
-			if werr != nil {
+			if _, werr := d.coord.SetStateFromReason(ctx, c.Tenant, c.Issue.ID, c.Issue.State, d.blockedState, reason); werr != nil {
 				d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.blockedState, werr)
 			}
 		}

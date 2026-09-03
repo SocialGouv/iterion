@@ -120,6 +120,42 @@ func (f *fakeBoardCoord) SetState(ctx context.Context, _, id, state string) erro
 	return nil
 }
 
+// SetStateFromReason mirrors the real coordinator's CAS: the write lands
+// only while the card still reads `from`, and reports whether it changed.
+// A fake that ignored the guard would let every caller pass vacuously on
+// the exact overwrite the guard exists to refuse.
+func (f *fakeBoardCoord) SetStateFromReason(ctx context.Context, tenant, id, from, to, reason string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	cur, seen := f.states[id]
+	if !seen {
+		for _, c := range f.cands {
+			if c.Issue.ID == id {
+				cur = c.Issue.State
+				break
+			}
+		}
+	}
+	f.mu.Unlock()
+	if cur != from || from == to {
+		return false, nil
+	}
+	if err := f.SetState(ctx, tenant, id, to); err != nil {
+		return false, err
+	}
+	if reason != "" {
+		f.mu.Lock()
+		if f.reasons == nil {
+			f.reasons = map[string]string{}
+		}
+		f.reasons[id] = reason
+		f.mu.Unlock()
+	}
+	return true, nil
+}
+
 func (f *fakeBoardCoord) Release(ctx context.Context, _, id, _ string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -2450,5 +2486,64 @@ func TestCloudProcessCard_ClaimConflictAbortsTheLaunch(t *testing.T) {
 	if processed.Load() {
 		t.Fatal("the run was launched after the fence refused the in-progress move — a second run on a card " +
 			"this replica no longer owns, whose finish transition and release are both refused")
+	}
+}
+
+// driftingCoord moves the card exactly once, at the moment the
+// reconciler's decision has already been taken — the operator's drag
+// landing inside the window between the sweep's listing and its write.
+type driftingCoord struct {
+	*fakeBoardCoord
+	id, to string
+	once   bool
+}
+
+func (d *driftingCoord) statusHook() {
+	if d.once {
+		return
+	}
+	d.once = true
+	d.fakeBoardCoord.mu.Lock()
+	d.fakeBoardCoord.states[d.id] = d.to
+	d.fakeBoardCoord.mu.Unlock()
+}
+
+// TestBoardDispatcher_ReconcilerDoesNotOverwriteAnOperatorDrag: the
+// reconciler decides on c.Issue.State captured at LISTING time, then
+// three round trips later (reconcileDue, statusFor, runFor/issueRuns)
+// writes blocked — a state its own comment calls a one-way door, since
+// the finished arm honours blocked as a deliberate placement and never
+// reclassifies it. An unconditional write therefore stamped a definitive
+// bad-outcome flag over an operator who had moved the card in that
+// window, silently. Both sibling repairs in this branch took the CAS
+// (board_forge's forge sync, fileFinishedTicket); this one was left out.
+func TestBoardDispatcher_ReconcilerDoesNotOverwriteAnOperatorDrag(t *testing.T) {
+	older := time.Now().Add(-time.Hour)
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1",
+		Issue:  native.Issue{ID: "native:dragged", State: native.StateInProgress, LastRunID: "run-dead"},
+	})
+	dc := &driftingCoord{fakeBoardCoord: f, id: "native:dragged", to: native.StateReady}
+	d := newBoardDispatcher(dc, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) {
+		// The operator drags the card here: after the sweep read its
+		// state, before the reconciler writes.
+		dc.statusHook()
+		return store.RunStatusFailed, nil
+	}
+	d.runFor = func(context.Context, string, string) (*store.Run, error) {
+		return &store.Run{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older}, nil
+	}
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+	d.adoptRun = func(string, string, string, string) error { return nil }
+
+	d.sweepForkAdoptions(context.Background())
+
+	f.mu.Lock()
+	got := f.states["native:dragged"]
+	f.mu.Unlock()
+	if got != native.StateReady {
+		t.Fatalf("card = %q, want %q — the reconciler wrote a state read before the operator moved the card, "+
+			"stamping the one-way blocked flag over their decision", got, native.StateReady)
 	}
 }

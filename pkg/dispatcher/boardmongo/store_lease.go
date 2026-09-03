@@ -543,6 +543,16 @@ func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
 // SetStateFrom is the CAS move for automated writers — changed=false
 // when the state drifted; the terminal guard still applies.
 func (s *Store) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
+	return s.SetStateFromReason(id, from, to, "")
+}
+
+// SetStateFromReason is SetStateFrom carrying an explicit provenance, the
+// CAS twin of SetStateWithReason. A machine repair needs BOTH halves at
+// once: the CAS so it cannot overwrite the operator who moved the card
+// under its decision, and the reason so the spine does not read the
+// repair as an operator gesture (spending a one-shot label and signing
+// the move with the assignee's name).
+func (s *Store) SetStateFromReason(id, from, to, reason string) (*native.Issue, bool, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	board := s.Board()
@@ -575,8 +585,11 @@ func (s *Store) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
 		return nil, false, fmt.Errorf("boardmongo: set state from decode: %w", err)
 	}
 	updated := doc.Issue
-	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
-		Payload: map[string]any{"from": from, "to": to}}); err != nil {
+	payload := map[string]any{"from": from, "to": to}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id, Payload: payload}); err != nil {
 		return nil, false, err
 	}
 	if to == native.StateDone {

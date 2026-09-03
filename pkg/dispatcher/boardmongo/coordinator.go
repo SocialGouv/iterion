@@ -119,6 +119,17 @@ func (c *Coordinator) SetStateWithReason(_ context.Context, tenant, id, state, r
 	return err
 }
 
+// SetStateFromReason is the tokenless CAS write: the repair lands only if
+// the card is still in the state the decision was taken on. The
+// reconcilers work from a listing snapshot that ages across several round
+// trips, so an unconditional write silently overwrites the operator who
+// moved the card in that window — with `blocked`, a one-way door. reason
+// keeps the machine provenance SetStateWithReason carries.
+func (c *Coordinator) SetStateFromReason(_ context.Context, tenant, id, from, to, reason string) (bool, error) {
+	_, changed, err := c.StoreFor(tenant).SetStateFromReason(id, from, to, reason)
+	return changed, err
+}
+
 func (c *Coordinator) Release(_ context.Context, tenant, id, marker string) error {
 	return c.StoreFor(tenant).Release(id, marker)
 }
