@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -119,8 +120,10 @@ func credentialSourceLabel(fromEnv, fromFile string) string {
 // RemoteAdminLLMOAuthConnect drives the browser code flow for the platform
 // forfait: authorize/start mints the URL, the operator authorizes in a
 // browser and pastes the resulting `code#state`, authorize/complete
-// exchanges it server-side into the stored credentials blob.
-func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer, kind string) error {
+// exchanges it server-side into the stored credentials blob. A non-empty
+// accountLabel names the account on that completing call, so the browser
+// path can name at connect time exactly like the paste path.
+func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer, kind, accountLabel string) error {
 	var start struct {
 		AuthorizeURL string `json:"authorize_url"`
 		State        string `json:"state"`
@@ -141,7 +144,11 @@ func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer
 		}
 		return fmt.Errorf("no authorization code pasted")
 	}
-	raw, err := c.Call(ctx, "POST", adminLLMOAuthBase(kind)+"/authorize/complete",
+	complete := adminLLMOAuthBase(kind) + "/authorize/complete"
+	if accountLabel != "" {
+		complete += "?account_label=" + url.QueryEscape(accountLabel)
+	}
+	raw, err := c.Call(ctx, "POST", complete,
 		map[string]string{"code": code, "state": start.State}, nil)
 	if err != nil {
 		return err

@@ -243,7 +243,7 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if len(args) == 2 {
 				kind = args[1]
 			}
-			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind)
+			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind, strings.TrimSpace(remoteLLMAccountLabel))
 		case "name":
 			// Names the ACCOUNT behind a platform forfait. The listing
 			// prints only kind + fingerprint otherwise, and a fingerprint
@@ -252,7 +252,14 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			body, err := json.Marshal(map[string]string{"account_label": remoteLLMAccountLabel})
+			// The server reads "" as "clear the label", so a forgotten flag
+			// must be refused rather than sent — `name` exists because
+			// operators forget the naming step, and un-naming on that very
+			// mistake would be the worst possible default.
+			if !cmd.Flags().Changed("account-label") {
+				return fmt.Errorf("usage: admin llm oauth name %s --account-label <name> (pass --account-label \"\" to clear it)", kind)
+			}
+			body, err := json.Marshal(map[string]string{"account_label": strings.TrimSpace(remoteLLMAccountLabel)})
 			if err != nil {
 				return err
 			}
@@ -667,7 +674,7 @@ func init() {
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name for create")
 	remoteAdminLLMKeysCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make the created key the provider's default")
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
-	remoteAdminLLMOAuthCmd.Flags().StringVar(&remoteLLMAccountLabel, "account-label", "", "Name the account behind this forfait (set at `set`, or alone with `name`)")
+	remoteAdminLLMOAuthCmd.Flags().StringVar(&remoteLLMAccountLabel, "account-label", "", "Name the account behind this forfait (with `set`/`connect`, or alone with `name`; `name --account-label \"\"` clears it)")
 	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
 
 	remoteAdminCapsCmd.Flags().IntVar(&remoteCapsFiveHour, "five-hour", 0, "Five-hour window cap percentage (0–100; 0 = no cap)")

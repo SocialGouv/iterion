@@ -103,7 +103,11 @@ type OAuthRecord struct {
 	// logs print only the fingerprint — so answering "whose subscription
 	// is this run spending?" meant grepping server logs and correlating
 	// hex by hand. Purely descriptive; no resolution path reads it.
-	AccountLabel string    `bson:"account_label,omitempty" json:"account_label,omitempty"`
+	//
+	// No bson omitempty: the Mongo store writes records through $set, and
+	// an omitted key leaves the OLD value in place — so clearing the label
+	// would report success and keep the stale name.
+	AccountLabel string    `bson:"account_label" json:"account_label,omitempty"`
 	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt    time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -117,6 +121,13 @@ type OAuthStore interface {
 	// ExpiringBefore returns records whose access token is set and
 	// expires before t — used by the background refresh worker.
 	ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error)
+	// SetAccountLabel writes ONLY the label (and updated_at) of an existing
+	// record; "" clears it. A rename must not travel through Upsert: that
+	// rewrites the whole record, sealed payload included, so a refresh
+	// committed between the caller's Get and its Upsert would be reverted
+	// to a token the provider may already have rotated out. Missing record
+	// → ErrOAuthNotFound.
+	SetAccountLabel(ctx context.Context, userID string, kind OAuthKind, label string) error
 }
 
 // ErrOAuthNotFound is the sentinel for missing records.
@@ -362,6 +373,20 @@ func (s *MemoryOAuthStore) ExpiringBefore(_ context.Context, t time.Time) ([]OAu
 	return out, nil
 }
 
+func (s *MemoryOAuthStore) SetAccountLabel(_ context.Context, userID string, kind OAuthKind, label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := mkOAuthKey(userID, kind)
+	r, ok := s.m[key]
+	if !ok {
+		return ErrOAuthNotFound
+	}
+	r.AccountLabel = label
+	r.UpdatedAt = time.Now().UTC()
+	s.m[key] = r
+	return nil
+}
+
 // MongoOAuthStore — production impl.
 type MongoOAuthStore struct {
 	coll *mongo.Collection
@@ -425,6 +450,22 @@ func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAut
 
 func (s *MongoOAuthStore) Delete(ctx context.Context, userID string, kind OAuthKind) error {
 	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: delete oauth")
+}
+
+func (s *MongoOAuthStore) SetAccountLabel(ctx context.Context, userID string, kind OAuthKind, label string) error {
+	// A literal $set of the two keys, never the struct: the sealed payload
+	// and the fingerprint stay whatever the last connect/refresh wrote.
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"user_id": userID, "kind": kind},
+		bson.M{"$set": bson.M{"account_label": label, "updated_at": time.Now().UTC()}},
+	)
+	if err != nil {
+		return fmt.Errorf("secrets: set oauth account label: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrOAuthNotFound
+	}
+	return nil
 }
 
 func (s *MongoOAuthStore) ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error) {

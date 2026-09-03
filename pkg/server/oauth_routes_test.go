@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -208,10 +209,13 @@ func TestOAuthConnections_SealsAndNeverEchoesTheCredential(t *testing.T) {
 // and the fingerprint is exposed beside it because it is the join key
 // the logs actually print.
 func TestOAuthAccountLabel(t *testing.T) {
-	_, hs, signer, store := oauthTestServer(t)
+	srv, hs, signer, store := oauthTestServer(t)
 	jo := oauthJWT(t, signer, "jo")
 	blob := func(tok string) string {
 		return `{"claudeAiOauth":{"accessToken":"` + tok + `","refreshToken":"rt","expiresAt":4102444800000}}`
+	}
+	codexBlob := func(tok, account string) string {
+		return `{"tokens":{"access_token":"` + tok + `","refresh_token":"rt","account_id":"` + account + `"},"auth_mode":"chatgpt"}`
 	}
 	view := func(body string) map[string]any {
 		t.Helper()
@@ -240,27 +244,73 @@ func TestOAuthAccountLabel(t *testing.T) {
 		}
 	})
 
-	t.Run("rotating the token keeps the account name", func(t *testing.T) {
-		// A re-connect with no label is a token rotation, not a rename:
-		// blanking the name here would put the operator back to reading
-		// fingerprints out of the logs.
-		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", jo, blob("sk-ant-oat01-B"))
+	t.Run("an unnamed re-connect of the same credential keeps the name", func(t *testing.T) {
+		// Same blob → same fingerprint → provably the same subscription:
+		// re-pasting a token is not renaming the account.
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", jo, blob("sk-ant-oat01-A"))
 		if code != http.StatusOK {
 			t.Fatalf("re-upload = %d body=%s", code, body)
 		}
 		if v := view(body); v["account_label"] != "jothedev" {
-			t.Fatalf("account_label = %v after rotation, want it preserved", v["account_label"])
+			t.Fatalf("account_label = %v after re-pasting the same blob, want it preserved", v["account_label"])
+		}
+	})
+
+	t.Run("an unnamed re-connect with a different fingerprint drops the name rather than inherit it", func(t *testing.T) {
+		// A claude_code blob carries no account id, so a different blob may
+		// be a rotation OR another person's forfait on the same owner key —
+		// the swap measured live on 2026-09-03. Inheriting the old name
+		// would answer "whose subscription paid?" with the wrong person;
+		// an absent name is a visible gap the operator can fill.
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", jo, blob("sk-ant-oat01-B"))
+		if code != http.StatusOK {
+			t.Fatalf("re-upload = %d body=%s", code, body)
+		}
+		if v := view(body); v["account_label"] != nil {
+			t.Fatalf("account_label = %v after a re-connect with a new fingerprint, want it dropped", v["account_label"])
 		}
 		rec, err := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rec.AccountLabel != "jothedev" {
-			t.Fatalf("store label = %q", rec.AccountLabel)
+		if rec.AccountLabel != "" {
+			t.Fatalf("store label = %q, want empty", rec.AccountLabel)
 		}
 	})
 
-	t.Run("rename backfills a record connected before labels existed", func(t *testing.T) {
+	t.Run("codex: the name follows the account id across token rotations", func(t *testing.T) {
+		// Codex fingerprints derive from tokens.account_id, so a fresh
+		// auth.json of the SAME ChatGPT account keeps its name, and one
+		// from a different account provably is not it.
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/credentials?account_label=jo%40openai", jo, codexBlob("tok-1", "acc-1"))
+		if code != http.StatusOK {
+			t.Fatalf("connect codex = %d body=%s", code, body)
+		}
+		code, body = oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/credentials", jo, codexBlob("tok-2", "acc-1"))
+		if code != http.StatusOK {
+			t.Fatalf("rotate codex = %d body=%s", code, body)
+		}
+		if v := view(body); v["account_label"] != "jo@openai" {
+			t.Fatalf("account_label = %v after rotating tokens of the same account, want it preserved", v["account_label"])
+		}
+		code, body = oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/credentials", jo, codexBlob("tok-3", "acc-2"))
+		if code != http.StatusOK {
+			t.Fatalf("swap codex = %d body=%s", code, body)
+		}
+		if v := view(body); v["account_label"] != nil {
+			t.Fatalf("account_label = %v after connecting a different account, want it dropped", v["account_label"])
+		}
+	})
+
+	t.Run("rename backfills a record connected before labels existed, without rewriting it", func(t *testing.T) {
+		// The rename must be a metadata write at the store, never a
+		// Get → Upsert of the whole record: that would carry the sealed
+		// payload this handler read back over whatever a concurrent refresh
+		// committed in between — a refresh token the provider may already
+		// have rotated out, which no later sweep can heal.
+		spy := &oauthUpsertSpy{OAuthStore: store}
+		srv.oauthStore = spy
+		t.Cleanup(func() { srv.oauthStore = store })
 		code, body := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", jo, `{"account_label":"jo perso"}`)
 		if code != http.StatusOK {
 			t.Fatalf("rename = %d body=%s", code, body)
@@ -268,14 +318,28 @@ func TestOAuthAccountLabel(t *testing.T) {
 		if v := view(body); v["account_label"] != "jo perso" {
 			t.Fatalf("account_label = %v", v["account_label"])
 		}
-		// Metadata only: the sealed credential and its fingerprint are
-		// untouched, so a rename can never rotate or break a live key.
+		if spy.upserts != 0 {
+			t.Fatalf("rename issued %d Upsert(s) — it must not rewrite the sealed record", spy.upserts)
+		}
 		rec, err := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(rec.SealedPayload) == 0 || rec.Fingerprint == "" {
-			t.Fatal("rename must not disturb the credential itself")
+		if rec.AccountLabel != "jo perso" || len(rec.SealedPayload) == 0 || rec.Fingerprint == "" {
+			t.Fatalf("after rename: label=%q payload=%d bytes fp=%q", rec.AccountLabel, len(rec.SealedPayload), rec.Fingerprint)
+		}
+	})
+
+	t.Run("rename with an empty label clears it", func(t *testing.T) {
+		code, body := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", jo, `{"account_label":""}`)
+		if code != http.StatusOK {
+			t.Fatalf("clear = %d body=%s", code, body)
+		}
+		if v := view(body); v["account_label"] != nil {
+			t.Fatalf("account_label = %v after clearing, want absent", v["account_label"])
+		}
+		if rec, _ := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode); rec.AccountLabel != "" {
+			t.Fatalf("store label = %q after clearing", rec.AccountLabel)
 		}
 	})
 
@@ -285,4 +349,54 @@ func TestOAuthAccountLabel(t *testing.T) {
 			t.Fatalf("rename with no account_label = %d, want 400 (an omitted field must not clear the label)", code)
 		}
 	})
+
+	t.Run("rename of a kind that is not connected is 404", func(t *testing.T) {
+		nobody := oauthJWT(t, signer, "nobody")
+		code, _ := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", nobody, `{"account_label":"x"}`)
+		if code != http.StatusNotFound {
+			t.Fatalf("rename with no connection = %d, want 404", code)
+		}
+	})
+
+	t.Run("team scope: a team admin names the forfait, a viewer cannot", func(t *testing.T) {
+		seedTeam(t, srv, "t1", "acme")
+		ctx := context.Background()
+		adm := seedTeamMember(t, srv, ctx, "adm", identity.RoleAdmin)
+		vie := seedTeamMember(t, srv, ctx, "vie", identity.RoleViewer)
+		admTok, _, err := signer.IssueAccess(adm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vieTok, _, err := signer.IssueAccess(vie)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/teams/t1/oauth/claude_code/credentials?account_label=team%20forfait", admTok, blob("sk-ant-oat01-T"))
+		if code != http.StatusOK {
+			t.Fatalf("team connect = %d body=%s", code, body)
+		}
+		if code, _ := oauthCall(t, hs, http.MethodPatch, "/api/teams/t1/oauth/claude_code", vieTok, `{"account_label":"mine now"}`); code != http.StatusForbidden {
+			t.Fatalf("viewer rename = %d, want 403", code)
+		}
+		code, body = oauthCall(t, hs, http.MethodPatch, "/api/teams/t1/oauth/claude_code", admTok, `{"account_label":"SocialGouv Revi"}`)
+		if code != http.StatusOK {
+			t.Fatalf("admin rename = %d body=%s", code, body)
+		}
+		code, body = oauthCall(t, hs, http.MethodGet, "/api/teams/t1/oauth/connections", vieTok, "")
+		if code != http.StatusOK || !strings.Contains(body, `"account_label":"SocialGouv Revi"`) || !strings.Contains(body, `"fingerprint":"`) {
+			t.Fatalf("team listing = %d body=%s, want the new name beside the fingerprint", code, body)
+		}
+	})
+}
+
+// oauthUpsertSpy counts whole-record writes, so a test can prove a code path
+// that promises "metadata only" never rewrites the sealed payload.
+type oauthUpsertSpy struct {
+	secrets.OAuthStore
+	upserts int
+}
+
+func (s *oauthUpsertSpy) Upsert(ctx context.Context, rec secrets.OAuthRecord) error {
+	s.upserts++
+	return s.OAuthStore.Upsert(ctx, rec)
 }

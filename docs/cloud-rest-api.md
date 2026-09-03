@@ -255,13 +255,21 @@ Full reference: [webhooks.md](webhooks.md).
 | `POST` | `/api/me/oauth/{kind}/authorize/complete` | member | Finish that handshake |
 | `POST` | `/api/me/oauth/{kind}/credentials` | member | Upload pasted `credentials.json` / `auth.json` |
 | `POST` | `/api/me/oauth/{kind}/refresh` | member | Refresh stored access token against the IdP |
+| `PATCH` | `/api/me/oauth/{kind}` | member | Name the account behind the credential (`{"account_label": "…"}`, `""` clears) — metadata only, the sealed credential is untouched |
 | `DELETE` | `/api/me/oauth/{kind}` | member | Disconnect |
+
+`authorize/complete` and `credentials` take an optional `?account_label=`
+query parameter to name the account at connect time. The listing exposes
+`account_label` beside `fingerprint`, the same string the publisher logs
+when it picks a credential (see
+[cloud-llm-credentials.md](cloud-llm-credentials.md#name-the-account-behind-every-credential)).
 
 Every route above has a team-scoped mirror at
 `/api/teams/{id}/oauth/…` (`connections`, `{kind}/authorize/start`,
-`{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`, and
-`DELETE {kind}`) for a forfait the whole team draws on rather than one
-operator.
+`{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`,
+`PATCH {kind}`, and `DELETE {kind}`) for a forfait the whole team draws
+on rather than one operator, and a platform mirror at
+`/api/admin/llm/oauth/…` (super-admin).
 
 Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go),
 [pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go).

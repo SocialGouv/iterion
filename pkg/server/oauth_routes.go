@@ -273,8 +273,8 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.logger.Info("oauth: owner=%s kind=%s connected via browser flow (expires=%v)", ownerKey, kind, rec.AccessTokenExpiresAt)
-	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser"})
+	s.logger.Info("oauth: owner=%s kind=%s connected via browser flow (account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser", "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -300,7 +300,7 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		return
 	}
 	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
-	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste"})
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste", "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -357,13 +357,17 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// Derived from the account the payload names where it names one, so
 	// connecting ONE subscription twice does not open two meters.
 	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, blob)
-	// A re-connect that names no account keeps the label the record
-	// already carried: rotating a token is not renaming the account, and
-	// silently blanking the name would put the operator back to reading
-	// fingerprints out of the logs.
+	// The name follows the fingerprint. A re-connect that names no account
+	// keeps the previous label ONLY when it provably re-connects the same
+	// subscription (codex: same account id; claude_code: the same blob).
+	// Any other re-connect may be an account SWAP — the same owner key
+	// re-pointed at somebody else's forfait — and inheriting the old name
+	// there would answer "whose subscription paid?" with the wrong person.
+	// Absent beats wrong: the operator names it (`account_label`) or the
+	// listing shows no name.
 	rec.AccountLabel = strings.TrimSpace(accountLabel)
 	if rec.AccountLabel == "" {
-		if prev, err := s.oauthStore.Get(ctx, ownerKey, kind); err == nil {
+		if prev, err := s.oauthStore.Get(ctx, ownerKey, kind); err == nil && prev.Fingerprint == rec.Fingerprint {
 			rec.AccountLabel = prev.AccountLabel
 		}
 	}
@@ -435,18 +439,24 @@ func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "account_label required (send \"\" to clear it)")
 		return
 	}
-	rec, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
-	if err != nil {
-		httpError(w, http.StatusNotFound, "no %s connection", kind)
-		return
-	}
-	rec.AccountLabel = strings.TrimSpace(*req.AccountLabel)
-	rec.UpdatedAt = time.Now().UTC()
-	if err := s.oauthStore.Upsert(r.Context(), rec); err != nil {
+	label := strings.TrimSpace(*req.AccountLabel)
+	// Store-level metadata write, not Get → Upsert: the latter would carry
+	// the sealed payload this handler read back over whatever a concurrent
+	// refresh committed in between.
+	if err := s.oauthStore.SetAccountLabel(r.Context(), ownerKey, kind, label); err != nil {
+		if errors.Is(err, secrets.ErrOAuthNotFound) {
+			httpError(w, http.StatusNotFound, "no %s connection", kind)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditOAuthByOwner(r, ownerKey, "renamed", kind, map[string]any{"account_label": rec.AccountLabel})
+	rec, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditOAuthByOwner(r, ownerKey, "renamed", kind, map[string]any{"account_label": label, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 

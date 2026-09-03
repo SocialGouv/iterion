@@ -240,9 +240,27 @@ iterion remote admin llm oauth name claude_code --account-label "iterion platfor
 
 The listing then answers the question directly — `account_label` beside
 the `fingerprint`, which is the SAME string the logs print, so a log line
-and the API join without a human in the middle. A re-connect that names
-no account KEEPS the existing label: rotating a token is not renaming the
-account.
+and the API join without a human in the middle. The studio shows both on
+every connection card (Settings → Subscriptions, a team's Model providers
+tab, Admin → LLM credentials) with a *Name account* action, and both
+connect forms take the name up front.
+
+**The name follows the fingerprint.** A re-connect that names no account
+keeps the previous label only when it provably re-connects the same
+subscription — codex fingerprints derive from the account id, so a fresh
+`auth.json` of the same ChatGPT account keeps its name; a claude_code
+credentials blob carries no account id, so only re-pasting the SAME blob
+does. Any other unnamed re-connect drops the label rather than inherit
+it: the same owner key re-pointed at a different forfait — the swap
+measured on 2026-09-03, SocialGouv's key replaced by a personal one on
+the same team — would otherwise answer "whose subscription paid?" with
+the wrong person. Pass `account_label` when you rotate, or `name` it
+afterwards; an unnamed row is a visible gap, a wrongly named one is a
+confident lie.
+
+Renaming is a metadata write at the store (`SetAccountLabel`), never a
+read-modify-write of the record: the sealed payload a concurrent refresh
+just rotated is not carried back over.
 
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
