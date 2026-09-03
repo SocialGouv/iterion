@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.96.1](https://github.com/SocialGouv/iterion/compare/v3.96.0...v3.96.1) (2026-09-03)
+
+### Bug Fixes
+
+* **quota:** classify an account spend ceiling, tell the PR when a review parks, stop runs on a closed PR ([#639](https://github.com/SocialGouv/iterion/issues/639)) ([cca3d20](https://github.com/SocialGouv/iterion/commit/cca3d20d524d73de9b44e069a9a2333ddb0bfce8)), references [other/#7](https://github.com/SocialGouv/iterion/issues/7) [widgets/#7](https://github.com/SocialGouv/iterion/issues/7)
+
+    <details><summary>why</summary>
+
+    "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage" put THREE words and an apostrophe between "your" and "limit"; the qualifier pattern tolerated exactly one word without one, so the notice sailed through as the node's answer and died as "structured output invalid: missing required field …" — the precise masking bug the pattern's own comment was written for, re-opened by a new wording (three branch-improve-loop runs on 2026-09-03, runs 01a06694 /…
+
+    </details>
+
 ## [3.96.0](https://github.com/SocialGouv/iterion/compare/v3.95.0...v3.96.0) (2026-09-03)
 
 ### Features
