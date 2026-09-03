@@ -92,16 +92,21 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 	meta := prforgePRMeta(p)
 
-	// A CLOSED or MERGED pull request ends every review it still owes.
+	// A CLOSED or MERGED pull request ends the reviews it still owes.
 	// Two costs otherwise, both paid in production: a run in flight keeps
 	// burning provider quota to judge a diff nobody will merge, and a run
 	// PARKED on a usage window wakes up hours later — after the retry the
 	// gate reconciler is deliberately waiting on — to review, and comment
 	// on, a dead PR. Stopping is not launching, so it runs before the fork
-	// guard: a fork PR's `/command` runs must stop too.
+	// guard: a fork PR's `/command` runs must stop too. What it reaches is
+	// bounded by the delivery audit — see stopRunsForDeadPR's REACH note.
 	if p.IsClosed() {
 		stopped := s.stopRunsForDeadPR(ctx, cfg, meta)
-		reason := "pull request closed — no runs to stop"
+		// "none FOUND", not "none to stop": the scan sees only what a
+		// delivery recorded, so an absence here is an absence of rows, not
+		// proof the pull request left nothing behind. The audit must not
+		// assert more than it checked.
+		reason := "pull request closed — no live runs found for it"
 		if stopped > 0 {
 			reason = fmt.Sprintf("pull request closed — stopped %d run(s) still bound to it", stopped)
 		}

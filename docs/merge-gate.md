@@ -153,10 +153,12 @@ notice says so explicitly — a ceiling reopens when an admin raises it (or
 the month rolls), so the armed retries can otherwise exhaust themselves
 against a wall.
 
-Symmetrically, a pull request that **closes or merges** ends every run bound
-to it and **disarms** their retries: an in-flight review would keep spending
-quota on a diff nobody will merge, and a parked one would wake hours later
-to comment on a dead PR. See [webhooks.md](webhooks.md).
+Symmetrically, a pull request that **closes or merges** ends the runs it
+launched and **disarms** their retries: an in-flight review would keep
+spending quota on a diff nobody will merge, and a parked one would wake
+hours later to comment on a dead PR. What that reaches is bounded by the
+delivery audit — the reviewers and amenders, not a board-carded command —
+see [webhooks.md](webhooks.md).
 
 ## Disabling the gate per repo — first review only, re-review on demand
 

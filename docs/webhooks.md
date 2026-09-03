@@ -135,14 +135,26 @@ event paths trigger; ping / push / everything else is silently filtered
 (returns 200 — a 4xx makes GitHub disable the webhook after repeated
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
-- **`pull_request`** with action **`closed`** (merged or not) → every run
-  still bound to that PR is **stopped**, and any armed usage-window retry is
+- **`pull_request`** with action **`closed`** (merged or not) → the runs that
+  pull request launched are **stopped**, and any armed usage-window retry is
   **disarmed**. Scoped to the PR's own subject and across every bot, unlike
   `overlap: supersede` which replaces one bot's work with newer work of the
   same bot. Without it a review in flight keeps spending provider quota on a
   diff nobody will merge, and a review PARKED on a quota window wakes hours
   later to comment on a dead pull request. Nothing is ever launched on this
   action.
+
+  **Reach** — discovery is the delivery audit, so it sees the runs a delivery
+  recorded: the `pull_request` lane itself, plus the `/command` and
+  review-thread lanes (their subjects are *per-comment* — that is the
+  idempotency key — so a delivery carries `parent_subject_id` naming the PR
+  it hangs off). It does **not** reach a **board-mode command running under
+  the cloud board coordinator**: that lane creates a card *instead of* a
+  delivery, so its runs have no row to find. Closing it needs a per-bot
+  answer to "does a command requested on a pull request die with the pull
+  request?" — yes for `/billy`, which pushes to the PR branch; no for a
+  repo-wide audit someone happened to ask for in a PR comment — so it is
+  deliberately left open rather than guessed at.
 - **`pull_request`** with action `opened`, `reopened`, or `ready_for_review`
   — **plus `synchronize` when the webhook sets `review_on_sync`**, so a push
   to the head re-reviews and the `revi/review` status re-evaluates on the new

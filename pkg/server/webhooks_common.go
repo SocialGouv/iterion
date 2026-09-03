@@ -1201,8 +1201,8 @@ func (s *Server) launchWebhookTarget(
 // there once sent operators hunting for a human who did nothing.
 const prClosedRunReason = "pull request closed or merged — nothing left to review"
 
-// stopRunsForDeadPR ends every run still bound to a pull request that just
-// closed or merged, and disarms any usage-window retry armed for one.
+// stopRunsForDeadPR ends the runs a pull request that just closed or merged
+// left behind, and disarms any usage-window retry armed for one.
 //
 // Two distinct leaks, both observed: a run in FLIGHT keeps spending
 // provider quota on a diff nobody will merge, and a run PARKED on a
@@ -1210,6 +1210,20 @@ const prClosedRunReason = "pull request closed or merged — nothing left to rev
 // comment on a dead pull request. Cancelling covers the first; the retry
 // disarm covers the second, and it is the one nothing else would do (the
 // retry lives in the store, not in the run's process).
+//
+// REACH — what this does and does not see, stated because it is not "every
+// run bound to the PR". Discovery is the webhook DELIVERY audit, so it
+// covers every run a delivery recorded: the pull_request lane itself, plus
+// the `/command` and review-thread lanes, whose per-comment subjects are
+// matched through Delivery.ParentSubjectID. It does NOT cover a board-mode
+// command running under the cloud coordinator: dispatchInvocation cards it
+// and returns before any delivery exists, so those runs have no row here at
+// all (they are reachable only through the card, via the SourceRef.IssueID
+// reverse edge). Nor rows written before ParentSubjectID shipped. Closing
+// the board lane needs a per-bot answer to "does a command REQUESTED on a
+// pull request die with it?" — true for /billy, which pushes to the PR
+// branch, and false for a repo-wide audit someone happened to ask for in a
+// PR comment — so it is deliberately not decided here.
 //
 // Scoped to (project, subject) across EVERY bot, unlike supersedeLiveRuns
 // which is per-bot: supersede replaces one bot's work with newer work of
