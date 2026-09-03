@@ -143,6 +143,13 @@ func buildResumeExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		RunFallback:     []ir.Fallback{runFallback},
+		// Mirrors resume.go's WithSandboxDefault: a resumed run re-resolves
+		// its sandbox with the same default a fresh one gets, so the
+		// fallback screen must too. `iterion resume` exposes no --sandbox
+		// flag, so the override tier is empty here BY DECISION, not by
+		// omission — add it here the day the flag lands.
+		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
+		SandboxOverride: "",
 		AutoMemory:      opts.AutoMemory,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.

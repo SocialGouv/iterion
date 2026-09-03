@@ -513,6 +513,13 @@ func buildRunExecutor(
 		PermissionDeny:  opts.PermissionDeny,
 		ModelOverrides:  modelOverrides,
 		RunFallback:     []ir.Fallback{runFallback},
+		// The exact pair buildEngine hands the engine below — the fallback
+		// screen must read the same two knobs, or `iterion run --fallback
+		// codex` on the shipped sandbox-by-default would sail through a
+		// screen that resolves "unsandboxed" while the same process starts
+		// a sandbox two functions away.
+		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
+		SandboxOverride: opts.Sandbox,
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.
