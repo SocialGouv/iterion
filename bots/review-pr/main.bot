@@ -1105,7 +1105,10 @@ workflow review_pr:
     ## Two read-only reviewer branches run in parallel; emit runs alone
     ## afterwards.
     max_parallel_branches: 2
-    max_duration: "45m"
+    ## The money guard is max_cost_usd; the duration cap only needs to
+    ## catch a hung run. 45m killed real reviews mid-publish (a forfait
+    ## retry or a big diff walks past it while spending nothing).
+    max_duration: "90m"
     max_cost_usd: 20
 
   ## EFFICIENCY: an empty review diff skips both LLM reviewers + emit.
