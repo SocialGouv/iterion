@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -25,6 +26,7 @@ func newApprovalTestServer(t *testing.T) (*Server, *mockGitLab, func()) {
 	srv := gl.server()
 	s := newForgeTestServer(t)
 	s.provisionApprovals = forge.NewMemoryProvisionApprovalStore()
+	s.auditStore = audit.NewMemoryStore()
 	ctx := context.Background()
 	if _, err := s.authStore().CreateOrg(ctx, identity.Org{
 		ID: "o1", Name: "o1", Slug: "o1", RequireProvisionApproval: true, CreatedAt: time.Now(),
@@ -880,6 +882,49 @@ func TestProvisionApproval_UnrelatedChangeDoesNotBlockApproval(t *testing.T) {
 	}
 	if !equalStringSets(ri.HoldLabels, []string{"incident"}) {
 		t.Fatalf("the unmentioned hold label should survive the replay: %v", ri.HoldLabels)
+	}
+}
+
+// The approver reads /api/orgs/{id}/audit, which lists by ORG id. Approve
+// and reject write org-keyed rows, but the REQUEST was recorded only
+// team-side — so the org admin saw decisions with no trace of what had
+// been asked, and the ProvisionApproval row is deleted on decision, so the
+// queue no longer held it either.
+func TestProvisionApproval_RequestReachesTheOrgAuditLog(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("enable should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Audit writes are detached (goSafe), so poll rather than assume.
+	find := func(tenant string) *audit.Event {
+		for i := 0; i < 100; i++ {
+			evs, err := s.auditStore.ListByTenant(context.Background(), tenant, audit.Page{Limit: 50})
+			if err == nil {
+				for j := range evs {
+					if evs[j].Action == "forge.provision.approval_requested" {
+						return &evs[j]
+					}
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return nil
+	}
+	if find("t1") == nil {
+		t.Fatal("the team's own audit log lost the request")
+	}
+	ev := find("o1")
+	if ev == nil {
+		t.Fatal("the request never reached the ORG audit log the approver reads")
+	}
+	if ev.Meta["team_id"] != "t1" || ev.Meta["requested_by"] != "teamadmin" {
+		t.Fatalf("the org-side row must name the requesting team and user: %+v", ev.Meta)
 	}
 }
 

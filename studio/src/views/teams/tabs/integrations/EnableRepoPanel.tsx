@@ -41,8 +41,18 @@ export function EnableRepoPanel({
   /** Called once the server accepts the enable request. The optional
    *  argument surfaces the repo that was just enabled so callers (e.g.
    *  the connect wizard) can jump straight to it — legacy callers may
-   *  ignore it (backward-compatible with the old no-arg signature). */
-  onDone: (enabled?: { repo: string; connectionID: string }) => void;
+   *  ignore it (backward-compatible with the old no-arg signature).
+   *
+   *  pendingApproval is true when the server answered 202: the org
+   *  requires an admin's approval and NOTHING was created on the forge.
+   *  A caller that renders a success screen must branch on it, or it
+   *  tells the operator automation is live when the request is still
+   *  sitting in the org queue. */
+  onDone: (enabled?: {
+    repo: string;
+    connectionID: string;
+    pendingApproval?: boolean;
+  }) => void;
   onCancel: () => void;
   onError: (m: string) => void;
 }) {
@@ -119,8 +129,12 @@ export function EnableRepoPanel({
           if (cron) crons[b.name] = cron;
         }
       }
-      await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
-      onDone({ repo, connectionID: conn.id });
+      const res = await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
+      onDone({
+        repo,
+        connectionID: conn.id,
+        pendingApproval: !!res?.pending_approval,
+      });
     } catch (e) {
       onError(errorMessage(e));
     } finally {

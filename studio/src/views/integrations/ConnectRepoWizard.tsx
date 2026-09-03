@@ -183,7 +183,10 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
             reloadConnections={reload}
             onError={setError}
             onDone={(enabled) => {
-              if (enabled) {
+              // A parked request (202) created NOTHING on the forge, so the
+              // repo does not exist to switch to — selecting it would point
+              // the repo switcher at a repo that is not wired.
+              if (enabled && !enabled.pendingApproval) {
                 choose(
                   forgeTeamRepoKey({
                     connection_id: enabled.connectionID,
@@ -198,6 +201,7 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
               if (enabled) {
                 p.set("connected", enabled.connectionID);
                 p.set("repo", enabled.repo);
+                if (enabled.pendingApproval) p.set("pending", "1");
               }
               navigate(withQuery(p));
             }}
@@ -208,6 +212,7 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
           <DoneStep
             connectionID={connectedID}
             repo={q.get("repo") ?? ""}
+            pendingApproval={q.get("pending") === "1"}
             returnTo={returnTo}
             onReturn={
               returnTo

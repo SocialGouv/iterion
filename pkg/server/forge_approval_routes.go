@@ -105,6 +105,16 @@ func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id
 	s.auditTenant(r, teamID, "forge.provision.approval_requested", "provision_approval", a.ID, map[string]any{
 		"repo": a.RepoFullName, "bots": a.BotIDs, "org_id": orgID,
 	})
+	// Org-side too: /api/orgs/{id}/audit lists by the ORG id, and approve /
+	// reject both write org-keyed rows. A team-keyed row alone leaves the
+	// approver's own view holding the DECISIONS with no record of what was
+	// requested — and the ProvisionApproval is deleted on decision, so the
+	// queue no longer holds it either. docs/ticket-context.md promises all
+	// three events land in the audit log; this is what makes that true of
+	// the log the approver actually reads.
+	s.auditOrg(r, orgID, "forge.provision.approval_requested", "provision_approval", a.ID, map[string]any{
+		"repo": a.RepoFullName, "bots": a.BotIDs, "team_id": teamID, "requested_by": a.RequestedBy,
+	})
 	writeJSONStatus(w, http.StatusAccepted, map[string]any{
 		"pending_approval": true,
 		"approval_id":      a.ID,

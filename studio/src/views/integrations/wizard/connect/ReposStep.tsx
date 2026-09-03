@@ -20,7 +20,11 @@ export interface ReposStepProps {
   repoBots: BotEntryWithSchema[];
   reloadConnections: () => Promise<void>;
   onError: (m: string) => void;
-  onDone: (enabled?: { repo: string; connectionID: string }) => void;
+  onDone: (enabled?: {
+    repo: string;
+    connectionID: string;
+    pendingApproval?: boolean;
+  }) => void;
 }
 
 export default function ReposStep({
