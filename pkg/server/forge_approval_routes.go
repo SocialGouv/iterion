@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -31,22 +32,34 @@ func (s *Server) registerForgeApprovalRoutes() {
 // the approval store is wired, the org opted in, and the caller does not
 // already hold the org-admin approval right. Empty string = provision
 // directly.
-func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Identity, teamID string) string {
+//
+// FAIL CLOSED: a store error reading the team or the org is returned as
+// an error, never as "no approval needed" — otherwise a transient Mongo
+// blip would silently bypass Org.RequireProvisionApproval. A team with no
+// parent org (local mode, legacy rows) legitimately has no approval
+// authority and provisions directly.
+func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Identity, teamID string) (string, error) {
 	if s.provisionApprovals == nil || s.authSvc == nil {
-		return ""
+		return "", nil
 	}
 	t, err := s.authStore().GetTeam(ctx, teamID)
-	if err != nil || t.OrgID == "" {
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("resolve team %s for the provision-approval gate: %w", teamID, err)
+	}
+	if t.OrgID == "" {
+		return "", nil
 	}
 	o, err := s.authStore().GetOrg(ctx, t.OrgID)
-	if err != nil || !o.RequireProvisionApproval {
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("resolve org %s for the provision-approval gate: %w", t.OrgID, err)
+	}
+	if !o.RequireProvisionApproval {
+		return "", nil
 	}
 	if s.canManageOrg(ctx, id, t.OrgID) {
-		return "" // org admin / super-admin: auto-approved by right
+		return "", nil // org admin / super-admin: auto-approved by right
 	}
-	return t.OrgID
+	return t.OrgID, nil
 }
 
 // parkProvisionRequest records the pending request and answers the team
@@ -166,7 +179,27 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusServiceUnavailable, "forge orchestrator not configured")
 		return
 	}
+	// Staleness chokepoint: the record replays a request captured earlier,
+	// and the team may have moved since. Approving must never resurrect
+	// state the team tore down — verify the referenced integration (for an
+	// update request) and the connection still exist, and answer 409 with
+	// the reason so the admin rejects the stale record instead of
+	// re-provisioning it by surprise.
 	ctx := store.WithTenant(r.Context(), a.TenantID)
+	if a.IntegrationID != "" && s.forgeIntegrations != nil {
+		if ri, err := s.forgeIntegrations.Get(ctx, a.IntegrationID); err != nil || ri.TenantID != a.TenantID {
+			httpError(w, http.StatusConflict,
+				"the integration this request updates no longer exists (the team removed it) — reject the request instead of approving it")
+			return
+		}
+	}
+	if s.forgeConnections != nil {
+		if conn, err := s.forgeConnections.Get(ctx, a.ConnectionID); err != nil || conn.TenantID != a.TenantID {
+			httpError(w, http.StatusConflict,
+				"the forge connection this request uses no longer exists — reject the request instead of approving it")
+			return
+		}
+	}
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
 		TenantID:       a.TenantID,
 		ConnectionID:   a.ConnectionID,

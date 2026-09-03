@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
@@ -53,6 +54,12 @@ export default function GovernanceTab({
   const settings = settingsQuery.data ?? null;
   const approvals = approvalsQuery.data ?? [];
   const teams = teamsQuery.data ?? [];
+  // A failed fetch must never render as an empty-but-healthy tab ("None."
+  // over a queue that exists) — mutation errors win the shared banner,
+  // else whichever query failed.
+  const fetchErr =
+    settingsQuery.error ?? approvalsQuery.error ?? teamsQuery.error ?? null;
+  const banner = err ?? (fetchErr ? errorMessage(fetchErr) : null);
 
   const reload = () => {
     setErr(null);
@@ -105,9 +112,9 @@ export default function GovernanceTab({
   return (
     <div className="space-y-6">
       {dialog}
-      {err && (
+      {banner && (
         <InlineBanner tone="danger" layout="inline">
-          {err}
+          {banner}
         </InlineBanner>
       )}
 
@@ -122,22 +129,21 @@ export default function GovernanceTab({
         {settings === null ? (
           <Spinner size="sm" label="Loading settings" />
         ) : (
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={settings.require_provision_approval}
-              disabled={!canManage}
-              onChange={(e) => void toggleApprovalFlag(e.target.checked)}
-            />
-            Require org approval for repo provisioning
-          </label>
+          <Checkbox
+            label="Require org approval for repo provisioning"
+            checked={settings.require_provision_approval}
+            disabled={!canManage}
+            onChange={(e) => void toggleApprovalFlag(e.target.checked)}
+          />
         )}
       </section>
 
       {canManage && (
         <section>
           <h3 className="font-medium mb-2">Pending provisioning requests</h3>
-          {approvals.length === 0 ? (
+          {approvalsQuery.error ? (
+            <div className="text-fg-muted text-sm">Could not load the queue — see the error above.</div>
+          ) : approvals.length === 0 ? (
             <div className="text-fg-muted text-sm">None.</div>
           ) : (
             <Table caption="Pending provisioning requests">

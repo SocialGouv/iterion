@@ -119,13 +119,16 @@ func (s *Server) handleUpdateOrgTeamCaps(w http.ResponseWriter, r *http.Request)
 	// team value overrides it in the launch gate (orValue), so without this
 	// clamp an org admin could raise a team above the deployment-wide limit.
 	// Raising past the ceiling stays super-admin (/api/admin/orgs). 0 keeps
-	// meaning "inherit the platform default" and is always allowed.
-	if d := s.orgDefaults.MaxConcurrentRuns; d > 0 && t.MaxConcurrentRuns > d {
+	// meaning "inherit the platform default" and is always allowed. Only the
+	// fields THIS request submitted are validated — a stored super-admin
+	// value above the ceiling must not lock the row against edits of the
+	// other field.
+	if d := s.orgDefaults.MaxConcurrentRuns; req.MaxConcurrentRuns != nil && d > 0 && t.MaxConcurrentRuns > d {
 		httpError(w, http.StatusUnprocessableEntity,
 			"max_concurrent_runs %d exceeds the platform ceiling %d — a platform admin must raise it", t.MaxConcurrentRuns, d)
 		return
 	}
-	if d := s.orgDefaults.LaunchRatePerMin; d > 0 && t.LaunchRatePerMin > d {
+	if d := s.orgDefaults.LaunchRatePerMin; req.LaunchRatePerMin != nil && d > 0 && t.LaunchRatePerMin > d {
 		httpError(w, http.StatusUnprocessableEntity,
 			"launch_rate_per_min %d exceeds the platform ceiling %d — a platform admin must raise it", t.LaunchRatePerMin, d)
 		return

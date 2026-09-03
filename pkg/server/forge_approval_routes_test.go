@@ -301,6 +301,47 @@ func TestOrgSettings_RequireProvisionApproval(t *testing.T) {
 	}
 }
 
+// Approving a request whose target the team tore down meanwhile must not
+// resurrect it: the approve answers 409 and the record stays for reject.
+func TestProvisionApproval_StaleTargetRefused(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	// Seed an integration (org admin, direct), then park an expanding update.
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+	w = httptest.NewRecorder()
+	req := forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, `{"bot_ids":["review-pr","dep-guard"]}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("park update: code=%d body=%s", w.Code, w.Body.String())
+	}
+	aid := approvalIDFrom(t, w)
+
+	// The team deletes the integration before the org admin decides.
+	if err := s.forgeIntegrations.Delete(context.Background(), res.IntegrationID); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	req = orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	req.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale approve should 409: code=%d body=%s", w.Code, w.Body.String())
+	}
+	// The record survives for an explicit reject.
+	if list, _ := s.provisionApprovals.ListByOrg(context.Background(), "o1"); len(list) != 1 {
+		t.Fatalf("stale record should stay pending: %d", len(list))
+	}
+}
+
 func approvalIDFrom(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()
 	var parked struct {
@@ -334,6 +375,28 @@ func TestOrgTeamCaps_PlatformCeiling(t *testing.T) {
 	s.handleUpdateOrgTeamCaps(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("at-ceiling should pass: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// A STORED above-ceiling value (super-admin set) must not lock the row:
+	// patching only the other field validates only the submitted field.
+	tm, err := s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm.MaxConcurrentRuns = 50 // above the ceiling of 5, super-admin territory
+	if err := s.authStore().UpdateTeam(context.Background(), tm); err != nil {
+		t.Fatal(err)
+	}
+	req = orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/teams/t1/caps", `{"launch_rate_per_min":10}`, "o1")
+	req.SetPathValue("team_id", "t1")
+	w = httptest.NewRecorder()
+	s.handleUpdateOrgTeamCaps(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patching the other field should pass despite a stored above-ceiling cap: code=%d body=%s", w.Code, w.Body.String())
+	}
+	tm, _ = s.authStore().GetTeam(context.Background(), "t1")
+	if tm.MaxConcurrentRuns != 50 || tm.LaunchRatePerMin != 10 {
+		t.Fatalf("stored cap clobbered or rate not applied: %+v", tm)
 	}
 }
 
