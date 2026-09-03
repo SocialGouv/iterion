@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.96.0](https://github.com/SocialGouv/iterion/compare/v3.95.0...v3.96.0) (2026-09-03)
+
+### Features
+
+* **secrets:** per-key concurrency ceiling — the operator's answer to fair-usage limits no provider will quantify ([#640](https://github.com/SocialGouv/iterion/issues/640)) ([b7e8402](https://github.com/SocialGouv/iterion/commit/b7e8402b601a085c5f3d479cb6f5b784f7cd7801))
+
+    <details><summary>why</summary>
+
+    A provider that freezes an account for 'usage pattern' violations publishes NO numeric bound to adapt to: the refusal message names no frequency, the 200s carry no rate headers, and the threshold only reveals itself by tripping it — which is how a whole fleet ended up frozen behind one credential. The bound has to be operator-set.
+
+    </details>
+
 ## [3.95.0](https://github.com/SocialGouv/iterion/compare/v3.94.3...v3.95.0) (2026-09-03)
 
 ### Features
