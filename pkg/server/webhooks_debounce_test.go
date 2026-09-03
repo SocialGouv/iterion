@@ -163,6 +163,66 @@ func TestMemoryDeferredLaunchStore_Semantics(t *testing.T) {
 	}
 }
 
+// Reschedule is the retry half of the claim contract, and it is
+// generation-guarded for the same reason Delete is: a fresh push that
+// landed mid-launch must keep its payload. A stale re-arm must also
+// never RESURRECT a row a closed PR purged.
+func TestMemoryDeferredLaunchStore_RescheduleIsGenerationGuarded(t *testing.T) {
+	st := webhooks.NewMemoryDeferredLaunchStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	row := func(idem string) webhooks.DeferredLaunch {
+		return webhooks.DeferredLaunch{
+			SubjectKey: "t1|w1|acme/a|pr:7", FireAt: now.Add(-time.Second), CreatedAt: now,
+			Targets: []webhooks.DeferredTarget{{BotID: "review-pr", IdemKey: idem}},
+		}
+	}
+	if ok, err := st.Upsert(ctx, row("k1")); err != nil || !ok {
+		t.Fatalf("upsert: ok=%v err=%v", ok, err)
+	}
+	claimed, _ := st.ClaimDue(ctx, now, 2*time.Minute, 10)
+	if len(claimed) != 1 {
+		t.Fatalf("claim: %v", claimed)
+	}
+	// A fresh push lands while the claimer is launching.
+	if ok, err := st.Upsert(ctx, row("k2")); err != nil || !ok {
+		t.Fatalf("re-upsert: ok=%v err=%v", ok, err)
+	}
+	// The claimer's launch failed and re-arms its OWN generation: the
+	// fresh payload must survive, unchanged and immediately due.
+	if err := st.Reschedule(ctx, claimed[0].SubjectKey, claimed[0].Generation, now.Add(time.Hour), 1); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := st.ClaimDue(ctx, now, 2*time.Minute, 10)
+	if len(fresh) != 1 || fresh[0].Targets[0].IdemKey != "k2" {
+		t.Fatalf("a stale re-arm clobbered the fresh push: %+v", fresh)
+	}
+	if fresh[0].Attempts != 0 {
+		t.Fatalf("the fresh payload must keep its full retry budget, attempts=%d", fresh[0].Attempts)
+	}
+	// Re-arming the CURRENT generation does take effect.
+	if err := st.Reschedule(ctx, fresh[0].SubjectKey, fresh[0].Generation, now.Add(time.Hour), 3); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ := st.ClaimDue(ctx, now.Add(time.Minute), 2*time.Minute, 10); len(due) != 0 {
+		t.Fatalf("a re-armed row must not be due before its new FireAt: %v", due)
+	}
+	due, _ := st.ClaimDue(ctx, now.Add(2*time.Hour), 2*time.Minute, 10)
+	if len(due) != 1 || due[0].Attempts != 3 {
+		t.Fatalf("re-armed row = %+v, want one due row carrying attempts=3", due)
+	}
+	// A purged subject (closed PR) must stay purged.
+	if err := st.DeleteBySubject(ctx, due[0].SubjectKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Reschedule(ctx, due[0].SubjectKey, due[0].Generation, now, 4); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := st.ClaimDue(ctx, now.Add(3*time.Hour), 2*time.Minute, 10); len(left) != 0 {
+		t.Fatalf("a re-arm resurrected a purged subject: %v", left)
+	}
+}
+
 // A lapsed lease re-offers the row (the claimer died mid-launch): the
 // at-least-once half of the contract — the launch tail's idempotency key
 // is what turns the replay of an already-launched target into a no-op.
