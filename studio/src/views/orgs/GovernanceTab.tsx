@@ -77,37 +77,47 @@ export default function GovernanceTab({
     }
   };
 
-  const approve = async (a: ProvisionApproval) => {
+  // The id whose decision is in flight. A decision is claimed server-side
+  // (first writer wins), so a double-click loses the race and comes back as
+  // "already approved or rejected" — an alarming thing to read about your
+  // own second click. Disable that row while it is being decided.
+  const [deciding, setDeciding] = useState<string | null>(null);
+
+  const decide = async (
+    a: ProvisionApproval,
+    run: () => Promise<unknown>,
+    confirmOpts: Parameters<typeof confirm>[0],
+  ) => {
+    if (deciding) return;
+    const ok = await confirm(confirmOpts);
+    if (!ok) return;
+    setDeciding(a.id);
+    try {
+      await run();
+      reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setDeciding(null);
+    }
+  };
+
+  const approve = (a: ProvisionApproval) => {
     const extras = approvalExtras(a);
-    const ok = await confirm({
+    return decide(a, () => approveProvision(orgID, a.id), {
       title: "Approve provisioning?",
       message: `Enable ${a.bot_ids.join(", ")} on ${a.repo_full_name}${extras ? ` (${extras})` : ""}? The webhook and token are created on the forge immediately.`,
       confirmLabel: "Approve",
     });
-    if (!ok) return;
-    try {
-      await approveProvision(orgID, a.id);
-      reload();
-    } catch (e) {
-      setErr(errorMessage(e));
-    }
   };
 
-  const reject = async (a: ProvisionApproval) => {
-    const ok = await confirm({
+  const reject = (a: ProvisionApproval) =>
+    decide(a, () => rejectProvision(orgID, a.id), {
       title: "Reject provisioning?",
       message: `Reject the request to enable ${a.bot_ids.join(", ")} on ${a.repo_full_name}? The requesting team admin can submit a new one.`,
       confirmLabel: "Reject",
       confirmVariant: "danger",
     });
-    if (!ok) return;
-    try {
-      await rejectProvision(orgID, a.id);
-      reload();
-    } catch (e) {
-      setErr(errorMessage(e));
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -170,10 +180,20 @@ export default function GovernanceTab({
                     <Td className="text-fg-muted">{formatDateTime(a.created_at)}</Td>
                     <Td align="right">
                       <div className="inline-flex gap-2">
-                        <Button variant="primary" size="sm" onClick={() => void approve(a)}>
-                          Approve
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={deciding !== null}
+                          onClick={() => void approve(a)}
+                        >
+                          {deciding === a.id ? "Approving…" : "Approve"}
                         </Button>
-                        <Button variant="danger" size="sm" onClick={() => void reject(a)}>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          disabled={deciding !== null}
+                          onClick={() => void reject(a)}
+                        >
                           Reject
                         </Button>
                       </div>

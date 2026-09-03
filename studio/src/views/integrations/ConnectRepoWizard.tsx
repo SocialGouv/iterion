@@ -197,6 +197,15 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
               queryClient.invalidateQueries({
                 queryKey: ["team-forge-repos", teamID],
               });
+              // Same as BindBotWizard: the done step points the operator at
+              // the Integrations tab's "Awaiting org approval" banner, which
+              // reads this list — drop the cached copy or the banner they
+              // were just told about is not there.
+              if (enabled?.pendingApproval) {
+                queryClient.invalidateQueries({
+                  queryKey: ["team-provision-approvals", teamID],
+                });
+              }
               const p = new URLSearchParams({ step: "done" });
               if (enabled) {
                 p.set("connected", enabled.connectionID);

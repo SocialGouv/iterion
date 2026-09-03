@@ -213,6 +213,16 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
               queryClient.invalidateQueries({
                 queryKey: ["team-forge-repos", teamID],
               });
+              // A parked request (202) is what the Integrations tab's
+              // "Awaiting org approval" banner reads, and the done step
+              // tells the operator to look for it there. Without this the
+              // list is served from cache and the banner is missing until
+              // something else happens to refetch it.
+              if (pending) {
+                queryClient.invalidateQueries({
+                  queryKey: ["team-provision-approvals", teamID],
+                });
+              }
               gotoStep("done");
             }}
           />
