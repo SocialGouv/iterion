@@ -215,9 +215,22 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		c.Issue.ID, tok, d.warn, func(error) { cancelCard() })
 	defer func() { cancelCard(); sess.Stop() }()
 
-	// Move to in-progress for board visibility (best-effort, fenced).
+	// Move to in-progress for board visibility (best-effort, fenced) —
+	// best-effort for a transition failure, which says nothing about
+	// ownership. NOT for ErrClaimConflict: that is the fence reporting the
+	// claim is no longer ours, so another replica (or the watchdog) already
+	// took this card. Launching past it starts a second run on it, and
+	// every later fenced write is refused too — the final SetStateOwned and
+	// the ReleaseOwned below — so the card ends up neither filed nor freed.
+	// ADR §6/§9 make this reachable during release N: an old binary's
+	// full-document write strips the epoch, and the fence then refuses
+	// everyone, the live holder included.
 	if err := d.coord.SetStateOwned(cardCtx, c.Tenant, c.Issue.ID, d.inProgressState, tok); err != nil {
 		d.warn("card %s/%s → in_progress: %v", c.Tenant, c.Issue.ID, err)
+		if errors.Is(err, tracker.ErrClaimConflict) {
+			d.warn("card %s/%s not started: the claim was lost before launch — leaving it to its owner", c.Tenant, c.Issue.ID)
+			return
+		}
 	}
 	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState

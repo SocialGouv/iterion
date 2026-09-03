@@ -1020,10 +1020,32 @@ func (c *Dispatcher) runDispatchSetup(plan dispatchSetupPlan) (created bool, ok 
 	var transitionedFrom string
 	if target := plan.runningTarget; target != "" && plan.sourceState != target {
 		if err := c.fencedUpdateState(plan.runCtx, plan.issueID, target, plan.session); err != nil {
+			if errors.Is(err, tracker.ErrClaimConflict) {
+				// The one error the "claim is already taken" premise below
+				// does NOT cover — the fence INVERTS it: a conflict is proof
+				// the claim is no longer ours. Somebody else (another daemon,
+				// an operator, the watchdog) owns this card, and running
+				// anyway starts a second run on it while every later fenced
+				// write — the finish transition, the release — is refused, so
+				// the card is never filed AND never freed. The heartbeat
+				// would only notice a lease-third later.
+				//
+				// Not hypothetical during this branch's own rollout: ADR §6
+				// says an old binary's full-document write strips the epoch
+				// and the fence then "refuses everyone, including the live
+				// holder", and §9 guarantees that population exists all
+				// through release N.
+				err = fmt.Errorf("claim lost before launch: %w", err)
+				c.logger.Warn("dispatcher: %s not started — %v", plan.identifier, err)
+				c.postCmd(cmdDispatchSetupDone{issueID: plan.issueID, err: err})
+				return false, false
+			}
 			if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
 				c.logger.Warn("dispatcher: in-progress transition %s: %v", plan.identifier, err)
 			}
-			// continue regardless — claim is already taken.
+			// continue regardless — an ordinary transition failure says
+			// nothing about ownership, and a stuck UpdateState must not
+			// strand work whose claim we still hold.
 		} else {
 			transitionedFrom = plan.sourceState
 		}

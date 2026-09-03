@@ -91,3 +91,56 @@ func TestRVAT18_RaceSetupWorkerVsShutdownStopClaimSession(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// conflictLeaser is nopLeaser whose fenced state write reports the claim
+// is no longer ours — the shape of another daemon, an operator, or the
+// watchdog having taken the card, and of the release-N mixed fleet where
+// an old binary's full-document write strips the epoch (ADR §6).
+type conflictLeaser struct{ nopLeaser }
+
+func (conflictLeaser) UpdateStateOwned(context.Context, string, string, tracker.ClaimToken) error {
+	return tracker.ErrClaimConflict
+}
+
+// TestRunDispatchSetup_ClaimConflictAbortsTheLaunch: the in-progress
+// transition is best-effort "because the claim is already taken" — a
+// premise ErrClaimConflict INVERTS. It is the one error proving this
+// worker no longer owns the card, so continuing starts a second run on
+// it while every later fenced write (the finish transition, the release)
+// is refused: the card ends up neither filed nor released, and the
+// heartbeat only notices a lease-third later.
+func TestRunDispatchSetup_ClaimConflictAbortsTheLaunch(t *testing.T) {
+	ws, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Name: "x", Workflow: t.TempDir() + "/f.bot",
+		Agent:     AgentConfig{MaxConcurrent: 4, RunningState: "in_progress"},
+		Workspace: WorkspaceConfig{Root: t.TempDir()}}
+	cfg.applyDefaults()
+	cfg.Agent.RunningState = "in_progress"
+	c, err := New(Options{Config: cfg, Tracker: conflictLeaser{}, Runner: &StubRunner{},
+		Workspaces: ws, Logger: quietLogger(), HostMarker: "h-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := StartClaimSession(c.leaser, "i1", tracker.ClaimToken{Marker: "h-1", Epoch: 1},
+		func(string, ...any) {}, nil)
+	defer sess.Stop()
+	entry := &runningEntry{IssueID: "i1", Identifier: "i1", WorkflowState: "ready", claim: sess}
+	c.state.running["i1"] = entry
+
+	created, ok := c.runDispatchSetup(dispatchSetupPlan{
+		issueID: "i1", identifier: "i1",
+		sourceState: "ready", runningTarget: "in_progress",
+		runCtx: context.Background(), entry: entry, session: sess,
+	})
+
+	if ok {
+		t.Fatal("setup reported OK after the fence refused the move — the run starts on a card this worker no " +
+			"longer owns, and every later fenced write is refused: never filed, never released")
+	}
+	if created {
+		t.Fatal("a workspace was created for a launch that must not happen")
+	}
+}

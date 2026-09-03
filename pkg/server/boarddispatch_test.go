@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2414,5 +2415,40 @@ func TestCloudReaper_FailedFilingKeepsTheClaim(t *testing.T) {
 	}
 	if state != native.StateInProgress {
 		t.Fatalf("precondition broken: the filing was supposed to fail, state = %q", state)
+	}
+}
+
+// stolenClaimCoord is a coordinator whose fenced state write always
+// reports the claim is no longer ours — the card was taken between the
+// Claim and the move (another replica, the watchdog, or the release-N
+// mixed fleet where an old binary's full-document write strips the
+// epoch and the fence refuses everyone, ADR §6).
+type stolenClaimCoord struct{ *fakeBoardCoord }
+
+func (s *stolenClaimCoord) SetStateOwned(context.Context, string, string, string, tracker.ClaimToken) error {
+	return tracker.ErrClaimConflict
+}
+
+// TestCloudProcessCard_ClaimConflictAbortsTheLaunch: the in-progress
+// move is "best-effort, fenced" — right for a transition failure, which
+// says nothing about ownership, wrong for ErrClaimConflict, which is
+// the fence proving the claim is gone. Warning and calling d.process
+// anyway runs a second run on a card another owner holds, and every
+// later fenced write (the final state, the release) is refused too.
+func TestCloudProcessCard_ClaimConflictAbortsTheLaunch(t *testing.T) {
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1", Issue: native.Issue{ID: "c-stolen", State: native.StateReady},
+	})
+	var processed atomic.Bool
+	d := newBoardDispatcher(&stolenClaimCoord{fakeBoardCoord: f},
+		func(context.Context, string, native.Issue) error { processed.Store(true); return nil },
+		"replica-A", 1, iterlog.Nop())
+
+	d.tick(context.Background())
+	d.wg.Wait()
+
+	if processed.Load() {
+		t.Fatal("the run was launched after the fence refused the in-progress move — a second run on a card " +
+			"this replica no longer owns, whose finish transition and release are both refused")
 	}
 }
