@@ -32,6 +32,21 @@ func TestIsRateLimitMessage(t *testing.T) {
 			want: true,
 		},
 		{
+			// The shape that re-opened the masking bug on 2026-09-03:
+			// THREE words and an apostrophe between "your" and "limit".
+			name: "org spend ceiling (real-world, run 01a06694)",
+			text: "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage",
+			want: true,
+		},
+		{
+			// The qualifier is bounded at three words on purpose: an
+			// agent narrating its own budget reasoning must not be read
+			// as the provider cutting us off.
+			name: "agent prose about limits is NOT a refusal",
+			text: "I checked whether we hit your project's documented per-user monthly request ceiling limit and we did not.",
+			want: false,
+		},
+		{
 			name: "future noun variant (daily) — tolerant match keeps this from re-masking",
 			text: "You've hit your daily limit · resets midnight (UTC)",
 			want: true,
@@ -107,5 +122,28 @@ func TestErrRateLimited_Error(t *testing.T) {
 	got := e.Error()
 	if !strings.Contains(got, "rate_limited") || !strings.Contains(got, BackendClaudeCode) {
 		t.Errorf("Error() = %q, want it to contain rate_limited + provider name", got)
+	}
+}
+
+// The codex bare-notice detector had the same masking gap the claude_code
+// regex was widened for: its prefixes carry no qualifier, so every
+// inserted-noun variant sailed through as a normal result. The opener
+// anchor keeps the prefix discipline that stops agent prose qualifying.
+func TestIsCodexBareLimitNoticeCoversNounVariants(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"You've hit your usage limit.", true},              // enumerated prefix, unchanged
+		{"You've hit your weekly limit · resets 9pm", true}, // was missed
+		{"You've hit your session limit · resets 10:30am", true},
+		{"You've hit your org's monthly spend limit · ask your admin to raise it", true},
+		{"I verified we never hit your weekly limit on this account.", false}, // prose, not an opener
+		{"Selected model is at capacity.", true},
+	}
+	for _, c := range cases {
+		if got := isCodexBareLimitNotice(c.text); got != c.want {
+			t.Errorf("isCodexBareLimitNotice(%q) = %v, want %v", c.text, got, c.want)
+		}
 	}
 }
