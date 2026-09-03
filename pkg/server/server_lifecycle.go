@@ -20,6 +20,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 )
 
+// Forge refresh cadence. The invariant is Lead > tick period: a GitHub App
+// installation token lives 1h and RunOnce only refreshes what expires within
+// Lead, so with Lead below the tick period a token can go from "not yet due"
+// to "expired" between two ticks. The refresh then lands AT expiry — and
+// because the next mint inherits that phase (mint at T ⇒ expiry T+1h ⇒ next
+// mint at the first tick ≥ T+1h−Lead), the connection locks onto an
+// always-refreshed-at-death cycle: any run whose launch minute sits just
+// before the lock point is sealed a token with seconds of life, its clones
+// and pushes failing "Invalid username or token" / "could not read Username"
+// (Senti's hourly `17 * * * *` vs a :17:24 lock, 2026-09-03). With
+// Lead > tick, every token is re-minted 5–15 minutes BEFORE expiry, so a
+// sealed token always carries at least Lead − tick of remaining life.
+const (
+	forgeRefreshLead = 15 * time.Minute
+	forgeRefreshTick = 10 * time.Minute
+)
+
 // Addr returns the actual bound address (host:port) once ListenAndServe has
 // successfully created its listener. It blocks until the listener is ready or
 // the context is cancelled. Used by the desktop host when Port=0 was passed
@@ -178,7 +195,7 @@ func (s *Server) ListenAndServe() error {
 			Sealer:         s.sealer,
 			RefresherFor:   s.forgeRefresherFor,
 			SecurityMinter: s.forgeSecurityTokenMinter,
-			Lead:           5 * time.Minute,
+			Lead:           forgeRefreshLead,
 		}
 		go func() {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -187,7 +204,14 @@ func (s *Server) ListenAndServe() error {
 				<-s.shutdown
 				cancel()
 			}()
-			t := time.NewTicker(10 * time.Minute)
+			// Boot sweep: a rolling deploy re-phases the ticker below onto the
+			// new pod's start time, so a token that was about to be refreshed by
+			// the old replica's next tick could otherwise sit dying until this
+			// replica's first tick, up to a full period away.
+			if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+				s.logger.Warn("forge token refresh: %v", err)
+			}
+			t := time.NewTicker(forgeRefreshTick)
 			defer t.Stop()
 			for {
 				select {
