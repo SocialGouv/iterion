@@ -383,10 +383,12 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 	}
 }
 
-// addsBots reports whether `requested` contains a bot id absent from
-// `current` — part of the surface-expansion predicate of the org
-// approval gate.
-func addsBots(current, requested []string) bool {
+// addsAny reports whether `requested` contains an entry absent from
+// `current` — the raw "this list grew" half of the surface-expansion
+// predicates of the org approval gate. Used for bot ids, the label
+// allowlist and the authorized-replier list; it says nothing about
+// open-set semantics, which widensAllowlist layers on top.
+func addsAny(current, requested []string) bool {
 	have := make(map[string]bool, len(current))
 	for _, b := range current {
 		have[b] = true
@@ -408,7 +410,7 @@ func addsBots(current, requested []string) bool {
 // Tightenings (removing bots, turning auto-fix off, adding hold labels,
 // narrowing the allowlist) and LaunchVars edits go through directly.
 func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool {
-	if addsBots(ri.BotIDs, req.BotIDs) {
+	if addsAny(ri.BotIDs, req.BotIDs) {
 		return true
 	}
 	// Zero-touch lane turned ON (nil leaves the stored choice alone).
@@ -423,7 +425,7 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// An EMPTY allowlist means "any freshly-applied label dispatches", so
 	// clearing a non-empty one — or adding a label to it — widens dispatch.
 	if req.LabelAllowlist != nil && len(ri.LabelAllowlist) > 0 &&
-		(len(req.LabelAllowlist) == 0 || addsBots(ri.LabelAllowlist, req.LabelAllowlist)) {
+		(len(req.LabelAllowlist) == 0 || addsAny(ri.LabelAllowlist, req.LabelAllowlist)) {
 		return true
 	}
 	// Any schedule change arms (or re-arms) unattended recurring launches.
@@ -435,8 +437,18 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	}
 	// Overlap: "allow" is the only unbounded concurrency policy (skip and
 	// supersede both cap the repo at one live run); moving to it from a
-	// bounded stored policy widens. An empty stored value already means
-	// allow (the historical default), so that transition changes nothing.
+	// bounded stored policy widens. An empty stored value already behaves as
+	// allow, so that transition changes nothing.
+	//
+	// CAREFUL — that last claim is true of the WEBHOOK path only, and by a
+	// coincidence worth naming: overlapSupersedes (webhooks_common.go) short-
+	// circuits on "" before consulting schedgate at all, so an unset policy
+	// caps nothing. schedgate.Normalize maps "" to OverlapSkip
+	// (pkg/schedgate/policy.go), which is the OPPOSITE — and it is what
+	// cloudsched honours. The day the webhook launch tail reads skip/allow
+	// the way cloudsched does, "" becomes a BOUNDED policy and this arm has
+	// to drop the `ri.Overlap != ""` guard or it will wave through a real
+	// widening.
 	if req.Overlap == "allow" && ri.Overlap != "" && ri.Overlap != "allow" {
 		return true
 	}
@@ -510,11 +522,17 @@ func expandsWebhookSurface(before, after webhooks.Config) bool {
 		return true
 	}
 	// Bot scope: normalizeBotScope has already turned wildcard into ["*"].
-	if after.WildcardBots && !before.WildcardBots {
-		return true
-	}
-	if addsBots(before.BotIDs, after.BotIDs) {
-		return true
+	// A wildcard scope is the open set, so — exactly like an open allowlist
+	// — nothing can widen it, and narrowing OUT of it (wildcard_bots:false
+	// plus an explicit list) must not be read as "added a bot the previous
+	// list did not carry", which is what a bare addsAny against ["*"] says.
+	if !before.WildcardBots {
+		if after.WildcardBots {
+			return true
+		}
+		if addsAny(before.BotIDs, after.BotIDs) {
+			return true
+		}
 	}
 	// Gate-style allowlists: empty (or "*") means allow-all, so clearing or
 	// extending one widens which deliveries dispatch.
@@ -533,7 +551,7 @@ func expandsWebhookSurface(before, after webhooks.Config) bool {
 	}
 	// AuthorizedRepliers is an inverted list: it GRANTS the command right
 	// (empty = nobody bypasses the role check), so additions widen.
-	if addsBots(before.AuthorizedRepliers, after.AuthorizedRepliers) {
+	if addsAny(before.AuthorizedRepliers, after.AuthorizedRepliers) {
 		return true
 	}
 	// Lowering the role floor widens who may launch a /command. "" reads as
@@ -563,7 +581,9 @@ func expandsWebhookSurface(before, after webhooks.Config) bool {
 	}
 	// Overlap: "allow" is the only unbounded concurrency policy; the empty
 	// stored value already behaves as allow on this path (overlapSupersedes
-	// short-circuits on ""), so that transition changes nothing.
+	// short-circuits on ""), so that transition changes nothing. Same
+	// caveat as expandsProvisionSurface's Overlap arm — see the note there
+	// on schedgate.Normalize mapping "" to skip.
 	if after.Overlap == "allow" && before.Overlap != "" && before.Overlap != "allow" {
 		return true
 	}

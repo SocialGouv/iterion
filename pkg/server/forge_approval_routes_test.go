@@ -559,6 +559,12 @@ func TestProvisionApproval_WebhookPatchCannotBypassGate(t *testing.T) {
 		// ── TIGHTENINGS AND NO-OPS: the guard must stay narrow ─────────
 		{"remove a bot", func(c *webhooks.Config) { c.BotIDs = []string{"review-pr", "dep-guard"} },
 			`{"bot_ids":["review-pr"]}`, http.StatusOK},
+		// Narrowing OUT of wildcard: ["*"] is the open set, so naming one bot
+		// is a tightening — reading it as "added a bot ["*"] did not carry"
+		// would refuse the very gesture an operator uses to close the scope.
+		{"narrow a wildcard bot scope", func(c *webhooks.Config) {
+			c.WildcardBots, c.BotIDs = true, []string{"*"}
+		}, `{"bot_ids":["review-pr"],"wildcard_bots":false}`, http.StatusOK},
 		{"narrow the project allowlist", func(c *webhooks.Config) {
 			c.ProjectAllowlist = []string{"group/api", "group/other"}
 		}, `{"project_allowlist":["group/api"]}`, http.StatusOK},
