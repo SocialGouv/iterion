@@ -507,9 +507,11 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	// release only; ClaimForLaunch (marker-unconditional) still protects
 	// the admission loop, and pipelineTicketLaunchable the active-run
 	// case.
-	if cur, err := board.Get(iss.ID); err != nil {
+	cur, err := board.Get(iss.ID)
+	if err != nil {
 		return "", fmt.Errorf("read ticket: %w", err)
-	} else if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(s.boardNow(board)) {
+	}
+	if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(s.boardNow(board)) {
 		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
 	}
 	entry, found, err := s.findBot(iss.Bot)
@@ -526,12 +528,37 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 		s.warnAdmissionSkipOnce(iss.ID, iss.Bot, found)
 		return "", fmt.Errorf("bot %q is not in this workspace's catalog (or is disabled)", iss.Bot)
 	}
-	// Leave StateReady BEFORE launching so the next tick won't re-pick this
-	// ticket while Launch is in flight. StateInProgress is not StateReady, so
-	// admitReadyPipelines skips it; the run's status then drives the column.
-	if _, _, err := board.SetStateFrom(iss.ID, native.StateReady, native.StateInProgress); err != nil {
-		s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
-		return "", fmt.Errorf("claim ticket: %w", err)
+	// Leave the launch column BEFORE launching so the next tick won't
+	// re-pick this ticket while Launch is in flight. StateInProgress is not
+	// StateReady, so admitReadyPipelines skips it; the run's status then
+	// drives the column.
+	//
+	// The CAS is anchored on the state this call READ (cur), never on a
+	// hardcoded Ready: this endpoint deliberately has NO ready precondition
+	// — it is the operator's relaunch of a needs-attention card, which the
+	// Opened lane folds inbox/waiting_deps into — so a Ready-anchored CAS
+	// was a SILENT no-op (SetStateFrom returns changed=false, nil on drift)
+	// for every non-Ready launch. The run then started while the card sat
+	// where it was: reconcileFinishedTickets only files a ticket that is
+	// in_progress, so it was never filed done, and BlockerSatisfied accepts
+	// only done — its dependents parked in waiting_deps for ever.
+	//
+	// changed==false is a REFUSAL the caller surfaces, not something to
+	// walk past: the ticket moved between the read and the write, and
+	// whoever moved it may already be launching it. A terminal source is
+	// refused too — SetStateFrom raises ErrTerminalStateExit rather than
+	// resurrecting a closed card behind the operator's back; reopening is
+	// their explicit gesture, not a launch's side effect.
+	sourceState := cur.State
+	if sourceState != native.StateInProgress {
+		_, changed, err := board.SetStateFrom(iss.ID, sourceState, native.StateInProgress)
+		if err != nil {
+			s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
+			return "", fmt.Errorf("claim ticket: %w", err)
+		}
+		if !changed {
+			return "", fmt.Errorf("ticket %s moved out of %q while it was being launched — nothing was started; re-read the board and retry", iss.ID, sourceState)
+		}
 	}
 	res, err := runs.Launch(context.Background(), runview.LaunchSpec{
 		FilePath: entry.MainFile(),
@@ -558,9 +585,21 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	})
 	if err != nil {
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)
-		// Return it to Backlog so it isn't stuck claimed with no run.
-		if _, _, rErr := board.SetStateFrom(iss.ID, native.StateInProgress, native.StateInbox); rErr != nil {
-			s.logger.Warn("pipeline admission: revert ticket %s: %v", iss.ID, rErr)
+		// Put the ticket back where it came FROM, not in a fixed column: a
+		// card launched from blocked/waiting_deps that failed to start is
+		// not a backlog item, and dumping it in Backlog silently moved it
+		// somewhere its operator never put it. The one exception is Ready,
+		// which the admission loop re-picks every tick — parking it in
+		// Backlog is what breaks that relaunch loop, and is why the fixed
+		// target was there.
+		revertTo := sourceState
+		if revertTo == native.StateReady {
+			revertTo = native.StateInbox
+		}
+		if revertTo != native.StateInProgress {
+			if _, _, rErr := board.SetStateFrom(iss.ID, native.StateInProgress, revertTo); rErr != nil {
+				s.logger.Warn("pipeline admission: revert ticket %s: %v", iss.ID, rErr)
+			}
 		}
 		return "", fmt.Errorf("launch: %w", err)
 	}

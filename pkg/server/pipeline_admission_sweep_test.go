@@ -644,3 +644,132 @@ type healthyClockBoard struct {
 func (healthyClockBoard) ServerNow(context.Context) (time.Time, error) {
 	return time.Now().UTC(), nil
 }
+
+// TestLaunchTicketNow_MovesANonReadyTicket: the state move must be
+// CAS-anchored on the ticket's OWN state, never on a hardcoded Ready.
+// This endpoint has no ready precondition — by design: it is the
+// operator's relaunch of a needs-attention card, and the Opened lane
+// folds inbox/waiting_deps into itself, so a fresh inbox task with no
+// run satisfies every canLaunchNow guard. SetStateFrom returns
+// (clone, changed=false, nil) on drift — a SILENT no-op — so a
+// Ready-anchored CAS started a real run while leaving the card exactly
+// where it was. reconcileFinishedTickets only files a ticket that is
+// in_progress, so that card was never filed done, and BlockerSatisfied
+// counts only done: its dependents park in waiting_deps for ever, which
+// is verbatim the failure that sweep exists to prevent.
+//
+// The board's own event log is the oracle: it records the transition
+// that did (or did not) happen, independently of where the card ends up
+// after the launch fails.
+func TestLaunchTicketNow_MovesANonReadyTicket(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// inbox, NOT ready — the shape the operator's "launch now" serves.
+	iss, err := board.Create(native.Issue{Title: "needs attention", State: native.StateInbox, Bot: "probe-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, svc := newLaunchProbeServer(t)
+
+	// The launch itself may fail (no backend credential here); what is
+	// under test is the board move that precedes it.
+	_, _ = s.launchTicketNow(svc, board, iss)
+
+	var moved bool
+	if err := board.ScanEvents(func(e *native.Event) bool {
+		if e.Type != native.EvtIssueState || e.IssueID != iss.ID {
+			return true
+		}
+		if to, _ := e.Payload["to"].(string); to == native.StateInProgress {
+			moved = true
+			return false
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if !moved {
+		t.Fatal("a non-Ready ticket was never moved to in_progress — the CAS is anchored on a hardcoded Ready, " +
+			"so the run starts while the card stays put: never filed done, dependents parked in waiting_deps for ever")
+	}
+}
+
+// TestLaunchTicketNow_RefusesConcurrentDrift: changed==false is a
+// REFUSAL, not something to walk past. The ticket moved between the
+// read and the CAS, so whoever moved it may already be launching it —
+// starting a second run there is the double-launch the fence exists to
+// close, and reporting success for a card that never moved is worse.
+func TestLaunchTicketNow_RefusesConcurrentDrift(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := board.Create(native.Issue{Title: "raced", State: native.StateReady, Bot: "probe-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, svc := newLaunchProbeServer(t)
+	// The card has since moved on; the board reports the OLD state once,
+	// so the CAS that follows finds the real one and must refuse. A real
+	// run service is wired on purpose: without the guard the call walks
+	// straight into Launch, and that is the outcome under test.
+	if _, err := board.SetState(iss.ID, native.StateInbox); err != nil {
+		t.Fatal(err)
+	}
+	drifting := &driftingBoard{BoardStore: board, onceTo: native.StateReady, id: iss.ID}
+
+	_, err = s.launchTicketNow(svc, drifting, iss)
+	if err == nil {
+		t.Fatal("a ticket that moved under the CAS was accepted — the silent no-op reports success for a card that never moved")
+	}
+	if !strings.Contains(err.Error(), "moved out of") {
+		t.Fatalf("refused for the wrong reason: %v — the drift guard did not fire, so the launch went ahead on a card another writer owns", err)
+	}
+}
+
+// newLaunchProbeServer wires a server whose catalog resolves "probe-bot"
+// and a real run service, so launchTicketNow reaches its board move and
+// its Launch call for real.
+func newLaunchProbeServer(t *testing.T) (*Server, *runview.Service) {
+	t.Helper()
+	botDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(botDir, "probe-bot.bot"),
+		[]byte("workflow probe:\n  entry: start\n\ntool start:\n  command: \"true\"\n\nstart -> done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := runview.NewService("", runview.WithStore(rs), runview.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSweepTestServer()
+	s.cfg.Bots.Paths = []string{botDir}
+	return s, svc
+}
+
+// driftingBoard makes the board move exactly once between
+// launchTicketNow's fresh Get and its CAS — the race the guard covers.
+type driftingBoard struct {
+	native.BoardStore
+	id     string
+	onceTo string
+	done   bool
+}
+
+func (d *driftingBoard) Get(id string) (*native.Issue, error) {
+	iss, err := d.BoardStore.Get(id)
+	if err != nil || d.done || id != d.id {
+		return iss, err
+	}
+	d.done = true
+	// Report a state the board does not actually hold: the CAS that
+	// follows must find the real one and refuse.
+	clone := *iss
+	clone.State = d.onceTo
+	return &clone, nil
+}
