@@ -118,9 +118,11 @@ func NewMemoryDeferredLaunchStore() *MemoryDeferredLaunchStore {
 func (s *MemoryDeferredLaunchStore) Upsert(_ context.Context, d DeferredLaunch) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Newest payload wins wholesale — including clearing any lease: a
-	// fresh push during a claimed row's launch re-arms the subject.
+	// Newest payload wins wholesale — including clearing any lease and any
+	// retry budget the OLD payload had spent: a fresh push during a
+	// claimed row's launch re-arms the subject from scratch.
 	d.ClaimedUntil = time.Time{}
+	d.Attempts = 0
 	if prev, ok := s.rows[d.SubjectKey]; ok {
 		d.Generation = prev.Generation + 1
 		d.CreatedAt = prev.CreatedAt
@@ -156,6 +158,21 @@ func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string,
 	if d, ok := s.rows[subjectKey]; ok && d.Generation == generation {
 		delete(s.rows, subjectKey)
 	}
+	return nil
+}
+
+func (s *MemoryDeferredLaunchStore) RescheduleFailed(_ context.Context, subjectKey string, generation int64, fireAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.rows[subjectKey]
+	if !ok || d.Generation != generation {
+		// A fresher payload re-armed the subject mid-retry — it wins.
+		return nil
+	}
+	d.Attempts++
+	d.FireAt = fireAt
+	d.ClaimedUntil = time.Time{}
+	s.rows[subjectKey] = d
 	return nil
 }
 

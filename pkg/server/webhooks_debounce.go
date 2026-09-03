@@ -56,6 +56,16 @@ const (
 	webhookDeferLease = 2 * time.Minute
 
 	webhookDeferBatch = 50
+
+	// webhookDeferMaxAttempts bounds how many times one parked payload is
+	// launched before the sweeper gives up on it. The deferred lane
+	// answered the forge 202 and wrote no delivery row, so it owns the
+	// only retry that will ever happen — but a permanently-broken bot
+	// must not re-fire forever either.
+	webhookDeferMaxAttempts = 3
+	// webhookDeferRetryBackoff is the base delay before a failed parked
+	// launch is retried (multiplied by the attempt number).
+	webhookDeferRetryBackoff = time.Minute
 )
 
 // webhookSyncDebounceFromEnv resolves the quiet window.
@@ -200,16 +210,27 @@ func (s *Server) sweepDeferredWebhookLaunches(ctx context.Context, now time.Time
 		return
 	}
 	for _, d := range due {
-		s.fireDeferredWebhookLaunch(ctx, d)
+		s.fireDeferredWebhookLaunch(ctx, now, d)
 	}
 }
 
 // fireDeferredWebhookLaunch replays one parked delivery through the
-// ordinary launch tail and acknowledges the row's generation. Every
-// outcome — launched, duplicate, denial, error — acknowledges: the tail
-// has recorded its own delivery row either way, and re-firing a denial
-// would re-deny every 20s until the TTL.
-func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.DeferredLaunch) {
+// ordinary launch tail and then decides the row's fate:
+//
+//   - launched / duplicate / admission DENIAL → acknowledge (delete). The
+//     tail recorded its own delivery row, and re-firing a denial would
+//     re-deny every 20s until the TTL.
+//   - transient launch error (no denial) → RE-ARM with backoff, up to
+//     webhookDeferMaxAttempts. The ordinary tail treats StatusLaunchError
+//     as retryable-on-redelivery — but this lane already answered the
+//     forge 202 at park time and wrote no delivery row, so no redelivery
+//     is coming and acknowledging would destroy the review on the first
+//     Mongo blip.
+//
+// Per-target bookkeeping is unnecessary: launchWebhookTarget's step-1
+// replay check turns a retry of an already-launched target into
+// StatusDuplicate, so a partially-succeeded fan-out keeps its successes.
+func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, now time.Time, d webhooks.DeferredLaunch) {
 	cfg, err := s.webhookConfigs.Get(ctx, d.WebhookID)
 	switch {
 	case errors.Is(err, webhooks.ErrNotFound):
@@ -257,6 +278,7 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		SubjectSHA:   d.SubjectSHA,
 		SenderHandle: d.SenderHandle,
 	}
+	retryable := false
 	for _, t := range d.Targets {
 		res := s.launchWebhookTarget(ctx, d.PublicBase, cfg, meta, forgeLaunchTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
@@ -265,8 +287,30 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		if res.Status == webhooks.StatusLaunched {
 			s.scheduleForgeBoardProjection(meta.ProjectPath)
 		}
+		// A DENIAL is terminal (org quota / cost cap / concurrency —
+		// re-firing would re-deny every 20s); an infrastructure launch
+		// error is not.
+		if res.Status == webhooks.StatusLaunchError && res.denial == nil {
+			retryable = true
+		}
 		if s.logger != nil && res.Status != webhooks.StatusLaunched && res.Status != webhooks.StatusDuplicate {
 			s.logger.Warn("webhook debounce sweeper: parked %s launch for %s ended %s: %s", t.BotID, d.SubjectID, res.Status, res.Error)
+		}
+	}
+	if retryable {
+		if d.Attempts+1 < webhookDeferMaxAttempts {
+			backoff := time.Duration(d.Attempts+1) * webhookDeferRetryBackoff
+			if err := s.webhookDeferred.RescheduleFailed(ctx, d.SubjectKey, d.Generation, now.Add(backoff)); err == nil {
+				s.warnf("webhook debounce sweeper: parked launch for %s failed (attempt %d/%d) — retrying in %s",
+					d.SubjectID, d.Attempts+1, webhookDeferMaxAttempts, backoff)
+				return
+			}
+			s.warnf("webhook debounce sweeper: could not re-arm the failed launch for %s — acknowledging it instead", d.SubjectID)
+		} else {
+			// The point at which the review is genuinely lost: no delivery
+			// row, no redelivery, no retry left. It has to be loud.
+			s.warnf("webhook debounce sweeper: parked launch for %s FAILED %d times — giving up; %s %s will get NO review of this head (push again to re-arm)",
+				d.SubjectID, webhookDeferMaxAttempts, d.ProjectPath, d.SubjectSHA)
 		}
 	}
 	_ = s.webhookDeferred.Delete(ctx, d.SubjectKey, d.Generation)

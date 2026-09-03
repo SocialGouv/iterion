@@ -82,6 +82,19 @@ type DeferredLaunchStore interface {
 	// is done. A subject that re-armed mid-claim (higher generation)
 	// survives and fires again with its fresh payload.
 	Delete(ctx context.Context, subjectKey string, generation int64) error
+	// RescheduleFailed re-arms a row whose launch failed transiently:
+	// bumps Attempts, sets FireAt and clears the lease — IFF the row
+	// still holds the named generation. The CAS is load-bearing: a push
+	// arriving mid-retry has already Upserted a fresher payload (higher
+	// generation), and that one must win rather than be pushed back by
+	// the loser's backoff.
+	//
+	// It exists because the deferred lane answered the forge 202 at park
+	// time and wrote no delivery row, so NO redelivery is coming: the
+	// ordinary "StatusLaunchError is retryable on redelivery" contract
+	// has nothing to retry it. Without this the first transient blip
+	// destroys the review outright.
+	RescheduleFailed(ctx context.Context, subjectKey string, generation int64, fireAt time.Time) error
 }
 
 // Limits are the monthly call caps applied to a delivery. Zero means

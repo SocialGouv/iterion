@@ -304,6 +304,113 @@ func (failingDeferredStore) ClaimDue(context.Context, time.Time, time.Duration, 
 	return nil, nil
 }
 func (failingDeferredStore) Delete(context.Context, string, int64) error { return nil }
+func (failingDeferredStore) RescheduleFailed(context.Context, string, int64, time.Time) error {
+	return nil
+}
+
+// The deferred lane answered the forge 202 at park time and wrote no
+// delivery row, so NO redelivery is coming: it owns the only retry this
+// review will ever get. Acknowledging a transient launch failure (a Mongo
+// blip, a bot momentarily unlaunchable) therefore destroys the review —
+// the ordinary "StatusLaunchError is retryable on redelivery" contract
+// has nothing to retry it with. It must re-arm, and give up loudly.
+func TestSyncDebounce_TransientLaunchFailureIsRetriedThenGivesUp(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	var attempts int
+	var launched []string
+	s.webhookLaunchBot = func(_ context.Context, bot string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		attempts++
+		if attempts <= 2 {
+			return "", errors.New("transient: queue unavailable")
+		}
+		launched = append(launched, bot)
+		return "run-" + bot, nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.handleGitHubWebhook(httptest.NewRecorder(), ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	base := time.Now().UTC()
+	// Attempt 1 fails → re-armed one backoff out, not acknowledged.
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(4*time.Minute))
+	// Attempt 2 fails → re-armed again.
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(10*time.Minute))
+	// Attempt 3 succeeds.
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(20*time.Minute))
+	if attempts != 3 || len(launched) != 1 {
+		t.Fatalf("want 3 attempts ending in one launch, got attempts=%d launched=%v", attempts, launched)
+	}
+	// Acknowledged: no fourth attempt.
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(40*time.Minute))
+	if attempts != 3 {
+		t.Fatalf("the acknowledged row re-fired: attempts=%d", attempts)
+	}
+}
+
+// The bound: a permanently-broken launch must not re-fire forever.
+func TestSyncDebounce_LaunchFailuresAreBounded(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	var attempts int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		attempts++
+		return "", errors.New("permanently broken")
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.handleGitHubWebhook(httptest.NewRecorder(), ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	base := time.Now().UTC()
+	for i := 1; i <= 6; i++ {
+		s.sweepDeferredWebhookLaunches(context.Background(), base.Add(time.Duration(i)*10*time.Minute))
+	}
+	if attempts != webhookDeferMaxAttempts {
+		t.Fatalf("attempts = %d, want the bound %d", attempts, webhookDeferMaxAttempts)
+	}
+}
+
+// A push arriving mid-retry must WIN: the fresher payload keeps its own
+// window instead of being pushed back by the loser's backoff, and its
+// retry budget starts clean.
+func TestDeferredStore_RescheduleLosesToAFreshPush(t *testing.T) {
+	st := webhooks.NewMemoryDeferredLaunchStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	d := webhooks.DeferredLaunch{SubjectKey: "t1|w1|acme/a|pr:7", FireAt: now.Add(-time.Second), CreatedAt: now}
+	if err := st.Upsert(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	due, _ := st.ClaimDue(ctx, now, time.Minute, 10)
+	if len(due) != 1 {
+		t.Fatalf("claim: %v", due)
+	}
+	// A fresh push lands while the claimer is launching.
+	d.FireAt = now.Add(3 * time.Minute)
+	if err := st.Upsert(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	// The loser's reschedule must not touch it.
+	if err := st.RescheduleFailed(ctx, due[0].SubjectKey, due[0].Generation, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := st.ClaimDue(ctx, now.Add(4*time.Minute), time.Minute, 10)
+	if len(fresh) != 1 {
+		t.Fatalf("the fresh push must fire on its OWN window, got %v", fresh)
+	}
+	if fresh[0].Attempts != 0 {
+		t.Fatalf("a new payload starts with a clean retry budget, got attempts=%d", fresh[0].Attempts)
+	}
+}
 
 // When the park fails, the defer lane falls back to launching inline —
 // and that fallback WRITES AN HTTP RESPONSE. A launch-gate denial

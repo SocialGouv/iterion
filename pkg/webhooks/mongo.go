@@ -189,8 +189,11 @@ func (s *MongoDeferredLaunchStore) Upsert(ctx context.Context, d DeferredLaunch)
 				"source_ip":     d.SourceIP,
 				"public_base":   d.PublicBase,
 				"targets":       d.Targets,
-				// A fresh push re-arms even a subject mid-claim.
+				// A fresh push re-arms even a subject mid-claim — and
+				// starts from a clean retry budget: the failures belonged
+				// to the payload this one replaces.
 				"claimed_until": time.Time{},
+				"attempts":      0,
 			},
 			"$inc":         bson.M{"generation": 1},
 			"$setOnInsert": bson.M{"created_at": d.CreatedAt},
@@ -235,6 +238,21 @@ func (s *MongoDeferredLaunchStore) ClaimDue(ctx context.Context, now time.Time, 
 func (s *MongoDeferredLaunchStore) Delete(ctx context.Context, subjectKey string, generation int64) error {
 	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": subjectKey, "generation": generation}); err != nil {
 		return fmt.Errorf("webhooks: delete deferred launch: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoDeferredLaunchStore) RescheduleFailed(ctx context.Context, subjectKey string, generation int64, fireAt time.Time) error {
+	// The generation filter IS the CAS: a push that re-armed the subject
+	// mid-retry bumped it, so this update matches nothing and the fresher
+	// payload keeps its own FireAt.
+	if _, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": subjectKey, "generation": generation},
+		bson.M{
+			"$set": bson.M{"fire_at": fireAt, "claimed_until": time.Time{}},
+			"$inc": bson.M{"attempts": 1},
+		}); err != nil {
+		return fmt.Errorf("webhooks: reschedule deferred launch: %w", err)
 	}
 	return nil
 }

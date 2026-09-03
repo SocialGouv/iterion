@@ -579,6 +579,11 @@ type DeferredLaunch struct {
 	// ClaimedUntil is the sweep lease (zero = unclaimed). See
 	// DeferredLaunchStore.ClaimDue for the at-least-once contract.
 	ClaimedUntil time.Time `bson:"claimed_until,omitempty" json:"claimed_until,omitempty"`
+	// Attempts counts the launch attempts this payload has already spent
+	// (0 on a fresh park). Reset to 0 by every Upsert: a new push is a new
+	// payload, not a continuation of the old one's failures. Bounded by
+	// the sweeper — see DeferredLaunchStore.RescheduleFailed.
+	Attempts int `bson:"attempts,omitempty" json:"attempts,omitempty"`
 
 	// Event metadata, mirrored from the handler's parse so the sweep can
 	// rebuild delivery rows + supersede scoping without the raw payload.
