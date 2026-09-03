@@ -1185,3 +1185,82 @@ func (s *Server) launchWebhookTarget(
 	out.RunID, out.DeliveryID = runID, delivery.ID
 	return out
 }
+
+// prClosedRunReason names the cancel so the run list, and the merge-gate
+// synthetic status that quotes run.Error, say WHY. "cancelled by user"
+// there once sent operators hunting for a human who did nothing.
+const prClosedRunReason = "pull request closed or merged — nothing left to review"
+
+// stopRunsForDeadPR ends every run still bound to a pull request that just
+// closed or merged, and disarms any usage-window retry armed for one.
+//
+// Two distinct leaks, both observed: a run in FLIGHT keeps spending
+// provider quota on a diff nobody will merge, and a run PARKED on a
+// provider window is a promise to come back — hours later, to review and
+// comment on a dead pull request. Cancelling covers the first; the retry
+// disarm covers the second, and it is the one nothing else would do (the
+// retry lives in the store, not in the run's process).
+//
+// Scoped to the delivery's own subject (`pr:<n>`) across EVERY bot, unlike
+// supersedeLiveRuns which is per-bot: supersede replaces one bot's work
+// with newer work of the same bot, while a closed PR ends everyone's.
+// Best-effort throughout — the close event must answer 200 regardless, or
+// the forge starts disabling the hook.
+//
+// Returns how many runs it stopped, for the delivery audit reason.
+func (s *Server) stopRunsForDeadPR(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta) int {
+	if s.webhookDeliveries == nil || meta.SubjectID == "" {
+		return 0
+	}
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = func(runID string) error {
+			return s.runs.CancelWithReason(runID, prClosedRunReason)
+		}
+	}
+	retries := store.AsRunRetryStore(s.cfg.Store)
+	if cancel == nil && retries == nil {
+		return 0
+	}
+	recent, err := s.webhookDeliveries.ListByWebhook(ctx, cfg.TenantID, cfg.ID, supersedeLookback)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("webhooks: closed-PR stop lookup failed for %s %s: %v", cfg.ID, meta.SubjectID, err)
+		}
+		return 0
+	}
+	stopped := 0
+	seen := make(map[string]bool, len(recent))
+	for _, d := range recent {
+		if d.RunID == "" || d.SubjectID != meta.SubjectID || d.Status != webhooks.StatusLaunched {
+			continue
+		}
+		if seen[d.RunID] {
+			continue // one PR can have several deliveries per run's lifetime
+		}
+		seen[d.RunID] = true
+		// Disarm FIRST: a cancel that lands while a retry is still armed
+		// leaves the promise standing, and the sweeper would resume the
+		// run we just cancelled.
+		if retries != nil {
+			if aerr := retries.AbandonRunRetry(ctx, d.RunID, prClosedRunReason); aerr != nil && s.logger != nil {
+				s.logger.Debug("webhooks: could not disarm the retry of run %s on a closed PR: %v", d.RunID, aerr)
+			}
+		}
+		if cancel == nil {
+			continue
+		}
+		if cerr := cancel(d.RunID); cerr != nil {
+			// Ordinary: the run already finished. Only a live run cancels.
+			if s.logger != nil {
+				s.logger.Debug("webhooks: closed-PR stop could not cancel run %s (likely already finished): %v", d.RunID, cerr)
+			}
+			continue
+		}
+		stopped++
+		if s.logger != nil {
+			s.logger.Info("webhooks: stopped run %s (%s on %s) — its pull request closed or merged", d.RunID, d.BotID, meta.SubjectID)
+		}
+	}
+	return stopped
+}

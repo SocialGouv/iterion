@@ -188,6 +188,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// silently unmergeable. Those runs ARE dead; reconcile them.
 	if run.Status == store.RunStatusFailedResumable &&
 		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+		// Not dead, but not silent either: the check stays on its in-flight
+		// claim, which reads identically to a review that died. Say on the
+		// PR that it parked and when it resumes — on the EVENT only, since
+		// the sweep re-offers this same run every minute for an hour.
+		if via == gateTriggerEvent {
+			s.noticeGatePausedForRetry(ctx, run)
+		}
 		return nil
 	}
 

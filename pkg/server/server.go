@@ -382,6 +382,11 @@ type Server struct {
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
 
+	// forgeIssueCommenterFor is a test seam overriding how a connection's
+	// PR-comment client is resolved (the parked-review pause notice).
+	// Nil → real admin client via forgeAdminFor.
+	forgeIssueCommenterFor func(ctx context.Context, conn forge.Connection) (forgeIssueCommenter, error)
+
 	// forgeReviewerAssignerFor is a test seam overriding how the
 	// publish-review handler resolves a connection's reviewer self-assign
 	// capability (nil result = capability absent). Nil field → real admin

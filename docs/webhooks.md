@@ -135,6 +135,14 @@ event paths trigger; ping / push / everything else is silently filtered
 (returns 200 — a 4xx makes GitHub disable the webhook after repeated
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
+- **`pull_request`** with action **`closed`** (merged or not) → every run
+  still bound to that PR is **stopped**, and any armed usage-window retry is
+  **disarmed**. Scoped to the PR's own subject and across every bot, unlike
+  `overlap: supersede` which replaces one bot's work with newer work of the
+  same bot. Without it a review in flight keeps spending provider quota on a
+  diff nobody will merge, and a review PARKED on a quota window wakes hours
+  later to comment on a dead pull request. Nothing is ever launched on this
+  action.
 - **`pull_request`** with action `opened`, `reopened`, or `ready_for_review`
   — **plus `synchronize` when the webhook sets `review_on_sync`**, so a push
   to the head re-reviews and the `revi/review` status re-evaluates on the new

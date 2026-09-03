@@ -203,3 +203,13 @@ func (p Parsed) StateOpenOrUnknown() bool {
 func (p Parsed) SubjectID() string {
 	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
 }
+
+// IsClosed reports whether this delivery says the pull request is over —
+// merged or closed unmerged, which for a review are the same fact: there
+// is nothing left to judge. Anchored on the ACTION rather than the state
+// alone, because a `synchronize` on a PR whose payload happens to carry
+// state=closed is a race, not a close event; the state check keeps a
+// stale/reopened payload from ending a live review.
+func (p Parsed) IsClosed() bool {
+	return p.Action == "closed" && strings.EqualFold(p.State, "closed")
+}

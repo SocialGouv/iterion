@@ -92,6 +92,24 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 	meta := prforgePRMeta(p)
 
+	// A CLOSED or MERGED pull request ends every review it still owes.
+	// Two costs otherwise, both paid in production: a run in flight keeps
+	// burning provider quota to judge a diff nobody will merge, and a run
+	// PARKED on a usage window wakes up hours later — after the retry the
+	// gate reconciler is deliberately waiting on — to review, and comment
+	// on, a dead PR. Stopping is not launching, so it runs before the fork
+	// guard: a fork PR's `/command` runs must stop too.
+	if p.IsClosed() {
+		stopped := s.stopRunsForDeadPR(ctx, cfg, meta)
+		reason := "pull request closed — no runs to stop"
+		if stopped > 0 {
+			reason = fmt.Sprintf("pull request closed — stopped %d run(s) still bound to it", stopped)
+		}
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	// Fork guard (UNCONDITIONAL on the auto path): a fork PR (head repo != base
 	// repo) is untrusted — an adversary can open one to run code in our runner
 	// with the forge token and to exhaust the tenant's budget. So an inbound PR
