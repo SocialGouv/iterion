@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -340,6 +341,22 @@ func TestOAuthAccountLabel(t *testing.T) {
 		}
 		if rec, _ := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode); rec.AccountLabel != "" {
 			t.Fatalf("store label = %q after clearing", rec.AccountLabel)
+		}
+	})
+
+	t.Run("a label past the cap is refused on every path that accepts one", func(t *testing.T) {
+		long := strings.Repeat("é", maxOAuthAccountLabel+1)
+		if code, body := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", jo, `{"account_label":"`+long+`"}`); code != http.StatusBadRequest {
+			t.Fatalf("rename with a %d-rune label = %d body=%s, want 400", maxOAuthAccountLabel+1, code, body)
+		}
+		if code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials?account_label="+url.QueryEscape(long), jo, blob("sk-ant-oat01-B")); code != http.StatusBadRequest {
+			t.Fatalf("connect with a %d-rune label = %d body=%s, want 400", maxOAuthAccountLabel+1, code, body)
+		}
+		// Exactly at the cap is fine — the bound is on length, not on
+		// bytes, so a French name is not cut shorter than an ASCII one.
+		atCap := strings.Repeat("é", maxOAuthAccountLabel)
+		if code, body := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", jo, `{"account_label":"`+atCap+`"}`); code != http.StatusOK {
+			t.Fatalf("rename with a %d-rune label = %d body=%s, want 200", maxOAuthAccountLabel, code, body)
 		}
 	})
 

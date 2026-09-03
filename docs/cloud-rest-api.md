@@ -255,7 +255,7 @@ Full reference: [webhooks.md](webhooks.md).
 | `POST` | `/api/me/oauth/{kind}/authorize/complete` | member | Finish that handshake |
 | `POST` | `/api/me/oauth/{kind}/credentials` | member | Upload pasted `credentials.json` / `auth.json` |
 | `POST` | `/api/me/oauth/{kind}/refresh` | member | Refresh stored access token against the IdP |
-| `PATCH` | `/api/me/oauth/{kind}` | member | Name the account behind the credential (`{"account_label": "…"}`, `""` clears) — metadata only, the sealed credential is untouched |
+| `PATCH` | `/api/me/oauth/{kind}` | member | Name the account behind the credential (`{"account_label": "…"}`, `""` clears; ≤ 120 characters) — metadata only, the sealed credential is untouched |
 | `DELETE` | `/api/me/oauth/{kind}` | member | Disconnect |
 
 `authorize/complete` and `credentials` take an optional `?account_label=`

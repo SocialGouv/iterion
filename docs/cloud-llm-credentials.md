@@ -243,7 +243,9 @@ the `fingerprint`, which is the SAME string the logs print, so a log line
 and the API join without a human in the middle. The studio shows both on
 every connection card (Settings → Subscriptions, a team's Model providers
 tab, Admin → LLM credentials) with a *Name account* action, and both
-connect forms take the name up front.
+connect forms take the name up front — pre-filled with the current one,
+so a routine rotation through the studio keeps its name unless you
+change it.
 
 **The name follows the fingerprint.** A re-connect that names no account
 keeps the previous label only when it provably re-connects the same
