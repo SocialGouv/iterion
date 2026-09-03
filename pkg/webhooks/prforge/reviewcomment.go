@@ -140,5 +140,5 @@ func (p ParsedReviewComment) SubjectID() string {
 // pull_request lane, so a run launched from a thread reply can be found when
 // that PR later closes. Always a PR here: the event only exists on one.
 func (p ParsedReviewComment) PRSubjectID() string {
-	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
+	return PRSubject(p.PRNumber)
 }

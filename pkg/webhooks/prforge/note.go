@@ -118,7 +118,7 @@ func (p ParsedNote) PRSubjectID() string {
 	if !p.IsPullRequest {
 		return ""
 	}
-	return "pr:" + strconv.FormatInt(p.IssueNumber, 10)
+	return PRSubject(p.IssueNumber)
 }
 
 // Command extracts a leading slash-command from the comment body, e.g.

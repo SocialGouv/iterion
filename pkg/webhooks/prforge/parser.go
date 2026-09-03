@@ -199,9 +199,18 @@ func (p Parsed) StateOpenOrUnknown() bool {
 	return p.State == "" || strings.EqualFold(p.State, "open")
 }
 
+// PRSubject builds the stable per-PR subject identifier. ONE definition,
+// because three lanes must produce byte-identical strings for the same pull
+// request — the pull_request lane's own subject, and the parent handle a
+// `/command` comment and a review-thread reply carry — or a closed PR
+// cannot find the runs its comments launched.
+func PRSubject(number int64) string {
+	return "pr:" + strconv.FormatInt(number, 10)
+}
+
 // SubjectID is the stable per-PR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
-	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
+	return PRSubject(p.PRNumber)
 }
 
 // IsClosed reports whether this delivery says the pull request is over —
