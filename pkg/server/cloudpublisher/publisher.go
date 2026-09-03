@@ -1004,6 +1004,8 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 				why = "provider rejected the credential itself (auth failure)"
 			case usagecap.WindowFrequency:
 				why = "provider refused the account's request rate (fair-usage)"
+			case usagecap.WindowSpend:
+				why = "the account's spend ceiling is reached — an admin must raise it (claude.ai/settings/usage)"
 			default:
 				why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
 			}

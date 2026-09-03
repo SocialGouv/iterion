@@ -3,6 +3,7 @@ package delegate
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsRateLimitMessage(t *testing.T) {
@@ -30,6 +31,21 @@ func TestIsRateLimitMessage(t *testing.T) {
 			name: "anthropic forfait WEEKLY limit (real-world, feed-watch runner 019f7eee)",
 			text: "You've hit your weekly limit · resets 9pm (Europe/Paris)",
 			want: true,
+		},
+		{
+			// The shape that re-opened the masking bug on 2026-09-03:
+			// THREE words and an apostrophe between "your" and "limit".
+			name: "org spend ceiling (real-world, run 01a06694)",
+			text: "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage",
+			want: true,
+		},
+		{
+			// The qualifier is bounded at three words on purpose: an
+			// agent narrating its own budget reasoning must not be read
+			// as the provider cutting us off.
+			name: "agent prose about limits is NOT a refusal",
+			text: "I checked whether we hit your project's documented per-user monthly request ceiling limit and we did not.",
+			want: false,
 		},
 		{
 			name: "future noun variant (daily) — tolerant match keeps this from re-masking",
@@ -107,5 +123,56 @@ func TestErrRateLimited_Error(t *testing.T) {
 	got := e.Error()
 	if !strings.Contains(got, "rate_limited") || !strings.Contains(got, BackendClaudeCode) {
 		t.Errorf("Error() = %q, want it to contain rate_limited + provider name", got)
+	}
+}
+
+// The codex bare-notice detector had the same masking gap the claude_code
+// regex was widened for: its prefixes carry no qualifier, so every
+// inserted-noun variant sailed through as a normal result. The opener
+// anchor keeps the prefix discipline that stops agent prose qualifying.
+func TestIsCodexBareLimitNoticeCoversNounVariants(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"You've hit your usage limit.", true},              // enumerated prefix, unchanged
+		{"You've hit your weekly limit · resets 9pm", true}, // was missed
+		{"You've hit your session limit · resets 10:30am", true},
+		{"You've hit your org's monthly spend limit · ask your admin to raise it", true},
+		{"I verified we never hit your weekly limit on this account.", false}, // prose, not an opener
+		{"Selected model is at capacity.", true},
+	}
+	for _, c := range cases {
+		if got := isCodexBareLimitNotice(c.text); got != c.want {
+			t.Errorf("isCodexBareLimitNotice(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+// A bare "spend limit" in the ACCEPTANCE gate would abort a node on
+// ordinary agent narration — and worse, record a StatusRejected reading
+// that routes every later run around that credential for an hour. The
+// ceiling reaches the gate through its provider-shaped opener instead.
+// Strings verified against this detector, not invented.
+func TestSpendLimitProseIsNotARefusal(t *testing.T) {
+	prose := []string{
+		"I'll add a spend limit check to the config.",
+		"The credpool docs say a metered pledge must carry a spend limit.",
+		"Question: should the org spend limit be configurable per team?",
+		"Now adding the spend limit classification to usagecap.go.",
+	}
+	for _, s := range prose {
+		if isRateLimitMessage(s) {
+			t.Errorf("agent prose must not read as a provider refusal: %q", s)
+		}
+	}
+	// The provider's own notice still does, through "hit your … limit".
+	real := "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage"
+	if !isRateLimitMessage(real) {
+		t.Fatalf("the provider notice must still be caught: %q", real)
+	}
+	kind, window, _ := classifyRateLimit(real, time.Now())
+	if kind != RateLimitKindUsageWindow || string(window) != "spend" {
+		t.Fatalf("kind=%q window=%q", kind, window)
 	}
 }

@@ -26,6 +26,22 @@ func TestClassifyRateLimit(t *testing.T) {
 			wantWindow: "frequency",
 		},
 		{
+			// The account SPEND ceiling, verbatim from the wire
+			// (2026-09-03, run 01a06694): three words and an apostrophe
+			// between "your" and "limit" defeated the old one-word
+			// qualifier, so the notice sailed through as the node's
+			// answer and died as "structured output invalid: missing
+			// required field …" — three branch-improve-loop runs on one
+			// morning. It names its own window: a money ceiling reopens
+			// when an admin raises it, never on a reset instant, so
+			// filing it as a nameless window would arm a blind retry
+			// against a wall.
+			name:       "org spend ceiling names the spend window, no reset",
+			text:       "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage",
+			wantKind:   RateLimitKindUsageWindow,
+			wantWindow: "spend",
+		},
+		{
 			name:      "forfait limit with pm clock",
 			text:      "You've hit your limit · resets 3pm",
 			wantKind:  RateLimitKindUsageWindow,

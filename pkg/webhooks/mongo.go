@@ -132,6 +132,23 @@ func (s *MongoDeliveryStore) CountLaunched(ctx context.Context, tenantID, webhoo
 	return int(n), nil
 }
 
+// ListLaunchedBySubject returns the subject's launched deliveries, newest
+// first. Unbounded by design (see the interface): one pull request's own
+// launches are few, and the point is to miss none.
+func (s *MongoDeliveryStore) ListLaunchedBySubject(ctx context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error) {
+	return s.kit.List(ctx, bson.M{
+		"tenant_id":    tenantID,
+		"webhook_id":   webhookID,
+		"project_path": projectPath,
+		"run_id":       bson.M{"$nin": bson.A{nil, ""}},
+		"$or": bson.A{
+			bson.M{"subject_id": subjectID},
+			bson.M{"parent_subject_id": subjectID},
+		},
+	}, "list launched deliveries by subject", "decode launched deliveries",
+		options.Find().SetSort(bson.M{"received_at": -1}))
+}
+
 // ---- MongoCounter ----
 
 type MongoCounter struct{ col *mongo.Collection }

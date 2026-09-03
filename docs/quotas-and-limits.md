@@ -124,9 +124,24 @@ Cost metering is "floor, not invoice":
   ([pkg/runner/loop_metrics.go:240-260](../pkg/runner/loop_metrics.go),
   [loop_spend.go](../pkg/runner/loop_spend.go)).
 - It is still a floor, not an invoice: a delegate that reports no cost
-  contributes none, and a subscription-billed run ("forfait") legitimately
-  reports `$0` because no per-call charge exists. Treat the monthly USD cap as
-  a trend signal rather than a billing ledger.
+  contributes none. Treat the monthly USD cap as a trend signal rather than a
+  billing ledger.
+- **A forfait run does NOT report `$0`** — and reading `cost_usd` as money
+  spent is the misreading this bullet exists to prevent. `claude_code` prints
+  `total_cost_usd` on every call whatever pays for it: on a **subscription**
+  it is the price those same calls WOULD have cost metered, cache creation
+  billed at 1.25× and cache reads at 0.1× included. Measured 2026-09-03 on a
+  cloud runner holding a forfait: `claude -p "reply pong"` — three input
+  tokens, five output — reported **$0.0402**, because it created 5 751 cache
+  tokens and read 17 120. Nothing was charged; the plan is flat. So an org
+  showing `cost_usd_this_month: 1991` on forfait-served runs has spent that in
+  *equivalent API price*, not in money: the only real money on a subscription
+  is the **extra-usage** overage, which the provider's own console is the sole
+  authority on.
+- And the bucket is the **ORG**, not the credential: `recordOrgSpend` charges
+  `msg.OrgID` whatever tier served the run (team forfait, credential pool,
+  platform keys, BYOK). The figure answers "what did this org consume", never
+  "what did this key cost".
 
 ## Reading usage
 

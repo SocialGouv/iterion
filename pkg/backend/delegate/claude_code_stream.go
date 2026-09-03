@@ -828,10 +828,15 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 // normal result and fails structured-output validation with a misleading
 // "missing required field", crashing the run instead of producing a clean
 // resumable rate-limit (observed for "session" on a claude-sonnet-5 fixer,
-// see docs/bot-runs/whole-improve-loop.md; and for "weekly" on the
-// feed-watch veille runner, 2026-07-20). One tolerant pattern subsumes
-// every noun so a new window shape never re-opens this masking bug.
-var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9-]+ )?limit`)
+// see docs/bot-runs/whole-improve-loop.md; for "weekly" on the feed-watch
+// veille runner, 2026-07-20; and for the multi-word "org's monthly spend"
+// on three branch-improve-loop runs, 2026-09-03). The qualifier is
+// therefore up to THREE words and may carry an apostrophe — one tolerant
+// pattern subsumes every noun so a new window shape never re-opens this
+// masking bug. Bounded rather than open (`.*`) so an agent's prose about
+// limits cannot bridge two unrelated sentences into a false positive; the
+// 200-char cap in isRateLimitMessage is the second guard.
+var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9'’-]+ ){0,3}limit`)
 
 // rateLimitSignals are case-insensitive substrings of assistant text
 // that indicate the upstream provider has cut us off. The forfait
@@ -850,6 +855,14 @@ var rateLimitSignals = []string{
 	"quota exceeded",
 	"usage limit reached",
 	"request rejected (429)",
+	// "spend limit" is deliberately NOT here. The account ceiling reaches
+	// this gate through hitYourLimitRe, whose "hit your … limit" opener is
+	// provider-shaped; the bare noun phrase is ordinary English an agent
+	// writes about its own work ("adding a spend limit check to the
+	// config"), and a false positive here does not merely mislabel — it
+	// ABORTS the node and records a StatusRejected reading that routes
+	// every later run around that credential for an hour. Same reasoning
+	// that dropped "rate_limit_error" above.
 }
 
 // relayedAPIErrorPrefix opens the CLI's verbatim relay of an upstream
@@ -914,6 +927,24 @@ var accountRefusalSignals = []string{
 	"request frequency has been limited",
 }
 
+// spendLimitSignals mean the ACCOUNT's money ceiling is reached — its own
+// admin's budget, not a subscription window: "You've hit your org's
+// monthly spend limit · ask your admin to raise it at
+// claude.ai/settings/usage". Held apart from accountRefusalSignals
+// because the operator-facing cause differs (raise the ceiling vs wait
+// for the provider to relent), and the evidence is recorded under
+// WindowSpend so a skip explains itself honestly. The behaviour is the
+// same on both: no reset instant, park the run, route around the
+// credential — waiting inside the month buys nothing.
+//
+// Reached ONLY from classifyRateLimit, i.e. after isRateLimitMessage has
+// already accepted the text as a provider refusal on a provider-shaped
+// opener. That ordering is what lets the signal stay a bare noun phrase:
+// it names which refusal this is, it never decides that one happened.
+var spendLimitSignals = []string{
+	"spend limit",
+}
+
 // classifyRateLimit refines a matched rate-limit message into
 // (Kind, Window, ResetAt). Window names the meter window the refusal is
 // evidence against, "" when the shape maps to none — the caller records
@@ -924,6 +955,13 @@ func classifyRateLimit(text string, now time.Time) (kind string, window usagecap
 	lower := strings.ToLower(text)
 	if isAccountRefusalText(lower) {
 		return RateLimitKindUsageWindow, usagecap.WindowFrequency, time.Time{}
+	}
+	// Before the generic window path: the spend notice also matches
+	// hitYourLimitRe, and falling through would file a money ceiling as a
+	// nameless window with a blind reset — a retry an hour later against a
+	// budget that only a human (or the next month) reopens.
+	if isSpendLimitText(lower) {
+		return RateLimitKindUsageWindow, usagecap.WindowSpend, time.Time{}
 	}
 	if !isUsageWindowText(lower) {
 		return RateLimitKindTransient, "", time.Time{}
@@ -936,6 +974,18 @@ func classifyRateLimit(text string, now time.Time) (kind string, window usagecap
 // classifyRateLimit and the flattened-error fallback: one definition.
 func isAccountRefusalText(lower string) bool {
 	for _, sig := range accountRefusalSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSpendLimitText reports whether already-lowercased text carries the
+// account spend-ceiling shape. One definition, shared by the classifier
+// and the flattened-error fallback for the same reason as its siblings.
+func isSpendLimitText(lower string) bool {
+	for _, sig := range spendLimitSignals {
 		if strings.Contains(lower, sig) {
 			return true
 		}
@@ -956,10 +1006,10 @@ func isUsageWindowText(lower string) bool {
 			return true
 		}
 	}
-	// An account-rate refusal parks the same way a shut window does, so
-	// the flattened-error fallback must recognise it through the same
-	// single definition.
-	return isAccountRefusalText(lower)
+	// An account-rate refusal and a spent budget both park the same way a
+	// shut window does, so the flattened-error fallback must recognise
+	// them through the same single definitions.
+	return isAccountRefusalText(lower) || isSpendLimitText(lower)
 }
 
 // UsageWindowInFlattenedError recovers the window signal from an error whose

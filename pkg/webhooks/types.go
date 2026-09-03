@@ -509,8 +509,16 @@ type Delivery struct {
 	EventAction string `bson:"event_action,omitempty" json:"event_action,omitempty"`
 	ProjectPath string `bson:"project_path,omitempty" json:"project_path,omitempty"`
 	SubjectID   string `bson:"subject_id,omitempty" json:"subject_id,omitempty"`
-	SubjectSHA  string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
-	PayloadHash string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	// ParentSubjectID names the subject this delivery's own subject hangs
+	// off — a comment's pull request ("pr:7") beside its own "comment:99".
+	// Without it a consumer asking "what did this pull request launch"
+	// finds only the PR-event lane: a `/billy` fixer and a review-thread
+	// reply record comment ids, so the closed-PR stop could not reach the
+	// very runs it exists to end. Empty when the subject has no parent
+	// (the PR/MR event itself, an issue comment).
+	ParentSubjectID string `bson:"parent_subject_id,omitempty" json:"parent_subject_id,omitempty"`
+	SubjectSHA      string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
+	PayloadHash     string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
 
 	Status     string     `bson:"status" json:"status"`
 	BotID      string     `bson:"bot_id,omitempty" json:"bot_id,omitempty"`

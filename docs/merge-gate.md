@@ -40,6 +40,9 @@ PR opened / pushed ──▶ launch claims the head:  revi/review = pending
 
                run dies without publishing ──▶ reconciler posts failure
                                                (event + 1-min sweep)
+       run PARKS on a provider quota ──▶ check stays claimed, pause notice
+                                          comments when it resumes
+              pull request closed/merged ──▶ its runs stop, retries disarmed
 ```
 
 The context is claimed at launch and answered at the end, so the check is never
@@ -135,6 +138,25 @@ cases the derivation does not cover.
 
 Repo admins keep their merge-queue bypass, so a stuck gate is never a hard
 block for an admin.
+
+### A paused review says so on the PR
+
+A review that hits the provider's quota does not die: the runner arms a
+durable retry and the reconciler leaves the check alone, because that armed
+retry is the promise. But the check then sits on its in-flight claim, which
+reads exactly like a review that died — and nothing said how long to wait.
+So the park **comments on the pull request**, once per park (fired from the
+run-outcome event, never the every-minute sweep): what happened, the instant
+the retry fires, the attempt number, and the provider's own sentence. When
+that sentence is an account **spend ceiling** rather than a time window, the
+notice says so explicitly — a ceiling reopens when an admin raises it (or
+the month rolls), so the armed retries can otherwise exhaust themselves
+against a wall.
+
+Symmetrically, a pull request that **closes or merges** ends every run bound
+to it and **disarms** their retries: an in-flight review would keep spending
+quota on a diff nobody will merge, and a parked one would wake hours later
+to comment on a dead PR. See [webhooks.md](webhooks.md).
 
 ## Disabling the gate per repo — first review only, re-review on demand
 
