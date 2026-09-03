@@ -3388,7 +3388,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchAdminLlmOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/admin/llm/oauth/{kind}",
+        "tags": [
+          "admin"
+        ]
+      }
     },
     "/api/admin/llm/oauth/{kind}/authorize/complete": {
       "parameters": [
@@ -4638,7 +4650,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchMeOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/me/oauth/{kind}",
+        "tags": [
+          "me"
+        ]
+      }
     },
     "/api/me/oauth/{kind}/authorize/complete": {
       "parameters": [

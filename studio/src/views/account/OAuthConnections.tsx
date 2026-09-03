@@ -18,6 +18,7 @@ import {
   deleteOAuth,
   listOAuthConnections,
   refreshOAuth,
+  renameOAuth,
   startOAuthAuthorize,
   uploadOAuthCredentials,
 } from "@/api/byok";
@@ -87,6 +88,13 @@ export default function OAuthConnections({
   // Raw-paste fallback editor.
   const [pasteKind, setPasteKind] = useState<OAuthKind | null>(null);
   const [draft, setDraft] = useState("");
+  // Account name typed alongside either connect form. Naming at connect
+  // time is what keeps a rotation from un-naming: an unnamed re-connect
+  // keeps the previous name only when the fingerprint is unchanged.
+  const [label, setLabel] = useState("");
+  // Inline rename of an already-connected kind.
+  const [renaming, setRenaming] = useState<OAuthKind | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const { confirm, dialog } = useConfirm();
   const addToast = useUIStore((s) => s.addToast);
 
@@ -123,9 +131,10 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      await completeOAuthAuthorize(connecting, { code: code.trim() }, scope);
+      await completeOAuthAuthorize(connecting, { code: code.trim() }, scope, label);
       setConnecting(null);
       setCode("");
+      setLabel("");
       onConnected();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -141,10 +150,30 @@ export default function OAuthConnections({
     setBusy(true);
     setMutErr(null);
     try {
-      await uploadOAuthCredentials(pasteKind, draft, scope);
+      await uploadOAuthCredentials(pasteKind, draft, scope, label);
       setPasteKind(null);
       setDraft("");
+      setLabel("");
       onConnected();
+    } catch (e) {
+      setMutErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Rename: metadata only — the sealed credential is untouched. An empty
+  // name clears it, which the form says out loud.
+  const submitRename = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    if (!renaming) return;
+    setBusy(true);
+    setMutErr(null);
+    try {
+      await renameOAuth(renaming, renameDraft, scope);
+      setRenaming(null);
+      setRenameDraft("");
+      reload();
     } catch (e) {
       setMutErr(errorMessage(e));
     } finally {
@@ -253,6 +282,27 @@ export default function OAuthConnections({
                   </div>
                 </div>
 
+                {/* Whose subscription this is: the name beside the fingerprint the
+                    publisher logs when it picks the credential, so a log line and
+                    this card join by eye. */}
+                {conn && (
+                  <div className="text-xs text-fg-muted flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span>
+                      Account:{" "}
+                      {conn.account_label ? (
+                        <span className="text-fg font-medium">{conn.account_label}</span>
+                      ) : (
+                        <span className="italic">unnamed — name it so the instance says whose subscription this is</span>
+                      )}
+                    </span>
+                    {conn.fingerprint && (
+                      <span title={conn.fingerprint}>
+                        fp <code className="font-mono">{conn.fingerprint.slice(0, 11)}</code>
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {/* Browser flow code-paste panel (claude_code) */}
                 {browser && connecting === kind ? (
                   <form onSubmit={finishConnect} className="space-y-2">
@@ -268,6 +318,12 @@ export default function OAuthConnections({
                       onChange={(e) => setCode(e.target.value)}
                       required
                     />
+                    <Input
+                      aria-label="Account name (optional)"
+                      placeholder="Account name (optional) — whose subscription is this? e.g. jothedev"
+                      value={label}
+                      onChange={(e) => setLabel(e.target.value)}
+                    />
                     <div className="flex gap-2">
                       <Button variant="primary" type="submit" loading={busy}>
                         {busy ? "Connecting…" : "Finish connection"}
@@ -278,6 +334,7 @@ export default function OAuthConnections({
                         onClick={() => {
                           setConnecting(null);
                           setCode("");
+                          setLabel("");
                         }}
                       >
                         Cancel
@@ -298,6 +355,12 @@ export default function OAuthConnections({
                       onChange={(e) => setDraft(e.target.value)}
                       required
                     />
+                    <Input
+                      aria-label="Account name (optional)"
+                      placeholder="Account name (optional) — whose subscription is this? e.g. jothedev"
+                      value={label}
+                      onChange={(e) => setLabel(e.target.value)}
+                    />
                     <div className="flex gap-2">
                       <Button variant="primary" type="submit" loading={busy}>
                         {busy ? "Sealing…" : "Save"}
@@ -308,6 +371,34 @@ export default function OAuthConnections({
                         onClick={() => {
                           setPasteKind(null);
                           setDraft("");
+                          setLabel("");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                ) : renaming === kind ? (
+                  <form onSubmit={submitRename} className="space-y-2">
+                    <label htmlFor={`oauth-label-${kind}`} className="block text-xs text-fg-muted">
+                      Name the account behind this credential. Leave it empty to clear the name.
+                    </label>
+                    <Input
+                      id={`oauth-label-${kind}`}
+                      placeholder="e.g. jothedev"
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                    />
+                    <div className="flex gap-2">
+                      <Button variant="primary" type="submit" loading={busy}>
+                        {busy ? "Saving…" : renameDraft.trim() ? "Save name" : "Clear name"}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        type="button"
+                        onClick={() => {
+                          setRenaming(null);
+                          setRenameDraft("");
                         }}
                       >
                         Cancel
@@ -344,6 +435,16 @@ export default function OAuthConnections({
                     )}
                     {conn && (
                       <>
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setRenaming(kind);
+                            setRenameDraft(conn.account_label ?? "");
+                          }}
+                          disabled={busy}
+                        >
+                          {conn.account_label ? "Rename account" : "Name account"}
+                        </Button>
                         {!notRefreshable && (
                           <Button variant="secondary" onClick={() => refresh(kind)} disabled={busy}>
                             Refresh tokens
