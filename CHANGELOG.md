@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.96.2](https://github.com/SocialGouv/iterion/compare/v3.96.1...v3.96.2) (2026-09-03)
+
+### Bug Fixes
+
+* **forge:** refresh lead must exceed the tick period, or a token phase-locks onto its own expiry ([#649](https://github.com/SocialGouv/iterion/issues/649)) ([1417654](https://github.com/SocialGouv/iterion/commit/1417654fbb946051c352377dc3aa95cc6eab5d8b))
+
+    <details><summary>why</summary>
+
+    The refresh worker only renews connections expiring within Lead (was 5m), swept every 10m: a 1h installation token could go from "not yet due" to "expired" between two ticks, the refresh then landing AT expiry — and since each mint inherits that phase, the connection locks onto an always-refreshed-at-death cycle. Any run whose launch minute sits just before the lock point is sealed a token with seconds of life: its clone barely makes it, its state push and NATS redeliveries die on it.
+
+    </details>
+
 ## [3.96.1](https://github.com/SocialGouv/iterion/compare/v3.96.0...v3.96.1) (2026-09-03)
 
 ### Bug Fixes
