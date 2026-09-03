@@ -283,7 +283,7 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 	var released, stranded []string
 	for _, e := range entries {
 		if !isStaleLocalMarker(e.Marker, host) {
-			if journalDeclineIsPermanent(e.Marker, host) {
+			if journalDeclineIsPermanent(e.Marker) {
 				stranded = append(stranded, e.Identifier+" ("+e.Marker+")")
 			}
 			continue
@@ -315,27 +315,33 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 	}
 }
 
+// parseLocalMarker splits a claim marker shaped "<host>-<pid>" (with an
+// optional watchdog "reaper:" prefix — a reaper that dies mid-disposition
+// must be sweepable like any other dead owner, or the expand/contract
+// rollback would strand every card it held). ok=false for any other
+// shape, or a pid <= 1: markers no probe can ever interpret. The ONE
+// parser both boot-sweep predicates read — a second copy is how the two
+// drift apart.
+func parseLocalMarker(marker string) (host string, pid int, ok bool) {
+	marker = strings.TrimPrefix(marker, reaperMarkerPrefix)
+	dash := strings.LastIndexByte(marker, '-')
+	if dash <= 0 || dash == len(marker)-1 {
+		return "", 0, false
+	}
+	pid, err := strconv.Atoi(marker[dash+1:])
+	if err != nil || pid <= 1 {
+		return "", 0, false
+	}
+	return marker[:dash], pid, true
+}
+
 // isStaleLocalMarker returns true iff marker is shaped "<host>-<pid>",
 // host matches the current daemon's host, AND pid is not a live process.
 // Returns false for any other shape so we never touch a marker we can't
 // confidently interpret.
 func isStaleLocalMarker(marker, host string) bool {
-	// markers look like "rog-3158843". Allow underscores in hostname.
-	// The watchdog claims under "reaper:<host>-<pid>": if a reaper dies
-	// mid-disposition its recovery claim must be reclaimable by the SAME
-	// boot sweep as any other, or turning the gate back off (the
-	// expand/contract rollback) would strand every card it was holding —
-	// the reaper being the only other thing that could have freed them.
-	marker = strings.TrimPrefix(marker, reaperMarkerPrefix)
-	dash := strings.LastIndexByte(marker, '-')
-	if dash <= 0 || dash == len(marker)-1 {
-		return false
-	}
-	if marker[:dash] != host {
-		return false
-	}
-	pid, err := strconv.Atoi(marker[dash+1:])
-	if err != nil || pid <= 1 {
+	mhost, pid, ok := parseLocalMarker(marker)
+	if !ok || mhost != host {
 		return false
 	}
 	// A live PID — or one we can't probe (different user, or any
@@ -347,20 +353,17 @@ func isStaleLocalMarker(marker, host string) bool {
 
 // journalDeclineIsPermanent reports that a journalled marker the boot
 // sweep declined can NEVER become releasable by a future boot on this
-// host: the pid part is unparsable or <= 1 (isStaleLocalMarker refuses
-// those unconditionally). A live pid or a foreign host is a TRANSIENT
-// decline — the owner may release it, or its host's own boot will.
-func journalDeclineIsPermanent(marker, host string) bool {
-	marker = strings.TrimPrefix(marker, reaperMarkerPrefix)
-	dash := strings.LastIndexByte(marker, '-')
-	if dash <= 0 || dash == len(marker)-1 {
-		return true // shapeless: no probe will ever admit it
-	}
-	if marker[:dash] != host {
-		return false // the other host's own boot sweep judges it
-	}
-	pid, err := strconv.Atoi(marker[dash+1:])
-	return err != nil || pid <= 1
+// host: the shape is unparsable or the pid <= 1 (isStaleLocalMarker
+// refuses those unconditionally). A live pid or a foreign host is a
+// TRANSIENT decline — the owner may release it, or its host's own boot
+// will. (On Windows localPidGone abstains for every pid, so live-pid
+// declines there are also permanent in practice — accepted: naming them
+// all would storm on the one platform where none is provable.)
+func journalDeclineIsPermanent(marker string) bool {
+	_, _, ok := parseLocalMarker(marker)
+	// Parseable + pid > 1 is always transient: same-host = the pid may
+	// die; foreign host = its own boot sweep judges it.
+	return !ok
 }
 
 // Stop signals the actor to exit and waits for it. Safe to call more

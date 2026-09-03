@@ -320,7 +320,7 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	}
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--remove-label", a.opts.ClaimedLabel}
 	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
-		if ghIssueGone(err) {
+		if a.ghReleaseGone(err) {
 			return ErrNotFound
 		}
 		return fmt.Errorf("gh issue edit (release): %w", err)
@@ -328,16 +328,23 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	return nil
 }
 
-// ghIssueGone recognises the gh CLI's missing-issue error text. Text
-// matching is brittle but the CLI offers no typed channel; both known
-// spellings (GraphQL resolve failure, REST 404) are matched.
-func ghIssueGone(err error) bool {
+// ghReleaseGone recognises the gh CLI error texts that mean the release
+// target is PERMANENTLY absent: the issue itself (GraphQL resolve
+// failure, REST 404), or the claim LABEL deleted from the repo — the
+// second member of the same class: either way the claim cannot exist
+// any more, and a non-benign error would keep the journal entry retried
+// and warned at every boot, for ever. The label form is anchored on the
+// exact configured label name (gh 2.x prints `'<label>' not found`), so
+// an unrelated not-found in the message cannot match. Text matching is
+// brittle but the CLI offers no typed channel.
+func (a *GitHubAdapter) ghReleaseGone(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "could not resolve to an issue") ||
-		strings.Contains(msg, "not found (http 404)")
+		strings.Contains(msg, "not found (http 404)") ||
+		strings.Contains(msg, strings.ToLower("'"+a.opts.ClaimedLabel+"' not found"))
 }
 
 // HasLinkedPR reports whether an OPEN pull request already references this

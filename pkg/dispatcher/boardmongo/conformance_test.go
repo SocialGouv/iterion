@@ -660,6 +660,24 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if tracker.IsMachineReason(tracker.ReasonRunFinished) {
 		t.Error("run_finished must stay DESCRIPTIVE (not machine) — a machine reason swallows the chain the filing exists to fire")
 	}
+	// Zero-value half of the same row: reason=="" falls back to the
+	// MARKER-DERIVED provenance on both twins (the seam decides, not a
+	// guard recopied at each call site — the twins diverged here once).
+	zcard, err := store.Create(native.Issue{Title: "prov reasoned zero", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	ztok, err := store.Claim(zcard.ID, tracker.ReaperMarkerPrefix+"prov-host")
+	if err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	if _, err := reasoned.SetStateOwnedReason(zcard.ID, native.StateDone, ztok, ""); err != nil {
+		t.Fatalf("provenance SetStateOwnedReason(\"\"): %v", err)
+	}
+	if got, _ := lastStatePayload(t, store, zcard.ID)["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Errorf("SetStateOwnedReason with an empty reason stamped %q, want the marker-derived %q — the twins must not diverge on the zero value",
+			got, tracker.ReasonWatchdog)
+	}
 }
 
 // runBoardAdminSuite exercises the native.BoardAdmin config-mutation surface

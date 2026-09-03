@@ -156,13 +156,16 @@ un-leased claim behind. That residue is swept on the watchdog cadence,
 recorded run (the batch cap applies at the query, so a post-hoc filter
 would let the conserved population — never written, always oldest in
 the updatedat order — permanently starve the batch), and the release
-fires only when that run FINISHED — the one disposition the
-fork-adoption reconciler actually files. A failed / resumable / pruned
-pointer released bare would sit unclaimed in the running column,
-invisible to every watchdog listing (they all select on a non-empty
-claim), for ever. Everything else stays conserved for the gated reap's
-own two-arm listing: a card with no recorded run proves nothing, and a
-launch-column card released bare would re-arm a fresh spend.
+fires only for a disposition the fork-adoption reconciler then FILES —
+finished, terminal failure, or a settled failed_resumable (the
+reconciler's own reach; a conserved claim hides the card from
+ListEligible and therefore from that reconciler, for ever). A PRUNED
+pointer released bare would sit unclaimed and unfiled in the running
+column — the reconciler cannot read it — and a kept claim (pause brake,
+operator cancel, armed continuation) is load-bearing: those stay
+conserved for the gated reap's own two-arm listing, like the no-run
+shape (proves nothing) and the launch-column shape (a bare release
+re-arms a fresh spend).
 The un-leased claim is not the only thing an old binary's full-document
 `ReplaceOne` re-applies: it also rewrites **state, labels, runs, gaveup
 and comments** from its stale snapshot — the exact lost-update class the

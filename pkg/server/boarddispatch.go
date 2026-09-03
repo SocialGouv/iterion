@@ -25,6 +25,7 @@ type boardCoordinator interface {
 	ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]boardmongo.Candidate, error)
 	Claim(ctx context.Context, tenant, id, marker string) (tracker.ClaimToken, error)
 	SetState(ctx context.Context, tenant, id, state string) error
+	SetStateWithReason(ctx context.Context, tenant, id, state, reason string) error
 	Release(ctx context.Context, tenant, id, marker string) error
 	// The fenced family: RenewClaim is the heartbeat processCard runs for
 	// as long as it holds the card (its poll-to-terminal has NO upper
@@ -482,8 +483,23 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 				pointer.ContinuationState != store.ContinuationRetryArmed)
 		if settled && c.Issue.State == d.inProgressState {
 			d.log("card %s/%s pointer run %s settled %s with no adoptable fork and no continuation — moving to %s", c.Tenant, c.Issue.ID, runID, st, d.blockedState)
-			if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.blockedState); err != nil {
-				d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.blockedState, err)
+			var werr error
+			if st == store.RunStatusFailedResumable {
+				// A settled RESUMABLE is a decision the machine takes
+				// alone — since the continuable arm, the living owner
+				// files nothing for it, so there is no living-owner
+				// parity to honour: machine provenance, no chain fires,
+				// no assignee attribution (the ceiling arm's own rule;
+				// tokenless SetState here spent a one-shot and signed
+				// the repair with the assignee's name).
+				werr = d.coord.SetStateWithReason(ctx, c.Tenant, c.Issue.ID, d.blockedState, tracker.ReasonWatchdog)
+			} else {
+				// Terminal FAILURE: the living owner would have filed
+				// blocked itself — the chain fires as it would for them.
+				werr = d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.blockedState)
+			}
+			if werr != nil {
+				d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.blockedState, werr)
 			}
 		}
 		return
@@ -568,13 +584,14 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	//
 	// The UN-LEASED population (ordinary claims a mixed-fleet write
 	// stripped of lease + fence, §8/§9 of the ADR) is swept GUARDED:
-	// released only when the released card is one something actually
-	// FILES afterwards — running column, recorded run, and that run
-	// FINISHED (the one disposition the fork-adoption reconciler
-	// honours). A failed / resumable / pruned pointer released bare
-	// would sit unclaimed in the running column, invisible to every
-	// watchdog listing, for ever — so those stay conserved for the
-	// gated reap, like the no-run and launch-column shapes.
+	// released only when the released card is one the fork-adoption
+	// reconciler actually FILES afterwards — running column, recorded
+	// run, and a disposition it repairs (finished, terminal failure,
+	// settled failed_resumable). A PRUNED pointer released bare would
+	// sit unclaimed and unfiled for ever, and a kept claim (pause brake,
+	// operator cancel, armed continuation) is load-bearing — those stay
+	// conserved for the gated reap, like the no-run and launch-column
+	// shapes.
 	var lastReap time.Time
 	for {
 		d.tick(ctx)
@@ -627,12 +644,11 @@ func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context, now 
 }
 
 // sweepUnleasedClaims releases ONLY the un-leased claims whose release
-// leaves a card something actually FILES afterwards: a running-column
-// card whose run FINISHED (StuckComplete — the one disposition the
-// fork-adoption reconciler honours; a failed / resumable / pruned
-// pointer released bare would sit unclaimed in the running column,
-// invisible to every watchdog listing, for ever). Everything else stays
-// conserved for the gated reap. The population filter (running column +
+// leaves a card the fork-adoption reconciler actually FILES afterwards:
+// a running-column card whose run finished, failed terminally, or
+// settled failed_resumable (a PRUNED pointer released bare would sit
+// unclaimed and unfiled in the running column for ever — the reconciler
+// cannot read it). Everything else stays conserved for the gated reap. The population filter (running column +
 // a recorded run) lives in the QUERY, not a post-listing Go filter: the
 // batch cap applies at the query, and the conserved population — never
 // written, therefore always oldest, therefore always FIRST in the
@@ -667,7 +683,19 @@ func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
 		}
-		if dec := dispatcher.DecideStuckCard(run, runErr, card); dec.Action != dispatcher.StuckComplete {
+		// Release for every disposition the RECONCILER can then file, not
+		// only finished: a released card is exactly what the
+		// fork-adoption reconciler repairs (terminal failure, settled
+		// failed_resumable) — while a CONSERVED claim hides the card from
+		// ListEligible and therefore from that reconciler, for ever,
+		// under a disabled gate. Still conserved: StuckKeep (paused
+		// parking brake, operator cancel, armed continuation — those
+		// claims are load-bearing or owned) and StuckReleaseOnly (a
+		// PRUNED pointer the reconciler cannot read — released bare it
+		// would sit unclaimed and unfiled in the running column).
+		switch dec := dispatcher.DecideStuckCard(run, runErr, card); dec.Action {
+		case dispatcher.StuckComplete, dispatcher.StuckFail, dispatcher.StuckRepark:
+		default:
 			d.warnKeepOnce(label, cand, dec.Reason, kept)
 			continue
 		}

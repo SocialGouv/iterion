@@ -428,6 +428,13 @@ func (s *Store) SetStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 	if err != nil {
 		return nil, err
 	}
+	// The zero value falls back to the marker-derived provenance — the
+	// SEAM decides, not a guard recopied at every call site: without
+	// this the twins diverged on reason=="" (Mongo marker-derived, FS
+	// none), a trap armed for the first caller that passes it through.
+	if reason == "" {
+		return s.setStateLocked(iss, newState, tok.Marker)
+	}
 	return s.setStateReasonLocked(iss, newState, "", reason)
 }
 

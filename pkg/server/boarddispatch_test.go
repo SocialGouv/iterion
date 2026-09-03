@@ -88,6 +88,21 @@ func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) (tracker
 	return tracker.ClaimToken{Marker: marker, Epoch: 1}, nil
 }
 
+// SetStateWithReason mirrors the real coordinator: same tokenless write,
+// explicit reason recorded (after success) for assertions.
+func (f *fakeBoardCoord) SetStateWithReason(ctx context.Context, tenant, id, state, reason string) error {
+	if err := f.SetState(ctx, tenant, id, state); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	if f.reasons == nil {
+		f.reasons = map[string]string{}
+	}
+	f.reasons[id] = reason
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeBoardCoord) SetState(ctx context.Context, _, id, state string) error {
 	// The real coordinator's store honours the caller's context — a fake
 	// that discards it certified a drain release that dies on the dead
@@ -1943,16 +1958,21 @@ func TestCloudSweep_UnleasedReleaseIsGuarded(t *testing.T) {
 	if _, held := f.claimed["c-run"]; held {
 		t.Fatalf("an un-leased in_progress card whose run FINISHED must be released (the reconciler files that shape), still held by %q", f.claimed["c-run"])
 	}
-	// Everything the reconciler does NOT file must stay conserved: a bare
-	// release strips the one field every watchdog listing selects on, and
-	// an unclaimed in_progress card with a failed/resumable/pruned
-	// pointer is repaired by NOTHING — invisible for ever.
+	// Released too: the dispositions the reconciler now FILES (terminal
+	// failure, settled failed_resumable) — a conserved claim would hide
+	// exactly those cards from ListEligible and therefore from the one
+	// bras that repairs them, for ever, under a disabled gate.
+	for _, id := range []string{"c-failed", "c-resum"} {
+		if got, held := f.claimed[id]; held {
+			t.Fatalf("%s must be released (the reconciler files that shape), still held by %q", id, got)
+		}
+	}
+	// Everything the reconciler CANNOT file must stay conserved: a bare
+	// release strips the one field every watchdog listing selects on.
 	for id, why := range map[string]string{
 		"c-ready":  "a launch column (a bare release re-arms a fresh launch)",
 		"c-norun":  "no recorded run",
-		"c-failed": "a terminal-failed pointer the reconciler never files",
-		"c-resum":  "a resumable pointer only the gated reap may repark",
-		"c-pruned": "a pruned pointer (release-only is the gated reap's call)",
+		"c-pruned": "a pruned pointer the reconciler cannot read",
 	} {
 		if got := f.claimed[id]; got != "podA-1" {
 			t.Fatalf("%s must stay conserved (%s), claim now %q", id, why, got)
@@ -2177,6 +2197,12 @@ func TestBoardDispatcher_DrainedCardIsFiledOnceItsRunFails(t *testing.T) {
 	if got := f.states["native:1"]; got != native.StateBlocked {
 		t.Fatalf("the drained card's run failed terminally and the card is still %q — stranded for ever", got)
 	}
+	// Terminal FAILURE keeps living-owner parity: the tokenless write,
+	// so the chain fires as it would have for the owner (no machine
+	// reason).
+	if got, has := f.reasons["native:1"]; has {
+		t.Fatalf("a terminal-failure filing went through the reasoned writer with %q — the living owner would have filed this itself, its chain must fire", got)
+	}
 }
 
 // TestBoardDispatcher_ContinuableCardIsFiledOnceItSettles: the continuable
@@ -2240,6 +2266,15 @@ func TestBoardDispatcher_ContinuableCardIsFiledOnceItSettles(t *testing.T) {
 
 			if got := f.states["native:1"]; got != tc.want {
 				t.Fatalf("card is %q, want %q — a settled continuable pointer strands the card for ever; an owned one must not be filed", got, tc.want)
+			}
+			// Provenance follows parity: a settled RESUMABLE is the
+			// machine's own decision (the living owner files nothing for
+			// it since the continuable arm) — machine reason, no chain,
+			// no assignee attribution.
+			if tc.want == native.StateBlocked && tc.status == store.RunStatusFailedResumable {
+				if got := f.reasons["native:1"]; got != tracker.ReasonWatchdog {
+					t.Fatalf("settled-resumable filing carries reason %q, want %q — a tokenless write here spends a one-shot and signs the repair with the assignee's name", got, tracker.ReasonWatchdog)
+				}
 			}
 		})
 	}

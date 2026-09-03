@@ -110,6 +110,15 @@ func (c *Coordinator) SetState(_ context.Context, tenant, id, state string) erro
 	return err
 }
 
+// SetStateWithReason is the tokenless write carrying an EXPLICIT
+// provenance — the reconciler's machine repairs use it so the spine
+// does not read them as an operator gesture (spending a one-shot and
+// attributing the move to the assignee).
+func (c *Coordinator) SetStateWithReason(_ context.Context, tenant, id, state, reason string) error {
+	_, err := c.StoreFor(tenant).SetStateWithReason(id, state, reason)
+	return err
+}
+
 func (c *Coordinator) Release(_ context.Context, tenant, id, marker string) error {
 	return c.StoreFor(tenant).Release(id, marker)
 }

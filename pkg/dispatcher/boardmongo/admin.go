@@ -530,6 +530,7 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 		return 0, err
 	}
 	touched := 0
+	var lost []string
 	for i := range all {
 		iss := all[i]
 		// CAS-guarded on the labels this sweep READ, re-read + re-transform
@@ -539,13 +540,13 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 		// (same class as Update; the transform is pure over labels, so the
 		// replay is exact).
 		wrote := false
-		wanted := false
-		for attempt := 0; attempt < 3; attempt++ {
+		exhausted := false
+		const attempts = 3
+		for attempt := 0; attempt < attempts; attempt++ {
 			newLabels, changed := transform(iss.Labels)
 			if !changed {
-				break
+				break // nothing (left) to do: converged, or someone got there first
 			}
-			wanted = true
 			preLabels := append([]string(nil), iss.Labels...)
 			iss.Labels = newLabels
 			iss.UpdatedAt = time.Now().UTC()
@@ -565,14 +566,19 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 				return touched, fmt.Errorf("boardmongo: re-read %s during %s: %w", iss.ID, eventType, err)
 			}
 			iss = *fresh
+			exhausted = attempt == attempts-1
 		}
 		if !wrote {
-			if wanted {
+			if exhausted {
 				// The sweep WANTED to rewrite this card and lost the CAS
 				// on every attempt — swallowing that leaves a label the
 				// operator asked to remove (possibly a consume_labels
-				// trigger) on the card, under a green return.
-				return touched, fmt.Errorf("boardmongo: %s: card %s lost the label CAS on every attempt — re-run the operation", eventType, iss.ID)
+				// trigger) on the card, under a green return. Recorded,
+				// not returned: aborting here lets ONE perpetually
+				// contended card keep every later card unswept, on every
+				// retry. The walk finishes (the FS twin's semantics) and
+				// names the losers at the end.
+				lost = append(lost, iss.ID)
 			}
 			continue
 		}
@@ -584,6 +590,9 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 			return touched, err
 		}
 		touched++
+	}
+	if len(lost) > 0 {
+		return touched, fmt.Errorf("boardmongo: %s: %d card(s) lost the label CAS on every attempt — re-run the operation for %v", eventType, len(lost), lost)
 	}
 	return touched, nil
 }
