@@ -196,15 +196,15 @@ func effectiveRouteBackend(route Fallback, node LLMNode, w *Workflow) (backend, 
 		}
 		return expanded, ""
 	}
-	// Inherited: the node's own backend, itself possibly an env ref, then
-	// the workflow default. "auto" defers to the same next tier the
-	// executor's resolver does.
-	nodeBackend := strings.TrimSpace(ExpandEnvWithDefault(node.GetLLMFields().Backend))
-	if nodeBackend == "" || nodeBackend == "auto" {
-		nodeBackend = strings.TrimSpace(ExpandEnvWithDefault(w.DefaultBackend))
-	}
-	if nodeBackend == "auto" {
-		nodeBackend = ""
-	}
-	return nodeBackend, " (inherited from the node's backend)"
+	// Inherited: the node's own backend, then the workflow default —
+	// effectiveNodeBackend's exact chain, fed the EXPANDED inputs. Reusing
+	// it rather than re-walking the tiers is what keeps this screen and
+	// the three above from drifting apart; the only difference is the
+	// expansion, which the others deliberately do not do (they refuse to
+	// judge a `${...}` backend at all, where this one must resolve it or
+	// miss the shape that motivated the screen).
+	return effectiveNodeBackend(
+		strings.TrimSpace(ExpandEnvWithDefault(node.GetLLMFields().Backend)),
+		strings.TrimSpace(ExpandEnvWithDefault(w.DefaultBackend)),
+	), " (inherited from the node's backend)"
 }
