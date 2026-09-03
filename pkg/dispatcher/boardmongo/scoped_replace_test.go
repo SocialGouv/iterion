@@ -553,3 +553,52 @@ func TestRenewClaimCtx_HonoursTheCallersContext(t *testing.T) {
 		t.Fatalf("the cancelled renew still took %s — Stop() is hostage to it", time.Since(start))
 	}
 }
+
+// A comment body is FREE TEXT evaluated nowhere: "$"-leading agent
+// output ("$ go test ./...", "$issue.labels") must persist verbatim.
+// Without $literal the pipeline $set read it as a field path — an empty
+// body, a hard write error, or a poisoned document that broke decoding
+// of the ENTIRE tenant listing (List returned 0 cards and an error).
+func TestAddComment_DollarBodiesAreDataNotExpressions(t *testing.T) {
+	s := scopedMongo(t)
+	iss, err := s.Create(native.Issue{Title: "victim", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness, err := s.Create(native.Issue{Title: "witness", State: native.StateReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"$ go test ./...", "$nope please review", "$issue.labels"} {
+		if _, _, err := s.AddComment(iss.ID, "agent", body); err != nil {
+			t.Fatalf("AddComment(%q): %v — free text hard-failed the write", body, err)
+		}
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("the commented card is no longer decodable: %v", err)
+	}
+	if len(got.Comments) != 3 {
+		t.Fatalf("want 3 comments, got %d", len(got.Comments))
+	}
+	for i, want := range []string{"$ go test ./...", "$nope please review", "$issue.labels"} {
+		if got.Comments[i].Body != want {
+			t.Fatalf("comment %d body = %q, want %q — evaluated as an expression", i, got.Comments[i].Body, want)
+		}
+	}
+	// The blast radius that made this CRITICAL: one poisoned comment
+	// broke the whole tenant's listing.
+	all, err := s.List(native.ListFilter{})
+	if err != nil {
+		t.Fatalf("tenant listing broken: %v", err)
+	}
+	seen := false
+	for _, i := range all {
+		if i.ID == witness.ID {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the witness card vanished from the tenant listing")
+	}
+}

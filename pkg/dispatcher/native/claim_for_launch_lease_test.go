@@ -92,3 +92,67 @@ func mustClaim(t *testing.T, s *Store, id string) tracker.ClaimToken {
 	}
 	return tok
 }
+
+// TestSweepStaleClaims_ContinuesPastBenignRaces: the boot sweep's
+// listing is a snapshot; losing the release race on ONE card (the
+// reaper transferred it, or the card was deleted mid-sweep) must not
+// abandon the whole walk — it is the only ungated repair dead-PID
+// claims have, and an abort left every following card claimed until
+// the next boot.
+func TestSweepStaleClaims_ContinuesPastBenignRaces(t *testing.T) {
+	s := newTestStore(t)
+	a := NewAdapter(s)
+	mk := func(title string) *Issue {
+		iss, err := s.Create(Issue{Title: title, State: StateInProgress})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Claim(iss.ID, "deadhost-901"); err != nil {
+			t.Fatal(err)
+		}
+		return iss
+	}
+	a1, b1, c1 := mk("stolen"), mk("b"), mk("c")
+
+	stolen := false
+	cleared, err := a.SweepStaleClaims(func(marker string) bool {
+		if !stolen {
+			stolen = true
+			// The reaper transfers card A in the exact window between the
+			// listing and this card's release.
+			if err := s.Release(a1.ID, "deadhost-901"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Claim(a1.ID, tracker.ReaperMarkerPrefix+"host-1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("one benign conflict aborted the sweep: %v", err)
+	}
+	for _, id := range []string{b1.ID, c1.ID} {
+		if got, _ := s.Get(id); got.Claim != "" {
+			t.Fatalf("card %s still claimed by a dead PID after the sweep (cleared=%v)", id, cleared)
+		}
+	}
+
+	// Deleted-card arm: no concurrent claimer needed at all.
+	d1, e1 := mk("deleted"), mk("e")
+	first := true
+	if _, err := a.SweepStaleClaims(func(string) bool {
+		if first {
+			first = false
+			if err := s.Delete(d1.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("a card deleted mid-sweep aborted the walk: %v", err)
+	}
+	if got, _ := s.Get(e1.ID); got.Claim != "" {
+		t.Fatalf("card %s still claimed after the deleted-card race", e1.ID)
+	}
+}

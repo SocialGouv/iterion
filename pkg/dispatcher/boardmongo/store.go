@@ -562,7 +562,11 @@ func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 	res := s.issues.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": bson.M{"$in": bson.A{"", nil}}},
 		leaseStampPipeline(bson.M{
-			"issue.claim":      marker,
+			// $literal: pipeline $set evaluates values as EXPRESSIONS, and
+			// the marker is operator-configurable — a "$"-leading one
+			// would be read as a field path (the AddComment lesson,
+			// applied to its class sibling).
+			"issue.claim":      bson.M{"$literal": marker},
 			"issue.claimepoch": bumpEpochExpr(),
 			"issue.claimedat":  "$$NOW",
 			"issue.updatedat":  "$$NOW",
@@ -608,7 +612,11 @@ func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 // bumpEpochExpr is the aggregation expression that advances the fencing
 // counter — the value that kills a dead owner's late writes. One
 // definition, shared by the two writers that acquire a fresh claim
-// (Claim phase 1 and ReclaimExpired's transfer).
+// (Claim phase 1 and ReclaimExpired's transfer). The server-clock floor
+// makes it NON-DECREASING at millisecond resolution, not strictly
+// increasing: after a family drop, two mints inside the same ms tie
+// (unreachable in production since the unscoped replace was removed —
+// it took two family drops on one card within 1ms).
 func bumpEpochExpr() bson.M {
 	// MONOTONE, not merely incrementing. A counter derived from the
 	// document alone restarts at 1 whenever the field is missing — and a
@@ -842,8 +850,15 @@ func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comm
 	if _, err := s.issues.UpdateOne(ctx,
 		bson.M{"_id": iss.ID, "tenant_id": s.tenant},
 		mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			// $literal shields the comment from aggregation-expression
+			// evaluation — without it a body starting with "$" is a FIELD
+			// PATH: "$nope" persists empty, "$ go test" hard-fails the
+			// write, and "$issue.labels" turns the body into an array
+			// that breaks decoding of the ENTIRE tenant listing. The rule
+			// is pkg/store/mongo/runs.go's, applied at its 8 sites; this
+			// was the one pipeline in the repo passing a free value bare.
 			"issue.comments": bson.M{"$concatArrays": bson.A{
-				bson.M{"$ifNull": bson.A{"$issue.comments", bson.A{}}}, bson.A{cm}}},
+				bson.M{"$ifNull": bson.A{"$issue.comments", bson.A{}}}, bson.M{"$literal": bson.A{cm}}}},
 			"issue.updatedat": c.CreatedAt,
 		}}}}); err != nil {
 		return nil, nil, fmt.Errorf("boardmongo: append comment: %w", err)

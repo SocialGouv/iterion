@@ -790,13 +790,21 @@ func TestBoardDispatcher_SweepAdoptsFinishedFork(t *testing.T) {
 	if _, ok := adopted["native:finished"]; ok {
 		t.Errorf("native:finished must be filed outright, not adopted: %v", adopted["native:finished"])
 	}
-	// Live pointer, missing pointer, forkless failure — and a BLOCKED card
-	// whose pointer finished (an operator placement, not a dispatcher
-	// orphan; R751dc1) — stay put.
-	for _, id := range []string{"native:live", "native:noptr", "native:forkless", "native:blockedfin"} {
+	// Live pointer, missing pointer — and a BLOCKED card whose pointer
+	// finished (an operator placement, not a dispatcher orphan; R751dc1)
+	// — stay put.
+	for _, id := range []string{"native:live", "native:noptr", "native:blockedfin"} {
 		if got, moved := f.states[id]; moved {
 			t.Errorf("card %s must stay put, was moved to %q", id, got)
 		}
+	}
+	// A forkless terminal FAILURE in the running column is FILED blocked —
+	// the verdict processCard would have written had it lived. Round 14's
+	// drain arm made this shape a routine output (a replica draining
+	// mid-run leaves its cards in_progress), and "stay put" then meant
+	// stranded for ever: not eligible, not claimed, reached by no sweep.
+	if got := f.states["native:forkless"]; got != native.StateBlocked {
+		t.Errorf("forkless failed card = %q, want %q (the drain's deferred verdict)", got, native.StateBlocked)
 	}
 	if searches != 3 {
 		t.Errorf("fork searches = %d, want 3 (stuck, blocked, forkless — one per stuck card)", searches)
@@ -1972,5 +1980,47 @@ func TestCloudSweep_UnleasedGateOnArmDisposes(t *testing.T) {
 	d.sweepUnleasedClaims(context.Background(), time.Now(), nil)
 	if _, held := f.claimed["c-resum"]; held {
 		t.Fatalf("gate ON: a resumable pointer must be DISPOSED by the full table (repark → release), still held by %q", f.claimed["c-resum"])
+	}
+}
+
+// TestBoardDispatcher_DrainedCardIsFiledOnceItsRunFails: the drain's
+// deferred verdict, end to end — the replica leaves the in-flight card
+// in_progress; when the run later FAILS terminally (no adoptable fork),
+// the fork-adoption reconciler files it blocked, the verdict processCard
+// would have written. Without that arm the card was in_progress for
+// ever: not eligible, not claimed, reached by no sweep.
+func TestBoardDispatcher_DrainedCardIsFiledOnceItsRunFails(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "feature-dev"))
+	ctx, cancel := context.WithCancel(context.Background())
+	d := newBoardDispatcher(f, func(c context.Context, _ string, _ native.Issue) error {
+		cancel()
+		<-c.Done()
+		return c.Err()
+	}, "replica-A", 4, nil)
+	d.statusFor = func(_ context.Context, _, _ string) (store.RunStatus, error) {
+		return store.RunStatusFailed, nil
+	}
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailed}, nil
+	}
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+	d.adoptRun = func(string, string, string, string) error { return nil }
+	d.tick(ctx)
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != d.inProgressState {
+		t.Fatalf("precondition: drain must leave the card in_progress, got %q", got)
+	}
+	// The reconciler reads the CANDIDATE's issue (the fake's state
+	// overlay only feeds the listing filter): fold the drained state and
+	// the run pointer onto the struct.
+	f.mu.Lock()
+	f.cands[0].Issue.LastRunID = "run-dead"
+	f.cands[0].Issue.State = d.inProgressState
+	f.mu.Unlock()
+
+	d.sweepForkAdoptions(context.Background())
+
+	if got := f.states["native:1"]; got != native.StateBlocked {
+		t.Fatalf("the drained card's run failed terminally and the card is still %q — stranded for ever", got)
 	}
 }

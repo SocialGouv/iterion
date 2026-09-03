@@ -456,6 +456,13 @@ func TestEpochIsMonotoneAcrossAFamilyDrop(t *testing.T) {
 		t.Fatalf("drop the claim family: %v", err)
 	}
 
+	// The floor is the server clock at MILLISECOND resolution: two mints
+	// after a family drop within the same ms both take now_ms and tie.
+	// Unreachable in production (it needs two family drops on one card
+	// inside 1ms, and round 13 removed the unscoped replace that produced
+	// them) — but this test CAN mint that fast, and mongo-conformance is
+	// a required check: force the tick over.
+	time.Sleep(2 * time.Millisecond)
 	second, err := st.Claim(iss.ID, "worker-A")
 	if err != nil {
 		t.Fatalf("Claim second: %v", err)

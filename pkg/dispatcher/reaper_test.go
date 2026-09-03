@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1056,5 +1057,99 @@ func TestReleaseClaim_KeepsJournalOnTransientFailure(t *testing.T) {
 	c.releaseClaim(context.Background(), iss.ID, "i1")
 	if c.claims.Contains(iss.ID) {
 		t.Fatal("a benign release race must still drop the journal entry")
+	}
+}
+
+// The reaper-marker strip in isStaleLocalMarker is branch-new behaviour
+// with no prior coverage: a local reaper's recovery claim
+// (reaper:<host>-<pid>) must be reclaimable by the same boot sweep as
+// any ordinary marker, and a CLOUD reaper marker (no pid) must never
+// pass the probe.
+func TestIsStaleLocalMarker_ReaperPrefix(t *testing.T) {
+	// PID 2^22 is above every default pid_max on Linux hosts we ship to;
+	// combined with a real dead-pid probe this is as deterministic as
+	// the platform allows.
+	dead := "4194304"
+	if isStale := isStaleLocalMarker("reaper:myhost-"+dead, "myhost"); !isStale {
+		t.Fatal("a dead LOCAL reaper's recovery claim must be reclaimable by the boot sweep — the rollback lever strands its cards otherwise")
+	}
+	for _, m := range []string{"reaper:pod-abc", "reaper:myhost", "reaper:"} {
+		if isStaleLocalMarker(m, "myhost") {
+			t.Fatalf("cloud/pid-less reaper marker %q passed the local pid probe", m)
+		}
+	}
+	if !isStaleLocalMarker("myhost-"+dead, "myhost") {
+		t.Fatal("plain dead-pid marker must still be stale (the strip must not break the pre-existing form)")
+	}
+}
+
+// The REAL local reaper path stamps machine provenance end-to-end: the
+// conformance suite covers the store method, not the chain
+// (reapOne → fileStuckCard → UpdateStateOwned → setStateLocked).
+func TestReapOne_FilingCarriesWatchdogProvenance(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-done-prov", store.RunStatusFinished)
+	cand := seedClaimedCard(t, board, "run-done-prov")
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cand, time.Now().Add(2*native.ClaimLeaseDuration))
+
+	var last map[string]any
+	if err := board.ScanEvents(func(e *native.Event) bool {
+		if e.Type == native.EvtIssueState && e.IssueID == cand.IssueID {
+			last = e.Payload
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if last == nil {
+		t.Fatal("the filing emitted no state event")
+	}
+	if got, _ := last["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Fatalf("the reaper's filing carries reason %q, want %q — the spine would spend an operator one-shot on this repair", got, tracker.ReasonWatchdog)
+	}
+}
+
+// slowCtxLeaser renews slowly but honours the caller's ctx — the shipped
+// mongo shape since RenewClaimCtx.
+type slowCtxLeaser struct {
+	tracker.ClaimLeaser
+}
+
+func (l slowCtxLeaser) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	select {
+	case <-time.After(5 * time.Second):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// An ordinary Stop() that catches a renewal mid-flight is a teardown,
+// not a failure: warning there fired in a storm exactly when the store
+// was slow — the moment the signal should mean something.
+func TestClaimSession_StopDoesNotWarnARenewalFailure(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := native.NewAdapter(board)
+	iss, _ := board.Create(native.Issue{Title: "x", State: native.StateInProgress})
+	tok, err := board.Claim(iss.ID, "host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	warn := func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) }
+	s := &claimSession{
+		leaser: slowCtxLeaser{ClaimLeaser: adapter}, issueID: iss.ID, tok: tok,
+		warn: warn, stop: make(chan struct{}), done: make(chan struct{}),
+		interval: time.Millisecond,
+	}
+	go s.loop()
+	time.Sleep(20 * time.Millisecond) // a beat starts and blocks in the slow renew
+	s.Stop()
+	if strings.Contains(buf.String(), "renewal") && strings.Contains(buf.String(), "failed") {
+		t.Fatalf("Stop() logged a renewal failure with no failure: %q", buf.String())
 	}
 }

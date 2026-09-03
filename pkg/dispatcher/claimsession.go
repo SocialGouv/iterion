@@ -99,6 +99,12 @@ func (s *claimSession) loop() {
 					s.onLost(err)
 				}
 				return
+			case errors.Is(err, context.Canceled):
+				// Stop() cancelled the in-flight renewal (the cancel now
+				// reaches the store): an ordinary teardown, not a failure —
+				// warning here fired on every Stop that crossed a beat,
+				// i.e. in a storm exactly when the store was slow.
+				return
 			default:
 				// A transient store error must not kill a live claim: the
 				// lease is long against the cadence, so the next beat

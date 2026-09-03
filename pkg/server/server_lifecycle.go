@@ -323,7 +323,14 @@ func (s *Server) ListenAndServe() error {
 	// Multi-replica-safe via the per-card Claim CAS (no leader election).
 	if s.cfg.CloudBoardCoordinator != nil {
 		marker := "board-dispatcher:" + uuid.NewString()
+		// Shutdown WAITS on this (bounded): the drain's final writes —
+		// release the claim, leave the card in place — run on a detached
+		// 10s context, and a process that exits without waiting kills
+		// them anyway, which is exactly the stranded-claim state the
+		// drain arm exists to prevent.
+		s.boardDispDone = make(chan struct{})
 		go func() {
+			defer close(s.boardDispDone)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go func() {
@@ -586,6 +593,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		// already closed (idempotent shutdown)
 	default:
 		close(s.shutdown)
+	}
+	if s.boardDispDone != nil {
+		// The board dispatcher's drain (in-flight cards left in place,
+		// claims released on a detached 10s context) runs AFTER the
+		// shutdown close above cancels its ctx. Wait for it, bounded by
+		// the caller's deadline: returning without waiting let the
+		// process exit mid-release — the stranded claim the drain arm
+		// exists to prevent, delivered by the shutdown path itself.
+		waitCtx, cancel := drainBudget(ctx)
+		select {
+		case <-s.boardDispDone:
+		case <-waitCtx.Done():
+			s.logger.Warn("shutdown: board dispatcher drain still running at the deadline — in-flight claim releases may be cut")
+		}
+		cancel()
 	}
 	return s.server.Shutdown(ctx)
 }

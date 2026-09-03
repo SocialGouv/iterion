@@ -442,7 +442,11 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 	filter["$or"] = reclaimableLease(cutoff)
 	res := s.issues.FindOneAndUpdate(ctx, filter,
 		leaseStampPipeline(bson.M{
-			"issue.claim":      marker,
+			// $literal: pipeline $set evaluates values as EXPRESSIONS, and
+			// the marker is operator-configurable — a "$"-leading one
+			// would be read as a field path (the AddComment lesson,
+			// applied to its class sibling).
+			"issue.claim":      bson.M{"$literal": marker},
 			"issue.claimepoch": bumpEpochExpr(),
 			"issue.claimedat":  "$$NOW",
 			"issue.updatedat":  "$$NOW",

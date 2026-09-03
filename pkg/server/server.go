@@ -60,6 +60,9 @@ type Server struct {
 	// boardClockWarned dedups the launch guard's clock-degradation warn on
 	// its edge (empty = healthy). Guarded by stateMu.
 	boardClockWarned string
+	// boardDispDone closes when the cloud board dispatcher run loop (and
+	// its drain writes) has fully returned; Shutdown waits on it, bounded.
+	boardDispDone chan struct{}
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.

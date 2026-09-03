@@ -194,6 +194,18 @@ func randomBootstrapPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// cloudBoardFor builds the per-tenant board factory. The return type is
+// the CONCRETE store on purpose: the pipeline launch guard measures
+// claim leases against the board's ServerNow, and this compile-time
+// shape is what keeps a future wrapper from silently dropping it.
+func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
+	factory := func(tenantID string) *boardmongo.Store { return boardmongo.New(st.DB(), tenantID) }
+	var _ interface {
+		ServerNow(context.Context) (time.Time, error)
+	} = factory("")
+	return func(tenantID string) native.BoardStore { return factory(tenantID) }
+}
+
 func runServer(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         serverOpts.configPath,
@@ -501,13 +513,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv := server.New(server.Config{
-		Port:                   serverOpts.port,
-		Bind:                   serverOpts.bind,
-		Bots:                   server.BotsConfig{Paths: botsPaths},
-		ExamplesDir:            examplesDir,
-		WorkDir:                serverOpts.dir,
-		Store:                  st,
-		CloudBoardFor:          func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
+		Port:        serverOpts.port,
+		Bind:        serverOpts.bind,
+		Bots:        server.BotsConfig{Paths: botsPaths},
+		ExamplesDir: examplesDir,
+		WorkDir:     serverOpts.dir,
+		Store:       st,
+		// The launch guard's cross-clock comparison type-asserts ServerNow
+		// on what THIS factory returns — a decorator inserted here that
+		// drops the method would silently disarm the guard (the pin in
+		// pipeline_admission.go only holds the method on *boardmongo.Store
+		// itself). cloudBoardFor keeps the concrete type visible at the
+		// wiring, so dropping the method is a compile error HERE.
+		CloudBoardFor:          cloudBoardFor(st),
 		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
 		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),
 		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),

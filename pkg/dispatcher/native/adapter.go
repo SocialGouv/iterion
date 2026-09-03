@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"time"
@@ -313,6 +314,7 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 		return nil, err
 	}
 	var cleared []string
+	skipped := 0
 	for _, iss := range issues {
 		if iss.Claim == "" {
 			continue
@@ -321,11 +323,40 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 			continue
 		}
 		if err := a.store.Release(iss.ID, iss.Claim); err != nil {
+			// The listing is a snapshot, not the truth at the moment of
+			// the act: losing the race on ONE card is benign (the reaper
+			// transferred it, a peer released it, the card was deleted) —
+			// aborting here left every FOLLOWING card claimed by a dead
+			// PID until the next boot, and this sweep is the only ungated
+			// repair that population has. Same tolerance as
+			// sweepJournalledClaims, its structural sibling.
+			if errors.Is(err, tracker.ErrClaimConflict) || errors.Is(err, tracker.ErrNotFound) {
+				skipped++
+				continue
+			}
 			return cleared, fmt.Errorf("release stale claim on %s (%s): %w", iss.ID, iss.Claim, err)
 		}
 		cleared = append(cleared, iss.ID)
 	}
+	if skipped > 0 && len(cleared) == 0 && skipped == lenStale(issues, isStale) {
+		// EVERY stale claim lost its race: sweep-wide contention is a
+		// different condition from a per-card blip, and a silent
+		// (nil, nil) here would read as "nothing was stale".
+		return nil, fmt.Errorf("stale-claim sweep released nothing: all %d candidates lost their release race", skipped)
+	}
 	return cleared, nil
+}
+
+// lenStale counts the listing's stale claims, for the sweep's
+// all-races-lost report.
+func lenStale(issues []*Issue, isStale func(string) bool) int {
+	n := 0
+	for _, iss := range issues {
+		if iss.Claim != "" && isStale(iss.Claim) {
+			n++
+		}
+	}
+	return n
 }
 
 func toTrackerIssue(iss *Issue) tracker.Issue {

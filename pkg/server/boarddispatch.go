@@ -419,8 +419,24 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	}
 	fork := newestFinishedIssueFork(forks, pointer)
 	if fork == nil {
+		// No fork to adopt. The FAILED verdict processCard would have
+		// written had it lived: a draining replica leaves its in-flight
+		// cards in the running column (never blocked — the run was still
+		// executing then), so a card whose pointer later reaches terminal
+		// FAILURE would otherwise sit in_progress for ever — not
+		// eligible, not claimed, reached by no sweep. Running-column
+		// only, like the finished arm: a blocked card or an operator
+		// move stays honoured, and resumable pointers keep their retry
+		// path.
+		if st == store.RunStatusFailed && c.Issue.State == d.inProgressState {
+			d.log("card %s/%s pointer run %s failed terminally with no adoptable fork — moving to %s", c.Tenant, c.Issue.ID, runID, d.blockedState)
+			if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.blockedState); err != nil {
+				d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.blockedState, err)
+			}
+		}
 		return
 	}
+
 	// Adopt the fork as the current attempt so the pointer converges with
 	// what the card already shows — workdir included, unlike launch-time
 	// stamps: the fork has already executed, and LastWorkdir feeds the
