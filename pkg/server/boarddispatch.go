@@ -699,7 +699,8 @@ func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time
 			d.warnKeepOnce(label, cand, dec.Reason, kept)
 			continue
 		}
-		if d.releaseSweptClaim(ctx, label, cand, now) {
+		if d.releaseSweptClaim(ctx, label, cand, now,
+			"the fork-adoption reconciler files it within one scan TTL") {
 			released++
 		}
 	}
@@ -799,7 +800,8 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 			d.warnKeepOnce(label, cand, pre.Reason, kept)
 			continue
 		}
-		if d.releaseSweptClaim(ctx, label, cand, now) {
+		if d.releaseSweptClaim(ctx, label, cand, now,
+			"with the watchdog gated off, nothing decides for it") {
 			swept++
 		}
 	}
@@ -877,7 +879,12 @@ func (d *boardDispatcher) loadRunForCard(ctx context.Context, cand boardmongo.Ex
 // releaseSweptClaim drops a claim without judging the card — the
 // gate-off behaviour. It still transfers first: releasing needs
 // ownership, and the CAS is what elects one winner between replicas.
-func (d *boardDispatcher) releaseSweptClaim(ctx context.Context, label string, cand boardmongo.ExpiredCandidate, now time.Time) bool {
+// outcome names, in the release warn, WHO decides for the freed card —
+// the un-leased sweep only releases dispositions the fork-adoption
+// reconciler then files, while a recovery-claim release truly leaves
+// the card to nobody (one message taught the wrong mental model for
+// the sweep's own common case).
+func (d *boardDispatcher) releaseSweptClaim(ctx context.Context, label string, cand boardmongo.ExpiredCandidate, now time.Time, outcome string) bool {
 	tok, _, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID,
 		cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
 	if err != nil {
@@ -898,8 +905,8 @@ func (d *boardDispatcher) releaseSweptClaim(ctx context.Context, label string, c
 			return false
 		}
 	}
-	d.warn("%s freed %s/%s (was held under %q); the card keeps state %q — with the watchdog gated off, nothing decides for it",
-		label, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State)
+	d.warn("%s freed %s/%s (was held under %q); the card keeps state %q — %s",
+		label, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, outcome)
 	return true
 }
 

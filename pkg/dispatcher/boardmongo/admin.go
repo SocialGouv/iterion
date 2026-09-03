@@ -524,13 +524,20 @@ func (s *Store) DeleteView(name string) error {
 // and a per-issue label event is appended. Mirrors native's
 // applyLabelRewriteLocked, including its event payload shape ({issue_id} +
 // the op fields).
-func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []string) ([]string, bool), eventType native.EventType, payload map[string]any) (int, error) {
+func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []string) ([]string, bool), eventType native.EventType, payload map[string]any) (touched int, err error) {
 	all, err := s.listAll(ctx)
 	if err != nil {
 		return 0, err
 	}
-	touched := 0
 	var lost []string
+	// The lost report survives EVERY exit: an I/O error later in the walk
+	// must not swallow the names of the cards that kept the label the
+	// operator asked to remove (possibly a consume_labels trigger).
+	defer func() {
+		if len(lost) > 0 {
+			err = errors.Join(err, fmt.Errorf("boardmongo: %s: %d card(s) lost the label CAS on every attempt — re-run the operation for %v", eventType, len(lost), lost))
+		}
+	}()
 	for i := range all {
 		iss := all[i]
 		// CAS-guarded on the labels this sweep READ, re-read + re-transform
@@ -590,9 +597,6 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 			return touched, err
 		}
 		touched++
-	}
-	if len(lost) > 0 {
-		return touched, fmt.Errorf("boardmongo: %s: %d card(s) lost the label CAS on every attempt — re-run the operation for %v", eventType, len(lost), lost)
 	}
 	return touched, nil
 }

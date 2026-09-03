@@ -362,7 +362,11 @@ func isStaleLocalMarker(marker, host string) bool {
 func journalDeclineIsPermanent(marker string) bool {
 	_, _, ok := parseLocalMarker(marker)
 	// Parseable + pid > 1 is always transient: same-host = the pid may
-	// die; foreign host = its own boot sweep judges it.
+	// die; foreign host = its own boot sweep judges it. An UNPARSABLE
+	// marker is permanent regardless of host — deliberately stricter
+	// than the pre-unification predicate, which read a foreign host's
+	// shapeless marker as transient although no boot anywhere can ever
+	// admit it (isStaleLocalMarker refuses the shape on every host).
 	return !ok
 }
 
