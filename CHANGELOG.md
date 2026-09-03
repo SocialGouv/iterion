@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.95.0](https://github.com/SocialGouv/iterion/compare/v3.94.3...v3.95.0) (2026-09-03)
+
+### Features
+
+* Revi ticket conformance (Jira & co) + org governance (provision approval, delegated caps) ([#630](https://github.com/SocialGouv/iterion/issues/630)) ([cf216f2](https://github.com/SocialGouv/iterion/commit/cf216f2c720e0d26b3f09ac0d7e7985e61203347))
+
+    <details><summary>why</summary>
+
+    Given a tracker_api_base (pinned per repo via the integration's launch_vars) and a bound read-only tracker_token file secret, the reviewers fetch the ticket(s) the PR references — explicit ticket_refs or extracted from the PR title/body + source branch — and verify the diff delivers the demand. Gaps surface as findings of the new "requirements" category (gating like any finding); a per-ticket verdict (covered / partial / not covered / unverifiable) is threaded converge -> pr_gate -> publish…
+
+    </details>
+
 ## [3.94.3](https://github.com/SocialGouv/iterion/compare/v3.94.2...v3.94.3) (2026-09-03)
 
 ### Bug Fixes
