@@ -3,8 +3,13 @@
 How to ship a `queue.RunMessage` schema bump (`pkg/queue/types.go`,
 `SchemaVersion`) without executing a payload with silently dropped semantics,
 and without losing runs while the server and runner fleets run mixed
-versions. This runbook is **mandatory** for every schema bump — deployment
-ordering alone is not sufficient (issue #481).
+versions. Read it before every schema bump.
+
+This runbook is **mandatory** for every schema bump, and ordering is the first
+decision it makes for you: **server-first by default**, because that puts any
+parked message on the replayable side. Runner-first is an optimization with a
+precondition — see *Deploy ordering* — and the drain/replay paths below are
+what you fall back to when neither ordering can spare the queue.
 
 ## Wire compatibility policy
 
@@ -12,10 +17,14 @@ ordering alone is not sufficient (issue #481).
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
   directions. The current v12 consumer accepts v10/v11 backlog explicitly;
   this is not implicit forward compatibility.
-- **Server first.** Deploy the server (producer) before the runners. The new
-  server is the only side that can start emitting the new version; runners
-  that don't speak it yet hold those messages (see below) instead of
-  destroying them.
+- **Server first by default.** Both orders can park a message; only one park is
+  replayable. Old runners rejecting the new version park messages a DLQ replay
+  fixes once the fleet is upgraded; new runners rejecting a version below their
+  `MinSchemaVersion` park messages a replay can never fix. Server-first keeps the
+  risk on the recoverable side. Roll the runners first only when nothing below
+  `Min(new)` can still be queued — automatic when the bump leaves
+  `MinSchemaVersion` alone, and otherwise not worth asserting from a gauge. The
+  precondition and the measured case are in *Deploy ordering* below.
 - **Additive field whose omission changes operator intent = breaking
   change.** If a new field carries a decision the caller explicitly made
   (budget caps, skills, auto-memory, loop guard, model pins…), a stale runner
@@ -69,9 +78,14 @@ A v12 runner treats v10/v11 messages with no field as epoch 0.
 
 Do not combine the schema bump and first non-zero epoch:
 
-1. **Release A:** deploy v12 with `config.rollout.runnerEpoch: 0`, using Path
-   A (recommended) or Path B below. Verify all server and runner probes show
-   `epoch: 0`.
+1. **Release A:** deploy v12 with `config.rollout.runnerEpoch: 0`. v11 → v12
+   leaves `MinSchemaVersion` at 10, so the runner-first precondition holds:
+   roll the **runners, then the server**, and neither Path A nor Path B is
+   needed — see *Deploy ordering* below. (Rolling server-first here is also
+   correct; the paths are only dispensable if you actually take the
+   runner-first order.) Verify all server and runner probes show `epoch: 0`.
+   (Done in prod on 2026-09-02 exactly that way: runner fleet, then server,
+   DLQ untouched throughout — the measurement at the end of *Deploy ordering*.)
 2. **Release B:** set the epoch to 1. New publishers stamp epoch 1. Old v12
    runners delayed-Nak those messages; new runners accept both epoch 0 and 1.
 
@@ -90,33 +104,154 @@ current high-water mark. Never restore a lower-epoch Helm revision directly.
 > burns the MaxDeliver budget in seconds, JetStream drops the message, and
 > nothing is parked to replay. That asymmetry drives the path choice below.
 
-## Server-first ordering with the shipped chart
+## Deploy ordering: which side rolls first
 
-Every procedure below hinges on deploying the server (producer) before the
-runners. A plain `helm upgrade` does NOT give you that ordering: the server
-and runner Deployments both resolve to the same image tag
-(`include "iterion.image" .`), so they roll together. Use the chart's
-per-runner image override to sequence the two phases:
+Both orders can park a message. They differ in **whether the park is
+recoverable**, and that — not "which side rejects less" — is what decides.
+
+| roll first | what gets rejected | recovery |
+|---|---|---|
+| **server** | old runners reject the new vN+1 | **replayable**: once every runner is new, `/api/admin/dlq/$SEQ/replay` re-publishes the same bytes and they are accepted |
+| **runners** | new runners reject anything still queued *below* `Min(new)` | **not replayable**: a replay re-publishes the same old bytes, the new fleet rejects them identically and re-parks (Path B step 5) — recovery is a per-run resume plus a DLQ delete |
+
+Server-first is therefore the safe default, for that reason and not a
+historical one: it puts the parking risk on the side that can be undone. The
+compatibility window changed *how often* a mismatch happens; it did not change
+which mismatch is recoverable.
+
+**Runner-first is an optimization, valid under one condition:** that nothing
+below `Min(new runner)` can still be in the stream. Then new runners admit
+everything — including what the old server is still publishing — and *nothing
+is rejected in either direction*, so neither Path A nor Path B is needed.
+
+### Deciding which you are in
+
+`MinSchemaVersion` unchanged by the bump ⇒ runner-first is safe with no
+further check: the new window is a superset of the old one, so no resident
+message can fall below it.
+
+`MinSchemaVersion` raised ⇒ **do not attempt runner-first on an observation.**
+Take server-first, or drain first (Path A) — draining *makes* the queue empty
+instead of trying to prove that it is, which is the only form of the check
+worth trusting when the failure is unrecoverable.
+
+`iterion_nats_pending_messages` looks like the oracle and is not: `pollPending`
+leaves the gauge at its last successful value when the poll errors, warning
+only after five consecutive failures ([pkg/runner/loop_nats.go](../pkg/runner/loop_nats.go)),
+so a queue that filled while polling was broken still reads 0 — stale in
+exactly the dangerous direction.
+
+`Min` does move. Across the versions that have one:
+
+    v9: 8 → v10: 9 → v11: 10 → v12: 10
+
+two of the three transitions raised it, each by exactly one — to equal the
+*previous* `SchemaVersion`. That is the shape that fools the naive test
+`Min(new) <= SchemaVersion(old server)`: it passes, while a message one
+version older still queued is rejected unrecoverably.
+
+For what it is worth, "still in the stream" is narrower than it sounds: the
+runs stream is `Retention: WorkQueuePolicy`
+([pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go)), so an ACKed message is
+removed immediately and `MaxAge` (24h) bounds only how long an **unacked** one
+lingers. Residue is what is pending or still being redelivered, not everything
+published in the last day. That makes the residue small — it does not make it
+observable.
+
+### The cost of server-first, stated honestly
+
+A vN+1 server publishing into a vN-only fleet gets every delivery
+delayed-Naked until a new-version runner is Ready. That is a race, not a
+certainty of loss: the 30s delay exists precisely to stretch the 8-delivery
+budget over ~4 minutes and cover a rolling restart (see *What a mixed fleet
+does* above and the constant's own justification), and under the chart's
+`maxSurge: 100%` / `maxUnavailable: 0` the first new runner is usually Ready
+early in the roll. What races the budget is time-to-first-Ready-new-runner,
+not the full roll — which under `drainMode: complete` can take hours.
+
+A fleet slow to become Ready spends the budget and parks the run
+`failed_resumable` — replayably. Runner-first removes that race; it is worth
+taking **when the condition above holds**, and it is what the v11 → v12
+cutover used (see the measurement below).
+
+### Sequencing the two Deployments
+
+A plain `helm upgrade` rolls both together: the server and runner Deployments
+resolve to the same image tag (`include "iterion.image" .`). Use the chart's
+per-runner image override to sequence the phases — here in runner-first order:
 
 ```bash
-# Phase 1 — pin the runners to the CURRENT (old) image, roll the server only.
+# Phase 1 — pin the runners to the NEW image, leaving the server on the old tag.
+helm upgrade iterion ./charts/iterion \
+  --set image.tag=<old-tag> \
+  --set runner.image=ghcr.io/socialgouv/iterion:<new-tag>
+
+# Phase 2 — once every runner is Ready on <new-tag>, roll the server.
+helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
+```
+
+**The snippet above is the runner-first order — the optimization, not the
+default.** Path A and Path B below are server-first, and that is a different
+command, not a swap of the two values (`image.tag` takes a tag,
+`runner.image` a full reference, so exchanging them renders an invalid image):
+
+```bash
+# SERVER-FIRST — Path A step 3 and Path B step 1 only.
+# Phase 1 — roll the server, holding the runners on the OLD image.
 helm upgrade iterion ./charts/iterion \
   --set image.tag=<new-tag> \
   --set runner.image=ghcr.io/socialgouv/iterion:<old-tag>
 
-# Phase 2 — once the server runs <new-tag>, unpin and roll the runners.
+# Phase 2 — once the server is Ready on <new-tag>, release the runners.
 helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
 ```
 
-(If your deploy pipeline sequences Deployments itself, use it instead — the
-requirement is only that no vN+1 message is published before the procedure
-below is chosen and running.)
+Getting that backwards on Path B is the destructive direction: it rolls the
+runners into a queue full of vN messages they reject, and per Path B step 5
+those parked messages are **unreplayable** — recovery is a per-run resume
+plus a DLQ delete.
+
+Both snippets assume the install moves its image via `image.tag`. If your
+values pin the image some other way, `--set image.tag=` may not move it at
+all — check that the rendered PodTemplate actually changed before treating a
+phase as done. Note `runner.image`, when set in a values file, already
+overrides `iterion.image` for the runner container, so phase 1's
+`--set runner.image=` must name a full reference and phase 2 must clear or
+advance it rather than rely on the shared tag.
+
+If your deploy pipeline sequences Deployments itself, use it instead — the
+requirement is only that the two Deployments do not roll together.
+
+**Both snippets sequence the IMAGE only.** A release that also moves
+`config.rollout.runnerEpoch` does not get sequenced by them: that is a single
+value rendered as a literal `ITERION_RUNNER_EPOCH` into BOTH PodTemplates
+(server-deployment.yaml and runner-deployment.yaml), so phase 1 rolls both
+Deployments. Move the epoch in its own release — which is what the two-release
+Release A / Release B protocol above already prescribes — not in the same one
+as a schema bump.
+
+> Measured on the v11 → v12 cutover (2026-09-02, prod: 12 runner pods, 3 server
+> pods, live traffic including a run executing across the runner roll).
+> Runner-first left the DLQ byte-identical — depth 30, `last_seq` 220, newest
+> message hours older than the rollout — with no
+> `iterion_runner_admission_rejected_total` sample anywhere in the fleet.
 
 ## Rollout procedure for a schema bump vN → vN+1
 
-Choose **one** of the two paths below. Deployment ordering alone (server
-first) is NOT a third option: it leaves the reverse case — vN+1 runners
-rejecting vN messages still in the queue — to chance.
+These two paths accompany the **server-first** default. Choose **one** of
+them: ordering alone is not a third option, because a server-first roll still
+parks the new version on the old fleet if no upgraded runner becomes Ready
+inside the delivery budget — Path A avoids that by draining first, Path B
+accepts it and replays afterwards.
+
+Both become unnecessary only when you **actually roll runner-first AND its
+precondition holds** — nothing below `Min(new runner)` can still be queued,
+which is automatic when the bump leaves `MinSchemaVersion` alone. Then nothing
+is rejected in either direction, so there is nothing to drain or replay. The
+precondition alone does not exempt you: a server-first roll still needs one of
+these paths whatever the precondition says. See *Deploy ordering* above, and
+do not infer the precondition from the old server's version alone. Path A's
+"recommended default" below is scoped to the bumps that still need a path.
 
 ### Path A — drained queue before cutover
 
@@ -127,8 +262,13 @@ later bump as well.
    window follow Path B — which, for v7 → v8, they cannot: keep the window.
 2. Wait for the queue to drain: `iterion_nats_pending_messages` = 0 and no
    `queued` runs older than the AckWait window.
-3. Deploy the server (vN+1), then roll the runners (vN+1) — per the
-   two-phase chart upgrade above.
+3. Deploy the server (vN+1), then roll the runners (vN+1) — the **SERVER-FIRST
+   snippet** above, not the runner-first one. (If step 1 held a real
+   maintenance window and step 2 reached zero, ordering is moot here: nothing
+   is left for either side to reject — and a drained queue is exactly the
+   precondition that also makes runner-first safe, so either order works. It is
+   not moot when step 1 was skipped and launches continued, which the step
+   explicitly allows — so follow the order regardless.)
 4. Sanity-check: one launch end-to-end, DLQ depth 0.
 
 ### Path B — DLQ identification + replay after cutover
@@ -140,8 +280,10 @@ v7 → v8 cutover itself the outgoing runners are pre-#481 builds: they bare-
 empty DLQ and a run stuck `queued` — the exact loss #481 closes. **Do not
 run Path B for v7 → v8; use Path A.**
 
-1. Deploy the server (vN+1) first, then roll the runners (two-phase upgrade
-   above). During the window, stale runners hold vN+1 messages via delayed
+1. Deploy the server (vN+1) first, then roll the runners — the **SERVER-FIRST
+   snippet** above, not the runner-first one. This is the path where the wrong
+   order parks messages that step 5 cannot replay. During the window, stale
+   runners hold vN+1 messages via delayed
    Naks; after MaxDeliver they park them on the DLQ and flip the runs to
    `failed_resumable`.
 2. Once **all** runners run vN+1, list the DLQ and identify the parked
