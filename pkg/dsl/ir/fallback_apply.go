@@ -40,12 +40,15 @@ const RunFallbackName = "run-fallback"
 //     declared tools would fail exactly when it is needed. A refused
 //     stage is skipped and the caller warns; later stages remain eligible.
 //
-// sandboxDefault is the deployment's global sandbox default (the
-// ITERION_SANDBOX_DEFAULT snapshot the runtime itself resolves modes
-// against): a codex stage is only takeable where the node will run
-// UNSANDBOXED, and whether an inherit-everything node is sandboxed is
-// the deployment's call, not the workflow's.
-func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxDefault string) []string {
+// sandboxed reports whether this run resolves to an ACTIVE sandbox.
+// The caller computes it with runtime.WorkflowSandboxActive — the same
+// pickMode precedence (CLI-strength override → workflow block → global
+// default) the engine itself applies — because the IR cannot know the
+// deployment's tiers, and a hand-rolled resolution here already lied
+// once: it honoured a node-level `sandbox:` tier the engine does not
+// have (one sandbox per run), advertising an escape hatch that
+// re-created the exact dispatch failure it claimed to prevent.
+func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
@@ -100,13 +103,11 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxDefault string) []s
 			}
 			// The codex CLI cannot run inside the sandbox (the dispatch
 			// guard in the delegate hard-errors on any non-noop driver) —
-			// so a codex stage on a node that will run sandboxed would
-			// fail EXACTLY when the chain is needed, which is worse than
-			// not having it. Refused here, at launch, where the operator
-			// is told; a node that explicitly opts out (sandbox: none)
-			// keeps the stage.
-			if route.Backend == "codex" && effectiveSandboxMode(agent.Sandbox, w.Sandbox, sandboxDefault) != "none" {
-				refuse("targets the codex CLI, which cannot run inside the sandbox this node executes in — set sandbox: none on the node, or route to claude_code/claw")
+			// so a codex stage on a sandboxed run would fail EXACTLY when
+			// the chain is needed, which is worse than not having it.
+			// Refused here, at launch, where the operator is told.
+			if route.Backend == "codex" && sandboxed {
+				refuse("targets the codex CLI, which cannot run inside the sandbox this run resolves to — set sandbox: none (workflow block or ITERION_SANDBOX_OVERRIDE), or route to claude_code/claw")
 				continue
 			}
 			// A route that changes backend with no model of its own cannot
@@ -148,21 +149,4 @@ func ParseRunFallbackFlag(arg string) (Fallback, error) {
 		return Fallback{}, fmt.Errorf("--fallback %q: missing backend (expected <backend>:<model>)", arg)
 	}
 	return Fallback{Name: RunFallbackName, Backend: backend, Model: model}, nil
-}
-
-// effectiveSandboxMode resolves the sandbox mode a node will run under,
-// mirroring the runtime's own precedence: node override, then workflow
-// spec, then the deployment default. An empty resolution means "no
-// sandbox" only when nothing anywhere asked for one.
-func effectiveSandboxMode(node, wf *SandboxSpec, deploymentDefault string) string {
-	if node != nil && node.Mode != "" {
-		return node.Mode
-	}
-	if wf != nil && wf.Mode != "" {
-		return wf.Mode
-	}
-	if deploymentDefault != "" {
-		return deploymentDefault
-	}
-	return "none"
 }
