@@ -339,9 +339,18 @@ gh api /orgs/<org>/packages/container/iterion/versions \
 ```
 
 The trade-off is real and yours: a digest turns each deploy into an explicit
-bump instead of a `rollout restart`. That is the ritual `runner.image` already
-follows — the runner is digest-pinned precisely so a moving tag cannot roll
-the Deployment (and kill in-flight runs) on every merge to main.
+bump instead of a `rollout restart`.
+
+**The chart pins nothing by default**, and `image.digest` pins the *shared*
+image only. `runner.image` — the per-runner-pod override — is empty by
+default and falls back to that same reference, so a runner pool given its own
+image keeps the hazard until it is pinned there too. That half matters more
+under the rollout epoch: a pod created from an old ReplicaSet keeps its
+literal `ITERION_RUNNER_EPOCH` while pulling whatever the tag means now.
+
+(SocialGouv's own prod values do pin the runner by digest, for a second
+reason: a moving tag rolled the runner Deployment on every merge to main and
+killed in-flight runs. That is a values-level choice, not a chart default.)
 
 ### Generation-aware rollout
 

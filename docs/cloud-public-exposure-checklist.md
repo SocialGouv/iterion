@@ -49,7 +49,7 @@ How to verify: `kubectl describe pod <iterion-server-pod> | grep -i secret` — 
 ## 5. Image supply chain
 
 - [ ] **Trivy CI** runs on PRs, pushes to `main`, weekly schedule, and post-image builds; the workflow publishes SARIF/results summaries for HIGH/CRITICAL findings but intentionally does **not** fail the PR or image release by itself. If you require a hard gate, configure branch protection or a code-scanning rule outside the current workflow. See [.github/workflows/trivy.yml](../.github/workflows/trivy.yml).
-- [ ] **Image references** in production values use `image: ghcr.io/socialgouv/iterion:<digest>@sha256:…`, not floating tags like `:latest` or `:v1`.
+- [ ] **Image references** in production values are digest-pinned, not floating tags like `:latest`, `:edge` or `:v1`. Set `image.digest: sha256:…` (it wins over `image.tag`, and the chart refuses any other shape); pin `runner.image` separately when the runner pool has its own image, since it falls back to the shared reference. Note the form is `repository@sha256:…` — a digest written into the `tag:` field renders `…iterion:@sha256:…`, which only kubelet rejects. See [cloud-deployment.md](cloud-deployment.md#pinning-the-image).
 - [ ] **Sandbox image** is pre-built and digest-pinned. The Kubernetes driver rejects `sandbox.build:` by design — production deployments reference a CI-built `iterion-sandbox-slim:<version>` digest.
 - [ ] **Cosign / sigstore** signatures verified at admission for production. (Optional but recommended; falls outside the chart's scope.)
 

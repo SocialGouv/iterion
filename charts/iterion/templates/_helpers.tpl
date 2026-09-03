@@ -55,8 +55,21 @@ v3.93.0 at once. A digest is the only reference that makes "one ReplicaSet =
 one build" true, which is what the per-PodTemplate rollout epoch assumes one
 layer up.
 */}}
+A malformed digest must abort the render, not reach the cluster: a bad shape
+still concatenates into a syntactically fine string that helm lints happily
+and only kubelet rejects (`InvalidImageName`), so no pod ever starts — behind
+`maxUnavailable: 0` the rollout then stalls in silence while the old pods keep
+serving, and a KEDA scale-up simply never gets capacity. This chart has
+already been bitten by the shape once, on the neighbouring field: a digest
+written into `tag:` rendered `…iterion:@sha256:…` (see
+docs/bot-runs/dep-update-guard.md). Same reasoning as
+`iterion.nats.monitoringEndpoint`'s `required` below.
+*/}}
 {{- define "iterion.image" -}}
 {{- if .Values.image.digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest) -}}
+{{- fail (printf "image.digest must be sha256:<64 hex chars>, got %q — pass the digest alone, not a tag or a full image reference" .Values.image.digest) -}}
+{{- end -}}
 {{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
 {{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
