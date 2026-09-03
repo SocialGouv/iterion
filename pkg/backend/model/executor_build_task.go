@@ -998,11 +998,30 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// an `mcp.<server>.*` wildcard. This is what lets a claw node reach the
 		// firecrawl scrape/search MCP (self-hosted, searxng-backed) instead of
 		// only claw's native direct-HTTP web_fetch — the wiring gap that made
-		// firecrawl claude_code-only. resolveToolsForNode starts the servers and
-		// expands + dedups the wildcards; the len(effectiveTools)>0 gate keeps
-		// tool-less judges lean (no ambient fetch tools, no behaviour change).
-		if e.mcpManager != nil {
+		// firecrawl claude_code-only. resolveToolsForNode expands + dedups the
+		// wildcards; the len(effectiveTools)>0 gate keeps tool-less judges
+		// lean (no ambient fetch tools, no behaviour change).
+		//
+		// Each server is ensured HERE, one by one: these are ambient (the
+		// node never named them — they arrive from the target repo's
+		// .mcp.json or the plugin catalog), so one that cannot boot costs
+		// its own tools, never the run. The other backends already degrade
+		// per-server (claude_code's CLI skips a server it cannot start; pi
+		// bounds each connect with a timeout) — hard-failing here was a
+		// claw-path parity defect: one token-less repo server killed every
+		// claw node of the run. A tool the node names EXPLICITLY on a dead
+		// server still fails loud in resolveToolsForNode.
+		if e.mcpManager != nil && e.toolRegistry != nil {
 			for _, srv := range f.activeMCPServers {
+				if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{srv}); err != nil {
+					if e.logger != nil {
+						e.logger.Warn("[%s] ambient MCP server %q failed to boot — the node runs WITHOUT its tools: %v", f.id, srv, err)
+					}
+					if e.hooks.OnMCPServerDegraded != nil {
+						e.hooks.OnMCPServerDegraded(f.id, MCPServerDegradedInfo{Server: srv, Source: "ambient", Err: err})
+					}
+					continue
+				}
 				clawTools = append(clawTools, "mcp."+srv+".*")
 			}
 		}

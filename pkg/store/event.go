@@ -447,6 +447,21 @@ const (
 	// Data keys: backend, session_id (the id that failed to serve),
 	// reason (delegate.FallbackCategory), error.
 	EventSessionDegraded EventType = "session_degraded"
+	// EventMCPServerDegraded records an AMBIENT MCP server (inherited from
+	// the target repo's .mcp.json or the plugin catalog — never named by
+	// the node) that failed to boot when the executor spliced the node's
+	// active servers into its tool set. The node runs on WITHOUT that
+	// server's tools instead of failing: the node never asked for it, and
+	// the other backends already degrade per-server (claude_code's CLI
+	// skips a server it cannot start; pi bounds each connect with a
+	// timeout) — failing the run here was a claw-path parity defect that
+	// let one unbootable repo server (e.g. a token-less sentry on a
+	// runner pod) kill every plan/review node. A server the node names
+	// EXPLICITLY (a concrete mcp.<server>.<tool> in tools:) still fails
+	// loud at resolution.
+	//
+	// Data keys: server, source ("ambient"), error.
+	EventMCPServerDegraded EventType = "mcp_server_degraded"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:
