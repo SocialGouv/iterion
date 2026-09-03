@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.99.0](https://github.com/SocialGouv/iterion/compare/v3.98.0...v3.99.0) (2026-09-03)
+
+### Features
+
+* **board:** claim lease + fenced watchdog for the dispatcher board (ADR-096) ([#646](https://github.com/SocialGouv/iterion/issues/646)) ([e194aeb](https://github.com/SocialGouv/iterion/commit/e194aebe09f91063799bc2d3477b50e397d7d513)), references [#597](https://github.com/SocialGouv/iterion/issues/597)
+
+    <details><summary>why</summary>
+
+    Commit 0 of the dispatcher-watchdog chantier (C1 slice 2/3) — the prerequisite the plan review made non-negotiable (F3/F25):
+
+    </details>
+
 ## [3.98.0](https://github.com/SocialGouv/iterion/compare/v3.97.0...v3.98.0) (2026-09-03)
 
 ### Features
