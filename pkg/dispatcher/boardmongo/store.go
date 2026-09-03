@@ -527,28 +527,65 @@ func (s *Store) SetStateWithReason(id, newState, reason string) (*native.Issue, 
 	return s.setStateReason(id, newState, reason)
 }
 
+// setStateReason is the OPERATOR/automation move: "apply this transition
+// to the state I just read, atomically".
+//
+// The write is CAS-guarded on that source state, and a miss re-reads and
+// RE-EVALUATES rather than replaying. Without the guard this was a
+// check-then-act — read, ValidateStateExit, then an unguarded write whose
+// filter is only {_id, tenant_id} — so on the one twin with real
+// concurrency the terminal sink was advisory: a card moved into done or
+// blocked between the read and the write was silently dragged back out,
+// which is exactly the resurrection the guard exists to refuse. The FS
+// twin runs the identical guard under its store-wide lock, and this
+// file's own setStateOwnedReason already argues the point ("a
+// check-then-act would reopen the TOCTOU the fence exists to close").
+//
+// Re-evaluating (not replaying) is what keeps the guard honest: the
+// terminal check must be taken against the state actually being left. A
+// concurrent move to the SAME target converges to the no-op arm, so a
+// benign race stays benign — which matters because
+// PromoteUnblockedDependents walks a stale listing and returns on the
+// first error.
 func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	iss, err := s.get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	board := s.Board()
 	if board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
-	if iss.State == newState {
-		return iss, nil
-	}
-	if err := native.ValidateStateExit(board, iss.State, newState); err != nil {
+	iss, err := s.get(ctx, id)
+	if err != nil {
 		return nil, err
 	}
-	old := iss.State
-	iss.State = newState
-	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss, "state"); err != nil {
-		return nil, err
+	var old string
+	const attempts = 3
+	for attempt := 0; ; attempt++ {
+		if iss.State == newState {
+			return iss, nil
+		}
+		if err := native.ValidateStateExit(board, iss.State, newState); err != nil {
+			return nil, err
+		}
+		old = iss.State
+		iss.State = newState
+		iss.UpdatedAt = time.Now().UTC()
+		matched, err := s.replaceGuarded(ctx, iss, bson.M{"issue.state": old}, "state")
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			break
+		}
+		if attempt == attempts-1 {
+			return nil, fmt.Errorf("%w: %s kept moving under the transition to %q — re-read the card and retry",
+				tracker.ErrTransitionRejected, id, newState)
+		}
+		fresh, gerr := s.get(ctx, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		iss = fresh
 	}
 	payload := map[string]any{"from": old, "to": newState}
 	if reason != "" {

@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -427,6 +429,46 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if _, _, err := store.SetStateFrom(sink.ID, native.StateDone, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) {
 		t.Fatalf("SetStateFrom out of terminal: want ErrTerminalStateExit, got %v", err)
 	}
+	// The sink guard must hold under CONCURRENCY, which is the only place
+	// it can be broken: a read-then-validate-then-unguarded-write is
+	// check-then-act, and the Mongo twin's ordinary SetState was exactly
+	// that (filter {_id, tenant_id}, no source-state predicate) while the
+	// FS twin ran the same guard under its store-wide lock. The section
+	// above is single-threaded, so it certified the guard on the ONE twin
+	// that cannot race and said nothing about the other.
+	//
+	// The assertion is order-INDEPENDENT, so it can only fail on a real
+	// defect. From a working state, one writer closes the card and another
+	// moves it to ready. Whoever wins, the card must END terminal: either
+	// ready landed first and done followed, or done landed first and ready
+	// was refused as a terminal exit. A final "ready" is reachable ONLY
+	// through the TOCTOU — the mover read the working state, the closer
+	// committed done, and the mover's unguarded write dragged it back out.
+	for i := 0; i < 12; i++ {
+		race, err := store.Create(native.Issue{Title: fmt.Sprintf("sink race %d", i), State: native.StateInProgress})
+		if err != nil {
+			t.Fatalf("Create race probe: %v", err)
+		}
+		var wg sync.WaitGroup
+		var moveErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = store.SetState(race.ID, native.StateDone) }()
+		go func() { defer wg.Done(); _, moveErr = store.SetState(race.ID, native.StateReady) }()
+		wg.Wait()
+		got, err := store.Get(race.ID)
+		if err != nil {
+			t.Fatalf("Get race probe: %v", err)
+		}
+		if got.State != native.StateDone {
+			t.Fatalf("a card closed concurrently with a move ended in %q: the terminal sink was left through a "+
+				"check-then-act write (move err = %v) — silent resurrection, the exact class the guard refuses",
+				got.State, moveErr)
+		}
+		if _, err := store.SetState(race.ID, native.StateBlocked); err != nil {
+			t.Fatalf("park race probe: %v", err)
+		}
+	}
+
 	// Park the probes terminally so the list-filter section below keeps
 	// its counts (one shared store per suite run).
 	if _, err := store.SetState(sink.ID, native.StateDone); err != nil {
