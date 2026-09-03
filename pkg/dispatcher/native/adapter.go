@@ -125,12 +125,34 @@ func (a *Adapter) ClaimLease(ctx context.Context, id, marker string) (tracker.Cl
 	return a.store.Claim(id, marker)
 }
 
-// RenewClaim delegates to the store (tracker.ClaimLeaser).
+// RenewClaim delegates to the store (tracker.ClaimLeaser), honouring the
+// caller's cancel for the whole call and not just at its entry.
+//
+// The store's renew takes no context and blocks on the store-wide lock,
+// so any long mutation holding it (a sweep, a bulk column migration)
+// blocks the heartbeat here. claimSession.Stop() runs ON THE ACTOR and
+// waits for that loop — so checking ctx only on the way in made the
+// session's documented "Stop() is not hostage to a slow renewal"
+// guarantee false on this backend, and left its context.Canceled arm
+// unreachable from the dispatcher (the cloud twin already honours it,
+// through RenewClaimCtx).
+//
+// The goroutine ends when the lock frees; the channel is buffered so it
+// never blocks on a caller that has gone. A renewal that lands after the
+// cancel merely extends a lease we still own — Stop() is followed by the
+// release, which is fenced on the same token.
 func (a *Adapter) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return a.store.RenewClaim(id, tok)
+	done := make(chan error, 1)
+	go func() { done <- a.store.RenewClaim(id, tok) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ReleaseOwned delegates to the store (tracker.ClaimLeaser).
