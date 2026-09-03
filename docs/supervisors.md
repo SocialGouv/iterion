@@ -130,7 +130,9 @@ Semantics that matter when choosing the set:
 
 Launch the workflow normally (`iterion run`); the supervisor is
 auto-spawned, observes the run, and is torn down when the run ends. The
-`watches:` ids must name agent nodes (a warning `C190` fires otherwise),
+`watches:` ids must name agent or judge nodes (a warning `C190` fires
+otherwise — both kinds execute through the same model executor and pick
+up steering at their next turn),
 and `system:` must reference a declared prompt (`C193`). Monitors aren't
 declared in the DSL — the supervisor bot registers the patterns it cares
 about at runtime; use the CLI `--monitor` flag to pre-seed them when

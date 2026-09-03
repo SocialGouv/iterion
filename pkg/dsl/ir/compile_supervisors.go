@@ -89,9 +89,13 @@ func (c *compiler) validateSupervisors(w *Workflow) {
 					"supervisor %q watches %q, which is not a declared node", sup.Name, nodeID)
 				continue
 			}
-			if n.NodeKind() != NodeAgent {
+			// Agent AND judge nodes are steerable: both execute through the
+			// same model executor, whose inbox-drain closure is bound per
+			// task regardless of node kind — a judge (e.g. a reviewer) picks
+			// up steering at its next turn exactly like an agent.
+			if kind := n.NodeKind(); kind != NodeAgent && kind != NodeJudge {
 				c.warnf(DiagUnknownWatchedNode,
-					"supervisor %q watches %q, which is a %s node — supervisors steer agent nodes", sup.Name, nodeID, n.NodeKind())
+					"supervisor %q watches %q, which is a %s node — supervisors steer agent and judge nodes", sup.Name, nodeID, kind)
 			}
 		}
 		if sup.System != "" {
