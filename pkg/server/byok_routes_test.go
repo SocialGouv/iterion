@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,5 +88,79 @@ func TestApiKeyTenantCtx_KeepsTheActiveTeamWhenNoPathTeam(t *testing.T) {
 	got, ok := store.TenantFromContext(apiKeyTenantCtx(r))
 	if !ok || got != "team-a" {
 		t.Fatalf("want the active team team-a, got %q (ok=%v)", got, ok)
+	}
+}
+
+// The whole HTTP surface of the concurrency ceiling, which nothing else
+// covers: it round-trips through create and update, it is REJECTED when
+// negative, and — the assertion that matters most — it SURVIVES an edit that
+// does not mention it. handleUpdateApiKey patches the fetched row, so a rename
+// leaves it intact; a refactor that rebuilt the record from the request
+// instead would silently reset every capped key to 0, and 0 means uncapped.
+// That is a fail-OPEN reset of the one control keeping a shared credential
+// inside a provider's fair-usage limit, and it would break in total silence.
+func TestApiKeyMaxConcurrentRuns_HTTPRoundTrip(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{apiKeys: secrets.NewMemoryApiKeyStore(), sealer: sealer}
+	admin := auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}
+
+	do := func(t *testing.T, method, path, body, keyID string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.SetPathValue("id", "team-a")
+		if keyID != "" {
+			r.SetPathValue("key_id", keyID)
+		}
+		r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), admin), "team-a"))
+		w := httptest.NewRecorder()
+		if method == "POST" {
+			srv.handleCreateTeamApiKey(w, r)
+		} else {
+			srv.handleUpdateApiKey(w, r)
+		}
+		return w
+	}
+	ceiling := func(t *testing.T, w *httptest.ResponseRecorder) (string, int) {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d body %s", w.Code, w.Body.String())
+		}
+		var v apiKeyView
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatalf("decode %s: %v", w.Body.String(), err)
+		}
+		return v.ID, v.MaxConcurrentRuns
+	}
+
+	id, got := ceiling(t, do(t, "POST", "/api/teams/team-a/api-keys",
+		`{"provider":"anthropic","name":"capped","secret":"sk-ant-api-x","max_concurrent_runs":3}`, ""))
+	if got != 3 {
+		t.Fatalf("created ceiling = %d, want 3", got)
+	}
+
+	// An edit that never mentions the ceiling must not disturb it.
+	if _, got = ceiling(t, do(t, "PATCH", "/api/teams/team-a/api-keys/"+id, `{"name":"renamed"}`, id)); got != 3 {
+		t.Fatalf("ceiling after an unrelated rename = %d, want 3 — an operator's cap must survive edits that do not mention it", got)
+	}
+
+	// And it is settable, including back to uncapped.
+	if _, got = ceiling(t, do(t, "PATCH", "/api/teams/team-a/api-keys/"+id, `{"max_concurrent_runs":1}`, id)); got != 1 {
+		t.Fatalf("ceiling after update = %d, want 1", got)
+	}
+	if _, got = ceiling(t, do(t, "PATCH", "/api/teams/team-a/api-keys/"+id, `{"max_concurrent_runs":0}`, id)); got != 0 {
+		t.Fatalf("ceiling after clearing = %d, want 0 (uncapped)", got)
+	}
+
+	// A negative ceiling is meaningless and must be refused on both paths,
+	// not stored as a value that would compare as "always at the ceiling".
+	if w := do(t, "PATCH", "/api/teams/team-a/api-keys/"+id, `{"max_concurrent_runs":-1}`, id); w.Code != http.StatusBadRequest {
+		t.Fatalf("update with a negative ceiling: status %d, want 400", w.Code)
+	}
+	if w := do(t, "POST", "/api/teams/team-a/api-keys",
+		`{"provider":"anthropic","name":"bad","secret":"sk-ant-api-y","max_concurrent_runs":-1}`, ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("create with a negative ceiling: status %d, want 400", w.Code)
 	}
 }
