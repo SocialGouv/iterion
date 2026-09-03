@@ -95,9 +95,18 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 			return nil, fmt.Errorf("model: invalid wildcard %q: %w", name, err)
 		}
 		// Ensure the server is connected so its tools are in the registry.
+		//
+		// A wildcard reaching here is a DECLARED dependency, so a boot failure
+		// is fatal on purpose: ambient servers (target repo `.mcp.json`, plugin
+		// catalog) are ensured one by one upstream in buildTask and dropped
+		// with an `mcp_server_degraded` event when they cannot boot, so they
+		// never arrive as a wildcard. The asymmetry with the empty-match
+		// warning below is the point — unreachable means the node asked for
+		// something the host cannot supply, empty means the server booted and
+		// has nothing to offer.
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{server}); err != nil {
-				return nil, fmt.Errorf("model: ensure MCP server %q for wildcard: %w", server, err)
+				return nil, fmt.Errorf("model: MCP server %q, named explicitly by this node as %q, cannot boot: %w (drop the wildcard to make the server optional — an ambient server degrades to a warning instead)", server, name, err)
 			}
 		}
 		if e.toolRegistry == nil {
