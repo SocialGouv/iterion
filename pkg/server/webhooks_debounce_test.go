@@ -13,11 +13,18 @@ import (
 
 // ghSyncPayload is a GitHub `synchronize` delivery (a push to the PR head).
 func ghSyncPayload(sha string) string {
+	return ghSyncPayloadRepo("acme/widgets", sha)
+}
+
+// ghSyncPayloadRepo is the same delivery for an arbitrary repository —
+// one webhook config routinely serves many (ProjectAllowlist, an
+// org-level hook), and PR numbers collide across them.
+func ghSyncPayloadRepo(repo, sha string) string {
 	return `{
 	  "action": "synchronize", "number": 7,
-	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "repository": {"id": 42, "full_name": "` + repo + `", "clone_url": "https://github.com/` + repo + `.git"},
 	  "pull_request": {"number": 7, "title": "T", "body": "b",
-	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
+	    "html_url": "https://github.com/` + repo + `/pull/7", "state": "open",
 	    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
 	  "sender": {"login": "alice"}
 	}`
@@ -78,6 +85,43 @@ func TestSyncDebounce_VolleyLaunchesOnlyFinalHead(t *testing.T) {
 	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(10*time.Minute))
 	if len(*got) != 1 {
 		t.Fatalf("acknowledged row re-fired: %v", botsOf(*got))
+	}
+}
+
+// One webhook serves MANY projects, and a subject id carries no repo
+// ("pr:7" on both). Keyed on the subject alone, a push to acme/b#7
+// replaces the parked review of acme/a#7 — which then never launches and
+// never retries (the defer lane writes no delivery row, so nothing
+// notices). Both reviews must survive and both must fire.
+func TestSyncDebounce_SamePRNumberInTwoProjectsDoNotCollide(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, repo := range []string{"acme/a", "acme/b"} {
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayloadRepo(repo, "sha-"+repo), prforge.EventHeaderPullRequest, pt))
+		if w.Code != 202 {
+			t.Fatalf("%s: deferred delivery must answer 202, got %d: %s", repo, w.Code, w.Body.String())
+		}
+	}
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 2 {
+		t.Fatalf("both projects' #7 must be reviewed, got %d launch(es): %v", len(*got), *got)
+	}
+	seen := map[string]bool{}
+	for _, rec := range *got {
+		seen[rec.vars["head_sha"]] = true
+	}
+	if !seen["sha-acme/a"] || !seen["sha-acme/b"] {
+		t.Fatalf("one project's review was dropped by a key collision; launched heads = %v", seen)
 	}
 }
 

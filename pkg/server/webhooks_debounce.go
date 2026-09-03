@@ -82,9 +82,20 @@ func webhookSyncDebounceFromEnv() time.Duration {
 }
 
 // deferSubjectKey scopes the debounce exactly like the supersede pass
-// scopes cancellation: one pull request on one webhook.
+// scopes cancellation: one pull request of ONE PROJECT on one webhook.
+//
+// The project path is load-bearing, not decoration. A subject id carries
+// no repo by construction (prforge → "pr:7", gitlab → "mr:7") and ONE
+// webhook config routinely serves MANY projects — that is what
+// ProjectAllowlist and an org-level forge hook are for. Keyed on the
+// subject alone, a push to acme/b#7 REPLACES the parked review of
+// acme/a#7 (Upsert is wholesale), which then never launches and never
+// retries: the defer lane writes no delivery row, so nothing in the
+// audit trail or the merge gate ever notices. supersedeLiveRuns already
+// scopes by project (ListLaunchedBySubject takes projectPath); this is
+// the same scope.
 func deferSubjectKey(cfg webhooks.Config, meta webhookEventMeta) string {
-	return cfg.TenantID + "|" + cfg.ID + "|" + meta.SubjectID
+	return cfg.TenantID + "|" + cfg.ID + "|" + meta.ProjectPath + "|" + meta.SubjectID
 }
 
 // shouldDeferSyncLaunch reports whether this delivery rides the debounce:
