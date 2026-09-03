@@ -871,9 +871,24 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
 		ws: newWsBridge(iterlog.Nop()),
 	}
-	c.shutdownRevertBudget, c.shutdownReleaseBudget = 40*time.Millisecond, 40*time.Millisecond
+	// The SEPARATION is what this asserts, not a wall-clock figure.
+	// Sequential costs drainCards budgets; the parallel drain runs
+	// ceil(drainCards/4) batches (its semaphore is 4). At 4 cards those
+	// were 4 units versus 1, and the ceiling sat one unit below the
+	// sequential floor — thin enough that a loaded machine read its own
+	// noise as a regression (measured: 123ms against a 120ms ceiling under
+	// a full-package run, green in isolation). Eight cards widen the gap
+	// to 8 units versus 2 at no extra cost, and the ceiling now sits
+	// between them with room on both sides (observed parallel ~100-115ms,
+	// sequential floor 320ms).
+	const (
+		drainCards  = 8
+		cardBudget  = 40 * time.Millisecond
+		drainCeling = 5 * cardBudget
+	)
+	c.shutdownRevertBudget, c.shutdownReleaseBudget = cardBudget, cardBudget
 	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
-	for i := 0; i < 4; i++ {
+	for i := 0; i < drainCards; i++ {
 		iss, err := board.Create(native.Issue{Title: "in flight", State: native.StateReady})
 		if err != nil {
 			t.Fatal(err)
@@ -895,10 +910,12 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 	c.shutdown()
 	elapsed := time.Since(start)
 
-	// Sequential would be ≥ 4 × 40ms of dead revert contexts; parallel is
-	// one card's worth plus scheduling noise.
-	if elapsed > 120*time.Millisecond {
-		t.Fatalf("drain took %s for 4 cards — sequential again: under a real grace period the SIGKILL beats the tail and those claims stay on disk", elapsed)
+	// Sequential would be ≥ drainCards × cardBudget of dead revert
+	// contexts; parallel is one card's worth plus scheduling noise.
+	if elapsed > drainCeling {
+		t.Fatalf("drain took %s for %d cards (ceiling %s, sequential floor %s) — sequential again: under a real "+
+			"grace period the SIGKILL beats the tail and those claims stay on disk",
+			elapsed, drainCards, drainCeling, time.Duration(drainCards)*cardBudget)
 	}
 	for id := range c.state.running {
 		if cur, _ := board.Get(id); cur.Claim != "" {
