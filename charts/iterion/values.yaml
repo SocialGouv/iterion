@@ -5,6 +5,18 @@
 image:
   repository: ghcr.io/socialgouv/iterion
   tag: ""              # defaults to .Chart.AppVersion when empty
+  # Wins over `tag` when set (`sha256:…`). Prefer it whenever `tag` is a
+  # MOVING tag (edge/main/latest): a tag is resolved per pod at that pod's own
+  # start time, so a publish landing mid-rollout splits one ReplicaSet across
+  # two builds, and a later HPA/KEDA scale-up from an existing ReplicaSet pulls
+  # whatever the tag means then — no rollout entry, no signal. A digest is what
+  # makes "one ReplicaSet = one build" true, which the rollout epoch assumes.
+  # Cost: each deploy becomes an explicit digest bump instead of a rollout
+  # restart. Note this pins the SHARED image only: `runner.image` below is
+  # empty by default and falls back to this same reference, so a runner pool
+  # given its own image must be pinned there too.
+  # See docs/cloud-deployment.md#pinning-the-image.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

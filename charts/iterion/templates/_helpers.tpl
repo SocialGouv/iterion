@@ -44,10 +44,37 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Container image reference. Defaults to .Chart.AppVersion when
 .Values.image.tag is empty so a fresh chart pull tracks the binary
 release out of the box.
+
+.Values.image.digest wins over the tag when set. A MOVING tag (`edge`,
+`main`, `latest`) is resolved per POD, at that pod's own start time — so a
+publish landing mid-rollout splits one ReplicaSet across two builds, and a
+later HPA/KEDA scale-up from an existing ReplicaSet silently pulls whatever
+the tag points at then, with no rollout-history entry. Measured on prod
+2026-09-02: three server pods of ReplicaSet 548c4b7f7d serving v3.92.0 and
+v3.93.0 at once. A digest is the only reference that makes "one ReplicaSet =
+one build" true, which is what the per-PodTemplate rollout epoch assumes one
+layer up.
+
+A malformed digest must abort the render, not reach the cluster: a bad shape
+still concatenates into a syntactically fine string that helm lints happily
+and only kubelet rejects (`InvalidImageName`), so no pod ever starts — behind
+`maxUnavailable: 0` the rollout then stalls in silence while the old pods keep
+serving, and a KEDA scale-up simply never gets capacity. This chart has
+already been bitten by the shape once, on the neighbouring field: a digest
+written into `tag:` rendered `…iterion:@sha256:…` (see
+docs/bot-runs/dep-update-guard.md). Same reasoning as
+`iterion.nats.monitoringEndpoint`'s `required` below.
 */}}
 {{- define "iterion.image" -}}
+{{- if .Values.image.digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest) -}}
+{{- fail (printf "image.digest must be sha256:<64 hex chars>, got %q — pass the digest alone, not a tag or a full image reference" .Values.image.digest) -}}
+{{- end -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
