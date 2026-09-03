@@ -204,3 +204,20 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 		CreatedAt: gc.CreatedAt,
 	}, nil
 }
+
+// CommentIssue on an App connection delegates to a fresh-token AdminClient —
+// same live-token rationale as SetCommitStatus/GetPullRequest, and the same
+// reason: the production GitHub path is the App, so a capability resolved by
+// type assertion against the admin client is INERT there unless the App
+// client forwards it. The parked-review pause notice is the caller.
+//
+// No extra permission work: RuntimeInstallationPermissions already mints
+// `issues: write`, which is what /repos/{repo}/issues/{n}/comments needs —
+// GitHub serves PR comments off the issues endpoint.
+func (a *AppClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
+	rest, err := a.rest(ctx)
+	if err != nil {
+		return forge.CommentRef{}, err
+	}
+	return rest.CommentIssue(ctx, repo, number, body)
+}

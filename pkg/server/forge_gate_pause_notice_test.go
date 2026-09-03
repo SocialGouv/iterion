@@ -7,7 +7,26 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
+	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
+	forgegitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
 	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// Every client forgeAdminFor can actually return must satisfy the commenter,
+// or issueCommenterFor degrades to (nil, nil) and the whole notice goes
+// SILENT — invisible, since the only trace is a Debug line deployments
+// suppress. That is exactly what shipped for the GitHub App (the production
+// path: the studio connect wizard creates KindGitHubApp connections), whose
+// AppClient forwards SetCommitStatus and GetPullRequest but had no
+// CommentIssue. The tests below inject the forgeIssueCommenterFor seam, so
+// only this assertion can catch it. Sibling of the forgeGateClient block in
+// forge_publish_gate_test.go, for the same class of bug.
+var (
+	_ forgeIssueCommenter = (*forgegithub.AdminClient)(nil)
+	_ forgeIssueCommenter = (*forgegithub.AppClient)(nil)
+	_ forgeIssueCommenter = (*forgegitlab.AdminClient)(nil)
+	_ forgeIssueCommenter = (*forgeforgejo.AdminClient)(nil)
 )
 
 type stubCommenter struct {

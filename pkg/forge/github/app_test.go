@@ -302,3 +302,58 @@ func TestAppClientRest_StatusesGranted(t *testing.T) {
 		t.Fatalf("granted statuses → one successful mint, got token=%q attempts=%d", rc.Token, attempts)
 	}
 }
+
+// The App client must be able to COMMENT, not only to set a status: the
+// merge gate's parked-review pause notice resolves its client by type
+// assertion off forgeAdminFor, which on the production GitHub path returns
+// *AppClient. Without this forwarder the assertion failed and the notice was
+// silently dropped. Round-trip: mint (issues:write is already in the
+// baseline) → POST /repos/{repo}/issues/{n}/comments with the minted token.
+func TestAppClientCommentIssue_RoundTrip(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	var (
+		body    map[string]any
+		gotAuth string
+		gotPath string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+			var in map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			perms, _ := in["permissions"].(map[string]any)
+			if perms["issues"] != "write" {
+				t.Errorf("the minted token must carry issues:write (the comments endpoint), got %v", perms)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_app", "expires_at": "2099-01-01T00:00:00Z"})
+			return
+		}
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":       321,
+			"html_url": "https://github.com/o/r/issues/7#issuecomment-321",
+			"body":     body["body"],
+			"user":     map[string]any{"login": "iterion[bot]"},
+		})
+	}))
+	defer srv.Close()
+
+	a := &AppClient{HTTP: srv.Client(), WebBaseURL: srv.URL, Cfg: AppConfig{AppID: 42, PrivateKeyPEM: pemStr}, InstallationID: 99, Now: func() time.Time { return time.Unix(1700000000, 0) }}
+	got, err := a.CommentIssue(context.Background(), "o/r", 7, "⏸️ Review paused")
+	if err != nil {
+		t.Fatalf("the App path must be able to comment: %v", err)
+	}
+	if !strings.HasSuffix(gotPath, "/repos/o/r/issues/7/comments") {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer ghs_app" {
+		t.Errorf("the comment must ride the minted installation token, got %q", gotAuth)
+	}
+	if body["body"] != "⏸️ Review paused" {
+		t.Errorf("request body = %v", body)
+	}
+	if got.ID != "321" || got.Author != "iterion[bot]" {
+		t.Errorf("comment = %+v", got)
+	}
+}
