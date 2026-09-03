@@ -42,3 +42,24 @@ func TestAccumulateAssistantUsage_DedupsByMessageID(t *testing.T) {
 		t.Fatalf("cache classes must carry across turns: %+v", cum)
 	}
 }
+
+// Interleaved message ids (a sub-agent's messages ride the same stream
+// as the parent's) must not double-count — the R5d75f1 regression: a
+// single last-id slot re-folded a message it had already folded on the
+// A,B,A pattern.
+func TestAccumulateAssistantUsage_InterleavedIDsDoNotDoubleCount(t *testing.T) {
+	var sm sessionMeta
+
+	sm.accumulateAssistantUsage("msg_A", claudesdk.Usage{InputTokens: 1000, OutputTokens: 100})
+	sm.accumulateAssistantUsage("msg_B", claudesdk.Usage{InputTokens: 500, OutputTokens: 50})
+	// A's final event arrives AFTER B started (interleaving): same id,
+	// updated output — must REPLACE A's contribution, not add it again.
+	cum := sm.accumulateAssistantUsage("msg_A", claudesdk.Usage{InputTokens: 1000, OutputTokens: 300})
+
+	if cum.InputTokens != 1500 {
+		t.Fatalf("input = %d, want 1500 (A once + B once)", cum.InputTokens)
+	}
+	if cum.OutputTokens != 350 {
+		t.Fatalf("output = %d, want 350 (A's updated 300 + B's 50)", cum.OutputTokens)
+	}
+}

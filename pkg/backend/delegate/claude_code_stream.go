@@ -134,33 +134,31 @@ type sessionMeta struct {
 	// Mid-call usage accumulation for the OnUsageProgress hook. The CLI
 	// may stream SEVERAL assistant events for one API message (one per
 	// content block), each carrying that message's usage — summing
-	// naively would multiply the spend. So usage is folded per message
-	// id: same id REPLACES the pending sample (later events carry the
-	// completed output count), a new id FOLDS the previous message's
-	// final sample into the totals. Cumulative = folded + pending.
-	usageFolded    claudesdk.Usage
-	usagePending   claudesdk.Usage
-	usagePendingID string
+	// naively would multiply the spend. And ids can INTERLEAVE (a
+	// sub-agent's messages ride the same stream as the parent's), so a
+	// single last-id slot would re-fold a message it already folded.
+	// Usage is therefore kept per message id, last value wins per id,
+	// and the cumulative is the running sum maintained incrementally
+	// (usageByMsg only stores what each id last contributed).
+	usageByMsg map[string]claudesdk.Usage
+	usageTotal claudesdk.Usage
 }
 
-// accumulateAssistantUsage folds one streamed assistant message's usage
-// into the session's cumulative counters (see the sessionMeta fields for
-// the per-message-id dedup) and reports the running totals.
+// accumulateAssistantUsage records one streamed assistant message's
+// usage (last value wins per message id — later events of the same
+// message carry the completed output count) and reports the running
+// totals across all message ids seen this call.
 func (sm *sessionMeta) accumulateAssistantUsage(msgID string, u claudesdk.Usage) claudesdk.Usage {
-	if msgID != sm.usagePendingID {
-		sm.usageFolded.InputTokens += sm.usagePending.InputTokens
-		sm.usageFolded.OutputTokens += sm.usagePending.OutputTokens
-		sm.usageFolded.CacheCreationInputTokens += sm.usagePending.CacheCreationInputTokens
-		sm.usageFolded.CacheReadInputTokens += sm.usagePending.CacheReadInputTokens
-		sm.usagePendingID = msgID
+	if sm.usageByMsg == nil {
+		sm.usageByMsg = make(map[string]claudesdk.Usage)
 	}
-	sm.usagePending = u
-	return claudesdk.Usage{
-		InputTokens:              sm.usageFolded.InputTokens + u.InputTokens,
-		OutputTokens:             sm.usageFolded.OutputTokens + u.OutputTokens,
-		CacheCreationInputTokens: sm.usageFolded.CacheCreationInputTokens + u.CacheCreationInputTokens,
-		CacheReadInputTokens:     sm.usageFolded.CacheReadInputTokens + u.CacheReadInputTokens,
-	}
+	prev := sm.usageByMsg[msgID]
+	sm.usageTotal.InputTokens += u.InputTokens - prev.InputTokens
+	sm.usageTotal.OutputTokens += u.OutputTokens - prev.OutputTokens
+	sm.usageTotal.CacheCreationInputTokens += u.CacheCreationInputTokens - prev.CacheCreationInputTokens
+	sm.usageTotal.CacheReadInputTokens += u.CacheReadInputTokens - prev.CacheReadInputTokens
+	sm.usageByMsg[msgID] = u
+	return sm.usageTotal
 }
 
 // applyClaudeCodeSessionMeta merges the streamed session metadata and

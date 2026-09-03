@@ -574,6 +574,16 @@ func (h *storeHooks) onUsageProgress(nodeID string, info UsageProgressInfo) {
 	if info.Model != "" {
 		st.model = info.Model
 	}
+	// A DROP in the call-cumulative counters means a NEW delegate call
+	// started on this node (a loop iteration, a retry, a fallback
+	// route). Without clearing the debounce watermarks the PREVIOUS
+	// call's peak would suppress every sample of the new one until it
+	// out-spent it — blinding cost_gt on exactly the later passes a
+	// pacer exists for.
+	if info.InputTokens+info.OutputTokens+info.CacheReadTokens+info.CacheWriteTokens <
+		st.in+st.out+st.cacheRead+st.cacheWrite {
+		st.lastUsed, st.lastTokens = 0, 0
+	}
 	st.in, st.out = info.InputTokens, info.OutputTokens
 	st.cacheRead, st.cacheWrite = info.CacheReadTokens, info.CacheWriteTokens
 	data := h.usageSampleLocked(st)

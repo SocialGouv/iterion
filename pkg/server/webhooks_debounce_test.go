@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -177,5 +178,131 @@ func TestMemoryDeferredLaunchStore_LeaseLapsesAndRefires(t *testing.T) {
 	}
 	if due, _ := st.ClaimDue(ctx, now.Add(2*time.Minute), time.Minute, 10); len(due) != 1 {
 		t.Fatalf("lapsed lease must re-offer the row, got %v", due)
+	}
+}
+
+// Two same-numbered PRs on two repos of ONE webhook must park under two
+// distinct keys and both fire — the R46e1fb regression: a repo-less
+// subject id ("pr:7") let a push to acme/b#7 replace acme/a#7's parked
+// review, which then never launched and never retried.
+func TestSyncDebounce_CrossRepoSamePRNumberIsolated(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	syncOn := func(repo, sha string) string {
+		return `{
+		  "action": "synchronize", "number": 7,
+		  "repository": {"id": 42, "full_name": "` + repo + `", "clone_url": "https://github.com/` + repo + `.git"},
+		  "pull_request": {"number": 7, "title": "T", "body": "b",
+		    "html_url": "https://github.com/` + repo + `/pull/7", "state": "open",
+		    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+		  "sender": {"login": "alice"}
+		}`
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), syncOn("acme/a", "sha-a"), prforge.EventHeaderPullRequest, pt))
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), syncOn("acme/b", "sha-b"), prforge.EventHeaderPullRequest, pt))
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 2 {
+		t.Fatalf("both repos' PRs must launch, got %d: %v", len(*got), botsOf(*got))
+	}
+	shas := map[string]bool{}
+	for _, rec := range *got {
+		shas[rec.vars["head_sha"]] = true
+	}
+	if !shas["sha-a"] || !shas["sha-b"] {
+		t.Fatalf("each repo must launch its own head, got %v", shas)
+	}
+}
+
+// A PR closed (merged) inside its quiet window must purge the parked
+// review — the R59ff42 regression: the sweep otherwise fires a full
+// review of a dead pull request minutes after it merged.
+func TestSyncDebounce_ClosedPRPurgesParkedLaunch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	closed := `{
+	  "action": "closed", "number": 7,
+	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "pull_request": {"number": 7, "title": "T", "body": "b", "merged": true,
+	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "closed",
+	    "head": {"ref": "feature/x", "sha": "sha-1"}, "base": {"ref": "main"}},
+	  "sender": {"login": "alice"}
+	}`
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), closed, prforge.EventHeaderPullRequest, pt))
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(10*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("a closed PR's parked review must never fire, got %v", botsOf(*got))
+	}
+}
+
+// The supersede pass must be scoped by project too: a push to acme/b#7
+// must not cancel the live review of acme/a#7 riding the same webhook —
+// the pre-existing sibling of the R46e1fb key collision.
+func TestSupersede_ScopedByProject(t *testing.T) {
+	s := newWebhookTestServer(t)
+	got := fanoutLauncher(s)
+	var cancelled []string
+	s.webhookCancelRun = func(runID string) error {
+		cancelled = append(cancelled, runID)
+		return nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.Overlap = schedgate.OverlapSupersede
+
+	openOn := func(repo, sha string) string {
+		return `{
+		  "action": "opened", "number": 7,
+		  "repository": {"id": 42, "full_name": "` + repo + `", "clone_url": "https://github.com/` + repo + `.git"},
+		  "pull_request": {"number": 7, "title": "T", "body": "b",
+		    "html_url": "https://github.com/` + repo + `/pull/7", "state": "open",
+		    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+		  "sender": {"login": "alice"}
+		}`
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), openOn("acme/a", "sha-a"), prforge.EventHeaderPullRequest, pt))
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), openOn("acme/b", "sha-b"), prforge.EventHeaderPullRequest, pt))
+
+	if len(*got) != 2 {
+		t.Fatalf("both PRs must launch, got %v", botsOf(*got))
+	}
+	if len(cancelled) != 0 {
+		t.Fatalf("a same-numbered PR of ANOTHER repo must not be superseded, cancelled %v", cancelled)
+	}
+}
+
+// A nil request through the denial-response path (the defer-failure
+// fallback fires with the inbound request now, but the guard is the
+// belt) must answer, never panic.
+func TestReflectAllowedOrigin_NilRequestIsNoop(t *testing.T) {
+	s := newWebhookTestServer(t)
+	w := httptest.NewRecorder()
+	s.reflectAllowedOrigin(w, nil)
+	if h := w.Header().Get("Access-Control-Allow-Origin"); h != "" {
+		t.Fatalf("nil request must reflect nothing, got %q", h)
 	}
 }

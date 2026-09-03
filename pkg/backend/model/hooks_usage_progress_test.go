@@ -141,3 +141,31 @@ func TestUsageProgress_ClawStepFeed(t *testing.T) {
 		t.Errorf("post-reset tokens = %v, want 40500", last.Data["tokens"])
 	}
 }
+
+// A NEW delegate call on the same node restarts its call-cumulative
+// counters near zero. The debounce watermark must reset on that drop —
+// the R99b7b4 regression: without it the previous call's peak suppressed
+// every sample of the new call until it out-spent it, blinding cost_gt
+// on exactly the later loop passes a pacer exists for.
+func TestUsageProgress_WatermarkResetsOnNewCall(t *testing.T) {
+	hooks, load := newUsageHooks(t, "run-up-reset")
+
+	// Call 1 climbs to a large cumulative.
+	hooks.OnUsageProgress("campaign", UsageProgressInfo{
+		Model: "claude-opus-5", InputTokens: 80000, OutputTokens: 2000,
+	})
+	n1 := len(load())
+	if n1 == 0 {
+		t.Fatal("call 1 must emit")
+	}
+
+	// Call 2 (new pass): cumulative restarts small (a drop from call 1's
+	// 82k) but past the $0.05 floor (~$0.09 at opus rates).
+	hooks.OnUsageProgress("campaign", UsageProgressInfo{
+		Model: "claude-opus-5", InputTokens: 15000, OutputTokens: 500,
+	})
+	evts := load()
+	if len(evts) <= n1 {
+		t.Fatalf("a fresh call's first sample must emit despite being under the previous call's peak (got %d events, had %d)", len(evts), n1)
+	}
+}

@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -81,10 +84,15 @@ func webhookSyncDebounceFromEnv() time.Duration {
 	return d
 }
 
-// deferSubjectKey scopes the debounce exactly like the supersede pass
-// scopes cancellation: one pull request on one webhook.
+// deferSubjectKey scopes the debounce to ONE pull request of ONE project
+// on one webhook. The project path is load-bearing: a subject id ("pr:7")
+// carries no repo and one webhook config routinely serves many
+// (ProjectAllowlist, an org-level hook), so keying on the subject alone
+// would let a push to acme/b#7 REPLACE the parked review of acme/a#7 —
+// which would then never launch and never retry (no delivery row was
+// ever written).
 func deferSubjectKey(cfg webhooks.Config, meta webhookEventMeta) string {
-	return cfg.TenantID + "|" + cfg.ID + "|" + meta.SubjectID
+	return cfg.TenantID + "|" + cfg.ID + "|" + meta.ProjectPath + "|" + meta.SubjectID
 }
 
 // shouldDeferSyncLaunch reports whether this delivery rides the debounce:
@@ -100,6 +108,7 @@ func (s *Server) shouldDeferSyncLaunch(gateResync bool) bool {
 func (s *Server) deferSyncLaunch(
 	ctx context.Context,
 	w http.ResponseWriter,
+	r *http.Request,
 	cfg webhooks.Config,
 	meta webhookEventMeta,
 	targets []forgeLaunchTarget,
@@ -124,6 +133,10 @@ func (s *Server) deferSyncLaunch(
 		SenderHandle: meta.SenderHandle,
 		PayloadHash:  payloadHash,
 		SourceIP:     srcIP,
+		// Mirror the request-derived server base: on a deployment with no
+		// PublicURL the launch tail resolves the forge publish grant's
+		// endpoint from the inbound request, which the sweep won't have.
+		PublicBase: s.publicBaseURL(r),
 	}
 	for _, t := range targets {
 		d.Targets = append(d.Targets, webhooks.DeferredTarget{
@@ -134,11 +147,12 @@ func (s *Server) deferSyncLaunch(
 	if err := s.webhookDeferred.Upsert(ctx, d); err != nil {
 		// The park failed — launching immediately is strictly better than
 		// dropping the review (the pre-debounce behaviour, and the forge
-		// has already been promised a review of this head).
+		// has already been promised a review of this head). The inbound
+		// request rides along: the denial path writes CORS headers off it.
 		if s.logger != nil {
 			s.logger.Warn("webhooks: defer of %s %s failed (%v) — launching immediately instead", cfg.ID, meta.SubjectID, err)
 		}
-		s.insertAndLaunchWebhookMulti(ctx, w, nil, cfg, meta, targets, payloadHash, srcIP)
+		s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 		return
 	}
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusDeferred)
@@ -147,6 +161,28 @@ func (s *Server) deferSyncLaunch(
 			cfg.Provider, meta.ProjectPath, meta.SubjectID, meta.SubjectSHA, s.syncDebounce)
 	}
 	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": webhooks.StatusDeferred})
+}
+
+// syntheticRequestForBase rebuilds the minimal *http.Request
+// publicBaseURL needs to re-derive a stored "scheme://host" base — the
+// deferred lane's stand-in for the inbound request it no longer has.
+// Returns nil for an empty/unparsable base (publicBaseURL then falls
+// back to cfg.PublicURL alone, the pre-fix behaviour).
+func syntheticRequestForBase(base string) *http.Request {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return nil
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	req := &http.Request{Host: u.Host, Header: http.Header{}, URL: &url.URL{}}
+	if u.Scheme == "https" {
+		// publicBaseURL reads scheme off r.TLS, not the URL.
+		req.TLS = &tls.ConnectionState{}
+	}
+	return req
 }
 
 // runWebhookDeferSweeper ticks until ctx is cancelled, launching parked
@@ -190,11 +226,19 @@ func (s *Server) sweepDeferredWebhookLaunches(ctx context.Context, now time.Time
 // would re-deny every 20s until the TTL.
 func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.DeferredLaunch) {
 	cfg, err := s.webhookConfigs.Get(ctx, d.WebhookID)
-	if err != nil {
+	if errors.Is(err, webhooks.ErrNotFound) {
 		// The webhook is gone (deleted between park and fire) — the row
 		// can never launch. Drop it rather than re-claim it forever.
-		s.warnf("webhook debounce sweeper: config %s gone (%v) — dropping parked launch for %s", d.WebhookID, err, d.SubjectID)
+		s.warnf("webhook debounce sweeper: config %s gone — dropping parked launch for %s", d.WebhookID, d.SubjectID)
 		_ = s.webhookDeferred.Delete(ctx, d.SubjectKey, d.Generation)
+		return
+	}
+	if err != nil {
+		// A transient store error (timeout, decode, server selection) is
+		// NOT "the webhook is gone": keep the row, let the lease lapse
+		// and the next sweep retry — deleting here would silently lose a
+		// review the forge was promised.
+		s.warnf("webhook debounce sweeper: config %s unreadable (%v) — will retry parked launch for %s", d.WebhookID, err, d.SubjectID)
 		return
 	}
 	// Re-stamp the synthetic webhook identity the auth middleware put on
@@ -218,8 +262,15 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		SubjectSHA:   d.SubjectSHA,
 		SenderHandle: d.SenderHandle,
 	}
+	// Rebuild the base-URL carrier the launch tail expects: with no
+	// PublicURL configured, injectForgePublishVars derives the publish
+	// endpoint from the request's Host — a synthetic request carrying the
+	// base mirrored at defer time keeps the deferred lane at parity with
+	// the immediate one (it is ONLY read by publicBaseURL; no handler
+	// writes a response through it).
+	req := syntheticRequestForBase(d.PublicBase)
 	for _, t := range d.Targets {
-		res := s.launchWebhookTarget(ctx, nil, cfg, meta, forgeLaunchTarget{
+		res := s.launchWebhookTarget(ctx, req, cfg, meta, forgeLaunchTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
 		}, d.PayloadHash, d.SourceIP)

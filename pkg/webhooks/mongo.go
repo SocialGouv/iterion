@@ -187,6 +187,7 @@ func (s *MongoDeferredLaunchStore) Upsert(ctx context.Context, d DeferredLaunch)
 				"sender_handle": d.SenderHandle,
 				"payload_hash":  d.PayloadHash,
 				"source_ip":     d.SourceIP,
+				"public_base":   d.PublicBase,
 				"targets":       d.Targets,
 				// A fresh push re-arms even a subject mid-claim.
 				"claimed_until": time.Time{},
@@ -234,6 +235,13 @@ func (s *MongoDeferredLaunchStore) ClaimDue(ctx context.Context, now time.Time, 
 func (s *MongoDeferredLaunchStore) Delete(ctx context.Context, subjectKey string, generation int64) error {
 	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": subjectKey, "generation": generation}); err != nil {
 		return fmt.Errorf("webhooks: delete deferred launch: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoDeferredLaunchStore) DeleteBySubject(ctx context.Context, subjectKey string) error {
+	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": subjectKey}); err != nil {
+		return fmt.Errorf("webhooks: purge deferred launch: %w", err)
 	}
 	return nil
 }

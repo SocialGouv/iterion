@@ -591,6 +591,13 @@ type DeferredLaunch struct {
 	SenderHandle string `bson:"sender_handle,omitempty" json:"sender_handle,omitempty"`
 	PayloadHash  string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
 	SourceIP     string `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
+	// PublicBase is the server base URL ("https://host") resolved from
+	// the ORIGINAL inbound request. The launch tail derives the forge
+	// publish grant's endpoint from the request when the deployment has
+	// no PublicURL configured — and the sweep has no request, so without
+	// this mirror a deferred review would silently lose its publish
+	// grant (no PR comments, no commit status) on such a deployment.
+	PublicBase string `bson:"public_base,omitempty" json:"public_base,omitempty"`
 
 	Targets []DeferredTarget `bson:"targets" json:"targets"`
 }

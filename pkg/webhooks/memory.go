@@ -159,6 +159,13 @@ func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string,
 	return nil
 }
 
+func (s *MemoryDeferredLaunchStore) DeleteBySubject(_ context.Context, subjectKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rows, subjectKey)
+	return nil
+}
+
 // MemoryCounter is an in-process monthly Counter. Production uses the
 // Mongo CAS variant; this one is mutex-serialised.
 type MemoryCounter struct {

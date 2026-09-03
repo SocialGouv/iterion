@@ -82,6 +82,11 @@ type DeferredLaunchStore interface {
 	// is done. A subject that re-armed mid-claim (higher generation)
 	// survives and fires again with its fresh payload.
 	Delete(ctx context.Context, subjectKey string, generation int64) error
+	// DeleteBySubject removes the subject's row unconditionally,
+	// whatever its generation or lease — the purge for a pull request
+	// that died (closed/merged) inside its quiet window, whose parked
+	// review must never fire.
+	DeleteBySubject(ctx context.Context, subjectKey string) error
 }
 
 // Limits are the monthly call caps applied to a delivery. Zero means
