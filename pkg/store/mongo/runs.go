@@ -673,6 +673,24 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // PatchRunSteering persists the live-steering state (loop grants +
 // absolute budget raises) with a partial $set, tenant-scoped. Partial:
 // nil inputs leave the stored field untouched.
+func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	if loopOverrides != nil {
+		set["loop_overrides"] = loopOverrides
+	}
+	if budgetRaises != nil {
+		set["budget_raises"] = budgetRaises
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+	if err != nil {
+		return fmt.Errorf("store/mongo: patch run steering: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 // SetRunCredFingerprints stamps the sealed credentials' audit identities
 // on the run document (see store.RunStore). Tenant-scoped like every
 // other targeted patch: the caller stamps a run it just persisted.
@@ -713,24 +731,6 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
 	}
 	return int(n), nil
-}
-
-func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
-	set := bson.M{"updated_at": time.Now().UTC()}
-	if loopOverrides != nil {
-		set["loop_overrides"] = loopOverrides
-	}
-	if budgetRaises != nil {
-		set["budget_raises"] = budgetRaises
-	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
-	if err != nil {
-		return fmt.Errorf("store/mongo: patch run steering: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return store.ErrRunNotFound
-	}
-	return nil
 }
 
 // PatchRunPermissionGrants persists the permission-gate allow rules the
