@@ -812,6 +812,12 @@ error conserves. Roll it out in two releases: ship the lease fields +
 heartbeats first (reaper off), then enable the reaper once no pre-lease
 binary is left in the fleet.
 
+The gate takes **`on` or `off` only** (case-insensitive) — not the
+`1`/`true` spellings some other `ITERION_*` toggles accept. Anything else
+leaves the watchdog OFF and is logged once at startup on both surfaces,
+so a mistyped cutover shows up in the log rather than as cards that
+quietly stay stuck.
+
 Three properties of that routing are easy to assume wrongly:
 
 - **The card's state is read by the transfer, not by the listing.** An

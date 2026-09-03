@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -71,7 +72,39 @@ func ReaperMarker(host string) string { return reaperMarkerPrefix + host }
 // ClaimReaperEnabled reads the fleet gate (shared with the cloud board
 // dispatcher's reaper — one switch, both surfaces).
 func ClaimReaperEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(claimReaperEnv)), "on")
+	on, _ := claimReaperSetting()
+	return on
+}
+
+// ClaimReaperMisspelling returns a diagnostic when the gate is set to a
+// value that is neither "on" nor "off", and "" otherwise. The var takes
+// exactly those two spellings, while this repo's other toggles accept
+// 1/true/0 — so an operator who reaches for a familiar one gets a
+// watchdog that is OFF, at the release N+1 cutover, with no feedback but
+// cards that stay stuck. That is precisely the failure mode this file's
+// own comment names ("a declared watchdog that silently isn't running").
+// Both surfaces log it once at startup.
+func ClaimReaperMisspelling() string {
+	_, raw := claimReaperSetting()
+	if raw == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s=%q is not a value this gate understands — it takes %q or %q, so the claim watchdog stays OFF",
+		claimReaperEnv, raw, "on", "off")
+}
+
+// claimReaperSetting resolves the gate, returning whether it is on and
+// the raw value when that value is unrecognised (empty otherwise).
+func claimReaperSetting() (on bool, unrecognised string) {
+	raw := strings.TrimSpace(os.Getenv(claimReaperEnv))
+	switch {
+	case strings.EqualFold(raw, "on"):
+		return true, ""
+	case raw == "" || strings.EqualFold(raw, "off"):
+		return false, ""
+	default:
+		return false, raw
+	}
 }
 
 // startClaimReaper launches the periodic reaper when the gate is on and
@@ -79,6 +112,9 @@ func ClaimReaperEnabled() bool {
 // LOGGED — a declared watchdog that silently isn't running is the
 // failure mode this whole chantier exists to end.
 func (c *Dispatcher) startClaimReaper() {
+	if msg := ClaimReaperMisspelling(); msg != "" {
+		c.logger.Warn("dispatcher: %s", msg)
+	}
 	if !ClaimReaperEnabled() {
 		return
 	}

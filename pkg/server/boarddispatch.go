@@ -593,6 +593,12 @@ func (d *boardDispatcher) noteReconcile(tenant, issueID string) {
 func (d *boardDispatcher) run(ctx context.Context) {
 	t := time.NewTicker(d.interval)
 	defer t.Stop()
+	// Say it once when the gate carries a value it does not understand:
+	// the operator's only other feedback at the cutover is cards that
+	// stay stuck.
+	if msg := dispatcher.ClaimReaperMisspelling(); msg != "" {
+		d.warn("%s", msg)
+	}
 	reaperOn := dispatcher.ClaimReaperEnabled()
 	if reaperOn {
 		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", dispatcher.ClaimReaperEnvName())

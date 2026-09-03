@@ -1288,3 +1288,35 @@ func TestReapOne_FailedFilingKeepsTheClaim(t *testing.T) {
 		t.Fatal("precondition broken: the filing was supposed to fail")
 	}
 }
+
+// TestClaimReaperGate_UnrecognisedValueIsLoud: the gate takes "on"/"off"
+// only, while this repo's other toggles take 1/true/0
+// (ITERION_OPENAI_USE_OAUTH=1, ITERION_PI_NO_CONTEXT_FILES=1,
+// ITERION_CLAUDE_CODE_STRICT_MCP=0). An operator reaching for a familiar
+// spelling got a watchdog that was OFF with nothing logged — at the
+// release N+1 cutover, where their only other feedback is cards that
+// stay stuck. That is the failure mode reaper.go's own comment says this
+// whole chantier exists to end.
+func TestClaimReaperGate_UnrecognisedValueIsLoud(t *testing.T) {
+	for _, v := range []string{"1", "true", "yes", "enabled"} {
+		t.Setenv(claimReaperEnv, v)
+		if ClaimReaperEnabled() {
+			t.Fatalf("%s=%q must not enable the gate — only %q does", claimReaperEnv, v, "on")
+		}
+		if msg := ClaimReaperMisspelling(); msg == "" {
+			t.Fatalf("%s=%q disabled the watchdog with no diagnostic — a declared watchdog that silently "+
+				"isn't running is exactly what this must not do", claimReaperEnv, v)
+		}
+	}
+	// The two spellings it DOES understand say nothing.
+	for _, v := range []string{"", "off", "OFF", "on", "On"} {
+		t.Setenv(claimReaperEnv, v)
+		if msg := ClaimReaperMisspelling(); msg != "" {
+			t.Fatalf("%s=%q is a valid spelling but warned: %s", claimReaperEnv, v, msg)
+		}
+	}
+	t.Setenv(claimReaperEnv, "ON")
+	if !ClaimReaperEnabled() {
+		t.Fatal("the gate must stay case-insensitive on its own spelling")
+	}
+}
