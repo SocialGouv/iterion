@@ -151,6 +151,16 @@ The resume command accepts the same recovery-relevant controls as launch:
 When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.
 
+**Cloud runs.** `POST /api/runs/{id}/resume` (and `iterion remote runs
+resume`) carries **no budget-override fields**: a run that died on a cap
+cannot be re-budgeted from the resume request. The consumed accounting rides
+the checkpoint, so a bare resume of a duration death restarts and dies again
+at the exit-grace ceiling. The working escape hatch is the source itself —
+resume with `{"source": "<the workflow text with a larger cap>", "force":
+true}`: the checkpoint restarts at the failed node with the new caps, the run
+record keeps showing the launch-time budget (a snapshot). A cloud twin of the
+CLI overrides is tracked as SocialGouv/iterion#652.
+
 ## Rewind: resume from an *earlier* node
 
 Resume always restarts at the checkpoint node. `iterion rewind` moves that
