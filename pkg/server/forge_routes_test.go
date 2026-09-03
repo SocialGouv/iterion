@@ -59,12 +59,25 @@ func (m *mockGitLab) server() *httptest.Server {
 		}
 	})
 	mux.HandleFunc("/api/v4/projects/group%2Fapi/hooks/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
+		switch r.Method {
+		case http.MethodDelete:
 			m.mu.Lock()
 			m.deletedHook++
 			m.hooks = map[int]map[string]any{}
 			m.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPut:
+			// Re-provisioning an existing integration UPDATES the hook in
+			// place rather than creating one; without this arm the client
+			// decodes an empty 200 body and fails with EOF.
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			id := m.nextHookID
+			body["id"] = id
+			m.hooks[id] = body
+			_ = json.NewEncoder(w).Encode(body)
 		}
 	})
 	return httptest.NewServer(mux)
@@ -99,9 +112,18 @@ func newForgeTestServer(t *testing.T) *Server {
 }
 
 func testForgeBotLookup(botID string) (*bundle.ForgeRequirements, error) {
-	if botID == "review-pr" {
+	switch botID {
+	case "review-pr":
 		return &bundle.ForgeRequirements{
 			Events:      []string{bundle.ForgeEventPullRequest, bundle.ForgeEventPullRequestComment},
+			TokenScopes: map[string]string{"pull_requests": "write"},
+			Secret:      "forge_token",
+		}, nil
+	case "dep-guard":
+		// A SECOND provisionable bot, so a test can exercise ADDING one to a
+		// repo that already carries another (the add-bots merge path).
+		return &bundle.ForgeRequirements{
+			Events:      []string{bundle.ForgeEventPullRequest},
 			TokenScopes: map[string]string{"pull_requests": "write"},
 			Secret:      "forge_token",
 		}, nil

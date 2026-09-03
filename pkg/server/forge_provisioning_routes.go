@@ -112,7 +112,32 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	if orgID != "" {
 		req.Repo = strings.TrimSpace(req.Repo)
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, "", false, nil)
+		// An enable on an ALREADY-connected repo is the ADD-BOTS gesture:
+		// Provision merges (existing ∪ requested) whenever an integration
+		// exists and Replace is false, which is exactly how the studio's
+		// BindBotWizard calls this endpoint. Snapshot that live integration
+		// so approve compares against what existed at park time via the
+		// IntegrationID branch — recording it as a NEW-repo request instead
+		// makes approve refuse every such request forever, with the false
+		// reason "provisioned after the request was parked".
+		existingID := ""
+		var baseBots []string
+		if s.forgeIntegrations != nil {
+			ri, gerr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, req.Repo)
+			switch {
+			case gerr == nil:
+				existingID, baseBots = ri.ID, ri.BotIDs
+			case errors.Is(gerr, forge.ErrIntegrationNotFound):
+				// Genuinely a new repo — the new-repo branch is correct.
+			default:
+				// Fail CLOSED, like the gate itself: parking on an unreadable
+				// store would record a new-repo request for what may be a
+				// live integration, and approve would then REPLACE it.
+				httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: resolve the repo's current integration: %v", gerr)
+				return
+			}
+		}
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, existingID, false, baseBots)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)

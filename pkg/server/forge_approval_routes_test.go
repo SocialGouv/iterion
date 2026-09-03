@@ -408,6 +408,65 @@ func TestProvisionApproval_StaleTargetRefused(t *testing.T) {
 	}
 }
 
+// POST /forge/repo-bots on an ALREADY-connected repo is the add-bots
+// gesture (Provision merges when Replace is false — it is how the studio's
+// BindBotWizard binds one more bot). Parking it as a NEW-repo request made
+// approve refuse it forever with "provisioned after the request was
+// parked": the repo was already provisioned AT park time. The park must
+// snapshot the live integration so approve takes the update branch.
+func TestProvisionApproval_AddBotsToConnectedRepoIsApprovable(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	// Seed: org admin connects the repo directly (ungated by right).
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var seed forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &seed)
+
+	// The team admin binds one MORE bot to that same repo → parks.
+	w = httptest.NewRecorder()
+	body := `{"connection_id":"` + connID + `","repo":"group/api","bot_ids":["review-pr","dep-guard"]}`
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", body, "t1"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("add-bots enable should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	aid := approvalIDFrom(t, w)
+
+	// The record must carry the live integration, not a new-repo blank.
+	a, err := s.provisionApprovals.Get(context.Background(), aid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.IntegrationID != seed.IntegrationID {
+		t.Fatalf("park lost the existing integration: got %q want %q", a.IntegrationID, seed.IntegrationID)
+	}
+	if !equalStringSets(a.BaseBotIDs, []string{"review-pr"}) {
+		t.Fatalf("park lost the base bot set: %v", a.BaseBotIDs)
+	}
+
+	// Approve must SUCCEED and merge, not 409.
+	w = httptest.NewRecorder()
+	req := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	req.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approving an add-bots request must not 409: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if !equalStringSets(res.BotIDs, []string{"review-pr", "dep-guard"}) {
+		t.Fatalf("bots not merged on approve: %v", res.BotIDs)
+	}
+	if ints, _ := s.forgeIntegrations.ListByTenant(context.Background(), "t1"); len(ints) != 1 {
+		t.Fatalf("add-bots must update the integration, not duplicate it: %d", len(ints))
+	}
+}
+
 func approvalIDFrom(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()
 	var parked struct {
