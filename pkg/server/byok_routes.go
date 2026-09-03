@@ -60,16 +60,15 @@ type updateApiKeyReq struct {
 
 func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
 	return apiKeyView{
-		ID:          k.ID,
-		Provider:    string(k.Provider),
-		Name:        k.Name,
-		Last4:       k.Last4,
-		Fingerprint: k.Fingerprint,
-		IsDefault:   k.IsDefault,
-		ScopeUserID: k.ScopeUserID,
-		CreatedAt:   k.CreatedAt.Format(time.RFC3339),
-		LastUsedAt:  optRFC3339(k.LastUsedAt),
-
+		ID:                k.ID,
+		Provider:          string(k.Provider),
+		Name:              k.Name,
+		Last4:             k.Last4,
+		Fingerprint:       k.Fingerprint,
+		IsDefault:         k.IsDefault,
+		ScopeUserID:       k.ScopeUserID,
+		CreatedAt:         k.CreatedAt.Format(time.RFC3339),
+		LastUsedAt:        optRFC3339(k.LastUsedAt),
 		MaxConcurrentRuns: k.MaxConcurrentRuns,
 	}
 }
@@ -198,18 +197,17 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 	}
 	now := time.Now().UTC()
 	key := secrets.ApiKey{
-		ID:           keyID,
-		ScopeTeamID:  teamID,
-		ScopeUserID:  userID,
-		Provider:     provider,
-		Name:         req.Name,
-		Last4:        secrets.Last4(req.Secret),
-		SealedSecret: sealed,
-		IsDefault:    req.IsDefault,
-		CreatedBy:    id.UserID,
-		CreatedAt:    now,
-		Fingerprint:  secrets.FingerprintSHA256(req.Secret),
-
+		ID:                keyID,
+		ScopeTeamID:       teamID,
+		ScopeUserID:       userID,
+		Provider:          provider,
+		Name:              req.Name,
+		Last4:             secrets.Last4(req.Secret),
+		SealedSecret:      sealed,
+		IsDefault:         req.IsDefault,
+		CreatedBy:         id.UserID,
+		CreatedAt:         now,
+		Fingerprint:       secrets.FingerprintSHA256(req.Secret),
 		MaxConcurrentRuns: req.MaxConcurrentRuns,
 	}
 	ctx := apiKeyTenantCtx(r)
