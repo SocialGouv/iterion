@@ -21,10 +21,10 @@ what you fall back to when neither ordering can spare the queue.
   replayable. Old runners rejecting the new version park messages a DLQ replay
   fixes once the fleet is upgraded; new runners rejecting a version below their
   `MinSchemaVersion` park messages a replay can never fix. Server-first keeps the
-  risk on the recoverable side, which is why it shipped WITH the window
-  (`bdafa72a0`) rather than before it. Roll the runners first only when nothing
-  below `Min(new)` can still be queued — the precondition, its check, and the
-  measured case are in *Deploy ordering* below.
+  risk on the recoverable side. Roll the runners first only when nothing below
+  `Min(new)` can still be queued — automatic when the bump leaves
+  `MinSchemaVersion` alone, and otherwise not worth asserting from a gauge. The
+  precondition and the measured case are in *Deploy ordering* below.
 - **Additive field whose omission changes operator intent = breaking
   change.** If a new field carries a decision the caller explicitly made
   (budget caps, skills, auto-memory, loop guard, model pins…), a stale runner
@@ -113,9 +113,9 @@ recoverable**, and that — not "which side rejects less" — is what decides.
 | **runners** | new runners reject anything still queued *below* `Min(new)` | **not replayable**: a replay re-publishes the same old bytes, the new fleet rejects them identically and re-parks (Path B step 5) — recovery is a per-run resume plus a DLQ delete |
 
 Server-first is therefore the safe default, and deliberately so: it was
-authored together with the compatibility window (`bdafa72a0` adds both
-`MinSchemaVersion = 8` and the rule), not before it. The window did not make
-it obsolete — it put the parking risk on the side that can be undone.
+not for historical reasons: it puts the parking risk on the side that can be
+undone. The compatibility window narrowed *when* a mismatch happens; it did
+not change which mismatch is recoverable.
 
 **Runner-first is an optimization, valid under one condition:** that nothing
 below `Min(new runner)` can still be in the stream. Then new runners admit
@@ -128,25 +128,33 @@ is rejected in either direction*, so neither Path A nor Path B is needed.
 further check: the new window is a superset of the old one, so no resident
 message can fall below it.
 
-`MinSchemaVersion` raised ⇒ **check the queue**, or take server-first. A
-raised `Min` is the common shape, not the exception:
+`MinSchemaVersion` raised ⇒ **do not attempt runner-first on an observation.**
+Take server-first, or drain first (Path A) — draining *makes* the queue empty
+instead of trying to prove that it is, which is the only form of the check
+worth trusting when the failure is unrecoverable.
 
-    8 (v9) → 9 (v10) → 10 (v11) → 10 (v12)
+`iterion_nats_pending_messages` looks like the oracle and is not: `pollPending`
+leaves the gauge at its last successful value when the poll errors, warning
+only after five consecutive failures ([pkg/runner/loop_nats.go](../pkg/runner/loop_nats.go)),
+so a queue that filled while polling was broken still reads 0 — stale in
+exactly the dangerous direction.
 
-Three of the four bumps since the window shipped raised it, each by exactly
-one. That shape is a trap for the naive test `Min(new) <= SchemaVersion(old
-server)`: it passes, while a message *one version older* still queued is
-rejected — unrecoverably.
+`Min` does move. Across the versions that have one:
 
-What "still in the stream" means here is narrower than it sounds. The runs
-stream is created with `Retention: WorkQueuePolicy`
+    v9: 8 → v10: 9 → v11: 10 → v12: 10
+
+two of the three transitions raised it, each by exactly one — to equal the
+*previous* `SchemaVersion`. That is the shape that fools the naive test
+`Min(new) <= SchemaVersion(old server)`: it passes, while a message one
+version older still queued is rejected unrecoverably.
+
+For what it is worth, "still in the stream" is narrower than it sounds: the
+runs stream is `Retention: WorkQueuePolicy`
 ([pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go)), so an ACKed message is
-removed immediately; `MaxAge` (24h) bounds only how long an **unacked** one
-may linger. Residue is therefore not "everything published in the last 24h" —
-it is what is still pending or still being redelivered: a run whose deliveries
-are bouncing, or a backlog the fleet has not reached. `iterion_nats_pending_messages`
-= 0 is the clean signal; a non-zero pending count on a `Min`-raising bump is
-the case to take seriously.
+removed immediately and `MaxAge` (24h) bounds only how long an **unacked** one
+lingers. Residue is what is pending or still being redelivered, not everything
+published in the last day. That makes the residue small — it does not make it
+observable.
 
 ### The cost of server-first, stated honestly
 
@@ -234,11 +242,12 @@ parks the new version on the old fleet if no upgraded runner becomes Ready
 inside the delivery budget — Path A avoids that by draining first, Path B
 accepts it and replays afterwards.
 
-They are unnecessary **only** when the runner-first precondition holds —
+Both become unnecessary **only** when the runner-first precondition holds —
 nothing below `Min(new runner)` can still be queued, which is automatic when
 the bump leaves `MinSchemaVersion` alone. Then nothing is rejected in either
-direction and there is nothing to drain or replay. See *Deploy ordering*
-above; do not infer that case from the old server's version alone.
+direction, so there is nothing to drain or replay. See *Deploy ordering*
+above; do not infer that case from the old server's version alone. Path A's
+"recommended default" below is scoped to the bumps that still need a path.
 
 ### Path A — drained queue before cutover
 
