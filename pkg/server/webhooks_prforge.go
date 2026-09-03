@@ -182,11 +182,15 @@ func buildPRForgeCommandVars(p prforge.ParsedNote, pr *forge.PullRef, route webh
 
 func prforgeNoteMeta(p prforge.ParsedNote) webhookEventMeta {
 	return webhookEventMeta{
-		Kind:         "issue_comment",
-		Action:       "comment",
-		ProjectPath:  p.ProjectPath,
-		SubjectID:    p.SubjectID(),
-		SenderHandle: p.AuthorLogin,
+		Kind:        "issue_comment",
+		Action:      "comment",
+		ProjectPath: p.ProjectPath,
+		SubjectID:   p.SubjectID(),
+		// Empty on a plain-issue comment: the closed-PR stop matches on this,
+		// and an issue number handed back as "pr:<n>" would let a closed PR
+		// cancel a same-numbered issue's runs.
+		ParentSubjectID: p.PRSubjectID(),
+		SenderHandle:    p.AuthorLogin,
 		// IssueURL is the issue/PR the comment sits on — the back-link target a
 		// command bot posts its opened MR/PR URL onto (via the ensureBoardCard
 		// open_mr stamp). Works for both surfaces (Surface()=="pr"|"issue").
@@ -449,13 +453,14 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 // reply.
 func prforgeReviewCommentMeta(p prforge.ParsedReviewComment) webhookEventMeta {
 	return webhookEventMeta{
-		Kind:         "review_comment",
-		Action:       "comment",
-		ProjectPath:  p.ProjectPath,
-		SubjectID:    p.SubjectID(),
-		SubjectURL:   p.PRURL,
-		SubjectSHA:   p.HeadSHA,
-		SenderHandle: p.AuthorLogin,
+		Kind:            "review_comment",
+		Action:          "comment",
+		ProjectPath:     p.ProjectPath,
+		SubjectID:       p.SubjectID(),
+		ParentSubjectID: p.PRSubjectID(),
+		SubjectURL:      p.PRURL,
+		SubjectSHA:      p.HeadSHA,
+		SenderHandle:    p.AuthorLogin,
 	}
 }
 

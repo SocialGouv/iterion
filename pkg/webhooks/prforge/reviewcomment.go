@@ -134,3 +134,11 @@ func ParseReviewComment(body []byte) (ParsedReviewComment, error) {
 func (p ParsedReviewComment) SubjectID() string {
 	return "rc:" + strconv.FormatInt(p.CommentID, 10)
 }
+
+// PRSubjectID is the subject of the pull request whose review thread this
+// reply belongs to — the same string Parsed.SubjectID() builds for the
+// pull_request lane, so a run launched from a thread reply can be found when
+// that PR later closes. Always a PR here: the event only exists on one.
+func (p ParsedReviewComment) PRSubjectID() string {
+	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
+}

@@ -57,3 +57,32 @@ func TestParseIssueComment_QuotedReplyTolerated(t *testing.T) {
 		t.Errorf("quote-reply should be skipped, want seki, got %q", cmd)
 	}
 }
+
+// PRSubjectID is the handle a closed pull request matches on to reach the
+// runs launched from comments on it. A plain-issue comment must carry NONE:
+// IssueNumber is then an issue number, and handing it back as "pr:<n>"
+// would let a closed pull request cancel a same-numbered issue's runs.
+func TestParsedNotePRSubjectID(t *testing.T) {
+	onPR, err := ParseIssueComment([]byte(ghIssueCommentPR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := onPR.PRSubjectID(); got != "pr:7" {
+		t.Errorf("a PR comment must name its pull request, got %q", got)
+	}
+	// Same shape the pull_request lane produces for the same PR — the two
+	// must agree or the stop cannot match across lanes.
+	if onPR.PRSubjectID() != (Parsed{PRNumber: 7}).SubjectID() {
+		t.Errorf("the comment's parent handle must equal the PR lane's own subject: %q vs %q",
+			onPR.PRSubjectID(), (Parsed{PRNumber: 7}).SubjectID())
+	}
+
+	body := `{"action":"created","repository":{"full_name":"a/b"},"issue":{"number":7,"state":"open"},"comment":{"id":1,"body":"/seki"},"sender":{"login":"bob"}}`
+	onIssue, err := ParseIssueComment([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := onIssue.PRSubjectID(); got != "" {
+		t.Errorf("a plain-issue comment has no parent pull request, got %q", got)
+	}
+}

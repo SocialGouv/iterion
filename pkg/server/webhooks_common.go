@@ -93,13 +93,17 @@ const featureDevBotID = "feature-dev"
 // provider that doesn't have e.g. a project path leaves it empty and
 // the delivery row simply omits it.
 type webhookEventMeta struct {
-	Kind         string // "merge_request" | "pull_request" | "note" | "generic"
-	Action       string // "open" | "reopen" | "comment" | …
-	ProjectPath  string // "owner/repo" or equivalent
-	SubjectID    string // "mr:7" / "pr:42" / "note:99" — stable per-event id
-	SubjectURL   string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
-	SubjectSHA   string // head SHA, when known
-	SenderHandle string // username for audit (logged only, never in delivery audit row v1)
+	Kind        string // "merge_request" | "pull_request" | "note" | "generic"
+	Action      string // "open" | "reopen" | "comment" | …
+	ProjectPath string // "owner/repo" or equivalent
+	SubjectID   string // "mr:7" / "pr:42" / "note:99" — stable per-event id
+	// ParentSubjectID is the subject this one hangs off when the two differ
+	// — the PR a `/command` comment or a review-thread reply lives on. Set
+	// by the comment lanes only; the pull_request lane's subject IS the PR.
+	ParentSubjectID string
+	SubjectURL      string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
+	SubjectSHA      string // head SHA, when known
+	SenderHandle    string // username for audit (logged only, never in delivery audit row v1)
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
@@ -620,11 +624,17 @@ func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payl
 		EventAction: meta.Action,
 		ProjectPath: meta.ProjectPath,
 		SubjectID:   meta.SubjectID,
-		SubjectSHA:  meta.SubjectSHA,
-		PayloadHash: payloadHash,
-		Status:      status,
-		SourceIP:    srcIP,
-		ReceivedAt:  time.Now().UTC(),
+		// The single stamping point for every DELIVERY-CREATING lane, so a
+		// handler cannot forget it. Not universal: a board-mode command with
+		// the cloud coordinator is carded and returns before any delivery
+		// exists (dispatchInvocation), so its runs are found through the
+		// card, not here — see stopRunsForDeadPR.
+		ParentSubjectID: meta.ParentSubjectID,
+		SubjectSHA:      meta.SubjectSHA,
+		PayloadHash:     payloadHash,
+		Status:          status,
+		SourceIP:        srcIP,
+		ReceivedAt:      time.Now().UTC(),
 	}
 }
 

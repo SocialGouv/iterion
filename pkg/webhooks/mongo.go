@@ -55,6 +55,13 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	if _, err := deliveries.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "idempotency_key", Value: 1}}, Options: options.Index().SetUnique(true).SetName("idempotency_unique")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "webhook_id", Value: 1}, {Key: "received_at", Value: -1}}, Options: options.Index().SetName("tenant_webhook_recent")},
+		// ListLaunchedBySubject is EXACT over the whole audit by contract, so
+		// without these it walks a busy webhook's entire TTL window — on the
+		// request path of every pull-request close. One per $or branch: Mongo
+		// unions indexed branches, but a single un-indexed branch drags the
+		// whole query back to a collection scan.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "webhook_id", Value: 1}, {Key: "project_path", Value: 1}, {Key: "subject_id", Value: 1}}, Options: options.Index().SetName("tenant_webhook_project_subject")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "webhook_id", Value: 1}, {Key: "project_path", Value: 1}, {Key: "parent_subject_id", Value: 1}}, Options: options.Index().SetName("tenant_webhook_project_parent_subject")},
 		{Keys: bson.D{{Key: "received_at", Value: 1}}, Options: options.Index().SetName("deliveries_ttl").SetExpireAfterSeconds(int32(DeliveryTTLDays * 24 * 60 * 60))},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("webhooks: ensure delivery indexes: %w", err)
@@ -133,15 +140,19 @@ func (s *MongoDeliveryStore) CountLaunched(ctx context.Context, tenantID, webhoo
 }
 
 // ListLaunchedBySubject returns the subject's launched deliveries, newest
-// first. Unbounded by design (see the interface): one pull request's own
-// launches are few, and the point is to miss none.
+// first — its own rows and those of the comments hanging off it (see the
+// interface). Unbounded by design: one pull request's own launches are few,
+// and the point is to miss none.
 func (s *MongoDeliveryStore) ListLaunchedBySubject(ctx context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error) {
 	return s.kit.List(ctx, bson.M{
 		"tenant_id":    tenantID,
 		"webhook_id":   webhookID,
 		"project_path": projectPath,
-		"subject_id":   subjectID,
 		"run_id":       bson.M{"$nin": bson.A{nil, ""}},
+		"$or": bson.A{
+			bson.M{"subject_id": subjectID},
+			bson.M{"parent_subject_id": subjectID},
+		},
 	}, "list launched deliveries by subject", "decode launched deliveries",
 		options.Find().SetSort(bson.M{"received_at": -1}))
 }

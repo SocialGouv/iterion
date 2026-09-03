@@ -509,8 +509,16 @@ type Delivery struct {
 	EventAction string `bson:"event_action,omitempty" json:"event_action,omitempty"`
 	ProjectPath string `bson:"project_path,omitempty" json:"project_path,omitempty"`
 	SubjectID   string `bson:"subject_id,omitempty" json:"subject_id,omitempty"`
-	SubjectSHA  string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
-	PayloadHash string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	// ParentSubjectID is the subject this one HANGS OFF, when the two
+	// differ: a `/command` comment ("comment:99") and a review-thread reply
+	// ("rc:88") both live on a pull request ("pr:7"). SubjectID stays
+	// per-comment because it is the idempotency key — one launch per comment
+	// — so without this second handle a run launched from a comment is
+	// unreachable from its own pull request. Empty when the subject has no
+	// parent (the pull_request lane, a plain-issue comment, generic).
+	ParentSubjectID string `bson:"parent_subject_id,omitempty" json:"parent_subject_id,omitempty"`
+	SubjectSHA      string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
+	PayloadHash     string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
 
 	Status     string     `bson:"status" json:"status"`
 	BotID      string     `bson:"bot_id,omitempty" json:"bot_id,omitempty"`

@@ -41,13 +41,23 @@ type DeliveryStore interface {
 	// rows out of.
 	CountLaunched(ctx context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error)
 	// ListLaunchedBySubject returns every delivery of one subject in one
-	// project that launched a run, whatever its event kind. EXACT over the
-	// whole audit for the same reason CountLaunched is: its caller stops
-	// the runs a closed pull request left behind, and the run it most
-	// needs to reach is the one PARKED hours ago on a provider quota —
-	// precisely the row a recency-bounded scan has already dropped. Scoped
-	// by projectPath because a subject id ("pr:7") carries no repo and one
-	// webhook config can serve several.
+	// project that launched a run, whatever its event kind — matching the
+	// subject EITHER as the delivery's own SubjectID or as its
+	// ParentSubjectID, so a pull request also reaches the runs launched
+	// from a comment on it ("comment:99") or from one of its review threads
+	// ("rc:88"), whose own subjects are per-comment by design.
+	//
+	// EXACT over the whole audit for the same reason CountLaunched is: its
+	// caller stops the runs a closed pull request left behind, and the run
+	// it most needs to reach is the one PARKED hours ago on a provider
+	// quota — precisely the row a recency-bounded scan has already dropped.
+	// Scoped by projectPath because a subject id ("pr:7") carries no repo
+	// and one webhook config can serve several.
+	//
+	// Two limits it cannot cover, both handled by the caller: rows written
+	// before ParentSubjectID shipped carry none, and a board-mode command
+	// under the cloud coordinator produces NO delivery at all (its card is
+	// the launch), so those runs are reached through the board instead.
 	ListLaunchedBySubject(ctx context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error)
 }
 

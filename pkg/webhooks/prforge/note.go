@@ -103,6 +103,24 @@ func (p ParsedNote) SubjectID() string {
 	return "comment:" + strconv.FormatInt(p.CommentID, 10)
 }
 
+// PRSubjectID is the subject of the pull request this comment lives ON —
+// the same string Parsed.SubjectID() builds for the pull_request lane, so a
+// run launched from a `/command` can be found when that PR later closes.
+// The comment's own SubjectID is per-comment by design (it is the
+// idempotency key: one launch per comment), which is exactly why it cannot
+// double as the PR handle.
+//
+// Empty for a plain-issue comment, and the guard is load-bearing rather than
+// defensive: IssueNumber is then an ISSUE number, and handing it back as
+// "pr:<n>" would let a closed pull request cancel the runs of a
+// same-numbered issue in the same repo.
+func (p ParsedNote) PRSubjectID() string {
+	if !p.IsPullRequest {
+		return ""
+	}
+	return "pr:" + strconv.FormatInt(p.IssueNumber, 10)
+}
+
 // Command extracts a leading slash-command from the comment body, e.g.
 // "/featurly add export" → ("featurly", "add export"). Returns ("", "") when
 // the comment does not start with a command. Delegates to

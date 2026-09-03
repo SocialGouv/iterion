@@ -41,6 +41,15 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 		// PR numbers collide freely across repos, and cancelling this one
 		// would block an unrelated pull request.
 		{ID: "d5", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/other", SubjectID: "pr:7", BotID: "review-pr", RunID: "run-e", Status: webhooks.StatusLaunched},
+		// A `/command` comment and a review-thread reply on THIS PR. Their
+		// own subjects are per-comment (the idempotency key: one launch per
+		// comment), so only the parent handle reaches them — without it a
+		// `/revi` re-review in flight kept burning quota on the dead PR.
+		{ID: "d6", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "comment:99", ParentSubjectID: "pr:7", BotID: "docs-refresh", RunID: "run-f", Status: webhooks.StatusLaunched},
+		{ID: "d7", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "rc:88", ParentSubjectID: "pr:7", BotID: "revi-converse", RunID: "run-g", Status: webhooks.StatusLaunched},
+		// A comment on ANOTHER pull request of the same repo: the parent
+		// handle is scoped, not a wildcard.
+		{ID: "d8", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "comment:77", ParentSubjectID: "pr:9", BotID: "docs-refresh", RunID: "run-h", Status: webhooks.StatusLaunched},
 	} {
 		if err := s.webhookDeliveries.Insert(context.Background(), d); err != nil {
 			t.Fatal(err)
@@ -65,8 +74,14 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 	if launched != 0 {
 		t.Fatalf("a closed PR must launch nothing, launched=%d", launched)
 	}
-	if len(cancelled) != 2 {
-		t.Fatalf("both live runs of pr:7 must stop, got %v", cancelled)
+	got := map[string]bool{}
+	for _, id := range cancelled {
+		got[id] = true
+	}
+	for _, want := range []string{"run-a", "run-b", "run-f", "run-g"} {
+		if !got[want] {
+			t.Errorf("%s is bound to pr:7 and must stop, got %v", want, cancelled)
+		}
 	}
 	for _, id := range cancelled {
 		if id == "run-c" {
@@ -78,6 +93,33 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 		if id == "run-e" {
 			t.Fatal("a same-numbered PR of ANOTHER repo was cancelled — the stop must be project-scoped")
 		}
+		if id == "run-h" {
+			t.Fatal("a comment on ANOTHER PR was cancelled — the parent handle must be scoped too")
+		}
+	}
+	if len(cancelled) != 4 {
+		t.Fatalf("exactly the four live runs of pr:7 must stop, got %v", cancelled)
+	}
+}
+
+// The meta a comment lane builds must carry the SECOND handle naming the
+// pull request it hangs off — that is what newWebhookDelivery stamps and
+// what the closed-PR stop matches on. The comment's own subject stays
+// per-comment: it is the idempotency key (one launch per comment).
+func TestCommentLaneMetaCarriesItsPRSubject(t *testing.T) {
+	onPR, err := prforge.ParseIssueComment([]byte(ghIssueCommentFeaturly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := prforgeNoteMeta(onPR)
+	if meta.ParentSubjectID != "pr:7" {
+		t.Errorf("a PR comment must name its pull request, got %q", meta.ParentSubjectID)
+	}
+	if meta.SubjectID != "comment:555" {
+		t.Errorf("the comment's own subject must stay per-comment, got %q", meta.SubjectID)
+	}
+	if d := newWebhookDelivery(webhooks.Config{}, meta, webhooks.StatusAccepted, "", ""); d.ParentSubjectID != "pr:7" {
+		t.Errorf("newWebhookDelivery must stamp it — it is the single point every delivery-creating lane goes through, got %q", d.ParentSubjectID)
 	}
 }
 
