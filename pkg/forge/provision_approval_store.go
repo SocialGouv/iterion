@@ -45,12 +45,37 @@ type ProvisionApproval struct {
 	// The optional per-repo settings of the original request, replayed
 	// verbatim on approval (forgeEnableReq semantics: nil leaves stored
 	// values untouched).
+	//
+	// NO omitempty on the nil-significant ones. For these fields nil and
+	// empty mean OPPOSITE things to the orchestrator — nil is "leave the
+	// stored value alone", empty is "clear it" — and bson's omitempty drops
+	// an empty slice/map, so `hold_labels: []` (lift every hold) would come
+	// back from Mongo as nil and silently become a no-op on approval. Only
+	// the cloud store serializes, so the memory store used by tests and
+	// local mode hides this entirely.
 	ScheduleCrons  map[string]string `bson:"schedule_crons,omitempty" json:"schedule_crons,omitempty"`
-	LaunchVars     map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
+	LaunchVars     map[string]string `bson:"launch_vars" json:"launch_vars,omitempty"`
 	Overlap        string            `bson:"overlap,omitempty" json:"overlap,omitempty"`
 	AutoFix        *bool             `bson:"auto_fix,omitempty" json:"auto_fix,omitempty"`
-	HoldLabels     []string          `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
-	LabelAllowlist []string          `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+	HoldLabels     []string          `bson:"hold_labels" json:"hold_labels,omitempty"`
+	LabelAllowlist []string          `bson:"label_allowlist" json:"label_allowlist,omitempty"`
+
+	// Base* snapshot the integration's live value at park time for each
+	// REPLACE-style setting above, so approve can refuse a request whose
+	// field the team has since changed on its own. Without them a parked
+	// "lift the hold label" replays over a NEWER hold the team added while
+	// the request sat in the queue, silently removing a brake nobody
+	// decided to remove — the orchestrator assigns these fields
+	// (existing.HoldLabels = operatorHold), it does not merge them.
+	//
+	// Only meaningful where the request carries the field (non-nil / non-
+	// empty); a request that never mentioned a field adopts the live value
+	// at replay time and is safe by construction.
+	BaseLaunchVars     map[string]string `bson:"base_launch_vars" json:"base_launch_vars,omitempty"`
+	BaseOverlap        string            `bson:"base_overlap,omitempty" json:"base_overlap,omitempty"`
+	BaseAutoFix        bool              `bson:"base_auto_fix,omitempty" json:"base_auto_fix,omitempty"`
+	BaseHoldLabels     []string          `bson:"base_hold_labels" json:"base_hold_labels,omitempty"`
+	BaseLabelAllowlist []string          `bson:"base_label_allowlist" json:"base_label_allowlist,omitempty"`
 
 	RequestedBy string    `bson:"requested_by" json:"requested_by"`
 	CreatedAt   time.Time `bson:"created_at" json:"created_at"`

@@ -121,13 +121,12 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		// IntegrationID branch — recording it as a NEW-repo request instead
 		// makes approve refuse every such request forever, with the false
 		// reason "provisioned after the request was parked".
-		existingID := ""
-		var baseBots []string
+		var base forge.RepoIntegration
 		if s.forgeIntegrations != nil {
 			ri, gerr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, req.Repo)
 			switch {
 			case gerr == nil:
-				existingID, baseBots = ri.ID, ri.BotIDs
+				base = ri
 			case errors.Is(gerr, forge.ErrIntegrationNotFound):
 				// Genuinely a new repo — the new-repo branch is correct.
 			default:
@@ -138,7 +137,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, existingID, false, baseBots)
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, base.ID, false, base)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -239,7 +238,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
 			HoldLabels:           req.HoldLabels,
 			LabelAllowlist:       req.LabelAllowlist,
-		}, ri.ID, true, ri.BotIDs)
+		}, ri.ID, true, ri)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)

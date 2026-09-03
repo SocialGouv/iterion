@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -756,6 +757,129 @@ func TestProvisionApproval_FailedProvisionStaysPending(t *testing.T) {
 	}
 	if got.ID != aid || got.RequestedBy != "teamadmin" {
 		t.Fatalf("the restored record must be the original: %+v", got)
+	}
+}
+
+// The approval replay REPLACES every setting the request carries — it does
+// not merge. So a tightening the team applies while a request waits in the
+// queue would be silently undone on approval. The sharpest case: park a
+// "lift the hold labels" request, then add a NEW hold label, then approve —
+// the brake must survive.
+func TestProvisionApproval_StaleOperatorFieldRefused(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	// Seed an integration carrying a hold label (org admin, direct).
+	w := httptest.NewRecorder()
+	body := `{"connection_id":"` + connID + `","repo":"group/api","bot_ids":["review-pr"],"hold_labels":["automation-hold"]}`
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", body, "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+
+	// Team admin asks to LIFT the hold (an expansion) → parked.
+	w = httptest.NewRecorder()
+	req := forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID,
+		`{"bot_ids":["review-pr"],"hold_labels":[]}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("lifting a hold label should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	aid := approvalIDFrom(t, w)
+
+	// Meanwhile the team adds a SECOND hold label — a tightening, so it goes
+	// through directly and never sees the queue.
+	w = httptest.NewRecorder()
+	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID,
+		`{"bot_ids":["review-pr"],"hold_labels":["automation-hold","incident"]}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("adding a hold label should be direct: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Approving the stale request must refuse, naming the diverged field.
+	w = httptest.NewRecorder()
+	areq := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	areq.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(w, areq)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("approving over a newer tightening should 409: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "hold labels") {
+		t.Fatalf("the 409 should name the diverged field: %s", w.Body.String())
+	}
+
+	// The brake is intact and the record stays pending for an explicit reject.
+	ri, err := s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStringSets(ri.HoldLabels, []string{"automation-hold", "incident"}) {
+		t.Fatalf("the newer hold labels were overwritten: %v", ri.HoldLabels)
+	}
+	if _, err := s.provisionApprovals.Get(context.Background(), aid); err != nil {
+		t.Fatalf("stale record should stay pending: %v", err)
+	}
+}
+
+// A field the request never mentioned adopts the live value at replay time,
+// so an unrelated change must NOT block the approval — the staleness guard
+// has to stay narrow or every queued request rots on the first edit.
+func TestProvisionApproval_UnrelatedChangeDoesNotBlockApproval(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+
+	// Park a request that mentions ONLY the bot set.
+	w = httptest.NewRecorder()
+	req := forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID,
+		`{"bot_ids":["review-pr","dep-guard"]}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("adding a bot should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	aid := approvalIDFrom(t, w)
+
+	// The team tightens a DIFFERENT field meanwhile.
+	w = httptest.NewRecorder()
+	req = forgeReq(teamAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID,
+		`{"bot_ids":["review-pr"],"hold_labels":["incident"]}`, "t1")
+	req.SetPathValue("integration_id", res.IntegrationID)
+	s.handleUpdateForgeRepoBots(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("adding a hold label should be direct: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// The bot-set snapshot still matches (the tightening kept review-pr), and
+	// hold labels were never part of the request → approval proceeds, and the
+	// newer hold label survives because the replay leaves it alone.
+	w = httptest.NewRecorder()
+	areq := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+aid+"/approve", "", "o1")
+	areq.SetPathValue("approval_id", aid)
+	s.handleApproveProvision(w, areq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("an unrelated tightening must not block approval: code=%d body=%s", w.Code, w.Body.String())
+	}
+	ri, err := s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStringSets(ri.HoldLabels, []string{"incident"}) {
+		t.Fatalf("the unmentioned hold label should survive the replay: %v", ri.HoldLabels)
 	}
 }
 

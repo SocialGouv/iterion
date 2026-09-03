@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,27 +66,37 @@ func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Iden
 
 // parkProvisionRequest records the pending request and answers the team
 // admin with 202 + the approval id. The caller has already validated the
-// request exactly as the direct path would. baseBotIDs snapshots the
-// integration's live bot set for update requests (nil for new repos).
-func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, baseBotIDs []string) {
+// request exactly as the direct path would. base is the integration as it
+// stood at park time (the zero value for a genuinely new repo): its bot
+// set AND every replace-style setting are snapshotted, so approve can
+// refuse a request the team has since overtaken — see approvalStaleField.
+func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, base forge.RepoIntegration) {
 	a := forge.ProvisionApproval{
-		ID:             uuid.NewString(),
-		OrgID:          orgID,
-		TenantID:       teamID,
-		ConnectionID:   req.ConnectionID,
-		RepoFullName:   req.Repo,
-		BotIDs:         req.BotIDs,
-		IntegrationID:  integrationID,
-		Replace:        replace,
-		BaseBotIDs:     baseBotIDs,
+		ID:            uuid.NewString(),
+		OrgID:         orgID,
+		TenantID:      teamID,
+		ConnectionID:  req.ConnectionID,
+		RepoFullName:  req.Repo,
+		BotIDs:        req.BotIDs,
+		IntegrationID: integrationID,
+		Replace:       replace,
+
 		ScheduleCrons:  req.ScheduleCrons,
 		LaunchVars:     req.LaunchVars,
 		Overlap:        req.Overlap,
 		AutoFix:        req.AutoFixOnGateFailure,
 		HoldLabels:     req.HoldLabels,
 		LabelAllowlist: req.LabelAllowlist,
-		RequestedBy:    id.UserID,
-		CreatedAt:      time.Now().UTC(),
+
+		BaseBotIDs:         base.BotIDs,
+		BaseLaunchVars:     base.LaunchVars,
+		BaseOverlap:        base.Overlap,
+		BaseAutoFix:        base.AutoFixOnGateFailure,
+		BaseHoldLabels:     base.HoldLabels,
+		BaseLabelAllowlist: base.LabelAllowlist,
+
+		RequestedBy: id.UserID,
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.provisionApprovals.Create(r.Context(), a); err != nil {
 		httpError(w, http.StatusConflict, "%s", err.Error())
@@ -203,6 +215,16 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 				"the integration's bot set changed since this request was parked — reject it and have the team re-submit against the current state")
 			return
 		}
+		// The bot set is not the only thing the replay REPLACES. Every
+		// replace-style setting the request carries overwrites the live one,
+		// so a tightening the team applied while the request waited would be
+		// silently undone — the sharpest case being a hold label added after
+		// a "lift the hold" request was parked.
+		if field := approvalStaleField(a, ri); field != "" {
+			httpError(w, http.StatusConflict,
+				"the integration's %s changed since this request was parked — approving would overwrite that newer change; reject it and have the team re-submit against the current state", field)
+			return
+		}
 	}
 	// A NEW-repo request whose repo got provisioned meanwhile (e.g. by an
 	// org admin directly) must not silently REPLACE that integration.
@@ -272,6 +294,31 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		"repo": a.RepoFullName, "bots": res.BotIDs, "connection_id": a.ConnectionID, "approved_by": id.UserID,
 	})
 	writeJSON(w, res)
+}
+
+// approvalStaleField names the first replace-style setting whose live value
+// has diverged from the snapshot taken at park time, or "" when the replay
+// is still safe. Each is checked ONLY when the parked request actually
+// carries it: the orchestrator adopts the live value for a field the
+// request left nil (or, for Overlap, empty), so an unmentioned field cannot
+// be clobbered and must not block an approval.
+func approvalStaleField(a forge.ProvisionApproval, ri forge.RepoIntegration) string {
+	if a.HoldLabels != nil && !slices.Equal(a.BaseHoldLabels, ri.HoldLabels) {
+		return "hold labels"
+	}
+	if a.LabelAllowlist != nil && !slices.Equal(a.BaseLabelAllowlist, ri.LabelAllowlist) {
+		return "label allowlist"
+	}
+	if a.LaunchVars != nil && !maps.Equal(a.BaseLaunchVars, ri.LaunchVars) {
+		return "launch vars"
+	}
+	if a.Overlap != "" && a.BaseOverlap != ri.Overlap {
+		return "overlap policy"
+	}
+	if a.AutoFix != nil && a.BaseAutoFix != ri.AutoFixOnGateFailure {
+		return "auto-fix setting"
+	}
+	return ""
 }
 
 // equalStringSets compares two string slices as SETS (order-insensitive,
