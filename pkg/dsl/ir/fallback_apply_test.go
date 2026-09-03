@@ -33,7 +33,7 @@ func TestApplyRunFallback_ReachesEligibleAgent(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	if refusals := ApplyRunFallback(w, []Fallback{runRoute()}, ""); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(w, []Fallback{runRoute()}, false); len(refusals) != 0 {
 		t.Fatalf("unexpected refusals: %v", refusals)
 	}
 	if len(agent.Fallbacks) != 1 || agent.Fallbacks[0].Name != RunFallbackName {
@@ -52,7 +52,7 @@ func TestApplyRunFallback_NeverReachesJudges(t *testing.T) {
 	judge := applyJudge("gate", "claude_code")
 	w := &Workflow{Nodes: map[string]Node{"gate": judge}}
 
-	ApplyRunFallback(w, []Fallback{runRoute()}, "")
+	ApplyRunFallback(w, []Fallback{runRoute()}, false)
 	if len(judge.Fallbacks) != 0 {
 		t.Errorf("the run-level route reached a judge: %+v", judge.Fallbacks)
 	}
@@ -67,7 +67,7 @@ func TestApplyRunFallback_AuthoredRoutesWin(t *testing.T) {
 	})
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	ApplyRunFallback(w, []Fallback{runRoute()}, "")
+	ApplyRunFallback(w, []Fallback{runRoute()}, false)
 	if len(agent.Fallbacks) != 1 {
 		t.Errorf("run-level route appended past an authored chain: %+v", agent.Fallbacks)
 	}
@@ -82,7 +82,7 @@ func TestApplyRunFallback_RefusesUngatedRoute(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "deny", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex", Model: "gpt-5.4"}}, "")
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex", Model: "gpt-5.4"}}, false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "UNGATED") {
 		t.Fatalf("expected an ungated-crossing refusal, got %v", refusals)
 	}
@@ -102,7 +102,7 @@ func TestApplyRunFallback_RefusesUngatedRouteFromWorkflowGate(t *testing.T) {
 		Nodes:      map[string]Node{"work": agent},
 	}
 
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex", Model: "gpt-5.4"}}, "")
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex", Model: "gpt-5.4"}}, false)
 	if len(refusals) != 1 {
 		t.Fatalf("a workflow-level gate must refuse the same crossing, got %v", refusals)
 	}
@@ -116,7 +116,7 @@ func TestApplyRunFallback_RefusesToolsInversion(t *testing.T) {
 	agent := applyAgent("work", "claw", "", nil, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, "")
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "un-restricts") {
 		t.Fatalf("expected a tools-inversion refusal, got %v", refusals)
 	}
@@ -131,7 +131,7 @@ func TestApplyRunFallback_RefusesBackendWithoutModel(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw"}}, "")
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw"}}, false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "no model") {
 		t.Fatalf("expected a missing-model refusal, got %v", refusals)
 	}
@@ -144,7 +144,7 @@ func TestApplyRunFallback_RefusesBackendWithoutModel(t *testing.T) {
 func TestApplyRunFallback_VisibleToPreRunAnalyses(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
-	ApplyRunFallback(w, []Fallback{runRoute()}, "")
+	ApplyRunFallback(w, []Fallback{runRoute()}, false)
 
 	llm, ok := w.Nodes["work"].(LLMNode)
 	if !ok {
@@ -159,7 +159,7 @@ func TestApplyRunFallback_VisibleToPreRunAnalyses(t *testing.T) {
 func TestApplyRunFallback_NoRouteIsANoOp(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", nil, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
-	if refusals := ApplyRunFallback(w, nil, ""); refusals != nil {
+	if refusals := ApplyRunFallback(w, nil, false); refusals != nil {
 		t.Errorf("an empty route must do nothing, got %v", refusals)
 	}
 	if len(agent.Fallbacks) != 0 {
@@ -175,7 +175,7 @@ func TestApplyRunFallback_PreservesStageOrder(t *testing.T) {
 		{Backend: "claw", Model: "anthropic/claude-opus-5"},
 	}
 
-	if refusals := ApplyRunFallback(w, routes, ""); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(w, routes, false); len(refusals) != 0 {
 		t.Fatalf("unexpected refusals: %v", refusals)
 	}
 	if len(agent.Fallbacks) != 2 {
@@ -197,7 +197,7 @@ func TestApplyRunFallback_RefusedStageDoesNotStopChain(t *testing.T) {
 		{Backend: "claw", Model: "openai/gpt-5.5"},
 	}
 
-	refusals := ApplyRunFallback(w, routes, "")
+	refusals := ApplyRunFallback(w, routes, false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "stage 1") || !strings.Contains(refusals[0], "UNGATED") {
 		t.Fatalf("refusals = %v, want the first stage refused explicitly", refusals)
 	}
@@ -242,45 +242,134 @@ func TestParseRunFallbackFlag(t *testing.T) {
 	}
 }
 
-// A codex stage is only takeable where the node will run unsandboxed:
-// the codex CLI hard-errors on any non-noop sandbox driver at dispatch,
-// so taking the stage there would fail exactly when the chain is needed.
-// Three faces: the deployment default sandboxes (refused), the workflow
-// asks for a sandbox (refused even with a neutral default), the node
-// explicitly opts out (allowed — dispatch would allow it too).
+// A codex stage is only takeable where the run is UNSANDBOXED: the codex
+// CLI hard-errors on any non-noop sandbox driver at dispatch, so taking
+// the stage under a sandbox would fail exactly when the chain is needed.
+//
+// Whether the run is sandboxed is the caller's answer (the engine's own
+// runtime.WorkflowSandboxActive), never re-derived here — so the screen
+// is a plain bool and the sandboxed/unsandboxed pair is all there is.
 func TestApplyRunFallback_codexRefusedWhenSandboxed(t *testing.T) {
 	route := []Fallback{{Backend: "codex", Model: "gpt-5.4"}}
 
-	mk := func(wfSandbox, nodeSandbox *SandboxSpec) *Workflow {
-		agent := &AgentNode{BaseNode: BaseNode{ID: "a"}, Sandbox: nodeSandbox}
-		return &Workflow{Nodes: map[string]Node{"a": agent}, Sandbox: wfSandbox}
+	mk := func() *Workflow {
+		agent := &AgentNode{BaseNode: BaseNode{ID: "a"}}
+		return &Workflow{Nodes: map[string]Node{"a": agent}}
 	}
 
-	// Deployment default "auto" sandboxes an inherit-everything node.
-	w := mk(nil, nil)
-	if refusals := ApplyRunFallback(w, route, "auto"); len(refusals) != 1 {
-		t.Fatalf("deployment-default sandbox: refusals = %v, want the codex stage refused", refusals)
+	w := mk()
+	if refusals := ApplyRunFallback(w, route, true); len(refusals) != 1 {
+		t.Fatalf("sandboxed run: refusals = %v, want the codex stage refused", refusals)
 	} else if len(w.Nodes["a"].(*AgentNode).Fallbacks) != 0 {
 		t.Fatal("the refused stage must not be materialised")
 	}
 
-	// Workflow-level sandbox with a neutral deployment default.
-	w = mk(&SandboxSpec{Mode: "auto"}, nil)
-	if refusals := ApplyRunFallback(w, route, ""); len(refusals) != 1 {
-		t.Fatalf("workflow sandbox: refusals = %v, want the codex stage refused", refusals)
-	}
-
-	// Node-level explicit opt-out beats a sandboxing deployment default.
-	w = mk(nil, &SandboxSpec{Mode: "none"})
-	if refusals := ApplyRunFallback(w, route, "auto"); len(refusals) != 0 {
-		t.Fatalf("node opt-out: refusals = %v, want the stage taken", refusals)
+	// Unsandboxed: dispatch would allow it, so the screen must too.
+	w = mk()
+	if refusals := ApplyRunFallback(w, route, false); len(refusals) != 0 {
+		t.Fatalf("unsandboxed run: refusals = %v, want the stage taken", refusals)
 	} else if len(w.Nodes["a"].(*AgentNode).Fallbacks) != 1 {
-		t.Fatal("the opted-out node must carry the codex stage")
+		t.Fatal("an unsandboxed run must carry the codex stage")
 	}
 
 	// A non-codex stage is untouched by the sandbox screen.
-	w = mk(&SandboxSpec{Mode: "auto"}, nil)
-	if refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "openai/gpt-5.6"}}, "auto"); len(refusals) != 0 {
+	w = mk()
+	if refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "openai/gpt-5.6"}}, true); len(refusals) != 0 {
 		t.Fatalf("claw stage: refusals = %v, want none — claw runs in the sandbox", refusals)
+	}
+}
+
+// The screen matches the backend a stage will DISPATCH on, not the string
+// the operator typed. Dispatch expands `${...}` and reads an empty
+// Backend as "inherit the node's", so a literal comparison waves through
+// exactly the two wire shapes the HTTP/studio surface can express
+// (runview.FallbackEntry → toRunFallback never passes ParseRunFallbackFlag).
+// The env rows are the ones that fail if someone "fixes" this with a
+// substring match on "codex".
+func TestApplyRunFallback_codexScreenedOnTheEffectiveBackend(t *testing.T) {
+	cases := []struct {
+		name        string
+		nodeBackend string
+		wfDefault   string
+		route       Fallback
+		wantRefused bool
+	}{{
+		name:        "inherited backend on a codex node",
+		nodeBackend: "codex",
+		route:       Fallback{Model: "gpt-5.4"},
+		wantRefused: true,
+	}, {
+		name:        "env ref defaulting to codex",
+		nodeBackend: "claude_code",
+		route:       Fallback{Backend: "${FALLBACK_BACKEND:-codex}", Model: "gpt-5.4"},
+		wantRefused: true,
+	}, {
+		name:        "inherited from the workflow default",
+		nodeBackend: "",
+		wfDefault:   "codex",
+		route:       Fallback{Model: "gpt-5.4"},
+		wantRefused: true,
+	}, {
+		// Controls against over-refusal: an inherited or env-resolved
+		// backend that is NOT codex keeps the operator's route.
+		name:        "inherited backend on a claude_code node",
+		nodeBackend: "claude_code",
+		route:       Fallback{Model: "claude-opus-5"},
+		wantRefused: false,
+	}, {
+		name:        "env ref defaulting to claw",
+		nodeBackend: "claude_code",
+		route:       Fallback{Backend: "${FALLBACK_BACKEND:-claw}", Model: "openai/gpt-5.6"},
+		wantRefused: false,
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &AgentNode{BaseNode: BaseNode{ID: "a"}}
+			agent.Backend = tc.nodeBackend
+			w := &Workflow{Nodes: map[string]Node{"a": agent}, DefaultBackend: tc.wfDefault}
+
+			refusals := ApplyRunFallback(w, []Fallback{tc.route}, true)
+			refused := len(refusals) == 1
+			if refused != tc.wantRefused {
+				t.Fatalf("refused = %v (%v), want %v", refused, refusals, tc.wantRefused)
+			}
+			if want := 0; tc.wantRefused && len(agent.Fallbacks) != want {
+				t.Fatalf("materialised %d stages, want %d", len(agent.Fallbacks), want)
+			}
+			if want := 1; !tc.wantRefused && len(agent.Fallbacks) != want {
+				t.Fatalf("materialised %d stages, want %d", len(agent.Fallbacks), want)
+			}
+		})
+	}
+
+	// The env value SET at launch wins over the `:-codex` default — the
+	// screen tracks resolution, not spelling.
+	t.Run("env var set away from codex", func(t *testing.T) {
+		t.Setenv("FALLBACK_BACKEND", "claw")
+		agent := &AgentNode{BaseNode: BaseNode{ID: "a"}}
+		agent.Backend = "claude_code"
+		w := &Workflow{Nodes: map[string]Node{"a": agent}}
+
+		route := Fallback{Backend: "${FALLBACK_BACKEND:-codex}", Model: "openai/gpt-5.6"}
+		if refusals := ApplyRunFallback(w, []Fallback{route}, true); len(refusals) != 0 {
+			t.Fatalf("refusals = %v, want the stage taken — it resolves to claw", refusals)
+		}
+		if len(agent.Fallbacks) != 1 {
+			t.Fatal("a claw-resolving stage must be materialised")
+		}
+	})
+}
+
+// A malformed route is reported as malformed, whatever the sandbox: a
+// bare `--fallback codex` can never work anywhere, so "no model" is the
+// actionable message, not a sandbox refusal the operator would chase.
+func TestApplyRunFallback_missingModelOutranksTheSandboxScreen(t *testing.T) {
+	agent := applyAgent("work", "claude_code", "", nil, nil)
+	w := &Workflow{Nodes: map[string]Node{"work": agent}}
+
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex"}}, true)
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "no model") {
+		t.Fatalf("refusals = %v, want the missing-model reason", refusals)
 	}
 }

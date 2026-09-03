@@ -1973,11 +1973,16 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// ir.ApplyRunFallback screen a local launch passes, so a pod can
 		// never take a crossing the compiler would refuse.
 		RunFallback: runFallbackFromMsg(msg.Fallback),
-		// The same deployment default the engine resolves sandbox modes
-		// against — the fallback screen refuses codex stages on nodes
-		// that will run sandboxed, and sandboxed-or-not is this value's
-		// call for an inherit-everything node.
-		SandboxDefault: r.cfg.SandboxDefault,
+		// The same pair handed to the engine at :1592/:1602 — the fallback
+		// screen refuses codex stages where the run will be sandboxed, and
+		// only both knobs together decide that. The override is
+		// load-bearing here: under ITERION_SANDBOX_OVERRIDE=none the pod
+		// IS the isolation boundary, task.Sandbox is nil and codex works,
+		// so screening on the default alone would drop an explicit
+		// --fallback on a supported deployment shape — the same reason
+		// loop_secrets.go consults WorkflowSandboxActive over both.
+		SandboxDefault:  r.cfg.SandboxDefault,
+		SandboxOverride: r.cfg.SandboxOverride,
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the

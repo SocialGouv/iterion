@@ -272,9 +272,14 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Inbox:          s.inboxBinder(),
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
-		SandboxDefault: s.sandboxDefault,
-		ModelOverrides: toModelOverrides(spec.ModelOverrides),
-		RunFallback:    toRunFallback(spec.Fallback),
+		// The same default engineOptions installs via WithSandboxDefault;
+		// no override tier exists on this surface (LaunchSpec carries no
+		// sandbox field and engineOptions never calls WithSandboxOverride),
+		// so the empty string is a decision on the record, not an omission.
+		SandboxDefault:  s.sandboxDefault,
+		SandboxOverride: "",
+		ModelOverrides:  toModelOverrides(spec.ModelOverrides),
+		RunFallback:     toRunFallback(spec.Fallback),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that

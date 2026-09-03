@@ -102,12 +102,18 @@ type ExecutorSpec struct {
 	// explicitly and win over the node's DSL backend:/model:, so a run can
 	// re-target the bot per node-group without editing the .bot. Empty = no-op.
 	ModelOverrides model.ModelOverrides
-	// SandboxDefault is the deployment's global sandbox default
-	// (ITERION_SANDBOX_DEFAULT snapshot) — ApplyRunFallback resolves
-	// each node's effective sandbox mode against it to refuse codex
-	// stages where the node will run sandboxed.
-	SandboxDefault string
-
+	// SandboxDefault / SandboxOverride are the SAME pair the caller hands
+	// the engine (runtime.WithSandboxDefault / WithSandboxOverride): the
+	// global default (ITERION_SANDBOX_DEFAULT snapshot) and the
+	// CLI-strength override (--sandbox, ITERION_SANDBOX_OVERRIDE on a
+	// runner pod). BuildExecutor resolves them through the engine's own
+	// runtime.WorkflowSandboxActive so the fallback screen and the engine
+	// can never disagree on whether the run is sandboxed — the screen
+	// refuses codex stages exactly where the sandbox will actually be up.
+	// Passing the pair, rather than a pre-computed bool, is what makes an
+	// omission at a launch surface visible next to its engine wiring.
+	SandboxDefault  string
+	SandboxOverride string
 	// RunFallback is the operator's ordered run-level fallback chain
 	// (studio Launch row / CLI --fallback). Empty = none.
 	//
@@ -283,7 +289,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	//
 	// A refused stage is skipped and the operator is told; later stages
 	// continue through the same screen and are never silently taken.
-	for _, refusal := range ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, spec.SandboxDefault) {
+	sandboxActive := runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault)
+	for _, refusal := range ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxActive) {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}
 
