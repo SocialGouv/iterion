@@ -412,9 +412,28 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if _, err := store.Reopen(sink.ID, native.StateBlocked); !errors.Is(err, tracker.ErrTransitionRejected) {
 		t.Fatalf("Reopen into another terminal: want refusal, got %v", err)
 	}
+	// A reopen also clears the give-up stamp — so the value it RETURNS
+	// must say so. It is JSON-encoded straight back to the caller
+	// (SetStateOrReopen, via the board HTTP handlers), and the studio's
+	// "Needs attention" reads exactly that field: a pre-write snapshot
+	// told the operator their reopened card was still given up. Stamp one
+	// first so the assertion cannot pass on an already-nil field.
+	if err := store.SetGaveUp(sink.ID, &native.GiveUp{
+		RunID: "run-gaveup", State: native.StateDone, Attempts: 3, At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SetGaveUp on the sink probe: %v", err)
+	}
 	reopened, err := store.Reopen(sink.ID, native.StateReady)
 	if err != nil || reopened.State != native.StateReady {
 		t.Fatalf("Reopen = (%+v, %v), want ready", reopened, err)
+	}
+	if reopened.GaveUp != nil {
+		t.Fatalf("Reopen returned a card still carrying its give-up stamp (%+v) — the write cleared it, so the "+
+			"returned value describes a card that no longer exists, and the studio renders it as still given up",
+			reopened.GaveUp)
+	}
+	if persisted, gerr := store.Get(sink.ID); gerr != nil || persisted.GaveUp != nil {
+		t.Fatalf("give-up stamp not cleared in the store: %+v err=%v", persisted, gerr)
 	}
 	if _, err := store.Reopen(sink.ID, native.StateInbox); !errors.Is(err, tracker.ErrTransitionRejected) {
 		t.Fatalf("Reopen of a non-terminal card: want refusal, got %v", err)

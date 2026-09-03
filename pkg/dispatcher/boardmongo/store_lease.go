@@ -116,11 +116,16 @@ func (s *Store) ReleaseOwned(id string, tok tracker.ClaimToken) error {
 // package added would otherwise leave a card reading "the dispatcher gave
 // up" after something moved it on. The stamp only describes the state it
 // was taken in — a card that left that state has no give-up to show.
-func stateSet(newState string) bson.M {
+func stateSet(newState string) bson.M { return stateSetAt(newState, time.Now().UTC()) }
+
+// stateSetAt is stateSet with the write's timestamp supplied, so a caller
+// that must ALSO return the updated issue can report exactly what it
+// wrote instead of a pre-write snapshot.
+func stateSetAt(newState string, at time.Time) bson.M {
 	return bson.M{
 		"issue.state":     newState,
 		"issue.gaveup":    nil,
-		"issue.updatedat": time.Now().UTC(),
+		"issue.updatedat": at,
 	}
 }
 
@@ -172,8 +177,13 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 			filter["issue.state"] = bson.M{"$nin": sinks}
 		}
 	}
+	// Before, not After: the event payload needs the state being LEFT, and
+	// the retry below re-reads it the same way. writtenAt lets the return
+	// value below still describe what was WRITTEN rather than the
+	// pre-write snapshot.
+	writtenAt := time.Now().UTC()
 	res := s.issues.FindOneAndUpdate(ctx, filter,
-		bson.M{"$set": stateSet(newState)},
+		bson.M{"$set": stateSetAt(newState, writtenAt)},
 		options.FindOneAndUpdate().SetReturnDocument(options.Before))
 	if res.Err() != nil && isNoDocuments(res.Err()) {
 		// Zero match has three causes and they must not be conflated: the
@@ -199,8 +209,9 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 		// conflict the counter just disproved — the caller's session
 		// treats ErrClaimConflict as terminal and would abandon a card it
 		// still holds.
+		writtenAt = time.Now().UTC()
 		res = s.issues.FindOneAndUpdate(ctx, filter,
-			bson.M{"$set": stateSet(newState)},
+			bson.M{"$set": stateSetAt(newState, writtenAt)},
 			options.FindOneAndUpdate().SetReturnDocument(options.Before))
 		if res.Err() != nil && isNoDocuments(res.Err()) {
 			// Still nothing, with ownership just verified: the card is
@@ -223,7 +234,13 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 	}
 	updated := before.Issue
 	old := updated.State
+	// Mirror EVERY field the write touched, not just the state: stateSet
+	// also clears the give-up stamp and bumps updatedat, and a returned
+	// value that still carries the old ones describes a card that no
+	// longer exists.
 	updated.State = newState
+	updated.GaveUp = nil
+	updated.UpdatedAt = writtenAt
 	if old != newState {
 		if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
 			Payload: func() map[string]any {
@@ -522,22 +539,31 @@ func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
 	}
 	// CAS on the source state: an operator (or another replica's reopen)
 	// racing this one loses cleanly instead of double-applying.
-	res, err := s.issues.UpdateOne(ctx,
+	// Return the POST-write document. stateSet also clears the give-up
+	// stamp and bumps updatedat, and this value is JSON-encoded straight
+	// back to the caller (SetStateOrReopen, via the board HTTP handlers) —
+	// so returning the snapshot read above told the studio the reopened
+	// card still carried the give-up flag that "Needs attention" reads.
+	res := s.issues.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": iss.State},
-		bson.M{"$set": stateSet(toState)})
-	if err != nil {
-		return nil, fmt.Errorf("boardmongo: reopen: %w", err)
-	}
-	if res.MatchedCount == 0 {
+		bson.M{"$set": stateSet(toState)},
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() != nil {
+		if !isNoDocuments(res.Err()) {
+			return nil, fmt.Errorf("boardmongo: reopen: %w", res.Err())
+		}
 		return nil, fmt.Errorf("%w: card moved while reopening", tracker.ErrTransitionRejected)
 	}
+	var doc issueDoc
+	if err := res.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("boardmongo: reopen decode: %w", err)
+	}
 	old := iss.State
-	iss.State = toState
 	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
 		Payload: map[string]any{"from": old, "to": toState, "reopened": true}}); err != nil {
 		return nil, err
 	}
-	return iss, nil
+	return &doc.Issue, nil
 }
 
 // SetStateFrom is the CAS move for automated writers — changed=false
