@@ -191,6 +191,11 @@ vars:
   ## the merge step as a second net. Default "medium": low-severity
   ## observations get at most a summary line. `--var
   ## severity_threshold=low` restores the everything mode per run.
+  ##
+  ## This is the floor the MERGE GATE counts above, because nothing under
+  ## it reaches the gate — so keep it at or below `gate_severity` (see
+  ## there). A deployment that gates on "low" must lower this one too, or
+  ## its required check silently stops seeing what it gates on.
   severity_threshold: string [enum: "low", "medium", "high", "critical"] = "medium"
 
   ## Cap the number of board issues / report rows (highest severity
@@ -273,6 +278,14 @@ vars:
   ## critical). Default "high": high + critical findings block; low +
   ## medium advise only. A finding you "would block a PR on" is exactly
   ## the reviewer's own bar (see review_system), so high is the sane floor.
+  ##
+  ## KEEP IT AT OR ABOVE `severity_threshold` (default "medium"). The gate
+  ## counts the findings that SURVIVED the review floor — the reviewers do
+  ## not draft below it and converge re-drops anything under it — so a
+  ## gate_severity BELOW the threshold can never see the findings it claims
+  ## to block on, and the check goes green with nothing to say. Lowering
+  ## this one means lowering `severity_threshold` with it (e.g. `--var
+  ## gate_severity=low --var severity_threshold=low`).
   gate_severity: string [enum: "low", "medium", "high", "critical"] = "high"
 
   ## The commit-status CONTEXT the gate posts under — the name that appears
