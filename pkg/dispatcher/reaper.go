@@ -202,7 +202,15 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	// PRE-transfer: only the rows that protect a live owner. The parked
 	// row is deliberately not consulted here — refusing the transfer would
 	// make its own bound unreachable and leave the card held for ever.
-	if pre := DecideTransfer(run, runErr, card); pre.Action == StuckKeep {
+	if pre := DecideTransfer(run, runErr, card); pre.Action == StuckKeep &&
+		!RecoveryHoldExpired(run, runErr, card, cand.Prev) {
+		// A Keep here is TERMINAL — it returns before the transfer, so
+		// keepAfterTransfer's "conserved once" bound is never reached. Right
+		// for an ordinary claim (the Keep protects its live owner), wrong
+		// for a claim a watchdog already minted: that one protects nobody,
+		// and holding it for ever is the stuck card this exists to clear,
+		// wearing the watchdog's own marker. RecoveryHoldExpired lets that
+		// case through to the transfer, where the bound applies.
 		c.logger.Debug("dispatcher: claim watchdog keeps %s: %s", cand.Identifier, pre.Reason)
 		return
 	}

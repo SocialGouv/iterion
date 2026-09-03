@@ -2547,3 +2547,47 @@ func TestBoardDispatcher_ReconcilerDoesNotOverwriteAnOperatorDrag(t *testing.T) 
 			"stamping the one-way blocked flag over their decision", got, native.StateReady)
 	}
 }
+
+// TestCloudSweep_GateOffReleasesAnAbandonedRecoveryHold: the gate-off
+// arm's contract is "drop the residue and nothing more". A card already
+// held under a RECOVERY marker IS the residue — the previous watchdog
+// conserved it and then died — and conserving it again strands it under
+// a claim only this sweep reaches, which is the opposite of what the
+// documented rollback lever is for. It went unnoticed because
+// warnKeepOnce dedups per (card, reason), so it fell silent after one
+// pass. Reason that never clears here: an operator-cancelled run.
+func TestCloudSweep_GateOffReleasesAnAbandonedRecoveryHold(t *testing.T) {
+	f := newFakeBoardCoord()
+	marker := dispatcher.ReaperMarker("dead-replica")
+	f.claimed["c-held"] = marker
+	f.epochs["c-held"] = 5
+	f.states["c-held"] = native.StateInProgress
+	cand := boardmongo.ExpiredCandidate{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-held", LastRunID: "run-cancelled", State: native.StateInProgress,
+			ClaimedAt: time.Now().Add(-4 * native.ClaimLeaseDuration),
+			Prev:      tracker.ClaimToken{Marker: marker, Epoch: 5},
+		},
+	}
+	t.Setenv(dispatcher.ClaimReaperEnvName(), "off")
+	d := newBoardDispatcher(f, nil, "replica-new", 1, iterlog.Nop())
+	d.runFor = func(context.Context, string, string) (*store.Run, error) {
+		return &store.Run{ID: "run-cancelled", Status: store.RunStatusCancelled}, nil
+	}
+
+	d.sweepClaims(context.Background(), "recovery sweep", []boardmongo.ExpiredCandidate{cand},
+		time.Now(), &passVerdict{})
+
+	f.mu.Lock()
+	held, ok := f.claimed["c-held"]
+	state := f.states["c-held"]
+	f.mu.Unlock()
+	if ok {
+		t.Fatalf("card still held under %q with the gate OFF — the rollback lever left it stranded under a dead "+
+			"watchdog's marker, which nothing else in cloud releases", held)
+	}
+	if state != native.StateInProgress {
+		t.Fatalf("state = %q — a release restores the card, it must never ROUTE an operator-cancelled run", state)
+	}
+}

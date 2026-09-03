@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -194,6 +195,42 @@ func DecideTransfer(run *store.Run, runErr error, card StuckCard) StuckDecision 
 			"no run recorded, but the card was claimed moments ago and is in the running column — the stamp is best-effort and lands after the launch, so taking the claim now could steal from a live worker"}
 	}
 	return d
+}
+
+// RecoveryHoldExpired: this card is held under a RECOVERY claim whose
+// reason has not cleared, and nothing is working behind it — so the
+// "conserved once" bound applies and the hold must come off.
+//
+// It exists because DecideTransfer's Keep is TERMINAL for the caller: it
+// returns before the transfer, so keepAfterTransfer — the only place that
+// bound lives — is never reached. For an ordinary claim that is right
+// (the Keep protects its live owner). For a claim ALREADY minted by a
+// watchdog it is not: a recovery claim protects nobody (a watchdog never
+// runs the card's work), it was taken a full lease ago, and it makes the
+// card invisible to ListEligible and to every sweep but the one that
+// finds it here. Held for ever is the stuck card the watchdog exists to
+// clear, wearing the watchdog's own marker.
+//
+// Releasing files NOTHING, so an operator-cancelled run is not routed —
+// the card is simply restored to what it was before a watchdog touched
+// it, which is what a release means (ADR §8).
+//
+// The bound is refused while anything might be alive: a running or queued
+// run, a stamp that could still land, or a run the store cannot read
+// (unknown is never read as dead — ADR-070). On the local twin the
+// running column is itself eligible, so a premature release there is a
+// second run against a live one.
+func RecoveryHoldExpired(run *store.Run, runErr error, card StuckCard, prev tracker.ClaimToken) bool {
+	if !tracker.IsReaperMarker(prev.Marker) {
+		return false
+	}
+	if runErr != nil {
+		return false
+	}
+	if run == nil {
+		return !stampMayStillLand(card)
+	}
+	return run.Status != store.RunStatusRunning && !run.Status.IsQueued()
 }
 
 // stampMayStillLand: the card is in the running column and was claimed

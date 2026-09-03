@@ -1320,3 +1320,84 @@ func TestClaimReaperGate_UnrecognisedValueIsLoud(t *testing.T) {
 		t.Fatal("the gate must stay case-insensitive on its own spelling")
 	}
 }
+
+// TestReapOne_AbandonedRecoveryHoldIsReleased: conservation is granted
+// ONCE — keepAfterTransfer says so and releases a card already wearing
+// the watchdog's marker. But that bound sits AFTER the transfer, and
+// DecideTransfer's Keep returns BEFORE it. So a card the watchdog
+// conserved for a reason that never clears — an operator-cancelled run
+// is Keep for ever, by doctrine — stayed held under a recovery claim
+// with no exit on any pass: invisible to ListEligible, invisible to
+// every sweep but the one that finds it here, and wearing the marker of
+// the very mechanism that was supposed to free it.
+//
+// Releasing files NOTHING, so the cancelled run is still not routed
+// anywhere: the card is restored to what it was before a watchdog
+// touched it.
+func TestReapOne_AbandonedRecoveryHoldIsReleased(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-cancelled", store.RunStatusCancelled)
+	iss, err := board.Create(native.Issue{Title: "conserved", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Already under a recovery claim: a previous pass conserved it.
+	if _, err := board.Claim(iss.ID, ReaperMarker("dead-reaper-host")); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := board.SetLastRun(iss.ID, "run-cancelled", "/tmp/wd"); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := board.ListExpiredClaimCandidates(time.Now().Add(2*native.ClaimLeaseDuration), 10)
+	if err != nil || len(cands) == 0 {
+		t.Fatalf("list: %d cands err=%v", len(cands), err)
+	}
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cands[0],
+		time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, err := board.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Claim != "" {
+		t.Fatalf("card still held under %q — the conserved-once bound is unreachable behind the pre-transfer "+
+			"Keep, so a reason that never clears hides the card for ever", got.Claim)
+	}
+	if got.State != native.StateInProgress {
+		t.Fatalf("state = %q, want it untouched: a release restores the card, it does not ROUTE an "+
+			"operator-cancelled run", got.State)
+	}
+}
+
+// TestReapOne_ARecoveryHoldOverALiveRunStays: the bound above must not
+// reach a card whose run is still going. On this twin the running column
+// is itself eligible, so releasing there puts a second run against a
+// live one — the exact double-launch transfer-before-act closes.
+func TestReapOne_ARecoveryHoldOverALiveRunStays(t *testing.T) {
+	c, board, runs := newReaperHarness(t)
+	mkRun(t, runs, "run-live", store.RunStatusRunning)
+	iss, err := board.Create(native.Issue{Title: "live", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.Claim(iss.ID, ReaperMarker("some-host")); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.SetLastRun(iss.ID, "run-live", "/tmp/wd"); err != nil {
+		t.Fatal(err)
+	}
+	cands, _ := board.ListExpiredClaimCandidates(time.Now().Add(2*native.ClaimLeaseDuration), 10)
+	if len(cands) == 0 {
+		t.Fatal("precondition: the card must be listed")
+	}
+
+	c.reapOne(context.Background(), c.tracker.(tracker.ClaimReaper), runsFor(c), cands[0],
+		time.Now().Add(2*native.ClaimLeaseDuration))
+
+	got, _ := board.Get(iss.ID)
+	if got.Claim == "" {
+		t.Fatal("a recovery hold over a RUNNING run was released — the running column is eligible here, so the " +
+			"next tick launches a second run against a live one")
+	}
+}

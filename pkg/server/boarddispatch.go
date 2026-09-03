@@ -830,7 +830,14 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
 		}
-		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
+		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep &&
+			!dispatcher.RecoveryHoldExpired(run, runErr, card, cand.Claim.Prev) {
+			// Gate OFF still means "drop the residue": a card already held
+			// under a RECOVERY marker whose reason has not cleared is the
+			// residue — conserving it again leaves it invisible for ever
+			// under a dead watchdog's claim, which is the opposite of what
+			// this rollback lever is for. warnKeepOnce dedups per (card,
+			// reason), so it would go silent after the first pass too.
 			d.warnKeepOnce(label, cand, pre.Reason, kept)
 			continue
 		}
@@ -1086,7 +1093,12 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	// DecideTransfer). Refusing the transfer on the parked row would make
 	// its own bound unreachable — and in cloud there is no boot sweep to
 	// free the card later, so "held" means held for ever.
-	if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep {
+	if dispatcher.DecideTransfer(run, runErr, card).Action == dispatcher.StuckKeep &&
+		!dispatcher.RecoveryHoldExpired(run, runErr, card, cand.Claim.Prev) {
+		// A Keep returns BEFORE the transfer, so the "conserved once" bound
+		// below is unreachable from here. That is right for an ordinary
+		// claim and wrong for one a watchdog already minted: it protects
+		// nobody, and in cloud there is no boot sweep to free it later.
 		return
 	}
 	var dec dispatcher.StuckDecision
