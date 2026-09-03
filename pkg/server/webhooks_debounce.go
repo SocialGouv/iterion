@@ -274,6 +274,39 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		s.warnf("webhook debounce sweeper: config %s unreadable (%v) — will retry parked launch for %s", d.WebhookID, err, d.SubjectID)
 		return
 	}
+	meta := webhookEventMeta{
+		Kind:         d.EventKind,
+		Action:       d.EventAction,
+		ProjectPath:  d.ProjectPath,
+		SubjectID:    d.SubjectID,
+		SubjectURL:   d.SubjectURL,
+		SubjectSHA:   d.SubjectSHA,
+		SenderHandle: d.SenderHandle,
+	}
+	// The config as it stands NOW governs, not the copy read when the
+	// push landed. The quiet window is real time an operator can act in,
+	// and the sweep bypasses every admission the inbound request passed
+	// through — the `!Enabled → 410` guard lives in the auth middleware
+	// (middleware_webhook.go), which a replay never re-enters. Letting a
+	// parked row outlive the switch that turns it off would silently
+	// replace an operator's explicit choice (CLAUDE.md principle 1).
+	// ReviewOnSync is the same call: every parked row IS a synchronize
+	// re-review (the only lane that defers), and clearing it is a
+	// deliberate repo-wide posture change the provisioner already logs
+	// as definitive. Both drop the row: the forge was ACKed minutes ago,
+	// so there is no retry to preserve, and "the operator said no" is a
+	// terminal answer, not a transient one.
+	if !cfg.Enabled || !cfg.ReviewOnSync {
+		why := "webhook disabled during the quiet window"
+		if cfg.Enabled {
+			why = "review_on_sync cleared during the quiet window"
+		}
+		s.warnf("webhook debounce sweeper: dropping parked launch for %s %s — %s", d.ProjectPath, d.SubjectID, why)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, d.PayloadHash, d.SourceIP,
+			"parked review dropped: "+why)
+		_ = s.webhookDeferred.Delete(ctx, d.SubjectKey, d.Generation)
+		return
+	}
 	// Re-stamp the synthetic webhook identity the auth middleware put on
 	// the original request's context: the launch tail's admission gate
 	// (gateLaunch) meters BY it, and a bare background context would be
@@ -286,15 +319,6 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		Kind:   auth.KindWebhook,
 	})
 	ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
-	meta := webhookEventMeta{
-		Kind:         d.EventKind,
-		Action:       d.EventAction,
-		ProjectPath:  d.ProjectPath,
-		SubjectID:    d.SubjectID,
-		SubjectURL:   d.SubjectURL,
-		SubjectSHA:   d.SubjectSHA,
-		SenderHandle: d.SenderHandle,
-	}
 	// Rebuild the base-URL carrier the launch tail expects: with no
 	// PublicURL configured, injectForgePublishVars derives the publish
 	// endpoint from the request's Host — a synthetic request carrying the
@@ -303,6 +327,13 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 	// writes a response through it).
 	req := syntheticRequestForBase(d.PublicBase)
 	for _, t := range d.Targets {
+		// Bot scope is re-read too: a bot removed from BotIDs while the
+		// row sat parked must not launch. Per-target, not per-row — a
+		// fan-out's other bots are still in scope.
+		if !cfg.AllowsBot(t.BotID) {
+			s.warnf("webhook debounce sweeper: dropping parked %s launch for %s — bot no longer in the webhook's scope", t.BotID, d.SubjectID)
+			continue
+		}
 		res := s.launchWebhookTarget(ctx, req, cfg, meta, forgeLaunchTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,

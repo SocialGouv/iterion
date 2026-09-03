@@ -352,6 +352,82 @@ func TestSyncDebounce_RedeliveryDoesNotKillItsOwnRun(t *testing.T) {
 	}
 }
 
+// The config as it stands AT FIRE TIME governs the parked launch. The
+// quiet window is real time an operator acts in, and the sweep re-enters
+// none of the admission the inbound request passed — the `!Enabled →
+// 410` guard lives in the auth middleware. A webhook switched off (or a
+// review_on_sync cleared) inside the window used to still get its run.
+func TestSyncDebounce_ConfigTurnedOffInsideWindowDropsParkedLaunch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		off  func(*webhooks.Config)
+	}{
+		{"webhook disabled", func(c *webhooks.Config) { c.Enabled = false }},
+		{"review_on_sync cleared", func(c *webhooks.Config) { c.ReviewOnSync = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+			s.syncDebounce = 3 * time.Minute
+			got := fanoutLauncher(s)
+			cfg, pt := ghConfig(t, s)
+			cfg.ReviewOnSync = true
+			if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+
+			w := httptest.NewRecorder()
+			s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+			if w.Code != 202 {
+				t.Fatalf("synchronize must defer (202), got %d: %s", w.Code, w.Body.String())
+			}
+
+			// The operator acts inside the quiet window.
+			tc.off(&cfg)
+			if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+
+			s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+			if len(*got) != 0 {
+				t.Fatalf("a parked review must not outlive the switch that turned it off, got %v", botsOf(*got))
+			}
+			// And the row is gone, not re-claimed every 20s until the TTL.
+			s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(30*time.Minute))
+			if len(*got) != 0 {
+				t.Fatalf("dropped row re-fired: %v", botsOf(*got))
+			}
+		})
+	}
+}
+
+// Bot scope is re-read at fire time too: a bot removed from BotIDs while
+// the row sat parked must not launch.
+func TestSyncDebounce_BotOutOfScopeAtFireTimeIsSkipped(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	cfg.BotIDs = []string{"some-other-bot"}
+	if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("a bot removed from the webhook's scope must not launch, got %v", botsOf(*got))
+	}
+}
+
 // A nil request through the denial-response path (the defer-failure
 // fallback fires with the inbound request now, but the guard is the
 // belt) must answer, never panic.
