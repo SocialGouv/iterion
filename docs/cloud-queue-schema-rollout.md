@@ -127,8 +127,10 @@ is rejected in either direction*, so neither Path A nor Path B is needed.
 ### Deciding which you are in
 
 `MinSchemaVersion` unchanged by the bump ⇒ runner-first is safe with no
-further check: the new window is a superset of the old one, so no resident
-message can fall below it.
+further check: the new floor IS the old floor, so every message the outgoing
+fleet could accept, the incoming one accepts too. (A message already below
+that shared floor is being rejected by the fleet you are replacing, roll or no
+roll — the ordering neither causes nor worsens it.)
 
 `MinSchemaVersion` raised ⇒ **do not attempt runner-first on an observation.**
 Take server-first, or drain first (Path A) — draining *makes* the queue empty
