@@ -1264,15 +1264,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
-	// Stamp the sealed credentials' audit identities on the run document
-	// (never secrets): the per-key concurrency meter counts alive runs by
-	// them. Best-effort — a failed stamp degrades the ceiling toward
-	// uncapped (fail-open, like the meter), never the launch.
-	if len(creds.fingerprints) > 0 {
-		if serr := p.store.SetRunCredFingerprints(ctx, runID, creds.fingerprints); serr != nil {
-			p.logger.Warn("cloudpublisher: stamp cred fingerprints on run %s: %v", runID, serr)
-		}
-	}
+	// The sealed credentials' audit identities ride the run document's
+	// single SaveRun below (never secrets): the per-key concurrency meter
+	// counts alive runs by them. Assigned on the in-memory doc rather
+	// than patched afterwards — at this point the document does NOT
+	// exist yet (the launch's one persist comes later), and a patch here
+	// would be a warn-and-lose no-op that leaves the ceiling blind to
+	// every launched run.
+	r.CredFingerprints = creds.fingerprints
 
 	// A run served by the pool may not spend more than what remains of its
 	// donor's allowance. This is the enforcement: the engine stops the run
@@ -1575,13 +1574,15 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if secretsErr != nil {
 		return secretsErr
 	}
-	// Re-stamp on resume: re-resolution may have picked different
-	// credentials, and a stale stamp meters a key this run no longer
-	// holds. Same best-effort contract as the launch-side stamp.
-	if len(creds.fingerprints) > 0 {
-		if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
-			p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
-		}
+	// Re-stamp on resume, UNCONDITIONALLY: re-resolution may have picked
+	// different credentials — or none at all (key deleted, every
+	// candidate refused with nothing to restore, env fallback) — and a
+	// stale stamp would hold a slot on a credential the run demonstrably
+	// no longer carries, for its whole remaining alive life. An empty
+	// re-resolution therefore CLEARS the stamp. Best-effort: a failed
+	// write degrades the ceiling toward uncapped, never the resume.
+	if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
+		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
