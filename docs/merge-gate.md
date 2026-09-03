@@ -153,10 +153,20 @@ notice says so explicitly — a ceiling reopens when an admin raises it (or
 the month rolls), so the armed retries can otherwise exhaust themselves
 against a wall.
 
+The notice is posted for **every run that owes the gate a verdict** —
+which includes a fixer that gates the head it pushes — but its wording is
+the review's ("the verdict lands here … a new push restarts it sooner"), so
+a parked fixer reads as a parked review, and the advice is the one thing not
+to do while a fixer works. Known gap, tracked as SocialGouv/iterion#650: the
+notice should name the parked run's role.
+
 Symmetrically, a pull request that **closes or merges** ends every run bound
 to it and **disarms** their retries: an in-flight review would keep spending
 quota on a diff nobody will merge, and a parked one would wake hours later
-to comment on a dead PR. See [webhooks.md](webhooks.md).
+to comment on a dead PR. See [webhooks.md](webhooks.md). Known gap
+(SocialGouv/iterion#663): a redelivery already in flight at the close can
+re-claim the run seconds after it was stopped — check `iterion remote runs
+list` after a merge and cancel a reviver by hand.
 
 ## Disabling the gate per repo — first review only, re-review on demand
 
@@ -423,6 +433,13 @@ Three ways, in order of preference:
    through. The status carries "approved by @user: reason" and links to the
    comment as the audit trail. It does **not** launch a re-review. *(GitHub +
    Forgejo today; GitLab `/revi approve` on a note is a follow-on.)*
+   **Known gap (SocialGouv/iterion#662):** on a GitHub App integration the
+   command currently fails with `set commit status: forge: insufficient
+   scope` (the webhook answers 502) — until it lands, the admin can write the
+   same status by hand (`POST /repos/{owner}/{repo}/statuses/{sha}`, the
+   repo's `gate_context`, `state: success`, "approved by @user: reason" as
+   the description, the comment URL as `target_url`), which the armed
+   auto-merge then picks up like any other green.
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.
 

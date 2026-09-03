@@ -1,5 +1,80 @@
 # Billy — branch-improvement validation
 
+## 2026-09-03 — `/billy` on the watchdog PR: three deaths, the banked chain delivered by hand (run 01a06728)
+
+- Status: **partial.** The fixer's work landed (17 commits on
+  SocialGouv/iterion#646, the ADR-096 claim-lease + watchdog PR) but never
+  through his own delivery tail: the run died three times before
+  `push_back`, and the operator fast-forwarded the banked chain onto the PR
+  branch. The PR merged the same evening (`e194aebe0`, v3.99.0, deployed).
+- Versions: iterion cloud prod (runner v3.96.1 digest, server ~v3.97) · bot
+  `branch-improve-loop` 1.2.1 · branch base `fa9c8b1be`.
+- Method: the documented habit — Revi left 1 medium (`Ra74e4c`) + 2 low + 7
+  questions on #646; `/billy` as maintainer; `review_mode=mono`; bot budget
+  `max_duration 2h30m` / `max_cost_usd 75`. An Anthropic incident was in
+  progress during the first attempt.
+- Result:
+
+  | attempt | wall-clock | outcome |
+  |---|---|---|
+  | 1 — 12:05→14:37Z | 2h32 | `BUDGET_EXCEEDED: duration (9004.7s/9000s)` mid-`campaign` (iter 3/8), $34.47; **6 commits banked** on `iterion/run-01a06728…` |
+  | 2 — bare `remote runs resume` | 15 min | re-died at 9901.6 s = the 110 % exit-grace ceiling (the consumed duration axis rides the checkpoint) |
+  | 3 — resume with `source` inline (`max_duration: 6h`) + `force` | 1h47 | restarted the campaign FROM SCRATCH (the resume re-clones the branch head, the banked chain is not re-imported), **17 commits** banked, died `USAGE_LIMIT_BLOCKED` (Claude session limit, usage_window retry armed) |
+  | 4 — auto retry 20:09Z | — | cancelled by the operator: it would have died on iterion's own weekly cap (95 %, hard) |
+
+  Operator delivery 17:43Z: fast-forward of the banked chain (17 commits,
+  verbatim) + one test-only fix + merge of `origin/main` → PR head
+  `196b18966`; the re-review fired by itself 3 s later (`review_on_sync`)
+  and came back green (0 ≥high, 2 low + 7 questions → #660). A merge-queue
+  ejection (#658 merged ahead, same flaky test touched) forced a second
+  merge (`385d8677e`); that head's re-review then died on the **weekly**
+  usage cap (`seven_day window at 95% ≥ 95%`, reset 2026-09-08) and parked
+  the gate for five days — `/revi approve` failed on the GitHub App
+  integration (#662), the override status was posted by hand.
+- Value: **high on substance.** Beyond Revi's findings (all addressed —
+  `launchTicketNow` CAS anchored on the read state, the reaper gate
+  misspelling made loud, the CI mongo-gate guard scoped), the campaign found
+  defects a 20-round adversarial loop had missed: a false "claim lost" when
+  the owner's own release races an in-flight heartbeat (`Releasing()`
+  latch), `cmdClaimLost` cancelling the NEXT run holding the card (run id on
+  the message), a lost fence at launch that still launched (both twins), the
+  mongo terminal sink as check-then-act (now a CAS with re-evaluation),
+  `SetStateFrom(x→x)` disagreeing across twins, the reconciler's tokenless
+  write overwriting an operator's drag (`SetStateFromReason` CAS), "a
+  release is the last act of a disposition", `store.RunAbsent` shared across
+  the four run-pointer authorities, the FS renew blocking `Stop()` on the
+  actor.
+- Findings / misses: his new `TestAdapterRenewClaim_HonoursCancelMidCall`
+  failed deterministically (10/10, plain and `-race`: the detached renewal
+  wrote into `t.TempDir()` during cleanup) — **a banked chain is committed
+  in stride but not gate-verified** (`verify_run` only runs at the end of a
+  pass). He applied `Releasing()` on the local twin and missed the cloud
+  `processCard` (Revi's `Rf238b1`, #660). His delivery tail was never
+  exercised: he never pushed himself, so by design he would have stamped
+  nothing on a head the operator pushed.
+- Engine hardening (GitHub board): #652 — resume re-clones the branch head
+  and restarts the campaign, ignoring the banked chain (proposal: re-anchor
+  on `FinalBranch` when it fast-forwards from the clone base); the cloud
+  `POST /api/runs/{id}/resume` has no budget overrides (workaround: `source`
+  inline + `force`); the consumed duration axis rides the checkpoint; the
+  exit grace does not protect a node cancelled in flight. #650 — the
+  gate-paused notice says "Review paused … a new push restarts it sooner"
+  for a FIXER (`forge_gate_pause_notice.go` filters on `gate_context`,
+  which a gating fixer carries). #662 — `/revi approve` → `set commit
+  status: forge: insufficient scope`, webhook 502. #663 — the parked review
+  revived 2 s after `stopRunsForDeadPR` (redelivery race). Verified working:
+  the death bank (`pushBank`, richer-chain supersede), the usage-window
+  retry (`run_retry_scheduled`, reset parsed from the typed error),
+  `review_on_sync`, stop-on-close for the auto-heal lane run.
+- Lessons for next run: size the fixer's `max_duration` for this repo's
+  verify gate (2h30 with ~1h of plan phases is too tight) or slim the plan
+  phases when `consumes: review` carries few findings; push in stride on
+  the PR branch (the work branch IS the PR branch); never bare-resume a
+  duration death on cloud; a banked chain is deliverable by hand only after
+  the full validation; when the weekly cap parks the gate, the documented
+  override is broken until #662 lands — budget a manual status or the admin
+  bypass.
+
 ## 2026-08-30 — three launches, zero delivery: the duration cap and the weekly cap (runs 01a0517a, 01a051dd, 01a05216)
 
 - Status: **failed.** `/billy` on SocialGouv/iterion#579 (the CHANGELOG
