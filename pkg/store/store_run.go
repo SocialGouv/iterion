@@ -987,6 +987,42 @@ func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID stri
 	})
 }
 
+// SetRunCredFingerprints stamps the sealed credentials' audit identities
+// on the run document (see RunStore). Load-modify-save, like the other
+// fs-side patches: the filesystem store has no partial update.
+func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error {
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	r.CredFingerprints = fingerprints
+	return s.SaveRun(ctx, r)
+}
+
+// CountAliveRunsWithCredFingerprint counts queued/running runs stamped
+// with fingerprint (see RunStore). Scan-and-filter like the other
+// fs-side reverse queries — local scale, no secondary index.
+func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
+	if fingerprint == "" {
+		return 0, nil
+	}
+	ids, err := s.filterRunsSorted(ctx, func(r *Run) bool {
+		if r.ID == excludeRunID || !r.Status.HoldsCredentialSlot() {
+			return false
+		}
+		for _, fp := range r.CredFingerprints {
+			if fp == fingerprint {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 // filterRunsSorted scans every run, keeps those matching pred, and
 // returns their ids sorted by CreatedAt ascending. Shared by the
 // fs-side reverse-tree queries.
