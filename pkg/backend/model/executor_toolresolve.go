@@ -116,7 +116,9 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		// means it booted and has nothing to offer.
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{server}); err != nil {
-				return nil, fmt.Errorf("model: MCP server %q, named explicitly by this node as %q, cannot boot: %w (drop the wildcard to make the server optional — an ambient server degrades to a warning instead)", server, name, err)
+				return nil, fmt.Errorf("model: MCP server %q cannot boot for wildcard %q: %w "+
+					"(a server the node lists explicitly is a declared dependency and fails the node; "+
+					"an ambient one — target repo .mcp.json, plugin catalog — costs only its own tools)", server, name, err)
 			}
 		}
 		if e.toolRegistry == nil {

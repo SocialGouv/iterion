@@ -140,10 +140,12 @@ func TestExplicitMCPWildcardBootFailureFailsTheNode(t *testing.T) {
 	if err == nil {
 		t.Fatal("an explicitly named MCP server that cannot boot must fail the node")
 	}
-	// The message has to name the server and say the node asked for it, or the
-	// operator cannot tell this apart from a tool that simply does not exist.
-	if !strings.Contains(err.Error(), "deadsrv") || !strings.Contains(err.Error(), "explicitly") {
-		t.Errorf("error must name the server and its declared origin: %v", err)
+	// The two facts an operator needs to act: WHICH server, and WHICH entry of
+	// the node's `tools:` list to go look at. Asserted on those rather than on
+	// the prose around them, which is not a contract — the pre-change message
+	// carried the server but not the wildcard, so this still has its teeth.
+	if !strings.Contains(err.Error(), "deadsrv") || !strings.Contains(err.Error(), "mcp.deadsrv.*") {
+		t.Errorf("error must name the server and the wildcard that asked for it: %v", err)
 	}
 	if len(degraded) != 0 {
 		t.Errorf("a declared dependency must never be reported as a degrade: %+v", degraded)
