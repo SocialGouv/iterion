@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -353,5 +356,81 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("fingerprints = %v, want fp-zai-b harvested", creds.fingerprints)
+	}
+}
+
+// The wiring layer — the exact gap the launch-side stamp fell through
+// (written before the run document existed, warn-and-lose): a LAUNCHED
+// run's document must carry the sealed credentials' fingerprints via the
+// launch's single SaveRun, and a RESUME whose re-resolution finds nothing
+// must CLEAR the stamp, not keep metering a credential the run no longer
+// holds.
+func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	keys := secrets.NewMemoryApiKeyStore()
+	ctx := store.WithIdentity(context.Background(), "team1", "owner1")
+	kid := secrets.NewApiKeyID()
+	sealed, _ := secrets.SealAPIKey(sealer, kid, []byte("zai-key"))
+	if err := keys.Create(ctx, secrets.ApiKey{ID: kid, ScopeTeamID: "team1", Provider: secrets.ProviderZAI,
+		Name: "zai", SealedSecret: sealed, Fingerprint: "fp-wired", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	p := &Publisher{
+		apiKeys:    keys,
+		usageCaps:  usagecap.NewMemStore(),
+		store:      rs,
+		runSecrets: secrets.NewMemoryRunSecretsStore(),
+		sealer:     sealer,
+		logger:     testLogger(),
+		publishRun: func(context.Context, *queue.RunMessage) error { return nil },
+	}
+	wf := &ir.Workflow{Name: "wf"}
+	if _, err := p.SubmitLaunch(ctx, "run-w1", runview.LaunchSpec{
+		FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
+	}, wf, "hash"); err != nil {
+		t.Fatalf("SubmitLaunch: %v", err)
+	}
+	run, err := rs.LoadRun(ctx, "run-w1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	found := false
+	for _, fp := range run.CredFingerprints {
+		if fp == "fp-wired" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("launched run carries %v, want fp-wired — the ceiling is blind to launches otherwise", run.CredFingerprints)
+	}
+
+	// The key disappears; the resume's re-resolution finds nothing and
+	// must CLEAR the stamp.
+	if err := keys.Delete(ctx, kid); err != nil {
+		t.Fatalf("delete key: %v", err)
+	}
+	run.Status = store.RunStatusPausedOperator
+	if err := rs.SaveRun(ctx, run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{
+		RunID: "run-w1", FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
+	}, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	run, err = rs.LoadRun(ctx, "run-w1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(run.CredFingerprints) != 0 {
+		t.Fatalf("resumed run still carries %v — a stale stamp holds a slot on a credential the run no longer has", run.CredFingerprints)
 	}
 }
