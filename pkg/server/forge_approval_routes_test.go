@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // newApprovalTestServer builds the forge test server with the approval
@@ -465,6 +466,172 @@ func TestProvisionApproval_AddBotsToConnectedRepoIsApprovable(t *testing.T) {
 	if ints, _ := s.forgeIntegrations.ListByTenant(context.Background(), "t1"); len(ints) != 1 {
 		t.Fatalf("add-bots must update the integration, not duplicate it: %d", len(ints))
 	}
+}
+
+// The org approval gate would be theatre if the settings it arbitrates
+// stayed directly PATCHable on the config the approval produced: the
+// webhook config is where they are ENFORCED at delivery time. A team admin
+// in an approval-required org must not be able to get one modest bot
+// approved and then widen the surface through
+// PATCH /api/teams/{id}/webhooks/{webhook_id}.
+func TestProvisionApproval_WebhookPatchCannotBypassGate(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	// Seed a PROVISIONED webhook (org admin, direct — ungated by right).
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", enableBody(connID), "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.WebhookID == "" {
+		t.Fatal("seed produced no webhook")
+	}
+
+	patch := func(ctx context.Context, id, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := forgeReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+id, body, "t1")
+		req.SetPathValue("webhook_id", id)
+		s.handleUpdateWebhook(rec, req)
+		return rec
+	}
+	// pre puts the config in the "before" state each case needs, straight
+	// through the store so the guard under test is not what sets it up.
+	pre := func(t *testing.T, mut func(*webhooks.Config)) {
+		t.Helper()
+		cfg, err := s.webhookConfigs.Get(context.Background(), res.WebhookID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mut(&cfg)
+		if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name string
+		mut  func(*webhooks.Config)
+		body string
+		want int
+	}{
+		// ── EXPANSIONS: refused ────────────────────────────────────────
+		{"re-enable a disabled webhook", func(c *webhooks.Config) { c.Enabled = false },
+			`{"enabled":true}`, http.StatusConflict},
+		{"wildcard bot scope", nil,
+			`{"wildcard_bots":true}`, http.StatusConflict},
+		{"add a bot", nil,
+			`{"bot_ids":["review-pr","dep-guard"]}`, http.StatusConflict},
+		{"clear the project allowlist", func(c *webhooks.Config) { c.ProjectAllowlist = []string{"group/api"} },
+			`{"project_allowlist":[]}`, http.StatusConflict},
+		{"add a project", func(c *webhooks.Config) { c.ProjectAllowlist = []string{"group/api"} },
+			`{"project_allowlist":["group/api","group/other"]}`, http.StatusConflict},
+		{"star the project allowlist", func(c *webhooks.Config) { c.ProjectAllowlist = []string{"group/api"} },
+			`{"project_allowlist":["*"]}`, http.StatusConflict},
+		{"clear the author allowlist", func(c *webhooks.Config) { c.AuthorAllowlist = []string{"dependabot[bot]"} },
+			`{"author_allowlist":[]}`, http.StatusConflict},
+		{"widen the label allowlist", func(c *webhooks.Config) { c.LabelAllowlist = []string{"implement"} },
+			`{"label_allowlist":["implement","chore"]}`, http.StatusConflict},
+		{"change the event allowlist", func(c *webhooks.Config) { c.EventAllowlist = []string{"merge_request"} },
+			`{"event_allowlist":["merge_request","note"]}`, http.StatusConflict},
+		{"grant a command replier", func(c *webhooks.Config) { c.AuthorizedRepliers = nil },
+			`{"authorized_repliers":["mallory"]}`, http.StatusConflict},
+		{"lower the replier role floor", func(c *webhooks.Config) { c.MinReplierRole = "maintainer" },
+			`{"min_replier_role":"reporter"}`, http.StatusConflict},
+		{"lift a hold label", func(c *webhooks.Config) { c.HoldLabels = []string{"automation-hold"} },
+			`{"hold_labels":[]}`, http.StatusConflict},
+		{"turn the zero-touch lane on", func(c *webhooks.Config) { c.AutoImplementOnOpen = false },
+			`{"auto_implement_on_open":true}`, http.StatusConflict},
+		{"turn review-on-sync on", func(c *webhooks.Config) { c.ReviewOnSync = false },
+			`{"review_on_sync":true}`, http.StatusConflict},
+		{"drop the fork protection", func(c *webhooks.Config) { c.BlockForkPRs = true },
+			`{"block_fork_prs":false}`, http.StatusConflict},
+		{"unbound the overlap policy", func(c *webhooks.Config) { c.Overlap = "supersede" },
+			`{"overlap":"allow"}`, http.StatusConflict},
+
+		// ── TIGHTENINGS AND NO-OPS: the guard must stay narrow ─────────
+		{"remove a bot", func(c *webhooks.Config) { c.BotIDs = []string{"review-pr", "dep-guard"} },
+			`{"bot_ids":["review-pr"]}`, http.StatusOK},
+		{"narrow the project allowlist", func(c *webhooks.Config) {
+			c.ProjectAllowlist = []string{"group/api", "group/other"}
+		}, `{"project_allowlist":["group/api"]}`, http.StatusOK},
+		{"bound an open project allowlist", func(c *webhooks.Config) { c.ProjectAllowlist = nil },
+			`{"project_allowlist":["group/api"]}`, http.StatusOK},
+		{"narrow a starred allowlist", func(c *webhooks.Config) { c.ProjectAllowlist = []string{"*"} },
+			`{"project_allowlist":["group/api"]}`, http.StatusOK},
+		{"add a hold label", func(c *webhooks.Config) { c.HoldLabels = nil },
+			`{"hold_labels":["automation-hold"]}`, http.StatusOK},
+		{"turn the zero-touch lane off", func(c *webhooks.Config) { c.AutoImplementOnOpen = true },
+			`{"auto_implement_on_open":false}`, http.StatusOK},
+		{"raise the replier role floor", func(c *webhooks.Config) { c.MinReplierRole = "reporter" },
+			`{"min_replier_role":"owner"}`, http.StatusOK},
+		{"revoke a command replier", func(c *webhooks.Config) { c.AuthorizedRepliers = []string{"mallory"} },
+			`{"authorized_repliers":[]}`, http.StatusOK},
+		{"rename (no surface change)", nil,
+			`{"name":"renamed"}`, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset to a known-neutral baseline, then apply the case's own.
+			pre(t, func(c *webhooks.Config) {
+				c.Enabled, c.WildcardBots = true, false
+				c.BotIDs = []string{"review-pr"}
+				c.ProjectAllowlist, c.EventAllowlist, c.AuthorAllowlist = nil, nil, nil
+				c.LabelAllowlist, c.HoldLabels, c.AuthorizedRepliers = nil, nil, nil
+				c.MinReplierRole, c.Overlap = "", ""
+				c.AutoImplementOnOpen, c.ReviewOnSync, c.BlockForkPRs = false, false, false
+			})
+			if tc.mut != nil {
+				pre(t, tc.mut)
+			}
+			if got := patch(teamAdminCtx(), res.WebhookID, tc.body).Code; got != tc.want {
+				t.Fatalf("team admin PATCH %s: code=%d want=%d", tc.body, got, tc.want)
+			}
+		})
+	}
+
+	// ── The guard must not fire outside its three preconditions ────────
+	t.Run("org admin is ungated", func(t *testing.T) {
+		pre(t, func(c *webhooks.Config) { c.WildcardBots = false; c.BotIDs = []string{"review-pr"} })
+		if got := patch(orgAdminCtx(), res.WebhookID, `{"wildcard_bots":true}`).Code; got != http.StatusOK {
+			t.Fatalf("org admin must be able to widen directly: code=%d", got)
+		}
+	})
+	t.Run("flag off is ungated", func(t *testing.T) {
+		pre(t, func(c *webhooks.Config) { c.WildcardBots = false; c.BotIDs = []string{"review-pr"} })
+		o, err := s.authStore().GetOrg(context.Background(), "o1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.RequireProvisionApproval = false
+		if err := s.authStore().UpdateOrg(context.Background(), o); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			o.RequireProvisionApproval = true
+			if err := s.authStore().UpdateOrg(context.Background(), o); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if got := patch(teamAdminCtx(), res.WebhookID, `{"wildcard_bots":true}`).Code; got != http.StatusOK {
+			t.Fatalf("gate must not fire with the org flag off: code=%d", got)
+		}
+	})
+	t.Run("a hand-made webhook is ungated", func(t *testing.T) {
+		cfg := webhooks.Config{
+			ID: "wh-manual", TenantID: "t1", Name: "manual", Provider: "gitlab",
+			Enabled: true, BotIDs: []string{"review-pr"}, CreatedAt: time.Now().UTC(),
+		}
+		if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		if got := patch(teamAdminCtx(), "wh-manual", `{"wildcard_bots":true}`).Code; got != http.StatusOK {
+			t.Fatalf("gate must only cover PROVISIONED webhooks: code=%d", got)
+		}
+	})
 }
 
 func approvalIDFrom(t *testing.T, w *httptest.ResponseRecorder) string {

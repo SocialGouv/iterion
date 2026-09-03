@@ -411,6 +411,10 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Snapshot for the org-approval guard below. Every assignment in this
+	// handler REPLACES a field (no in-place slice or map mutation), so a
+	// shallow copy is a faithful "before".
+	before := cfg
 	var req webhookConfigReq
 	if !decodeJSON(w, r, &req) {
 		return
@@ -524,6 +528,26 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.BotIDs, cfg.WildcardBots = newBotIDs, newWildcard
+	}
+	// Org ex-ante validation, on the config a forge integration PROVISIONED.
+	// Without this the approval gate is bypassable: the settings the queue
+	// exists to arbitrate are the settings this endpoint writes, and they
+	// are ENFORCED from here at delivery time. Tightenings still go through
+	// directly; an expansion is refused rather than parked, because an
+	// approval record replays a forge.ProvisionRequest, not a webhook patch.
+	// The escape hatch is that org admins are ungated — the message says so,
+	// or the 409 reads as a dead end.
+	if cfg.ProvisionedBy != "" {
+		orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+		if gerr != nil {
+			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
+			return
+		}
+		if orgID != "" && expandsWebhookSurface(before, cfg) {
+			httpError(w, http.StatusConflict,
+				"this webhook is managed by a forge integration and this change widens what automation may do without a human — your org requires an org admin to approve that; submit it from the Integrations tab, or ask an org admin to make the change directly")
+			return
+		}
 	}
 	cfg.UpdatedAt = time.Now().UTC()
 	if err := s.webhookConfigs.Update(r.Context(), cfg); err != nil {

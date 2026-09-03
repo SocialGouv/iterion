@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 func (s *Server) registerForgeProvisioningRoutes() {
@@ -438,6 +439,133 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// bounded stored policy widens. An empty stored value already means
 	// allow (the historical default), so that transition changes nothing.
 	if req.Overlap == "allow" && ri.Overlap != "" && ri.Overlap != "allow" {
+		return true
+	}
+	return false
+}
+
+// openAllowlist reports whether a gate-style allowlist admits EVERYTHING:
+// pkg/webhooks treats an empty list as allow-all, and a bare "*" entry is
+// the explicit spelling of the same thing (MatchProject, MatchLabel,
+// MatchAuthor). Normalising the two together is what lets the widening
+// test below call ["*"] → ["group/api"] a narrowing instead of "an entry
+// this list did not have".
+func openAllowlist(list []string) bool {
+	if len(list) == 0 {
+		return true
+	}
+	for _, e := range list {
+		if strings.TrimSpace(e) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// widensAllowlist reports whether replacing `before` with `after` lets MORE
+// through, for the gate-style allowlists whose empty value means allow-all.
+// Opening a bounded list (cleared, or given a "*") widens; so does any entry
+// the old list did not carry — including a "*foo" suffix wildcard added
+// beside the exact "foo" it generalises. Comparison is trimmed but
+// case-SENSITIVE: the matchers fold case, so a case-only edit is a no-op
+// that this reads as a new entry, erring toward approval.
+//
+// NOT valid for EventAllowlist, whose empty value means "the provider's
+// defaults", not allow-all — see the caller.
+func widensAllowlist(before, after []string) bool {
+	if openAllowlist(before) {
+		return false // already open — nothing can widen it
+	}
+	if openAllowlist(after) {
+		return true // bounded → allow-all
+	}
+	have := make(map[string]bool, len(before))
+	for _, e := range before {
+		have[strings.TrimSpace(e)] = true
+	}
+	for _, e := range after {
+		if !have[strings.TrimSpace(e)] {
+			return true
+		}
+	}
+	return false
+}
+
+// expandsWebhookSurface is expandsProvisionSurface's twin for a DIRECT
+// PATCH of a provisioned webhook config. The provisioning gate would be
+// theatre without it: the webhook config is where these settings are
+// actually ENFORCED at delivery time, and PATCH /api/teams/{id}/webhooks/
+// {webhook_id} accepts every one of them behind canManageTeam alone. A team
+// admin could get one modest bot approved and then widen the surface at
+// will on the config the approval produced.
+//
+// Scope is deliberately the AUTHORIZATION/DISPATCH surface — who and what
+// may launch without a human — mirroring what the provisioning request
+// carries. Budget dials (RateLimit, MonthlyCallLimit) and credential
+// bindings (KeyOverrides, SecretOverrides) are governed elsewhere and are
+// not classified here.
+func expandsWebhookSurface(before, after webhooks.Config) bool {
+	// Re-enabling a disabled webhook restores the ENTIRE surface at once
+	// (middleware_webhook.go answers 410 while off).
+	if !before.Enabled && after.Enabled {
+		return true
+	}
+	// Bot scope: normalizeBotScope has already turned wildcard into ["*"].
+	if after.WildcardBots && !before.WildcardBots {
+		return true
+	}
+	if addsBots(before.BotIDs, after.BotIDs) {
+		return true
+	}
+	// Gate-style allowlists: empty (or "*") means allow-all, so clearing or
+	// extending one widens which deliveries dispatch.
+	if widensAllowlist(before.ProjectAllowlist, after.ProjectAllowlist) ||
+		widensAllowlist(before.AuthorAllowlist, after.AuthorAllowlist) ||
+		widensAllowlist(before.LabelAllowlist, after.LabelAllowlist) {
+		return true
+	}
+	// EventAllowlist is NOT a plain allowlist: empty falls back to the
+	// provider's default set (MatchEvent), so a clear can either widen or
+	// narrow depending on what the list held. Undecidable here — park every
+	// change, the same "fail toward approval, never past it" rule the
+	// schedule arm of expandsProvisionSurface applies.
+	if !equalStringSets(before.EventAllowlist, after.EventAllowlist) {
+		return true
+	}
+	// AuthorizedRepliers is an inverted list: it GRANTS the command right
+	// (empty = nobody bypasses the role check), so additions widen.
+	if addsBots(before.AuthorizedRepliers, after.AuthorizedRepliers) {
+		return true
+	}
+	// Lowering the role floor widens who may launch a /command. "" reads as
+	// developer on both sides (webhooks.ReplierRoleRank), so an unset field
+	// compares as the default rather than as zero.
+	if webhooks.ReplierRoleRank(after.MinReplierRole) < webhooks.ReplierRoleRank(before.MinReplierRole) {
+		return true
+	}
+	// The operator's automation brake: removing any hold label re-arms the
+	// lanes it was pausing.
+	if removesAny(before.HoldLabels, after.HoldLabels) {
+		return true
+	}
+	// Zero-touch lanes.
+	if after.AutoImplementOnOpen && !before.AutoImplementOnOpen {
+		return true
+	}
+	if after.ReviewOnSync && !before.ReviewOnSync {
+		return true
+	}
+	// Turning a declared protection off. (The GitHub auto path blocks fork
+	// PRs unconditionally today, so this is belt-and-braces there — but the
+	// switch is documented as a protection, and the predicate should be
+	// right the day the guard becomes conditional.)
+	if before.BlockForkPRs && !after.BlockForkPRs {
+		return true
+	}
+	// Overlap: "allow" is the only unbounded concurrency policy; the empty
+	// stored value already behaves as allow on this path (overlapSupersedes
+	// short-circuits on ""), so that transition changes nothing.
+	if after.Overlap == "allow" && before.Overlap != "" && before.Overlap != "allow" {
 		return true
 	}
 	return false
