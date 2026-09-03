@@ -96,14 +96,24 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		}
 		// Ensure the server is connected so its tools are in the registry.
 		//
-		// A wildcard reaching here is a DECLARED dependency, so a boot failure
-		// is fatal on purpose: ambient servers (target repo `.mcp.json`, plugin
-		// catalog) are ensured one by one upstream in buildTask and dropped
-		// with an `mcp_server_degraded` event when they cannot boot, so they
-		// never arrive as a wildcard. The asymmetry with the empty-match
-		// warning below is the point — unreachable means the node asked for
-		// something the host cannot supply, empty means the server booted and
-		// has nothing to offer.
+		// Policy: a server the node LISTS EXPLICITLY is a declared dependency
+		// and fails the node; an ambient one (target repo `.mcp.json`, plugin
+		// catalog) costs only its own tools.
+		//
+		// This loop cannot tell the two apart — provenance is not represented
+		// in `names`. What normally keeps the fatal branch off ambient servers
+		// is ORDERING, not the shape of the name: buildTask ensures each
+		// ambient server one by one and splices only the survivors in as
+		// `mcp.<srv>.*`, so an ambient wildcard arriving here is already
+		// `discovered` and the EnsureServers below is a no-op for it.
+		// "Normally", not "always": EnsureServers rolls a newly-discovered
+		// server back when a sibling of the same call fails, and parallel
+		// branches share this executor's manager. Carry provenance in if the
+		// distinction ever has to be exact here.
+		//
+		// The asymmetry with the empty-match warning below is deliberate:
+		// unreachable means the server could not be supplied at all, empty
+		// means it booted and has nothing to offer.
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{server}); err != nil {
 				return nil, fmt.Errorf("model: MCP server %q, named explicitly by this node as %q, cannot boot: %w (drop the wildcard to make the server optional — an ambient server degrades to a warning instead)", server, name, err)
