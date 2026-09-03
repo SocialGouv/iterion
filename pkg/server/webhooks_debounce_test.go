@@ -212,6 +212,87 @@ func TestSyncDebounce_ParkedLaunchKeepsThePublishGrant(t *testing.T) {
 	}
 }
 
+// flakyConfigStore makes Get fail with a NON-not-found error (a decode
+// failure, a server-selection timeout) for the first n reads.
+type flakyConfigStore struct {
+	webhooks.ConfigStore
+	fails int
+}
+
+func (f *flakyConfigStore) Get(ctx context.Context, id string) (webhooks.Config, error) {
+	if f.fails > 0 {
+		f.fails--
+		return webhooks.Config{}, errors.New("server selection timeout")
+	}
+	return f.ConfigStore.Get(ctx, id)
+}
+
+// A TRANSIENT config-store error is not "the webhook is gone". Deleting on
+// it destroys the parked review with no delivery row and no retry — the
+// review silently lost, the required check never landing. The row must
+// survive and the next sweep must launch it. (Only webhooks.ErrNotFound —
+// a genuinely deleted config — is terminal.)
+func TestSyncDebounce_TransientConfigErrorKeepsTheParkedLaunch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	s.handleGitHubWebhook(httptest.NewRecorder(), ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	s.webhookConfigs = &flakyConfigStore{ConfigStore: s.webhookConfigs, fails: 1}
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("nothing may launch while the config is unreadable: %v", botsOf(*got))
+	}
+
+	// The lease lapses; the next sweep reads the config and launches.
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(10*time.Minute))
+	if len(*got) != 1 {
+		t.Fatalf("the parked review was destroyed by a transient error — got %d launch(es)", len(*got))
+	}
+}
+
+// The operator's kill switch must hold RETROACTIVELY: inbound deliveries
+// are refused with 410 once a webhook is disabled, so a row parked just
+// before must not launch minutes later. That is a control-plane bypass,
+// not merely wasted spend.
+func TestSyncDebounce_DisabledWebhookDropsTheParkedLaunch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.handleGitHubWebhook(httptest.NewRecorder(), ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	cfg.Enabled = false
+	if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("a disabled webhook must not launch its parked review: %v", botsOf(*got))
+	}
+	// And the row is gone, not left to be re-claimed every 20s forever.
+	s.webhookConfigs = webhooks.NewMemoryConfigStore()
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(10*time.Minute))
+	if len(*got) != 0 {
+		t.Fatalf("the dropped row came back: %v", botsOf(*got))
+	}
+}
+
 // failingDeferredStore refuses every park, driving deferSyncLaunch onto
 // its "launch immediately instead" fallback.
 type failingDeferredStore struct{ webhooks.DeferredLaunchStore }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -210,10 +211,28 @@ func (s *Server) sweepDeferredWebhookLaunches(ctx context.Context, now time.Time
 // would re-deny every 20s until the TTL.
 func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.DeferredLaunch) {
 	cfg, err := s.webhookConfigs.Get(ctx, d.WebhookID)
-	if err != nil {
+	switch {
+	case errors.Is(err, webhooks.ErrNotFound):
 		// The webhook is gone (deleted between park and fire) — the row
 		// can never launch. Drop it rather than re-claim it forever.
-		s.warnf("webhook debounce sweeper: config %s gone (%v) — dropping parked launch for %s", d.WebhookID, err, d.SubjectID)
+		s.warnf("webhook debounce sweeper: config %s deleted — dropping parked launch for %s", d.WebhookID, d.SubjectID)
+		_ = s.webhookDeferred.Delete(ctx, d.SubjectKey, d.Generation)
+		return
+	case err != nil:
+		// A decode failure, a server-selection timeout, a per-call
+		// deadline: the config may be perfectly alive. Deleting on a
+		// transient error destroys the parked review with no delivery row
+		// and no retry — the review silently lost, the required check
+		// never landing. Leave the row: the lease lapses and the next
+		// sweep tries again.
+		s.warnf("webhook debounce sweeper: config %s unreadable (%v) — leaving %s parked for the next sweep", d.WebhookID, err, d.SubjectID)
+		return
+	case !cfg.Enabled:
+		// The operator's kill switch must hold RETROACTIVELY. Inbound
+		// deliveries are refused with 410 (middleware_webhook.go); a row
+		// parked before the webhook was disabled would otherwise launch
+		// minutes later — a control-plane bypass, not merely waste.
+		s.warnf("webhook debounce sweeper: webhook %s disabled — dropping parked launch for %s", d.WebhookID, d.SubjectID)
 		_ = s.webhookDeferred.Delete(ctx, d.SubjectKey, d.Generation)
 		return
 	}
