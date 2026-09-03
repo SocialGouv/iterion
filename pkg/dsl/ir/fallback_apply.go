@@ -46,8 +46,8 @@ const RunFallbackName = "run-fallback"
 // not a precedence chain re-derived here: sandbox activation is
 // run-scoped — the engine starts ONE sandbox and stamps its handle on
 // every node — so any second resolution living in this package could
-// only diverge from the engine's. A codex stage is only takeable where
-// the node will run UNSANDBOXED.
+// only diverge from the engine's. A codex stage is only takeable on a
+// run that will execute UNSANDBOXED.
 func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxActive bool) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
@@ -189,8 +189,15 @@ func ParseRunFallbackFlag(arg string) (Fallback, error) {
 // would put a backend dependency on a leaf package that has none.
 func effectiveRouteBackend(route Fallback, node LLMNode, w *Workflow) (backend, origin string) {
 	declared := strings.TrimSpace(route.Backend)
-	if declared != "" {
-		expanded := strings.TrimSpace(ExpandEnvWithDefault(declared))
+	// Emptiness is judged AFTER expansion, because dispatch judges it
+	// there too: an unset `${VAR}` carrying no `:-` default expands to
+	// "" (ExpandEnvWithDefault), and resolveChain assigns that "" to
+	// chainElement.Backend, which means "inherit the node's resolved
+	// backend". So `${UNSET}` and an absent field are the SAME route at
+	// dispatch, and screening only the absent one would leave the pair
+	// self-inconsistent — a codex node refusing `{model: …}` while
+	// waving through `{backend: "${UNSET}", model: …}`.
+	if expanded := strings.TrimSpace(ExpandEnvWithDefault(declared)); expanded != "" {
 		if expanded != declared {
 			return expanded, fmt.Sprintf(" (via %s)", declared)
 		}
@@ -203,8 +210,23 @@ func effectiveRouteBackend(route Fallback, node LLMNode, w *Workflow) (backend, 
 	// expansion, which the others deliberately do not do (they refuse to
 	// judge a `${...}` backend at all, where this one must resolve it or
 	// miss the shape that motivated the screen).
+	nodeBackend := strings.TrimSpace(ExpandEnvWithDefault(node.GetLLMFields().Backend))
+	// Name the tier the backend actually came from: a node declaring none
+	// takes the workflow's `default_backend:`, and a refusal blaming "the
+	// node's backend" would send the operator to a line that is not there.
+	from := "the node's backend"
+	if effectiveNodeBackend(nodeBackend, "") == "" {
+		from = "the workflow's default_backend"
+	}
+	origin = fmt.Sprintf(" (inherited from %s)", from)
+	if declared != "" {
+		// The operator DID name a backend — it just resolved to nothing.
+		// Saying only "inherited" would hide the unset variable that is
+		// the actual thing to fix.
+		origin = fmt.Sprintf(" (%s is unset, inherited from %s)", declared, from)
+	}
 	return effectiveNodeBackend(
-		strings.TrimSpace(ExpandEnvWithDefault(node.GetLLMFields().Backend)),
+		nodeBackend,
 		strings.TrimSpace(ExpandEnvWithDefault(w.DefaultBackend)),
-	), " (inherited from the node's backend)"
+	), origin
 }

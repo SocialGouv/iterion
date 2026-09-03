@@ -293,22 +293,40 @@ func TestApplyRunFallback_codexScreenedOnTheEffectiveBackend(t *testing.T) {
 		wfDefault   string
 		route       Fallback
 		wantRefused bool
+		// wantOrigin, when set, is a substring the refusal must carry —
+		// the refusal has to name WHERE the backend resolved from, or it
+		// sends the operator to a line that does not exist.
+		wantOrigin string
 	}{{
 		name:        "inherited backend on a codex node",
 		nodeBackend: "codex",
 		route:       Fallback{Model: "gpt-5.4"},
 		wantRefused: true,
+		wantOrigin:  "inherited from the node's backend",
 	}, {
 		name:        "env ref defaulting to codex",
 		nodeBackend: "claude_code",
 		route:       Fallback{Backend: "${FALLBACK_BACKEND:-codex}", Model: "gpt-5.4"},
 		wantRefused: true,
+		wantOrigin:  "via ${FALLBACK_BACKEND:-codex}",
 	}, {
 		name:        "inherited from the workflow default",
 		nodeBackend: "",
 		wfDefault:   "codex",
 		route:       Fallback{Model: "gpt-5.4"},
 		wantRefused: true,
+		wantOrigin:  "inherited from the workflow's default_backend",
+	}, {
+		// An UNSET `${VAR}` with no `:-` default expands to "", which
+		// resolveChain reads as "inherit the node's resolved backend" —
+		// the same route as an absent field, so it must be screened the
+		// same way. Judging emptiness before expansion waved this one
+		// through onto a codex node the dispatch guard then hard-errors on.
+		name:        "env ref with the var unset inherits the node's codex",
+		nodeBackend: "codex",
+		route:       Fallback{Backend: "${FALLBACK_BACKEND}", Model: "gpt-5.4"},
+		wantRefused: true,
+		wantOrigin:  "${FALLBACK_BACKEND} is unset, inherited from the node's backend",
 	}, {
 		// Controls against over-refusal: an inherited or env-resolved
 		// backend that is NOT codex keeps the operator's route.
@@ -321,10 +339,18 @@ func TestApplyRunFallback_codexScreenedOnTheEffectiveBackend(t *testing.T) {
 		nodeBackend: "claude_code",
 		route:       Fallback{Backend: "${FALLBACK_BACKEND:-claw}", Model: "openai/gpt-5.6"},
 		wantRefused: false,
+	}, {
+		name:        "env ref with the var unset on a claude_code node",
+		nodeBackend: "claude_code",
+		route:       Fallback{Backend: "${FALLBACK_BACKEND}", Model: "claude-opus-5"},
+		wantRefused: false,
 	}}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Hermetic: every row above reasons about FALLBACK_BACKEND
+			// being unset, which an ambient export would silently invert.
+			t.Setenv("FALLBACK_BACKEND", "")
 			agent := &AgentNode{BaseNode: BaseNode{ID: "a"}}
 			agent.Backend = tc.nodeBackend
 			w := &Workflow{Nodes: map[string]Node{"a": agent}, DefaultBackend: tc.wfDefault}
@@ -333,6 +359,10 @@ func TestApplyRunFallback_codexScreenedOnTheEffectiveBackend(t *testing.T) {
 			refused := len(refusals) == 1
 			if refused != tc.wantRefused {
 				t.Fatalf("refused = %v (%v), want %v", refused, refusals, tc.wantRefused)
+			}
+			if tc.wantOrigin != "" && !strings.Contains(refusals[0], tc.wantOrigin) {
+				t.Errorf("refusal %q does not name where the backend resolved from (want %q)",
+					refusals[0], tc.wantOrigin)
 			}
 			if want := 0; tc.wantRefused && len(agent.Fallbacks) != want {
 				t.Fatalf("materialised %d stages, want %d", len(agent.Fallbacks), want)
