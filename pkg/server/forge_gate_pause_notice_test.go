@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
@@ -189,4 +190,24 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 			t.Fatalf("a non-gating run must post nothing, got %v", c.bodies)
 		}
 	})
+}
+
+// The cause quotes the PROVIDER's own sentence, which carries multi-byte
+// runes ("·", "’"). A byte-slice truncation cuts between the bytes of one
+// and emits invalid UTF-8 into a comment posted on someone's pull request.
+func TestGatePauseCauseTruncatesOnRuneBoundaries(t *testing.T) {
+	// "·" is 2 bytes: place them so a naive msg[:300] lands inside one.
+	long := strings.Repeat("a", 299) + "·" + strings.Repeat("b", 60)
+	got := gatePauseCause(&store.Run{Error: long})
+	if !utf8.ValidString(got) {
+		t.Fatalf("the quoted cause must stay valid UTF-8, got %q", got)
+	}
+	if len(got) >= len(long) {
+		t.Fatalf("a long cause must still be bounded, got %d bytes", len(got))
+	}
+	// The first line only, and unbounded input must not survive whole.
+	multi := gatePauseCause(&store.Run{Error: "rate_limited: hit your weekly limit\nstack frame\nmore"})
+	if strings.Contains(multi, "stack frame") {
+		t.Fatalf("a comment is not a log — only the first line: %q", multi)
+	}
 }

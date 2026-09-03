@@ -181,11 +181,11 @@ func gatePauseCause(run *store.Run) string {
 	if i := strings.IndexByte(msg, '\n'); i >= 0 {
 		msg = strings.TrimSpace(msg[:i])
 	}
-	const maxCause = 300
-	if len(msg) > maxCause {
-		msg = strings.TrimSpace(msg[:maxCause]) + "…"
-	}
-	return msg
+	// truncate, not a byte slice: the sentence this quotes is the provider's
+	// own, and those carry multi-byte runes ("·", "’") — cutting between the
+	// bytes of one emits invalid UTF-8 into a comment posted on someone's
+	// pull request. The package's helper already backs off to a rune start.
+	return truncate(msg, 300)
 }
 
 // isSpendCeilingCause reports whether the parked cause is an account SPEND
