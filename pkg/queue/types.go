@@ -31,12 +31,14 @@ import (
 //     messages a replay can never fix (it re-publishes the same bytes). Roll
 //     the runners first only when nothing below MinSchemaVersion(new) can
 //     still be queued — automatic when the bump leaves MinSchemaVersion
-//     alone, otherwise a check against the queue, never against the old
-//     server's SchemaVersion. A mismatch in
-//     either direction is TRANSIENT, never terminal: the consumer holds the
-//     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
-//     on the DLQ with the run document flipped to an actionable status —
-//     never dropped, never left `queued` in silence.
+//     alone. When the bump RAISES it, do not try to establish that by
+//     observation: the pending gauge freezes at its last value when the poll
+//     fails, and the old server's SchemaVersion is not the test. Take
+//     server-first, or drain the queue first. A mismatch in either direction
+//     is TRANSIENT, never terminal: the consumer holds the message with a
+//     delayed Nak and, once MaxDeliver is exhausted, parks it on the DLQ with
+//     the run document flipped to an actionable status — never dropped, never
+//     left `queued` in silence.
 //   - Any ADDITIVE field whose omission changes operator intent (a knob the
 //     caller explicitly set, that a stale runner would silently fall back
 //     from) is a BREAKING change: bump SchemaVersion. The publisher must
