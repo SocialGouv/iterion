@@ -399,15 +399,18 @@ type TraceContext struct {
 }
 
 // ErrSchemaVersion marks the one decode failure that is TRANSIENT rather than
-// terminal: the message was published by a newer server than this consumer.
+// terminal: the message carries a version outside this consumer's
+// [MinSchemaVersion, SchemaVersion] window — published by a newer server, or
+// queued before a bump raised the floor under it.
 //
 // It matters because the two failures deserve opposite handling. A malformed
 // payload will never decode, on any consumer, so terminating it is right. A
-// version this build does not know is the ordinary state of a rolling upgrade
-// — the server is deployed first, deliberately — and a consumer that
-// terminates it destroys a run no one can recover: the queue entry is gone
-// while the run document sits `queued` forever, with the refusal visible only
-// in one pod's logs. Observed in production during exactly such a rollout.
+// version outside the window is the ordinary state of a rolling upgrade, in
+// EITHER direction (which side rolls first, and why, is the ordering bullet at
+// the top of this file) — and a consumer that terminates it destroys a run no
+// one can recover: the queue entry is gone while the run document sits
+// `queued` forever, with the refusal visible only in one pod's logs. Observed
+// in production during exactly such a rollout.
 var ErrSchemaVersion = errors.New("queue: schema version")
 
 // Validate enforces the invariants a runner must rely on before
