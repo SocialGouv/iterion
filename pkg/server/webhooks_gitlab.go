@@ -221,6 +221,13 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
 
+	// Push debounce: a synchronize launch waits out a quiet window so a
+	// volley of pushes costs one review of the final head (a re-request
+	// click stays immediate — a human is waiting on it).
+	if s.shouldDeferSyncLaunch(gateResync && !reviewRequested) {
+		s.deferSyncLaunch(ctx, w, cfg, meta, targets, payloadHash, srcIP)
+		return
+	}
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 

@@ -146,6 +146,10 @@ type Config struct {
 	WebhookConfigs    webhooks.ConfigStore
 	WebhookDeliveries webhooks.DeliveryStore
 	WebhookCounter    webhooks.Counter
+	// WebhookDeferred parks synchronize-lane review launches for a quiet
+	// window (the push debounce, ITERION_WEBHOOK_SYNC_DEBOUNCE). nil →
+	// every push launches immediately, as before.
+	WebhookDeferred webhooks.DeferredLaunchStore
 
 	// OrgUsage is the per-org monthly run/cost metering counter. When
 	// non-nil, every launch (REST, resume, webhook) passes the

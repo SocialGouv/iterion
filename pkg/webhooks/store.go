@@ -57,6 +57,33 @@ type DeliveryStore interface {
 	ListLaunchedBySubject(ctx context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error)
 }
 
+// DeferredLaunchStore parks resolved webhook launches for a quiet
+// window (the push debounce) and hands due ones to the sweep exactly
+// once across replicas.
+type DeferredLaunchStore interface {
+	// Upsert stores d keyed on SubjectKey: an existing row for the same
+	// subject is REPLACED wholesale (newest payload wins), its FireAt
+	// pushed back — the debounce — its Generation bumped and any sweep
+	// lease cleared (a fresh push re-arms even a subject mid-claim).
+	Upsert(ctx context.Context, d DeferredLaunch) error
+	// ClaimDue atomically LEASES and returns up to limit rows whose
+	// FireAt is at or before now and whose previous lease (if any) has
+	// expired: each row goes to one caller across replicas for the
+	// lease's duration. The claimer Deletes the row once the launch
+	// tail has run; a claimer that dies mid-launch simply lets the
+	// lease lapse and the row re-fires — the launch tail's idempotency
+	// key turns the retry of an ALREADY-launched target into a
+	// duplicate no-op, so the net is at-least-once fire, exactly-once
+	// launch. (A destructive claim would instead LOSE the launch with
+	// the delivery long since ACKed: a required check absent forever.)
+	ClaimDue(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]DeferredLaunch, error)
+	// Delete removes the row IFF it still holds the named generation —
+	// the claimer's acknowledgement that exactly the payload it launched
+	// is done. A subject that re-armed mid-claim (higher generation)
+	// survives and fires again with its fresh payload.
+	Delete(ctx context.Context, subjectKey string, generation int64) error
+}
+
 // Limits are the monthly call caps applied to a delivery. Zero means
 // "no cap at that level".
 type Limits struct {

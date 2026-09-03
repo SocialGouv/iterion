@@ -539,7 +539,61 @@ const (
 	StatusFiltered      = "filtered"
 	StatusLaunched      = "launched"
 	StatusLaunchError   = "launch_error"
+	// StatusDeferred is an HTTP-response-only status (never a stored
+	// Delivery row): the delivery is parked for a quiet window and will
+	// launch — as its own delivery, under its own idempotency key — when
+	// the window elapses with no newer push on the same subject.
+	StatusDeferred = "deferred"
 )
+
+// DeferredTarget is one resolved (bot, idempotency key, vars) launch of
+// a parked delivery — the serialized twin of the server's in-memory
+// launch target, so the sweep can replay the launch exactly as the
+// handler would have performed it.
+type DeferredTarget struct {
+	BotID   string            `bson:"bot_id" json:"bot_id"`
+	IdemKey string            `bson:"idem_key" json:"idem_key"`
+	Vars    map[string]string `bson:"vars" json:"vars"`
+	RepoURL string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
+	RepoRef string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
+}
+
+// DeferredLaunch parks one webhook delivery's resolved launch for a
+// quiet window — the push debounce. Keyed by SubjectKey (tenant |
+// webhook | subject): a newer push on the same subject REPLACES the
+// payload and pushes FireAt back, so a volley of pushes costs one
+// review of the final head instead of N-1 superseded partial runs.
+// The sweep claims due rows atomically (first replica wins) and runs
+// the ordinary launch tail on the stored targets.
+type DeferredLaunch struct {
+	// SubjectKey is the row's identity (tenant | webhook | subject).
+	// Generation increments on every upsert: a Delete names the
+	// generation it launched, so acknowledging an old payload can never
+	// drop a subject that re-armed mid-claim.
+	SubjectKey string    `bson:"_id" json:"subject_key"`
+	Generation int64     `bson:"generation" json:"generation"`
+	TenantID   string    `bson:"tenant_id" json:"tenant_id"`
+	WebhookID  string    `bson:"webhook_id" json:"webhook_id"`
+	FireAt     time.Time `bson:"fire_at" json:"fire_at"`
+	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
+	// ClaimedUntil is the sweep lease (zero = unclaimed). See
+	// DeferredLaunchStore.ClaimDue for the at-least-once contract.
+	ClaimedUntil time.Time `bson:"claimed_until,omitempty" json:"claimed_until,omitempty"`
+
+	// Event metadata, mirrored from the handler's parse so the sweep can
+	// rebuild delivery rows + supersede scoping without the raw payload.
+	EventKind    string `bson:"event_kind,omitempty" json:"event_kind,omitempty"`
+	EventAction  string `bson:"event_action,omitempty" json:"event_action,omitempty"`
+	ProjectPath  string `bson:"project_path,omitempty" json:"project_path,omitempty"`
+	SubjectID    string `bson:"subject_id,omitempty" json:"subject_id,omitempty"`
+	SubjectURL   string `bson:"subject_url,omitempty" json:"subject_url,omitempty"`
+	SubjectSHA   string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
+	SenderHandle string `bson:"sender_handle,omitempty" json:"sender_handle,omitempty"`
+	PayloadHash  string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	SourceIP     string `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
+
+	Targets []DeferredTarget `bson:"targets" json:"targets"`
+}
 
 // OverlapPolicy projects the webhook's overlap field onto the shared
 // launch-surface policy. Not normalized: schedgate's zero value means "skip"

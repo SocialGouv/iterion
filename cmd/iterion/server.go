@@ -569,6 +569,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
+		WebhookDeferred:        stores.webhooks.Deferred,
 		ConfigShares:           stores.configShares,
 		OrgUsage:               stores.orgUsage,
 		OrgDefaults:            orgLimitDefaultsFromEnv(),

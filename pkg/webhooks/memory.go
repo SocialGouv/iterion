@@ -104,6 +104,61 @@ func (s *MemoryDeliveryStore) ListLaunchedBySubject(_ context.Context, tenantID,
 	}), nil
 }
 
+// MemoryDeferredLaunchStore is an in-process DeferredLaunchStore. Keep
+// its semantics in lock-step with MongoDeferredLaunchStore.
+type MemoryDeferredLaunchStore struct {
+	mu   sync.Mutex
+	rows map[string]DeferredLaunch // by SubjectKey
+}
+
+func NewMemoryDeferredLaunchStore() *MemoryDeferredLaunchStore {
+	return &MemoryDeferredLaunchStore{rows: make(map[string]DeferredLaunch)}
+}
+
+func (s *MemoryDeferredLaunchStore) Upsert(_ context.Context, d DeferredLaunch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Newest payload wins wholesale — including clearing any lease: a
+	// fresh push during a claimed row's launch re-arms the subject.
+	d.ClaimedUntil = time.Time{}
+	if prev, ok := s.rows[d.SubjectKey]; ok {
+		d.Generation = prev.Generation + 1
+		d.CreatedAt = prev.CreatedAt
+	} else {
+		d.Generation = 1
+	}
+	s.rows[d.SubjectKey] = d
+	return nil
+}
+
+func (s *MemoryDeferredLaunchStore) ClaimDue(_ context.Context, now time.Time, lease time.Duration, limit int) ([]DeferredLaunch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []DeferredLaunch
+	for k, d := range s.rows {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		if d.FireAt.After(now) || d.ClaimedUntil.After(now) {
+			continue
+		}
+		d.ClaimedUntil = now.Add(lease)
+		s.rows[k] = d
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].FireAt.Before(out[j].FireAt) })
+	return out, nil
+}
+
+func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string, generation int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d, ok := s.rows[subjectKey]; ok && d.Generation == generation {
+		delete(s.rows, subjectKey)
+	}
+	return nil
+}
+
 // MemoryCounter is an in-process monthly Counter. Production uses the
 // Mongo CAS variant; this one is mutex-serialised.
 type MemoryCounter struct {

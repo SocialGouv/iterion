@@ -137,12 +137,16 @@ type Server struct {
 	// /api/local/secrets handlers need its scope-aware ops (ForScope, Project,
 	// Global, ListScoped), so keeping the concrete type here avoids a
 	// type-assertion in every handler. Nil in cloud mode.
-	localSecrets      *secrets.LayeredGenericSecretStore
-	runSecrets        secrets.RunSecretsStore
-	sealer            secrets.Sealer
-	oauthStore        secrets.OAuthStore
-	oauthPending      secrets.OAuthPendingStore
-	webhookConfigs    webhooks.ConfigStore
+	localSecrets    *secrets.LayeredGenericSecretStore
+	runSecrets      secrets.RunSecretsStore
+	sealer          secrets.Sealer
+	oauthStore      secrets.OAuthStore
+	oauthPending    secrets.OAuthPendingStore
+	webhookConfigs  webhooks.ConfigStore
+	webhookDeferred webhooks.DeferredLaunchStore
+	// syncDebounce is the quiet window a synchronize-lane review launch
+	// waits for (ITERION_WEBHOOK_SYNC_DEBOUNCE; 0 = launch immediately).
+	syncDebounce      time.Duration
 	webhookDeliveries webhooks.DeliveryStore
 	webhookCounter    webhooks.Counter
 	orgUsage          orgusage.Counter
@@ -504,6 +508,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		webhookConfigs:     cfg.WebhookConfigs,
 		webhookDeliveries:  cfg.WebhookDeliveries,
 		webhookCounter:     cfg.WebhookCounter,
+		webhookDeferred:    cfg.WebhookDeferred,
+		syncDebounce:       webhookSyncDebounceFromEnv(),
 		orgUsage:           cfg.OrgUsage,
 		orgDefaults:        cfg.OrgDefaults,
 		credPool:           cfg.CredPoolBroker,
