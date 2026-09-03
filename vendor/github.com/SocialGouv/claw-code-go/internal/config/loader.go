@@ -19,6 +19,9 @@ type Settings struct {
 	BlockedTools   []string `json:"blockedTools,omitempty"`
 	MaxTokens      int      `json:"maxTokens,omitempty"`
 	Theme          string   `json:"theme,omitempty"`
+	// AllowImmediateStructuredOutput disables the work-before-output guard.
+	// A pointer preserves explicit false values across layered settings.
+	AllowImmediateStructuredOutput *bool `json:"allowImmediateStructuredOutput,omitempty"`
 
 	// EnabledPlugins maps plugin IDs to their enabled state.
 	EnabledPlugins map[string]bool `json:"enabledPlugins,omitempty"`
@@ -140,6 +143,9 @@ func merge(dst, src *Settings) {
 	if src.Theme != "" {
 		dst.Theme = src.Theme
 	}
+	if src.AllowImmediateStructuredOutput != nil {
+		dst.AllowImmediateStructuredOutput = src.AllowImmediateStructuredOutput
+	}
 	if src.EnabledPlugins != nil {
 		dst.EnabledPlugins = src.EnabledPlugins
 	}
@@ -250,6 +256,9 @@ func WriteProject(s *Settings) error {
 	}
 	if s.Theme != "" {
 		existing["theme"] = s.Theme
+	}
+	if s.AllowImmediateStructuredOutput != nil {
+		existing["allowImmediateStructuredOutput"] = *s.AllowImmediateStructuredOutput
 	}
 
 	path := filepath.Join(".claude", "settings.json")
