@@ -40,8 +40,8 @@ PR opened / pushed ──▶ launch claims the head:  revi/review = pending
 
                run dies without publishing ──▶ reconciler posts failure
                                                (event + 1-min sweep)
-       run PARKS on a provider quota ──▶ check stays claimed, pause notice
-                                          comments when it resumes
+       run PARKS on a provider quota ──▶ check stays claimed, a comment posted
+                                          AT THE PARK says when it resumes
               pull request closed/merged ──▶ its runs stop, retries disarmed
 ```
 
