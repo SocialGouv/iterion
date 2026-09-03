@@ -2,10 +2,13 @@ package model
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -51,5 +54,55 @@ func TestBuildTaskForwardsDeclaredMCPServersPerBackend(t *testing.T) {
 		if mcpForwardingBackends[backend] {
 			t.Errorf("%s must not receive Task.MCPServers", backend)
 		}
+	}
+}
+
+// An AMBIENT MCP server (repo .mcp.json / plugin catalog — never named by
+// the node) that cannot boot must cost its own tools, never the run: the
+// other backends already degrade per-server, and hard-failing the claw
+// splice let one token-less repo server kill every claw node of a run
+// (native:b2e46831 — the repo-scoped sentry server on runner pods).
+func TestBuildTaskAmbientMCPServerBootFailureDegradesNotFails(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"deadsrv": {Command: "/nonexistent/iterion-test-mcp-server"},
+		}),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"deadsrv"}}
+	f := backendFields{id: "n", model: "anthropic/claude-opus-5", tools: []string{"bash"}, activeMCPServers: []string{"deadsrv"}}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("an ambient server that cannot boot must not fail the node: %v", err)
+	}
+	names := make([]string, 0, len(task.ToolDefs))
+	for _, td := range task.ToolDefs {
+		names = append(names, td.Name)
+	}
+	if len(task.ToolDefs) == 0 {
+		t.Fatal("the node's own tools must survive the degraded server")
+	}
+	for _, n := range names {
+		if strings.HasPrefix(n, "mcp.deadsrv.") {
+			t.Fatalf("dead server's tools leaked into the task: %v", names)
+		}
+	}
+	if len(degraded) != 1 || degraded[0].Server != "deadsrv" || degraded[0].Source != "ambient" || degraded[0].Err == nil {
+		t.Fatalf("the drop must be observable via OnMCPServerDegraded: %+v", degraded)
 	}
 }

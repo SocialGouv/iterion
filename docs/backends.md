@@ -651,6 +651,19 @@ subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
 restores host-config inheritance. Settings remain inherited independently
 (`--setting-sources`, above).
 
+**Ambient servers degrade per-server, on every backend.** A server a node
+never named — inherited from the target repo's `.mcp.json` or the plugin
+catalog — that fails to boot costs its OWN tools, never the run:
+claude_code's CLI skips a server it cannot start, pi bounds each connect
+with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process splice
+skips it with a Warn log plus a `mcp_server_degraded` run event (server,
+source, error), so the drop is in the run record, not just the process
+log. Typical case: a repo-scoped server needing a credential the
+execution host doesn't have (a token-less Sentry server on a cloud
+runner pod). A tool the node names EXPLICITLY on a dead server still
+fails loud at resolution — a declared dependency is never silently
+dropped.
+
 ### `codex`
 
 The Codex backend delegates to the installed Codex CLI through the pinned Agent

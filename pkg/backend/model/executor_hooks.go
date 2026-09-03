@@ -145,6 +145,15 @@ type SessionDegradedInfo struct {
 	Err    error // the failure the dropped session is being blamed for
 }
 
+// MCPServerDegradedInfo describes an ambient MCP server dropped from a
+// node's tool set because it failed to boot, passed to the
+// OnMCPServerDegraded hook.
+type MCPServerDegradedInfo struct {
+	Server string // MCP server name that failed to boot
+	Source string // where the server came from — "ambient" (repo .mcp.json / plugin catalog)
+	Err    error  // the boot failure the dropped tools are blamed for
+}
+
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
 	OnLLMRequest    func(nodeID string, info LLMRequestInfo)
@@ -204,6 +213,14 @@ type EventHooks struct {
 	// record; the process log alone leaves a downstream gate blind.
 	OnSessionDegraded func(nodeID string, info SessionDegradedInfo)
 
+	// OnMCPServerDegraded fires when an AMBIENT MCP server (repo
+	// .mcp.json / plugin catalog — never named by the node) fails to
+	// boot and is dropped from the node's tool set. Purely observational
+	// — the node runs on without that server's tools — but it is the
+	// only thing that puts "this node ran without an inherited server"
+	// in the run record.
+	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
+
 	// OnNodeFinished fires after a node's executor returns successfully.
 	// The output map carries iterion's conventional usage keys (`_tokens`,
 	// `_cost_usd`, `_model`) so observers (e.g. the Prometheus exporter)
@@ -255,22 +272,23 @@ func chainCb6[A, B, C, D, E, F any](a, b func(A, B, C, D, E, F)) func(A, B, C, D
 // closure.
 func ChainHooks(a, b EventHooks) EventHooks {
 	return EventHooks{
-		OnLLMRequest:       chainCb2(a.OnLLMRequest, b.OnLLMRequest),
-		OnLLMPrompt:        chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
-		OnLLMResponse:      chainCb2(a.OnLLMResponse, b.OnLLMResponse),
-		OnLLMRetry:         chainCb2(a.OnLLMRetry, b.OnLLMRetry),
-		OnLLMStepFinish:    chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
-		OnLLMTurnCapture:   chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
-		OnLLMCompacted:     chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
-		OnToolStarted:      chainCb2(a.OnToolStarted, b.OnToolStarted),
-		OnToolCall:         chainCb2(a.OnToolCall, b.OnToolCall),
-		OnToolNodeResult:   chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
-		OnDelegateStarted:  chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished: chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:    chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:    chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback: chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:  chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnNodeFinished:     chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		OnLLMRequest:        chainCb2(a.OnLLMRequest, b.OnLLMRequest),
+		OnLLMPrompt:         chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
+		OnLLMResponse:       chainCb2(a.OnLLMResponse, b.OnLLMResponse),
+		OnLLMRetry:          chainCb2(a.OnLLMRetry, b.OnLLMRetry),
+		OnLLMStepFinish:     chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
+		OnLLMTurnCapture:    chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
+		OnLLMCompacted:      chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
+		OnToolStarted:       chainCb2(a.OnToolStarted, b.OnToolStarted),
+		OnToolCall:          chainCb2(a.OnToolCall, b.OnToolCall),
+		OnToolNodeResult:    chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
+		OnDelegateStarted:   chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:  chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:     chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:     chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:  chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnSessionDegraded:   chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded: chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnNodeFinished:      chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }
