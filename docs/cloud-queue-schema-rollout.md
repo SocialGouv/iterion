@@ -18,14 +18,17 @@ drain/replay paths were written for.)
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
   directions. The current v12 consumer accepts v10/v11 backlog explicitly;
   this is not implicit forward compatibility.
-- **Roll the permissive side first.** The server is the only side that can
-  start emitting the new version, so the fleet that must already tolerate it
-  is the runners: deploy them first whenever their window still covers what
-  the old server emits (`Min(new) <= Max(old)` — the ordinary case, and then
-  nothing is ever rejected). Only when a bump raises `MinSchemaVersion` past
-  the old server's version does the server go first, with runners that don't
-  speak it yet holding those messages (see below) instead of destroying them.
-  Full rule and the measured evidence: *Deploy ordering* below.
+- **Roll the permissive side first — after checking which side that is.** The
+  server is the only side that can start emitting the new version, so the fleet
+  that must already tolerate it is the runners, and they normally go first.
+  The test is `MinSchemaVersion(new runner)` against the **oldest version still
+  resident in the stream** — not against the old server's `SchemaVersion`, which
+  is only a proxy and breaks on the commonest bump shape (`Min` raised by one).
+  When `Min` rises above what is still queued, the server goes first instead and
+  the drain/replay paths apply, with runners that don't speak the new version
+  holding those messages (see below) rather than destroying them. Never assume
+  the direction: *Deploy ordering* below has the full rule, the history, and the
+  measured evidence.
 - **Additive field whose omission changes operator intent = breaking
   change.** If a new field carries a decision the caller explicitly made
   (budget caps, skills, auto-memory, loop guard, model pins…), a stale runner
@@ -124,9 +127,15 @@ v9), so check the queue rather than assume.
 
 ### Runner-first, when that holds
 
-It holds for any bump that leaves `MinSchemaVersion` alone — the ordinary
-case since #481 introduced a window (`MinSchemaVersion` 10 has trailed
-`SchemaVersion` by several versions ever since). Roll the **runners first**:
+It holds when `MinSchemaVersion` is unchanged, and when it rises no higher
+than the oldest version still queued. **Do not assume it — check.** History
+says the check matters: since the window shipped, `MinSchemaVersion` went 8
+(v9) → 9 (v10) → 10 (v11) and only stayed put at v12. Three of four bumps
+raised it, each by exactly one, i.e. to equal the *previous* `SchemaVersion` —
+the shape that passes a naive "`Min(new) <= Max(old server)`" test while still
+rejecting anything one version older left in the stream.
+
+When the check passes, roll the **runners first**:
 
 - new runners accept `[Min(new) … Max(new)]`, so the old server's vN messages
   are still admitted — the "reverse case" of Path B step 5 cannot arise;
@@ -151,10 +160,17 @@ Runner-first removes that race instead of timing it.
 
 ### Server-first, when it does not
 
-If a bump raises `MinSchemaVersion` past the old server's `SchemaVersion`, new
-runners would reject the vN messages still in the queue. Ordering cannot save
-that case in either direction: deploy the server first and follow Path A
-(drain) or Path B (DLQ replay) below.
+If `MinSchemaVersion(new)` rises **above the oldest version still resident in
+the stream**, new runners would reject that backlog. Ordering cannot save it in
+either direction: deploy the server first and follow Path A (drain) or Path B
+(DLQ replay) below.
+
+Note the predicate is the resident one, not `Min(new) > SchemaVersion(old
+server)`. Those differ exactly in the historically common shape — `Min` raised
+by one, to equal the old server's version — where the server test says "safe,
+skip both paths" while a message one version older is still in the stream
+waiting to be parked unreplayably. When in doubt, drain (Path A): it is the
+only branch that does not depend on knowing what is queued.
 
 ### Sequencing the two Deployments
 
@@ -193,10 +209,13 @@ runners into a queue full of vN messages they reject, and per Path B step 5
 those parked messages are **unreplayable** — recovery is a per-run resume
 plus a DLQ delete.
 
-Both snippets assume `image.digest` is unset. A values-pinned digest **wins
-over `image.tag`**, so these `--set image.tag=` phases become silent no-ops;
-pin the phase's digest instead (see
-[cloud-deployment.md](cloud-deployment.md#pinning-the-image)).
+Both snippets assume the install moves its image via `image.tag`. If your
+values pin the image some other way, `--set image.tag=` may not move it at
+all — check that the rendered PodTemplate actually changed before treating a
+phase as done. Note `runner.image`, when set in a values file, already
+overrides `iterion.image` for the runner container, so phase 1's
+`--set runner.image=` must name a full reference and phase 2 must clear or
+advance it rather than rely on the shared tag.
 
 If your deploy pipeline sequences Deployments itself, use it instead — the
 requirement is only that the side which must be permissive is Ready before the
