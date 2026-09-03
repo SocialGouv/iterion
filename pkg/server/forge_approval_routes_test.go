@@ -555,6 +555,12 @@ func TestProvisionApproval_WebhookPatchCannotBypassGate(t *testing.T) {
 			`{"block_fork_prs":false}`, http.StatusConflict},
 		{"unbound the overlap policy", func(c *webhooks.Config) { c.Overlap = "supersede" },
 			`{"overlap":"allow"}`, http.StatusConflict},
+		{"arm a review-request launch identity", func(c *webhooks.Config) { c.ReviewRequestLogins = nil },
+			`{"review_request_logins":["mallory"]}`, http.StatusConflict},
+		{"clear the forge host pin", func(c *webhooks.Config) { c.ForgeBaseURL = "https://gitlab.example.com" },
+			`{"forge_base_url":""}`, http.StatusConflict},
+		{"give the fixer direct push-back", func(c *webhooks.Config) { c.BranchImproveAsPR = true },
+			`{"branch_improve_as_pr":false}`, http.StatusConflict},
 
 		// ── TIGHTENINGS AND NO-OPS: the guard must stay narrow ─────────
 		{"remove a bot", func(c *webhooks.Config) { c.BotIDs = []string{"review-pr", "dep-guard"} },
@@ -580,6 +586,17 @@ func TestProvisionApproval_WebhookPatchCannotBypassGate(t *testing.T) {
 			`{"min_replier_role":"owner"}`, http.StatusOK},
 		{"revoke a command replier", func(c *webhooks.Config) { c.AuthorizedRepliers = []string{"mallory"} },
 			`{"authorized_repliers":[]}`, http.StatusOK},
+		{"drop a review-request identity", func(c *webhooks.Config) { c.ReviewRequestLogins = []string{"botuser"} },
+			`{"review_request_logins":[]}`, http.StatusOK},
+		{"pin the forge host", func(c *webhooks.Config) { c.ForgeBaseURL = "" },
+			`{"forge_base_url":"https://gitlab.example.com"}`, http.StatusOK},
+		{"make the fixer open a PR instead", func(c *webhooks.Config) { c.BranchImproveAsPR = false },
+			`{"branch_improve_as_pr":true}`, http.StatusOK},
+		// LaunchVars are deliberately NOT classified — expandsProvisionSurface
+		// lets them through unparked too, and making the two paths disagree
+		// would settle an open question of this PR by accident.
+		{"edit launch vars", nil,
+			`{"launch_vars":{"gate_context":"revi/review"}}`, http.StatusOK},
 		{"rename (no surface change)", nil,
 			`{"name":"renamed"}`, http.StatusOK},
 	}
@@ -591,8 +608,10 @@ func TestProvisionApproval_WebhookPatchCannotBypassGate(t *testing.T) {
 				c.BotIDs = []string{"review-pr"}
 				c.ProjectAllowlist, c.EventAllowlist, c.AuthorAllowlist = nil, nil, nil
 				c.LabelAllowlist, c.HoldLabels, c.AuthorizedRepliers = nil, nil, nil
-				c.MinReplierRole, c.Overlap = "", ""
-				c.AutoImplementOnOpen, c.ReviewOnSync, c.BlockForkPRs = false, false, false
+				c.MinReplierRole, c.Overlap, c.ForgeBaseURL = "", "", ""
+				c.ReviewRequestLogins = nil
+				c.AutoImplementOnOpen, c.ReviewOnSync = false, false
+				c.BlockForkPRs, c.BranchImproveAsPR = false, false
 			})
 			if tc.mut != nil {
 				pre(t, tc.mut)

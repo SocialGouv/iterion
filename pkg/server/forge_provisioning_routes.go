@@ -511,10 +511,21 @@ func widensAllowlist(before, after []string) bool {
 // will on the config the approval produced.
 //
 // Scope is deliberately the AUTHORIZATION/DISPATCH surface — who and what
-// may launch without a human — mirroring what the provisioning request
-// carries. Budget dials (RateLimit, MonthlyCallLimit) and credential
-// bindings (KeyOverrides, SecretOverrides) are governed elsewhere and are
-// not classified here.
+// may launch without a human, and where a credential may be sent. What is
+// knowingly NOT classified, and why:
+//   - RateLimit / MonthlyCallLimit: budget dials, governed by the org's own
+//     quota layer rather than this gate.
+//   - KeyOverrides / SecretOverrides: credential bindings, already validated
+//     against the team's own secrets by validateKeyOverrides /
+//     validateSecretOverrides.
+//   - LaunchVars: expandsProvisionSurface lets these through unparked on the
+//     provisioning path too. That is a DELIBERATE, documented choice, and
+//     whether a launch var naming a credential-consuming endpoint should be
+//     an expansion is an open question on this PR — not something to settle
+//     here by making the two paths disagree.
+//   - DefaultBotID: cannot widen — the delivery path gates every launch on
+//     cfg.AllowsBot regardless of which bot selection picked.
+//   - Name, ReviewOnSyncPinned: no effect on the live surface.
 func expandsWebhookSurface(before, after webhooks.Config) bool {
 	// Re-enabling a disabled webhook restores the ENTIRE surface at once
 	// (middleware_webhook.go answers 410 while off).
@@ -554,6 +565,16 @@ func expandsWebhookSurface(before, after webhooks.Config) bool {
 	if addsAny(before.AuthorizedRepliers, after.AuthorizedRepliers) {
 		return true
 	}
+	// ReviewRequestLogins is inverted the same way, and grants MORE than it
+	// looks: a review-request addressed to one of these identities LAUNCHES
+	// the re-review lane, and the set also joins iterionBotLogins — so an
+	// added login both arms a new trigger and makes the actor guard read
+	// that identity's own PRs as the bot's echo. Adding one is exactly the
+	// "ordinary reviewer ping becomes a bot run" outcome the field's own
+	// doc warns about.
+	if addsAny(before.ReviewRequestLogins, after.ReviewRequestLogins) {
+		return true
+	}
 	// Lowering the role floor widens who may launch a /command. "" reads as
 	// developer on both sides (webhooks.ReplierRoleRank), so an unset field
 	// compares as the default rather than as zero.
@@ -577,6 +598,24 @@ func expandsWebhookSurface(before, after webhooks.Config) bool {
 	// switch is documented as a protection, and the predicate should be
 	// right the day the guard becomes conditional.)
 	if before.BlockForkPRs && !after.BlockForkPRs {
+		return true
+	}
+	// Clearing the forge pin. A set ForgeBaseURL REFUSES any delivery whose
+	// payload MR-URL host does not match it (resolveForgeBaseURL); clearing
+	// it falls back to deriving the host from the payload, bounded only by
+	// the OPTIONAL global ITERION_WEBHOOK_FORGE_HOSTS allowlist. That is the
+	// control that stops a hostile-but-secret-authenticated payload from
+	// redirecting the bot's forge_token at a host of its choosing, so
+	// dropping it widens where a credential may be sent.
+	if before.ForgeBaseURL != "" && after.ForgeBaseURL == "" {
+		return true
+	}
+	// BranchImproveAsPR true→false hands the fixer DIRECT push onto the PR's
+	// source branch, where true makes it open a separate PR the author
+	// reviews first. Turning it off is strictly more automation without a
+	// human — the posture the field exists to offer a third-party
+	// contributor's branch.
+	if before.BranchImproveAsPR && !after.BranchImproveAsPR {
 		return true
 	}
 	// Overlap: "allow" is the only unbounded concurrency policy; the empty
