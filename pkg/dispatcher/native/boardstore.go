@@ -1,5 +1,11 @@
 package native
 
+import (
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+)
+
 // BoardStore is the storage contract the board operations (boardops), the
 // dispatcher tracker adapter, and the REST handlers operate against. The
 // filesystem-backed *Store satisfies it; a cloud build can supply a
@@ -19,13 +25,45 @@ type BoardStore interface {
 	List(filter ListFilter) ([]*Issue, error)
 	Update(id string, p Patch) (*Issue, error)
 	SetState(id, newState string) (*Issue, error)
+	// SetStateFrom is the CAS move for AUTOMATED writers (changed=false
+	// when the state drifted); Reopen is the ONE sanctioned exit from a
+	// Terminal:true state (operator surfaces only — see the guard in
+	// state_guard.go).
+	SetStateFrom(id, from, to string) (*Issue, bool, error)
+	Reopen(id, toState string) (*Issue, error)
 	Delete(id string) error
 
-	// Claim/Release are the dispatcher's per-issue lease (marker = the
-	// dispatcher instance id). SetLastRun records the run a dispatch spawned
-	// so a cross-restart resume can find it.
-	Claim(id, marker string) error
+	// Claim/Release are the dispatcher's per-issue claim (marker = the
+	// dispatcher instance id). Claim stamps a persisted LEASE and returns
+	// the ownership token (marker + fencing epoch) the Owned variants
+	// below demand; RenewClaim is the heartbeat that keeps a live
+	// worker's claim from expiring. These are MANDATORY contract methods,
+	// not an optional capability: an optional lease would be silently
+	// inert on the backend that forgets it, and the cloud board is
+	// exactly where the reaper matters (the SetLastRun/Adapter regression
+	// documents how a silent optional-interface miss plays out).
+	Claim(id, marker string) (tracker.ClaimToken, error)
+	RenewClaim(id string, tok tracker.ClaimToken) error
 	Release(id, marker string) error
+	// ReleaseOwned + the *Owned mutators are the fenced write family: a
+	// CAS on (claim, claim_epoch) so a worker whose claim was stolen
+	// finds every late write refused (tracker.ErrClaimConflict) instead
+	// of clobbering the new owner's state.
+	ReleaseOwned(id string, tok tracker.ClaimToken) error
+	SetStateOwned(id, newState string, tok tracker.ClaimToken) (*Issue, error)
+	SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
+	SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
+	SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error
+	// The reaper half — MANDATORY for the same reason as the lease: an
+	// optional watchdog is silently inert exactly where it matters (the
+	// cloud). ListExpiredClaimCandidates never lists a legacy claim;
+	// ReclaimExpired is a CAS TRANSFER (claim still prev + still
+	// expired → new owner, epoch bumped), never a bare clear.
+	ListExpiredClaimCandidates(cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error)
+	ReclaimExpired(id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
+	// SetLastRun records the run a dispatch spawned so a cross-restart
+	// resume can find it (unfenced form — for writers acting on
+	// UNCLAIMED cards, e.g. the parked-card reconcilers).
 	SetLastRun(id, runID, workdir string) error
 	// SetAwaitingInput denormalizes onto the issue whether its most recent
 	// run parked awaiting human/operator input, so the board grid can badge
@@ -70,6 +108,16 @@ func AsUniqueTitleCreator(s BoardStore) UniqueTitleCreator {
 	return u
 }
 
+// StateReasoner is the optional provenance-carrying state setter. The
+// shared auto-promote uses it so BOTH twins emit the same descriptive
+// reason (tracker.ReasonUnblocked) on the same gesture — without it the
+// FS twin stamped and the Mongo twin did not, and the trigger spine read
+// two different truths from one close. The conformance suite is what
+// keeps a backend from silently degrading to the bare SetState.
+type StateReasoner interface {
+	SetStateWithReason(id, newState, reason string) (*Issue, error)
+}
+
 // LaunchClaimer is the optional interface for board backends that can
 // atomically claim a Ready ticket for launch — a CAS StateReady →
 // StateInProgress that reports whether THIS caller won (PR #193 M2). It
@@ -95,6 +143,7 @@ func AsLaunchClaimer(s BoardStore) LaunchClaimer {
 var _ BoardStore = (*Store)(nil)
 var _ UniqueTitleCreator = (*Store)(nil)
 var _ LaunchClaimer = (*Store)(nil)
+var _ StateReasoner = (*Store)(nil)
 
 // Compile-time guarantees: the filesystem store is a full board backend.
 var (

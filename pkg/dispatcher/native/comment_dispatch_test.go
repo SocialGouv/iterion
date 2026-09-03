@@ -81,3 +81,49 @@ func TestAddComment_AutoDispatch(t *testing.T) {
 		t.Errorf("plain comment should still be recorded, got %d comments", len(got2.Comments))
 	}
 }
+
+// TestAddComment_RetriesAGivenUpCard: /command on a card the dispatcher
+// gave up on is the operator's documented way back. Every /command
+// resolves to StateReady (resolveBoardComment) and the default give-up
+// column is a SINK, so the bare SetState this handler kept — the one
+// operator surface the terminal-sink sweep missed — answered 409, AFTER
+// the comment and the bot stamp had already persisted: the card was left
+// mutated but un-dispatched, and "retry it by commenting" was dead.
+func TestAddComment_RetriesAGivenUpCard(t *testing.T) {
+	st, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := st.Create(Issue{Title: "gave up", State: StateBlocked})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Board().StateByName(StateBlocked) == nil || !st.Board().StateByName(StateBlocked).Terminal {
+		t.Skip("this board's give-up column is not a sink — nothing to prove")
+	}
+	st.SetCommentDispatcher(func(Issue, string) (string, map[string]string, string, bool) {
+		return "feature-dev", map[string]string{"feature_prompt": "retry"}, StateReady, true
+	})
+	mux := http.NewServeMux()
+	st.RegisterRoutes(mux, "/api/v1/native")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/native/issues/"+iss.ID+"/comments",
+		strings.NewReader(`{"body":"/featurly try again"}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("comment on a given-up card: code=%d body=%s — the terminal sink refuses the one exit the "+
+			"operator has, and the comment + bot stamp already landed", w.Code, w.Body.String())
+	}
+	got, err := st.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateReady {
+		t.Fatalf("card state = %q, want %q — the card is mutated but never became dispatchable", got.State, StateReady)
+	}
+	if got.Bot != "feature-dev" {
+		t.Fatalf("bot = %q, want the resolved one", got.Bot)
+	}
+}

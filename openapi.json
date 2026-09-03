@@ -874,6 +874,17 @@
           "claim": {
             "type": "string"
           },
+          "claim_epoch": {
+            "type": "integer"
+          },
+          "claim_lease_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "comments": {
             "items": {
               "$ref": "#/components/schemas/Comment"

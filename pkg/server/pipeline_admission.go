@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -179,8 +180,23 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 		return true
 	}
 	r, err := rs.LoadRun(ctx, iss.LastRunID)
-	if err != nil || r == nil {
-		return true // last run vanished; a fresh launch is safe
+	if err != nil {
+		if store.RunAbsent(err) {
+			// Pruned, or deleted behind a durable tombstone: both are
+			// PROOF of absence, not lack of information — refusing them
+			// bricked a ticket whose operator deleted its run, with no
+			// studio exit (delete does not clear the card's LastRunID).
+			return true
+		}
+		// No information is not no run: a run record that EXISTS but
+		// cannot be read may be alive. The dispatcher's
+		// lastRunHoldBeforeClaim HOLDS on exactly this input — failing
+		// open here made the two authorities disagree on the same card
+		// and minted a sibling for a live run on a store blip.
+		return false
+	}
+	if r == nil {
+		return true
 	}
 	switch r.Status {
 	case store.RunStatusRunning,
@@ -271,7 +287,7 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 // parent iss.LastRunID still names (the board mutates its own copy of
 // the issue on SetLastRun).
 func (s *Server) fileFinishedTicket(board native.BoardStore, iss *native.Issue, runID string) {
-	if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
+	if _, _, err := board.SetStateFrom(iss.ID, iss.State, native.StateDone); err != nil {
 		s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, runID, err)
 		return
 	}
@@ -390,6 +406,71 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 	}
 }
 
+// boardNow resolves the instant a lease is measured against. The lease
+// is stamped with the DATABASE clock ($$NOW), so comparing it to this
+// pod's clock re-opens the cross-clock hole from the other end: a pod
+// running Δ fast reads every lease younger than Δ as lapsed and admits a
+// launch past a LIVE holder (at Δ ≥ the lease duration the guard is
+// fully disarmed). Backends without a server clock (the single-process
+// FS twin) fall back to the local one, which is then the only clock.
+func (s *Server) boardNow(board native.BoardStore) time.Time {
+	reason := ""
+	defer func() {
+		// Degradation is LOGGED, on its edge — the reaper's own rule ("a
+		// watchdog silently measuring against a suspect clock is worse
+		// than one that logs its degradation"), copied here WITH the
+		// property this time. The exemption keys on the CONCRETE FS twin
+		// (single process, one clock — its fallback is the design), never
+		// on method presence: keyed on the method, a decorator around the
+		// cloud board that drops ServerNow would lose the server clock AND
+		// the warn in the same move — the silent disarm this log exists
+		// to catch.
+		if _, isFS := board.(*native.Store); isFS {
+			return
+		}
+		s.stateMu.Lock()
+		prev := s.boardClockWarned
+		s.boardClockWarned = reason
+		s.stateMu.Unlock()
+		if reason != prev && reason != "" {
+			s.logger.Warn("pipeline admission: board clock unavailable (%s) — measuring the claim lease against this pod's clock", reason)
+		}
+		// The recovery edge is logged too — like its latch siblings
+		// (noteRunReadFailure): a clock that came back silently leaves the
+		// last message on record saying the guard is degraded.
+		if reason == "" && prev != "" {
+			s.logger.Info("pipeline admission: board clock recovered — the claim-lease guard measures against the server clock again")
+		}
+	}()
+	if sn, ok := board.(interface {
+		ServerNow(context.Context) (time.Time, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv, err := sn.ServerNow(ctx)
+		switch {
+		case err != nil:
+			reason = err.Error()
+		case srv.IsZero():
+			reason = "empty collection"
+		default:
+			return srv
+		}
+	} else {
+		reason = fmt.Sprintf("board type %T exposes no server clock", board)
+	}
+	return time.Now().UTC()
+}
+
+// The production board type must keep exposing the server clock. This pin
+// holds the METHOD on *boardmongo.Store only — a decorator inserted at the
+// CloudBoardFor return site still compiles past it; the runtime warn in
+// boardNow (whose exemption keys on the FS twin, not on method presence)
+// is what makes that wrapper loud instead of a silent disarm.
+var _ interface {
+	ServerNow(context.Context) (time.Time, error)
+} = (*boardmongo.Store)(nil)
+
 // launchTicketNow claims a ticket and launches its bot, returning the run
 // id. It is the shared body of the admission loop (which ignores the error
 // and retries next tick) and of the operator's explicit "launch now" drag,
@@ -397,6 +478,42 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 // case is a *skip*, not a failure, for the loop — hence the dedicated
 // error the caller can distinguish.
 func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
+	// A ticket held under a LIVE claim already has a launcher — the
+	// dispatcher wins with the CLAIM, and its move out of Ready is
+	// offloaded, so the state alone cannot say the ticket is free. This is
+	// the choke point BOTH callers cross (the admission loop's
+	// ClaimForLaunch refuses the same card earlier — atomically; the
+	// operator's explicit "launch now" reaches here directly), so the
+	// guard lives here, on a FRESH read: launching past it minted a second
+	// run while the claim holder was mid-launch. Read-then-move, not a
+	// CAS, because this path must stay legal for a non-Ready
+	// needs-attention relaunch (ClaimForLaunch requires Ready); the
+	// residual µs window is the documented V1 shape, down from the whole
+	// launch flight.
+	//
+	// LIVE is the lease, not the marker. The dispatcher PARKS an
+	// awaiting-input card with its claim retained and its heartbeat
+	// STOPPED (ADR-014), and DecideStuckCard conserves that claim for
+	// ever on a paused/cancelled run — so a bare `Claim != ""` refused
+	// the operator's own escape hatch (this endpoint has no Ready
+	// precondition precisely to serve it) and pointed them at a watchdog
+	// that would never come. A claim with NO lease is admitted too: that
+	// is what a release N-1 binary writes, the population the
+	// expand/contract rollout GUARANTEES during release N — and it has
+	// zero release path (the FS reaper has no un-leased arm at all; the
+	// cloud one only lists it gate ON), so refusing it bricked the card
+	// for ever on both twins. The cost is a seconds-wide double-launch
+	// window against a legacy daemon mid-launch, during the mixed-fleet
+	// release only; ClaimForLaunch (marker-unconditional) still protects
+	// the admission loop, and pipelineTicketLaunchable the active-run
+	// case.
+	cur, err := board.Get(iss.ID)
+	if err != nil {
+		return "", fmt.Errorf("read ticket: %w", err)
+	}
+	if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(s.boardNow(board)) {
+		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
+	}
 	entry, found, err := s.findBot(iss.Bot)
 	if err != nil {
 		s.logger.Warn("pipeline admission: resolve bot %q: %v", iss.Bot, err)
@@ -411,12 +528,37 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 		s.warnAdmissionSkipOnce(iss.ID, iss.Bot, found)
 		return "", fmt.Errorf("bot %q is not in this workspace's catalog (or is disabled)", iss.Bot)
 	}
-	// Leave StateReady BEFORE launching so the next tick won't re-pick this
-	// ticket while Launch is in flight. StateInProgress is not StateReady, so
-	// admitReadyPipelines skips it; the run's status then drives the column.
-	if _, err := board.SetState(iss.ID, native.StateInProgress); err != nil {
-		s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
-		return "", fmt.Errorf("claim ticket: %w", err)
+	// Leave the launch column BEFORE launching so the next tick won't
+	// re-pick this ticket while Launch is in flight. StateInProgress is not
+	// StateReady, so admitReadyPipelines skips it; the run's status then
+	// drives the column.
+	//
+	// The CAS is anchored on the state this call READ (cur), never on a
+	// hardcoded Ready: this endpoint deliberately has NO ready precondition
+	// — it is the operator's relaunch of a needs-attention card, which the
+	// Opened lane folds inbox/waiting_deps into — so a Ready-anchored CAS
+	// was a SILENT no-op (SetStateFrom returns changed=false, nil on drift)
+	// for every non-Ready launch. The run then started while the card sat
+	// where it was: reconcileFinishedTickets only files a ticket that is
+	// in_progress, so it was never filed done, and BlockerSatisfied accepts
+	// only done — its dependents parked in waiting_deps for ever.
+	//
+	// changed==false is a REFUSAL the caller surfaces, not something to
+	// walk past: the ticket moved between the read and the write, and
+	// whoever moved it may already be launching it. A terminal source is
+	// refused too — SetStateFrom raises ErrTerminalStateExit rather than
+	// resurrecting a closed card behind the operator's back; reopening is
+	// their explicit gesture, not a launch's side effect.
+	sourceState := cur.State
+	if sourceState != native.StateInProgress {
+		_, changed, err := board.SetStateFrom(iss.ID, sourceState, native.StateInProgress)
+		if err != nil {
+			s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
+			return "", fmt.Errorf("claim ticket: %w", err)
+		}
+		if !changed {
+			return "", fmt.Errorf("ticket %s moved out of %q while it was being launched — nothing was started; re-read the board and retry", iss.ID, sourceState)
+		}
 	}
 	res, err := runs.Launch(context.Background(), runview.LaunchSpec{
 		FilePath: entry.MainFile(),
@@ -443,9 +585,21 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	})
 	if err != nil {
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)
-		// Return it to Backlog so it isn't stuck claimed with no run.
-		if _, rErr := board.SetState(iss.ID, native.StateInbox); rErr != nil {
-			s.logger.Warn("pipeline admission: revert ticket %s: %v", iss.ID, rErr)
+		// Put the ticket back where it came FROM, not in a fixed column: a
+		// card launched from blocked/waiting_deps that failed to start is
+		// not a backlog item, and dumping it in Backlog silently moved it
+		// somewhere its operator never put it. The one exception is Ready,
+		// which the admission loop re-picks every tick — parking it in
+		// Backlog is what breaks that relaunch loop, and is why the fixed
+		// target was there.
+		revertTo := sourceState
+		if revertTo == native.StateReady {
+			revertTo = native.StateInbox
+		}
+		if revertTo != native.StateInProgress {
+			if _, _, rErr := board.SetStateFrom(iss.ID, native.StateInProgress, revertTo); rErr != nil {
+				s.logger.Warn("pipeline admission: revert ticket %s: %v", iss.ID, rErr)
+			}
 		}
 		return "", fmt.Errorf("launch: %w", err)
 	}

@@ -24,7 +24,7 @@ func TestListCandidatesEligibleOnly(t *testing.T) {
 	ready, _ := s.Create(native.Issue{Title: "go", State: "ready"})
 	_, _ = s.Create(native.Issue{Title: "later", State: "backlog"})
 	claimed, _ := s.Create(native.Issue{Title: "taken", State: "ready"})
-	if err := s.Claim(claimed.ID, "other"); err != nil {
+	if _, err := s.Claim(claimed.ID, "other"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -171,14 +171,14 @@ func TestListForRepark(t *testing.T) {
 	if err := s.SetLastRun(theirs.ID, "run-theirs", ""); err != nil {
 		t.Fatalf("SetLastRun theirs: %v", err)
 	}
-	if err := s.Claim(theirs.ID, "other-host"); err != nil {
+	if _, err := s.Claim(theirs.ID, "other-host"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	ours, _ := s.Create(native.Issue{Title: "ours", State: native.StateInProgress})
 	if err := s.SetLastRun(ours.ID, "run-ours", ""); err != nil {
 		t.Fatalf("SetLastRun ours: %v", err)
 	}
-	if err := s.Claim(ours.ID, "me"); err != nil {
+	if _, err := s.Claim(ours.ID, "me"); err != nil {
 		t.Fatalf("Claim ours: %v", err)
 	}
 	fresh, _ := s.Create(native.Issue{Title: "fresh", State: native.StateReady})

@@ -20,6 +20,7 @@ type fakeGH struct {
 	apiOutByCall map[string][]byte // per-endpoint canned responses (key is the resource path)
 	calls        [][]string
 	failNum      int
+	editErr      error
 }
 
 func (f *fakeGH) cmd(_ context.Context, args []string, _ []string) ([]byte, error) {
@@ -47,6 +48,9 @@ func (f *fakeGH) cmd(_ context.Context, args []string, _ []string) ([]byte, erro
 		}
 		return f.apiOut, nil
 	case args[0] == "issue" && (args[1] == "edit" || args[1] == "comment"):
+		if f.editErr != nil {
+			return nil, f.editErr
+		}
 		if f.failNum != 0 {
 			var n int
 			_, _ = fmt.Sscanf(args[2], "%d", &n)
@@ -319,4 +323,41 @@ func TestGitHubListCandidatesBlockers(t *testing.T) {
 			t.Fatalf("want #42 dispatched, got %+v", got)
 		}
 	})
+}
+
+// A MISSING issue (deleted, transferred) must map Release onto
+// ErrNotFound like the Forgejo twin: callers treat that absence as
+// benign — without the mapping a deleted issue's claim-journal entry
+// was retried and warned at every boot, for ever.
+func TestGitHubReleaseMapsMissingIssueToNotFound(t *testing.T) {
+	fake := &fakeGH{}
+	a := newGHAdapter(t, fake, nil)
+	fake.editErr = errors.New("GraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)")
+	if err := a.Release(context.Background(), "github:owner/repo#7", "m"); !errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("Release on a deleted issue = %v, want ErrNotFound — its journal entry is otherwise retried at every boot for ever", err)
+	}
+	// Any OTHER failure stays a real error (a 503 must keep the entry).
+	fake.editErr = errors.New("HTTP 503: service unavailable")
+	if err := a.Release(context.Background(), "github:owner/repo#7", "m"); err == nil || errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("a transient failure must stay a real error, got %v", err)
+	}
+}
+
+// The claim LABEL deleted from the repo is the same permanent shape the
+// missing-ISSUE mapping closed: gh refuses the remove, and a non-benign
+// error kept the journal entry retried + warned at every boot for ever.
+// Error text captured from gh 2.99.0 against a real repo.
+func TestGitHubReleaseMapsDeletedClaimLabelToNotFound(t *testing.T) {
+	fake := &fakeGH{}
+	a := newGHAdapter(t, fake, nil)
+	fake.editErr = errors.New("failed to update https://github.com/o/r/issues/638: 'iterion-claimed' not found\nfailed to update 1 issue")
+	if err := a.Release(context.Background(), "github:owner/repo#638", "m"); !errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("Release with the claim label deleted from the repo = %v, want ErrNotFound", err)
+	}
+	// An UNRELATED label's not-found must NOT match (the anchor is the
+	// configured claim label): that error is a real one to surface.
+	fake.editErr = errors.New("failed to update https://github.com/o/r/issues/638: 'wontfix' not found")
+	if err := a.Release(context.Background(), "github:owner/repo#638", "m"); err == nil || errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("an unrelated label's not-found mapped to ErrNotFound: %v", err)
+	}
 }

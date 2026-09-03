@@ -334,7 +334,9 @@ func (h *BoardAPI) handleTransitionIssue(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, errors.New("transition: to is required"))
 		return
 	}
-	iss, err := s.SetState(id, in.To)
+	// The board REST API is an operator surface (the /board drag):
+	// leaving a terminal state is the sanctioned reopen.
+	iss, err := SetStateOrReopen(s, id, in.To)
 	if err != nil {
 		writeErr(w, statusForErr(err), err)
 		return
@@ -399,7 +401,9 @@ func (h *BoardAPI) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Optional one-shot dispatch: stamp bot + args, then move to the
-	// requested state so the dispatcher picks the issue up.
+	// requested state so the dispatcher picks the issue up. The stamp must
+	// stay FIRST — the move is what makes the card dispatchable, and a
+	// dispatcher claiming it between the two would launch the previous bot.
 	if bot != nil || botArgs != nil {
 		patch := Patch{}
 		if bot != nil {
@@ -413,8 +417,19 @@ func (h *BoardAPI) handleAddComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The move goes through the OPERATOR helper, like every other operator
+	// surface the terminal-sink sweep converted (transition, CLI move,
+	// pipeline actions, deps). This one was missed, and it is the surface
+	// where it bites hardest: resolveBoardComment returns StateReady for
+	// EVERY "/command", while the default give-up column (blocked) is a
+	// sink. A bare SetState therefore answered 409 — after the comment and
+	// the bot stamp above had already persisted, leaving the card mutated
+	// but un-dispatched — and killed "retry a given-up card by commenting"
+	// outright. Reachable on both twins via an explicit transition_to
+	// (iterion remote board, the remote_issue_comment MCP tool). Reopen is
+	// the sanctioned exit, and an operator's comment is entitled to it.
 	if transitionTo != "" {
-		if _, err := s.SetState(id, transitionTo); err != nil {
+		if _, err := SetStateOrReopen(s, id, transitionTo); err != nil {
 			writeErr(w, statusForErr(err), err)
 			return
 		}

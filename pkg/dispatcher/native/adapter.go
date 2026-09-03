@@ -2,8 +2,10 @@ package native
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
@@ -28,17 +30,26 @@ func (a *Adapter) Name() string { return "native" }
 // all StateDone (see BlockersSatisfied / CanLaunch). Missing blockers
 // are treated as open (fail closed). Terminal non-success states such
 // as StateBlocked do NOT satisfy a dependency.
+// LaunchStates names the board columns a card is dispatched FROM — see
+// tracker.LaunchStateLister. One definition, shared with ListCandidates
+// below, so the watchdog and the poller can never disagree about which
+// column a launch started in.
+func (a *Adapter) LaunchStates() []string {
+	b := a.store.Board()
+	out := make([]string, 0, len(b.States))
+	for _, s := range b.States {
+		if s.Eligible {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
 func (a *Adapter) ListCandidates(ctx context.Context) ([]tracker.Issue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	b := a.store.Board()
-	eligible := make([]string, 0, len(b.States))
-	for _, s := range b.States {
-		if s.Eligible {
-			eligible = append(eligible, s.Name)
-		}
-	}
+	eligible := a.LaunchStates()
 	if len(eligible) == 0 {
 		return nil, nil
 	}
@@ -99,12 +110,117 @@ func (a *Adapter) Comment(ctx context.Context, id, body string) error {
 	return err
 }
 
-// Claim delegates to the store.
+// Claim delegates to the store (tracker.Tracker's tokenless form — the
+// token is discarded here; token-aware callers use ClaimLease).
 func (a *Adapter) Claim(ctx context.Context, id, marker string) error {
+	_, err := a.ClaimLease(ctx, id, marker)
+	return err
+}
+
+// ClaimLease claims and returns the ownership token (tracker.ClaimLeaser).
+func (a *Adapter) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	if err := ctx.Err(); err != nil {
+		return tracker.ClaimToken{}, err
+	}
+	return a.store.Claim(id, marker)
+}
+
+// RenewClaim delegates to the store (tracker.ClaimLeaser), honouring the
+// caller's cancel for the whole call and not just at its entry.
+//
+// The store's renew takes no context and blocks on the store-wide lock,
+// so any long mutation holding it (a sweep, a bulk column migration)
+// blocks the heartbeat here. claimSession.Stop() runs ON THE ACTOR and
+// waits for that loop — so checking ctx only on the way in made the
+// session's documented "Stop() is not hostage to a slow renewal"
+// guarantee false on this backend, and left its context.Canceled arm
+// unreachable from the dispatcher (the cloud twin already honours it,
+// through RenewClaimCtx).
+//
+// The goroutine ends when the lock frees; the channel is buffered so it
+// never blocks on a caller that has gone. A renewal that lands after the
+// cancel merely extends a lease we still own — Stop() is followed by the
+// release, which is fenced on the same token.
+func (a *Adapter) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return a.store.Claim(id, marker)
+	done := make(chan error, 1)
+	go func() { done <- a.store.RenewClaim(id, tok) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ReleaseOwned delegates to the store (tracker.ClaimLeaser).
+func (a *Adapter) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return a.store.ReleaseOwned(id, tok)
+}
+
+// UpdateStateOwned delegates to the store (tracker.ClaimLeaser).
+func (a *Adapter) UpdateStateOwned(ctx context.Context, id, newState string, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := a.store.SetStateOwned(id, newState, tok)
+	return err
+}
+
+// UpdateStateOwnedReason is the fenced state write carrying an explicit
+// provenance (the watchdog's terminal verdicts) — see
+// native.SetStateOwnedReason.
+func (a *Adapter) UpdateStateOwnedReason(ctx context.Context, id, newState string, tok tracker.ClaimToken, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rr, ok := a.store.(interface {
+		SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*Issue, error)
+	})
+	if !ok {
+		// Backend without the reasoned form: marker-derived provenance.
+		_, err := a.store.SetStateOwned(id, newState, tok)
+		return err
+	}
+	_, err := rr.SetStateOwnedReason(id, newState, tok, reason)
+	return err
+}
+
+// SetLastRunOwned / SetAwaitingInputOwned / SetGaveUpOwned are the fenced
+// forms of the setter pass-throughs below — same regression-guard rule:
+// a store method without its Adapter pass-through fails silently at the
+// optional-interface assertion.
+func (a *Adapter) SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error {
+	return a.store.SetLastRunOwned(id, runID, workdir, tok)
+}
+
+func (a *Adapter) SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error {
+	return a.store.SetAwaitingInputOwned(id, v, tok)
+}
+
+func (a *Adapter) SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error {
+	return a.store.SetGaveUpOwned(id, g, tok)
+}
+
+// ListExpiredClaimCandidates / ReclaimExpired expose the store's reaper
+// half under tracker.ClaimReaper (compile-asserted below).
+func (a *Adapter) ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]tracker.ExpiredClaim, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return a.store.ListExpiredClaimCandidates(cutoff, limit)
+}
+
+func (a *Adapter) ReclaimExpired(ctx context.Context, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error) {
+	if err := ctx.Err(); err != nil {
+		return tracker.ClaimToken{}, "", err
+	}
+	return a.store.ReclaimExpired(id, prev, marker, cutoff)
 }
 
 // Release delegates to the store.
@@ -239,6 +355,7 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 		return nil, err
 	}
 	var cleared []string
+	skipped, attempted := 0, 0
 	for _, iss := range issues {
 		if iss.Claim == "" {
 			continue
@@ -246,10 +363,31 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 		if !isStale(iss.Claim) {
 			continue
 		}
+		attempted++
 		if err := a.store.Release(iss.ID, iss.Claim); err != nil {
+			// The listing is a snapshot, not the truth at the moment of
+			// the act: losing the race on ONE card is benign (the reaper
+			// transferred it, a peer released it, the card was deleted) —
+			// aborting here left every FOLLOWING card claimed by a dead
+			// PID until the next boot, and this sweep is the only ungated
+			// repair that population has. Same tolerance as
+			// sweepJournalledClaims, its structural sibling.
+			if errors.Is(err, tracker.ErrClaimConflict) || errors.Is(err, tracker.ErrNotFound) {
+				skipped++
+				continue
+			}
 			return cleared, fmt.Errorf("release stale claim on %s (%s): %w", iss.ID, iss.Claim, err)
 		}
 		cleared = append(cleared, iss.ID)
+	}
+	if skipped > 0 && len(cleared) == 0 && skipped == attempted {
+		// EVERY stale claim lost its race: sweep-wide contention is a
+		// different condition from a per-card blip, and a silent
+		// (nil, nil) here would read as "nothing was stale". Counted in
+		// the loop — re-invoking the predicate here doubled the boot's
+		// PID probes and let a time-varying predicate suppress the very
+		// diagnostic this exists to emit.
+		return nil, fmt.Errorf("stale-claim sweep released nothing: all %d candidates lost their release race", skipped)
 	}
 	return cleared, nil
 }
@@ -279,3 +417,11 @@ func shortIdentifier(id string) string {
 	}
 	return id[:15]
 }
+
+// Compile-time: the adapter exposes BOTH watchdog capabilities — an
+// optional-interface miss here is the documented SetLastRun regression
+// (a store method without its Adapter pass-through fails silently).
+var (
+	_ tracker.ClaimLeaser = (*Adapter)(nil)
+	_ tracker.ClaimReaper = (*Adapter)(nil)
+)

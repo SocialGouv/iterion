@@ -5461,6 +5461,11 @@ export interface components {
                 [key: string]: string;
             };
             claim?: string;
+            claim_epoch?: number;
+            /** Format: date-time */
+            claim_lease_until?: string;
+            /** Format: date-time */
+            claimed_at?: string;
             comments?: components["schemas"]["Comment"][];
             /** Format: date-time */
             created_at: string;

@@ -177,6 +177,13 @@ type runningEntry struct {
 	// detection now reads this atomic.
 	lastEventAtomicNano atomic.Int64
 
+	// claim is the lease heartbeat session for this dispatch (nil when
+	// the tracker has no lease backend). Actor-owned pointer; the session
+	// itself is goroutine-safe. It OUTLIVES the entry on the finish path
+	// (rides finishPlan into the worker) and is stopped on the park/hold
+	// paths by stopClaimSession.
+	claim *claimSession
+
 	// issueSnapshot is the tracker.Issue snapshot used to render
 	// dispatch.vars. Kept so the dispatcher can render a fresh prompt
 	// on retry without re-fetching from the tracker.

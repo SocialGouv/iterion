@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -54,7 +55,8 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 		return err
 	}
 	for _, sub := range matched {
-		if err := e.applyEffect(ctx, sub, ev, effectOpts{}); err != nil && !errors.Is(err, errEffectOneShotSpent) {
+		if err := e.applyEffect(ctx, sub, ev, effectOpts{}); err != nil &&
+			!errors.Is(err, errEffectOneShotSpent) && !errors.Is(err, errEffectMachineCaused) {
 			e.warn("trigger: effect for subscription %s failed: %v", sub.ID, err)
 		}
 	}
@@ -67,6 +69,17 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 // (MaterializeEffects), so an admission rule added for one path cannot be
 // missed by the other.
 func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event) ([]Subscription, error) {
+	// A machine-caused event owes no effect to anyone — decline at the
+	// SHARED admission prelude, before the outbox materializes durable
+	// rows only MarkDone can retire: a schema migration emits one event
+	// per card, and cards x subscriptions rows of guaranteed no-ops
+	// queued FIFO ahead of the next genuine operator trigger is a
+	// head-of-line delay measured in tens of minutes. applyEffect keeps
+	// its own check as defense in depth.
+	if machineCaused(ev) {
+		return nil, nil
+	}
+
 	// An event already launched by an authoritative path (today: the inline
 	// forge webhook, which keeps its own admission/idempotency/quota gates)
 	// is OBSERVATIONAL only — never re-launch or re-promote it.
@@ -98,12 +111,43 @@ type effectOpts struct {
 	onConsumed func()
 }
 
-// applyEffect executes ONE (subscription, event) effect — the single effect
-// body both delivery paths share. Error semantics: nil = executed;
-// errEffectOneShotSpent = the one-shot was consumed by another event
-// (terminal, not a failure); anything else = the effect did not happen (the
-// bus path warns and moves on, the outbox path retries).
+// errEffectMachineCaused = the event came from iterion acting on the
+// board by itself (a watchdog repair, a schema migration), so NO effect
+// fires on it: not a launch, not a promote, and no one-shot gate is
+// spent. Benign like errEffectOneShotSpent (the one-shot consumed by
+// another event): the subscription simply does not fire, on the bus path
+// AND the outbox path.
+var errEffectMachineCaused = errors.New("trigger: no effect fires on a machine-caused event")
+
+// machineCaused reports that an event was produced by the machine rather
+// than by an operator or a bot acting on the board. The set is the
+// ENUMERATED tracker.IsMachineReason — matching only the watchdog value
+// let a column rename (one event per card) spend every consume_labels
+// one-shot in the column at once, and matching ANY reason killed the
+// one-shot of an unblocked card (the cascade of an operator closing its
+// blocker — intent, not machinery).
+func machineCaused(ev Event) bool {
+	reason, _ := ev.Payload["reason"].(string)
+	return tracker.IsMachineReason(reason)
+}
+
+// applyEffect executes ONE (subscription, event) effect — the single
+// effect body both delivery paths share. Error semantics: nil =
+// executed; errEffectMachineCaused / errEffectOneShotSpent = benign, the
+// subscription does not fire; anything else = the effect did not happen
+// (the bus path warns and moves on, the outbox path retries).
+
 func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
+	// BEFORE the mode switch: a machine-caused event fires NOTHING. A
+	// subscription is written for an operator's (or a bot's) gesture, and
+	// a schema migration emits one event per card in the touched column —
+	// so gating only the one-shot left the ordinary launch and the board
+	// promote wide open: renaming a column mass-launched a run per card,
+	// on cards nobody moved (the exact fan-out the one-shot guard was
+	// written against, minus the label).
+	if machineCaused(ev) {
+		return errEffectMachineCaused
+	}
 	switch sub.EffectiveMode() {
 	case bundle.ExecutionBoard:
 		if e.board == nil {

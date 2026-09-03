@@ -452,7 +452,7 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 			target = native.StateReady
 		}
 	}
-	issue, err := boardStore.SetState(id, target)
+	issue, err := native.SetStateOrReopen(boardStore, id, target)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board ready: set state: %v", err)
 		return

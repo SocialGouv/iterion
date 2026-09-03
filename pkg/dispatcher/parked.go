@@ -73,7 +73,7 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 		if target == "" || target == native.StateAwaitingInput {
 			continue
 		}
-		c.setAwaitingInput(iss.ID, false)
+		c.setAwaitingInput(iss.ID, false, nil)
 		if err := c.tracker.UpdateState(ctx, iss.ID, target); err != nil {
 			c.logger.Warn("dispatcher: parked sweep move %s → %q: %v", iss.Identifier, target, err)
 			continue
@@ -81,10 +81,8 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 		// Transition FIRST, Release LAST (same ordering as the finish
 		// worker): the claim keeps ListCandidates away until the card is
 		// in its final, mostly-non-eligible state.
-		if err := c.tracker.Release(ctx, iss.ID, c.hostMarker); err != nil {
-			c.logger.Warn("dispatcher: parked sweep release %s: %v", iss.Identifier, err)
-		}
-		c.claims.Remove(iss.ID)
+		c.dropJournalAfterRelease(iss.ID, iss.Identifier,
+			c.tracker.Release(ctx, iss.ID, c.hostMarker))
 		moved = true
 	}
 	if moved {
@@ -123,8 +121,12 @@ func (c *Dispatcher) reparkToAwaitingInput(iss tracker.Issue, runID string) bool
 		}
 		delete(c.state.retries, iss.ID)
 	}
-	c.setAwaitingInput(iss.ID, true)
-	moved := c.moveToAwaitingInput(iss.ID, iss.Identifier)
+	// Unfenced on purpose: the re-park claim was just taken by THIS
+	// marker via the tokenless tracker path and no session exists for
+	// it — same semantics as before the fence; the parked card is then
+	// protected by the reaper's paused-run exemption, not by a lease.
+	c.setAwaitingInput(iss.ID, true, nil)
+	moved := c.moveToAwaitingInput(iss.ID, iss.Identifier, nil)
 	if !moved {
 		return false
 	}

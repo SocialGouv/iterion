@@ -64,7 +64,7 @@ func (w *EffectWorker) Tick(ctx context.Context, limit int) int {
 func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 	err := w.applyClaimedEffect(ctx, row)
 	switch {
-	case err == nil, errors.Is(err, errEffectOneShotSpent):
+	case err == nil, errors.Is(err, errEffectOneShotSpent), errors.Is(err, errEffectMachineCaused):
 		if merr := w.Outbox.MarkDone(ctx, row.ID, row.ClaimID); merr != nil {
 			// The effect ran; a failed done-write means one redundant retry
 			// of an idempotent/one-shot-guarded effect, not a loss.

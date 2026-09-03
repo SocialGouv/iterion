@@ -385,7 +385,19 @@ func (s *Server) ListenAndServe() error {
 	// Multi-replica-safe via the per-card Claim CAS (no leader election).
 	if s.cfg.CloudBoardCoordinator != nil {
 		marker := "board-dispatcher:" + uuid.NewString()
+		// Shutdown WAITS on this (bounded): the drain's final writes —
+		// release the claim, leave the card in place — run on a detached
+		// 10s context, and a process that exits without waiting kills
+		// them anyway, which is exactly the stranded-claim state the
+		// drain arm exists to prevent. Written under stateMu: the bare
+		// field write raced Shutdown's read (-race), and a SIGTERM during
+		// boot skipped the wait entirely.
+		done := make(chan struct{})
+		s.stateMu.Lock()
+		s.boardDispDone = done
+		s.stateMu.Unlock()
 		go func() {
+			defer close(done)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go func() {
@@ -649,5 +661,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	default:
 		close(s.shutdown)
 	}
-	return s.server.Shutdown(ctx)
+	// The board dispatcher's drain (in-flight cards left in place, claims
+	// released on a detached 10s context) runs concurrently with the HTTP
+	// shutdown below — waiting for it BEFORE server.Shutdown carved a
+	// third serial segment out of the grace period and starved the HTTP
+	// drain the budget arithmetic was sized for. Wait AFTER instead: the
+	// only requirement is that the PROCESS not exit mid-release, and the
+	// dispatcher drains while HTTP connections wind down.
+	err := s.server.Shutdown(ctx)
+	s.stateMu.RLock()
+	boardDone := s.boardDispDone
+	s.stateMu.RUnlock()
+	if boardDone != nil { // nil when the cloud board dispatcher never started
+		// Bounded by ctx only: a caller shutting down with no deadline
+		// waits for the drain however long it takes (the drain's own claim
+		// releases run on a detached 10s context, so in practice this is
+		// bounded by that — but the bound is the drain's, not ours).
+		select {
+		case <-boardDone:
+		case <-ctx.Done():
+			s.logger.Warn("shutdown: board dispatcher drain still running at the deadline — in-flight claim releases may be cut")
+		}
+	}
+	return err
 }

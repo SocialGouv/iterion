@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -107,6 +108,29 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 			{Key: "issue.claim", Value: 1},
 			{Key: "issue.updatedat", Value: 1},
 		}, Options: options.Index().SetName("eligible_by_updated")},
+		// Serves the claim watchdog's expired-lease query (leaseUntil
+		// range + sort), cross-tenant every minute per replica. Leading
+		// with issue.claimleaseuntil makes it an index range scan; the
+		// eligible_by_updated index above CANNOT serve it (it leads with
+		// issue.state), so without this the reaper is the exact COLLSCAN
+		// + non-indexed-sort that index's own comment exists to avoid.
+		// Partial on a non-empty claim: only claimed cards carry a lease.
+		// (claim, lease): the recovery sweep SELECTS a marker namespace as
+		// a prefix range, and without a claim-leading index that range is
+		// a residual filter after the fetch — 20k documents examined to
+		// return none, at every pod boot, precisely in the state the gate
+		// being off produces (expired claims accumulating unbounded).
+		{Keys: bson.D{{Key: "issue.claim", Value: 1}, {Key: "issue.claimleaseuntil", Value: 1}},
+			Options: options.Index().SetName("claim_then_lease").
+				SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
+		// (lease, updatedat): the un-leased sweep bounds on the lease and
+		// ORDERS on updatedat; without the second key that sort is a
+		// blocking in-memory one over every un-leased claimed document, at
+		// every pod boot, growing with exactly the population a gated-off
+		// reaper accumulates.
+		{Keys: bson.D{{Key: "issue.claimleaseuntil", Value: 1}, {Key: "issue.updatedat", Value: 1}},
+			Options: options.Index().SetName("lease_then_updated").
+				SetPartialFilterExpression(bson.D{{Key: "issue.claim", Value: bson.D{{Key: "$gt", Value: ""}}}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("boardmongo: ensure issues index: %w", err)
@@ -290,23 +314,151 @@ func (s *Store) List(filter native.ListFilter) ([]*native.Issue, error) {
 	return out, nil
 }
 
-// replace persists the issue and stamps UpdatedAt.
-func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
-	expireGiveUp(iss)
-	_, err := s.issues.ReplaceOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, issueDoc{ID: iss.ID, Tenant: s.tenant, Issue: *iss})
-	if err != nil {
-		return fmt.Errorf("boardmongo: replace issue: %w", err)
+// issueFieldKeys are the BSON keys THIS binary knows on the nested
+// issue subdocument, derived from the struct once at init so a new
+// field can never be forgotten here. The derivation reproduces the
+// driver's naming exactly: the bson tag head when present, else the
+// lowercased field name (native.Issue carries no bson tags today).
+var issueFieldKeys = func() []string {
+	t := reflect.TypeOf(native.Issue{})
+	keys := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		name := strings.ToLower(f.Name)
+		if tag, ok := f.Tag.Lookup("bson"); ok {
+			head := strings.Split(tag, ",")[0]
+			if head == "-" {
+				continue
+			}
+			if head != "" {
+				name = head
+			}
+		}
+		keys = append(keys, name)
 	}
-	return nil
+	return keys
+}()
+
+// claimOwnedKeys is the ownership family: it belongs to the CAS writers
+// alone (Claim, RenewClaim, ReleaseOwned, ReclaimExpired), never to a
+// read-modify-write. Persisting it from a snapshot re-applies whatever
+// the claim was when the document was READ, which un-does a reaper's
+// transfer and rewinds the fencing epoch — handing a card back to the
+// owner the watchdog just evicted, with a fresh lease. The bson keys are
+// lowercased struct names (the driver's default), matched against the
+// marshalled map, so a rename that misses this list is caught by the
+// conformance suite rather than by production.
+var claimOwnedKeys = map[string]bool{
+	"claim": true, "claimepoch": true, "claimedat": true, "claimleaseuntil": true,
+}
+
+// replace persists the issue via targeted $set/$unset of the keys THIS
+// binary knows — never a full-document ReplaceOne: in a mixed fleet a
+// replace from an older binary silently erased every field a newer one
+// had added to the subdocument (a claim lease wiped this way turns a
+// live, expirable claim into a permanently stuck legacy one). Unknown
+// (future) fields survive; a known field the struct no longer emits is
+// still $unset, so for everything this binary owns the semantics match
+// the replace it supersedes. The claim family is excluded outright (see
+// claimOwnedKeys).
+// changed names the issue fields the CALLER mutated, as bson keys or
+// their snake_case event aliases (bot_args → botargs). The write is
+// scoped to exactly those (+ updatedat, + gaveup — expireGiveUp below
+// may clear the stamp on any write): persisting the WHOLE snapshot
+// re-applied every other family from a stale read — the same defect
+// claimOwnedKeys closed for the claim family, live on all the others
+// (a bot comment or an admin label sweep pulled a card back OUT of a
+// terminal sink the fenced owner had filed it into, with no state
+// event, no guard, and its consumed one-shot labels restored). A
+// caller that forgets a key loses its own write — which the
+// conformance suite's read-back assertions catch, where a clobber of
+// SOMEBODY ELSE'S write was invisible.
+func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...string) error {
+	_, err := s.replaceGuarded(ctx, iss, nil, changed...)
+	return err
+}
+
+// replaceGuarded is replace() with an optional CAS guard merged into the
+// filter, reporting whether the write MATCHED. A guard is how a
+// read-modify-write of a racy family (labels — the one the trigger
+// spine's one-shot consume depends on) detects that the document moved
+// under its snapshot instead of silently re-applying the stale value:
+// matched=false means the caller must re-read and re-apply its own
+// transform (the value it holds cannot be replayed — it embeds the
+// stale read). The ungarded form keeps replace()'s historical
+// semantics: a write to a deleted document is a silent no-op.
+func (s *Store) replaceGuarded(ctx context.Context, iss *native.Issue, guard bson.M, changed ...string) (bool, error) {
+	hadGaveUp := iss.GaveUp != nil
+	expireGiveUp(iss)
+	expired := hadGaveUp && iss.GaveUp == nil
+	raw, err := bson.Marshal(iss)
+	if err != nil {
+		return false, fmt.Errorf("boardmongo: marshal issue: %w", err)
+	}
+	var m bson.M
+	if err := bson.Unmarshal(raw, &m); err != nil {
+		return false, fmt.Errorf("boardmongo: remarshal issue: %w", err)
+	}
+	known := map[string]bool{}
+	for _, k := range issueFieldKeys {
+		known[k] = true
+	}
+	// gaveup rides along ONLY when the expiry above actually fired:
+	// naming it unconditionally wrote the snapshot's (usually nil) stamp
+	// on every write — the very clobber this scoping removed, left open
+	// on the one field that decides whether a failed pipeline shows in
+	// Needs attention (measured 103/120 stamps lost to a concurrent
+	// write; the FS twin's single critical section loses 0).
+	keys := map[string]bool{"updatedat": true}
+	if expired {
+		keys["gaveup"] = true
+	}
+	for _, k := range changed {
+		k = strings.ReplaceAll(k, "_", "")
+		// A typo'd key would silently write nothing — the caller's own
+		// mutation lost with no error, which is worse than the clobber
+		// this scoping replaced. Refuse it loudly.
+		if !known[k] {
+			return false, fmt.Errorf("boardmongo: replace: unknown issue field %q", k)
+		}
+		if claimOwnedKeys[k] {
+			// The claim family belongs to the CAS writers alone; without
+			// this refusal a caller naming it would have its write
+			// silently dropped.
+			return false, fmt.Errorf("boardmongo: replace: %q is claim-owned — use the fenced CAS writers", k)
+		}
+		keys[k] = true
+	}
+	// native.Issue carries no bson tags, so EVERY field marshals (a nil
+	// slice as null, a nil pointer as null — which is also why an append
+	// must be a $concatArrays pipeline, never $push, see AddComment).
+	// There is no $unset arm: a key named in `changed` is always present
+	// in the marshalled map.
+	set := bson.M{}
+	for k := range keys {
+		set["issue."+k] = m[k]
+	}
+	if len(set) == 0 {
+		return true, nil
+	}
+	filter := bson.M{"_id": iss.ID, "tenant_id": s.tenant}
+	for k, v := range guard {
+		filter[k] = v
+	}
+	update := bson.M{"$set": set}
+	res, err := s.issues.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("boardmongo: replace issue: %w", err)
+	}
+	return res.MatchedCount > 0, nil
 }
 
 func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	iss, err := s.get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	if p.Blockers != nil {
 		next := native.NormalizeBlockers(*p.Blockers)
 		if err := native.ValidateBlockers(s, id, next); err != nil {
@@ -314,6 +466,10 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 		}
 		// Normalize before applyPatch so the stored list is clean.
 		p.Blockers = &next
+	}
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	changed := applyPatch(iss, p, s.Board())
 	if len(changed.fields) == 0 {
@@ -323,7 +479,15 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 		return nil, changed.err
 	}
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	// No labels guard here on purpose: a patch's label list is the
+	// caller's ABSOLUTE intent (boardops set_labels, the studio editor),
+	// so replaying it after a re-read yields the same write — the FS
+	// twin's serialization gives the identical outcome. The guarded
+	// retry lives where the snapshot carries no intent: the admin label
+	// sweeps (applyLabelRewrite). A stale absolute list that still names
+	// a consumed one-shot label re-arms it BY INTENT on both twins —
+	// that is the set_labels API shape, not a lost update.
+	if err := s.replace(ctx, iss, changed.fields...); err != nil {
 		return nil, err
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: iss.ID, Payload: map[string]any{"changed": changed.fields}}); err != nil {
@@ -343,26 +507,91 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 	return iss, nil
 }
 
+// ServerNow reads the DATABASE clock (the clock every lease is stamped
+// with). The launch guard compares leases against it so a pod running
+// fast cannot read a live lease as lapsed — the same one-clock rule the
+// reaper's cutoff follows.
+func (s *Store) ServerNow(ctx context.Context) (time.Time, error) {
+	return serverNow(ctx, s.issues)
+}
+
 func (s *Store) SetState(id, newState string) (*native.Issue, error) {
+	return s.setStateReason(id, newState, "")
+}
+
+// SetStateWithReason is SetState carrying an explicit provenance
+// (native.StateReasoner) — the twin of the FS store's stamped promote
+// path. The conformance suite holds both twins to emitting the same
+// reason on the same gesture.
+func (s *Store) SetStateWithReason(id, newState, reason string) (*native.Issue, error) {
+	return s.setStateReason(id, newState, reason)
+}
+
+// setStateReason is the OPERATOR/automation move: "apply this transition
+// to the state I just read, atomically".
+//
+// The write is CAS-guarded on that source state, and a miss re-reads and
+// RE-EVALUATES rather than replaying. Without the guard this was a
+// check-then-act — read, ValidateStateExit, then an unguarded write whose
+// filter is only {_id, tenant_id} — so on the one twin with real
+// concurrency the terminal sink was advisory: a card moved into done or
+// blocked between the read and the write was silently dragged back out,
+// which is exactly the resurrection the guard exists to refuse. The FS
+// twin runs the identical guard under its store-wide lock, and this
+// file's own setStateOwnedReason already argues the point ("a
+// check-then-act would reopen the TOCTOU the fence exists to close").
+//
+// Re-evaluating (not replaying) is what keeps the guard honest: the
+// terminal check must be taken against the state actually being left. A
+// concurrent move to the SAME target converges to the no-op arm, so a
+// benign race stays benign — which matters because
+// PromoteUnblockedDependents walks a stale listing and returns on the
+// first error.
+func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
+	board := s.Board()
+	if board.StateByName(newState) == nil {
+		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
+	}
 	iss, err := s.get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if s.Board().StateByName(newState) == nil {
-		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
+	var old string
+	const attempts = 3
+	for attempt := 0; ; attempt++ {
+		if iss.State == newState {
+			return iss, nil
+		}
+		if err := native.ValidateStateExit(board, iss.State, newState); err != nil {
+			return nil, err
+		}
+		old = iss.State
+		iss.State = newState
+		iss.UpdatedAt = time.Now().UTC()
+		matched, err := s.replaceGuarded(ctx, iss, bson.M{"issue.state": old}, "state")
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			break
+		}
+		if attempt == attempts-1 {
+			return nil, fmt.Errorf("%w: %s kept moving under the transition to %q — re-read the card and retry",
+				tracker.ErrTransitionRejected, id, newState)
+		}
+		fresh, gerr := s.get(ctx, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		iss = fresh
 	}
-	if iss.State == newState {
-		return iss, nil
+	payload := map[string]any{"from": old, "to": newState}
+	if reason != "" {
+		payload["reason"] = reason
 	}
-	old := iss.State
-	iss.State = newState
-	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
-		return nil, err
-	}
-	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID, Payload: map[string]any{"from": old, "to": newState}}); err != nil {
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID, Payload: payload}); err != nil {
 		return nil, err
 	}
 	if newState == native.StateDone {
@@ -381,53 +610,162 @@ func (s *Store) Delete(id string) error {
 	return s.emit(native.Event{Type: native.EvtIssueDeleted, IssueID: id})
 }
 
-// Claim sets the claim marker via a conditional update (CAS): the update only
-// matches when the issue is unclaimed OR already held by this marker, so two
-// replicas racing to claim cannot both win. Idempotent for the same marker.
-func (s *Store) Claim(id, marker string) error {
+// Claim sets the claim marker via a conditional update (CAS), stamps the
+// lease with the SERVER clock ($$NOW — a pod with a fast local clock must
+// not mint itself extra lease), and returns the ownership token. Two
+// phases, both atomic: a fresh acquisition bumps the fencing epoch; an
+// idempotent same-marker re-claim refreshes the lease and returns the
+// CURRENT epoch without bumping (only a change of ownership advances the
+// fence). Two replicas racing to claim still elect exactly one winner.
+func (s *Store) Claim(id, marker string) (tracker.ClaimToken, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	now := time.Now().UTC()
-	res, err := s.issues.UpdateOne(ctx,
-		bson.M{"_id": id, "tenant_id": s.tenant, "$or": bson.A{bson.M{"issue.claim": ""}, bson.M{"issue.claim": marker}}},
-		bson.M{"$set": bson.M{"issue.claim": marker, "issue.updatedat": now}},
-	)
-	if err != nil {
-		return fmt.Errorf("boardmongo: claim: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		// Either the issue doesn't exist, or it's held by another marker.
-		iss, gerr := s.get(ctx, id)
-		if gerr != nil {
-			return gerr
+	// Phase 1: fresh acquisition of an unclaimed card. "Unclaimed" must
+	// include an ABSENT claim field, not just an empty one: the ordinary
+	// write path no longer re-persists the claim family, so nothing
+	// re-creates the field, and a document that lost it (an out-of-band
+	// write, an older binary) would otherwise be unclaimable, invisible
+	// to ListEligible AND invisible to the watchdog — a dead card.
+	res := s.issues.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": bson.M{"$in": bson.A{"", nil}}},
+		leaseStampPipeline(bson.M{
+			// $literal: pipeline $set evaluates values as EXPRESSIONS, and
+			// the marker is operator-configurable — a "$"-leading one
+			// would be read as a field path (the AddComment lesson,
+			// applied to its class sibling).
+			"issue.claim":      bson.M{"$literal": marker},
+			"issue.claimepoch": bumpEpochExpr(),
+			"issue.claimedat":  "$$NOW",
+			"issue.updatedat":  "$$NOW",
+		}),
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() == nil {
+		var doc issueDoc
+		if err := res.Decode(&doc); err != nil {
+			return tracker.ClaimToken{}, fmt.Errorf("boardmongo: claim decode: %w", err)
 		}
-		return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
+		if err := s.emit(native.Event{Type: native.EvtIssueClaimed, IssueID: id,
+			Payload: map[string]any{"marker": marker, "claim_epoch": doc.Issue.ClaimEpoch}}); err != nil {
+			return tracker.ClaimToken{}, err
+		}
+		return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
 	}
-	if res.ModifiedCount == 0 {
-		return nil // already held by this marker (idempotent)
+	if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
+		return tracker.ClaimToken{}, fmt.Errorf("boardmongo: claim: %w", res.Err())
 	}
-	return s.emit(native.Event{Type: native.EvtIssueClaimed, IssueID: id, Payload: map[string]any{"marker": marker}})
+	// Phase 2: idempotent re-claim by the current holder.
+	res = s.issues.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": marker},
+		leaseStampPipeline(bson.M{}),
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() == nil {
+		var doc issueDoc
+		if err := res.Decode(&doc); err != nil {
+			return tracker.ClaimToken{}, fmt.Errorf("boardmongo: re-claim decode: %w", err)
+		}
+		return tracker.ClaimToken{Marker: marker, Epoch: doc.Issue.ClaimEpoch}, nil
+	}
+	if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
+		return tracker.ClaimToken{}, fmt.Errorf("boardmongo: re-claim: %w", res.Err())
+	}
+	// Neither arm matched: missing card, or held by someone else.
+	iss, gerr := s.get(ctx, id)
+	if gerr != nil {
+		return tracker.ClaimToken{}, gerr
+	}
+	return tracker.ClaimToken{}, fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
 }
 
+// bumpEpochExpr is the aggregation expression that advances the fencing
+// counter — the value that kills a dead owner's late writes. One
+// definition, shared by the two writers that acquire a fresh claim
+// (Claim phase 1 and ReclaimExpired's transfer). The server-clock floor
+// makes it NON-DECREASING at millisecond resolution, not strictly
+// increasing: after a family drop, two mints inside the same ms tie
+// (unreachable in production since the unscoped replace was removed —
+// it took two family drops on one card within 1ms).
+func bumpEpochExpr() bson.M {
+	// MONOTONE, not merely incrementing. A counter derived from the
+	// document alone restarts at 1 whenever the field is missing — and a
+	// full-document replace from an older binary removes it — so two
+	// successive holds by the SAME worker (markers are process-scoped,
+	// not claim-scoped) would mint IDENTICAL tokens, and a superseded
+	// one would be indistinguishable from the live one. Taking the
+	// server clock as a floor makes a re-mint after any loss land far
+	// ahead of every token ever issued, so the fence keeps meaning what
+	// it says even across the rolling deploy that drops the field.
+	return bson.M{"$max": bson.A{
+		bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$issue.claimepoch", 0}}, 1}},
+		bson.M{"$toLong": "$$NOW"},
+	}}
+}
+
+// leaseStampPipeline builds the update pipeline that stamps the claim
+// lease from the server clock, merged with the caller's extra $set
+// fields. A pipeline (not a plain $set document) is what makes $$NOW
+// and the epoch $add expressions legal.
+func leaseStampPipeline(extra bson.M) mongo.Pipeline {
+	set := bson.M{
+		"issue.claimleaseuntil": bson.M{"$dateAdd": bson.M{
+			"startDate": "$$NOW", "unit": "millisecond",
+			"amount": native.ClaimLeaseDuration.Milliseconds(),
+		}},
+	}
+	for k, v := range extra {
+		set[k] = v
+	}
+	return mongo.Pipeline{{{Key: "$set", Value: set}}}
+}
+
+// Release is the tokenless (marker-scoped) release of the BoardStore
+// contract. It is a single conditional write, never check-then-act: a
+// read-then-write here let an evicted owner's release land after a
+// reaper had transferred the card, clearing the recovery claim and
+// making the card instantly re-dispatchable mid-disposition. The lease
+// bookkeeping goes with the claim — a released card must not keep a
+// fossil lease a reaper could misread. The epoch STAYS: it is the
+// per-issue fence and must only ever move forward.
 func (s *Store) Release(id, marker string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	iss, err := s.get(ctx, id)
+	if marker == "" {
+		// The empty marker owns nothing. Skipping the write is not an
+		// optimisation: the conditional filter is `claim: marker`, which
+		// with an empty marker MATCHES an unclaimed card and would
+		// announce a release that never happened. Falling through to the
+		// read-back below gives the FS twin's answer — nil when the card
+		// is free, ErrClaimConflict when someone holds it.
+		return s.releaseRefused(ctx, id)
+	}
+	res, err := s.issues.UpdateOne(ctx,
+		bson.M{"_id": id, "tenant_id": s.tenant, "issue.claim": marker},
+		bson.M{"$set": bson.M{
+			"issue.claim":           "",
+			"issue.claimedat":       time.Time{},
+			"issue.claimleaseuntil": time.Time{},
+			"issue.updatedat":       time.Now().UTC(),
+		}})
 	if err != nil {
-		return err
+		return fmt.Errorf("boardmongo: release issue: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return s.releaseRefused(ctx, id)
+	}
+	return s.emit(native.Event{Type: native.EvtIssueReleased, IssueID: id, Payload: map[string]any{"marker": marker}})
+}
+
+// releaseRefused answers a release whose conditional write matched
+// nothing: already free is the desired state, anyone else holding it is
+// a conflict. Same two answers as the FS twin, one definition.
+func (s *Store) releaseRefused(ctx context.Context, id string) error {
+	iss, gerr := s.get(ctx, id)
+	if gerr != nil {
+		return gerr
 	}
 	if iss.Claim == "" {
 		return nil
 	}
-	if iss.Claim != marker {
-		return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
-	}
-	iss.Claim = ""
-	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
-		return err
-	}
-	return s.emit(native.Event{Type: native.EvtIssueReleased, IssueID: id, Payload: map[string]any{"marker": marker}})
+	return fmt.Errorf("%w: held by %s", tracker.ErrClaimConflict, iss.Claim)
 }
 
 func (s *Store) SetLastRun(id, runID, workdir string) error {
@@ -445,7 +783,7 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	iss.LastWorkdir = workdir
 	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
 	iss.UpdatedAt = now
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "lastrunid", "lastworkdir", "runs"); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})
@@ -467,7 +805,7 @@ func (s *Store) SetAwaitingInput(id string, v bool) error {
 	}
 	iss.AwaitingInput = v
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "awaitinginput"); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"awaiting_input": v}})
@@ -485,13 +823,13 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if err != nil {
 		return err
 	}
-	want, ok := giveUpToRecord(iss, g)
+	want, ok := native.GiveUpToRecord(iss, g)
 	if !ok {
 		return nil
 	}
 	// Compared against what would ACTUALLY be written, so a repeat call is a
 	// real no-op rather than a re-write that churns UpdatedAt.
-	if sameGiveUp(iss.GaveUp, want) {
+	if native.SameGiveUp(iss.GaveUp, want) {
 		return nil
 	}
 	// stamped is what actually landed on the issue (nil for a clear); the
@@ -509,7 +847,7 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 		stamped = &stamp
 	}
 	iss.UpdatedAt = time.Now().UTC()
-	if err := s.replace(ctx, iss); err != nil {
+	if err := s.replace(ctx, iss, "gaveup"); err != nil {
 		return err
 	}
 	payload := map[string]any{"gave_up": stamped != nil}
@@ -534,44 +872,22 @@ func expireGiveUp(iss *native.Issue) {
 	}
 }
 
-// giveUpToRecord resolves a caller's stamp against the issue as it stands,
-// returning the value to write and whether to write at all.
-//
-// A give-up describes a ticket that is still where the give-up PUT it. When
-// the ticket has already moved — an operator got there between the terminal
-// move and the stamp — the give-up is superseded, and recording it would put
-// the operator's own choice under a "the dispatcher gave up and filed this
-// ticket as …" banner. Nothing is written; the state change already stands in
-// the audit log.
-//
-// A stamp arriving without a state is filled in from the issue, so the value
-// compared for idempotence and the value written are always the same thing.
-func giveUpToRecord(iss *native.Issue, g *native.GiveUp) (*native.GiveUp, bool) {
-	if g == nil {
-		return nil, true
-	}
-	out := *g
-	if out.State == "" {
-		out.State = iss.State
-	}
-	if out.State != iss.State {
-		return nil, false
-	}
-	return &out, true
-}
-
-// sameGiveUp compares two stamps on the fields that decide behaviour (the
-// timestamp is provenance, not identity), so a re-stamp of the same give-up
-// writes nothing. Mirrors the filesystem store's predicate.
-func sameGiveUp(a, b *native.GiveUp) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
-}
-
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment.
+// toBSON round-trips a value into the driver's generic document form,
+// for embedding inside an aggregation-pipeline update.
+func toBSON(v any) (bson.M, error) {
+	raw, err := bson.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m bson.M
+	if err := bson.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comment, error) {
 	if strings.TrimSpace(body) == "" {
 		return nil, nil, errors.New("comment: body required")
@@ -588,11 +904,34 @@ func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comm
 		Body:      body,
 		CreatedAt: time.Now().UTC(),
 	}
+	// An APPEND, not a read-modify-$set of the whole array: two
+	// concurrent comments through the snapshot form lost one of the two
+	// every time (60/60 measured — a /command posted while a bot wrote
+	// its dispatch trace vanished with no error). $push cannot serve: a
+	// nil slice persists as null (no bson tags), which $push refuses —
+	// the pipeline form coalesces null to [] first.
+	cm, err := toBSON(c)
+	if err != nil {
+		return nil, nil, fmt.Errorf("boardmongo: marshal comment: %w", err)
+	}
+	if _, err := s.issues.UpdateOne(ctx,
+		bson.M{"_id": iss.ID, "tenant_id": s.tenant},
+		mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			// $literal shields the comment from aggregation-expression
+			// evaluation — without it a body starting with "$" is a FIELD
+			// PATH: "$nope" persists empty, "$ go test" hard-fails the
+			// write, and "$issue.labels" turns the body into an array
+			// that breaks decoding of the ENTIRE tenant listing. The rule
+			// is pkg/store/mongo/runs.go's, applied at its 8 sites; this
+			// was the one pipeline in the repo passing a free value bare.
+			"issue.comments": bson.M{"$concatArrays": bson.A{
+				bson.M{"$ifNull": bson.A{"$issue.comments", bson.A{}}}, bson.M{"$literal": bson.A{cm}}}},
+			"issue.updatedat": c.CreatedAt,
+		}}}}); err != nil {
+		return nil, nil, fmt.Errorf("boardmongo: append comment: %w", err)
+	}
 	iss.Comments = append(iss.Comments, c)
 	iss.UpdatedAt = c.CreatedAt
-	if err := s.replace(ctx, iss); err != nil {
-		return nil, nil, err
-	}
 	if err := s.emit(native.Event{Type: native.EvtIssueComment, IssueID: id, Payload: map[string]any{"comment_id": c.ID, "author": author}}); err != nil {
 		return nil, nil, err
 	}
