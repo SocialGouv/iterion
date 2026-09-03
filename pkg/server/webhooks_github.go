@@ -98,7 +98,9 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// PARKED on a usage window wakes up hours later — after the retry the
 	// gate reconciler is deliberately waiting on — to review, and comment
 	// on, a dead PR. Stopping is not launching, so it runs before the fork
-	// guard: a fork PR's `/command` runs must stop too.
+	// guard: a fork PR's `/command` runs must stop too — they are reached
+	// through the delivery's ParentSubjectID, since a command records the
+	// COMMENT's id as its own subject.
 	if p.IsClosed() {
 		stopped := s.stopRunsForDeadPR(ctx, cfg, meta)
 		reason := "pull request closed — no runs to stop"

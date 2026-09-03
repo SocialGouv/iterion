@@ -37,6 +37,11 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 		// which is exactly what makes it invisible to the by-subject query
 		// (the store defines "launched" as having one, like CountLaunched).
 		{ID: "d4", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "pr:7", BotID: "review-pr", Status: webhooks.StatusFiltered},
+		// A `/billy` fixer launched from a COMMENT: its own subject is the
+		// comment id, and only the parent link ties it to pr:7. Before that
+		// link the stop could not reach it — the exact run whose quota it
+		// keeps burning on a merged PR.
+		{ID: "d6", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "comment:99", ParentSubjectID: "pr:7", BotID: "branch-improve-loop", RunID: "run-f", Status: webhooks.StatusLaunched},
 		// SAME subject id, ANOTHER repo on the same multi-project webhook:
 		// PR numbers collide freely across repos, and cancelling this one
 		// would block an unrelated pull request.
@@ -65,8 +70,17 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 	if launched != 0 {
 		t.Fatalf("a closed PR must launch nothing, launched=%d", launched)
 	}
-	if len(cancelled) != 2 {
-		t.Fatalf("both live runs of pr:7 must stop, got %v", cancelled)
+	if len(cancelled) != 3 {
+		t.Fatalf("every live run of pr:7 must stop — including the comment-launched fixer, got %v", cancelled)
+	}
+	var sawComment bool
+	for _, id := range cancelled {
+		if id == "run-f" {
+			sawComment = true
+		}
+	}
+	if !sawComment {
+		t.Fatal("a /command run reaches the PR only through ParentSubjectID — the stop missed it")
 	}
 	for _, id := range cancelled {
 		if id == "run-c" {

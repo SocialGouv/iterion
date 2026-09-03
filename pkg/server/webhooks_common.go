@@ -93,13 +93,18 @@ const featureDevBotID = "feature-dev"
 // provider that doesn't have e.g. a project path leaves it empty and
 // the delivery row simply omits it.
 type webhookEventMeta struct {
-	Kind         string // "merge_request" | "pull_request" | "note" | "generic"
-	Action       string // "open" | "reopen" | "comment" | …
-	ProjectPath  string // "owner/repo" or equivalent
-	SubjectID    string // "mr:7" / "pr:42" / "note:99" — stable per-event id
-	SubjectURL   string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
-	SubjectSHA   string // head SHA, when known
-	SenderHandle string // username for audit (logged only, never in delivery audit row v1)
+	Kind        string // "merge_request" | "pull_request" | "note" | "generic"
+	Action      string // "open" | "reopen" | "comment" | …
+	ProjectPath string // "owner/repo" or equivalent
+	SubjectID   string // "mr:7" / "pr:42" / "note:99" — stable per-event id
+	// ParentSubjectID is the PR/MR a comment subject hangs off ("pr:7"),
+	// empty when the subject is the pull request itself or a plain issue.
+	// Persisted on the delivery so "every run this pull request launched"
+	// is answerable across the comment lanes.
+	ParentSubjectID string
+	SubjectURL      string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
+	SubjectSHA      string // head SHA, when known
+	SenderHandle    string // username for audit (logged only, never in delivery audit row v1)
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
@@ -612,19 +617,20 @@ func (s *Server) checkBotPermitted(
 // row to StatusLaunched once the launch returns.
 func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payloadHash, srcIP string) webhooks.Delivery {
 	return webhooks.Delivery{
-		ID:          uuid.NewString(),
-		TenantID:    cfg.TenantID,
-		WebhookID:   cfg.ID,
-		Provider:    cfg.Provider,
-		EventKind:   meta.Kind,
-		EventAction: meta.Action,
-		ProjectPath: meta.ProjectPath,
-		SubjectID:   meta.SubjectID,
-		SubjectSHA:  meta.SubjectSHA,
-		PayloadHash: payloadHash,
-		Status:      status,
-		SourceIP:    srcIP,
-		ReceivedAt:  time.Now().UTC(),
+		ID:              uuid.NewString(),
+		TenantID:        cfg.TenantID,
+		WebhookID:       cfg.ID,
+		Provider:        cfg.Provider,
+		EventKind:       meta.Kind,
+		EventAction:     meta.Action,
+		ProjectPath:     meta.ProjectPath,
+		SubjectID:       meta.SubjectID,
+		ParentSubjectID: meta.ParentSubjectID,
+		SubjectSHA:      meta.SubjectSHA,
+		PayloadHash:     payloadHash,
+		Status:          status,
+		SourceIP:        srcIP,
+		ReceivedAt:      time.Now().UTC(),
 	}
 }
 

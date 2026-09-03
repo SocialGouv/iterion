@@ -99,7 +99,8 @@ func (s *MemoryDeliveryStore) CountLaunched(_ context.Context, tenantID, webhook
 func (s *MemoryDeliveryStore) ListLaunchedBySubject(_ context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error) {
 	return s.kit.List(func(d Delivery) bool {
 		return d.TenantID == tenantID && d.WebhookID == webhookID &&
-			d.ProjectPath == projectPath && d.SubjectID == subjectID && d.RunID != ""
+			d.ProjectPath == projectPath && d.RunID != "" &&
+			(d.SubjectID == subjectID || d.ParentSubjectID == subjectID)
 	}), nil
 }
 

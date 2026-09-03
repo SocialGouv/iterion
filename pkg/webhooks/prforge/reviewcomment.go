@@ -129,6 +129,13 @@ func ParseReviewComment(body []byte) (ParsedReviewComment, error) {
 	return p, nil
 }
 
+// ParentSubjectID names the PULL REQUEST this review-thread comment hangs
+// off ("pr:7"). See ParsedNote.ParentSubjectID for why the parent link is
+// stored beside the comment's own subject id.
+func (p ParsedReviewComment) ParentSubjectID() string {
+	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
+}
+
 // SubjectID is the stable per-comment id used in delivery records +
 // idempotency (one launch per reply).
 func (p ParsedReviewComment) SubjectID() string {

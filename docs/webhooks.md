@@ -137,7 +137,11 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
 - **`pull_request`** with action **`closed`** (merged or not) → every run
   still bound to that PR is **stopped**, and any armed usage-window retry is
-  **disarmed**. Scoped to the PR's own subject and across every bot, unlike
+  **disarmed**. That includes the runs a **comment** launched (`/billy`, a
+  review-thread reply): those record the comment's own id as their subject,
+  so the delivery carries a `parent_subject_id` pointing at the pull
+  request, and the stop matches on either. Scoped to the PR across every
+  bot, unlike
   `overlap: supersede` which replaces one bot's work with newer work of the
   same bot. Without it a review in flight keeps spending provider quota on a
   diff nobody will merge, and a review PARKED on a quota window wakes hours

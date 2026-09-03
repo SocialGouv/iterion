@@ -204,3 +204,17 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 		CreatedAt: gc.CreatedAt,
 	}, nil
 }
+
+// CommentIssue on an App connection delegates to a management-token
+// AdminClient minted on demand — the same shape CreatePullReview uses, and
+// for the same reason: an App connection resolves to *AppClient, so a
+// capability implemented only on *AdminClient is INVISIBLE to every type
+// assertion the server does. That is not a fringe shape: the studio's
+// GitHub connect wizard creates App connections by default.
+func (a *AppClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
+	rest, err := a.rest(ctx)
+	if err != nil {
+		return forge.CommentRef{}, err
+	}
+	return rest.CommentIssue(ctx, repo, number, body)
+}

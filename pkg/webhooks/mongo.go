@@ -140,8 +140,11 @@ func (s *MongoDeliveryStore) ListLaunchedBySubject(ctx context.Context, tenantID
 		"tenant_id":    tenantID,
 		"webhook_id":   webhookID,
 		"project_path": projectPath,
-		"subject_id":   subjectID,
 		"run_id":       bson.M{"$nin": bson.A{nil, ""}},
+		"$or": bson.A{
+			bson.M{"subject_id": subjectID},
+			bson.M{"parent_subject_id": subjectID},
+		},
 	}, "list launched deliveries by subject", "decode launched deliveries",
 		options.Find().SetSort(bson.M{"received_at": -1}))
 }
