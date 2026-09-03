@@ -206,10 +206,13 @@ helm upgrade iterion ./charts/iterion \
 helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
 ```
 
-Getting that backwards on Path B is the destructive direction: it rolls the
-runners into a queue full of vN messages they reject, and per Path B step 5
-those parked messages are **unreplayable** — recovery is a per-run resume
-plus a DLQ delete.
+Getting that backwards is the destructive direction on a bump that RAISED
+`Min`: it rolls the runners into a queue holding messages below their new
+floor, and per Path B step 5 those parks are **unreplayable** — recovery is a
+per-run resume plus a DLQ delete. (When the bump leaves `Min` alone, inverting
+the order is not a mistake — it is the runner-first optimization above, which
+retires the path instead of breaking it. The order matters here precisely
+because the raised-`Min` bump is the one that still needs a path.)
 
 Both snippets assume the install moves its image via `image.tag`. If your
 values pin the image some other way, `--set image.tag=` may not move it at
