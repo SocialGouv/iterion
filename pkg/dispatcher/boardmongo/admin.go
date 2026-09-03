@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"slices"
 	"time"
 
@@ -66,7 +67,7 @@ func (s *Store) migrateState(ctx context.Context, from, to, reason string) (int,
 		}
 		iss.State = to
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
+		if err := s.replace(ctx, &iss, "state"); err != nil {
 			return touched, fmt.Errorf("boardmongo: write %s during state migration: %w", iss.ID, err)
 		}
 		if err := s.emit(native.Event{
@@ -128,7 +129,7 @@ func (s *Store) RenameState(from, to string) (int, error) {
 	if err := s.persistBoard(ctx, board); err != nil {
 		return 0, err
 	}
-	touched, err := s.migrateState(ctx, from, to, "state_rename")
+	touched, err := s.migrateState(ctx, from, to, tracker.ReasonStateRename)
 	if err != nil {
 		return touched, err
 	}
@@ -173,7 +174,17 @@ func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 		if board.StateByName(migrateTo) == nil {
 			return 0, fmt.Errorf("boardmongo: unknown migration target %q", migrateTo)
 		}
-		touched, err = s.migrateState(ctx, name, migrateTo, "state_delete")
+		// A terminal column emptied into a working one is a bulk reopen —
+		// held to the same dependents check as the single-card Reopen, on
+		// both twins.
+		ptrs := make([]*native.Issue, len(all))
+		for i := range all {
+			ptrs[i] = &all[i]
+		}
+		if err := native.ReopenMigrationAllowed(board, ptrs, name, migrateTo); err != nil {
+			return 0, err
+		}
+		touched, err = s.migrateState(ctx, name, migrateTo, tracker.ReasonStateDelete)
 		if err != nil {
 			return touched, err
 		}
@@ -267,7 +278,7 @@ func (s *Store) applyFieldRewrite(ctx context.Context, transform func(fields map
 		}
 		iss.Fields = nextFields
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
+		if err := s.replace(ctx, &iss, "fields"); err != nil {
 			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, reason, err)
 		}
 		if err := s.emit(native.Event{
@@ -376,7 +387,7 @@ func (s *Store) RenameField(from, to string) (int, error) {
 		}
 		out[to] = v
 		return out, true
-	}, "field_rename")
+	}, tracker.ReasonFieldRename)
 	if err != nil {
 		return touched, err
 	}
@@ -407,7 +418,7 @@ func (s *Store) DeleteField(name string) (int, error) {
 			}
 		}
 		return out, true
-	}, "field_delete")
+	}, tracker.ReasonFieldDelete)
 	if err != nil {
 		return touched, err
 	}
@@ -513,22 +524,70 @@ func (s *Store) DeleteView(name string) error {
 // and a per-issue label event is appended. Mirrors native's
 // applyLabelRewriteLocked, including its event payload shape ({issue_id} +
 // the op fields).
-func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []string) ([]string, bool), eventType native.EventType, payload map[string]any) (int, error) {
+func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []string) ([]string, bool), eventType native.EventType, payload map[string]any) (touched int, err error) {
 	all, err := s.listAll(ctx)
 	if err != nil {
 		return 0, err
 	}
-	touched := 0
+	var lost []string
+	// The lost report survives EVERY exit: an I/O error later in the walk
+	// must not swallow the names of the cards that kept the label the
+	// operator asked to remove (possibly a consume_labels trigger).
+	defer func() {
+		if len(lost) > 0 {
+			err = errors.Join(err, fmt.Errorf("boardmongo: %s: %d card(s) lost the label CAS on every attempt — re-run the operation for %v", eventType, len(lost), lost))
+		}
+	}()
 	for i := range all {
 		iss := all[i]
-		newLabels, changed := transform(iss.Labels)
-		if !changed {
-			continue
+		// CAS-guarded on the labels this sweep READ, re-read + re-transform
+		// on a miss: the sweep's listAll snapshot ages for the whole walk,
+		// and an unguarded write re-applied it — resurrecting a one-shot
+		// label the trigger spine had atomically consumed in the window
+		// (same class as Update; the transform is pure over labels, so the
+		// replay is exact).
+		wrote := false
+		exhausted := false
+		const attempts = 3
+		for attempt := 0; attempt < attempts; attempt++ {
+			newLabels, changed := transform(iss.Labels)
+			if !changed {
+				break // nothing (left) to do: converged, or someone got there first
+			}
+			preLabels := append([]string(nil), iss.Labels...)
+			iss.Labels = newLabels
+			iss.UpdatedAt = time.Now().UTC()
+			matched, err := s.replaceGuarded(ctx, &iss, bson.M{"issue.labels": preLabels}, "labels")
+			if err != nil {
+				return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, eventType, err)
+			}
+			if matched {
+				wrote = true
+				break
+			}
+			fresh, err := s.get(ctx, iss.ID)
+			if err != nil {
+				if errors.Is(err, tracker.ErrNotFound) {
+					break // deleted mid-sweep — a benign race, like the FS twin
+				}
+				return touched, fmt.Errorf("boardmongo: re-read %s during %s: %w", iss.ID, eventType, err)
+			}
+			iss = *fresh
+			exhausted = attempt == attempts-1
 		}
-		iss.Labels = newLabels
-		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
-			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, eventType, err)
+		if !wrote {
+			if exhausted {
+				// The sweep WANTED to rewrite this card and lost the CAS
+				// on every attempt — swallowing that leaves a label the
+				// operator asked to remove (possibly a consume_labels
+				// trigger) on the card, under a green return. Recorded,
+				// not returned: aborting here lets ONE perpetually
+				// contended card keep every later card unswept, on every
+				// retry. The walk finishes (the FS twin's semantics) and
+				// names the losers at the end.
+				lost = append(lost, iss.ID)
+			}
+			continue
 		}
 		evtPayload := map[string]any{"issue_id": iss.ID}
 		for k, v := range payload {

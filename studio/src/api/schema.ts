@@ -187,7 +187,8 @@ export interface paths {
         delete: operations["deleteAdminLlmOauthByKind"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/admin/llm/oauth/{kind} */
+        patch: operations["patchAdminLlmOauthByKind"];
         trace?: never;
     };
     "/api/admin/llm/oauth/{kind}/authorize/complete": {
@@ -1177,7 +1178,8 @@ export interface paths {
         delete: operations["deleteMeOauthByKind"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/me/oauth/{kind} */
+        patch: operations["patchMeOauthByKind"];
         trace?: never;
     };
     "/api/me/oauth/{kind}/authorize/complete": {
@@ -5459,6 +5461,11 @@ export interface components {
                 [key: string]: string;
             };
             claim?: string;
+            claim_epoch?: number;
+            /** Format: date-time */
+            claim_lease_until?: string;
+            /** Format: date-time */
+            claimed_at?: string;
             comments?: components["schemas"]["Comment"][];
             /** Format: date-time */
             created_at: string;
@@ -6414,6 +6421,26 @@ export interface operations {
         };
     };
     deleteAdminLlmOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchAdminLlmOauthByKind: {
         parameters: {
             query?: never;
             header?: never;
@@ -7728,6 +7755,26 @@ export interface operations {
         };
     };
     deleteMeOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchMeOauthByKind: {
         parameters: {
             query?: never;
             header?: never;

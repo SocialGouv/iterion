@@ -153,11 +153,21 @@ func mergeLiveIntoRegistry(reg *ModelRegistry, cache *LiveCache) {
 		if ok {
 			// Update non-zero fields only — never zero out values that were
 			// curated in the embed registry but are missing from live data.
-			if e.ContextWindow > 0 {
-				existing.ContextWindow = e.ContextWindow
-			}
-			if e.MaxOutput > 0 {
-				existing.MaxOutput = e.MaxOutput
+			//
+			// Copy-then-swap, never mutate in place: a published entry is
+			// immutable because LookupModel hands its pointer to callers
+			// that dereference it once the read lock is gone (see the
+			// ModelRegistry doc comment). The write lock held here does not
+			// exclude those readers.
+			if e.ContextWindow > 0 || e.MaxOutput > 0 {
+				updated := *existing
+				if e.ContextWindow > 0 {
+					updated.ContextWindow = e.ContextWindow
+				}
+				if e.MaxOutput > 0 {
+					updated.MaxOutput = e.MaxOutput
+				}
+				reg.models[canonical] = &updated
 			}
 			// Add new aliases without removing existing ones.
 			for _, alias := range e.Aliases {

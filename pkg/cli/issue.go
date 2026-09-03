@@ -222,7 +222,9 @@ func RunIssueMove(p *Printer, opts IssueMoveOptions) error {
 	if err != nil {
 		return err
 	}
-	iss, err := s.SetState(id, opts.To)
+	// The CLI is an operator surface: moving a card out of a terminal
+	// state is the sanctioned reopen.
+	iss, err := native.SetStateOrReopen(s, id, opts.To)
 	if err != nil {
 		return err
 	}

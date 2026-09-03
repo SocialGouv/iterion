@@ -388,13 +388,20 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// would leave an unjournalled live claim — exactly the stranding the
 	// journal exists to prevent.
 	c.claims.Record(claimEntry{IssueID: iss.ID, Identifier: iss.Identifier, Marker: c.hostMarker, ClaimedAt: time.Now().UTC()})
-	if err := c.tracker.Claim(ctx, iss.ID, c.hostMarker); err != nil {
+	var claimTok tracker.ClaimToken
+	var claimErr error
+	if c.leaser != nil {
+		claimTok, claimErr = c.leaser.ClaimLease(ctx, iss.ID, c.hostMarker)
+	} else {
+		claimErr = c.tracker.Claim(ctx, iss.ID, c.hostMarker)
+	}
+	if claimErr != nil {
 		c.claims.Remove(iss.ID)
-		if errors.Is(err, tracker.ErrClaimConflict) {
+		if errors.Is(claimErr, tracker.ErrClaimConflict) {
 			c.logger.Info("dispatcher: %s already claimed elsewhere, skipping", iss.Identifier)
 			return
 		}
-		c.logger.Warn("dispatcher: claim %s: %v", iss.Identifier, err)
+		c.logger.Warn("dispatcher: claim %s: %v", iss.Identifier, claimErr)
 		return
 	}
 
@@ -439,6 +446,33 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		attempt,
 		cancel,
 	)
+	if c.leaser != nil {
+		// The heartbeat spans dispatch through the finish worker's last
+		// write (it rides finishPlan out of the actor). On loss: cancel
+		// the worker via the actor — its fenced writes are refused
+		// already; the cancel just stops it burning spend toward them.
+		// Both captured for the message: the card is re-claimable the
+		// instant this claim goes, so a queued loss must name the run it
+		// belongs to or it cancels whatever run holds the card when it
+		// finally lands.
+		issueID, lostRunID := iss.ID, runID
+		entry.claim = StartClaimSession(c.leaser, issueID, claimTok, c.logger.Warn, func(error) {
+			// NON-blocking on purpose. The actor stops this very session
+			// (stopClaimSession waits for the loop to exit), so a blocking
+			// send here closes a cycle: actor waiting on the session, the
+			// session waiting on the actor's full command channel — the
+			// daemon dispatches nothing again until restart. The message is
+			// best-effort by construction: the fenced write family already
+			// refuses everything this worker will attempt, so dropping it
+			// costs tokens, never correctness.
+			select {
+			case c.cmds <- cmdClaimLost{issueID: issueID, runID: lostRunID}:
+			case <-c.stop:
+			default:
+				c.logger.Warn("dispatcher: claim on %s was lost but the command queue is full — the worker keeps running until its writes are refused", issueID)
+			}
+		})
+	}
 
 	spec := c.buildSpec(cfg, iss, runID, entry.WorkspacePath, attempt, entry)
 	spec.ResumeFromRunID = resumeFromRunID
@@ -461,6 +495,7 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		workspaceGeneration: workspaceGeneration,
 		runCtx:              runCtx,
 		entry:               entry,
+		session:             entry.claim,
 		spec:                spec,
 	})
 }
@@ -484,8 +519,12 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 		return true
 	}
 	r, err := c.loadRunForDecision(rs, prev, "pre-claim hold check")
-	if errors.Is(err, store.ErrRunNotFound) {
-		return false // pruned run — the legitimate fresh start
+	if store.RunAbsent(err) {
+		// Pruned, or deleted behind a durable tombstone — both PROVE the
+		// run is gone (the same reading as pipelineTicketLaunchable and
+		// the claim watchdog: every authority answers this shared
+		// predicate, or one bricks the card another would free).
+		return false
 	}
 	if err != nil {
 		c.recordLastRunHold(iss, fmt.Sprintf("last run %s exists but cannot be read — holding", prev))
@@ -846,8 +885,11 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)
 		// Nothing was transitioned and no slot was allocated yet (the
 		// post-claim setup I/O runs off the actor below, only after the
-		// entry is in place) — just release the claim. See ADR-028 Step 4.
-		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
+		// entry is in place) — just release the claim, through the SAME
+		// choke as every other release site so the journal entry drops
+		// with it (a bypass kept a stale "claimed" diagnostic pinned).
+		// See ADR-028 Step 4.
+		c.releaseClaim(ctx, iss.ID, iss.Identifier)
 		return "", "", attempt, false
 	}
 	return freshID, "", attempt, true
@@ -907,7 +949,7 @@ func (c *Dispatcher) buildRunningEntry(
 	// A fresh dispatch (incl. a re-dispatch of a previously-parked issue)
 	// supersedes any prior pause — clear the denormalized awaiting-input
 	// badge so the card doesn't show a stale ⏸ while the new run executes.
-	c.setAwaitingInput(iss.ID, false)
+	c.setAwaitingInput(iss.ID, false, entry.claim)
 	return entry
 }
 
@@ -927,7 +969,12 @@ type dispatchSetupPlan struct {
 	workspaceGeneration string
 	runCtx              context.Context
 	entry               *runningEntry
-	spec                DispatchSpec
+	// session is the claim heartbeat SNAPSHOT taken on the actor — the
+	// same rule finishPlan.session follows. runDispatchSetup runs OFF the
+	// actor, so reading entry.claim there races shutdown's drain, which
+	// nils it (stopClaimSession).
+	session *claimSession
+	spec    DispatchSpec
 }
 
 // launchDispatchSetup runs the post-claim dispatch setup OFF the actor and,
@@ -976,11 +1023,33 @@ func (c *Dispatcher) runDispatchSetup(plan dispatchSetupPlan) (created bool, ok 
 	// revert. Moved off the actor in ADR-028 Step 4.
 	var transitionedFrom string
 	if target := plan.runningTarget; target != "" && plan.sourceState != target {
-		if err := c.tracker.UpdateState(plan.runCtx, plan.issueID, target); err != nil {
+		if err := c.fencedUpdateState(plan.runCtx, plan.issueID, target, plan.session); err != nil {
+			if errors.Is(err, tracker.ErrClaimConflict) {
+				// The one error the "claim is already taken" premise below
+				// does NOT cover — the fence INVERTS it: a conflict is proof
+				// the claim is no longer ours. Somebody else (another daemon,
+				// an operator, the watchdog) owns this card, and running
+				// anyway starts a second run on it while every later fenced
+				// write — the finish transition, the release — is refused, so
+				// the card is never filed AND never freed. The heartbeat
+				// would only notice a lease-third later.
+				//
+				// Not hypothetical during this branch's own rollout: ADR §6
+				// says an old binary's full-document write strips the epoch
+				// and the fence then "refuses everyone, including the live
+				// holder", and §9 guarantees that population exists all
+				// through release N.
+				err = fmt.Errorf("claim lost before launch: %w", err)
+				c.logger.Warn("dispatcher: %s not started — %v", plan.identifier, err)
+				c.postCmd(cmdDispatchSetupDone{issueID: plan.issueID, err: err})
+				return false, false
+			}
 			if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
 				c.logger.Warn("dispatcher: in-progress transition %s: %v", plan.identifier, err)
 			}
-			// continue regardless — claim is already taken.
+			// continue regardless — an ordinary transition failure says
+			// nothing about ownership, and a stuck UpdateState must not
+			// strand work whose claim we still hold.
 		} else {
 			transitionedFrom = plan.sourceState
 		}
@@ -1249,7 +1318,7 @@ func (c *Dispatcher) postCmd(command cmd) {
 // detached call sites (finishRun, shutdown) callers should pass a
 // short-budget context.Background()-derived ctx so an actor-shutdown
 // doesn't short-circuit the revert.
-func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, sourceState, currentTarget string) {
+func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, sourceState, currentTarget string, sess *claimSession) {
 	if sourceState == "" {
 		return
 	}
@@ -1277,7 +1346,7 @@ func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, 
 			return
 		}
 	}
-	if err := c.tracker.UpdateState(ctx, issueID, sourceState); err != nil {
+	if err := c.fencedUpdateState(ctx, issueID, sourceState, sess); err != nil {
 		if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
 			c.logger.Warn("dispatcher: revert state %s → %s: %v", identifier, sourceState, err)
 		}

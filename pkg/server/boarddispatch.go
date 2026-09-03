@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -20,9 +23,33 @@ import (
 // *boardmongo.Coordinator satisfies it; tests pass a fake.
 type boardCoordinator interface {
 	ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]boardmongo.Candidate, error)
-	Claim(ctx context.Context, tenant, id, marker string) error
+	Claim(ctx context.Context, tenant, id, marker string) (tracker.ClaimToken, error)
 	SetState(ctx context.Context, tenant, id, state string) error
+	SetStateWithReason(ctx context.Context, tenant, id, state, reason string) error
+	// SetStateFromReason is the tokenless CAS: the repair lands only if
+	// the card is still where the decision saw it. The reconcilers judge
+	// on a listing snapshot that ages across several round trips, so an
+	// unconditional write overwrites the operator who moved the card in
+	// that window — silently, and with a state (`blocked`) its own filing
+	// comment calls a one-way door.
+	SetStateFromReason(ctx context.Context, tenant, id, from, to, reason string) (bool, error)
 	Release(ctx context.Context, tenant, id, marker string) error
+	// The fenced family: RenewClaim is the heartbeat processCard runs for
+	// as long as it holds the card (its poll-to-terminal has NO upper
+	// bound, so "the claim window is short" is false by construction);
+	// the Owned writes are CAS on the token so a superseded replica's
+	// late writes are refused, never landed.
+	RenewClaim(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
+	SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error
+	SetStateOwnedReason(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken, reason string) error
+	ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
+	// The reaper pair (the cloud half of the claim watchdog — the hole
+	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
+	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
+	ListExpiredClaimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ListAbandonedRecoveryClaims(ctx context.Context, markerPrefix string, cutoff time.Time, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ListUnleasedClaims(ctx context.Context, cutoff time.Time, runningState string, limit int) ([]boardmongo.ExpiredCandidate, error)
+	ReclaimExpired(ctx context.Context, tenant, id string, prev tracker.ClaimToken, marker string, cutoff time.Time) (tracker.ClaimToken, string, error)
 }
 
 // errCardPaused marks a processBoardCard error whose run parked on a
@@ -30,6 +57,28 @@ type boardCoordinator interface {
 // failing. processCard routes such a card to the awaiting-input column, not
 // blocked.
 var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
+
+// errCardContinuable marks a run that ended terminal-for-polling but NOT
+// finally failed (failed_resumable, cancelled): the retry machinery or
+// the operator continues it, so the card is left in place — never filed
+// blocked, the flag no reconciler lifts.
+var errCardContinuable = errors.New("board dispatcher: run continuable")
+
+// pollDisposition maps a TERMINAL polled status to the poll's verdict:
+// finished = clean; failed = the one filing-worthy failure; everything
+// else terminal (failed_resumable, cancelled) is continuable — the retry
+// machinery or the operator picks the run back up, so processCard must
+// leave the card in place rather than file blocked.
+func pollDisposition(runID string, st store.RunStatus) error {
+	switch {
+	case st == store.RunStatusFinished:
+		return nil
+	case st.IsFinalFailure():
+		return fmt.Errorf("run %s ended %s", runID, st)
+	default:
+		return fmt.Errorf("run %s ended %s: %w", runID, st, errCardContinuable)
+	}
+}
 
 // boardDispatcher polls the cloud board for eligible cards and runs each via
 // the injected process func (launch + poll-to-terminal). Multi-replica-safe
@@ -76,15 +125,35 @@ type boardDispatcher struct {
 	reconcileMemoMu sync.Mutex
 	reconcileMemo   map[string]time.Time
 
+	// sweepKeepWarned / sweepListFailed / sweepBatchFull dedup the repair
+	// sweeps' per-pass warns on their edges (the sweeps run every
+	// watchdog pass; their populations are self-sustaining under a
+	// disabled gate).
+	sweepKeepWarned map[string]string
+	sweepListFailed map[string]bool
+	sweepBatchFull  map[string]bool
 	// saturationWarned dedups the fork-adoption sweep's listing-cap warning
 	// to one line per condition edge (only touched from the run-loop
 	// goroutine, which calls the sweeps sequentially).
 	saturationWarned bool
 
 	interval time.Duration
-	sem      chan struct{}
-	logger   *iterlog.Logger
-	wg       sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
+	// reapEvery paces the watchdog family (reap pass + the two repair
+	// sweeps) inside the run loop; injectable so the periodicity is
+	// provable without waiting a real minute.
+	reapEvery time.Duration
+	sem       chan struct{}
+	logger    *iterlog.Logger
+	wg        sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
+	// clockFallbackReason latches WHICH degradation was last reported, so
+	// the notice stays edge-triggered (a per-pass warn is a log storm at
+	// the watchdog's cadence) without a change of cause going unsaid —
+	// an operator reading a stale reason is looking at the wrong problem.
+	clockFallbackReason string
+	// runReadFailure latches whether the run store is currently failing,
+	// so the abstention it causes is reported on its edges rather than
+	// once per candidate per pass.
+	runReadFailure bool
 }
 
 // newBoardDispatcher wires a cloud board dispatcher with sensible defaults.
@@ -102,6 +171,7 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		blockedState:    native.StateBlocked,
 		awaitingState:   native.StateAwaitingInput,
 		interval:        5 * time.Second,
+		reapEvery:       dispatcher.ClaimReaperInterval(),
 		sem:             make(chan struct{}, concurrency),
 		logger:          logger,
 	}
@@ -122,40 +192,96 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 		default:
 			return claimed // no free slots; the rest wait for the next tick
 		}
-		if err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
+		tok, err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker)
+		if err != nil {
 			<-d.sem // claim lost (another replica won, or conflict) — release the slot
 			continue
 		}
 		claimed++
 		d.wg.Add(1)
-		errtrack.Go("server.boardDispatch.processCard", func() { d.processCard(ctx, c) })
+		errtrack.Go("server.boardDispatch.processCard", func() { d.processCard(ctx, c, tok) })
 	}
 	return claimed
 }
 
-func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidate) {
+func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidate, tok tracker.ClaimToken) {
 	defer d.wg.Done()
 	defer func() { <-d.sem }()
-	// Move to in-progress for board visibility (best-effort).
-	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.inProgressState); err != nil {
+
+	// Heartbeat for the WHOLE hold: the poll-to-terminal below has no
+	// upper bound (a long run is normal), so without renewal every card
+	// held longer than one lease would read as reapable. Reuse the SAME
+	// claimSession primitive the local dispatcher uses (cadence, conflict
+	// vs transient semantics, "two missed beats of slack" invariant — all
+	// defined once) through a tenant-binding adapter; onLost cancels the
+	// poll, since the fenced writes below are refused already and the
+	// cancel just stops this replica working a card it no longer owns.
+	cardCtx, cancelCard := context.WithCancel(ctx)
+	sess := dispatcher.StartClaimSession(
+		coordLeaser{coord: d.coord, tenant: c.Tenant},
+		c.Issue.ID, tok, d.warn, func(error) { cancelCard() })
+	defer func() { cancelCard(); sess.Stop() }()
+
+	// Move to in-progress for board visibility (best-effort, fenced) —
+	// best-effort for a transition failure, which says nothing about
+	// ownership. NOT for ErrClaimConflict: that is the fence reporting the
+	// claim is no longer ours, so another replica (or the watchdog) already
+	// took this card. Launching past it starts a second run on it, and
+	// every later fenced write is refused too — the final SetStateOwned and
+	// the ReleaseOwned below — so the card ends up neither filed nor freed.
+	// ADR §6/§9 make this reachable during release N: an old binary's
+	// full-document write strips the epoch, and the fence then refuses
+	// everyone, the live holder included.
+	if err := d.coord.SetStateOwned(cardCtx, c.Tenant, c.Issue.ID, d.inProgressState, tok); err != nil {
 		d.warn("card %s/%s → in_progress: %v", c.Tenant, c.Issue.ID, err)
-	}
-	runErr := d.process(ctx, c.Tenant, c.Issue)
-	final := d.doneState
-	if runErr != nil {
-		// A pause is not a failure: route the card to the awaiting-input
-		// column so the operator answers it there, not to blocked.
-		if errors.Is(runErr, errCardPaused) {
-			final = d.awaitingState
-		} else {
-			final = d.blockedState
-			d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+		if errors.Is(err, tracker.ErrClaimConflict) {
+			d.warn("card %s/%s not started: the claim was lost before launch — leaving it to its owner", c.Tenant, c.Issue.ID)
+			return
 		}
 	}
-	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, final); err != nil {
-		d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
+	runErr := d.process(cardCtx, c.Tenant, c.Issue)
+	final := d.doneState
+	switch {
+	case runErr != nil && errors.Is(runErr, errCardPaused):
+		// A pause is not a failure: route the card to the awaiting-input
+		// column so the operator answers it there, not to blocked.
+		final = d.awaitingState
+	case runErr != nil && errors.Is(runErr, errCardContinuable):
+		// The run is continuable (failed_resumable / cancelled): the retry
+		// machinery or the operator picks it back up. Leave the card in
+		// place, release the claim — the fork-adoption reconciler files it
+		// if the pointer later reaches a real terminal disposition.
+		final = ""
+	case runErr != nil && ctx.Err() != nil:
+		// THIS REPLICA is going away — that says nothing about the run,
+		// which keeps executing on its runner pod and will finish.
+		// Filing blocked here wrote a terminal "won't do" on live work,
+		// for ever (reconcileDeadPointer refuses to reclassify blocked:
+		// it is an operator-facing bad-outcome flag). Leave the card in
+		// place and only release the claim: unclaimed in_progress is
+		// exactly what the fork-adoption reconciler files once the run
+		// terminates — the same disposition the LOCAL twin's
+		// context.Canceled arm (finishRevert) reaches. The claim-lost
+		// path is unaffected: it cancels cardCtx, not this parent ctx.
+		final = ""
+		d.warn("card %s/%s: replica draining mid-run — leaving the card in place, releasing the claim", c.Tenant, c.Issue.ID)
+	case runErr != nil:
+		final = d.blockedState
+		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
 	}
-	if err := d.coord.Release(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
+	// Final writes on a DETACHED ctx: a superseded claim cancelled
+	// cardCtx (the fenced writes must still run to be REFUSED loudly —
+	// typed conflict in the log — rather than die on a dead ctx reading
+	// as a store outage), and a draining replica's parent ctx is dead
+	// too, while the release below is the write the drain exists FOR.
+	finCtx, finCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer finCancel()
+	if final != "" {
+		if err := d.coord.SetStateOwned(finCtx, c.Tenant, c.Issue.ID, final, tok); err != nil {
+			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
+		}
+	}
+	if err := d.coord.ReleaseOwned(finCtx, c.Tenant, c.Issue.ID, tok); err != nil {
 		d.warn("card %s/%s release: %v", c.Tenant, c.Issue.ID, err)
 	}
 }
@@ -314,7 +440,12 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 			return
 		}
 		d.log("card %s/%s pointer run %s finished but the card was never filed — moving to %s", c.Tenant, c.Issue.ID, runID, d.doneState)
-		if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
+		// CAS on the state this decision was taken on: three round trips
+		// (reconcileDue, statusFor and — on the other arm — runFor/issueRuns)
+		// separate the listing from this write, and an operator who moved
+		// the card in that window must win. Same shape as the sibling
+		// repairs in this diff (board_forge's sync, fileFinishedTicket).
+		if _, err := d.coord.SetStateFromReason(ctx, c.Tenant, c.Issue.ID, c.Issue.State, d.doneState, ""); err != nil {
 			d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
 		}
 		return
@@ -324,6 +455,16 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	}
 	pointer, err := d.runFor(ctx, c.Tenant, runID)
 	if err != nil || pointer == nil {
+		return
+	}
+	// Judge on the FRESH record — statusFor's read above is only a cheap
+	// pre-filter and can be stale by the time the pointer loads: a
+	// redelivered run is running again, and a resume CLEARS
+	// ContinuationState, so mixing the stale status with the fresh
+	// continuation filed a RUNNING run as blocked. A pointer that turned
+	// finished is left for the next pass (the finished arm reads it then).
+	st = pointer.Status
+	if st == store.RunStatusFinished || !st.IsTerminal() {
 		return
 	}
 	runs, err := d.issueRuns(ctx, c.Tenant, c.Issue.ID)
@@ -343,8 +484,55 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	}
 	fork := newestFinishedIssueFork(forks, pointer)
 	if fork == nil {
+		// No fork to adopt. The verdict processCard would have written
+		// had it lived: a draining replica (and the continuable arm)
+		// leaves its in-flight cards in the running column, so a card
+		// whose pointer settles terminal would otherwise sit in_progress
+		// for ever — not eligible, not claimed, reached by no sweep.
+		// Files: terminal FAILURE, and a failed_resumable pointer once NO
+		// continuation owns its future — while a redelivery or an armed
+		// retry does, the run's own next attempt resolves the card.
+		// CANCELLED is the operator's stop and is NEVER auto-routed, in
+		// any direction (the shared doctrine — DecideStuckCard, the
+		// outcome router, the retry paths): their card stays where they
+		// left it. blocked (not a repark) for the settled resumable on
+		// purpose: the decision table's repark presumes the reaper's
+		// claim and its LifetimeRuns ceiling — this path has neither, and
+		// an unbounded repark is a spend loop. The trade-off is a one-way
+		// door: a blocked card whose run the operator later resumes to
+		// completion needs a manual drag (the finished arm honours
+		// blocked as a deliberate placement).
+		settled := st == store.RunStatusFailed ||
+			(st == store.RunStatusFailedResumable &&
+				pointer.ContinuationState != store.ContinuationRedeliveryPending &&
+				pointer.ContinuationState != store.ContinuationRetryArmed)
+		if settled && c.Issue.State == d.inProgressState {
+			d.log("card %s/%s pointer run %s settled %s with no adoptable fork and no continuation — moving to %s", c.Tenant, c.Issue.ID, runID, st, d.blockedState)
+			// A settled RESUMABLE is a decision the machine takes alone
+			// — since the continuable arm, the living owner files
+			// nothing for it, so there is no living-owner parity to
+			// honour: machine provenance, no chain fires, no assignee
+			// attribution (the ceiling arm's own rule; a bare tokenless
+			// write here spent a one-shot and signed the repair with the
+			// assignee's name). A terminal FAILURE is the opposite: the
+			// living owner would have filed blocked itself, so the chain
+			// fires as it would for them.
+			//
+			// Both take the CAS. This is the one-way door the comment
+			// above names, written on a state read three round trips ago
+			// — an operator who dragged the card out of the running
+			// column in that window must not find it stamped blocked.
+			reason := ""
+			if st == store.RunStatusFailedResumable {
+				reason = tracker.ReasonWatchdog
+			}
+			if _, werr := d.coord.SetStateFromReason(ctx, c.Tenant, c.Issue.ID, c.Issue.State, d.blockedState, reason); werr != nil {
+				d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.blockedState, werr)
+			}
+		}
 		return
 	}
+
 	// Adopt the fork as the current attempt so the pointer converges with
 	// what the card already shows — workdir included, unlike launch-time
 	// stamps: the fork has already executed, and LastWorkdir feeds the
@@ -405,10 +593,60 @@ func (d *boardDispatcher) noteReconcile(tenant, issueID string) {
 func (d *boardDispatcher) run(ctx context.Context) {
 	t := time.NewTicker(d.interval)
 	defer t.Stop()
+	// Say it once when the gate carries a value it does not understand:
+	// the operator's only other feedback at the cutover is cards that
+	// stay stuck.
+	if msg := dispatcher.ClaimReaperMisspelling(); msg != "" {
+		d.warn("%s", msg)
+	}
+	reaperOn := dispatcher.ClaimReaperEnabled()
+	if reaperOn {
+		d.warn("claim watchdog active (%s=on): expired leases are reclaimed and routed by the decision table", dispatcher.ClaimReaperEnvName())
+	}
+	// The watchdog family is paced by its OWN interval, not by the
+	// dispatch tick it shares a loop with: a lease measured in minutes has
+	// no use for a five-second sweep. lastReap starts zero, so the FIRST
+	// pass runs immediately — that pass is the boot sweep; boot and
+	// periodic are one mechanism, not two invocations that can drift.
+	//
+	// The recovery-claim sweep runs on every pass and independently of
+	// the gate (the gate stops DECISIONS, not REPAIRS): releasing an
+	// abandoned `reaper:<host>` claim is a pure return to the card's
+	// pre-watchdog state, and flipping the gate off mid-conservation (the
+	// documented rollback lever) must not strand it under a marker
+	// nothing else in cloud releases.
+	//
+	// The UN-LEASED population (ordinary claims a mixed-fleet write
+	// stripped of lease + fence, §8/§9 of the ADR) is swept GUARDED:
+	// released only when the released card is one the fork-adoption
+	// reconciler actually FILES afterwards — running column, recorded
+	// run, and a disposition it repairs (finished, terminal failure,
+	// settled failed_resumable). A PRUNED pointer released bare would
+	// sit unclaimed and unfiled for ever, and a kept claim (pause brake,
+	// operator cancel, armed continuation) is load-bearing — those stay
+	// conserved for the gated reap, like the no-run and launch-column
+	// shapes.
+	var lastReap time.Time
 	for {
 		d.tick(ctx)
 		d.sweepParked(ctx)
 		d.sweepForkAdoptions(ctx)
+		if time.Since(lastReap) >= d.reapEvery {
+			lastReap = time.Now()
+			// ONE clock and ONE latch verdict for the WHOLE pass: the
+			// reap and the recovery sweep both read runs, and feeding the
+			// latch per arm brought the mixed-batch flap back one level
+			// up — a false failure/recovery warn pair per pass, the
+			// second line claiming a recovery the store never made.
+			now := d.reapCutoff(ctx)
+			verdict := &passVerdict{}
+			if reaperOn {
+				d.reapExpiredClaims(ctx, now, verdict)
+			}
+			d.sweepAbandonedRecoveryClaims(ctx, now, verdict)
+			d.sweepUnleasedClaims(ctx, now, verdict)
+			verdict.report(d)
+		}
 		select {
 		case <-ctx.Done():
 			d.wg.Wait() // let in-flight cards finish their state transition
@@ -416,6 +654,581 @@ func (d *boardDispatcher) run(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// sweepAbandonedRecoveryClaims releases expired claims still held under a
+// watchdog's own recovery marker. Runs on the watchdog cadence (first
+// pass = boot) and never behind the reaper gate: its whole purpose is to
+// repair the state a disabled reaper would otherwise leave behind for
+// ever.
+func (d *boardDispatcher) sweepAbandonedRecoveryClaims(ctx context.Context, now time.Time, v *passVerdict) {
+	if v == nil { // standalone (test) form: this call IS the pass
+		v = &passVerdict{}
+		defer v.report(d)
+	}
+	cands, err := d.coord.ListAbandonedRecoveryClaims(ctx, dispatcher.ReaperMarkerPrefix(), now, sweepBatch)
+	if d.noteSweepListing("recovery-claim sweep", err); err != nil {
+		return
+	}
+	// A full batch means there are probably more, and NOTHING else can
+	// reach them: a recovery claim carries a fresh lease, so it sorts
+	// behind every ordinary one in the reaper's own listing.
+	d.noteSweepFullBatch("recovery-claim sweep", len(cands) == sweepBatch)
+	d.sweepClaims(ctx, "recovery-claim sweep", cands, now, v)
+}
+
+// sweepUnleasedClaims releases ONLY the un-leased claims whose release
+// leaves a card the fork-adoption reconciler actually FILES afterwards:
+// a running-column card whose run finished, failed terminally, or
+// settled failed_resumable (a PRUNED pointer released bare would sit
+// unclaimed and unfiled in the running column for ever — the reconciler
+// cannot read it). Everything else stays conserved for the gated reap. The population filter (running column +
+// a recorded run) lives in the QUERY, not a post-listing Go filter: the
+// batch cap applies at the query, and the conserved population — never
+// written, therefore always oldest, therefore always FIRST in the
+// updatedat-ascending order — permanently starved the repairable card
+// out of a post-hoc filter's batch.
+func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time, v *passVerdict) {
+	if v == nil { // standalone (test) form: this call IS the pass
+		v = &passVerdict{}
+		defer v.report(d)
+	}
+	const label = "un-leased claim sweep"
+	cands, err := d.coord.ListUnleasedClaims(ctx, now, d.inProgressState, sweepBatch)
+	if d.noteSweepListing(label, err); err != nil {
+		return
+	}
+	// Full batch = more remain that only this sweep reaches (the sibling
+	// sweep's rule); say so on the edge.
+	d.noteSweepFullBatch(label, len(cands) == sweepBatch)
+	if dispatcher.ClaimReaperEnabled() {
+		// Gate ON: the reap's own two-arm listing covers this population
+		// with the full decision table; hand the batch to the shared body
+		// (reapOne disposes, CAS-idempotent with the reap pass).
+		d.sweepClaims(ctx, label, cands, now, v)
+		return
+	}
+	released := 0
+	kept := map[string]bool{}
+	for _, cand := range cands {
+		run, runErr := d.loadRunForCard(ctx, cand)
+		v.fold(cand.Tenant, cand.Claim.LastRunID != "", runErr)
+		card := dispatcher.StuckCard{
+			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+		}
+		// Release for every disposition the RECONCILER can then file, not
+		// only finished: a released card is exactly what the
+		// fork-adoption reconciler repairs (terminal failure, settled
+		// failed_resumable) — while a CONSERVED claim hides the card from
+		// ListEligible and therefore from that reconciler, for ever,
+		// under a disabled gate. Still conserved: StuckKeep (paused
+		// parking brake, operator cancel, armed continuation — those
+		// claims are load-bearing or owned) and StuckReleaseOnly (a
+		// PRUNED pointer the reconciler cannot read — released bare it
+		// would sit unclaimed and unfiled in the running column).
+		switch dec := dispatcher.DecideStuckCard(run, runErr, card); dec.Action {
+		case dispatcher.StuckComplete, dispatcher.StuckFail, dispatcher.StuckRepark:
+		default:
+			d.warnKeepOnce(label, cand, dec.Reason, kept)
+			continue
+		}
+		if d.releaseSweptClaim(ctx, label, cand, now,
+			"the fork-adoption reconciler files it within one scan TTL") {
+			released++
+		}
+	}
+	d.purgeKeepMemo(label, kept)
+	if released > 0 {
+		d.warn("%s: handled %d claim(s) (%s=off)", label, released, dispatcher.ClaimReaperEnvName())
+	}
+}
+
+// warnKeepOnce reports a conserved card on its (card, reason) edge —
+// once, not once per pass per replica: the conserved population is
+// self-sustaining. kept collects this pass's keys for purgeKeepMemo.
+func (d *boardDispatcher) warnKeepOnce(label string, cand boardmongo.ExpiredCandidate, reason string, kept map[string]bool) {
+	key := label + "|" + cand.Tenant + "/" + cand.Claim.IssueID
+	if d.sweepKeepWarned == nil {
+		d.sweepKeepWarned = map[string]string{}
+	}
+	if d.sweepKeepWarned[key] != reason {
+		d.sweepKeepWarned[key] = reason
+		d.warn("%s leaves %s/%s alone: %s", label, cand.Tenant, cand.Claim.IssueID, reason)
+	}
+	kept[key] = true
+}
+
+// purgeKeepMemo drops this label's memo entries for cards the pass no
+// longer kept — released, disposed, or gone. Bounds the memo by the live
+// population and lets a card that comes BACK warn again.
+func (d *boardDispatcher) purgeKeepMemo(label string, kept map[string]bool) {
+	for key := range d.sweepKeepWarned {
+		if strings.HasPrefix(key, label+"|") && !kept[key] {
+			delete(d.sweepKeepWarned, key)
+		}
+	}
+}
+
+// noteSweepFullBatch reports a sweep's batch saturation on its edge: a
+// full batch means more remain that only this sweep reaches, and a
+// silent cap reads as "all handled".
+func (d *boardDispatcher) noteSweepFullBatch(label string, full bool) {
+	if d.sweepBatchFull == nil {
+		d.sweepBatchFull = map[string]bool{}
+	}
+	if full == d.sweepBatchFull[label] {
+		return
+	}
+	d.sweepBatchFull[label] = full
+	if full {
+		d.warn("%s: batch of %d was full — more remain and only this sweep reaches them", label, sweepBatch)
+	} else {
+		d.log("%s back under its %d-claim batch", label, sweepBatch)
+	}
+}
+
+// sweepClaims is the ONE body both startup sweeps run. Two rules hold
+// whatever the gate says:
+//
+//   - LIVENESS IS NEVER SKIPPED. Every path that takes a card from its
+//     holder consults DecideTransfer first, and these are no exception:
+//     "no lease" is not "no owner". A legacy claim carries no epoch, which
+//     ownedFilter deliberately admits — so its holder can still renew,
+//     write and release, and is merely not heartbeating. Only the run says
+//     whether anyone is alive.
+//   - THE GATE STOPS DECISIONS, NOT REPAIRS. With it on, dispose properly
+//     (reapOne re-judges and files); with it off, drop the residue and
+//     nothing more, leaving the card as it was before a watchdog touched
+//     it.
+func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands []boardmongo.ExpiredCandidate, now time.Time, v *passVerdict) {
+	gated := dispatcher.ClaimReaperEnabled()
+	swept := 0
+	kept := map[string]bool{}
+	// The purge runs on EVERY pass, an empty one included — bailing before
+	// it left memo entries alive across an empty pass, so a card that came
+	// back with the same reason stayed silent for ever.
+	defer d.purgeKeepMemo(label, kept)
+	if len(cands) == 0 {
+		return
+	}
+	for _, cand := range cands {
+		if gated {
+			acted, obs, rerr := d.reapOne(ctx, cand, now)
+			v.fold(cand.Tenant, obs, rerr)
+			// Count only what was actually disposed: a conserved card or
+			// a lost CAS announced as "handled" reads as work done on a
+			// card nothing touched.
+			if acted {
+				swept++
+			}
+			continue
+		}
+		run, runErr := d.loadRunForCard(ctx, cand)
+		v.fold(cand.Tenant, cand.Claim.LastRunID != "", runErr)
+		card := dispatcher.StuckCard{
+			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+		}
+		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep &&
+			!dispatcher.RecoveryHoldExpired(run, runErr, card, cand.Claim.Prev) {
+			// Gate OFF still means "drop the residue": a card already held
+			// under a RECOVERY marker whose reason has not cleared is the
+			// residue — conserving it again leaves it invisible for ever
+			// under a dead watchdog's claim, which is the opposite of what
+			// this rollback lever is for. warnKeepOnce dedups per (card,
+			// reason), so it would go silent after the first pass too.
+			d.warnKeepOnce(label, cand, pre.Reason, kept)
+			continue
+		}
+		if d.releaseSweptClaim(ctx, label, cand, now,
+			"with the watchdog gated off, nothing decides for it") {
+			swept++
+		}
+	}
+	if swept > 0 {
+		d.warn("%s: handled %d claim(s) (%s=%s)", label, swept,
+			dispatcher.ClaimReaperEnvName(), map[bool]string{true: "on", false: "off"}[gated])
+	}
+}
+
+// passVerdict folds a pass's per-card run reads into ONE latch feed.
+// Feeding the latch per card flapped it on a mixed batch — a false
+// failure/recovery warn pair every pass, for ever.
+type passVerdict struct {
+	observed bool
+	err      error
+	tenant   string // the tenant of the first failure, for the message
+}
+
+func (v *passVerdict) fold(tenant string, observed bool, err error) {
+	if !observed {
+		return
+	}
+	v.observed = true
+	if err != nil && v.err == nil {
+		v.err, v.tenant = err, tenant
+	}
+}
+
+// report feeds the latch once — and only when something consulted the
+// store: a pass over cards with no runs measured nothing, so it neither
+// sets nor clears.
+func (v *passVerdict) report(d *boardDispatcher) {
+	if v.observed {
+		d.noteRunReadFailure(v.tenant, v.err)
+	}
+}
+
+// noteSweepListing reports a sweep's listing health on its EDGES, per
+// label: the sweeps run every watchdog pass, so a per-pass line under a
+// store outage is one warn per minute per replica — the storm that
+// hides the next real signal (the Debug-decline lesson, warn once).
+func (d *boardDispatcher) noteSweepListing(label string, err error) {
+	if d.sweepListFailed == nil {
+		d.sweepListFailed = map[string]bool{}
+	}
+	if err != nil {
+		if !d.sweepListFailed[label] {
+			d.sweepListFailed[label] = true
+			d.warn("%s list: %v — repairs paused until the listing recovers", label, err)
+		}
+		return
+	}
+	if d.sweepListFailed[label] {
+		d.sweepListFailed[label] = false
+		d.log("%s listing recovered", label)
+	}
+}
+
+// loadRunForCard resolves a candidate's run the way reapOne does, so the
+// two never judge the same card on different evidence.
+func (d *boardDispatcher) loadRunForCard(ctx context.Context, cand boardmongo.ExpiredCandidate) (*store.Run, error) {
+	if cand.Claim.LastRunID == "" {
+		return nil, nil
+	}
+	if d.runFor == nil {
+		return nil, errNoRunLoader
+	}
+	run, err := d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
+	if store.RunAbsent(err) {
+		// Pruned OR deliberately deleted (tombstone): both prove nothing
+		// is alive. Reading a tombstone as an unreadable store instead
+		// conserves the card for ever — the decision table returns
+		// StuckKeep on any read error and reapOne returns before the
+		// transfer, so the "conserved once" release is unreachable too.
+		run, err = nil, nil
+	}
+	return run, err
+}
+
+// releaseSweptClaim drops a claim without judging the card — the
+// gate-off behaviour. It still transfers first: releasing needs
+// ownership, and the CAS is what elects one winner between replicas.
+// outcome names, in the release warn, WHO decides for the freed card —
+// the un-leased sweep only releases dispositions the fork-adoption
+// reconciler then files, while a recovery-claim release truly leaves
+// the card to nobody (one message taught the wrong mental model for
+// the sweep's own common case).
+func (d *boardDispatcher) releaseSweptClaim(ctx context.Context, label string, cand boardmongo.ExpiredCandidate, now time.Time, outcome string) bool {
+	tok, _, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID,
+		cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
+	if err != nil {
+		if !errors.Is(err, tracker.ErrClaimConflict) {
+			d.warn("%s reclaim %s/%s: %v", label, cand.Tenant, cand.Claim.IssueID, err)
+		}
+		return false
+	}
+	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+		// Retry once: the transfer already replaced the original marker
+		// with ours, so giving up here leaves the card under a RECOVERY
+		// claim that only a boot sweep releases — strictly worse than the
+		// stranded claim we came to repair.
+		if err2 := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err2 != nil {
+			d.warn("%s could not release %s/%s (was held by %q, now under %q): %v",
+				label, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker,
+				dispatcher.ReaperMarker(d.marker), err2)
+			return false
+		}
+	}
+	d.warn("%s freed %s/%s (was held under %q); the card keeps state %q — %s",
+		label, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, outcome)
+	return true
+}
+
+// errNoRunLoader marks the wiring gap that makes the watchdog unable to
+// judge anything — reported through the same edge-triggered latch as a
+// failing store, since the consequence for every card is identical.
+var errNoRunLoader = errors.New("no run loader wired")
+
+// noteRunReadFailure reports the run store's health on its EDGES: the
+// transition into failure (every card conserved from here) and back out
+// of it. A per-card line would bury both — the batch is a hundred cards,
+// once a minute, per replica.
+func (d *boardDispatcher) noteRunReadFailure(tenant string, err error) {
+	if err == nil {
+		if d.runReadFailure {
+			d.runReadFailure = false
+			d.warn("claim watchdog can read runs again — cards are being judged rather than conserved")
+		}
+		return
+	}
+	if !d.runReadFailure {
+		d.runReadFailure = true
+		d.warn("claim watchdog cannot read runs (first failure on tenant %s: %v) — every card is conserved until this clears",
+			tenant, err)
+	}
+}
+
+// reapCutoff resolves the instant an expired lease is measured against.
+// The lease itself is stamped from the DATABASE clock, so measuring it
+// with this pod's clock re-opens from the other end the very hole that
+// stamping closed: a replica running fast would see live leases as
+// expired and reclaim cards from owners that are still working. Ask the
+// database. If it cannot answer, fall back to the local clock and SAY so
+// — a watchdog silently measuring against a suspect clock is worse than
+// one that logs its degradation.
+func (d *boardDispatcher) reapCutoff(ctx context.Context) time.Time {
+	local := time.Now().UTC()
+	clocked, ok := d.coord.(interface {
+		ServerNow(context.Context) (time.Time, error)
+	})
+	if !ok {
+		return local
+	}
+	srv, err := clocked.ServerNow(ctx)
+	if err != nil {
+		// Edge-triggered like the zero branch below: a store hiccup at the
+		// watchdog's cadence would otherwise be a log storm, which is the
+		// noise that hides the next real signal.
+		if d.clockFallbackReason != "unavailable" {
+			d.clockFallbackReason = "unavailable"
+			d.warn("claim watchdog: server clock unavailable (%v) — measuring leases against this pod's clock", err)
+		}
+		return local
+	}
+	if srv.IsZero() {
+		// An empty board has no document to read a clock from. Nothing is
+		// claimed either, so a skewed cutoff has nothing to steal — but say
+		// it once rather than never: silence here reads as "the server
+		// clock is in use" when it is not.
+		if d.clockFallbackReason != "empty" {
+			d.clockFallbackReason = "empty"
+			d.warn("claim watchdog: no document to read the server clock from — measuring leases against this pod's clock until one exists")
+		}
+		return local
+	}
+	d.clockFallbackReason = ""
+	return srv
+}
+
+// reapExpiredClaims is the cloud claim watchdog pass: same decision
+// table as the local dispatcher (dispatcher.DecideStuckCard — one
+// authority, F16), same transfer-before-acting order (F9). Runs on
+// every replica; the per-card CAS transfer elects exactly one winner.
+func (d *boardDispatcher) reapExpiredClaims(ctx context.Context, now time.Time, v *passVerdict) {
+	// v == nil is the standalone (test) form: this call IS the pass, so
+	// it owns the report.
+	if v == nil {
+		v = &passVerdict{}
+		defer v.report(d)
+	}
+	cands, err := d.coord.ListExpiredClaimCandidates(ctx, now, 100)
+	if err != nil {
+		d.warn("claim watchdog list: %v", err)
+		return
+	}
+	for _, cand := range cands {
+		_, obs, rerr := d.reapOne(ctx, cand, now)
+		v.fold(cand.Tenant, obs, rerr)
+	}
+}
+
+// watchdogRunCeiling is a coarse SPEND backstop, not a retry policy:
+// past it the cloud watchdog stops returning a card to the pool, because
+// each return costs a FRESH run there (that launcher cannot resume a
+// recorded one). It is compared against the card's lifetime run count —
+// every run it ever carried, whatever launched them — so it must sit far
+// above any healthy card's normal traffic. A card re-queued three times
+// by an operator is not a runaway.
+const watchdogRunCeiling = 20
+
+// sweepBatch bounds one recovery-claim sweep. A full batch is reported,
+// never silently truncated: nothing but this sweep can reach the
+// remainder.
+const sweepBatch = 100
+
+// reapOne judges one candidate. acted reports whether the card's claim
+// was actually transferred and disposed (a conserved card, a lost CAS or
+// a read failure did NOT get handled — the sweep's count must not claim
+// otherwise); runObserved/runReadErr report on the run store so the
+// CALLER folds one latch verdict per pass — noting per card flapped the
+// latch on a mixed batch (one unreadable run + one healthy = a false
+// failure/recovery pair every pass).
+func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCandidate, now time.Time) (acted, runObserved bool, runReadErr error) {
+	var run *store.Run
+	var runErr error
+	if cand.Claim.LastRunID != "" {
+		runObserved = true
+		if d.runFor == nil {
+			// Without a run loader the table cannot be consulted —
+			// conserve (the read-error row). The wiring gap reaches the
+			// latch through the pass verdict like any read failure: a
+			// missing loader conserves EVERY card on EVERY pass, and one
+			// line per card would bury the one that matters.
+			return false, true, errNoRunLoader
+		}
+		run, runErr = d.runFor(ctx, cand.Tenant, cand.Claim.LastRunID)
+		if store.RunAbsent(runErr) {
+			// Pruned or tombstoned: both prove nothing is alive.
+			run, runErr = nil, nil
+		}
+		runReadErr = runErr
+	}
+	card := dispatcher.StuckCard{
+		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
+		StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+	}
+	// PRE-transfer: only the rows that protect a live owner (see
+	// DecideTransfer). Refusing the transfer on the parked row would make
+	// its own bound unreachable — and in cloud there is no boot sweep to
+	// free the card later, so "held" means held for ever.
+	if dispatcher.DecideTransfer(run, runErr, card).Action == dispatcher.StuckKeep &&
+		!dispatcher.RecoveryHoldExpired(run, runErr, card, cand.Claim.Prev) {
+		// A Keep returns BEFORE the transfer, so the "conserved once" bound
+		// below is unreachable from here. That is right for an ordinary
+		// claim and wrong for one a watchdog already minted: it protects
+		// nobody, and in cloud there is no boot sweep to free it later.
+		return
+	}
+	var dec dispatcher.StuckDecision
+	tok, liveState, err := d.coord.ReclaimExpired(ctx, cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev, dispatcher.ReaperMarker(d.marker), now)
+	if err != nil {
+		if !errors.Is(err, tracker.ErrClaimConflict) {
+			d.warn("claim watchdog reclaim %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		}
+		return
+	}
+	// The transfer is the first moment state and ownership are known
+	// TOGETHER, so the decision is re-taken on what it saw — every rule
+	// that reads the card must judge this value, not the listing's copy.
+	card.State = liveState
+	if dec = dispatcher.DecideStuckCard(run, runErr, card); dec.Action == dispatcher.StuckKeep {
+		// Conservation is granted ONCE: a card held under a recovery claim
+		// is invisible to ListEligible and to sweepParked alike, so holding
+		// it forever is the stuck card the watchdog exists to clear. The
+		// recovery marker already on the claim is the record of the grant.
+		if !dispatcher.IsReaperMarker(cand.Claim.Prev.Marker) {
+			d.warn("claim watchdog holds %s/%s under a recovery claim: %s — re-judged at the next lease",
+				cand.Tenant, cand.Claim.IssueID, dec.Reason)
+			return
+		}
+		d.warn("claim watchdog releases %s/%s after conserving it for a full lease (%s) — "+
+			"the reason has not cleared, and holding it any longer only hides the card",
+			cand.Tenant, cand.Claim.IssueID, dec.Reason)
+		if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+			d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		}
+		acted = true
+		return
+	}
+	filed := true
+	switch dec.Action {
+	case dispatcher.StuckComplete:
+		filed = d.fileReapedCard(ctx, cand, card, d.doneState, tok, tracker.ReasonRunFinished)
+	case dispatcher.StuckFail:
+		filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
+	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
+		// Unlike the local dispatcher — where the running column is itself
+		// eligible, so a bare release re-arms the card — this tick only
+		// ever lists d.eligible. Releasing an in_progress card here frees
+		// the claim and strands the card: no cloud net picks it up
+		// (sweepParked lists awaiting_input only, and there is no board
+		// retry sweeper). So the return to the pool must be WRITTEN, under
+		// the recovery token, before the release below.
+		//
+		// And it must be BOUNDED. The local dispatcher resumes the
+		// RECORDED run (resolveRunID); this path calls runs.Launch, which
+		// always starts a fresh one. Without a ceiling an always-failing
+		// card would be relaunched once per lease forever — the watchdog
+		// turning a stuck card into a spend loop. Past the ceiling the card
+		// is filed as failed, which is visible and terminal.
+		switch {
+		case dec.Action == dispatcher.StuckRepark && cand.Claim.LifetimeRuns >= watchdogRunCeiling:
+			// Only a REPARK spends a fresh run here. A release-only card
+			// (the claimant died before recording anything, or its run was
+			// pruned by the documented retention command) has failed at
+			// nothing and must never be filed as failed.
+			d.warn("claim watchdog stops returning %s/%s to the pool: it has already carried %d runs — "+
+				"filing it as %s rather than paying for another",
+				cand.Tenant, cand.Claim.IssueID, cand.Claim.LifetimeRuns, d.blockedState)
+			// Machine provenance ("" → the reaper marker derives watchdog),
+			// NOT run_failed: the run is failed_resumable — the living owner
+			// would have written nothing, so no downstream chain may fire on
+			// this filing (a descriptive reason here re-armed a spend on the
+			// very card the ceiling exists to stop paying for; and a fleet's
+			// N-1 pods classify only the marker-derived reason as machine).
+			filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "")
+		case len(d.eligible) > 0:
+			filed = d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
+		}
+	}
+	if !filed {
+		// The write this arm's own comment calls mandatory ("the return to
+		// the pool must be WRITTEN, under the recovery token, before the
+		// release below") did not land. Releasing anyway produces exactly
+		// the outcome that comment names unacceptable: an in_progress card
+		// with no claim, which no cloud net picks up — sweepParked lists
+		// awaiting_input only, and there is no board retry sweeper. Keep
+		// the recovery claim; its lease expires, so the next pass re-judges
+		// and retries the write.
+		d.warn("claim watchdog keeps %s/%s claimed: its %s filing did not land, and releasing it un-filed "+
+			"strands the card where no cloud sweep reaches it — retried at the next lease",
+			cand.Tenant, cand.Claim.IssueID, dec.Action)
+		return
+	}
+	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
+		d.warn("claim watchdog release %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+	}
+	d.warn("claim watchdog reclaimed %s/%s from %q (%s → %s): %s",
+		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, dec.Action, dec.Reason)
+	acted = true
+	return
+}
+
+// fileReapedCard writes a reaped card's disposition under the recovery
+// token, gated by the SHARED predicate the local reaper uses: a card an
+// operator (or a bot with board.move) already moved out of the running
+// column carries an intent that predates the watchdog, and overwriting it
+// would silently undo, say, a manual re-queue.
+// reason: the run's own verdict for TERMINAL filings (run_finished /
+// run_failed — descriptive, the downstream chain fires as it would have
+// for the living owner); "" for reparks into a launch column, which stay
+// under the machine watchdog provenance (firing there re-arms a spend).
+//
+// It reports whether the disposition IS SETTLED — written, or declined by
+// the shared guard, which is itself a decision. Only then may the caller
+// release; the twin's contract, for the same reason.
+func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, target string, tok tracker.ClaimToken, reason string) bool {
+	if !dispatcher.ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
+		if card.State != target {
+			d.warn("claim watchdog leaves %s/%s in %q (moved out of %q deliberately — not overwriting it with %q)",
+				cand.Tenant, cand.Claim.IssueID, card.State, card.RunningState, target)
+		}
+		return true
+	}
+	if reason != "" {
+		if err := d.coord.SetStateOwnedReason(ctx, cand.Tenant, cand.Claim.IssueID, target, tok, reason); err != nil {
+			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, target, err)
+			return false
+		}
+		return true
+	}
+	if err := d.coord.SetStateOwned(ctx, cand.Tenant, cand.Claim.IssueID, target, tok); err != nil {
+		d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, target, err)
+		return false
+	}
+	return true
 }
 
 func (d *boardDispatcher) warn(format string, args ...any) {
@@ -656,10 +1469,8 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	for {
 		if run, lerr := s.runs.LoadRunCtx(ctx, runID); lerr == nil {
 			switch st := run.Status; {
-			case st == store.RunStatusFinished:
-				return nil
 			case st.IsTerminal():
-				return fmt.Errorf("run %s ended %s", runID, st)
+				return pollDisposition(runID, st)
 			case st.IsPaused():
 				// Parked on a human/operator gate — stop waiting; the operator
 				// resumes the run. Denormalize the pause hint so the grid can
@@ -676,4 +1487,27 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		case <-ticker.C:
 		}
 	}
+}
+
+// coordLeaser binds a tenant onto the cross-tenant coordinator so the
+// tenant-agnostic claimSession heartbeat can renew a cloud card's lease.
+// Only RenewClaim is exercised by the session; the rest satisfy the
+// tracker.ClaimLeaser interface (the cloud never calls them through it —
+// its board writes go through the fenced coord methods directly).
+type coordLeaser struct {
+	coord  boardCoordinator
+	tenant string
+}
+
+func (l coordLeaser) RenewClaim(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return l.coord.RenewClaim(ctx, l.tenant, id, tok)
+}
+func (l coordLeaser) ClaimLease(ctx context.Context, id, marker string) (tracker.ClaimToken, error) {
+	return l.coord.Claim(ctx, l.tenant, id, marker)
+}
+func (l coordLeaser) ReleaseOwned(ctx context.Context, id string, tok tracker.ClaimToken) error {
+	return l.coord.ReleaseOwned(ctx, l.tenant, id, tok)
+}
+func (l coordLeaser) UpdateStateOwned(ctx context.Context, id, newState string, tok tracker.ClaimToken) error {
+	return l.coord.SetStateOwned(ctx, l.tenant, id, newState, tok)
 }

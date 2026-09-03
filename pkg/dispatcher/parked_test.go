@@ -62,7 +62,7 @@ func TestReconcileParked(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
-			if err := ns.Claim(iss.ID, "test-host-1"); err != nil {
+			if _, err := ns.Claim(iss.ID, "test-host-1"); err != nil {
 				t.Fatalf("Claim: %v", err)
 			}
 			if err := ns.SetLastRun(iss.ID, "run-parked-1", ""); err != nil {
@@ -153,7 +153,7 @@ func TestReconcileParked_SkipsOtherDaemonsClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := ns.Claim(iss.ID, "other-host-9"); err != nil {
+	if _, err := ns.Claim(iss.ID, "other-host-9"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if err := ns.SetLastRun(iss.ID, "run-other-1", ""); err != nil {

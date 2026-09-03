@@ -33,6 +33,22 @@ var ErrRunNotFound = errors.New("store: run not found")
 // HTTP layer maps it to 410 Gone.
 var ErrRunDeleted = errors.New("store: run was deleted")
 
+// RunAbsent reports whether a LoadRun error PROVES the run is gone —
+// never came to exist (ErrRunNotFound), or was deliberately deleted and
+// left a tombstone (ErrRunDeleted). Both mean "nothing is alive behind
+// this id"; a bare error means the store is momentarily unreadable and
+// must NOT be read as absence.
+//
+// It exists because the two sentinels are easy to half-handle: a caller
+// that tests only ErrRunNotFound treats a deleted run as a transient
+// read failure and conserves forever — which for the claim watchdog is a
+// card stuck under a dead owner's claim with no exit. Every authority
+// that resolves a card's recorded run answers this question the same
+// way, or one bricks the card the other would free.
+func RunAbsent(err error) bool {
+	return errors.Is(err, ErrRunNotFound) || errors.Is(err, ErrRunDeleted)
+}
+
 // ---------------------------------------------------------------------------
 // RunStatus — lifecycle state of a run
 // ---------------------------------------------------------------------------

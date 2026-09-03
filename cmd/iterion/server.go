@@ -194,6 +194,19 @@ func randomBootstrapPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// cloudBoardFor builds the per-tenant board factory. The pipeline launch
+// guard measures claim leases against the board's ServerNow; the inner
+// pin below holds the method on the bare factory ONLY — a wrapper around
+// the returned closure would still compile, and is caught at runtime by
+// boardNow's warn (any non-FS board without a server clock is loud).
+func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
+	factory := func(tenantID string) *boardmongo.Store { return boardmongo.New(st.DB(), tenantID) }
+	var _ interface {
+		ServerNow(context.Context) (time.Time, error)
+	} = factory("")
+	return func(tenantID string) native.BoardStore { return factory(tenantID) }
+}
+
 func runServer(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         serverOpts.configPath,
@@ -501,13 +514,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv := server.New(server.Config{
-		Port:                  serverOpts.port,
-		Bind:                  serverOpts.bind,
-		Bots:                  server.BotsConfig{Paths: botsPaths},
-		ExamplesDir:           examplesDir,
-		WorkDir:               serverOpts.dir,
-		Store:                 st,
-		CloudBoardFor:         func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
+		Port:        serverOpts.port,
+		Bind:        serverOpts.bind,
+		Bots:        server.BotsConfig{Paths: botsPaths},
+		ExamplesDir: examplesDir,
+		WorkDir:     serverOpts.dir,
+		Store:       st,
+		// The launch guard's cross-clock comparison type-asserts ServerNow
+		// on what THIS factory returns. No compile pin covers this seam —
+		// a decorator wrapped around the returned closure compiles fine
+		// (cloudBoardFor's inner pin only checks the bare factory). The
+		// real net is runtime: boardNow warns on any non-FS board without
+		// a server clock, so a wrapper degrades LOUDLY, never silently.
+		CloudBoardFor:         cloudBoardFor(st),
 		CloudBoardCoordinator: boardmongo.NewCoordinator(st.DB()),
 		TriggerStore:          trigger.NewMongoSubscriptionStore(st.DB()),
 		ScheduledBots:         cloudsched.NewMongoStore(st.DB()),

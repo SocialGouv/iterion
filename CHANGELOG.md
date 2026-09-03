@@ -3,6 +3,52 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.99.0](https://github.com/SocialGouv/iterion/compare/v3.98.0...v3.99.0) (2026-09-03)
+
+### Features
+
+* **board:** claim lease + fenced watchdog for the dispatcher board (ADR-096) ([#646](https://github.com/SocialGouv/iterion/issues/646)) ([e194aeb](https://github.com/SocialGouv/iterion/commit/e194aebe09f91063799bc2d3477b50e397d7d513)), references [#597](https://github.com/SocialGouv/iterion/issues/597)
+
+    <details><summary>why</summary>
+
+    Commit 0 of the dispatcher-watchdog chantier (C1 slice 2/3) — the prerequisite the plan review made non-negotiable (F3/F25):
+
+    </details>
+
+## [3.98.0](https://github.com/SocialGouv/iterion/compare/v3.97.0...v3.98.0) (2026-09-03)
+
+### Features
+
+* **oauth:** name the account behind a credential, and expose its fingerprint ([#653](https://github.com/SocialGouv/iterion/issues/653)) ([5e27183](https://github.com/SocialGouv/iterion/commit/5e2718395fbe11b756cabcd46c9546893506a362))
+
+    <details><summary>why</summary>
+
+    Nothing on an OAuth record said WHOSE account it was. The payload is sealed, the API view exposed neither a label nor the fingerprint, and the only place the credential is ever identified is a server log line the publisher writes when it picks one (fp=700acc7b…). Answering "whose subscription paid for that run?" therefore meant grepping logs and correlating hex by hand — measured today, with three fingerprints across three owners in one window.
+
+    </details>
+
+### Bug Fixes
+
+* **mcp:** make the explicitly-named wildcard's fatal boot a decision, not an accident ([#645](https://github.com/SocialGouv/iterion/issues/645)) ([fd3f89b](https://github.com/SocialGouv/iterion/commit/fd3f89b5019894297cdc1711c5ed47d1a309a3d2)), closes [#638](https://github.com/SocialGouv/iterion/issues/638), references [#633](https://github.com/SocialGouv/iterion/issues/633) [#633](https://github.com/SocialGouv/iterion/issues/633)
+
+    <details><summary>why</summary>
+
+    Two lines apart, expandWildcards hard-fails a wildcard whose MCP server cannot boot and merely warns when that server booted with no tools. The asymmetry is correct — #633 established that ambient servers (target repo .mcp.json, plugin catalog) degrade per-server upstream in buildTask, so a wildcard reaching this function is a DECLARED dependency and must never be dropped in silence — but nothing at the code site said so, and the error named neither the declaration nor a way out. A reader had…
+
+    </details>
+
+## [3.97.0](https://github.com/SocialGouv/iterion/compare/v3.96.2...v3.97.0) (2026-09-03)
+
+### Features
+
+* **ir:** a codex fallback stage is refused at launch where the node will run sandboxed ([#648](https://github.com/SocialGouv/iterion/issues/648)) ([c820b54](https://github.com/SocialGouv/iterion/commit/c820b5445e60b75456eb962f4a04f33fda7d7ce1))
+
+    <details><summary>why</summary>
+
+    The codex CLI hard-errors on any non-noop sandbox driver at dispatch — so a codex stage on a sandboxed node fails EXACTLY when the fallback chain is needed, which is worse than not having it. ApplyRunFallback now resolves each node's effective sandbox mode (node override → workflow spec → the deployment's ITERION_SANDBOX_DEFAULT snapshot, threaded through ExecutorSpec from both the cloud runner and the local service) and refuses the stage with the same launch-time voice as the other C176…
+
+    </details>
+
 ## [3.96.2](https://github.com/SocialGouv/iterion/compare/v3.96.1...v3.96.2) (2026-09-03)
 
 ### Bug Fixes

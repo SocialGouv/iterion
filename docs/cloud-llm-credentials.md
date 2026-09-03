@@ -211,6 +211,57 @@ the ChatGPT-forfait wire gates models by the codex-cli `version:` header
 `ITERION_CODEX_VERSION` to a recent codex-cli version (gpt-5.5 needed
 ≥ 0.130).
 
+## Name the account behind every credential
+
+Nothing else identifies it. The payload is sealed, and when the publisher
+picks a credential it logs a FINGERPRINT:
+
+```
+cloudpublisher: oauth-forfait(org) used run=… kind=claude_code fp=700acc7b00f
+```
+
+Answering "whose subscription paid for that run?" from hex alone means
+grepping server logs and correlating by hand — measured on 2026-09-03,
+with three different fingerprints across three owners in one log window.
+
+So name it at connect time, and rename the ones already connected:
+
+```sh
+# at install (paste path; the browser flow takes the same query param)
+iterion remote api POST "/api/teams/$TEAM/oauth/claude_code/credentials?account_label=jothedev" --data @blob.json
+
+# rename later — metadata only, the sealed credential is untouched
+iterion remote api PATCH "/api/teams/$TEAM/oauth/claude_code" --data '{"account_label":"jothedev"}'
+
+# platform tier (super-admin), same idea
+iterion remote admin llm oauth set claude_code --from-file ./creds.json --account-label "iterion platform"
+iterion remote admin llm oauth name claude_code --account-label "iterion platform"
+```
+
+The listing then answers the question directly — `account_label` beside
+the `fingerprint`, which is the SAME string the logs print, so a log line
+and the API join without a human in the middle. The studio shows both on
+every connection card (Settings → Subscriptions, a team's Model providers
+tab, Admin → LLM credentials) with a *Name account* action, and both
+connect forms take the name up front.
+
+**The name follows the fingerprint.** A re-connect that names no account
+keeps the previous label only when it provably re-connects the same
+subscription — codex fingerprints derive from the account id, so a fresh
+`auth.json` of the same ChatGPT account keeps its name; a claude_code
+credentials blob carries no account id, so only re-pasting the SAME blob
+does. Any other unnamed re-connect drops the label rather than inherit
+it: the same owner key re-pointed at a different forfait — the swap
+measured on 2026-09-03, SocialGouv's key replaced by a personal one on
+the same team — would otherwise answer "whose subscription paid?" with
+the wrong person. Pass `account_label` when you rotate, or `name` it
+afterwards; an unnamed row is a visible gap, a wrongly named one is a
+confident lie.
+
+Renaming is a metadata write at the store (`SetAccountLabel`), never a
+read-modify-write of the record: the sealed payload a concurrent refresh
+just rotated is not carried back over.
+
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
 The credential every tenant-less run used to inherit from the runner pod's

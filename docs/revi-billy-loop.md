@@ -72,13 +72,23 @@ The webhook tail resolves everything from the PR and the repo integration:
    (`/revi approve [reason]`, maintainer-gated).
 
    That third step is **not free** — it needs `review_on_sync` on the repo's
-   webhook config, which is **off by default** (a push is otherwise an
-   on-demand re-review, deliberately budget-frugal). It is the same switch the
-   merge gate needs, so a repo whose `revi/review` is a required check has it
-   on; a repo that only ever auto-reviews on open does not, and Billy's push
-   there ends the loop until someone comments `/revi`. Check it before
-   concluding the loop is broken:
+   webhook config. The orchestrator **derives it ON** whenever a bot of the
+   webhook gates merges (declares the `statuses` scope) and the gate is not
+   disabled, unless an operator pinned the value
+   ([pkg/forge/orchestrator.go](../pkg/forge/orchestrator.go),
+   `ReviewOnSyncPinned`); a repo that only ever auto-reviews on open has it
+   off, and Billy's push there ends the loop until someone comments `/revi`.
+   Check it before concluding the loop is broken:
    `iterion remote api GET /api/teams/<team-id>/webhooks` → `review_on_sync`.
+
+4. **While Billy runs, the PR looks untouched** — `revi/review` stays green
+   on the OLD head and no status says a fixer is at work: the only signals
+   are the run itself (`iterion remote runs list`, the run console) and,
+   when he parks on a quota, the platform's pause notice. That notice is
+   written for a review and currently mislabels a parked fixer ("Review
+   paused … a new push restarts it sooner" — a push is exactly what NOT to
+   do while he works; SocialGouv/iterion#650). Nothing is wrong: wait for
+   his push, or for the `pending` claim that follows it.
 
 ## Session discipline (the gotchas)
 
@@ -96,6 +106,30 @@ The webhook tail resolves everything from the PR and the repo integration:
   `usage cap: … window` is `failed_resumable` with the usage-window retry
   armed — it resumes at the provider reset by itself
   ([usage-caps.md](usage-caps.md)). Don't relaunch it by hand.
+- **A death is not a loss — the pod's commits are BANKED** on
+  `iterion/run-<run-id>` (`final_branch` / `final_commit` on the run doc;
+  the richer chain of successive attempts wins). But a **resume re-clones
+  the branch head and restarts the campaign from scratch**, redoing the
+  banked work (SocialGouv/iterion#652). If the retry cannot finish in the
+  budget left, deliver the banked chain by hand: fast-forward it onto the
+  PR branch AFTER the full validation (`task check`, `-race`, conformance —
+  a chain committed in stride is not gate-verified and can be red), say so
+  on the PR, and let `review_on_sync` re-review the head.
+- **Never bare-resume a duration death on cloud.** The consumed duration
+  axis rides the checkpoint, so `iterion remote runs resume` restarts and
+  dies at the 110 % exit-grace ceiling (15 min of pod for nothing). The
+  cloud resume endpoint has no budget-override fields; raise the cap by
+  resuming with the bot source inline: `POST /api/runs/<id>/resume` with
+  `{"source": <main.bot with a larger max_duration>, "force": true}` — the
+  checkpoint restarts inside `campaign`, the plan phases are not re-paid.
+- **When the WEEKLY cap parks the gate**, the reset can be days out and
+  the review's `pending` claim blocks the PR that long. The documented
+  maintainer override (`/revi approve`, [merge-gate.md](merge-gate.md))
+  currently fails on a GitHub App integration (`set commit status: forge:
+  insufficient scope`, SocialGouv/iterion#662): the fallbacks are the
+  admin's own status write on the head (same context, "approved by
+  @user: reason" in the description, the comment as `target_url`) or the
+  admin merge-queue bypass.
 - **"Don't hand-fix" assumes Billy can run.** When the *weekly* cap is
   hard-blocking, the reset can be days out and the habit has no path: fix the
   findings yourself, say so on the PR against their finding ids, and write the
@@ -114,3 +148,7 @@ Every `/billy` run on this repo gets a dated bilan in
 found here is a defect to fix in stride — in the bot
 (`bots/branch-improve-loop/`) or the engine — that is the point of running the
 loop on ourselves.
+
+The 2026-09-03 run on the watchdog PR (#646) is the reference for the
+banked-chain delivery and the weekly-cap wall:
+[bot-runs/branch-improve-loop.md](bot-runs/branch-improve-loop.md).

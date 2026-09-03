@@ -788,6 +788,72 @@ filesystems (e.g. dev laptop + CI), the per-issue claim marker
 prevents simultaneous dispatch — each dispatcher writes its own marker
 and refuses to dispatch issues marked by anyone else.
 
+### Claim lease + watchdog (native board, ADR-096)
+
+On the native board (filesystem and Mongo), the claim is a **fenced,
+leased** token, not a bare marker. Each card carries `claim_epoch` (a
+per-issue fencing counter), `claimed_at`, and `claim_lease_until`; the
+owning dispatcher **heartbeats** the lease for the whole hold, and every
+write it makes while it holds the card is a compare-and-set on
+`(claim, claim_epoch)`. A worker whose claim was stolen finds its late
+writes refused rather than clobbering the new owner.
+
+The **claim watchdog** (`ITERION_BOARD_CLAIM_REAPER=on`, default off)
+runs every minute on each dispatcher and each cloud replica. It reclaims
+cards whose lease expired with nobody renewing — **including cross-host
+dead owners**, which the boot-time same-host pid-probe sweep never
+touched — by transferring the claim to a recovery owner (never freeing
+it first, which would let the next tick re-dispatch it), then routing the
+card by its recorded run's terminal state: finished → the completed
+column, terminal failure → the failed column, resumable → returned to the
+dispatch pool, paused → left alone (its retained claim is the parking
+brake, ADR-014). A running/queued run is never reclaimed, and any read
+error conserves. Roll it out in two releases: ship the lease fields +
+heartbeats first (reaper off), then enable the reaper once no pre-lease
+binary is left in the fleet.
+
+The gate takes **`on` or `off` only** (case-insensitive) — not the
+`1`/`true` spellings some other `ITERION_*` toggles accept. Anything else
+leaves the watchdog OFF and is logged once at startup on both surfaces,
+so a mistyped cutover shows up in the log rather than as cards that
+quietly stay stuck.
+
+Three properties of that routing are easy to assume wrongly:
+
+- **The card's state is read by the transfer, not by the listing.** An
+  operator can move a card between the two, and the watchdog honours what
+  it finds — it will not overwrite a deliberate move into a column the
+  card is not dispatched from. It *does* file a card still sitting in a
+  launch column, because the move into the running column is best-effort
+  on both launch paths: leaving it there would have the next tick launch
+  a second run for work already delivered.
+- **A card in the running column with no run recorded is left alone.**
+  The run stamp is best-effort and lands after the launch, so its absence
+  proves nothing — freeing the card could double-launch a live worker.
+- **Returning a card to the pool is bounded in cloud** (`watchdogRunCeiling`,
+  20 lifetime runs): the cloud launcher starts a fresh run rather than
+  resuming the recorded one, so an always-failing card would otherwise be
+  relaunched once per lease forever. The bound is a coarse SPEND backstop
+  on the card's cumulative run count — every run it ever carried,
+  whatever launched them — not a watchdog retry counter, so it must sit
+  far above any healthy card's normal traffic. Past the ceiling a repark
+  is filed as failed instead. The local dispatcher resumes the recorded
+  run and needs no such bound.
+
+Terminal board states (`done`, `blocked`) are **sinks**: the ordinary
+state-move family refuses to leave them (silent resurrection was
+any→any's worst case). The one sanctioned exit for a CARD is an operator
+**reopen** (the `/board` drag, `iterion issue move`, the pipeline Reset
+button); bots with `board.move` get the refusal with no fallback. A
+terminal→terminal move (closing a blocked give-up as done) stays an
+ordinary refiling.
+
+Deleting a terminal **column** into a working one (`DELETE
+/board/states/{name}?migrate_to=…`) reopens every card in it at once. It
+is allowed — it is an explicit operator gesture on the board's own
+schema — but it is held to the same dependents check as a single-card
+reopen, so the column editor cannot become the way around a refusal.
+
 ## Operational tips
 
 - Always pair `iterion dispatch` with `iterion studio` (or just visit

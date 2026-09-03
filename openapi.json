@@ -874,6 +874,17 @@
           "claim": {
             "type": "string"
           },
+          "claim_epoch": {
+            "type": "integer"
+          },
+          "claim_lease_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "comments": {
             "items": {
               "$ref": "#/components/schemas/Comment"
@@ -3388,7 +3399,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchAdminLlmOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/admin/llm/oauth/{kind}",
+        "tags": [
+          "admin"
+        ]
+      }
     },
     "/api/admin/llm/oauth/{kind}/authorize/complete": {
       "parameters": [
@@ -4638,7 +4661,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchMeOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/me/oauth/{kind}",
+        "tags": [
+          "me"
+        ]
+      }
     },
     "/api/me/oauth/{kind}/authorize/complete": {
       "parameters": [

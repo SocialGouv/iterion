@@ -142,8 +142,11 @@ func buildResumeExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
-		RunFallback:     []ir.Fallback{runFallback},
-		AutoMemory:      opts.AutoMemory,
+		// Same tiers as `iterion run` — resume has no --sandbox flag, so
+		// the override tier is empty here by construction.
+		SandboxDefault: runtime.ResolveGlobalSandboxDefault(),
+		RunFallback:    []ir.Fallback{runFallback},
+		AutoMemory:     opts.AutoMemory,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.
 		BotID:          runview.BotIDForRun(r),

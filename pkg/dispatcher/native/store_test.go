@@ -414,7 +414,7 @@ func TestClaimRelease(t *testing.T) {
 	s := newTestStore(t)
 	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
 
-	if err := s.Claim(iss.ID, "host-1"); err != nil {
+	if _, err := s.Claim(iss.ID, "host-1"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	got, _ := s.Get(iss.ID)
@@ -423,12 +423,12 @@ func TestClaimRelease(t *testing.T) {
 	}
 
 	// same marker is idempotent
-	if err := s.Claim(iss.ID, "host-1"); err != nil {
+	if _, err := s.Claim(iss.ID, "host-1"); err != nil {
 		t.Fatalf("re-claim same marker: %v", err)
 	}
 
 	// different marker → conflict
-	if err := s.Claim(iss.ID, "host-2"); !errors.Is(err, tracker.ErrClaimConflict) {
+	if _, err := s.Claim(iss.ID, "host-2"); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Fatalf("want ErrClaimConflict, got %v", err)
 	}
 
@@ -684,7 +684,7 @@ func TestEventSequenceMonotonic(t *testing.T) {
 	s := newTestStore(t)
 	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
 	_, _ = s.SetState(iss.ID, "in_progress")
-	_ = s.Claim(iss.ID, "marker")
+	_, _ = s.Claim(iss.ID, "marker")
 	_ = s.Release(iss.ID, "marker")
 	_ = s.Delete(iss.ID)
 
@@ -1020,9 +1020,10 @@ func TestGiveUpStampDoesNotComeBackWhenTheTicketReturns(t *testing.T) {
 	}
 
 	// The operator retries: the ticket is restaged, which supersedes the
-	// give-up. Any write in the new state expires the stamp.
-	if _, err := s.SetState(iss.ID, StateReady); err != nil {
-		t.Fatalf("SetState(ready): %v", err)
+	// give-up. Restaging out of a terminal state is the sanctioned
+	// Reopen (the sink guard refuses the ordinary move).
+	if _, err := s.Reopen(iss.ID, StateReady); err != nil {
+		t.Fatalf("Reopen(ready): %v", err)
 	}
 	if got, _ := s.Get(iss.ID); got.GaveUp != nil {
 		t.Fatalf("stamp survived the ticket leaving its state: %+v", got.GaveUp)

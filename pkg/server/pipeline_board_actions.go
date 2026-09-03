@@ -238,7 +238,9 @@ func (s *Server) handlePipelineBoardTaskReset(w http.ResponseWriter, r *http.Req
 			break
 		}
 	}
-	updated, err := boardStore.SetState(id, native.StateReady)
+	// Reset is an OPERATOR gesture: a terminal ticket restaged is a
+	// sanctioned reopen, not a machine resurrection.
+	updated, err := native.SetStateOrReopen(boardStore, id, native.StateReady)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board reset: restage: %v", err)
 		return

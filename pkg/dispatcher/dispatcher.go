@@ -51,7 +51,12 @@ type Options struct {
 type Dispatcher struct {
 	cfg     atomic.Pointer[Config]
 	tracker tracker.Tracker
-	runner  Runner
+	// leaser is the tracker's claim-lease capability, resolved ONCE at
+	// construction. nil for forge trackers (label-based claims carry no
+	// record to fence) — announced in the log at startup, never a silent
+	// no-op (the ClaimLeaser contract).
+	leaser tracker.ClaimLeaser
+	runner Runner
 
 	// snapshot holds the most-recently-published immutable Snapshot. The
 	// actor is the sole writer (via fireSnapshot); Snapshot() reads it
@@ -106,7 +111,30 @@ type Dispatcher struct {
 	// effect without a restart.
 	spendStore store.SpendStore
 
+	// runReadFailure latches whether the claim watchdog can currently
+	// read runs. Atomic because the reaper runs OFF the actor: its
+	// abstention is reported on the edges (every card is conserved while
+	// it holds), never once per card per pass.
+	runReadFailure atomic.Bool
+
+	// shutdownRevertBudget / shutdownReleaseBudget bound the two board
+	// writes of the transition-then-release pair — at shutdown AND in
+	// every runFinishWorker (the same structural pair; the names keep the
+	// site that motivated them). SEPARATE by design (a slow revert must
+	// not eat the release's deadline) and injectable so the tests that
+	// prove it do not spend the real ones.
+	shutdownRevertBudget  time.Duration
+	shutdownReleaseBudget time.Duration
+
 	ws *wsBridge
+}
+
+// budget returns the configured duration or the production default.
+func (c *Dispatcher) budget(configured, def time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return def
 }
 
 // cmdBufferSize sizes the actor's command channel. The hazard it guards:
@@ -165,6 +193,11 @@ func New(opts Options) (*Dispatcher, error) {
 		ws:         newWsBridge(opts.Logger),
 		claims:     newClaimJournal(opts.StoreDir, opts.Logger),
 	}
+	if l, ok := opts.Tracker.(tracker.ClaimLeaser); ok {
+		c.leaser = l
+	} else {
+		opts.Logger.Info("dispatcher: tracker %T has no claim-lease capability — lease heartbeats and the claim watchdog are disabled for this tracker (label-based claims cannot be fenced)", opts.Tracker)
+	}
 	c.cfg.Store(opts.Config)
 	// Seed the published snapshot so Snapshot() never reads a nil pointer
 	// before the actor's first fireSnapshot. Safe to build here: cfg and
@@ -192,6 +225,7 @@ func New(opts Options) (*Dispatcher, error) {
 func (c *Dispatcher) Start(ctx context.Context) {
 	c.startOnce.Do(func() {
 		c.sweepStaleLocalClaims()
+		c.startClaimReaper()
 		errtrack.Go("dispatcher.actorLoop", func() { c.actorLoop(ctx) })
 	})
 }
@@ -246,9 +280,12 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	var released []string
+	var released, stranded []string
 	for _, e := range entries {
 		if !isStaleLocalMarker(e.Marker, host) {
+			if journalDeclineIsPermanent(e.Marker) {
+				stranded = append(stranded, e.Identifier+" ("+e.Marker+")")
+			}
 			continue
 		}
 		if err := c.tracker.Release(ctx, e.IssueID, e.Marker); err != nil &&
@@ -262,9 +299,40 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 		c.claims.Remove(e.IssueID)
 		released = append(released, e.Identifier)
 	}
+	// PERMANENT abstentions are NAMED, once per boot: a marker no future
+	// boot can ever prove dead (unparsable shape, pid <= 1) is — on an
+	// external tracker, where this sweep is the ONLY recovery path — a
+	// claim label stranded for ever with no trace. Transient declines
+	// (live pid = another daemon sharing the store; foreign host = not
+	// ours to judge) stay silent: warning on them is a storm in every
+	// legitimate multi-daemon setup.
+	if len(stranded) > 0 {
+		c.logger.Warn("dispatcher: boot sweep kept %d journalled claim(s) whose markers can NEVER be proven dead — if their owners are gone, release them by hand: %v",
+			len(stranded), stranded)
+	}
 	if len(released) > 0 {
 		c.logger.Info("dispatcher: released %d journalled claim(s) from dead local PIDs: %v", len(released), released)
 	}
+}
+
+// parseLocalMarker splits a claim marker shaped "<host>-<pid>" (with an
+// optional watchdog "reaper:" prefix — a reaper that dies mid-disposition
+// must be sweepable like any other dead owner, or the expand/contract
+// rollback would strand every card it held). ok=false for any other
+// shape, or a pid <= 1: markers no probe can ever interpret. The ONE
+// parser both boot-sweep predicates read — a second copy is how the two
+// drift apart.
+func parseLocalMarker(marker string) (host string, pid int, ok bool) {
+	marker = strings.TrimPrefix(marker, reaperMarkerPrefix)
+	dash := strings.LastIndexByte(marker, '-')
+	if dash <= 0 || dash == len(marker)-1 {
+		return "", 0, false
+	}
+	pid, err := strconv.Atoi(marker[dash+1:])
+	if err != nil || pid <= 1 {
+		return "", 0, false
+	}
+	return marker[:dash], pid, true
 }
 
 // isStaleLocalMarker returns true iff marker is shaped "<host>-<pid>",
@@ -272,16 +340,8 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 // Returns false for any other shape so we never touch a marker we can't
 // confidently interpret.
 func isStaleLocalMarker(marker, host string) bool {
-	// markers look like "rog-3158843". Allow underscores in hostname.
-	dash := strings.LastIndexByte(marker, '-')
-	if dash <= 0 || dash == len(marker)-1 {
-		return false
-	}
-	if marker[:dash] != host {
-		return false
-	}
-	pid, err := strconv.Atoi(marker[dash+1:])
-	if err != nil || pid <= 1 {
+	mhost, pid, ok := parseLocalMarker(marker)
+	if !ok || mhost != host {
 		return false
 	}
 	// A live PID — or one we can't probe (different user, or any
@@ -289,6 +349,25 @@ func isStaleLocalMarker(marker, host string) bool {
 	// we can't confidently prove is dead. See localPidGone in
 	// proc_unix.go / proc_windows.go.
 	return localPidGone(pid)
+}
+
+// journalDeclineIsPermanent reports that a journalled marker the boot
+// sweep declined can NEVER become releasable by a future boot on this
+// host: the shape is unparsable or the pid <= 1 (isStaleLocalMarker
+// refuses those unconditionally). A live pid or a foreign host is a
+// TRANSIENT decline — the owner may release it, or its host's own boot
+// will. (On Windows localPidGone abstains for every pid, so live-pid
+// declines there are also permanent in practice — accepted: naming them
+// all would storm on the one platform where none is provable.)
+func journalDeclineIsPermanent(marker string) bool {
+	_, _, ok := parseLocalMarker(marker)
+	// Parseable + pid > 1 is always transient: same-host = the pid may
+	// die; foreign host = its own boot sweep judges it. An UNPARSABLE
+	// marker is permanent regardless of host — deliberately stricter
+	// than the pre-unification predicate, which read a foreign host's
+	// shapeless marker as transient although no boot anywhere can ever
+	// admit it (isStaleLocalMarker refuses the shape on every host).
+	return !ok
 }
 
 // Stop signals the actor to exit and waits for it. Safe to call more
@@ -470,22 +549,60 @@ func (c *Dispatcher) shutdown() {
 	// claim eagerly here (best-effort, detached ctx with a short
 	// budget — same pattern as finishRun's release path).
 	currentTarget := c.cfg.Load().Agent.RunningState
+	// The per-card writes drain in PARALLEL: entries are independent
+	// (distinct issues, thread-safe tracker), and a sequential drain made
+	// the wall N × (revert budget + release budget) — under a default
+	// terminationGracePeriodSeconds the SIGKILL arrived before the tail
+	// and those claims were never released. The bound is now ONE card's
+	// budgets, whatever the fleet was carrying.
+	var drain sync.WaitGroup
+	// Bounded parallelism, and each card's budgets start when its TURN
+	// starts, not at a shared T0: unbounded goroutines against a tracker
+	// that serializes (the FS store is one mutex; a forge client rate-
+	// limits) burn one shared window while queued — measured at N=20 with
+	// production budgets, 7 claims leaked in 10s where the sequential
+	// drain freed all 20. With 4 in flight a card waits on at most 3
+	// calls ahead of it inside the tracker, which any budget dwarfs.
+	sem := make(chan struct{}, 4)
 	for _, r := range c.state.running {
 		// Shutdown is an internal interruption (the local twin of the cloud
 		// runner drain): failed_resumable, auto-resumed on the next start.
 		if r.Cancel != nil {
 			r.Cancel(runtime.ErrRunInterrupted)
 		}
-		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		c.releaseClaim(relCtx, r.IssueID, r.Identifier)
-		// Revert the in-progress transition (best-effort) so tickets
-		// snap back to their source state for the next daemon start.
-		// Without this, an operator-triggered Ctrl+C would leave every
-		// in-flight ticket in `in_progress`, hidden from the next
-		// daemon's eligible candidate list until manually dragged back.
-		c.revertTransition(relCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget)
-		relCancel()
+		drain.Add(1)
+		go func(r *runningEntry) {
+			defer drain.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			// SEPARATE budgets. The revert opens with a RefreshStates round
+			// trip, so sharing one deadline lets a merely slow tracker spend
+			// the whole of it and leave the release unsent — and the release
+			// is the half shutdown exists for: an unreleased claim hides the
+			// card from the next daemon's candidate listing.
+			// The revert keeps the release's default (not a shorter one): a
+			// tracker slow enough to blow a tighter revert budget but not the
+			// release's would leave the card in_progress WITHOUT a claim — the
+			// least recoverable shape (wrong state for ListEligible, no claim
+			// for the reaper to list).
+			revCtx, revCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
+			// Transition FIRST, release LAST — the order the finish worker and
+			// the parked reconciler both keep, and for the same reason: a
+			// release opens the card to the next claimant immediately, and the
+			// revert's own guard ("is it still in_progress?") cannot tell OUR
+			// in_progress from a SUCCESSOR's. Releasing first therefore let a
+			// shutting-down daemon drag a card back into the launch column
+			// while a fresh run was already working it. Fenced, so a claim
+			// that moved on refuses the revert instead of clobbering it.
+			c.revertTransition(revCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget, r.claim)
+			revCancel()
+			relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
+			c.releaseClaimSess(relCtx, r.IssueID, r.Identifier, r.claim)
+			relCancel()
+			c.stopClaimSession(r)
+		}(r)
 	}
+	drain.Wait()
 	for _, e := range c.state.retries {
 		if e.Timer != nil {
 			e.Timer.Stop()

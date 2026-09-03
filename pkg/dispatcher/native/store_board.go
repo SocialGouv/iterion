@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -165,7 +166,7 @@ func (s *Store) RenameState(from, to string) (touched int, err error) {
 	if err := s.setBoardLocked(next); err != nil {
 		return 0, err
 	}
-	touched, err = s.migrateStateLocked(from, to, "state_rename")
+	touched, err = s.migrateStateLocked(from, to, tracker.ReasonStateRename)
 	if err != nil {
 		return touched, err
 	}
@@ -206,7 +207,15 @@ func (s *Store) DeleteState(name, migrateTo string) (touched int, err error) {
 		if s.board.StateByName(migrateTo) == nil {
 			return 0, fmt.Errorf("native store: unknown migration target %q", migrateTo)
 		}
-		touched, err = s.migrateStateLocked(name, migrateTo, "state_delete")
+		// Deleting a TERMINAL column with a working-state target reopens
+		// every card in it at once — a reopen more powerful than Reopen
+		// itself, which refuses when dependents were already promoted on a
+		// card's completion. Hold it to the same bar rather than letting
+		// the column editor be the way around the sink.
+		if err := s.reopenMigrationAllowedLocked(name, migrateTo); err != nil {
+			return 0, err
+		}
+		touched, err = s.migrateStateLocked(name, migrateTo, tracker.ReasonStateDelete)
 		if err != nil {
 			return touched, err
 		}
@@ -221,6 +230,40 @@ func (s *Store) DeleteState(name, migrateTo string) (touched int, err error) {
 		Type:    EvtBoardUpdated,
 		Payload: map[string]any{"op": "state_delete", "state": name, "migrate_to": migrateTo},
 	})
+}
+
+// reopenMigrationAllowedLocked refuses a column migration that would
+// carry cards ACROSS the terminal boundary while dependents are still
+// standing on their completion. Same predicate as Reopen — a bulk gesture
+// does not earn an exemption the single-card one is refused.
+func (s *Store) reopenMigrationAllowedLocked(from, to string) error {
+	all := make([]*Issue, 0, len(s.index))
+	for _, iss := range s.index {
+		all = append(all, iss)
+	}
+	return ReopenMigrationAllowed(s.board, all, from, to)
+}
+
+// ReopenMigrationAllowed refuses a column migration that carries cards
+// ACROSS the terminal boundary while dependents still stand on their
+// completion — the bulk form of Reopen's own check, shared by both twins
+// so the board editor cannot be a way around the sink on one of them.
+func ReopenMigrationAllowed(b *Board, all []*Issue, from, to string) error {
+	src := b.StateByName(from)
+	dst := b.StateByName(to)
+	if src == nil || !src.Terminal || (dst != nil && dst.Terminal) {
+		return nil
+	}
+	idx := promotedDependents(all)
+	for _, iss := range all {
+		if iss.State != from {
+			continue
+		}
+		if err := reopenBlocked(idx, iss.ID, iss.State); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // StatePatch carries the editable per-column fields for UpdateState.

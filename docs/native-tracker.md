@@ -560,9 +560,25 @@ if err != nil { return err }
 iss, err := s.Create(native.Issue{Title: "do a thing", State: "ready"})
 list, err := s.List(native.ListFilter{States: []string{"ready"}})
 _, err = s.SetState(iss.ID, "in_progress")
-err = s.Claim(iss.ID, "worker-1")
-err = s.Release(iss.ID, "worker-1")
+tok, err := s.Claim(iss.ID, "worker-1") // returns a fenced ClaimToken + lease
+err = s.RenewClaim(iss.ID, tok)         // heartbeat the lease while working
+err = s.ReleaseOwned(iss.ID, tok)       // fenced release
 ```
+
+`Claim` stamps a **lease** (`claim_lease_until`) and a fencing
+`claim_epoch`, returning the `tracker.ClaimToken` every owner-scoped
+write (`SetStateOwned` / `SetLastRunOwned` / `SetAwaitingInputOwned` /
+`SetGaveUpOwned` / `ReleaseOwned` / `RenewClaim`) must present — a
+compare-and-set on `(claim, claim_epoch)`, so a worker whose claim was
+stolen finds its late writes refused (`tracker.ErrClaimConflict`). The
+tokenless `Release` and `SetState` remain for callers acting on
+**unclaimed** cards. The claim watchdog (ADR-096) reclaims expired leases
+by transfer; see the dispatcher doc's *Claim lease + watchdog* section.
+
+Terminal board states are **sinks**: `SetState` refuses to leave one
+(`tracker.ErrTerminalStateExit`, which wraps `ErrTransitionRejected`).
+`Reopen(id, toState)` is the one sanctioned exit (operator surfaces);
+`SetStateFrom(id, from, to)` is the CAS move for automated writers.
 
 To plug it into the dispatcher's `Tracker` interface:
 

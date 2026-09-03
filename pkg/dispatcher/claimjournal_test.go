@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,5 +124,38 @@ func TestReleaseClaimDropsJournalEntry(t *testing.T) {
 	c.releaseClaim(context.Background(), "gh:1", "gh#1")
 	if got := c.claims.Load(); len(got) != 0 {
 		t.Fatalf("journal after releaseClaim = %+v, want empty", got)
+	}
+}
+
+// A journalled marker that can NEVER be proven dead (unparsable shape,
+// pid <= 1) is — on an external tracker, where the journal is the ONLY
+// recovery path — a permanently stranded claim label: the boot sweep
+// must NAME it, once, instead of declining in silence. A live-pid
+// decline (another daemon sharing the store) stays silent: warning on
+// it is a storm in every legitimate multi-daemon setup.
+func TestJournalSweep_PermanentDeclinesAreNamed(t *testing.T) {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "dispatcher"
+	}
+	ft := newFakeTracker()
+	var buf bytes.Buffer
+	c := &Dispatcher{
+		tracker:    ft,
+		logger:     iterlog.New(iterlog.LevelWarn, &buf),
+		hostMarker: host + "-1",
+		claims:     newClaimJournal(t.TempDir(), quietLogger()),
+	}
+	c.claims.Record(claimEntry{IssueID: "gh:pid1", Identifier: "gh#pid1", Marker: host + "-1", ClaimedAt: time.Now().UTC()})
+	c.claims.Record(claimEntry{IssueID: "gh:live", Identifier: "gh#live", Marker: host + "-" + strconv.Itoa(os.Getpid()), ClaimedAt: time.Now().UTC()})
+
+	c.sweepJournalledClaims(host)
+
+	out := buf.String()
+	if !strings.Contains(out, "NEVER be proven dead") || !strings.Contains(out, "gh#pid1") {
+		t.Fatalf("the permanently-undecidable entry was declined in silence: %q", out)
+	}
+	if strings.Contains(out, "gh#live") {
+		t.Fatalf("a live peer daemon's entry was named as stranded — false-positive storm in multi-daemon setups: %q", out)
 	}
 }

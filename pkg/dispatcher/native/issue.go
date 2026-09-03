@@ -33,6 +33,23 @@ type Issue struct {
 	// pipeline applies — same wire format as the studio's Launch form.
 	BotArgs map[string]string `json:"bot_args,omitempty"`
 	Claim   string            `json:"claim,omitempty"`
+	// ClaimEpoch is the per-issue fencing counter: bumped on every FRESH
+	// claim acquisition (never on an idempotent same-marker re-claim), it
+	// travels in the tracker.ClaimToken and every owner-scoped write is a
+	// CAS on (Claim, ClaimEpoch) — a stolen claim's late writes find
+	// typed refusals, never the new owner's state.
+	ClaimEpoch int64 `json:"claim_epoch,omitempty"`
+	// ClaimedAt is when the CURRENT claim was acquired (audit; zero on a
+	// legacy claim written before the lease existed — such claims are
+	// never expired by time, only by the historical pid-probe sweep).
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// ClaimLeaseUntil is the single instant the claim's lease expires —
+	// stamped at claim and pushed forward by each RenewClaim heartbeat
+	// (one field, not a claimed-at/renewed-at max: it is what the reaper
+	// queries and what an index can serve). On Mongo it is written with
+	// the server clock so a pod with a fast clock cannot steal a live
+	// claim. Zero = legacy claim, see ClaimedAt.
+	ClaimLeaseUntil time.Time `json:"claim_lease_until,omitempty"`
 	// LastRunID is the most recent dispatcher-spawned run that
 	// processed this issue. Stamped by the dispatcher's finishRun
 	// regardless of success/failure so the operator can always

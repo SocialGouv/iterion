@@ -319,7 +319,10 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		return 0, 0, err
 	}
 	if is.State == "closed" && doneCol != "" && !isTerminalState(b, existing.State) {
-		if _, err := board.SetState(cardID, doneCol); err != nil {
+		// CAS on the snapshot: an operator who moved the card between our
+		// read and this write wins — the sync must not clobber a fresh
+		// human decision with a stale forge fact.
+		if _, _, err := board.SetStateFrom(cardID, existing.State, doneCol); err != nil {
 			return 0, 0, err
 		}
 	}

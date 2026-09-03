@@ -105,6 +105,7 @@ var topLevelFields = []fieldSpec{
 	{"theme", "string"},
 	{"allowedTools", "array"},
 	{"blockedTools", "array"},
+	{"allowImmediateStructuredOutput", "boolean"},
 }
 
 var hooksFields = []fieldSpec{

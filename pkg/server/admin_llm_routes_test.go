@@ -230,6 +230,8 @@ func TestAdminLLM_NonSuperAdminIsRefused(t *testing.T) {
 		{"POST", "/api/admin/llm/api-keys", userTok, http.StatusForbidden},
 		{"GET", "/api/admin/llm/oauth/connections", userTok, http.StatusForbidden},
 		{"POST", "/api/admin/llm/oauth/claude_code/credentials", userTok, http.StatusForbidden},
+		{"PATCH", "/api/admin/llm/oauth/claude_code", userTok, http.StatusForbidden},
+		{"PATCH", "/api/admin/llm/oauth/claude_code", "", http.StatusUnauthorized},
 		{"GET", "/api/admin/llm/api-keys", "", http.StatusUnauthorized},
 		{"POST", "/api/admin/llm/oauth/claude_code/credentials", "", http.StatusUnauthorized},
 	}
@@ -270,6 +272,18 @@ func TestAdminLLM_OAuthPasteStoresUnderThePlatformOwner(t *testing.T) {
 	}
 	if strings.Contains(string(body), "sk-ant-platform-forfait") {
 		t.Fatal("the connections list leaked the token")
+	}
+
+	// Naming the platform forfait is the same PATCH as the tenant tiers,
+	// under the super-admin gate; the listing is where the name must show.
+	if code, body = llmDo(t, hs, "PATCH", "/api/admin/llm/oauth/claude_code", adminTok, `{"account_label":"iterion platform"}`); code != http.StatusOK {
+		t.Fatalf("rename: status=%d body=%s", code, body)
+	}
+	if code, body = llmDo(t, hs, "GET", "/api/admin/llm/oauth/connections", adminTok, ""); code != http.StatusOK || !strings.Contains(string(body), `"account_label":"iterion platform"`) {
+		t.Fatalf("connections list after rename: status=%d body=%s", code, body)
+	}
+	if rec, err := oauth.Get(context.Background(), secrets.PlatformOwnerKey, secrets.OAuthKindClaudeCode); err != nil || rec.AccountLabel != "iterion platform" {
+		t.Fatalf("stored label = %q (err=%v)", rec.AccountLabel, err)
 	}
 
 	if code, body = llmDo(t, hs, "DELETE", "/api/admin/llm/oauth/claude_code", adminTok, ""); code >= 300 {
