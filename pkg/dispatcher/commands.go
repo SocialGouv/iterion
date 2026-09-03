@@ -359,11 +359,23 @@ const (
 // failed_resumable, and whoever owns the card decides what happens next.
 type cmdClaimLost struct {
 	issueID string
+	// runID names the run whose session observed the loss. The message is
+	// queued and applied later, and the card is re-claimable the instant
+	// the previous claim goes — so by the time this lands, running[issueID]
+	// may already be a NEW run for the same card. Matching on the issue
+	// alone cancelled that innocent successor with ErrRunInterrupted.
+	runID string
 }
 
 func (m cmdClaimLost) apply(c *Dispatcher, _ context.Context) {
 	r, ok := c.state.running[m.issueID]
 	if !ok || r.Cancel == nil {
+		return
+	}
+	if m.runID != "" && r.RunID != m.runID {
+		// A different run holds the card now: the loss belonged to a run
+		// that has already gone. Cancelling here would kill work that has
+		// nothing to do with the superseded claim.
 		return
 	}
 	if r.CancelIssuedAt.IsZero() {
@@ -792,6 +804,11 @@ func (c *Dispatcher) fencedUpdateState(ctx context.Context, issueID, state strin
 // exists. The benign races (already gone, superseded) stay benign: in
 // both, the claim is no longer ours to release.
 func (c *Dispatcher) releaseClaimSess(ctx context.Context, issueID, identifier string, sess *claimSession) {
+	// Announce the release BEFORE it lands: a heartbeat already in flight
+	// will see it as ErrClaimConflict, and without this it read as a
+	// supersession — warning "claim lost, stopping the worker" on an
+	// ordinary finish and firing the cancel path for a run already over.
+	sess.Releasing()
 	if sess != nil && c.leaser != nil {
 		err := c.leaser.ReleaseOwned(ctx, issueID, sess.Token())
 		c.dropJournalAfterRelease(issueID, identifier, err)

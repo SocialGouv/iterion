@@ -39,10 +39,19 @@ type claimSession struct {
 	// Injectable for tests.
 	interval time.Duration
 
-	lost     atomic.Bool
-	stop     chan struct{}
-	stopOnce sync.Once
-	done     chan struct{}
+	lost atomic.Bool
+	// releasing latches once the owner has begun its OWN final release.
+	// The release runs before Stop() (stopping earlier would let the
+	// lease lapse while the worker is still writing), so a beat already
+	// in flight can come back ErrClaimConflict simply because our own
+	// release landed first. That is not a supersession: reporting it
+	// warned "claim lost — stopping the worker" on every ordinary finish
+	// that happened to straddle a beat, and fired the cancel path for a
+	// run that had already ended.
+	releasing atomic.Bool
+	stop      chan struct{}
+	stopOnce  sync.Once
+	done      chan struct{}
 }
 
 // StartClaimSession begins heartbeating. leaser must be non-nil; the
@@ -92,6 +101,12 @@ func (s *claimSession) loop() {
 			switch {
 			case err == nil:
 			case errors.Is(err, tracker.ErrClaimConflict):
+				if s.releasing.Load() {
+					// Our OWN release landed between this beat's send and
+					// its reply. Nothing was superseded and there is nothing
+					// left to cancel — the run is over.
+					return
+				}
 				// The claim moved on — latch, tell the owner once, stop.
 				s.lost.Store(true)
 				s.warn("dispatcher: claim on %s was lost (lease superseded) — stopping the worker: %v", s.issueID, err)
@@ -121,6 +136,16 @@ func (s *claimSession) Token() tracker.ClaimToken { return s.tok }
 
 // Lost reports whether the claim was observed superseded.
 func (s *claimSession) Lost() bool { return s.lost.Load() }
+
+// Releasing announces that the owner is about to drop this claim itself.
+// Call it immediately before the release write: from here on a renewal
+// conflict is our own release, not a supersession, and must not warn or
+// fire onLost. Safe on a nil session so callers stay branch-free.
+func (s *claimSession) Releasing() {
+	if s != nil {
+		s.releasing.Store(true)
+	}
+}
 
 // Stop ends the heartbeat (idempotent) and waits for the loop to exit.
 // Called after the finish worker's LAST write — never earlier, or the

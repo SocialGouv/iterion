@@ -451,7 +451,11 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		// write (it rides finishPlan out of the actor). On loss: cancel
 		// the worker via the actor — its fenced writes are refused
 		// already; the cancel just stops it burning spend toward them.
-		issueID := iss.ID
+		// Both captured for the message: the card is re-claimable the
+		// instant this claim goes, so a queued loss must name the run it
+		// belongs to or it cancels whatever run holds the card when it
+		// finally lands.
+		issueID, lostRunID := iss.ID, runID
 		entry.claim = StartClaimSession(c.leaser, issueID, claimTok, c.logger.Warn, func(error) {
 			// NON-blocking on purpose. The actor stops this very session
 			// (stopClaimSession waits for the loop to exit), so a blocking
@@ -462,7 +466,7 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 			// refuses everything this worker will attempt, so dropping it
 			// costs tokens, never correctness.
 			select {
-			case c.cmds <- cmdClaimLost{issueID: issueID}:
+			case c.cmds <- cmdClaimLost{issueID: issueID, runID: lostRunID}:
 			case <-c.stop:
 			default:
 				c.logger.Warn("dispatcher: claim on %s was lost but the command queue is full — the worker keeps running until its writes are refused", issueID)

@@ -170,3 +170,63 @@ func (l *slowLeaser) ReleaseOwned(context.Context, string, tracker.ClaimToken) e
 func (l *slowLeaser) UpdateStateOwned(context.Context, string, string, tracker.ClaimToken) error {
 	return nil
 }
+
+// TestClaimLost_DoesNotCancelTheNextRun: cmdClaimLost is queued and
+// applied later, and the card becomes re-claimable the instant the
+// previous claim goes — the finish worker releases BEFORE stopping the
+// heartbeat, so a beat blocked behind that release returns
+// ErrClaimConflict and fires the loss for a run that has already ended.
+// Matching on the issue id alone then cancelled whatever run held the
+// card by the time the message landed: an innocent successor killed with
+// ErrRunInterrupted.
+func TestClaimLost_DoesNotCancelTheNextRun(t *testing.T) {
+	c := &Dispatcher{state: newState(), logger: quietLogger()}
+	var cancelled []error
+	c.state.running["i1"] = &runningEntry{
+		IssueID: "i1", Identifier: "i1", RunID: "run-NEW",
+		Cancel: func(err error) { cancelled = append(cancelled, err) },
+	}
+
+	// The loss belongs to the PREVIOUS run for this card.
+	cmdClaimLost{issueID: "i1", runID: "run-OLD"}.apply(c, context.Background())
+
+	if len(cancelled) != 0 {
+		t.Fatalf("the successor run was cancelled by its predecessor's lost claim: %v", cancelled)
+	}
+	// The same message for the run that actually lost its claim still acts.
+	cmdClaimLost{issueID: "i1", runID: "run-NEW"}.apply(c, context.Background())
+	if len(cancelled) != 1 {
+		t.Fatalf("a genuine claim loss must still cancel its own run: %v", cancelled)
+	}
+}
+
+// TestClaimSession_OwnReleaseIsNotASupersession: the finish worker
+// releases the claim and only then stops the heartbeat (stopping earlier
+// would let the lease lapse while it is still writing). A beat in flight
+// across that release comes back ErrClaimConflict — our OWN release, not
+// another owner. Reporting it warned "claim lost — stopping the worker"
+// on ordinary finishes and fired the cancel path for a run already over.
+func TestClaimSession_OwnReleaseIsNotASupersession(t *testing.T) {
+	fl := &fakeLeaser{renewErrs: []error{tracker.ErrClaimConflict}}
+	var lost, warns atomic.Int32
+	s := &claimSession{
+		issueID: "i1", tok: tracker.ClaimToken{Marker: "m", Epoch: 1},
+		leaser: fl, warn: func(string, ...any) { warns.Add(1) },
+		interval: 5 * time.Millisecond,
+		onLost:   func(error) { lost.Add(1) },
+		stop:     make(chan struct{}), done: make(chan struct{}),
+	}
+	s.Releasing() // the owner is dropping this claim itself
+	go s.loop()
+	<-s.done // the loop still exits on the conflict — quietly
+
+	if got := lost.Load(); got != 0 {
+		t.Fatalf("onLost fired %d time(s) for our own release — the cancel path runs for a run already over", got)
+	}
+	if got := warns.Load(); got != 0 {
+		t.Fatalf("warned %d time(s) about a claim we released ourselves — an alarming line on every ordinary finish that straddles a beat", got)
+	}
+	if s.Lost() {
+		t.Fatal("our own release must not latch the loss flag")
+	}
+}
