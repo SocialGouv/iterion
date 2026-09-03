@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -425,6 +427,119 @@ func TestSyncDebounce_BotOutOfScopeAtFireTimeIsSkipped(t *testing.T) {
 	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
 	if len(*got) != 0 {
 		t.Fatalf("a bot removed from the webhook's scope must not launch, got %v", botsOf(*got))
+	}
+}
+
+// A parked launch that FAILS must be re-armed, not deleted — the
+// Rb58c20 regression. The forge was answered `202 deferred` minutes ago,
+// so the immediate lane's recovery (hand back the denial's 4xx, let the
+// forge redeliver) does not exist here: deleting the row drops the
+// promised review with no retry and no visible failure.
+func TestSyncDebounce_FailedLaunchIsRetriedNotDropped(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	var attempts int
+	fail := true
+	s.webhookLaunchBot = func(_ context.Context, bot string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		attempts++
+		if fail {
+			return "", errors.New("bot temporarily broken")
+		}
+		return "run-" + bot, nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	base := time.Now().UTC()
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(4*time.Minute))
+	if attempts != 1 {
+		t.Fatalf("the parked launch must be attempted once, got %d", attempts)
+	}
+
+	// Re-armed: the next sweep past the backoff retries it, and this time
+	// the launch succeeds.
+	fail = false
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(20*time.Minute))
+	if attempts != 2 {
+		t.Fatalf("a failed parked launch must be retried, attempts=%d", attempts)
+	}
+	// Launched: the row is acknowledged and never fires again.
+	s.sweepDeferredWebhookLaunches(context.Background(), base.Add(2*time.Hour))
+	if attempts != 2 {
+		t.Fatalf("a launched row re-fired, attempts=%d", attempts)
+	}
+}
+
+// The retry chain is BOUNDED, and its end is audited: a review that can
+// never launch must be abandoned loudly (a launch_error delivery naming
+// the loss), never deleted in silence.
+func TestSyncDebounce_RetryChainIsBoundedAndAudited(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	var attempts int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		attempts++
+		return "", errors.New("bot permanently broken")
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayload("sha-1"), prforge.EventHeaderPullRequest, pt))
+
+	base := time.Now().UTC()
+	for i := 1; i <= webhookDeferMaxAttempts+4; i++ {
+		s.sweepDeferredWebhookLaunches(context.Background(), base.Add(time.Duration(i)*time.Hour))
+	}
+	if attempts != webhookDeferMaxAttempts {
+		t.Fatalf("retries = %d, want the chain capped at %d", attempts, webhookDeferMaxAttempts)
+	}
+	ds, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var abandoned bool
+	for _, d := range ds {
+		if d.Status == webhooks.StatusLaunchError && strings.Contains(d.Error, "abandoned") {
+			abandoned = true
+		}
+	}
+	if !abandoned {
+		t.Fatal("the abandoned review must leave an audited launch_error delivery, not vanish")
+	}
+}
+
+// The retry horizon: a transient denial (concurrency, launch rate) is
+// waited out on its own Retry-After; a monthly quota/cost denial resets
+// next MONTH — parking the row that long buys nothing (the head is
+// stale long before) and hides the loss, so it is terminal.
+func TestDeferRetryWait(t *testing.T) {
+	if wait, ok := deferRetryWait(nil, 0); !ok || wait != webhookDeferRetryBase {
+		t.Fatalf("a plain launch failure must retry at the base delay, got %s ok=%v", wait, ok)
+	}
+	if wait, ok := deferRetryWait(&launchDenial{retryAfter: 90 * time.Second}, 0); !ok || wait != 90*time.Second {
+		t.Fatalf("the denial's own Retry-After must floor the wait, got %s ok=%v", wait, ok)
+	}
+	if wait, ok := deferRetryWait(&launchDenial{retryAfter: time.Hour}, 0); !ok || wait != webhookDeferRetryMax {
+		t.Fatalf("the wait must stay capped, got %s ok=%v", wait, ok)
+	}
+	if _, ok := deferRetryWait(nil, webhookDeferMaxAttempts-1); ok {
+		t.Fatal("the chain must be bounded by the attempt cap")
+	}
+	monthly := &launchDenial{resetAt: nextMonthStart(time.Now().UTC())}
+	if _, ok := deferRetryWait(monthly, 0); ok {
+		t.Fatal("a monthly-cap denial must be terminal, not parked for weeks")
 	}
 }
 

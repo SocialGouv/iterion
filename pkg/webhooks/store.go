@@ -77,6 +77,14 @@ type DeferredLaunchStore interface {
 	// launch. (A destructive claim would instead LOSE the launch with
 	// the delivery long since ACKed: a required check absent forever.)
 	ClaimDue(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]DeferredLaunch, error)
+	// Reschedule pushes an UNLAUNCHED row's FireAt back and records the
+	// attempt, IFF it still holds the named generation — the retry half
+	// of the claim contract, for a launch the admission gate refused
+	// transiently (org concurrency, launch rate) or that failed outright.
+	// Generation-guarded for the same reason Delete is: a fresh push that
+	// landed mid-claim must not be clobbered by the stale payload's
+	// re-arm. Clears the lease, so the next sweep past FireAt claims it.
+	Reschedule(ctx context.Context, subjectKey string, generation int64, fireAt time.Time, attempts int) error
 	// Delete removes the row IFF it still holds the named generation —
 	// the claimer's acknowledgement that exactly the payload it launched
 	// is done. A subject that re-armed mid-claim (higher generation)

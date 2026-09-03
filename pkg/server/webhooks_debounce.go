@@ -58,6 +58,16 @@ const (
 	webhookDeferLease = 2 * time.Minute
 
 	webhookDeferBatch = 50
+
+	// Retry chain for a parked row the launch tail refused (see
+	// deferRetryWait). webhookDeferRetryBase doubles per attempt up to
+	// webhookDeferRetryMax; webhookDeferMaxAttempts caps the chain
+	// (~45 min of retries), and a denial whose reset lies past
+	// webhookDeferRetryHorizon is not worth waiting for at all.
+	webhookDeferRetryBase    = 30 * time.Second
+	webhookDeferRetryMax     = 10 * time.Minute
+	webhookDeferMaxAttempts  = 8
+	webhookDeferRetryHorizon = 30 * time.Minute
 )
 
 // webhookSyncDebounceFromEnv resolves the quiet window.
@@ -248,16 +258,16 @@ func (s *Server) sweepDeferredWebhookLaunches(ctx context.Context, now time.Time
 		return
 	}
 	for _, d := range due {
-		s.fireDeferredWebhookLaunch(ctx, d)
+		s.fireDeferredWebhookLaunch(ctx, d, now)
 	}
 }
 
 // fireDeferredWebhookLaunch replays one parked delivery through the
-// ordinary launch tail and acknowledges the row's generation. Every
-// outcome — launched, duplicate, denial, error — acknowledges: the tail
-// has recorded its own delivery row either way, and re-firing a denial
-// would re-deny every 20s until the TTL.
-func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.DeferredLaunch) {
+// ordinary launch tail. A row that LAUNCHED (or replayed as a duplicate)
+// is acknowledged by generation; one that did not launch is re-armed —
+// see deferRetryWait for why, and for the horizon past which the loss
+// becomes terminal and audited.
+func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.DeferredLaunch, now time.Time) {
 	cfg, err := s.webhookConfigs.Get(ctx, d.WebhookID)
 	if errors.Is(err, webhooks.ErrNotFound) {
 		// The webhook is gone (deleted between park and fire) — the row
@@ -326,6 +336,10 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 	// the immediate one (it is ONLY read by publicBaseURL; no handler
 	// writes a response through it).
 	req := syntheticRequestForBase(d.PublicBase)
+	var (
+		failed string        // non-empty = nothing launched for this target
+		denial *launchDenial // the admission refusal, when that is why
+	)
 	for _, t := range d.Targets {
 		// Bot scope is re-read too: a bot removed from BotIDs while the
 		// row sat parked must not launch. Per-target, not per-row — a
@@ -341,9 +355,80 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		if res.Status == webhooks.StatusLaunched {
 			s.scheduleForgeBoardProjection(meta.ProjectPath)
 		}
-		if s.logger != nil && res.Status != webhooks.StatusLaunched && res.Status != webhooks.StatusDuplicate {
-			s.logger.Warn("webhook debounce sweeper: parked %s launch for %s ended %s: %s", t.BotID, d.SubjectID, res.Status, res.Error)
+		if res.Status == webhooks.StatusLaunched || res.Status == webhooks.StatusDuplicate {
+			continue
+		}
+		s.warnf("webhook debounce sweeper: parked %s launch for %s ended %s: %s", t.BotID, d.SubjectID, res.Status, res.Error)
+		failed = t.BotID + ": " + res.Error
+		if res.denial != nil {
+			// Denials are org-scoped (concurrency, launch rate, monthly
+			// quota, cost cap) — the remaining bots would deny identically
+			// and each re-record the same terminal row, as the immediate
+			// lane's fan-out already breaks for.
+			denial = res.denial
+			break
 		}
 	}
+	if failed != "" {
+		if wait, ok := deferRetryWait(denial, d.Attempts); ok {
+			// NOT delete: the forge was answered `202 deferred` minutes ago,
+			// so it will never redeliver, and the immediate lane's recovery —
+			// hand the denial's 4xx back and let the forge retry — does not
+			// exist here. Re-arm on the denial's own horizon instead.
+			// Generation-guarded, so a push that landed mid-launch keeps its
+			// fresher payload.
+			if err := s.webhookDeferred.Reschedule(ctx, d.SubjectKey, d.Generation, now.Add(wait), d.Attempts+1); err != nil {
+				// Leave the row alone: its lease lapses and the next sweep
+				// re-fires it, which is the same at-least-once net a dead
+				// claimer relies on.
+				s.warnf("webhook debounce sweeper: could not re-arm parked launch for %s (%v) — the lapsing lease will re-fire it", d.SubjectID, err)
+				return
+			}
+			s.warnf("webhook debounce sweeper: parked launch for %s %s did not launch (%s) — retrying in %s (attempt %d/%d)",
+				d.ProjectPath, d.SubjectID, failed, wait, d.Attempts+1, webhookDeferMaxAttempts)
+			return
+		}
+		// Terminal: name the loss instead of deleting the row in silence.
+		// A monthly quota/cost reset is weeks out, and by then this head
+		// is long stale — an honest terminal loss beats a row that
+		// no-ops for a month.
+		s.warnf("webhook debounce sweeper: ABANDONING the parked review of %s %s after %d attempt(s) — %s",
+			d.ProjectPath, d.SubjectID, d.Attempts+1, failed)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, d.PayloadHash, d.SourceIP,
+			fmt.Sprintf("parked review abandoned after %d attempt(s): %s", d.Attempts+1, failed))
+	}
 	_ = s.webhookDeferred.Delete(ctx, d.SubjectKey, d.Generation)
+}
+
+// deferRetryWait decides whether a parked row that failed to launch
+// should try again, and after how long. Reported false = terminal, drop
+// it (loudly, with an audit row).
+//
+// The immediate lane recovers from a launch denial by handing the
+// forge the denial's own 4xx/5xx: the delivery shows failed and a
+// retry launches once the quota resets. The deferred lane forfeits
+// that — the forge was ACKed `202 deferred` minutes ago — so the retry
+// has to live here or the promised review is simply lost.
+//
+// The chain is bounded on two axes. Attempts caps the count; and a
+// denial that names a reset FURTHER OUT than the chain's own cadence
+// (today only the monthly run-quota / cost-cap denials, whose resetAt
+// is the next month) is refused outright: parking a row for weeks buys
+// nothing — the head it reviews is stale long before then — and hides
+// the loss behind a row that will silently no-op.
+func deferRetryWait(denial *launchDenial, attempts int) (time.Duration, bool) {
+	if attempts+1 >= webhookDeferMaxAttempts {
+		return 0, false
+	}
+	if denial != nil && !denial.resetAt.IsZero() &&
+		time.Until(denial.resetAt) > webhookDeferRetryHorizon {
+		return 0, false
+	}
+	// Exponential from the sweep cadence, floored by the denial's own
+	// Retry-After hint (concurrency 30s, launch rate its bucket's), capped.
+	wait := webhookDeferRetryBase << min(attempts, 8)
+	if denial != nil && denial.retryAfter > wait {
+		wait = denial.retryAfter
+	}
+	return min(wait, webhookDeferRetryMax), true
 }

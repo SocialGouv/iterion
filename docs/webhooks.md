@@ -163,7 +163,20 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `/revi` and a re-request click stay immediate — a human is waiting on
   those. During the window the required check is simply absent, the same
   honest "nothing is reviewing this yet" as the seconds between push and
-  launch; the in-flight claim still lands at the real launch.
+  launch; the in-flight claim still lands at the real launch. Two
+  properties of the window are worth knowing when a parked review does
+  not appear: the **config at fire time governs** — disabling the
+  webhook, clearing `review_on_sync`, or removing the bot from
+  `bot_ids` during the window drops the parked launch (with a
+  `filtered` delivery naming why), because the sweep re-enters none of
+  the admission the inbound request passed; and a parked launch the
+  admission gate refuses (org concurrency, launch rate) or that fails
+  outright is **re-armed with backoff**, not dropped — the forge was
+  answered `202 deferred` and will never redeliver, so the retry has to
+  live here. That chain is bounded (8 attempts, ~45 min); past it, or
+  on a monthly quota/cost denial that resets weeks away, the review is
+  abandoned with a `launch_error` delivery naming the loss rather than
+  disappearing.
   → PR auto-**review** (Revi / `review-pr`). This lane is **review-only**: a
   PR-open NEVER auto-launches the mutating branch-improve loop (Billy) — see
   *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**

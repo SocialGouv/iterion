@@ -150,6 +150,20 @@ func (s *MemoryDeferredLaunchStore) ClaimDue(_ context.Context, now time.Time, l
 	return out, nil
 }
 
+func (s *MemoryDeferredLaunchStore) Reschedule(_ context.Context, subjectKey string, generation int64, fireAt time.Time, attempts int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.rows[subjectKey]
+	if !ok || d.Generation != generation {
+		return nil // a fresh push already replaced this payload
+	}
+	d.FireAt = fireAt
+	d.Attempts = attempts
+	d.ClaimedUntil = time.Time{}
+	s.rows[subjectKey] = d
+	return nil
+}
+
 func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string, generation int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

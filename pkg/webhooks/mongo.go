@@ -189,7 +189,10 @@ func (s *MongoDeferredLaunchStore) Upsert(ctx context.Context, d DeferredLaunch)
 				"source_ip":     d.SourceIP,
 				"public_base":   d.PublicBase,
 				"targets":       d.Targets,
-				// A fresh push re-arms even a subject mid-claim.
+				// A fresh push is a fresh payload: it re-arms even a subject
+				// mid-claim, and it gets the full retry budget back (the
+				// handler builds d with Attempts zero).
+				"attempts":      d.Attempts,
 				"claimed_until": time.Time{},
 			},
 			"$inc":         bson.M{"generation": 1},
@@ -230,6 +233,19 @@ func (s *MongoDeferredLaunchStore) ClaimDue(ctx context.Context, now time.Time, 
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+func (s *MongoDeferredLaunchStore) Reschedule(ctx context.Context, subjectKey string, generation int64, fireAt time.Time, attempts int) error {
+	// Generation-guarded and deliberately NOT an upsert: a row a fresh
+	// push replaced (higher generation) or a closed PR purged must stay
+	// replaced/purged — a stale re-arm must never resurrect it.
+	if _, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": subjectKey, "generation": generation},
+		bson.M{"$set": bson.M{"fire_at": fireAt, "attempts": attempts, "claimed_until": time.Time{}}},
+	); err != nil {
+		return fmt.Errorf("webhooks: reschedule deferred launch: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoDeferredLaunchStore) Delete(ctx context.Context, subjectKey string, generation int64) error {
