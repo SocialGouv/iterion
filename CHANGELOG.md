@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.94.3](https://github.com/SocialGouv/iterion/compare/v3.94.2...v3.94.3) (2026-09-03)
+
+### Bug Fixes
+
+* **chart:** let image.digest pin the server, so one ReplicaSet is one build ([#637](https://github.com/SocialGouv/iterion/issues/637)) ([5334b2d](https://github.com/SocialGouv/iterion/commit/5334b2d5b0708deea52c50af4035776e517a2fbc)), closes [#636](https://github.com/SocialGouv/iterion/issues/636)
+
+    <details><summary>why</summary>
+
+    `iterion.image` could only build `repo:tag`, so "pin the server by digest" was not expressible at all — the operator's only lever was a tag, which is the thing that moves. `runner.image` is consumed verbatim and could already carry a digest; the shared server image had no equivalent seam.
+
+    </details>
+
 ## [3.94.2](https://github.com/SocialGouv/iterion/compare/v3.94.1...v3.94.2) (2026-09-03)
 
 ### Bug Fixes
