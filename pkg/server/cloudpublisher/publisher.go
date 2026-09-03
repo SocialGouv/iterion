@@ -1041,13 +1041,26 @@ func usageBackendForProvider(prov secrets.Provider) string {
 // Everything uncertain means "usable", same contract as refusedUntil.
 func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string) func(secrets.ApiKey) bool {
 	return func(k secrets.ApiKey) bool {
-		// Concurrency ceiling first — cheaper than the meter read, and a
-		// key at its ceiling must rest whatever its refusal history says.
-		// Providers with fair-usage frequency limits publish no numeric
-		// bound to adapt to; the operator sets one on the key, and the
-		// walk passes a full key over exactly like a refused one. Fails
-		// OPEN on a count error: the ceiling is protection against
-		// tripping a provider, not a correctness invariant.
+		// Refusal evidence first. Both tests are independent and each
+		// returns false on its own condition, so the order cannot change
+		// WHICH keys are usable — only what the walk pays to find out.
+		// This one is a keyed point lookup on the meter; the ceiling
+		// below is an unindexed count over every alive run, so asking it
+		// second is what keeps a provider freeze (the case that refuses
+		// several keys in a row) from paying a scan per refused key.
+		backend := usageBackendForProvider(k.Provider)
+		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider))
+		if !until.IsZero() {
+			p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
+				k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
+			return false
+		}
+		// Concurrency ceiling. Providers with fair-usage frequency limits
+		// publish no numeric bound to adapt to; the operator sets one on
+		// the key, and the walk passes a full key over exactly like a
+		// refused one. Fails OPEN on a count error: the ceiling is
+		// protection against tripping a provider, not a correctness
+		// invariant.
 		if k.MaxConcurrentRuns > 0 && p.store != nil && k.Fingerprint != "" {
 			n, err := p.store.CountAliveRunsWithCredFingerprint(ctx, k.Fingerprint, runID)
 			if err != nil {
@@ -1058,14 +1071,7 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string
 				return false
 			}
 		}
-		backend := usageBackendForProvider(k.Provider)
-		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider))
-		if until.IsZero() {
-			return true
-		}
-		p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
-			k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
-		return false
+		return true
 	}
 }
 

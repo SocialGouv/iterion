@@ -290,6 +290,29 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1")(capped) {
 		t.Fatal("a resume must not count itself toward the key's ceiling")
 	}
+
+	// The ceiling and the refusal meter are INDEPENDENT reasons to pass a
+	// key over: either alone skips it, and neither may mask the other.
+	// That is what makes their evaluation order a pure cost question —
+	// the predicate reads the cheap keyed meter before the unindexed
+	// alive-run count, and this pins that the swap changed no verdict.
+	caps := usagecap.NewMemStore()
+	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team"), "fp-capped"),
+		usagecap.Reading{Window: usagecap.WindowFrequency, Status: usagecap.StatusRejected, ObservedAt: time.Now()}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	both := (&Publisher{usageCaps: caps, store: rs, logger: testLogger()}).
+		apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new")
+	if both(capped) {
+		t.Fatal("a key both refused AND at its ceiling must be skipped")
+	}
+	if both(roomy) {
+		t.Fatal("a refused key must be skipped even with ceiling headroom")
+	}
+	// And the mirror: room on the meter, none on the ceiling.
+	if usable(capped) {
+		t.Fatal("a key at its ceiling must be skipped even with a clean meter")
+	}
 }
 
 // End to end at the resolution: the capped key's provider slot walks to
