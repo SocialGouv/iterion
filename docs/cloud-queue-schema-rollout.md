@@ -12,10 +12,14 @@ ordering alone is not sufficient (issue #481).
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
   directions. The current v12 consumer accepts v10/v11 backlog explicitly;
   this is not implicit forward compatibility.
-- **Server first.** Deploy the server (producer) before the runners. The new
-  server is the only side that can start emitting the new version; runners
-  that don't speak it yet hold those messages (see below) instead of
-  destroying them.
+- **Roll the permissive side first.** The server is the only side that can
+  start emitting the new version, so the fleet that must already tolerate it
+  is the runners: deploy them first whenever their window still covers what
+  the old server emits (`Min(new) <= Max(old)` — the ordinary case, and then
+  nothing is ever rejected). Only when a bump raises `MinSchemaVersion` past
+  the old server's version does the server go first, with runners that don't
+  speak it yet holding those messages (see below) instead of destroying them.
+  Full rule and the measured evidence: *Deploy ordering* below.
 - **Additive field whose omission changes operator intent = breaking
   change.** If a new field carries a decision the caller explicitly made
   (budget caps, skills, auto-memory, loop guard, model pins…), a stale runner
@@ -69,9 +73,11 @@ A v12 runner treats v10/v11 messages with no field as epoch 0.
 
 Do not combine the schema bump and first non-zero epoch:
 
-1. **Release A:** deploy v12 with `config.rollout.runnerEpoch: 0`, using Path
-   A (recommended) or Path B below. Verify all server and runner probes show
-   `epoch: 0`.
+1. **Release A:** deploy v12 with `config.rollout.runnerEpoch: 0`. v11 → v12
+   stays inside the compatibility window, so this is a runner-first rollout
+   and neither Path A nor Path B applies — see *Deploy ordering* below.
+   Verify all server and runner probes show `epoch: 0`. (Done in prod on
+   2026-09-02: runner fleet, then server, DLQ untouched throughout.)
 2. **Release B:** set the epoch to 1. New publishers stamp epoch 1. Old v12
    runners delayed-Nak those messages; new runners accept both epoch 0 and 1.
 
