@@ -24,6 +24,7 @@ func (s *Server) registerOAuthTeamRoutes() {
 	s.mux.Handle("POST /api/teams/{id}/oauth/{kind}/authorize/complete", s.requireAuth(http.HandlerFunc(s.handleTeamCompleteOAuth)))
 	s.mux.Handle("POST /api/teams/{id}/oauth/{kind}/credentials", s.requireAuth(http.HandlerFunc(s.handleTeamUploadOAuth)))
 	s.mux.Handle("POST /api/teams/{id}/oauth/{kind}/refresh", s.requireAuth(http.HandlerFunc(s.handleTeamRefreshOAuth)))
+	s.mux.Handle("PATCH /api/teams/{id}/oauth/{kind}", s.requireAuth(http.HandlerFunc(s.handleTeamRenameOAuth)))
 	s.mux.Handle("DELETE /api/teams/{id}/oauth/{kind}", s.requireAuth(http.HandlerFunc(s.handleTeamDeleteOAuth)))
 }
 
@@ -76,6 +77,18 @@ func (s *Server) handleTeamRefreshOAuth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.refreshOAuthForOwner(w, r, secrets.OrgOwnerKey(teamID), secrets.OAuthKind(r.PathValue("kind")))
+}
+
+// handleTeamRenameOAuth names the account behind a team's forfait, so the
+// instance itself answers "whose subscription is this?".
+func (s *Server) handleTeamRenameOAuth(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	s.renameOAuthForOwner(w, r, secrets.OrgOwnerKey(teamID), secrets.OAuthKind(r.PathValue("kind")))
 }
 
 func (s *Server) handleTeamDeleteOAuth(w http.ResponseWriter, r *http.Request) {

@@ -28,13 +28,25 @@ func (s *Server) registerOAuthForfaitRoutes() {
 	// Raw blob paste — kept as a fallback (power users / Codex).
 	s.mux.Handle("POST /api/me/oauth/{kind}/credentials", s.requireAuth(http.HandlerFunc(s.handleUploadOAuthCredentials)))
 	s.mux.Handle("POST /api/me/oauth/{kind}/refresh", s.requireAuth(http.HandlerFunc(s.handleRefreshOAuth)))
+	s.mux.Handle("PATCH /api/me/oauth/{kind}", s.requireAuth(http.HandlerFunc(s.handleRenameOAuth)))
 	s.mux.Handle("DELETE /api/me/oauth/{kind}", s.requireAuth(http.HandlerFunc(s.handleDeleteOAuth)))
 }
 
 // oauthConnectionView is the safe-to-display projection of an
 // OAuthRecord. Plaintext / sealed payload never leave the server.
 type oauthConnectionView struct {
-	Kind                 string   `json:"kind"`
+	Kind string `json:"kind"`
+	// AccountLabel is the operator's name for the account behind this
+	// credential ("jothedev"). Empty on records connected before labels
+	// existed — rename them with PATCH.
+	AccountLabel string `json:"account_label,omitempty"`
+	// Fingerprint is the credential's stable id, and the SAME value the
+	// runtime prints when it picks a credential
+	// ("oauth-forfait(org) used … fp=700acc7b…"). Exposing it is what
+	// lets an operator answer "whose subscription served that run?"
+	// from the API instead of grepping server logs. Non-secret by
+	// construction: a hash, never the token.
+	Fingerprint          string   `json:"fingerprint,omitempty"`
 	Scopes               []string `json:"scopes,omitempty"`
 	AccessTokenExpiresAt *string  `json:"access_token_expires_at,omitempty"`
 	LastRefreshedAt      *string  `json:"last_refreshed_at,omitempty"`
@@ -48,6 +60,8 @@ type oauthConnectionView struct {
 func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
 	return oauthConnectionView{
 		Kind:                 string(r.Kind),
+		AccountLabel:         r.AccountLabel,
+		Fingerprint:          r.Fingerprint,
 		Scopes:               r.Scopes,
 		CreatedAt:            r.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:            r.UpdatedAt.Format(time.RFC3339),
@@ -82,6 +96,12 @@ func (s *Server) handleUploadOAuthCredentials(w http.ResponseWriter, r *http.Req
 func (s *Server) handleRefreshOAuth(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	s.refreshOAuthForOwner(w, r, id.UserID, secrets.OAuthKind(r.PathValue("kind")))
+}
+
+// handleRenameOAuth names the account behind the caller's own forfait.
+func (s *Server) handleRenameOAuth(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	s.renameOAuthForOwner(w, r, id.UserID, secrets.OAuthKind(r.PathValue("kind")))
 }
 
 func (s *Server) handleDeleteOAuth(w http.ResponseWriter, r *http.Request) {
@@ -248,7 +268,7 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusInternalServerError, "build credentials: %v", err)
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob)
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, r.URL.Query().Get("account_label"))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -274,12 +294,12 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "empty body — paste the credentials.json / auth.json content")
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body)
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, r.URL.Query().Get("account_label"))
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, expires=%v)", ownerKey, kind, rec.AccessTokenExpiresAt)
+	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
 	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste"})
 	writeJSON(w, toOAuthView(rec))
 }
@@ -287,7 +307,7 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 // sealOAuthRecord validates a credentials blob, extracts expiry/scope
 // metadata, seals it bound to (ownerKey, kind), and upserts the record.
 // Shared by the browser flow and the paste path.
-func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte) (secrets.OAuthRecord, error) {
+func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string) (secrets.OAuthRecord, error) {
 	now := time.Now().UTC()
 	rec := secrets.OAuthRecord{
 		// ID is derived in the OAuth store's Upsert (memory + Mongo
@@ -337,6 +357,16 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// Derived from the account the payload names where it names one, so
 	// connecting ONE subscription twice does not open two meters.
 	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, blob)
+	// A re-connect that names no account keeps the label the record
+	// already carried: rotating a token is not renaming the account, and
+	// silently blanking the name would put the operator back to reading
+	// fingerprints out of the logs.
+	rec.AccountLabel = strings.TrimSpace(accountLabel)
+	if rec.AccountLabel == "" {
+		if prev, err := s.oauthStore.Get(ctx, ownerKey, kind); err == nil {
+			rec.AccountLabel = prev.AccountLabel
+		}
+	}
 	if err := s.oauthStore.Upsert(ctx, rec); err != nil {
 		return secrets.OAuthRecord{}, err
 	}
@@ -379,6 +409,44 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	writeJSON(w, toOAuthView(rec))
+}
+
+// renameOAuthForOwner sets (or clears) the account label on an existing
+// connection. It exists because the label is the only thing that maps a
+// credential back to a human account, and every record connected before
+// labels existed carries none — so the feature would be inert on exactly
+// the credentials an operator most needs to identify today. Renaming
+// touches metadata only: the sealed payload, fingerprint and expiry are
+// untouched, so a rename can never rotate or invalidate a live key.
+func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, ownerKey string, kind secrets.OAuthKind) {
+	if !kind.Valid() {
+		httpError(w, http.StatusBadRequest, "unknown oauth kind")
+		return
+	}
+	var req struct {
+		AccountLabel *string `json:"account_label"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode body: %v", err)
+		return
+	}
+	if req.AccountLabel == nil {
+		httpError(w, http.StatusBadRequest, "account_label required (send \"\" to clear it)")
+		return
+	}
+	rec, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "no %s connection", kind)
+		return
+	}
+	rec.AccountLabel = strings.TrimSpace(*req.AccountLabel)
+	rec.UpdatedAt = time.Now().UTC()
+	if err := s.oauthStore.Upsert(r.Context(), rec); err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditOAuthByOwner(r, ownerKey, "renamed", kind, map[string]any{"account_label": rec.AccountLabel})
 	writeJSON(w, toOAuthView(rec))
 }
 

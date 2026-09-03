@@ -187,7 +187,8 @@ export interface paths {
         delete: operations["deleteAdminLlmOauthByKind"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/admin/llm/oauth/{kind} */
+        patch: operations["patchAdminLlmOauthByKind"];
         trace?: never;
     };
     "/api/admin/llm/oauth/{kind}/authorize/complete": {
@@ -1177,7 +1178,8 @@ export interface paths {
         delete: operations["deleteMeOauthByKind"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/me/oauth/{kind} */
+        patch: operations["patchMeOauthByKind"];
         trace?: never;
     };
     "/api/me/oauth/{kind}/authorize/complete": {
@@ -6433,6 +6435,26 @@ export interface operations {
             };
         };
     };
+    patchAdminLlmOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postAdminLlmOauthByKindAuthorizeComplete: {
         parameters: {
             query?: never;
@@ -7728,6 +7750,26 @@ export interface operations {
         };
     };
     deleteMeOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchMeOauthByKind: {
         parameters: {
             query?: never;
             header?: never;

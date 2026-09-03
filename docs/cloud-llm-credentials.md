@@ -211,6 +211,39 @@ the ChatGPT-forfait wire gates models by the codex-cli `version:` header
 `ITERION_CODEX_VERSION` to a recent codex-cli version (gpt-5.5 needed
 ≥ 0.130).
 
+## Name the account behind every credential
+
+Nothing else identifies it. The payload is sealed, and when the publisher
+picks a credential it logs a FINGERPRINT:
+
+```
+cloudpublisher: oauth-forfait(org) used run=… kind=claude_code fp=700acc7b00f
+```
+
+Answering "whose subscription paid for that run?" from hex alone means
+grepping server logs and correlating by hand — measured on 2026-09-03,
+with three different fingerprints across three owners in one log window.
+
+So name it at connect time, and rename the ones already connected:
+
+```sh
+# at install (paste path; the browser flow takes the same query param)
+iterion remote api POST "/api/teams/$TEAM/oauth/claude_code/credentials?account_label=jothedev" --data @blob.json
+
+# rename later — metadata only, the sealed credential is untouched
+iterion remote api PATCH "/api/teams/$TEAM/oauth/claude_code" --data '{"account_label":"jothedev"}'
+
+# platform tier (super-admin), same idea
+iterion remote admin llm oauth set claude_code --from-file ./creds.json --account-label "iterion platform"
+iterion remote admin llm oauth name claude_code --account-label "iterion platform"
+```
+
+The listing then answers the question directly — `account_label` beside
+the `fingerprint`, which is the SAME string the logs print, so a log line
+and the API join without a human in the middle. A re-connect that names
+no account KEEPS the existing label: rotating a token is not renaming the
+account.
+
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
 The credential every tenant-less run used to inherit from the runner pod's

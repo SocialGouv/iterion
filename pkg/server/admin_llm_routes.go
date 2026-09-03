@@ -43,6 +43,7 @@ func (s *Server) registerAdminLLMRoutes() {
 		s.mux.Handle("POST /api/admin/llm/oauth/{kind}/authorize/start", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminStartPlatformOAuth)))
 		s.mux.Handle("POST /api/admin/llm/oauth/{kind}/authorize/complete", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminCompletePlatformOAuth)))
 		s.mux.Handle("POST /api/admin/llm/oauth/{kind}/refresh", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminRefreshPlatformOAuth)))
+		s.mux.Handle("PATCH /api/admin/llm/oauth/{kind}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminRenamePlatformOAuth)))
 		s.mux.Handle("DELETE /api/admin/llm/oauth/{kind}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminDeletePlatformOAuth)))
 	}
 }
@@ -137,6 +138,13 @@ func (s *Server) handleAdminCompletePlatformOAuth(w http.ResponseWriter, r *http
 
 func (s *Server) handleAdminRefreshPlatformOAuth(w http.ResponseWriter, r *http.Request) {
 	s.refreshOAuthForOwner(w, r, secrets.PlatformOwnerKey, secrets.OAuthKind(r.PathValue("kind")))
+}
+
+// handleAdminRenamePlatformOAuth names the account behind a PLATFORM
+// forfait — the tier that serves every team with no credential of its
+// own, and therefore the one whose owner is hardest to recall.
+func (s *Server) handleAdminRenamePlatformOAuth(w http.ResponseWriter, r *http.Request) {
+	s.renameOAuthForOwner(w, r, secrets.PlatformOwnerKey, secrets.OAuthKind(r.PathValue("kind")))
 }
 
 func (s *Server) handleAdminDeletePlatformOAuth(w http.ResponseWriter, r *http.Request) {

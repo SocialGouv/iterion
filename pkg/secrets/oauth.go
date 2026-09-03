@@ -96,9 +96,16 @@ type OAuthRecord struct {
 	// account), self-healed on legacy records at their first refresh. It
 	// is what downstream metering keys on — re-posting credentials is the
 	// act that says "different subscription", so it re-stamps.
-	Fingerprint string    `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
-	CreatedAt   time.Time `bson:"created_at" json:"created_at"`
-	UpdatedAt   time.Time `bson:"updated_at" json:"updated_at"`
+	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// AccountLabel names the ACCOUNT this credential belongs to, in the
+	// operator's own words ("jothedev", "SocialGouv Revi"). Nothing else
+	// in the record identifies it: the payload is sealed, and the runtime
+	// logs print only the fingerprint — so answering "whose subscription
+	// is this run spending?" meant grepping server logs and correlating
+	// hex by hand. Purely descriptive; no resolution path reads it.
+	AccountLabel string    `bson:"account_label,omitempty" json:"account_label,omitempty"`
+	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt    time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // OAuthStore is the persistence interface for sealed OAuth records.

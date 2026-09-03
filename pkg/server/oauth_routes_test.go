@@ -200,3 +200,89 @@ func TestOAuthConnections_SealsAndNeverEchoesTheCredential(t *testing.T) {
 		}
 	})
 }
+
+// Nothing on an OAuth record says WHOSE account it is: the payload is
+// sealed, and the runtime logs print only a fingerprint — so answering
+// "whose subscription served that run?" meant grepping server logs and
+// correlating hex by hand (measured, 2026-09-03). The label closes that,
+// and the fingerprint is exposed beside it because it is the join key
+// the logs actually print.
+func TestOAuthAccountLabel(t *testing.T) {
+	_, hs, signer, store := oauthTestServer(t)
+	jo := oauthJWT(t, signer, "jo")
+	blob := func(tok string) string {
+		return `{"claudeAiOauth":{"accessToken":"` + tok + `","refreshToken":"rt","expiresAt":4102444800000}}`
+	}
+	view := func(body string) map[string]any {
+		t.Helper()
+		var v map[string]any
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			t.Fatalf("decode %q: %v", body, err)
+		}
+		return v
+	}
+
+	t.Run("connecting names the account, and the view exposes the join key", func(t *testing.T) {
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials?account_label=jothedev", jo, blob("sk-ant-oat01-A"))
+		if code != http.StatusOK {
+			t.Fatalf("upload = %d body=%s", code, body)
+		}
+		v := view(body)
+		if v["account_label"] != "jothedev" {
+			t.Fatalf("account_label = %v, want jothedev", v["account_label"])
+		}
+		fp, _ := v["fingerprint"].(string)
+		if fp == "" {
+			t.Fatal("fingerprint must be exposed — it is what the runtime logs print when picking a credential")
+		}
+		if strings.Contains(body, "sk-ant-oat01-A") {
+			t.Fatal("the credential itself must never come back")
+		}
+	})
+
+	t.Run("rotating the token keeps the account name", func(t *testing.T) {
+		// A re-connect with no label is a token rotation, not a rename:
+		// blanking the name here would put the operator back to reading
+		// fingerprints out of the logs.
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", jo, blob("sk-ant-oat01-B"))
+		if code != http.StatusOK {
+			t.Fatalf("re-upload = %d body=%s", code, body)
+		}
+		if v := view(body); v["account_label"] != "jothedev" {
+			t.Fatalf("account_label = %v after rotation, want it preserved", v["account_label"])
+		}
+		rec, err := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.AccountLabel != "jothedev" {
+			t.Fatalf("store label = %q", rec.AccountLabel)
+		}
+	})
+
+	t.Run("rename backfills a record connected before labels existed", func(t *testing.T) {
+		code, body := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", jo, `{"account_label":"jo perso"}`)
+		if code != http.StatusOK {
+			t.Fatalf("rename = %d body=%s", code, body)
+		}
+		if v := view(body); v["account_label"] != "jo perso" {
+			t.Fatalf("account_label = %v", v["account_label"])
+		}
+		// Metadata only: the sealed credential and its fingerprint are
+		// untouched, so a rename can never rotate or break a live key.
+		rec, err := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rec.SealedPayload) == 0 || rec.Fingerprint == "" {
+			t.Fatal("rename must not disturb the credential itself")
+		}
+	})
+
+	t.Run("rename refuses an absent field rather than blanking the name", func(t *testing.T) {
+		code, _ := oauthCall(t, hs, http.MethodPatch, "/api/me/oauth/claude_code", jo, `{}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("rename with no account_label = %d, want 400 (an omitted field must not clear the label)", code)
+		}
+	})
+}
