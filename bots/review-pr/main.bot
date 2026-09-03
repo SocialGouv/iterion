@@ -306,10 +306,9 @@ vars:
 ## single "wrap up now" steering message the reviewer picks up at its
 ## next turn. It never judges code and never adds findings. Cost is
 ## bounded by design: ≤4 haiku evals on a 5m cooldown (~cents/run).
-## The cost_gt monitor rides budget_warning events, which today are
-## emitted at node END (usage is recorded per node) — it becomes a live
-## mid-review signal once the engine streams usage progress; until then
-## the cooldown wakes are the pacing signal.
+## The cost_gt monitor rides the debounced mid-node usage_progress
+## samples (plus budget_warning), so it fires WHILE the review runs —
+## the cooldown wakes cover pacing between samples.
 supervisor pacer:
   watches: [reviewer_claude, reviewer_gpt]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-haiku-4-5}"

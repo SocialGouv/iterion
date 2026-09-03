@@ -271,6 +271,16 @@ const (
 	EventEdgeSelected   EventType = "edge_selected"
 	EventBudgetWarning  EventType = "budget_warning"
 	EventBudgetExceeded EventType = "budget_exceeded"
+	// EventUsageProgress is an OBSERVATIONAL mid-node usage sample —
+	// data: {tokens, used?, model} where tokens is the node's cumulative
+	// billed-token estimate so far and used its estimated USD cost
+	// (omitted when the model is unpriced: zero means unknown, never
+	// free). Budget accounting is untouched — the node's spend is still
+	// recorded once, at node end. Emitted debounced (on significant
+	// growth, not per turn); its consumer is the supervisor hub's
+	// cost_gt monitor, which without it only fires after the node
+	// completes — too late to steer.
+	EventUsageProgress EventType = "usage_progress"
 	// EventBudgetExitGrace records that a node ran on a SPENT budget
 	// because it sits on the run's exit path — data: {dimension, used,
 	// limit, node}. A run that emits it has, deliberately, spent past

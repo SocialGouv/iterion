@@ -280,7 +280,14 @@ are wildcards):
 - `node_id` — matches the event's node
 - `tool_name` — matches a tool event's tool (`Bash`, `Edit`, …)
 - `text_contains` — case-insensitive substring against the rendered event
-- `cost_gt` — fires on a `budget_warning` whose `used` exceeds the value
+- `cost_gt` — fires on a `budget_warning` OR a mid-node `usage_progress`
+  sample whose `used` (estimated USD) exceeds the value. The
+  `usage_progress` stream is what makes this a LIVE pacing signal: the
+  run's budget accounting records a node's spend once, at node end, so a
+  `budget_warning` alone would fire only after the watched node completed
+  — too late to steer. Samples are debounced (emitted on significant
+  growth, not per turn) and an unpriced sample (unknown model) carries
+  tokens only, which never satisfies a dollar threshold.
 
 The supervisor bot registers the few signals it cares about and is then
 woken only when they fire, instead of re-reading every turn — this is the

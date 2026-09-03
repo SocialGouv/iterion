@@ -181,8 +181,16 @@ type EventHooks struct {
 	// observational — the executor has already decided whether to stop the
 	// run by the time it fires — but it is the only place the timeline
 	// learns that iterion stopped itself rather than being refused.
-	OnUsageCap     func(nodeID string, info UsageCapInfo)
-	OnLLMCompacted func(nodeID string, info LLMCompactInfo)
+	OnUsageCap func(nodeID string, info UsageCapInfo)
+	// OnUsageProgress fires with a node's CUMULATIVE mid-call token
+	// usage (claude_code: per streamed assistant API message, deduped by
+	// message id; claw's equivalent is derived from per-step usage in
+	// the store hooks layer). Observational only — budget accounting
+	// still records the spend once, at node end. The store hook
+	// debounces it into usage_progress events so a supervisor's cost_gt
+	// monitor can fire while the node is still steerable.
+	OnUsageProgress func(nodeID string, info UsageProgressInfo)
+	OnLLMCompacted  func(nodeID string, info LLMCompactInfo)
 	OnToolStarted  func(nodeID string, info LLMToolStartedInfo)
 	OnToolCall     func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)

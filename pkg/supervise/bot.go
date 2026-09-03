@@ -69,7 +69,7 @@ const decisionSchema = `{
           "node_id":       {"type": "string"},
           "tool_name":     {"type": "string", "description": "Match a tool by name, e.g. Bash, Edit."},
           "text_contains": {"type": "string", "description": "Case-insensitive substring matched against the rendered event."},
-          "cost_gt":       {"type": "number", "description": "Fire when a budget_warning reports used > this value."}
+          "cost_gt":       {"type": "number", "description": "Fire when a budget_warning or a mid-node usage_progress sample reports used > this value (USD)."}
         }
       }
     },

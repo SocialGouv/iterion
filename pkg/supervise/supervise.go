@@ -109,7 +109,11 @@ type Monitor struct {
 	// error fragment, a failing-test marker.
 	TextContains string `json:"text_contains,omitempty"`
 	// CostGt fires on a budget_warning whose Data["used"] exceeds this
-	// (USD or token count, whichever the dimension reports).
+	// (USD or token count, whichever the dimension reports), or on a
+	// usage_progress sample whose estimated USD "used" exceeds it — the
+	// mid-node signal that lets a pacer intervene while the watched node
+	// still has a turn left (a budget_warning lands only when the run's
+	// accounting records the spend, i.e. after the node completes).
 	CostGt float64 `json:"cost_gt,omitempty"`
 }
 
@@ -138,9 +142,11 @@ func (m Monitor) matches(evt *store.Event) bool {
 		if !(m.CostGt > 0) {
 			return false
 		}
-		if evt.Type != store.EventBudgetWarning {
+		if evt.Type != store.EventBudgetWarning && evt.Type != store.EventUsageProgress {
 			return false
 		}
+		// An unpriced usage_progress sample carries no "used" — it cannot
+		// assert a dollar threshold, so it never fires this branch.
 		if used, ok := numField(evt.Data, "used"); !ok || used <= m.CostGt {
 			return false
 		}
