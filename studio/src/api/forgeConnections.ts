@@ -133,6 +133,11 @@ export interface ForgeProvisionResult {
   managed_secret_id: string;
   bot_ids: string[];
   created: boolean;
+  // Set (202) when the org requires an org admin's approval: nothing was
+  // provisioned yet — the request is parked in the org approval queue.
+  pending_approval?: boolean;
+  approval_id?: string;
+  detail?: string;
 }
 
 // ForgeOAuthApp is a per-tenant, per-instance OAuth application's credentials

@@ -25,6 +25,123 @@ func (s *Server) registerOrgRoutes() {
 	s.mux.Handle("GET /api/orgs/{id}/usage", s.requireAuth(http.HandlerFunc(s.handleOrgUsage)))
 	s.mux.Handle("GET /api/orgs/{id}/teams", s.requireAuth(http.HandlerFunc(s.handleListOrgTeams)))
 	s.mux.Handle("POST /api/orgs/{id}/teams", s.requireAuth(http.HandlerFunc(s.handleCreateOrgTeam)))
+	s.mux.Handle("GET /api/orgs/{id}/settings", s.requireAuth(http.HandlerFunc(s.handleGetOrgSettings)))
+	s.mux.Handle("PATCH /api/orgs/{id}/settings", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgSettings)))
+	s.mux.Handle("PATCH /api/orgs/{id}/teams/{team_id}/caps", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgTeamCaps)))
+}
+
+// orgSettingsView is the org-admin-managed slice of Org settings — the
+// governance knobs an org runs itself, distinct from the super-admin
+// plan/budget fields (/api/admin/orgs) which stay the platform's contract.
+type orgSettingsView struct {
+	RequireProvisionApproval bool `json:"require_provision_approval"`
+}
+
+func (s *Server) handleGetOrgSettings(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	if !s.canViewOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "not a member of this org")
+		return
+	}
+	o, err := s.authStore().GetOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	writeJSON(w, orgSettingsView{RequireProvisionApproval: o.RequireProvisionApproval})
+}
+
+func (s *Server) handleUpdateOrgSettings(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	var req struct {
+		RequireProvisionApproval *bool `json:"require_provision_approval,omitempty"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	o, err := s.authStore().GetOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	if req.RequireProvisionApproval != nil {
+		o.RequireProvisionApproval = *req.RequireProvisionApproval
+	}
+	o.UpdatedAt = time.Now().UTC()
+	if err := s.authStore().UpdateOrg(r.Context(), o); err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditOrg(r, orgID, "org.settings_updated", "org", orgID, map[string]any{
+		"require_provision_approval": o.RequireProvisionApproval,
+	})
+	writeJSON(w, orgSettingsView{RequireProvisionApproval: o.RequireProvisionApproval})
+}
+
+// handleUpdateOrgTeamCaps lets an ORG admin set the per-team executor caps
+// of the teams in THEIR org (MaxConcurrentRuns / LaunchRatePerMin) — the
+// same fields the super-admin console manages, delegated one level down.
+// The org-level monthly budget stays super-admin: an org does not raise
+// its own plan.
+func (s *Server) handleUpdateOrgTeamCaps(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	teamID := r.PathValue("team_id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	t, err := s.authStore().GetTeam(r.Context(), teamID)
+	if err != nil || t.OrgID != orgID {
+		httpError(w, http.StatusNotFound, "team not in org")
+		return
+	}
+	var req struct {
+		MaxConcurrentRuns *int `json:"max_concurrent_runs,omitempty"`
+		LaunchRatePerMin  *int `json:"launch_rate_per_min,omitempty"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !applyNonNegative(w, req.MaxConcurrentRuns, &t.MaxConcurrentRuns, "max_concurrent_runs") {
+		return
+	}
+	if !applyNonNegative(w, req.LaunchRatePerMin, &t.LaunchRatePerMin, "launch_rate_per_min") {
+		return
+	}
+	// The platform default is a CEILING for the delegated route: any non-zero
+	// team value overrides it in the launch gate (orValue), so without this
+	// clamp an org admin could raise a team above the deployment-wide limit.
+	// Raising past the ceiling stays super-admin (/api/admin/orgs). 0 keeps
+	// meaning "inherit the platform default" and is always allowed. Only the
+	// fields THIS request submitted are validated — a stored super-admin
+	// value above the ceiling must not lock the row against edits of the
+	// other field.
+	if d := s.orgDefaults.MaxConcurrentRuns; req.MaxConcurrentRuns != nil && d > 0 && t.MaxConcurrentRuns > d {
+		httpError(w, http.StatusUnprocessableEntity,
+			"max_concurrent_runs %d exceeds the platform ceiling %d — a platform admin must raise it", t.MaxConcurrentRuns, d)
+		return
+	}
+	if d := s.orgDefaults.LaunchRatePerMin; req.LaunchRatePerMin != nil && d > 0 && t.LaunchRatePerMin > d {
+		httpError(w, http.StatusUnprocessableEntity,
+			"launch_rate_per_min %d exceeds the platform ceiling %d — a platform admin must raise it", t.LaunchRatePerMin, d)
+		return
+	}
+	t.UpdatedAt = time.Now().UTC()
+	if err := s.authStore().UpdateTeam(r.Context(), t); err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditOrg(r, orgID, "team.caps_updated", "team", teamID, map[string]any{
+		"max_concurrent_runs": t.MaxConcurrentRuns, "launch_rate_per_min": t.LaunchRatePerMin,
+	})
+	writeJSON(w, toTeamSummaryView(t))
 }
 
 type orgMemberView struct {

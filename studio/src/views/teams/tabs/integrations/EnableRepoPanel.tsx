@@ -42,7 +42,7 @@ export function EnableRepoPanel({
    *  argument surfaces the repo that was just enabled so callers (e.g.
    *  the connect wizard) can jump straight to it — legacy callers may
    *  ignore it (backward-compatible with the old no-arg signature). */
-  onDone: (enabled?: { repo: string; connectionID: string }) => void;
+  onDone: (enabled?: { repo: string; connectionID: string; pending?: boolean }) => void;
   onCancel: () => void;
   onError: (m: string) => void;
 }) {
@@ -119,8 +119,8 @@ export function EnableRepoPanel({
           if (cron) crons[b.name] = cron;
         }
       }
-      await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
-      onDone({ repo, connectionID: conn.id });
+      const res = await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
+      onDone({ repo, connectionID: conn.id, pending: !!res.pending_approval });
     } catch (e) {
       onError(errorMessage(e));
     } finally {

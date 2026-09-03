@@ -1696,6 +1696,85 @@ export interface paths {
         patch: operations["patchOrgsByIdMembersByUserId"];
         trace?: never;
     };
+    "/api/orgs/{id}/provision-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/provision-approvals */
+        get: operations["getOrgsByIdProvisionApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/provision-approvals/{approval_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/orgs/{id}/provision-approvals/{approval_id}/approve */
+        post: operations["postOrgsByIdProvisionApprovalsByApprovalIdApprove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/provision-approvals/{approval_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/orgs/{id}/provision-approvals/{approval_id}/reject */
+        post: operations["postOrgsByIdProvisionApprovalsByApprovalIdReject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/settings */
+        get: operations["getOrgsByIdSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/orgs/{id}/settings */
+        patch: operations["patchOrgsByIdSettings"];
+        trace?: never;
+    };
     "/api/orgs/{id}/sso/domains": {
         parameters: {
             query?: never;
@@ -1835,6 +1914,26 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/teams/{team_id}/caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                team_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/orgs/{id}/teams/{team_id}/caps */
+        patch: operations["patchOrgsByIdTeamsByTeamIdCaps"];
         trace?: never;
     };
     "/api/orgs/{id}/usage": {
@@ -3905,6 +4004,25 @@ export interface paths {
         get: operations["getTeamsByIdPool"];
         /** PUT /api/teams/{id}/pool */
         put: operations["putTeamsByIdPool"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/provision-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/provision-approvals */
+        get: operations["getTeamsByIdProvisionApprovals"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -8331,6 +8449,108 @@ export interface operations {
             };
         };
     };
+    getOrgsByIdProvisionApprovals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdProvisionApprovalsByApprovalIdApprove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdProvisionApprovalsByApprovalIdReject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getOrgsByIdSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchOrgsByIdSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getOrgsByIdSsoDomains: {
         parameters: {
             query?: never;
@@ -8542,6 +8762,27 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchOrgsByIdTeamsByTeamIdCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                team_id: string;
             };
             cookie?: never;
         };
@@ -11340,6 +11581,26 @@ export interface operations {
         };
     };
     putTeamsByIdPool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdProvisionApprovals: {
         parameters: {
             query?: never;
             header?: never;

@@ -288,6 +288,13 @@ type Org struct {
 	// across the whole org (a soft cap: in-flight runs finish; new
 	// launches are denied once crossed).
 	MonthlyCostCapUSD float64 `bson:"monthly_cost_cap_usd,omitempty" json:"monthly_cost_cap_usd,omitempty"`
+
+	// RequireProvisionApproval (org-admin managed) parks any repo-bot
+	// provisioning requested by a TEAM admin as a pending approval an ORG
+	// admin must approve before anything is created forge-side. Org
+	// admins (and super-admins) provisioning themselves are not gated.
+	// Off by default — existing orgs keep the direct-provision behaviour.
+	RequireProvisionApproval bool `bson:"require_provision_approval,omitempty" json:"require_provision_approval,omitempty"`
 }
 
 // EffectiveStatus treats an empty status (legacy rows) as active.
