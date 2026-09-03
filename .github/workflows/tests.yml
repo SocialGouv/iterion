@@ -556,6 +556,14 @@ jobs:
           helm template t charts/iterion --set image.tag=edge \
             --set "image.digest=$digest" > /tmp/render-digest.yaml
           grep -q "image: ghcr.io/socialgouv/iterion@$digest" /tmp/render-digest.yaml
+          # ...and that NOTHING still resolves through the tag. The render has
+          # two iterion.image containers (server + runner fallback) and grep -q
+          # stops at the first, so a refactor routing only one of them through
+          # the digest would otherwise still pass.
+          if grep -q "image: ghcr.io/socialgouv/iterion:edge" /tmp/render-digest.yaml; then
+            echo "::error::a container still resolved through image.tag despite image.digest being set"
+            exit 1
+          fi
           if helm template t charts/iterion --set image.digest=deadbeef >/dev/null 2>&1; then
             echo "::error::a malformed image.digest rendered instead of failing"
             exit 1

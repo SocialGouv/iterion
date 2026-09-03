@@ -316,9 +316,18 @@ installs use one to iterate fast. Know what it costs: a tag is resolved
   measured on prod 2026-09-02, three server pods of ReplicaSet `548c4b7f7d`
   serving v3.92.0 and v3.93.0 at once, visible outside as `/healthz` and
   `/api/server/info` disagreeing on `commit`;
-- a later HPA/KEDA scale-up creates a pod **from an existing ReplicaSet** and
-  pulls whatever the tag means *then* — the ReplicaSet drifts with no rollout
+- a later HPA/KEDA scale-up creates a pod **from an existing ReplicaSet**, and
+  what it runs depends on `pullPolicy`. With `Always` it is whatever the tag
+  means *then*; with the chart default **`IfNotPresent`** kubelet does not
+  re-resolve a tag it already has cached on that node, so the pod runs an
+  arbitrarily *older* layer. Either way the ReplicaSet drifts with no rollout
   entry and no signal.
+
+`IfNotPresent` has a second consequence worth stating plainly: on a moving
+tag, `kubectl rollout restart` is **not** a reliable way to reach the current
+build — a node with the tag cached serves the cached layer. Fast iteration on
+`:edge` needs `pullPolicy: Always` at minimum, and even then buys only
+"current at each pod's start time", not "one build".
 
 That matters beyond cosmetics once the rollout epoch is in play: the epoch
 rides the PodTemplate, which assumes one ReplicaSet is one build.
@@ -340,6 +349,18 @@ gh api /orgs/<org>/packages/container/iterion/versions \
 
 The trade-off is real and yours: a digest turns each deploy into an explicit
 bump instead of a `rollout restart`.
+
+> **Once `digest` is set in a values file, every `--set image.tag=…` becomes a
+> silent no-op** — the upgrade succeeds, no PodTemplate field changes, nothing
+> rolls, and nothing warns. That bites the sequencing recipes in
+> [cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md), where the
+> phase-1 command also sets `runner.image` — which IS consumed verbatim. On a
+> digest-pinned install that phase rolls only the *runners*, to the old tag,
+> while the server stays put: pods restart, the upgrade reports success, and
+> an operator who reads that as "the server is on the new build" then publishes
+> new-version messages from the old one. **Move a digest-pinned install by
+> bumping `image.digest`** (and `runner.image` to a digest reference), never by
+> `--set image.tag`.
 
 **The chart pins nothing by default**, and `image.digest` pins the *shared*
 image only. `runner.image` — the per-runner-pod override — is empty by
