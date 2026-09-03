@@ -415,6 +415,26 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// Org approval-gate parity: a MANAGED (forge-provisioned) config is the
+	// runtime face of a repo integration, and it carries the same automation
+	// switches the provisioning gate parks (bots, hold labels, allowlist,
+	// zero-touch lanes, overlap). Letting a team admin PATCH those here
+	// would bypass Org.RequireProvisionApproval entirely — so an EXPANDING
+	// patch on a managed config is refused toward the integrations API,
+	// whose approval flow is the governed path. Tightenings and neutral
+	// fields (launch vars, rate limits, names) stay direct.
+	if strings.HasPrefix(cfg.ProvisionedBy, "forge:") {
+		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+		if gerr != nil {
+			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
+			return
+		}
+		if gateOrg != "" && webhookPatchExpandsSurface(cfg, req) {
+			httpError(w, http.StatusConflict,
+				"this org requires approval for expanding a managed integration's automation — request the change through the repo-bots API (/api/teams/{id}/forge/repo-bots), which queues it for an org admin")
+			return
+		}
+	}
 	if req.Name != nil {
 		cfg.Name = *req.Name
 	}

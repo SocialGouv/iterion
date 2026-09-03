@@ -3,6 +3,88 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.98.0](https://github.com/SocialGouv/iterion/compare/v3.97.0...v3.98.0) (2026-09-03)
+
+### Features
+
+* **oauth:** name the account behind a credential, and expose its fingerprint ([#653](https://github.com/SocialGouv/iterion/issues/653)) ([5e27183](https://github.com/SocialGouv/iterion/commit/5e2718395fbe11b756cabcd46c9546893506a362))
+
+    <details><summary>why</summary>
+
+    Nothing on an OAuth record said WHOSE account it was. The payload is sealed, the API view exposed neither a label nor the fingerprint, and the only place the credential is ever identified is a server log line the publisher writes when it picks one (fp=700acc7b…). Answering "whose subscription paid for that run?" therefore meant grepping logs and correlating hex by hand — measured today, with three fingerprints across three owners in one window.
+
+    </details>
+
+### Bug Fixes
+
+* **mcp:** make the explicitly-named wildcard's fatal boot a decision, not an accident ([#645](https://github.com/SocialGouv/iterion/issues/645)) ([fd3f89b](https://github.com/SocialGouv/iterion/commit/fd3f89b5019894297cdc1711c5ed47d1a309a3d2)), closes [#638](https://github.com/SocialGouv/iterion/issues/638), references [#633](https://github.com/SocialGouv/iterion/issues/633) [#633](https://github.com/SocialGouv/iterion/issues/633)
+
+    <details><summary>why</summary>
+
+    Two lines apart, expandWildcards hard-fails a wildcard whose MCP server cannot boot and merely warns when that server booted with no tools. The asymmetry is correct — #633 established that ambient servers (target repo .mcp.json, plugin catalog) degrade per-server upstream in buildTask, so a wildcard reaching this function is a DECLARED dependency and must never be dropped in silence — but nothing at the code site said so, and the error named neither the declaration nor a way out. A reader had…
+
+    </details>
+
+## [3.97.0](https://github.com/SocialGouv/iterion/compare/v3.96.2...v3.97.0) (2026-09-03)
+
+### Features
+
+* **ir:** a codex fallback stage is refused at launch where the node will run sandboxed ([#648](https://github.com/SocialGouv/iterion/issues/648)) ([c820b54](https://github.com/SocialGouv/iterion/commit/c820b5445e60b75456eb962f4a04f33fda7d7ce1))
+
+    <details><summary>why</summary>
+
+    The codex CLI hard-errors on any non-noop sandbox driver at dispatch — so a codex stage on a sandboxed node fails EXACTLY when the fallback chain is needed, which is worse than not having it. ApplyRunFallback now resolves each node's effective sandbox mode (node override → workflow spec → the deployment's ITERION_SANDBOX_DEFAULT snapshot, threaded through ExecutorSpec from both the cloud runner and the local service) and refuses the stage with the same launch-time voice as the other C176…
+
+    </details>
+
+## [3.96.2](https://github.com/SocialGouv/iterion/compare/v3.96.1...v3.96.2) (2026-09-03)
+
+### Bug Fixes
+
+* **forge:** refresh lead must exceed the tick period, or a token phase-locks onto its own expiry ([#649](https://github.com/SocialGouv/iterion/issues/649)) ([1417654](https://github.com/SocialGouv/iterion/commit/1417654fbb946051c352377dc3aa95cc6eab5d8b))
+
+    <details><summary>why</summary>
+
+    The refresh worker only renews connections expiring within Lead (was 5m), swept every 10m: a 1h installation token could go from "not yet due" to "expired" between two ticks, the refresh then landing AT expiry — and since each mint inherits that phase, the connection locks onto an always-refreshed-at-death cycle. Any run whose launch minute sits just before the lock point is sealed a token with seconds of life: its clone barely makes it, its state push and NATS redeliveries die on it.
+
+    </details>
+
+## [3.96.1](https://github.com/SocialGouv/iterion/compare/v3.96.0...v3.96.1) (2026-09-03)
+
+### Bug Fixes
+
+* **quota:** classify an account spend ceiling, tell the PR when a review parks, stop runs on a closed PR ([#639](https://github.com/SocialGouv/iterion/issues/639)) ([cca3d20](https://github.com/SocialGouv/iterion/commit/cca3d20d524d73de9b44e069a9a2333ddb0bfce8)), references [other/#7](https://github.com/SocialGouv/iterion/issues/7) [widgets/#7](https://github.com/SocialGouv/iterion/issues/7)
+
+    <details><summary>why</summary>
+
+    "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage" put THREE words and an apostrophe between "your" and "limit"; the qualifier pattern tolerated exactly one word without one, so the notice sailed through as the node's answer and died as "structured output invalid: missing required field …" — the precise masking bug the pattern's own comment was written for, re-opened by a new wording (three branch-improve-loop runs on 2026-09-03, runs 01a06694 /…
+
+    </details>
+
+## [3.96.0](https://github.com/SocialGouv/iterion/compare/v3.95.0...v3.96.0) (2026-09-03)
+
+### Features
+
+* **secrets:** per-key concurrency ceiling — the operator's answer to fair-usage limits no provider will quantify ([#640](https://github.com/SocialGouv/iterion/issues/640)) ([b7e8402](https://github.com/SocialGouv/iterion/commit/b7e8402b601a085c5f3d479cb6f5b784f7cd7801))
+
+    <details><summary>why</summary>
+
+    A provider that freezes an account for 'usage pattern' violations publishes NO numeric bound to adapt to: the refusal message names no frequency, the 200s carry no rate headers, and the threshold only reveals itself by tripping it — which is how a whole fleet ended up frozen behind one credential. The bound has to be operator-set.
+
+    </details>
+
+## [3.95.0](https://github.com/SocialGouv/iterion/compare/v3.94.3...v3.95.0) (2026-09-03)
+
+### Features
+
+* Revi ticket conformance (Jira & co) + org governance (provision approval, delegated caps) ([#630](https://github.com/SocialGouv/iterion/issues/630)) ([cf216f2](https://github.com/SocialGouv/iterion/commit/cf216f2c720e0d26b3f09ac0d7e7985e61203347))
+
+    <details><summary>why</summary>
+
+    Given a tracker_api_base (pinned per repo via the integration's launch_vars) and a bound read-only tracker_token file secret, the reviewers fetch the ticket(s) the PR references — explicit ticket_refs or extracted from the PR title/body + source branch — and verify the diff delivers the demand. Gaps surface as findings of the new "requirements" category (gating like any finding); a per-ticket verdict (covered / partial / not covered / unverifiable) is threaded converge -> pr_gate -> publish…
+
+    </details>
+
 ## [3.94.3](https://github.com/SocialGouv/iterion/compare/v3.94.2...v3.94.3) (2026-09-03)
 
 ### Bug Fixes

@@ -234,3 +234,19 @@ func TestWindowAuth_evidenceNotCap(t *testing.T) {
 		t.Fatal("an auth refusal must never block a launch through the usage cap — it is routing evidence, not quota")
 	}
 }
+
+// WindowSpend exists for ONE consumer: the credential-tier skip, which is
+// gated on FamilyOf(window) != FamilyNone. Drop the case (or let the
+// window fall to default) and every spend refusal is filtered out at that
+// consumer — the feature goes inert with nothing failing. Sibling of
+// TestWindowAuth_evidenceNotCap, for the same reason.
+func TestWindowSpend_evidenceNotCap(t *testing.T) {
+	if got := FamilyOf(WindowSpend); got != FamilyAccount {
+		t.Fatalf("FamilyOf(WindowSpend) = %q, want %q — FamilyNone would make the evidence consumers drop it", got, FamilyAccount)
+	}
+	// It governs no operator cap: an account ceiling is the provider's
+	// wall, not a percentage iterion stops itself at.
+	if p := (Policy{}).For(FamilyAccount); p.Enabled() {
+		t.Fatalf("FamilyAccount must stay uncapped (the provider's wall, not a percentage we stop at), got %+v", p)
+	}
+}

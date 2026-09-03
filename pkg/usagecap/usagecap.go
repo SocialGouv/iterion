@@ -72,6 +72,19 @@ const (
 	// around a credential the provider will not serve, and freshness for
 	// a reading with no reset instant is already bounded by ObservedAt.
 	WindowFrequency Window = "frequency"
+	// WindowSpend is not a provider window either: it is the ACCOUNT's
+	// money ceiling, set by its own admin ("You've hit your org's monthly
+	// spend limit · ask your admin to raise it"), relayed as text rather
+	// than as window telemetry. Distinct from WindowOverage — that is a
+	// channel the plan may spill INTO, this is the wall it stops at — and
+	// from WindowFrequency, which refuses the request RATE while the
+	// budget is intact. It carries no reset instant (a human raises the
+	// ceiling, or the calendar month rolls), so freshness is bounded by
+	// ObservedAt like the other two refusals, and the credential-tier
+	// skip is the consumer: a credential whose org budget is spent serves
+	// NOTHING, so the resolver must route around it instead of feeding
+	// every node of every run into the same wall.
+	WindowSpend Window = "spend"
 	// WindowAuth is not a provider window either: it is the provider
 	// REJECTING THE CREDENTIAL ITSELF — a dead token, an expired OAuth
 	// record, a malformed secret. Like WindowFrequency it exists as a
@@ -116,7 +129,7 @@ func FamilyOf(w Window) Family {
 		return FamilyFiveHour
 	case WindowSevenDay, WindowSevenDayOpus, WindowSevenDaySonnet, WindowSevenDayOverageIncluded:
 		return FamilyWeek
-	case WindowFrequency:
+	case WindowFrequency, WindowSpend:
 		return FamilyAccount
 	case WindowAuth:
 		return FamilyCredential

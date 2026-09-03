@@ -153,6 +153,9 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
   }, [teamID]);
 
   const [error, setError] = useState<string | null>(null);
+  // Set when the enable came back 202: the org requires an admin approval,
+  // so the done step must not claim the bot is live.
+  const [pendingApproval, setPendingApproval] = useState(false);
   const back = prevBindStep(step, prefill);
 
   return (
@@ -205,7 +208,8 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
             secretNames={secretNames}
             onBack={back ? () => gotoStep(back) : undefined}
             onError={setError}
-            onEnabled={() => {
+            onEnabled={(pending) => {
+              setPendingApproval(pending);
               queryClient.invalidateQueries({
                 queryKey: ["team-forge-repos", teamID],
               });
@@ -221,6 +225,7 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
             botEntry={botEntry}
             returnTo={returnTo}
             navigate={navigate}
+            pendingApproval={pendingApproval}
           />
         )}
 
@@ -433,7 +438,7 @@ function ReviewStep({
   secretNames: string[] | null;
   onBack?: () => void;
   onError: (m: string) => void;
-  onEnabled: () => void;
+  onEnabled: (pendingApproval: boolean) => void;
 }) {
   const botIDs = useMemo(() => unionBotIds(repo.bot_ids, botName), [repo.bot_ids, botName]);
   const [preview, setPreview] = useState<ForgeEnablePreview | null>(null);
@@ -473,8 +478,8 @@ function ReviewStep({
   const enable = async () => {
     setBusy(true);
     try {
-      await enableForgeRepoBots(teamID, connID, repoFullName, botIDs);
-      onEnabled();
+      const res = await enableForgeRepoBots(teamID, connID, repoFullName, botIDs);
+      onEnabled(!!res.pending_approval);
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -653,16 +658,43 @@ function DoneStep({
   botEntry,
   returnTo,
   navigate,
+  pendingApproval,
 }: {
   repo: ForgeTeamRepo;
   botName: string;
   botEntry: BotEntryWithSchema | null;
   returnTo: string | null;
   navigate: (to: string) => void;
+  pendingApproval: boolean;
 }) {
   const label = botEntry?.display_name?.trim() || botName;
   const launchFile = botEntry ? botLaunchFile(botEntry) : null;
   const scheduleHref = `/triggers?tab=schedules&repo=${encodeURIComponent(repo.repo_full_name)}`;
+  if (pendingApproval) {
+    return (
+      <div className="space-y-4">
+        <header className="space-y-1">
+          <h2 className="text-headline font-semibold">Awaiting org approval</h2>
+          <p className="text-xs text-fg-muted">
+            Your organization requires an org admin to approve repo
+            provisioning. The request to enable {label} on{" "}
+            <span className="font-mono">{repo.repo_full_name}</span> is queued —
+            nothing is created on the forge until it is approved. It appears
+            under the team&apos;s Integrations tab and the org admins&apos;
+            approval queue.
+          </p>
+        </header>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => navigate(returnTo || "/teams")}
+          >
+            Done
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="space-y-4">
       <header className="space-y-1">

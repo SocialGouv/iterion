@@ -272,6 +272,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Inbox:          s.inboxBinder(),
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
+		SandboxDefault: s.sandboxDefault,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
 		RunFallback:    toRunFallback(spec.Fallback),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller

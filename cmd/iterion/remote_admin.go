@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -134,6 +135,9 @@ var (
 	remoteLLMName     string
 	remoteLLMDefault  bool
 	remoteLLMKeyData  string
+	// remoteLLMAccountLabel names the ACCOUNT behind a forfait, so a
+	// listing says "jothedev" instead of a bare fingerprint.
+	remoteLLMAccountLabel string
 )
 
 var remoteAdminLLMCmd = &cobra.Command{
@@ -198,7 +202,7 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 }
 
 var remoteAdminLLMOAuthCmd = &cobra.Command{
-	Use:   "oauth [set|connect|refresh|delete] [kind]",
+	Use:   "oauth [set|connect|name|refresh|delete] [kind]",
 	Short: "Platform OAuth-forfait: list connections (default) or act on one kind (claude_code|codex)",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
@@ -228,14 +232,38 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+kind+"/credentials", blob)
+			path := "/api/admin/llm/oauth/" + kind + "/credentials"
+			if lbl := strings.TrimSpace(remoteLLMAccountLabel); lbl != "" {
+				path += "?account_label=" + url.QueryEscape(lbl)
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", path, blob)
 		case "connect":
 			// Browser code flow; only claude_code supports it, so it defaults.
 			kind := "claude_code"
 			if len(args) == 2 {
 				kind = args[1]
 			}
-			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind)
+			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind, strings.TrimSpace(remoteLLMAccountLabel))
+		case "name":
+			// Names the ACCOUNT behind a platform forfait. The listing
+			// prints only kind + fingerprint otherwise, and a fingerprint
+			// is what the server logs print — not what a human recalls.
+			kind, err := needKind()
+			if err != nil {
+				return err
+			}
+			// The server reads "" as "clear the label", so a forgotten flag
+			// must be refused rather than sent — `name` exists because
+			// operators forget the naming step, and un-naming on that very
+			// mistake would be the worst possible default.
+			if !cmd.Flags().Changed("account-label") {
+				return fmt.Errorf("usage: admin llm oauth name %s --account-label <name> (pass --account-label \"\" to clear it)", kind)
+			}
+			body, err := json.Marshal(map[string]string{"account_label": strings.TrimSpace(remoteLLMAccountLabel)})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", "/api/admin/llm/oauth/"+kind, body)
 		case "refresh":
 			kind, err := needKind()
 			if err != nil {
@@ -249,7 +277,7 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			}
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/oauth/"+kind, nil)
 		default:
-			return fmt.Errorf("unknown oauth action %q (want set|connect|refresh|delete)", action)
+			return fmt.Errorf("unknown oauth action %q (want set|connect|name|refresh|delete)", action)
 		}
 	}),
 }
@@ -646,6 +674,7 @@ func init() {
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name for create")
 	remoteAdminLLMKeysCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make the created key the provider's default")
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
+	remoteAdminLLMOAuthCmd.Flags().StringVar(&remoteLLMAccountLabel, "account-label", "", "Name the account behind this forfait (with `set`/`connect`, or alone with `name`; `name --account-label \"\"` clears it)")
 	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
 
 	remoteAdminCapsCmd.Flags().IntVar(&remoteCapsFiveHour, "five-hour", 0, "Five-hour window cap percentage (0–100; 0 = no cap)")

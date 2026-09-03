@@ -8,6 +8,44 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-02 — ticket conformance (v0.6.0) first dogfood: fetch + verdict + 3 real findings on its own feature branch (run 01a06405)
+- Status: validated (local half — the PR-summary section and the forge publish path stay for the prod e2e)
+- Versions: bot 0.6.0 · iterion 754321763 (worktree revi-ticket-context)
+- Method: mono/claude (claude_code, opus, effort high), `--var base_ref=main`
+  on the feature branch itself, `--var tracker_api_base=https://api.github.com`,
+  `--var ticket_refs=627` (explicit ref — extraction not exercised), no
+  `tracker_token` bound (the no-credential path), `post_to_board=false`, no
+  `pr_url`, `ITERION_SANDBOX_DEFAULT=none` (a *linked git worktree* workspace:
+  its `.git` is a file pointing into the main repo's `.git/worktrees/`, which a
+  sandbox bind-mount would break — a real limitation to know when dogfooding
+  from a Claude worktree).
+- Result: converged; first pass died `BUDGET_EXCEEDED` at pr_gate on a too-tight
+  `--max-cost-usd 5` (opus review of a 4-commit multi-surface diff ≈ $6) —
+  `iterion resume --max-cost-usd 8` finished it in seconds (only deterministic
+  nodes remained). Total ≈ $6.
+- Value: the whole new chain proved live — the reviewer read the skill, curled
+  `api.github.com/repos/SocialGouv/iterion/issues/627` unauthenticated (token
+  file absent → the skill's fetch-without-auth fallback), returned the exact
+  verdict `#627: not covered — <the ticket's real demand, correctly summarised,
+  vs what the branch actually delivers>`, filed it as a `requirements` finding,
+  and `ticket_conformance` threaded converge → pr_gate → done intact.
+- Findings / misses: on top of the expected requirements verdict, Revi returned
+  **3 real findings on the feature branch it was reviewing** (its own new
+  capability's diff): [high] the delegated org-admin caps PATCH could raise a
+  team ABOVE the platform default (`orValue` semantics — any non-zero team value
+  wins), [medium] the update-path approval gate keyed only on the bot set, so
+  `auto_fix_on_gate_failure:true` with an unchanged bot set bypassed the org
+  approval, [low] the approver UI showed repo+bots but not the automation
+  switches it was approving. All three fixed in the same session (platform
+  ceiling 422, `expandsProvisionSurface` predicate, `approvalExtras` rendering)
+  with regression tests.
+- Engine hardening: none needed — the budget-exceeded → raise-cap → resume
+  recovery worked exactly as documented.
+- Lessons for next run: budget an opus mono review of a real feature branch at
+  ~$6–8, not $5; prod e2e must exercise the two halves this run could not — the
+  PR review summary's "Ticket conformance" section and a real authenticated
+  Jira fetch through a bound `tracker_token` (egress `AllowedHosts` observed).
+
 ## 2026-09-02 — 🔁 re-request lane live pilot on questions-ecrites (runs 01a0620c / 01a0620f / 01a06211)
 
 - Status: **validated** — the three behaviours of the GitHub re-request lane

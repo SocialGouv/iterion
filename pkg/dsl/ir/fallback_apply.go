@@ -39,7 +39,16 @@ const RunFallbackName = "run-fallback"
 //     plus C135's, since a claw route that cannot resolve the node's
 //     declared tools would fail exactly when it is needed. A refused
 //     stage is skipped and the caller warns; later stages remain eligible.
-func ApplyRunFallback(w *Workflow, routes []Fallback) []string {
+//
+// sandboxed reports whether this run resolves to an ACTIVE sandbox.
+// The caller computes it with runtime.WorkflowSandboxActive — the same
+// pickMode precedence (CLI-strength override → workflow block → global
+// default) the engine itself applies — because the IR cannot know the
+// deployment's tiers, and a hand-rolled resolution here already lied
+// once: it honoured a node-level `sandbox:` tier the engine does not
+// have (one sandbox per run), advertising an escape hatch that
+// re-created the exact dispatch failure it claimed to prevent.
+func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
@@ -90,6 +99,15 @@ func ApplyRunFallback(w *Workflow, routes []Fallback) []string {
 			// Same tiering as the diagnostic — see toolDiagReporter.
 			if reason := unresolvableToolsReason(route.Backend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
 				refuse(reason)
+				continue
+			}
+			// The codex CLI cannot run inside the sandbox (the dispatch
+			// guard in the delegate hard-errors on any non-noop driver) —
+			// so a codex stage on a sandboxed run would fail EXACTLY when
+			// the chain is needed, which is worse than not having it.
+			// Refused here, at launch, where the operator is told.
+			if route.Backend == "codex" && sandboxed {
+				refuse("targets the codex CLI, which cannot run inside the sandbox this run resolves to — set sandbox: none (workflow block or ITERION_SANDBOX_OVERRIDE), or route to claude_code/claw")
 				continue
 			}
 			// A route that changes backend with no model of its own cannot

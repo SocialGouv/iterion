@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 func (s *Server) registerForgeProvisioningRoutes() {
@@ -100,6 +101,40 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			"connection %s is watch-only (Dependabot alerts only) — it cannot host webhooks or hand a bot a forge token; pick the team's runtime connection", conn.ID)
 		return
 	}
+	// Org ex-ante validation (Org.RequireProvisionApproval): a team admin's
+	// request is parked for an org admin's decision — nothing is created
+	// forge-side until approved. Validated exactly like the direct path
+	// above, so what the admin approves is what would have run. A store
+	// error here FAILS the request (503): the gate never fails open.
+	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+	if gerr != nil {
+		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
+		return
+	}
+	if orgID != "" {
+		req.Repo = strings.TrimSpace(req.Repo)
+		// This endpoint is ALSO the add-bots path for an already-connected
+		// repo (Provision merges when the integration exists). Record which
+		// case this request is — id + bot-set snapshot — or the approve-time
+		// staleness check would mistake an add-bots request for a new-repo
+		// one and refuse it forever. A store error here fails closed like
+		// the gate itself; only a clean not-found means "new repo".
+		integrationID, baseBots := "", []string(nil)
+		if s.forgeIntegrations != nil {
+			ri, ierr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, req.Repo)
+			switch {
+			case ierr == nil:
+				integrationID, baseBots = ri.ID, ri.BotIDs
+			case errors.Is(ierr, forge.ErrIntegrationNotFound):
+				// genuinely new repo
+			default:
+				httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ierr)
+				return
+			}
+		}
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots)
+		return
+	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
 		TenantID:       teamID,
@@ -176,6 +211,29 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	if len(req.BotIDs) == 0 {
 		httpError(w, http.StatusBadRequest, "bot_ids must be non-empty — use DELETE to remove the integration entirely")
+		return
+	}
+	// Org ex-ante validation: only an update EXPANDING the automated
+	// surface needs the org's approval — removals and tightenings go
+	// through directly (see expandsProvisionSurface). A store error FAILS
+	// the request (503): the gate never fails open.
+	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+	if ugerr != nil {
+		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ugerr)
+		return
+	}
+	if orgID := uOrgID; orgID != "" && expandsProvisionSurface(ri, req) {
+		s.parkProvisionRequest(w, r, id, orgID, teamID, forgeEnableReq{
+			ConnectionID:         ri.ConnectionID,
+			Repo:                 ri.RepoFullName,
+			BotIDs:               req.BotIDs,
+			ScheduleCrons:        req.ScheduleCrons,
+			LaunchVars:           req.LaunchVars,
+			Overlap:              req.Overlap,
+			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
+			HoldLabels:           req.HoldLabels,
+			LabelAllowlist:       req.LabelAllowlist,
+		}, ri.ID, true, ri.BotIDs)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -318,6 +376,110 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 	default:
 		httpError(w, http.StatusBadGateway, "provisioning failed: %v", err)
 	}
+}
+
+// addsBots reports whether `requested` contains a bot id absent from
+// `current` — part of the surface-expansion predicate of the org
+// approval gate.
+func addsBots(current, requested []string) bool {
+	have := make(map[string]bool, len(current))
+	for _, b := range current {
+		have[b] = true
+	}
+	for _, b := range requested {
+		if !have[b] {
+			return true
+		}
+	}
+	return false
+}
+
+// expandsProvisionSurface is the org-approval predicate for UPDATES of an
+// existing integration: true when the request grows what automation may do
+// on the repo without a human. Keying on the bot set alone would let a
+// team admin bypass the gate through the switches replayed by the same
+// endpoint — turning the zero-touch fixer lane on, lifting a hold label,
+// or widening the issue-label dispatch — so those expansions park too.
+// Tightenings (removing bots, turning auto-fix off, adding hold labels,
+// narrowing the allowlist) and LaunchVars edits go through directly.
+func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool {
+	if addsBots(ri.BotIDs, req.BotIDs) {
+		return true
+	}
+	// Zero-touch lane turned ON (nil leaves the stored choice alone).
+	if req.AutoFixOnGateFailure != nil && *req.AutoFixOnGateFailure && !ri.AutoFixOnGateFailure {
+		return true
+	}
+	// HoldLabels is the operator's automation brake: removing any current
+	// entry re-arms lanes the label was pausing. nil keeps the stored set.
+	if req.HoldLabels != nil && removesAny(ri.HoldLabels, req.HoldLabels) {
+		return true
+	}
+	// An EMPTY allowlist means "any freshly-applied label dispatches", so
+	// clearing a non-empty one — or adding a label to it — widens dispatch.
+	if req.LabelAllowlist != nil && len(ri.LabelAllowlist) > 0 &&
+		(len(req.LabelAllowlist) == 0 || addsBots(ri.LabelAllowlist, req.LabelAllowlist)) {
+		return true
+	}
+	// Any schedule change arms (or re-arms) unattended recurring launches.
+	// The stored cadence lives in the scheduler, not on the integration, so
+	// a tightening cannot be told apart here — park every non-empty set
+	// (fail toward approval, never past it).
+	if len(req.ScheduleCrons) > 0 {
+		return true
+	}
+	// Overlap: "allow" is the only unbounded concurrency policy (skip and
+	// supersede both cap the repo at one live run); moving to it from a
+	// bounded stored policy widens. An empty stored value already means
+	// allow (the historical default), so that transition changes nothing.
+	if req.Overlap == "allow" && ri.Overlap != "" && ri.Overlap != "allow" {
+		return true
+	}
+	return false
+}
+
+// webhookPatchExpandsSurface is expandsProvisionSurface's twin for the
+// generic webhook CRUD: a MANAGED (forge-provisioned) config carries the
+// same automation switches the approval gate parks, and PATCHing them
+// directly would bypass the org's decision (found live by review round 3).
+// Same doctrine: only EXPANSIONS are caught; tightenings stay direct.
+func webhookPatchExpandsSurface(cfg webhooks.Config, req webhookConfigReq) bool {
+	if req.BotIDs != nil && addsBots(cfg.BotIDs, req.BotIDs) {
+		return true
+	}
+	if req.WildcardBots != nil && *req.WildcardBots && !cfg.WildcardBots {
+		return true
+	}
+	if req.HoldLabels != nil && removesAny(cfg.HoldLabels, req.HoldLabels) {
+		return true
+	}
+	if req.LabelAllowlist != nil && len(cfg.LabelAllowlist) > 0 &&
+		(len(req.LabelAllowlist) == 0 || addsBots(cfg.LabelAllowlist, req.LabelAllowlist)) {
+		return true
+	}
+	// The zero-touch implement-on-open lane, turned ON.
+	if req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen && !cfg.AutoImplementOnOpen {
+		return true
+	}
+	if req.Overlap != nil && strings.TrimSpace(*req.Overlap) == "allow" &&
+		cfg.Overlap != "" && cfg.Overlap != "allow" {
+		return true
+	}
+	return false
+}
+
+// removesAny reports whether any entry of `current` is absent from `next`.
+func removesAny(current, next []string) bool {
+	keep := make(map[string]bool, len(next))
+	for _, s := range next {
+		keep[s] = true
+	}
+	for _, s := range current {
+		if !keep[s] {
+			return true
+		}
+	}
+	return false
 }
 
 func splitCSV(s string) []string {

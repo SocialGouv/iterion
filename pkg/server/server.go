@@ -198,6 +198,9 @@ type Server struct {
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// provisionApprovals parks team-admin provisioning requests when the
+	// org opted into ex-ante approval (Org.RequireProvisionApproval).
+	provisionApprovals forge.ProvisionApprovalStore
 	// authorTrustG is the lazily-built TTL cache behind the issue
 	// author-trust gate (webhooks + forge→board sync); use authorTrustGate().
 	authorTrustG      *authorTrust
@@ -392,6 +395,11 @@ type Server struct {
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
 
+	// forgeIssueCommenterFor is a test seam overriding how a connection's
+	// PR-comment client is resolved (the parked-review pause notice).
+	// Nil → real admin client via forgeAdminFor.
+	forgeIssueCommenterFor func(ctx context.Context, conn forge.Connection) (forgeIssueCommenter, error)
+
 	// forgeReviewerAssignerFor is a test seam overriding how the
 	// publish-review handler resolves a connection's reviewer self-assign
 	// capability (nil result = capability absent). Nil field → real admin
@@ -483,57 +491,58 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		cfg.WSTickets = wsticket.NewMemoryStore(wsTicketTTL)
 	}
 	s := &Server{
-		cfg:               cfg,
-		logger:            logger,
-		mux:               newRecordingMux(),
-		addrReady:         make(chan struct{}),
-		shutdown:          make(chan struct{}),
-		authSvc:           cfg.AuthService,
-		signer:            cfg.AuthSigner,
-		oidcRegistry:      cfg.OIDCRegistry,
-		oidcStates:        cfg.OIDCStates,
-		desktopTickets:    cfg.DesktopTickets,
-		wsTickets:         cfg.WSTickets,
-		apiKeys:           cfg.ApiKeys,
-		genericSecrets:    cfg.GenericSecrets,
-		runSecrets:        cfg.RunSecrets,
-		sealer:            cfg.Sealer,
-		orgSSO:            cfg.OrgSSO,
-		orgDomains:        cfg.OrgDomains,
-		orgDomainTXT:      orgsso.DefaultTXTLookup(),
-		oauthStore:        cfg.OAuthForfait,
-		oauthPending:      cfg.OAuthPending,
-		webhookConfigs:    cfg.WebhookConfigs,
-		webhookDeliveries: cfg.WebhookDeliveries,
-		webhookCounter:    cfg.WebhookCounter,
-		orgUsage:          cfg.OrgUsage,
-		orgDefaults:       cfg.OrgDefaults,
-		credPool:          cfg.CredPoolBroker,
-		credPoolPools:     cfg.CredPoolPools,
-		credPoolPledges:   cfg.CredPoolPledges,
-		credPoolLeases:    cfg.CredPoolLeases,
-		credPoolLedger:    cfg.CredPoolLedger,
-		auditStore:        cfg.Audit,
-		usageCapSettings:  cfg.UsageCapSettings,
-		pats:              cfg.PATs,
-		queue:             cfg.Queue,
-		botBindings:       cfg.BotBindings,
-		forgeConnections:  cfg.ForgeConnections,
-		pluginSources:     cfg.PluginSources,
-		botSources:        cfg.BotSources,
-		botRolesStore:     cfg.BotRolesSettings,
-		sandboxCfgStore:   cfg.SandboxSettings,
-		botVarsStore:      cfg.BotVarsSettings,
-		forgeIntegrations: cfg.ForgeIntegrations,
-		forgeOAuthApps:    cfg.ForgeOAuthApps,
-		forgeGitHubApp:    cfg.ForgeGitHubApp,
-		memStore:          cfg.MemoryStore,
-		httpClient:        &http.Client{Timeout: 15 * time.Second},
-		browserSessions:   cfg.BrowserRegistry,
-		statsCache:        newRunStatsCache(),
-		locCache:          newRunLOCCache(),
-		marketplace:       cfg.Marketplace,
-		redis:             cfg.Redis,
+		cfg:                cfg,
+		logger:             logger,
+		mux:                newRecordingMux(),
+		addrReady:          make(chan struct{}),
+		shutdown:           make(chan struct{}),
+		authSvc:            cfg.AuthService,
+		signer:             cfg.AuthSigner,
+		oidcRegistry:       cfg.OIDCRegistry,
+		oidcStates:         cfg.OIDCStates,
+		desktopTickets:     cfg.DesktopTickets,
+		wsTickets:          cfg.WSTickets,
+		apiKeys:            cfg.ApiKeys,
+		genericSecrets:     cfg.GenericSecrets,
+		runSecrets:         cfg.RunSecrets,
+		sealer:             cfg.Sealer,
+		orgSSO:             cfg.OrgSSO,
+		orgDomains:         cfg.OrgDomains,
+		orgDomainTXT:       orgsso.DefaultTXTLookup(),
+		oauthStore:         cfg.OAuthForfait,
+		oauthPending:       cfg.OAuthPending,
+		webhookConfigs:     cfg.WebhookConfigs,
+		webhookDeliveries:  cfg.WebhookDeliveries,
+		webhookCounter:     cfg.WebhookCounter,
+		orgUsage:           cfg.OrgUsage,
+		orgDefaults:        cfg.OrgDefaults,
+		credPool:           cfg.CredPoolBroker,
+		credPoolPools:      cfg.CredPoolPools,
+		credPoolPledges:    cfg.CredPoolPledges,
+		credPoolLeases:     cfg.CredPoolLeases,
+		credPoolLedger:     cfg.CredPoolLedger,
+		auditStore:         cfg.Audit,
+		usageCapSettings:   cfg.UsageCapSettings,
+		pats:               cfg.PATs,
+		queue:              cfg.Queue,
+		botBindings:        cfg.BotBindings,
+		forgeConnections:   cfg.ForgeConnections,
+		pluginSources:      cfg.PluginSources,
+		botSources:         cfg.BotSources,
+		botRolesStore:      cfg.BotRolesSettings,
+		sandboxCfgStore:    cfg.SandboxSettings,
+		botVarsStore:       cfg.BotVarsSettings,
+		forgeIntegrations:  cfg.ForgeIntegrations,
+		provisionApprovals: cfg.ProvisionApprovals,
+		forgeOAuthApps:     cfg.ForgeOAuthApps,
+		forgeGitHubApp:     cfg.ForgeGitHubApp,
+		memStore:           cfg.MemoryStore,
+		httpClient:         &http.Client{Timeout: 15 * time.Second},
+		browserSessions:    cfg.BrowserRegistry,
+		statsCache:         newRunStatsCache(),
+		locCache:           newRunLOCCache(),
+		marketplace:        cfg.Marketplace,
+		redis:              cfg.Redis,
 	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and

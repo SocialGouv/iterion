@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -359,6 +360,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// Refused-but-only keys, per provider, remembered across the tiers for
 	// the restore step — the api-key twin of skippedForfaits below.
 	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
+	// Audit identity of the API key that filled each provider slot, for
+	// the run-document stamp (the OAuth side rides bundle.OAuthFingerprints).
+	apiKeyFPs := map[secrets.Provider]string{}
 
 	// 1. BYOK API keys.
 	if p.apiKeys != nil {
@@ -386,6 +390,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				continue
 			}
 			bundle.APIKeys[prov] = string(r.Plaintext)
+			apiKeyFPs[prov] = r.Fingerprint
 			usedIDs = append(usedIDs, r.KeyID)
 		}
 		// A provider whose EVERY key was refused resolves to nothing under
@@ -405,7 +410,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				if len(r.Plaintext) == 0 {
 					continue
 				}
-				skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID}
+				skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, fingerprint: r.Fingerprint}
 			}
 		}
 		// Bumping last_used_at is best-effort observability, not on
@@ -589,7 +594,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys)
+		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs)
 	}
 
 	// A skipped credential is only an improvement when some other tier
@@ -614,6 +619,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				continue
 			}
 			bundle.APIKeys[prov] = sk.plaintext
+			apiKeyFPs[prov] = sk.fingerprint
 			if sk.platform {
 				bundle.PlatformSourced[string(prov)] = true
 			}
@@ -647,6 +653,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		oauthKinds = append(oauthKinds, kind)
 	}
 	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
+	// Harvest every sealed credential's audit identity for the run-doc
+	// stamp: API keys from the slot records above, OAuth from the bundle's
+	// own fingerprint map (each fill site stamps it there).
+	seen := map[string]bool{}
+	for _, fp := range apiKeyFPs {
+		if fp != "" && !seen[fp] {
+			seen[fp] = true
+			res.fingerprints = append(res.fingerprints, fp)
+		}
+	}
+	for _, fp := range bundle.OAuthFingerprints {
+		if fp != "" && !seen[fp] {
+			seen[fp] = true
+			res.fingerprints = append(res.fingerprints, fp)
+		}
+	}
+	sort.Strings(res.fingerprints)
 
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
 		return res, nil
@@ -686,6 +709,11 @@ type credResolution struct {
 	// topology vars for a queued run. Empty = nothing resolved (env
 	// fallback), in which case no injection happens.
 	families reviewtopology.FamilySet
+	// fingerprints are the audit identities of every credential the
+	// bundle sealed — API keys and OAuth records alike, never secrets.
+	// The caller stamps them on the run document so the per-key
+	// concurrency meter can count alive runs by credential.
+	fingerprints []string
 }
 
 // setOAuthFingerprint stamps the audit identity of the credential that
@@ -719,7 +747,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string) {
 	if p.sealer == nil {
 		return
 	}
@@ -763,6 +791,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 					}
 					bundle.APIKeys[prov] = string(r.Plaintext)
 					bundle.PlatformSourced[string(prov)] = true
+					apiKeyFPs[prov] = r.Fingerprint
 					taken[secrets.WireFamily(string(prov))] = true
 					usedIDs = append(usedIDs, r.KeyID)
 					p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
@@ -796,7 +825,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 					if _, seen := skippedAPIKeys[prov]; seen {
 						continue
 					}
-					skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, platform: true}
+					skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true}
 				}
 			}
 		}
@@ -873,9 +902,10 @@ type skippedForfait struct {
 // platform marks the deployment's own key so the restore keeps its
 // PlatformSourced metering scope.
 type skippedAPIKey struct {
-	plaintext string
-	keyID     string
-	platform  bool
+	plaintext   string
+	keyID       string
+	fingerprint string
+	platform    bool
 }
 
 // providersWithoutKey returns the subset of provs that filled no API-key
@@ -974,6 +1004,8 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 				why = "provider rejected the credential itself (auth failure)"
 			case usagecap.WindowFrequency:
 				why = "provider refused the account's request rate (fair-usage)"
+			case usagecap.WindowSpend:
+				why = "the account's spend ceiling is reached — an admin must raise it (claude.ai/settings/usage)"
 			default:
 				why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
 			}
@@ -1011,6 +1043,23 @@ func usageBackendForProvider(prov secrets.Provider) string {
 // Everything uncertain means "usable", same contract as refusedUntil.
 func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string) func(secrets.ApiKey) bool {
 	return func(k secrets.ApiKey) bool {
+		// Concurrency ceiling first — cheaper than the meter read, and a
+		// key at its ceiling must rest whatever its refusal history says.
+		// Providers with fair-usage frequency limits publish no numeric
+		// bound to adapt to; the operator sets one on the key, and the
+		// walk passes a full key over exactly like a refused one. Fails
+		// OPEN on a count error: the ceiling is protection against
+		// tripping a provider, not a correctness invariant.
+		if k.MaxConcurrentRuns > 0 && p.store != nil && k.Fingerprint != "" {
+			n, err := p.store.CountAliveRunsWithCredFingerprint(ctx, k.Fingerprint, runID)
+			if err != nil {
+				p.logger.Warn("cloudpublisher: concurrency count for api-key(%s) %q: %v — ceiling not applied", k.Provider, k.Name, err)
+			} else if n >= k.MaxConcurrentRuns {
+				p.logger.Info("cloudpublisher: api-key(%s) %q AT ITS CEILING for run=%s (%d/%d alive runs); trying the next key of this provider",
+					k.Provider, k.Name, runID, n, k.MaxConcurrentRuns)
+				return false
+			}
+		}
 		backend := usageBackendForProvider(k.Provider)
 		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider))
 		if until.IsZero() {
@@ -1217,6 +1266,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
+	// The sealed credentials' audit identities ride the run document's
+	// single SaveRun below (never secrets): the per-key concurrency meter
+	// counts alive runs by them. Assigned on the in-memory doc rather
+	// than patched afterwards — at this point the document does NOT
+	// exist yet (the launch's one persist comes later), and a patch here
+	// would be a warn-and-lose no-op that leaves the ceiling blind to
+	// every launched run.
+	r.CredFingerprints = creds.fingerprints
+
 	// A run served by the pool may not spend more than what remains of its
 	// donor's allowance. This is the enforcement: the engine stops the run
 	// on its own cost budget, instead of the overspend being discovered
@@ -1517,6 +1575,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	if secretsErr != nil {
 		return secretsErr
+	}
+	// Re-stamp on resume, UNCONDITIONALLY: re-resolution may have picked
+	// different credentials — or none at all (key deleted, every
+	// candidate refused with nothing to restore, env fallback) — and a
+	// stale stamp would hold a slot on a credential the run demonstrably
+	// no longer carries, for its whole remaining alive life. An empty
+	// re-resolution therefore CLEARS the stamp. Best-effort: a failed
+	// write degrades the ceiling toward uncapped, never the resume.
+	if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
+		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.

@@ -36,6 +36,8 @@ type apiKeyView struct {
 	ScopeUserID string  `json:"scope_user_id,omitempty"`
 	CreatedAt   string  `json:"created_at"`
 	LastUsedAt  *string `json:"last_used_at,omitempty"`
+	// 0 = uncapped; see secrets.ApiKey.MaxConcurrentRuns.
+	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
 }
 
 type createApiKeyReq struct {
@@ -43,12 +45,17 @@ type createApiKeyReq struct {
 	Name      string `json:"name"`
 	Secret    string `json:"secret"`
 	IsDefault bool   `json:"is_default,omitempty"`
+	// MaxConcurrentRuns caps how many alive runs may hold this key at
+	// once (0 = uncapped) — the operator-side answer to providers whose
+	// fair-usage limits publish no numeric bound.
+	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
 }
 
 type updateApiKeyReq struct {
-	Name      *string `json:"name,omitempty"`
-	IsDefault *bool   `json:"is_default,omitempty"`
-	Secret    *string `json:"secret,omitempty"` // rotate
+	Name              *string `json:"name,omitempty"`
+	IsDefault         *bool   `json:"is_default,omitempty"`
+	Secret            *string `json:"secret,omitempty"` // rotate
+	MaxConcurrentRuns *int    `json:"max_concurrent_runs,omitempty"`
 }
 
 func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
@@ -62,6 +69,8 @@ func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
 		ScopeUserID: k.ScopeUserID,
 		CreatedAt:   k.CreatedAt.Format(time.RFC3339),
 		LastUsedAt:  optRFC3339(k.LastUsedAt),
+
+		MaxConcurrentRuns: k.MaxConcurrentRuns,
 	}
 }
 
@@ -177,6 +186,10 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		httpError(w, http.StatusBadRequest, "name + secret required")
 		return
 	}
+	if req.MaxConcurrentRuns < 0 {
+		httpError(w, http.StatusBadRequest, "max_concurrent_runs must be >= 0 (0 = uncapped)")
+		return
+	}
 	keyID := secrets.NewApiKeyID()
 	sealed, err := secrets.SealAPIKey(s.sealer, keyID, []byte(req.Secret))
 	if err != nil {
@@ -196,6 +209,8 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		CreatedBy:    id.UserID,
 		CreatedAt:    now,
 		Fingerprint:  secrets.FingerprintSHA256(req.Secret),
+
+		MaxConcurrentRuns: req.MaxConcurrentRuns,
 	}
 	ctx := apiKeyTenantCtx(r)
 	if err := s.apiKeys.Create(ctx, key); err != nil {
@@ -247,6 +262,13 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 		key.SealedSecret = sealed
 		key.Last4 = secrets.Last4(*req.Secret)
 		key.Fingerprint = secrets.FingerprintSHA256(*req.Secret)
+	}
+	if req.MaxConcurrentRuns != nil {
+		if *req.MaxConcurrentRuns < 0 {
+			httpError(w, http.StatusBadRequest, "max_concurrent_runs must be >= 0 (0 = uncapped)")
+			return
+		}
+		key.MaxConcurrentRuns = *req.MaxConcurrentRuns
 	}
 	if req.IsDefault != nil {
 		key.IsDefault = *req.IsDefault

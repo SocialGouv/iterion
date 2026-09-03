@@ -1,7 +1,23 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.8
+version: 0.6.0
+## 0.6.0 — TICKET CONFORMANCE (opt-in, tracker-agnostic): given a
+## tracker API base (`tracker_api_base`, typically pinned per repo via
+## the integration's launch_vars) and a bound read-only `tracker_token`
+## secret (file-mounted; bind it with AllowedHosts = the tracker host so
+## the egress guard pins it to that instance), the reviewers fetch the
+## ticket(s) the PR references — explicit `ticket_refs`, or extracted
+## from the PR title/body + source branch (PROJ-123 keys, #N refs,
+## ticket URLs) — and verify the diff answers the demand. Gaps are
+## findings of the new "requirements" category (they gate like any
+## finding); a per-ticket verdict (covered / partial / not covered /
+## unverifiable) lands in the markdown report and the PR review summary.
+## Tracker specifics (Jira Cloud/DC, GitHub, GitLab, auth modes) live in
+## skills/ticket-context.md, never in the DSL. Fetch failure degrades to
+## an explicit "unverifiable" — never a silent skip, never a failed
+## review. Dormant by default: no tracker_api_base = byte-identical
+## behaviour to 0.5.x.
 ## 0.5.7 — the review comment stops reporting a comparison that never happened.
 ## Mono is the default topology (one family reviews), yet every comment ended
 ## with "0 finding(s) cross-confirmed by both model families" — which reads as
@@ -89,12 +105,19 @@ description: |
   forge review — inline comments anchored to file:line with one-click
   ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
   or commits code — that is the improve-loops' job (Billy / Willy).
+  Optional TICKET CONFORMANCE: with a tracker API base + a bound
+  read-only tracker token, it also fetches the ticket(s) the PR
+  references (Jira, GitHub/GitLab issues) and verifies the diff answers
+  the demand — per-ticket verdicts in the review, gaps as
+  "requirements" findings.
 when_to_use: |
   Use when you want a PR/branch REVIEWED and its issues surfaced — to
   the board for triage and/or posted directly onto the PR (pass
   --var pr_url) as inline comments + ```suggestion fixes — but NOT
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
-  reviews AND fixes AND commits.
+  reviews AND fixes AND commits. Set tracker_api_base (+ bind a
+  tracker_token secret) to also have it check the PR against the
+  tracker ticket(s) it references.
 author: SocialGouv (devthejo) — review-pr/main.bot
 schema_version: 1
 triggers: [review-pr, pr-review, review]

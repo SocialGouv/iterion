@@ -113,6 +113,17 @@ func (s RunStatus) CarriesFailureCode() bool {
 	return s == RunStatusFailed || s == RunStatusFailedResumable || s == RunStatusCancelled
 }
 
+// HoldsCredentialSlot names the statuses that count toward a
+// credential's concurrency ceiling (secrets.ApiKey.MaxConcurrentRuns):
+// running is spending, and queued is about to — admitting a burst of
+// queued runs against a full key is exactly the thundering herd the
+// ceiling exists to stop. Parked (failed_resumable) and paused runs
+// hold NO slot: they spend nothing while they wait, and their resume
+// re-resolves credentials against the ceiling like any claim.
+func (s RunStatus) HoldsCredentialSlot() bool {
+	return s == RunStatusRunning || s == RunStatusQueued
+}
+
 // CarriesPausePointer reports whether a run in this status may
 // truthfully carry a pending-interaction pointer on its checkpoint
 // (Checkpoint.InteractionID / InteractionQuestions). True for the

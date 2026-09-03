@@ -575,6 +575,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BotBindings:            stores.botBindings,
 		ForgeConnections:       stores.forgeConn,
 		ForgeIntegrations:      stores.forgeIntegration,
+		ProvisionApprovals:     stores.forgeApprovals,
 		ForgeOAuthApps:         stores.forgeOAuthApp,
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
 		PluginSources:          stores.pluginSources,
@@ -670,6 +671,7 @@ type cloudStores struct {
 	configShares     *configshare.MongoStore
 	forgeConn        *forge.MongoConnectionStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
+	forgeApprovals   *forge.MongoProvisionApprovalStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
 	pluginSources    *pluginsource.MongoStore
 	botSources       *botsource.MongoStore
@@ -712,6 +714,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
+		forgeApprovals:   forge.NewMongoProvisionApprovalStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
@@ -755,6 +758,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"webhooks", func(c context.Context) error { return webhooks.EnsureSchema(c, st.DB()) }},
 		{"forge_connections", s.forgeConn.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
+		{"forge_provision_approvals", s.forgeApprovals.EnsureSchema},
 		{"forge_oauth_apps", s.forgeOAuthApp.EnsureSchema},
 		{"plugin_sources", s.pluginSources.EnsureSchema},
 		{"bot_sources", s.botSources.EnsureSchema},

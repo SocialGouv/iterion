@@ -80,6 +80,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("NodesServed", func(t *testing.T) { testNodesServed(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
+	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -2489,5 +2490,71 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 1)
 	if err != nil || len(ids) != 1 || ids[0] != "routable-b" {
 		t.Fatalf("ListRoutableRuns(limit=1) = (%v, %v), want the oldest routable run [routable-b]", ids, err)
+	}
+}
+
+// testCredFingerprintMeter exercises the credential-concurrency meter
+// pair: SetRunCredFingerprints (stamp + re-stamp) and
+// CountAliveRunsWithCredFingerprint (queued/running only, exclusion of
+// the run being resolved, empty fingerprint counts nothing).
+func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	mk := func(id string, status store.RunStatus, fps ...string) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = status
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		if len(fps) > 0 {
+			if err := s.SetRunCredFingerprints(ctx, id, fps); err != nil {
+				t.Fatalf("SetRunCredFingerprints %s: %v", id, err)
+			}
+		}
+	}
+
+	mk("fp_run1", store.RunStatusRunning, "fp-zai", "fp-oauth")
+	mk("fp_run2", store.RunStatusQueued, "fp-zai")
+	// Terminal and parked runs hold no slot.
+	mk("fp_done", store.RunStatusFinished, "fp-zai")
+	mk("fp_parked", store.RunStatusFailedResumable, "fp-zai")
+	// A run with other credentials does not count.
+	mk("fp_other", store.RunStatusRunning, "fp-anthropic")
+
+	n, err := s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", "")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("alive(fp-zai) = %d, want 2 (running + queued; finished and parked hold no slot)", n)
+	}
+
+	// The run being resolved never counts toward its own ceiling.
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", "fp_run1"); err != nil || n != 1 {
+		t.Errorf("alive(fp-zai, excl fp_run1) = %d/%v, want 1", n, err)
+	}
+
+	// An empty fingerprint is not a meter.
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "", ""); err != nil || n != 0 {
+		t.Errorf("alive(empty) = %d/%v, want 0", n, err)
+	}
+
+	// Re-stamp replaces wholesale: a resume that resolved different
+	// credentials must not keep metering the old ones.
+	if err := s.SetRunCredFingerprints(ctx, "fp_run2", []string{"fp-anthropic"}); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Errorf("alive(fp-zai) after re-stamp = %d/%v, want 1", n, err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-anthropic", ""); err != nil || n != 2 {
+		t.Errorf("alive(fp-anthropic) after re-stamp = %d/%v, want 2", n, err)
 	}
 }

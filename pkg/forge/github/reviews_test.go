@@ -151,3 +151,14 @@ func TestGitHubListPRReviewComments_NewestFirstCapReversed(t *testing.T) {
 		t.Fatalf("callers must receive chronological order: %+v", out)
 	}
 }
+
+// An App connection resolves to *AppClient, so a capability implemented
+// only on *AdminClient is invisible to every type assertion the server
+// does — the pause notice was silently inert on the standard GitHub
+// shape. Assert the surface, not the behaviour: the delegation itself is
+// CreatePullReview's proven shape.
+func TestAppClientCarriesTheCommentCapability(t *testing.T) {
+	var _ interface {
+		CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error)
+	} = (*AppClient)(nil)
+}

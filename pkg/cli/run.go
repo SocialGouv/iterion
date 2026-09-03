@@ -512,6 +512,11 @@ func buildRunExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		ModelOverrides:  modelOverrides,
+		// The same tiers the engine resolves the sandbox from (see
+		// ExecutorSpec) — without them the codex screen is inert on the
+		// primary local surface while the run sandboxes two calls later.
+		SandboxOverride: opts.Sandbox,
+		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
 		RunFallback:     []ir.Fallback{runFallback},
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a

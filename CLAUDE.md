@@ -274,6 +274,15 @@ the hours this one spent.
   terminal-state sink + operator `Reopen`, and the two-release
   expand/contract rollout. Read it when a native-board card is stuck
   `in_progress` with a dead owner, or before enabling the reaper.
+- [docs/ticket-context.md](docs/ticket-context.md) — plugging tracker
+  tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
+  verifies the PR delivers what the ticket asks: the team wiring (team
+  secret → `tracker_token` binding with `allowed_hosts` → per-repo
+  `tracker_api_base` launch_var), the one-credential-per-team limit, and
+  the org governance layer (provisioning approval queue +
+  org-admin-delegated per-team caps). Read it when a team asks "can the
+  reviewer check the code against our tickets?" or when a provisioning
+  request seems stuck "awaiting org approval".
 - [docs/outcome-router.md](docs/outcome-router.md) — the
   `ITERION_OUTCOME_ROUTER` switch: how a policy-carrying terminal run is
   decided by its launch-frozen contract (merge/relaunch/escalate), the

@@ -2182,6 +2182,9 @@
           "last_used_at": {
             "type": "string"
           },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -2340,6 +2343,9 @@
         "properties": {
           "is_default": {
             "type": "boolean"
+          },
+          "max_concurrent_runs": {
+            "type": "integer"
           },
           "name": {
             "type": "string"
@@ -2985,6 +2991,9 @@
           "is_default": {
             "type": "boolean"
           },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -3390,7 +3399,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchAdminLlmOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/admin/llm/oauth/{kind}",
+        "tags": [
+          "admin"
+        ]
+      }
     },
     "/api/admin/llm/oauth/{kind}/authorize/complete": {
       "parameters": [
@@ -4640,7 +4661,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchMeOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/me/oauth/{kind}",
+        "tags": [
+          "me"
+        ]
+      }
     },
     "/api/me/oauth/{kind}/authorize/complete": {
       "parameters": [
@@ -5356,6 +5389,130 @@
         ]
       }
     },
+    "/api/orgs/{id}/provision-approvals": {
+      "get": {
+        "operationId": "getOrgsByIdProvisionApprovals",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/provision-approvals",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/provision-approvals/{approval_id}/approve": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "approval_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdProvisionApprovalsByApprovalIdApprove",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/provision-approvals/{approval_id}/approve",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/provision-approvals/{approval_id}/reject": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "approval_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdProvisionApprovalsByApprovalIdReject",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/provision-approvals/{approval_id}/reject",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/settings": {
+      "get": {
+        "operationId": "getOrgsByIdSettings",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/settings",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdSettings",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/settings",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
     "/api/orgs/{id}/sso/domains": {
       "get": {
         "operationId": "getOrgsByIdSsoDomains",
@@ -5599,6 +5756,38 @@
           }
         },
         "summary": "POST /api/orgs/{id}/teams",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/teams/{team_id}/caps": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "team_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdTeamsByTeamIdCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/teams/{team_id}/caps",
         "tags": [
           "orgs"
         ]
@@ -8924,6 +9113,30 @@
           "teams"
         ]
       }
+    },
+    "/api/teams/{id}/provision-approvals": {
+      "get": {
+        "operationId": "getTeamsByIdProvisionApprovals",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/provision-approvals",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/teams/{id}/secrets": {
       "get": {

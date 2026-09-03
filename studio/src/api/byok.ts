@@ -35,6 +35,10 @@ export interface OAuthConnection {
   last_refreshed_at?: string;
   /** False when the stored payload has no refresh token — only a manual reconnect renews it. */
   refreshable?: boolean;
+  /** The account behind the credential, in the operator's words — absent until someone names it. */
+  account_label?: string;
+  /** Audit identity of the subscription: the string the publisher logs when it picks this credential. */
+  fingerprint?: string;
   created_at: string;
   updated_at: string;
 }
@@ -153,26 +157,52 @@ export async function startOAuthAuthorize(
 
 // completeOAuthAuthorize finishes the browser flow with the code the user
 // pasted from Anthropic's callback page (`code#state` accepted whole).
+// accountLabelQuery names the account on a connect call. An unnamed
+// connect keeps the previous name only when the fingerprint is unchanged
+// (server rule), so naming here is what keeps a rotation from un-naming.
+function accountLabelQuery(accountLabel?: string): string {
+  const label = accountLabel?.trim();
+  return label ? `?account_label=${encodeURIComponent(label)}` : "";
+}
+
 export async function completeOAuthAuthorize(
   kind: OAuthKind,
   input: { code: string; state?: string },
   scope: OAuthScope = { mine: true },
+  accountLabel?: string,
 ): Promise<OAuthConnection> {
-  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/authorize/complete`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  return send(
+    `${oauthBase(scope)}/${encodeURIComponent(kind)}/authorize/complete${accountLabelQuery(accountLabel)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function uploadOAuthCredentials(
   kind: OAuthKind,
   blob: string,
   scope: OAuthScope = { mine: true },
+  accountLabel?: string,
 ): Promise<OAuthConnection> {
-  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/credentials`, {
+  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}/credentials${accountLabelQuery(accountLabel)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: blob,
+  });
+}
+
+// renameOAuth names (or, with "", un-names) the account behind a
+// connected credential. Metadata only: the sealed credential is untouched.
+export async function renameOAuth(
+  kind: OAuthKind,
+  accountLabel: string,
+  scope: OAuthScope = { mine: true },
+): Promise<OAuthConnection> {
+  return send(`${oauthBase(scope)}/${encodeURIComponent(kind)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ account_label: accountLabel.trim() }),
   });
 }
 
