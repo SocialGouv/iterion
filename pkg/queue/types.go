@@ -19,21 +19,20 @@ import (
 
 // SchemaVersion is incremented at every breaking change to the wire
 // payload. Producers always set RunMessage.V = SchemaVersion; consumers
-// reject any V outside [MinSchemaVersion, SchemaVersion], so a rolling
-// upgrade must roll the PERMISSIVE side first — see the ordering bullet
-// below.
+// reject any V outside [MinSchemaVersion, SchemaVersion] in both directions,
+// so a rolling upgrade has to choose which side rolls first — see the
+// ordering bullet below.
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
-//   - Roll the side that must already tolerate the other FIRST. Ordinarily
-//     that is the runners: while MinSchemaVersion(new) is at or below the
-//     oldest V still RESIDENT in the stream, new runners admit everything
-//     they may be handed, so nothing is ever rejected. SchemaVersion(old
-//     server) is the usual proxy for that, but only a proxy — admission is
-//     per message, and the stream retains MaxAge (24h), so a bump that RAISES
-//     MinSchemaVersion within that window can still meet older queued
-//     messages. Deploy the server first when MinSchemaVersion rises past what
-//     is still queued: there new runners would reject the backlog, and the
-//     runbook's drain/replay paths apply. A mismatch in
+//   - Deploy the server (producer) first by default. Both orders can park a
+//     message; only one park is replayable. Old runners rejecting the new
+//     version park messages a DLQ replay fixes once the fleet is upgraded;
+//     new runners rejecting a version below their MinSchemaVersion park
+//     messages a replay can never fix (it re-publishes the same bytes). Roll
+//     the runners first only when nothing below MinSchemaVersion(new) can
+//     still be queued — automatic when the bump leaves MinSchemaVersion
+//     alone, otherwise a check against the queue, never against the old
+//     server's SchemaVersion. A mismatch in
 //     either direction is TRANSIENT, never terminal: the consumer holds the
 //     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
 //     on the DLQ with the run document flipped to an actionable status —
@@ -81,11 +80,12 @@ import (
 // the platform-override feature exists to prevent. Consumers accept BOTH v8
 // and v9 (MinSchemaVersion): the change is purely additive, so a NEW runner
 // consumes old queued v8 messages. (The reverse does not hold — a pre-bump
-// runner rejects v9 — which is exactly why the permissive side, the runners,
-// goes first: dual-accept closes the stranded-v8-message half of the window,
-// and rolling runners first closes the other half by never letting a v9
-// message meet a v8-only consumer. An earlier revision of this note read
-// "server-first ordering remains required"; that was the pre-window rule.)
+// runner rejects v9 — so the server-first ordering, or a same-release roll of
+// both, remains the default; dual-accept removes only the stranded-v8-message
+// half of the window. Rolling the runners first removes the other half, but
+// only when nothing below the new Min can still be queued: a runner-first roll
+// parks such a message UNREPLAYABLY, while a server-first one parks the new
+// version replayably. See the runbook's Deploy ordering section.)
 //
 // v=10 (2026-08-29): added Fallback so the operator's single run-level
 // fallback route (`--fallback` / launch `fallback`) reaches the runner.
