@@ -136,20 +136,29 @@ func (s *MemoryDeferredLaunchStore) Upsert(_ context.Context, d DeferredLaunch) 
 func (s *MemoryDeferredLaunchStore) ClaimDue(_ context.Context, now time.Time, lease time.Duration, limit int) ([]DeferredLaunch, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []DeferredLaunch
-	for k, d := range s.rows {
-		if limit > 0 && len(out) >= limit {
-			break
-		}
+	// Order FIRST, lease second — Mongo sorts by fire_at and only then
+	// applies the limit, and this store promises the same semantics. Map
+	// iteration order is random, so leasing as we scan would lease an
+	// ARBITRARY subset when more rows are due than the batch allows and
+	// merely sort what it happened to take: the oldest parked review
+	// (the one whose author has waited longest) could be skipped in
+	// favour of one that just became due.
+	var due []DeferredLaunch
+	for _, d := range s.rows {
 		if d.FireAt.After(now) || d.ClaimedUntil.After(now) {
 			continue
 		}
-		d.ClaimedUntil = now.Add(lease)
-		s.rows[k] = d
-		out = append(out, d)
+		due = append(due, d)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].FireAt.Before(out[j].FireAt) })
-	return out, nil
+	sort.Slice(due, func(i, j int) bool { return due[i].FireAt.Before(due[j].FireAt) })
+	if limit > 0 && len(due) > limit {
+		due = due[:limit]
+	}
+	for i := range due {
+		due[i].ClaimedUntil = now.Add(lease)
+		s.rows[due[i].SubjectKey] = due[i]
+	}
+	return due, nil
 }
 
 func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string, generation int64) error {

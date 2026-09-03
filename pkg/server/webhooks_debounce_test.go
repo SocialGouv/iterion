@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -567,6 +568,39 @@ func TestMemoryDeferredLaunchStore_Semantics(t *testing.T) {
 	}
 	if left, _ := st.ClaimDue(ctx, now.Add(10*time.Minute), 2*time.Minute, 10); len(left) != 0 {
 		t.Fatalf("acknowledged row still claimable: %v", left)
+	}
+}
+
+// Mongo sorts by fire_at and only THEN applies the batch limit; the
+// memory twin promises the same semantics. Leasing as it scanned made it
+// take an arbitrary map-order subset and merely sort what it took — so
+// with more rows due than the batch allows, the review whose author has
+// waited longest could be skipped for one that just became due.
+func TestMemoryDeferredLaunchStore_ClaimsTheOldestDueFirst(t *testing.T) {
+	st := webhooks.NewMemoryDeferredLaunchStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Park 10 subjects, oldest FireAt last so insertion order can't be
+	// mistaken for the answer.
+	for i := 10; i >= 1; i-- {
+		if err := st.Upsert(ctx, webhooks.DeferredLaunch{
+			SubjectKey: fmt.Sprintf("t1|w1|acme/a|pr:%d", i),
+			FireAt:     now.Add(-time.Duration(i) * time.Minute),
+			CreatedAt:  now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	due, err := st.ClaimDue(ctx, now, time.Minute, 3)
+	if err != nil || len(due) != 3 {
+		t.Fatalf("claim: %v %v", due, err)
+	}
+	for _, want := range []string{"t1|w1|acme/a|pr:10", "t1|w1|acme/a|pr:9", "t1|w1|acme/a|pr:8"} {
+		if due[0].SubjectKey != want {
+			t.Fatalf("claimed %v — want the three oldest due, oldest first (%s)", []string{due[0].SubjectKey, due[1].SubjectKey, due[2].SubjectKey}, want)
+		}
+		due = due[1:]
 	}
 }
 
