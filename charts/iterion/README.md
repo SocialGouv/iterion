@@ -44,7 +44,7 @@ groups:
 | Group | What it controls |
 |---|---|
 | `mode` | `local` (single-pod studio + PVC) vs `cloud` (the platform) |
-| `image` | Repository/tag/pullPolicy — one image for server + runner |
+| `image` | Repository/tag/**digest**/pullPolicy — one image for server + runner. `digest` wins over `tag`; prefer it over a moving tag (`edge`/`main`), which is resolved per pod and can leave one ReplicaSet running two builds — see [cloud-deployment.md](../../docs/cloud-deployment.md#pinning-the-image) |
 | `server` | Replicas, full-surge `strategy`, resources, command/args, metrics port |
 | `runner` | Pool enable/replicas/resources, full-surge `strategy`, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods) |
 | `config` | Non-secret env: `rollout.*` (monotonic runner epoch), `mongo.*`, `nats.*`, `s3.*`, `runner.*`, `auth.*` (public half: publicUrl, cookies, TTLs, signupMode, OIDC client ids), `smtp.*` (host/port/from — enables invitations + password-reset email), `orgDefaults.*` (platform-wide launch limits → `ITERION_ORG_DEFAULT_*`), `log.*` |

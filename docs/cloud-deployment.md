@@ -306,6 +306,43 @@ them:
 > the mixed-version window also needs the drained-queue-or-DLQ-replay
 > procedure in [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md).
 
+### Pinning the image
+
+`image.tag` accepts a **moving** tag (`edge`, `main`, `latest`) and many
+installs use one to iterate fast. Know what it costs: a tag is resolved
+**per pod, at that pod's own start time**, so
+
+- a publish landing mid-rollout splits **one ReplicaSet across two builds** —
+  measured on prod 2026-09-02, three server pods of ReplicaSet `548c4b7f7d`
+  serving v3.92.0 and v3.93.0 at once, visible outside as `/healthz` and
+  `/api/server/info` disagreeing on `commit`;
+- a later HPA/KEDA scale-up creates a pod **from an existing ReplicaSet** and
+  pulls whatever the tag means *then* — the ReplicaSet drifts with no rollout
+  entry and no signal.
+
+That matters beyond cosmetics once the rollout epoch is in play: the epoch
+rides the PodTemplate, which assumes one ReplicaSet is one build.
+
+`image.digest` (`sha256:…`) wins over `image.tag` and is the only reference
+that makes that true:
+
+```yaml
+image:
+  repository: ghcr.io/socialgouv/iterion
+  digest: sha256:…        # wins over `tag`
+```
+
+```sh
+# resolve the moving tag to the digest it currently points at
+gh api /orgs/<org>/packages/container/iterion/versions \
+  --jq '[.[]|select(.metadata.container.tags|index("edge"))][0].name'
+```
+
+The trade-off is real and yours: a digest turns each deploy into an explicit
+bump instead of a `rollout restart`. That is the ritual `runner.image` already
+follows — the runner is digest-pinned precisely so a moving tag cannot roll
+the Deployment (and kill in-flight runs) on every merge to main.
+
 ### Generation-aware rollout
 
 The chart uses `RollingUpdate` with `maxSurge: 100%` and
