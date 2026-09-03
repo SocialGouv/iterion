@@ -235,7 +235,21 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	// 60s burned, nothing actionable in the log).
 	var dispatchErr error
 	dispatched := false
-	deadline := time.Now().Add(60 * time.Second)
+	// Bound the probe by the TEST's own budget rather than a wall clock of its
+	// own. Nothing here is timing-sensitive any more — the child blocks on the
+	// release file — so this deadline bounds ONE thing: how long the parent run
+	// takes to reach the subbot node. A fixed 60s does not cover that under
+	// -race on a runner already busy with the rest of the suite, which is how
+	// this test ejected an unrelated PR from the merge queue. Reserve a margin
+	// so the failure is this test's own diagnosis, not the package timeout's
+	// goroutine dump.
+	probeStart := time.Now()
+	deadline := probeStart.Add(5 * time.Minute)
+	if d, ok := t.Deadline(); ok {
+		if budgeted := d.Add(-30 * time.Second); budgeted.Before(deadline) {
+			deadline = budgeted
+		}
+	}
 	for time.Now().Before(deadline) && !held {
 		select {
 		case dispatchErr = <-done:
@@ -292,7 +306,16 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		t.Fatalf("Dispatch returned before any child run appeared — the subbot node was never reached: %v", dispatchErr)
 	}
 	if childID == "" {
-		t.Fatal("never observed a child run — the subbot node did not spawn one")
+		// Name WHICH of the two it is: a parent still running never reached the
+		// node (too slow for the budget), a terminal one reached the end
+		// without spawning (a real defect). Reporting only the symptom is what
+		// made the previous timeout unactionable.
+		parentStatus := "unknown"
+		if p, perr := probe.LoadRun(context.Background(), runID); perr == nil {
+			parentStatus = string(p.Status)
+		}
+		t.Fatalf("never observed a child run — the subbot node did not spawn one (parent %s is %q after %s)",
+			runID, parentStatus, time.Since(probeStart).Truncate(time.Second))
 	}
 	if !held {
 		t.Fatal("never caught the child mid-pass — its lock was never observed held while it was blocked on the release file")
