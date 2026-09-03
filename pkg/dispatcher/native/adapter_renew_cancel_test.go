@@ -33,6 +33,11 @@ func TestAdapterRenewClaim_HonoursCancelMidCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := NewAdapter(st)
+	// Read the lease BEFORE the probe takes the store lock: Get needs it too.
+	before, err := st.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	release, held := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -42,7 +47,6 @@ func TestAdapterRenewClaim_HonoursCancelMidCall(t *testing.T) {
 		st.mu.Unlock()
 	}()
 	<-held
-	defer close(release)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
@@ -62,5 +66,25 @@ func TestAdapterRenewClaim_HonoursCancelMidCall(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("renew ignored the cancel and stayed blocked on the store lock — Stop() waits for the heartbeat " +
 			"loop on the actor goroutine, so the whole dispatcher is held hostage by one slow renewal")
+	}
+
+	// The detached renewal is still parked on the lock. Free it and WAIT
+	// for its write to land before returning: the adapter documents that
+	// a late renewal merely extends a lease we still own, and t.TempDir's
+	// cleanup would otherwise race that write ("directory not empty").
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cur, err := st.Get(iss.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.ClaimLeaseUntil.After(before.ClaimLeaseUntil) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the detached renewal never landed once the store lock was freed")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
