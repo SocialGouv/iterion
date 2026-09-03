@@ -3,6 +3,9 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // A workflow's `mcp_server:` blocks have to reach EVERY backend that consumes
@@ -149,5 +153,73 @@ func TestExplicitMCPWildcardBootFailureFailsTheNode(t *testing.T) {
 	}
 	if len(degraded) != 0 {
 		t.Errorf("a declared dependency must never be reported as a degrade: %+v", degraded)
+	}
+}
+
+// The success half of the ambient splice — untested until now, though it is the
+// whole point of the splice (a claw node reaching the repo's/plugin catalog's
+// MCP tools at all). It also pins the ORDERING that the fatal branch in
+// expandWildcards depends on: buildTask ensures each ambient server, then
+// splices the survivors in as `mcp.<srv>.*`, so ambient wildcards DO reach
+// expandWildcards, and survive it only because they are already `discovered`
+// by then. That reads backwards easily — "a wildcard failing there must be a
+// declared dependency" is the tempting inference, and it is wrong, because
+// provenance is not represented in the list expandWildcards walks. Hence an
+// executed fact here rather than a comment there.
+func TestBuildTaskAmbientMCPServerToolsReachTheTaskAsAWildcard(t *testing.T) {
+	srv := gomcp.NewServer(&gomcp.Implementation{Name: "livesrv", Version: "v0"}, nil)
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name:        "scrape",
+		Description: "scrape a page",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *gomcp.CallToolRequest, any) (*gomcp.CallToolResult, any, error) {
+		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: "ok"}}}, nil, nil
+	})
+	httpSrv := httptest.NewServer(gomcp.NewStreamableHTTPHandler(
+		func(*http.Request) *gomcp.Server { return srv },
+		&gomcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	))
+	defer httpSrv.Close()
+
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"livesrv": {Name: "livesrv", Transport: mcp.TransportHTTP, URL: httpSrv.URL},
+		}),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	// Ambient: active on the node, never named in its `tools:` list.
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"livesrv"}}
+	f := backendFields{id: "n", model: "anthropic/claude-opus-5", tools: []string{"bash"}, activeMCPServers: []string{"livesrv"}}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("a healthy ambient server must not fail the node: %v", err)
+	}
+	var got []string
+	for _, td := range task.ToolDefs {
+		got = append(got, td.Name)
+	}
+	// Matched on the server name rather than the full wire name: delegate tool
+	// names are SANITIZED (`mcp_livesrv_scrape`, not `mcp.livesrv.scrape`), and
+	// which separator the sanitizer picks is not what this test is about.
+	if !slices.ContainsFunc(got, func(n string) bool { return strings.Contains(n, "livesrv") }) {
+		t.Errorf("the ambient server's tools must reach the task via the wildcard splice: %v", got)
+	}
+	if len(degraded) != 0 {
+		t.Errorf("a server that booted must not be reported as degraded: %+v", degraded)
 	}
 }
