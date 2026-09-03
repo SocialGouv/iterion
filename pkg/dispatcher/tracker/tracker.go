@@ -233,6 +233,16 @@ const (
 	// caused it is a deliberate gesture, and a subscription armed on the
 	// promoted card's target state is exactly the intent it expresses.
 	ReasonUnblocked = "unblocked"
+	// ReasonRunFinished / ReasonRunFailed mark a watchdog TERMINAL filing
+	// — the verdict the dead owner would have written. Descriptive, NOT
+	// machine: the disposition is determined by the run's own outcome,
+	// and a downstream subscription must fire exactly as it would have
+	// for the living owner (swallowing it lost the card's whole chain,
+	// silently and permanently). Only the watchdog's REPARKS — a write
+	// into a launch column, where firing re-arms a fresh spend — stay
+	// under the machine ReasonWatchdog.
+	ReasonRunFinished = "run_finished"
+	ReasonRunFailed   = "run_failed"
 )
 
 // IsMachineReason reports whether a board-event `reason` names iterion

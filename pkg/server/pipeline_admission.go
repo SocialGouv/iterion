@@ -420,11 +420,13 @@ func (s *Server) boardNow(board native.BoardStore) time.Time {
 		// Degradation is LOGGED, on its edge — the reaper's own rule ("a
 		// watchdog silently measuring against a suspect clock is worse
 		// than one that logs its degradation"), copied here WITH the
-		// property this time. The FS twin's fallback is expected and
-		// stays silent (single process, one clock).
-		if _, hasClock := board.(interface {
-			ServerNow(context.Context) (time.Time, error)
-		}); !hasClock {
+		// property this time. The exemption keys on the CONCRETE FS twin
+		// (single process, one clock — its fallback is the design), never
+		// on method presence: keyed on the method, a decorator around the
+		// cloud board that drops ServerNow would lose the server clock AND
+		// the warn in the same move — the silent disarm this log exists
+		// to catch.
+		if _, isFS := board.(*native.Store); isFS {
 			return
 		}
 		s.stateMu.Lock()
@@ -449,13 +451,17 @@ func (s *Server) boardNow(board native.BoardStore) time.Time {
 		default:
 			return srv
 		}
+	} else {
+		reason = fmt.Sprintf("board type %T exposes no server clock", board)
 	}
 	return time.Now().UTC()
 }
 
-// The cross-clock guard only exists if the PRODUCTION board type still
-// exposes the server clock — a decorator around CloudBoardFor that
-// drops the method would disarm it silently, suite green.
+// The production board type must keep exposing the server clock. This pin
+// holds the METHOD on *boardmongo.Store only — a decorator inserted at the
+// CloudBoardFor return site still compiles past it; the runtime warn in
+// boardNow (whose exemption keys on the FS twin, not on method presence)
+// is what makes that wrapper loud instead of a silent disarm.
 var _ interface {
 	ServerNow(context.Context) (time.Time, error)
 } = (*boardmongo.Store)(nil)

@@ -41,6 +41,8 @@ type fakeBoardCoord struct {
 	// recoveryListErr fault-injects the recovery listing (the sweep's
 	// listing-health latch reads it).
 	recoveryListErr error
+	// reasons records the explicit provenance of reasoned owned writes.
+	reasons map[string]string
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -86,7 +88,13 @@ func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) (tracker
 	return tracker.ClaimToken{Marker: marker, Epoch: 1}, nil
 }
 
-func (f *fakeBoardCoord) SetState(_ context.Context, _, id, state string) error {
+func (f *fakeBoardCoord) SetState(ctx context.Context, _, id, state string) error {
+	// The real coordinator's store honours the caller's context — a fake
+	// that discards it certified a drain release that dies on the dead
+	// parent ctx in production (the round-7 stub lesson, replayed).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.stateErr[id]; err != nil {
@@ -96,7 +104,10 @@ func (f *fakeBoardCoord) SetState(_ context.Context, _, id, state string) error 
 	return nil
 }
 
-func (f *fakeBoardCoord) Release(_ context.Context, _, id, _ string) error {
+func (f *fakeBoardCoord) Release(ctx context.Context, _, id, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	delete(f.claimed, id)
 	f.mu.Unlock()
@@ -118,6 +129,9 @@ func (f *fakeBoardCoord) RenewClaim(_ context.Context, _, id string, tok tracker
 }
 
 func (f *fakeBoardCoord) SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	held := f.claimed[id] == tok.Marker
 	f.mu.Unlock()
@@ -127,7 +141,22 @@ func (f *fakeBoardCoord) SetStateOwned(ctx context.Context, tenant, id, state st
 	return f.SetState(ctx, tenant, id, state)
 }
 
+// SetStateOwnedReason mirrors the real coordinator: same fenced write,
+// explicit reason recorded for assertions.
+func (f *fakeBoardCoord) SetStateOwnedReason(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken, reason string) error {
+	f.mu.Lock()
+	if f.reasons == nil {
+		f.reasons = map[string]string{}
+	}
+	f.reasons[id] = reason
+	f.mu.Unlock()
+	return f.SetStateOwned(ctx, tenant, id, state, tok)
+}
+
 func (f *fakeBoardCoord) ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	holder, ok := f.claimed[id]
 	f.mu.Unlock()
@@ -335,6 +364,42 @@ func TestBoardDispatcher_PausedRunMovesToAwaitingInput(t *testing.T) {
 	}
 	if len(f.claimed) != 0 {
 		t.Errorf("card should be released after a pause: %v", f.claimed)
+	}
+}
+
+// A run that ends failed_resumable / cancelled is CONTINUABLE — the retry
+// machinery or the operator picks it back up. Filing it blocked wrote a
+// terminal "won't do" on continuable work (the flag no reconciler lifts);
+// the card must stay in the running column, claim released.
+func TestBoardDispatcher_ContinuableRunLeavesTheCardInPlace(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "feature-dev"))
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return fmt.Errorf("run r1 ended failed_resumable: %w", errCardContinuable)
+	}, "replica-A", 4, nil)
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != d.inProgressState {
+		t.Errorf("a continuable run's card must stay in the running column, got %q", got)
+	}
+	if len(f.claimed) != 0 {
+		t.Errorf("card should be released so the retry can reclaim it: %v", f.claimed)
+	}
+}
+
+// The poll's terminal classification: only a FINAL failure is
+// filing-worthy; failed_resumable and cancelled must come back wrapped
+// in errCardContinuable so processCard leaves the card in place.
+func TestPollDisposition_SplitsFinalFromContinuable(t *testing.T) {
+	if err := pollDisposition("r", store.RunStatusFinished); err != nil {
+		t.Fatalf("finished: %v", err)
+	}
+	if err := pollDisposition("r", store.RunStatusFailed); err == nil || errors.Is(err, errCardContinuable) {
+		t.Fatalf("failed must be a filing-worthy (non-continuable) error, got %v", err)
+	}
+	for _, st := range []store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled} {
+		if err := pollDisposition("r", st); !errors.Is(err, errCardContinuable) {
+			t.Fatalf("%s must be continuable — filing it blocked writes a terminal verdict on continuable work, got %v", st, err)
+		}
 	}
 }
 
@@ -1121,6 +1186,53 @@ func TestCloudReaper_ReparkReturnsTheCardToThePool(t *testing.T) {
 	}
 }
 
+// TestCloudReaper_FilingProvenanceSplit: a TERMINAL filing carries the
+// run's own DESCRIPTIVE verdict (run_finished / run_failed — the chain a
+// living owner would fire fires on the repair too), while a repark into
+// a launch column stays under the machine watchdog provenance (a
+// descriptive repark would re-arm a spend on a card nobody moved).
+func TestCloudReaper_FilingProvenanceSplit(t *testing.T) {
+	f := newFakeBoardCoord()
+	statuses := map[string]store.RunStatus{
+		"run-done": store.RunStatusFinished,
+		"run-dead": store.RunStatusFailed,
+		"run-back": store.RunStatusFailedResumable,
+	}
+	for card, run := range map[string]string{
+		"c-done": "run-done", "c-dead": "run-dead", "c-back": "run-back",
+	} {
+		f.claimed[card] = "dead-owner"
+		f.epochs[card] = 1
+		f.states[card] = native.StateInProgress
+		f.expired = append(f.expired, boardmongo.ExpiredCandidate{
+			Tenant: "t1",
+			Claim: tracker.ExpiredClaim{
+				IssueID: card, LastRunID: run,
+				Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+			},
+		})
+	}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: statuses[id]}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+
+	if got := f.reasons["c-done"]; got != tracker.ReasonRunFinished {
+		t.Fatalf("done filing carries reason %q, want %q — the outcome is the run's, not the watchdog's", got, tracker.ReasonRunFinished)
+	}
+	if got := f.reasons["c-dead"]; got != tracker.ReasonRunFailed {
+		t.Fatalf("failed filing carries reason %q, want %q", got, tracker.ReasonRunFailed)
+	}
+	if got, has := f.reasons["c-back"]; has {
+		t.Fatalf("a repark went through the reasoned writer with %q — it must stay under the marker-derived machine provenance", got)
+	}
+	if got := f.states["c-back"]; got != native.StateReady {
+		t.Fatalf("repark landed in %q, want %q", got, native.StateReady)
+	}
+}
+
 // TestCloudReaper_HonoursADeliberateStateMove: same contract as the local
 // reaper (shared predicate) — an operator who moved the card while its
 // owner was dead outranks the watchdog's default filing.
@@ -1353,9 +1465,12 @@ func TestCloudReaper_BootSweepFreesAbandonedRecoveryClaims(t *testing.T) {
 	// Drive run() itself, not the method: what matters is that STARTUP
 	// performs the sweep. Calling the helper directly would pass with the
 	// wiring removed — the whole defect being that nothing invoked it.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	d.run(ctx)
+	runOnePass(t, d, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		_, held := f.claimed["c-abandoned"]
+		return !held
+	})
 
 	if _, held := f.claimed["c-abandoned"]; held {
 		t.Fatalf("a recovery claim nobody came back for must be freed, still held by %q", f.claimed["c-abandoned"])
@@ -1602,6 +1717,29 @@ func TestCloudReaper_RecoverySweepFreesADeadOne(t *testing.T) {
 	}
 }
 
+// runOnePass drives d.run with a LIVE context (production's boot shape —
+// the sweeps' writes carry the loop ctx) and cancels once cond holds or
+// the deadline passes. A pre-cancelled ctx was the old trick to exit
+// after one pass, but with a context-honouring fake it also killed the
+// very writes under test.
+func runOnePass(t *testing.T, d *boardDispatcher, cond func() bool) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.interval = time.Hour
+	done := make(chan struct{})
+	go func() { defer close(done); d.run(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !cond() {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if !cond() {
+		t.Fatalf("condition never held within the pass")
+	}
+}
+
 // TestCloudReaper_LatchIsFedOncePerPass: the pass folds every card's run
 // read into ONE latch verdict. Feeding the latch per card flapped it on a
 // mixed batch — one unreadable run plus one healthy = a false
@@ -1782,9 +1920,12 @@ func TestCloudSweep_UnleasedReleaseIsGuarded(t *testing.T) {
 			return nil, store.ErrRunNotFound
 		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	d.run(ctx)
+	runOnePass(t, d, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		_, held := f.claimed["c-run"]
+		return !held
+	})
 
 	if _, held := f.claimed["c-run"]; held {
 		t.Fatalf("an un-leased in_progress card whose run FINISHED must be released (the reconciler files that shape), still held by %q", f.claimed["c-run"])
@@ -2022,5 +2163,61 @@ func TestBoardDispatcher_DrainedCardIsFiledOnceItsRunFails(t *testing.T) {
 
 	if got := f.states["native:1"]; got != native.StateBlocked {
 		t.Fatalf("the drained card's run failed terminally and the card is still %q — stranded for ever", got)
+	}
+}
+
+// The Shutdown tail must actually WAIT for the board dispatcher's drain
+// (the process exiting mid-release strands claims), and must give up
+// LOUDLY at the caller's deadline instead of hanging.
+func TestShutdown_WaitsForTheBoardDispatcherDrain(t *testing.T) {
+	newSrv := func(buf *bytes.Buffer) *Server {
+		return New(Config{
+			WorkDir:                 t.TempDir(),
+			StoreDir:                t.TempDir(),
+			DisableAuth:             true,
+			SkipProjectRegistration: true,
+		}, iterlog.New(iterlog.LevelWarn, buf))
+	}
+
+	// Drain finishes within the deadline: Shutdown returns only AFTER the
+	// channel closes, and no warn fires.
+	var buf bytes.Buffer
+	s := newSrv(&buf)
+	done := make(chan struct{})
+	s.stateMu.Lock()
+	s.boardDispDone = done
+	s.stateMu.Unlock()
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		close(done)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.Shutdown(ctx)
+	select {
+	case <-done:
+	default:
+		t.Fatal("Shutdown returned while the board dispatcher drain was still running — the process would exit mid-claim-release")
+	}
+	if strings.Contains(buf.String(), "drain still running") {
+		t.Fatalf("a drain that finished in time warned anyway: %q", buf.String())
+	}
+
+	// Drain outlives the deadline: Shutdown must come back (not hang) and
+	// say what it cut.
+	var buf2 bytes.Buffer
+	s2 := newSrv(&buf2)
+	s2.stateMu.Lock()
+	s2.boardDispDone = make(chan struct{}) // never closes
+	s2.stateMu.Unlock()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	start := time.Now()
+	_ = s2.Shutdown(ctx2)
+	if time.Since(start) > 3*time.Second {
+		t.Fatal("Shutdown hung far past its deadline on a stuck drain")
+	}
+	if !strings.Contains(buf2.String(), "drain still running") {
+		t.Fatalf("a drain cut at the deadline must be loud, got %q", buf2.String())
 	}
 }

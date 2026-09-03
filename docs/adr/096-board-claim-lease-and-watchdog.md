@@ -163,6 +163,16 @@ invisible to every watchdog listing (they all select on a non-empty
 claim), for ever. Everything else stays conserved for the gated reap's
 own two-arm listing: a card with no recorded run proves nothing, and a
 launch-column card released bare would re-arm a fresh spend.
+The un-leased claim is not the only thing an old binary's full-document
+`ReplaceOne` re-applies: it also rewrites **state, labels, runs, gaveup
+and comments** from its stale snapshot — the exact lost-update class the
+scoped `$set` closed (a terminal filing rewound, a consumed one-shot
+label restored) stays OPEN wherever an old pod writes, for the duration
+of the rolling window. Nothing sweeps that residue (a rewound state or a
+resurrected label is indistinguishable from an operator's own write
+after the fact); the bound is the rolling window itself, which is why
+release N must fully drain the old ReplicaSet before N+1 turns any
+decision-making on.
 Release N+1, once no old binary can un-lease a claim, enables the
 reaper — and with it the full decision table over whatever the
 mixed-fleet window stranded. The other gate-independent releaser is the

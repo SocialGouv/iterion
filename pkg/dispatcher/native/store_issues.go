@@ -415,6 +415,22 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (upda
 	return s.setStateLocked(iss, newState, tok.Marker)
 }
 
+// SetStateOwnedReason is SetStateOwned with an EXPLICIT provenance
+// overriding the marker-derived one — the watchdog's terminal filings
+// carry the run's own verdict (run_finished / run_failed, descriptive)
+// so the card's downstream chain fires as it would have for the living
+// owner; its reparks keep the marker-derived machine reason.
+func (s *Store) SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateOwnedReason", &err)
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return nil, err
+	}
+	return s.setStateReasonLocked(iss, newState, "", reason)
+}
+
 // Reopen is the ONE sanctioned exit from a terminal state — an
 // operator-surface op, refused when dependents were already promoted on
 // this card's completion (deterministic v1). It emits the ordinary

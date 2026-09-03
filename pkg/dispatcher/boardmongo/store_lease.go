@@ -127,6 +127,18 @@ func stateSet(newState string) bson.M {
 // SetStateOwned is SetState fenced on the claim token: the ownership
 // check and the transition are ONE conditional write.
 func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*native.Issue, error) {
+	return s.setStateOwnedReason(id, newState, tok, "")
+}
+
+// SetStateOwnedReason is SetStateOwned with an EXPLICIT provenance
+// overriding the marker-derived one (native.SetStateOwnedReason's twin):
+// the watchdog's terminal filings carry the run's own verdict so the
+// card's downstream chain fires as it would have for the living owner.
+func (s *Store) SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*native.Issue, error) {
+	return s.setStateOwnedReason(id, newState, tok, reason)
+}
+
+func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	board := s.Board()
@@ -214,7 +226,12 @@ func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (*nat
 	updated.State = newState
 	if old != newState {
 		if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
-			Payload: native.StateChangePayload(old, newState, tok.Marker)}); err != nil {
+			Payload: func() map[string]any {
+				if reason != "" {
+					return map[string]any{"from": old, "to": newState, "reason": reason}
+				}
+				return native.StateChangePayload(old, newState, tok.Marker)
+			}()}); err != nil {
 			return nil, err
 		}
 		if newState == native.StateDone {

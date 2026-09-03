@@ -193,9 +193,9 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	}
 	switch dec.Action {
 	case StuckComplete:
-		c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok)
+		c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok, tracker.ReasonRunFinished)
 	case StuckFail:
-		c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok)
+		c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, tracker.ReasonRunFailed)
 	case StuckRepark, StuckReleaseOnly:
 		// The release below is the whole action: the card re-enters the
 		// eligible pool, and for Repark the retry machinery resumes the
@@ -218,11 +218,25 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 // predicate (the cloud reaper reads the same one). Failures are logged,
 // never fatal: the claim is released either way, so a card is never left
 // owned by a dead worker's ghost.
-func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken) {
+func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken, reason string) {
 	if !ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
 		if target != "" && target != card.RunningState && card.State != target {
 			c.logger.Info("dispatcher: claim watchdog leaves %s in %q (moved out of %q deliberately — not overwriting it with %q)",
 				cand.Identifier, card.State, card.RunningState, target)
+		}
+		return
+	}
+	// A TERMINAL filing carries the run's own verdict (run_finished /
+	// run_failed — descriptive, non-machine): the card's downstream chain
+	// must fire exactly as it would have for the living owner. Only the
+	// reparks stay under the machine watchdog reason. A leaser without
+	// the reasoned form falls back to the marker-derived one — the
+	// conformance canary is what keeps both twins honest.
+	if rr, ok := c.leaser.(interface {
+		UpdateStateOwnedReason(ctx context.Context, id, newState string, tok tracker.ClaimToken, reason string) error
+	}); ok && reason != "" {
+		if err := rr.UpdateStateOwnedReason(ctx, cand.IssueID, target, tok, reason); err != nil {
+			c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
 		}
 		return
 	}

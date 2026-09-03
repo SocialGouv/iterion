@@ -131,6 +131,13 @@ func (c *Coordinator) SetStateOwned(_ context.Context, tenant, id, state string,
 	return err
 }
 
+// SetStateOwnedReason carries the watchdog's terminal verdict — see
+// Store.SetStateOwnedReason.
+func (c *Coordinator) SetStateOwnedReason(_ context.Context, tenant, id, state string, tok tracker.ClaimToken, reason string) error {
+	_, err := c.StoreFor(tenant).SetStateOwnedReason(id, state, tok, reason)
+	return err
+}
+
 func (c *Coordinator) ReleaseOwned(_ context.Context, tenant, id string, tok tracker.ClaimToken) error {
 	return c.StoreFor(tenant).ReleaseOwned(id, tok)
 }

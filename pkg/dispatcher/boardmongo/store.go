@@ -410,6 +410,12 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...strin
 		if !known[k] {
 			return fmt.Errorf("boardmongo: replace: unknown issue field %q", k)
 		}
+		if claimOwnedKeys[k] {
+			// The claim family belongs to the CAS writers alone; a caller
+			// naming it here would have its write silently dropped by the
+			// skip below — the very shape the loud refusal exists for.
+			return fmt.Errorf("boardmongo: replace: %q is claim-owned — use the fenced CAS writers", k)
+		}
 		keys[k] = true
 	}
 	// native.Issue carries no bson tags, so EVERY field marshals (a nil

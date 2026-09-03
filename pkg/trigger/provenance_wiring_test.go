@@ -61,6 +61,73 @@ func TestNormalizeBoardEvent_ProvenanceTravelsAndBlanksTheActor(t *testing.T) {
 	}
 }
 
+// The whole cable of the provenance SPLIT: a watchdog TERMINAL filing
+// (SetStateOwnedReason, run_finished) must be ADMITTED by the shared
+// subscription prelude — the chain a living owner would fire fires on
+// the repair too — while a watchdog REPARK (fenced marker-derived
+// watchdog reason) fires nothing. Both events are what the real store
+// emits, not hand-built payloads.
+func TestWatchdogTerminalFilingFiresTheChain_ReparkDoesNot(t *testing.T) {
+	ctx := context.Background()
+	s, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	subs := NewMemorySubscriptionStore()
+	if err := subs.Create(ctx, Subscription{
+		ID: "s1", TenantID: "t1", BotID: "next-bot", Enabled: true,
+		Mode:  bundle.ExecutionDirect,
+		Match: Matcher{Sources: []Source{SourceBoard}, Kinds: []string{KindCardMoved}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	filed, _ := s.Create(native.Issue{Title: "filed", State: native.StateInProgress})
+	tok1, err := s.Claim(filed.ID, tracker.ReaperMarkerPrefix+"host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetStateOwnedReason(filed.ID, native.StateDone, tok1, tracker.ReasonRunFinished); err != nil {
+		t.Fatal(err)
+	}
+
+	parked, _ := s.Create(native.Issue{Title: "parked", State: native.StateInProgress})
+	tok2, err := s.Claim(parked.ID, tracker.ReaperMarkerPrefix+"host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetStateOwned(parked.ID, native.StateReady, tok2); err != nil {
+		t.Fatal(err)
+	}
+
+	admitted := map[string]int{}
+	if err := s.ScanEvents(func(e *native.Event) bool {
+		if e.Type != native.EvtIssueState {
+			return true
+		}
+		ev, ok, err := NormalizeBoardEvent(s.Get, *e, "t1", "org/repo", "board")
+		if err != nil || !ok {
+			t.Fatalf("normalize issue %s: ok=%v err=%v", e.IssueID, ok, err)
+		}
+		matched, err := matchingSubscriptions(ctx, subs, ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		admitted[e.IssueID] += len(matched)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if admitted[filed.ID] != 1 {
+		t.Fatalf("the watchdog's TERMINAL filing matched %d subscriptions, want 1 — the run's own outcome must fire the chain the living owner would have fired", admitted[filed.ID])
+	}
+	if admitted[parked.ID] != 0 {
+		t.Fatalf("the watchdog's REPARK matched %d subscriptions, want 0 — returning a card to the pool is machinery, not a gesture", admitted[parked.ID])
+	}
+}
+
 func TestMachineCaused_EnumeratedSet(t *testing.T) {
 	for reason, want := range map[string]bool{
 		tracker.ReasonWatchdog:    true,
@@ -70,7 +137,11 @@ func TestMachineCaused_EnumeratedSet(t *testing.T) {
 		// Descriptive provenance — the cascade of an operator gesture —
 		// keeps its triggers. This row is what died under `reason != ""`.
 		tracker.ReasonUnblocked: false,
-		"":                      false,
+		// A watchdog TERMINAL filing writes the run's own outcome — the
+		// chain a living owner would fire must fire on the repair too.
+		tracker.ReasonRunFinished: false,
+		tracker.ReasonRunFailed:   false,
+		"":                        false,
 	} {
 		ev := Event{Payload: map[string]any{}}
 		if reason != "" {

@@ -194,10 +194,11 @@ func randomBootstrapPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// cloudBoardFor builds the per-tenant board factory. The return type is
-// the CONCRETE store on purpose: the pipeline launch guard measures
-// claim leases against the board's ServerNow, and this compile-time
-// shape is what keeps a future wrapper from silently dropping it.
+// cloudBoardFor builds the per-tenant board factory. The pipeline launch
+// guard measures claim leases against the board's ServerNow; the inner
+// pin below holds the method on the bare factory ONLY — a wrapper around
+// the returned closure would still compile, and is caught at runtime by
+// boardNow's warn (any non-FS board without a server clock is loud).
 func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
 	factory := func(tenantID string) *boardmongo.Store { return boardmongo.New(st.DB(), tenantID) }
 	var _ interface {
@@ -520,11 +521,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WorkDir:     serverOpts.dir,
 		Store:       st,
 		// The launch guard's cross-clock comparison type-asserts ServerNow
-		// on what THIS factory returns — a decorator inserted here that
-		// drops the method would silently disarm the guard (the pin in
-		// pipeline_admission.go only holds the method on *boardmongo.Store
-		// itself). cloudBoardFor keeps the concrete type visible at the
-		// wiring, so dropping the method is a compile error HERE.
+		// on what THIS factory returns. No compile pin covers this seam —
+		// a decorator wrapped around the returned closure compiles fine
+		// (cloudBoardFor's inner pin only checks the bare factory). The
+		// real net is runtime: boardNow warns on any non-FS board without
+		// a server clock, so a wrapper degrades LOUDLY, never silently.
 		CloudBoardFor:          cloudBoardFor(st),
 		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
 		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),

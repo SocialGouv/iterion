@@ -610,4 +610,14 @@ func TestBoardNow_DegradationWarnsOnItsEdge(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Fatalf("the FS twin's local-clock fallback must stay silent, got %q", buf.String())
 	}
+	// A DECORATOR that drops ServerNow is the silent-disarm case the warn
+	// exists for: the exemption keys on the concrete FS twin, so any other
+	// clockless board must be loud (with the erroring board, the method
+	// was still there — keyed on method presence this branch never fired).
+	buf.Reset()
+	s.boardClockWarned = ""
+	s.boardNow(struct{ native.BoardStore }{BoardStore: cb})
+	if warns := strings.Count(buf.String(), "no server clock"); warns != 1 {
+		t.Fatalf("a clock-dropping decorator warned %d time(s), want 1 — losing the method and the warn in the same move is the disarm this log exists to catch", warns)
+	}
 }

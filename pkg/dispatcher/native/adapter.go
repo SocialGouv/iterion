@@ -150,6 +150,25 @@ func (a *Adapter) UpdateStateOwned(ctx context.Context, id, newState string, tok
 	return err
 }
 
+// UpdateStateOwnedReason is the fenced state write carrying an explicit
+// provenance (the watchdog's terminal verdicts) — see
+// native.SetStateOwnedReason.
+func (a *Adapter) UpdateStateOwnedReason(ctx context.Context, id, newState string, tok tracker.ClaimToken, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rr, ok := a.store.(interface {
+		SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*Issue, error)
+	})
+	if !ok {
+		// Backend without the reasoned form: marker-derived provenance.
+		_, err := a.store.SetStateOwned(id, newState, tok)
+		return err
+	}
+	_, err := rr.SetStateOwnedReason(id, newState, tok, reason)
+	return err
+}
+
 // SetLastRunOwned / SetAwaitingInputOwned / SetGaveUpOwned are the fenced
 // forms of the setter pass-throughs below — same regression-guard rule:
 // a store method without its Adapter pass-through fails silently at the
@@ -314,7 +333,7 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 		return nil, err
 	}
 	var cleared []string
-	skipped := 0
+	skipped, attempted := 0, 0
 	for _, iss := range issues {
 		if iss.Claim == "" {
 			continue
@@ -322,6 +341,7 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 		if !isStale(iss.Claim) {
 			continue
 		}
+		attempted++
 		if err := a.store.Release(iss.ID, iss.Claim); err != nil {
 			// The listing is a snapshot, not the truth at the moment of
 			// the act: losing the race on ONE card is benign (the reaper
@@ -338,25 +358,16 @@ func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, 
 		}
 		cleared = append(cleared, iss.ID)
 	}
-	if skipped > 0 && len(cleared) == 0 && skipped == lenStale(issues, isStale) {
+	if skipped > 0 && len(cleared) == 0 && skipped == attempted {
 		// EVERY stale claim lost its race: sweep-wide contention is a
 		// different condition from a per-card blip, and a silent
-		// (nil, nil) here would read as "nothing was stale".
+		// (nil, nil) here would read as "nothing was stale". Counted in
+		// the loop — re-invoking the predicate here doubled the boot's
+		// PID probes and let a time-varying predicate suppress the very
+		// diagnostic this exists to emit.
 		return nil, fmt.Errorf("stale-claim sweep released nothing: all %d candidates lost their release race", skipped)
 	}
 	return cleared, nil
-}
-
-// lenStale counts the listing's stale claims, for the sweep's
-// all-races-lost report.
-func lenStale(issues []*Issue, isStale func(string) bool) int {
-	n := 0
-	for _, iss := range issues {
-		if iss.Claim != "" && isStale(iss.Claim) {
-			n++
-		}
-	}
-	return n
 }
 
 func toTrackerIssue(iss *Issue) tracker.Issue {

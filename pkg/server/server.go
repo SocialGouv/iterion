@@ -62,6 +62,10 @@ type Server struct {
 	boardClockWarned string
 	// boardDispDone closes when the cloud board dispatcher run loop (and
 	// its drain writes) has fully returned; Shutdown waits on it, bounded.
+	// nil until ListenAndServe wires the dispatcher — both the write and
+	// the read go through stateMu (unsynchronized, a SIGTERM during boot
+	// raced the write, read nil, and skipped the very wait the drain
+	// depends on — caught by -race).
 	boardDispDone chan struct{}
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);

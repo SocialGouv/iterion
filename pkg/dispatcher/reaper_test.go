@@ -1083,9 +1083,12 @@ func TestIsStaleLocalMarker_ReaperPrefix(t *testing.T) {
 	}
 }
 
-// The REAL local reaper path stamps machine provenance end-to-end: the
+// The REAL local reaper path stamps provenance end-to-end: the
 // conformance suite covers the store method, not the chain
-// (reapOne → fileStuckCard → UpdateStateOwned → setStateLocked).
+// (reapOne → fileStuckCard → UpdateStateOwnedReason → setStateReasonLocked).
+// A TERMINAL filing carries the DESCRIPTIVE run outcome — the watchdog
+// merely writes what the run already decided, so downstream chains fire
+// exactly as they would for the living owner.
 func TestReapOne_FilingCarriesWatchdogProvenance(t *testing.T) {
 	c, board, runs := newReaperHarness(t)
 	mkRun(t, runs, "run-done-prov", store.RunStatusFinished)
@@ -1105,8 +1108,11 @@ func TestReapOne_FilingCarriesWatchdogProvenance(t *testing.T) {
 	if last == nil {
 		t.Fatal("the filing emitted no state event")
 	}
-	if got, _ := last["reason"].(string); got != tracker.ReasonWatchdog {
-		t.Fatalf("the reaper's filing carries reason %q, want %q — the spine would spend an operator one-shot on this repair", got, tracker.ReasonWatchdog)
+	if got, _ := last["reason"].(string); got != tracker.ReasonRunFinished {
+		t.Fatalf("the reaper's TERMINAL filing carries reason %q, want %q — the outcome is the run's, not the watchdog's, and the chain a living owner would fire must fire here too", got, tracker.ReasonRunFinished)
+	}
+	if tracker.IsMachineReason(tracker.ReasonRunFinished) {
+		t.Fatal("run_finished must stay DESCRIPTIVE (not machine) — a machine reason would swallow the downstream chain the filing exists to fire")
 	}
 }
 

@@ -33,6 +33,7 @@ type boardCoordinator interface {
 	// late writes are refused, never landed.
 	RenewClaim(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
 	SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error
+	SetStateOwnedReason(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken, reason string) error
 	ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
 	// The reaper pair (the cloud half of the claim watchdog — the hole
 	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
@@ -48,6 +49,28 @@ type boardCoordinator interface {
 // failing. processCard routes such a card to the awaiting-input column, not
 // blocked.
 var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
+
+// errCardContinuable marks a run that ended terminal-for-polling but NOT
+// finally failed (failed_resumable, cancelled): the retry machinery or
+// the operator continues it, so the card is left in place — never filed
+// blocked, the flag no reconciler lifts.
+var errCardContinuable = errors.New("board dispatcher: run continuable")
+
+// pollDisposition maps a TERMINAL polled status to the poll's verdict:
+// finished = clean; failed = the one filing-worthy failure; everything
+// else terminal (failed_resumable, cancelled) is continuable — the retry
+// machinery or the operator picks the run back up, so processCard must
+// leave the card in place rather than file blocked.
+func pollDisposition(runID string, st store.RunStatus) error {
+	switch {
+	case st == store.RunStatusFinished:
+		return nil
+	case st.IsFinalFailure():
+		return fmt.Errorf("run %s ended %s", runID, st)
+	default:
+		return fmt.Errorf("run %s ended %s: %w", runID, st, errCardContinuable)
+	}
+}
 
 // boardDispatcher polls the cloud board for eligible cards and runs each via
 // the injected process func (launch + poll-to-terminal). Multi-replica-safe
@@ -202,6 +225,12 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// A pause is not a failure: route the card to the awaiting-input
 		// column so the operator answers it there, not to blocked.
 		final = d.awaitingState
+	case runErr != nil && errors.Is(runErr, errCardContinuable):
+		// The run is continuable (failed_resumable / cancelled): the retry
+		// machinery or the operator picks it back up. Leave the card in
+		// place, release the claim — the fork-adoption reconciler files it
+		// if the pointer later reaches a real terminal disposition.
+		final = ""
 	case runErr != nil && ctx.Err() != nil:
 		// THIS REPLICA is going away — that says nothing about the run,
 		// which keeps executing on its runner pod and will finish.
@@ -995,9 +1024,9 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	}
 	switch dec.Action {
 	case dispatcher.StuckComplete:
-		d.fileReapedCard(ctx, cand, card, d.doneState, tok)
+		d.fileReapedCard(ctx, cand, card, d.doneState, tok, tracker.ReasonRunFinished)
 	case dispatcher.StuckFail:
-		d.fileReapedCard(ctx, cand, card, d.blockedState, tok)
+		d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
 	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
 		// Unlike the local dispatcher — where the running column is itself
 		// eligible, so a bare release re-arms the card — this tick only
@@ -1022,9 +1051,9 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			d.warn("claim watchdog stops returning %s/%s to the pool: it has already carried %d runs — "+
 				"filing it as %s rather than paying for another",
 				cand.Tenant, cand.Claim.IssueID, cand.Claim.LifetimeRuns, d.blockedState)
-			d.fileReapedCard(ctx, cand, card, d.blockedState, tok)
+			d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
 		case len(d.eligible) > 0:
-			d.fileReapedCard(ctx, cand, card, d.eligible[0], tok)
+			d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
 		}
 	}
 	if err := d.coord.ReleaseOwned(ctx, cand.Tenant, cand.Claim.IssueID, tok); err != nil {
@@ -1041,11 +1070,21 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 // operator (or a bot with board.move) already moved out of the running
 // column carries an intent that predates the watchdog, and overwriting it
 // would silently undo, say, a manual re-queue.
-func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, target string, tok tracker.ClaimToken) {
+// reason: the run's own verdict for TERMINAL filings (run_finished /
+// run_failed — descriptive, the downstream chain fires as it would have
+// for the living owner); "" for reparks into a launch column, which stay
+// under the machine watchdog provenance (firing there re-arms a spend).
+func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, target string, tok tracker.ClaimToken, reason string) {
 	if !dispatcher.ShouldFileStuckCard(card.State, card.RunningState, target, card.LaunchStates) {
 		if card.State != target {
 			d.warn("claim watchdog leaves %s/%s in %q (moved out of %q deliberately — not overwriting it with %q)",
 				cand.Tenant, cand.Claim.IssueID, card.State, card.RunningState, target)
+		}
+		return
+	}
+	if reason != "" {
+		if err := d.coord.SetStateOwnedReason(ctx, cand.Tenant, cand.Claim.IssueID, target, tok, reason); err != nil {
+			d.warn("claim watchdog file %s/%s → %s: %v", cand.Tenant, cand.Claim.IssueID, target, err)
 		}
 		return
 	}
@@ -1292,10 +1331,8 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	for {
 		if run, lerr := s.runs.LoadRunCtx(ctx, runID); lerr == nil {
 			switch st := run.Status; {
-			case st == store.RunStatusFinished:
-				return nil
 			case st.IsTerminal():
-				return fmt.Errorf("run %s ended %s", runID, st)
+				return pollDisposition(runID, st)
 			case st.IsPaused():
 				// Parked on a human/operator gate — stop waiting; the operator
 				// resumes the run. Denormalize the pause hint so the grid can

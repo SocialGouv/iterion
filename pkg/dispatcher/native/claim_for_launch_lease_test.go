@@ -1,6 +1,7 @@
 package native
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -154,5 +155,49 @@ func TestSweepStaleClaims_ContinuesPastBenignRaces(t *testing.T) {
 	}
 	if got, _ := s.Get(e1.ID); got.Claim != "" {
 		t.Fatalf("card %s still claimed after the deleted-card race", e1.ID)
+	}
+}
+
+// TestSweepStaleClaims_AllRacesLostIsLoud_CountedInTheLoop: when EVERY
+// stale claim loses its release race the sweep must say so — and the
+// count must come from the loop itself: re-invoking the predicate after
+// the walk doubled the boot's PID probes and let a time-varying
+// predicate (a PID that dies mid-sweep reads live on the recount)
+// suppress the very diagnostic.
+func TestSweepStaleClaims_AllRacesLostIsLoud_CountedInTheLoop(t *testing.T) {
+	s := newTestStore(t)
+	a := NewAdapter(s)
+	ids := []string{}
+	for _, title := range []string{"a", "b"} {
+		iss, err := s.Create(Issue{Title: title, State: StateInProgress})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Claim(iss.ID, "deadhost-901"); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, iss.ID)
+	}
+	calls := 0
+	_, err := a.SweepStaleClaims(func(marker string) bool {
+		calls++
+		// Steal the card in the window between the listing and the
+		// release, so this card's release loses its race…
+		id := ids[calls-1]
+		if err := s.Release(id, "deadhost-901"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Claim(id, tracker.ReaperMarkerPrefix+"host-1"); err != nil {
+			t.Fatal(err)
+		}
+		// …and report TIME-VARYING staleness: true now, false on any
+		// recount — the shape that silenced the old post-loop recount.
+		return calls <= len(ids)
+	})
+	if err == nil || !strings.Contains(err.Error(), "released nothing") {
+		t.Fatalf("a sweep where every candidate lost its race must be loud, got %v", err)
+	}
+	if calls != len(ids) {
+		t.Fatalf("predicate invoked %d times for %d cards — the count must come from the loop, not a recount", calls, len(ids))
 	}
 }
