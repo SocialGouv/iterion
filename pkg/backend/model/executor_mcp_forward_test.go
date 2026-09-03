@@ -106,3 +106,50 @@ func TestBuildTaskAmbientMCPServerBootFailureDegradesNotFails(t *testing.T) {
 		t.Fatalf("the drop must be observable via OnMCPServerDegraded: %+v", degraded)
 	}
 }
+
+// The other half of the same rule, and the reason the ambient degrade is safe:
+// a server the node names EXPLICITLY is a declared dependency, so its boot
+// failure fails the node loud. Without this test the asymmetry reads as an
+// accident of which branch returns, and the tolerant half would erode onto the
+// declared path — silently running an agent without the tools it asked for.
+func TestExplicitMCPWildcardBootFailureFailsTheNode(t *testing.T) {
+	tr := tool.NewRegistry()
+	if err := tr.RegisterBuiltin("bash", "bash", nil, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"deadsrv": {Command: "/nonexistent/iterion-test-mcp-server"},
+		}),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	// Named in the node's own tool list, NOT in activeMCPServers — the whole
+	// distinction between a declared dependency and an inherited one.
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}}
+	f := backendFields{id: "n", model: "anthropic/claude-opus-5", tools: []string{"bash", "mcp.deadsrv.*"}}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("an explicitly named MCP server that cannot boot must fail the node")
+	}
+	// The message has to name the server AND the entry that pulled it in, or the
+	// operator cannot tell this apart from a tool that simply does not exist.
+	// Asserted on those two facts rather than on the wording: the entry is data,
+	// so a reword that keeps it stays green, and the pre-change message
+	// ("ensure MCP server %q for wildcard") carried the server alone — which is
+	// where this test gets its teeth.
+	if !strings.Contains(err.Error(), "deadsrv") || !strings.Contains(err.Error(), "mcp.deadsrv.*") {
+		t.Errorf("error must name the server and the wildcard entry: %v", err)
+	}
+	if len(degraded) != 0 {
+		t.Errorf("a declared dependency must never be reported as a degrade: %+v", degraded)
+	}
+}
