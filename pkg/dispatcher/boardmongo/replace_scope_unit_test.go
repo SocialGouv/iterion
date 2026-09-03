@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -124,5 +125,64 @@ func TestLabelSweep_DoesNotResurrectAConsumedOneShot(t *testing.T) {
 	}
 	if calls < 2 {
 		t.Fatalf("transform called %d time(s) — the guard miss must re-read and re-transform, not re-apply the stale slice", calls)
+	}
+}
+
+// A sweep that WANTS to rewrite a card and loses the CAS on every
+// attempt must say so: swallowing the exhaustion leaves a label the
+// operator asked to remove (possibly a consume_labels trigger) on the
+// card, under a green return with a count that never mentions it.
+func TestLabelSweep_ExhaustionIsLoud(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("sweeploud_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		c, cc := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cc()
+		_ = db.Drop(c)
+		_ = client.Disconnect(c)
+	})
+	if err := EnsureSchema(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s := New(db, "t1")
+	iss, err := s.Create(native.Issue{Title: "x", State: native.StateReady,
+		Labels: []string{"retire-me", "keep"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	sabotaged := func(labels []string) ([]string, bool) {
+		n++
+		// A concurrent writer moves the labels between EVERY read and
+		// write, so the guard misses on all attempts.
+		fresh := append([]string{fmt.Sprintf("noise-%d", n)}, labels...)
+		if _, uerr := s.Update(iss.ID, native.Patch{Labels: &fresh}); uerr != nil {
+			t.Fatal(uerr)
+		}
+		out := make([]string, 0, len(labels))
+		changed := false
+		for _, l := range labels {
+			if l == "retire-me" {
+				changed = true
+				continue
+			}
+			out = append(out, l)
+		}
+		return out, changed
+	}
+	_, err = s.applyLabelRewrite(ctx, sabotaged, native.EvtIssueUpdated, map[string]any{"op": "delete"})
+	if err == nil || !strings.Contains(err.Error(), "lost the label CAS") {
+		t.Fatalf("a sweep exhausted on every CAS attempt returned %v — the un-rewritten card vanishes under a green return", err)
 	}
 }

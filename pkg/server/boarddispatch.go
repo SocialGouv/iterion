@@ -431,6 +431,16 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	if err != nil || pointer == nil {
 		return
 	}
+	// Judge on the FRESH record — statusFor's read above is only a cheap
+	// pre-filter and can be stale by the time the pointer loads: a
+	// redelivered run is running again, and a resume CLEARS
+	// ContinuationState, so mixing the stale status with the fresh
+	// continuation filed a RUNNING run as blocked. A pointer that turned
+	// finished is left for the next pass (the finished arm reads it then).
+	st = pointer.Status
+	if st == store.RunStatusFinished || !st.IsTerminal() {
+		return
+	}
 	runs, err := d.issueRuns(ctx, c.Tenant, c.Issue.ID)
 	if err != nil {
 		d.warn("fork-adoption sweep: list runs of card %s/%s: %v", c.Tenant, c.Issue.ID, err)
@@ -453,14 +463,21 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 		// leaves its in-flight cards in the running column, so a card
 		// whose pointer settles terminal would otherwise sit in_progress
 		// for ever — not eligible, not claimed, reached by no sweep.
-		// Files: terminal FAILURE, and a terminal-RESUMABLE pointer
-		// (failed_resumable, cancelled) once NO continuation owns its
-		// future — while a redelivery or an armed retry does, the run's
-		// own next attempt resolves the card, and filing it would write a
-		// verdict on continuable work. Running-column only, like the
-		// finished arm: a blocked card or an operator move stays honoured.
+		// Files: terminal FAILURE, and a failed_resumable pointer once NO
+		// continuation owns its future — while a redelivery or an armed
+		// retry does, the run's own next attempt resolves the card.
+		// CANCELLED is the operator's stop and is NEVER auto-routed, in
+		// any direction (the shared doctrine — DecideStuckCard, the
+		// outcome router, the retry paths): their card stays where they
+		// left it. blocked (not a repark) for the settled resumable on
+		// purpose: the decision table's repark presumes the reaper's
+		// claim and its LifetimeRuns ceiling — this path has neither, and
+		// an unbounded repark is a spend loop. The trade-off is a one-way
+		// door: a blocked card whose run the operator later resumes to
+		// completion needs a manual drag (the finished arm honours
+		// blocked as a deliberate placement).
 		settled := st == store.RunStatusFailed ||
-			(st.IsTerminalResumable() &&
+			(st == store.RunStatusFailedResumable &&
 				pointer.ContinuationState != store.ContinuationRedeliveryPending &&
 				pointer.ContinuationState != store.ContinuationRetryArmed)
 		if settled && c.Issue.State == d.inProgressState {

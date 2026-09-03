@@ -2189,14 +2189,25 @@ func TestBoardDispatcher_DrainedCardIsFiledOnceItsRunFails(t *testing.T) {
 func TestBoardDispatcher_ContinuableCardIsFiledOnceItSettles(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
-		status       store.RunStatus
+		status       store.RunStatus // statusFor's (possibly stale) read
+		fresh        store.RunStatus // the pointer record's status; "" = same
 		continuation store.ContinuationState
 		want         string
 	}{
-		{"failed_resumable settled", store.RunStatusFailedResumable, "", native.StateBlocked},
-		{"cancelled settled", store.RunStatusCancelled, "", native.StateBlocked},
-		{"retry armed keeps the card", store.RunStatusFailedResumable, store.ContinuationRetryArmed, native.StateInProgress},
-		{"redelivery pending keeps the card", store.RunStatusFailedResumable, store.ContinuationRedeliveryPending, native.StateInProgress},
+		{"failed_resumable settled", store.RunStatusFailedResumable, "", "", native.StateBlocked},
+		// CANCELLED is the operator's stop — never auto-routed, in any
+		// direction (the shared doctrine: DecideStuckCard, the outcome
+		// router, the retry paths). And blocked is a one-way door: filing
+		// it left a card their resumed-and-finished run could never
+		// un-block.
+		{"cancelled is never auto-routed", store.RunStatusCancelled, "", "", native.StateInProgress},
+		{"retry armed keeps the card", store.RunStatusFailedResumable, "", store.ContinuationRetryArmed, native.StateInProgress},
+		{"redelivery pending keeps the card", store.RunStatusFailedResumable, "", store.ContinuationRedeliveryPending, native.StateInProgress},
+		// TOCTOU: statusFor read failed_resumable, but by the time the
+		// pointer loads the run is RUNNING again (a redelivery — which
+		// also cleared ContinuationState). The verdict must come from the
+		// fresh record, or a live run's card is filed blocked.
+		{"redelivered run is not filed", store.RunStatusFailedResumable, store.RunStatusRunning, "", native.StateInProgress},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeBoardCoord(readyCard("native:1", "feature-dev"))
@@ -2206,8 +2217,12 @@ func TestBoardDispatcher_ContinuableCardIsFiledOnceItSettles(t *testing.T) {
 			d.statusFor = func(_ context.Context, _, _ string) (store.RunStatus, error) {
 				return tc.status, nil
 			}
+			fresh := tc.fresh
+			if fresh == "" {
+				fresh = tc.status
+			}
 			d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
-				return &store.Run{ID: id, Status: tc.status, ContinuationState: tc.continuation}, nil
+				return &store.Run{ID: id, Status: fresh, ContinuationState: tc.continuation}, nil
 			}
 			d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
 			d.adoptRun = func(string, string, string, string) error { return nil }

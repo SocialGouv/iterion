@@ -491,6 +491,7 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		workspaceGeneration: workspaceGeneration,
 		runCtx:              runCtx,
 		entry:               entry,
+		session:             entry.claim,
 		spec:                spec,
 	})
 }
@@ -879,8 +880,11 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)
 		// Nothing was transitioned and no slot was allocated yet (the
 		// post-claim setup I/O runs off the actor below, only after the
-		// entry is in place) — just release the claim. See ADR-028 Step 4.
-		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
+		// entry is in place) — just release the claim, through the SAME
+		// choke as every other release site so the journal entry drops
+		// with it (a bypass kept a stale "claimed" diagnostic pinned).
+		// See ADR-028 Step 4.
+		c.releaseClaim(ctx, iss.ID, iss.Identifier)
 		return "", "", attempt, false
 	}
 	return freshID, "", attempt, true
@@ -960,7 +964,12 @@ type dispatchSetupPlan struct {
 	workspaceGeneration string
 	runCtx              context.Context
 	entry               *runningEntry
-	spec                DispatchSpec
+	// session is the claim heartbeat SNAPSHOT taken on the actor — the
+	// same rule finishPlan.session follows. runDispatchSetup runs OFF the
+	// actor, so reading entry.claim there races shutdown's drain, which
+	// nils it (stopClaimSession).
+	session *claimSession
+	spec    DispatchSpec
 }
 
 // launchDispatchSetup runs the post-claim dispatch setup OFF the actor and,
@@ -1009,7 +1018,7 @@ func (c *Dispatcher) runDispatchSetup(plan dispatchSetupPlan) (created bool, ok 
 	// revert. Moved off the actor in ADR-028 Step 4.
 	var transitionedFrom string
 	if target := plan.runningTarget; target != "" && plan.sourceState != target {
-		if err := c.fencedUpdateState(plan.runCtx, plan.issueID, target, plan.entry.claim); err != nil {
+		if err := c.fencedUpdateState(plan.runCtx, plan.issueID, target, plan.session); err != nil {
 			if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
 				c.logger.Warn("dispatcher: in-progress transition %s: %v", plan.identifier, err)
 			}

@@ -280,9 +280,12 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	var released []string
+	var released, stranded []string
 	for _, e := range entries {
 		if !isStaleLocalMarker(e.Marker, host) {
+			if journalDeclineIsPermanent(e.Marker, host) {
+				stranded = append(stranded, e.Identifier+" ("+e.Marker+")")
+			}
 			continue
 		}
 		if err := c.tracker.Release(ctx, e.IssueID, e.Marker); err != nil &&
@@ -295,6 +298,17 @@ func (c *Dispatcher) sweepJournalledClaims(host string) {
 		}
 		c.claims.Remove(e.IssueID)
 		released = append(released, e.Identifier)
+	}
+	// PERMANENT abstentions are NAMED, once per boot: a marker no future
+	// boot can ever prove dead (unparsable shape, pid <= 1) is — on an
+	// external tracker, where this sweep is the ONLY recovery path — a
+	// claim label stranded for ever with no trace. Transient declines
+	// (live pid = another daemon sharing the store; foreign host = not
+	// ours to judge) stay silent: warning on them is a storm in every
+	// legitimate multi-daemon setup.
+	if len(stranded) > 0 {
+		c.logger.Warn("dispatcher: boot sweep kept %d journalled claim(s) whose markers can NEVER be proven dead — if their owners are gone, release them by hand: %v",
+			len(stranded), stranded)
 	}
 	if len(released) > 0 {
 		c.logger.Info("dispatcher: released %d journalled claim(s) from dead local PIDs: %v", len(released), released)
@@ -329,6 +343,24 @@ func isStaleLocalMarker(marker, host string) bool {
 	// we can't confidently prove is dead. See localPidGone in
 	// proc_unix.go / proc_windows.go.
 	return localPidGone(pid)
+}
+
+// journalDeclineIsPermanent reports that a journalled marker the boot
+// sweep declined can NEVER become releasable by a future boot on this
+// host: the pid part is unparsable or <= 1 (isStaleLocalMarker refuses
+// those unconditionally). A live pid or a foreign host is a TRANSIENT
+// decline — the owner may release it, or its host's own boot will.
+func journalDeclineIsPermanent(marker, host string) bool {
+	marker = strings.TrimPrefix(marker, reaperMarkerPrefix)
+	dash := strings.LastIndexByte(marker, '-')
+	if dash <= 0 || dash == len(marker)-1 {
+		return true // shapeless: no probe will ever admit it
+	}
+	if marker[:dash] != host {
+		return false // the other host's own boot sweep judges it
+	}
+	pid, err := strconv.Atoi(marker[dash+1:])
+	return err != nil || pid <= 1
 }
 
 // Stop signals the actor to exit and waits for it. Safe to call more

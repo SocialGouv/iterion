@@ -291,8 +291,10 @@ func (a *GitHubAdapter) Comment(ctx context.Context, id, body string) error {
 	return nil
 }
 
-// Claim adds the ClaimedLabel and a marker comment (so multiple
-// dispatchers against the same repo can observe each other's markers).
+// Claim adds the ClaimedLabel. The marker is NOT persisted anywhere on
+// the issue (labels carry no host/pid — see the Tracker interface note),
+// which is why the boot journal is this adapter's only claim-recovery
+// path.
 func (a *GitHubAdapter) Claim(ctx context.Context, id, marker string) error {
 	num, ok := parseGitHubID(a.opts.Repo, id)
 	if !ok {
@@ -306,7 +308,11 @@ func (a *GitHubAdapter) Claim(ctx context.Context, id, marker string) error {
 }
 
 // Release removes the ClaimedLabel. Idempotent — gh ignores
-// remove-label for a label that isn't present.
+// remove-label for a label that isn't present, and a MISSING issue
+// (deleted, transferred) maps to ErrNotFound like the Forgejo twin:
+// callers treat that absence as benign, and without the mapping a
+// deleted issue's claim-journal entry was retried and warned at every
+// boot, for ever.
 func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	num, ok := parseGitHubID(a.opts.Repo, id)
 	if !ok {
@@ -314,9 +320,24 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	}
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--remove-label", a.opts.ClaimedLabel}
 	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
+		if ghIssueGone(err) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("gh issue edit (release): %w", err)
 	}
 	return nil
+}
+
+// ghIssueGone recognises the gh CLI's missing-issue error text. Text
+// matching is brittle but the CLI offers no typed channel; both known
+// spellings (GraphQL resolve failure, REST 404) are matched.
+func ghIssueGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "could not resolve to an issue") ||
+		strings.Contains(msg, "not found (http 404)")
 }
 
 // HasLinkedPR reports whether an OPEN pull request already references this

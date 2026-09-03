@@ -539,11 +539,13 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 		// (same class as Update; the transform is pure over labels, so the
 		// replay is exact).
 		wrote := false
+		wanted := false
 		for attempt := 0; attempt < 3; attempt++ {
 			newLabels, changed := transform(iss.Labels)
 			if !changed {
 				break
 			}
+			wanted = true
 			preLabels := append([]string(nil), iss.Labels...)
 			iss.Labels = newLabels
 			iss.UpdatedAt = time.Now().UTC()
@@ -565,6 +567,13 @@ func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []s
 			iss = *fresh
 		}
 		if !wrote {
+			if wanted {
+				// The sweep WANTED to rewrite this card and lost the CAS
+				// on every attempt — swallowing that leaves a label the
+				// operator asked to remove (possibly a consume_labels
+				// trigger) on the card, under a green return.
+				return touched, fmt.Errorf("boardmongo: %s: card %s lost the label CAS on every attempt — re-run the operation", eventType, iss.ID)
+			}
 			continue
 		}
 		evtPayload := map[string]any{"issue_id": iss.ID}
