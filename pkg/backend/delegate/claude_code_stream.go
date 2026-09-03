@@ -855,10 +855,14 @@ var rateLimitSignals = []string{
 	"quota exceeded",
 	"usage limit reached",
 	"request rejected (429)",
-	// The account spend ceiling. Kept here too — not only in
-	// hitYourLimitRe's reach — so a future rewording that drops the
-	// "hit your …" opener is still caught by the gate.
-	"spend limit",
+	// "spend limit" is deliberately NOT here. The account ceiling reaches
+	// this gate through hitYourLimitRe, whose "hit your … limit" opener is
+	// provider-shaped; the bare noun phrase is ordinary English an agent
+	// writes about its own work ("adding a spend limit check to the
+	// config"), and a false positive here does not merely mislabel — it
+	// ABORTS the node and records a StatusRejected reading that routes
+	// every later run around that credential for an hour. Same reasoning
+	// that dropped "rate_limit_error" above.
 }
 
 // relayedAPIErrorPrefix opens the CLI's verbatim relay of an upstream
@@ -932,6 +936,11 @@ var accountRefusalSignals = []string{
 // WindowSpend so a skip explains itself honestly. The behaviour is the
 // same on both: no reset instant, park the run, route around the
 // credential — waiting inside the month buys nothing.
+//
+// Reached ONLY from classifyRateLimit, i.e. after isRateLimitMessage has
+// already accepted the text as a provider refusal on a provider-shaped
+// opener. That ordering is what lets the signal stay a bare noun phrase:
+// it names which refusal this is, it never decides that one happened.
 var spendLimitSignals = []string{
 	"spend limit",
 }

@@ -51,7 +51,16 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	prURL := strings.TrimSpace(runInputString(run, "pr_url"))
 	token := strings.TrimSpace(runInputString(run, forgePublishVarToken))
 	if prURL == "" || token == "" {
-		return // not a gating run: nothing to tell anyone
+		return // holds no publish grant: nothing to tell anyone
+	}
+	// Holding a grant is NOT owing a verdict — the server mints one for
+	// ANY bot launched with a pr_url (the brancher, the docs amender, the
+	// fixer). The notice says "review paused … the verdict lands here",
+	// which for a fixer parked on the same quota is simply false, and
+	// there is no claimed check for it to explain. Same two conditions the
+	// reconciler uses to decide a run owes the gate a verdict.
+	if strings.TrimSpace(runInputString(run, "gate_context")) == "" || runGateDisabled(run) {
+		return
 	}
 	debugf := func(format string, args ...any) {
 		if s.logger != nil {
@@ -69,14 +78,22 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 		debugf("its pr_url does not parse: %v", err)
 		return
 	}
+	// pr_url is a LAUNCH VAR and injectForgePublishVars honours a
+	// caller-pinned token, so the grant's scope has to be re-enforced here
+	// exactly as the publish endpoint and the reconciler enforce it —
+	// repo, tenant, host. Without the REPO half a run holding a legitimate
+	// grant for repo A could park on a quota and have iterion's forge
+	// identity comment on any repo B the connection reaches (for a GitHub
+	// App installation, typically the whole org).
+	if !strings.EqualFold(strings.TrimSpace(repo), strings.TrimSpace(grant.Repo)) {
+		debugf("its grant covers %s — refusing to comment outside the grant's repo", grant.Repo)
+		return
+	}
 	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
 	if err != nil {
 		debugf("its connection %s is unreadable: %v", grant.ConnectionID, err)
 		return
 	}
-	// The same scope re-enforcement the publish path and the reconciler
-	// apply: pr_url is a launch var, so the grant's tenant and host are
-	// what bound where this token may speak.
 	if conn.TenantID != grant.TeamID {
 		debugf("its connection %s belongs to another tenant", grant.ConnectionID)
 		return

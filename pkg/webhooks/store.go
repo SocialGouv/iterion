@@ -40,6 +40,15 @@ type DeliveryStore interface {
 	// whole audit, never a recent-window scan a busy webhook can push the
 	// rows out of.
 	CountLaunched(ctx context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error)
+	// ListLaunchedBySubject returns every delivery of one subject in one
+	// project that launched a run, whatever its event kind. EXACT over the
+	// whole audit for the same reason CountLaunched is: its caller stops
+	// the runs a closed pull request left behind, and the run it most
+	// needs to reach is the one PARKED hours ago on a provider quota —
+	// precisely the row a recency-bounded scan has already dropped. Scoped
+	// by projectPath because a subject id ("pr:7") carries no repo and one
+	// webhook config can serve several.
+	ListLaunchedBySubject(ctx context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error)
 }
 
 // Limits are the monthly call caps applied to a delivery. Zero means

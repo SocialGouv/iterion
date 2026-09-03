@@ -3,6 +3,7 @@ package delegate
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsRateLimitMessage(t *testing.T) {
@@ -145,5 +146,33 @@ func TestIsCodexBareLimitNoticeCoversNounVariants(t *testing.T) {
 		if got := isCodexBareLimitNotice(c.text); got != c.want {
 			t.Errorf("isCodexBareLimitNotice(%q) = %v, want %v", c.text, got, c.want)
 		}
+	}
+}
+
+// A bare "spend limit" in the ACCEPTANCE gate would abort a node on
+// ordinary agent narration — and worse, record a StatusRejected reading
+// that routes every later run around that credential for an hour. The
+// ceiling reaches the gate through its provider-shaped opener instead.
+// Strings verified against this detector, not invented.
+func TestSpendLimitProseIsNotARefusal(t *testing.T) {
+	prose := []string{
+		"I'll add a spend limit check to the config.",
+		"The credpool docs say a metered pledge must carry a spend limit.",
+		"Question: should the org spend limit be configurable per team?",
+		"Now adding the spend limit classification to usagecap.go.",
+	}
+	for _, s := range prose {
+		if isRateLimitMessage(s) {
+			t.Errorf("agent prose must not read as a provider refusal: %q", s)
+		}
+	}
+	// The provider's own notice still does, through "hit your … limit".
+	real := "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/settings/usage"
+	if !isRateLimitMessage(real) {
+		t.Fatalf("the provider notice must still be caught: %q", real)
+	}
+	kind, window, _ := classifyRateLimit(real, time.Now())
+	if kind != RateLimitKindUsageWindow || string(window) != "spend" {
+		t.Fatalf("kind=%q window=%q", kind, window)
 	}
 }

@@ -111,6 +111,45 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		}
 	})
 
+	t.Run("a grant for another repo cannot aim the comment", func(t *testing.T) {
+		s, c := newWorld(t)
+		// The grant covers acme/widgets; pr_url — a LAUNCH VAR — points
+		// elsewhere on the same host.
+		s.forgePublishTokens.Register("run-token", ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: "acme/other"})
+		run := parkedRun(t, s, "rate_limited: You've hit your weekly limit", time.Now().UTC().Add(time.Hour))
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 0 {
+			t.Fatalf("the grant's repo scope must bound where the bot identity speaks, got %v", c.bodies)
+		}
+	})
+
+	t.Run("a bot that owes no verdict stays silent", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(time.Hour)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A fixer launched on the PR: it holds a publish grant (the server
+		// mints one for any bot with a pr_url) but claims no check.
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "branch-improve-loop", map[string]any{
+			"pr_url": prURL, forgePublishVarToken: "run-token",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = store.RunStatusFailedResumable
+		run.RetryState = &store.RunRetryState{RetryAfter: &at}
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 0 {
+			t.Fatalf("only a run owing a gate verdict may say \"the verdict lands here\", got %v", c.bodies)
+		}
+	})
+
 	t.Run("a run that gates nothing stays silent", func(t *testing.T) {
 		s, c := newWorld(t)
 		at := time.Now().UTC().Add(time.Hour)

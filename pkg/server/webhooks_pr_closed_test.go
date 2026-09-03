@@ -30,10 +30,17 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 	// Two launched runs on this PR (two different bots) plus one on
 	// another PR, which must be left alone.
 	for _, d := range []webhooks.Delivery{
-		{ID: "d1", TenantID: cfg.TenantID, WebhookID: cfg.ID, SubjectID: "pr:7", BotID: "review-pr", RunID: "run-a", Status: webhooks.StatusLaunched},
-		{ID: "d2", TenantID: cfg.TenantID, WebhookID: cfg.ID, SubjectID: "pr:7", BotID: "branch-improve-loop", RunID: "run-b", Status: webhooks.StatusLaunched},
-		{ID: "d3", TenantID: cfg.TenantID, WebhookID: cfg.ID, SubjectID: "pr:9", BotID: "review-pr", RunID: "run-c", Status: webhooks.StatusLaunched},
-		{ID: "d4", TenantID: cfg.TenantID, WebhookID: cfg.ID, SubjectID: "pr:7", BotID: "review-pr", RunID: "run-d", Status: webhooks.StatusFiltered},
+		{ID: "d1", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "pr:7", BotID: "review-pr", RunID: "run-a", Status: webhooks.StatusLaunched},
+		{ID: "d2", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "pr:7", BotID: "branch-improve-loop", RunID: "run-b", Status: webhooks.StatusLaunched},
+		{ID: "d3", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "pr:9", BotID: "review-pr", RunID: "run-c", Status: webhooks.StatusLaunched},
+		// A filtered delivery launched nothing, so it carries no run id —
+		// which is exactly what makes it invisible to the by-subject query
+		// (the store defines "launched" as having one, like CountLaunched).
+		{ID: "d4", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/widgets", SubjectID: "pr:7", BotID: "review-pr", Status: webhooks.StatusFiltered},
+		// SAME subject id, ANOTHER repo on the same multi-project webhook:
+		// PR numbers collide freely across repos, and cancelling this one
+		// would block an unrelated pull request.
+		{ID: "d5", TenantID: cfg.TenantID, WebhookID: cfg.ID, ProjectPath: "acme/other", SubjectID: "pr:7", BotID: "review-pr", RunID: "run-e", Status: webhooks.StatusLaunched},
 	} {
 		if err := s.webhookDeliveries.Insert(context.Background(), d); err != nil {
 			t.Fatal(err)
@@ -67,6 +74,9 @@ func TestGitHubWebhook_ClosedPRStopsItsRuns(t *testing.T) {
 		}
 		if id == "run-d" {
 			t.Fatal("a delivery that never launched carries no run to cancel")
+		}
+		if id == "run-e" {
+			t.Fatal("a same-numbered PR of ANOTHER repo was cancelled — the stop must be project-scoped")
 		}
 	}
 }
