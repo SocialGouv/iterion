@@ -3,7 +3,7 @@
 How to ship a `queue.RunMessage` schema bump (`pkg/queue/types.go`,
 `SchemaVersion`) without executing a payload with silently dropped semantics,
 and without losing runs while the server and runner fleets run mixed
-versions. Read it before every schema bump.
+versions.
 
 This runbook is **mandatory** for every schema bump, and ordering is the first
 decision it makes for you: **server-first by default**, because that puts any
