@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.94.2](https://github.com/SocialGouv/iterion/compare/v3.94.1...v3.94.2) (2026-09-03)
+
+### Bug Fixes
+
+* **review-pr:** raise max_duration 45m → 90m ([#634](https://github.com/SocialGouv/iterion/issues/634)) ([3985c81](https://github.com/SocialGouv/iterion/commit/3985c81815bf06631801ca3c75ed50295657c0ad))
+
+    <details><summary>why</summary>
+
+    The cost cap (max_cost_usd) is the money guard; the duration cap only needs to catch a genuinely hung run. At 45m it killed real reviews mid-publish — a large diff or a usage-window retry walks past it while spending nothing, and the verdict a gate is waiting on dies with the run (observed 2026-09-02, round 7 of the pilot: converge refused at 92% of the duration axis, the review completed everywhere but the publish).
+
+    </details>
+
 ## [3.94.1](https://github.com/SocialGouv/iterion/compare/v3.94.0...v3.94.1) (2026-09-03)
 
 ### Bug Fixes
