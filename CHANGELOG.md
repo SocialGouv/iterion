@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.94.1](https://github.com/SocialGouv/iterion/compare/v3.94.0...v3.94.1) (2026-09-03)
+
+### Bug Fixes
+
+* **mcp:** an ambient MCP server that cannot boot costs its tools, never the run ([#633](https://github.com/SocialGouv/iterion/issues/633)) ([2eedd4d](https://github.com/SocialGouv/iterion/commit/2eedd4db304da5241e07b460f4d4fadd66178bfe))
+
+    <details><summary>why</summary>
+
+    The claw splice added every active MCP server — including servers the node never named, inherited from the target repo's .mcp.json or the plugin catalog — as an mcp.<server>.* wildcard, and expandWildcards hard-failed the node when one of them could not boot. One token-less repo server (the repo-scoped sentry on runner pods, which have no SENTRY_ACCESS_TOKEN) therefore killed every claw node of a run at plan_review — observed 3× on 2026-09-02, neutralising the zero-touch fixer lane on this repo…
+
+    </details>
+
 ## [3.94.0](https://github.com/SocialGouv/iterion/compare/v3.93.0...v3.94.0) (2026-09-02)
 
 ### Features
