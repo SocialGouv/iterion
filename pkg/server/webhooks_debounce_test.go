@@ -123,8 +123,8 @@ func TestMemoryDeferredLaunchStore_Semantics(t *testing.T) {
 		FireAt: now.Add(-time.Second), CreatedAt: now,
 		Targets: []webhooks.DeferredTarget{{BotID: "review-pr", IdemKey: "k1"}},
 	}
-	if err := st.Upsert(ctx, d); err != nil {
-		t.Fatal(err)
+	if ok, err := st.Upsert(ctx, d); err != nil || !ok {
+		t.Fatalf("upsert: ok=%v err=%v", ok, err)
 	}
 
 	// Claim leases the row: a concurrent claim sees nothing.
@@ -139,8 +139,8 @@ func TestMemoryDeferredLaunchStore_Semantics(t *testing.T) {
 	// Re-arm mid-claim: fresh payload, cleared lease, bumped generation.
 	d.FireAt = now.Add(-time.Millisecond)
 	d.Targets = []webhooks.DeferredTarget{{BotID: "review-pr", IdemKey: "k2"}}
-	if err := st.Upsert(ctx, d); err != nil {
-		t.Fatal(err)
+	if ok, err := st.Upsert(ctx, d); err != nil || !ok {
+		t.Fatalf("re-upsert: ok=%v err=%v", ok, err)
 	}
 	// Acknowledging the OLD generation must not drop the re-armed row.
 	if err := st.Delete(ctx, due[0].SubjectKey, due[0].Generation); err != nil {
@@ -171,10 +171,10 @@ func TestMemoryDeferredLaunchStore_LeaseLapsesAndRefires(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	if err := st.Upsert(ctx, webhooks.DeferredLaunch{
+	if ok, err := st.Upsert(ctx, webhooks.DeferredLaunch{
 		SubjectKey: "t1|w1|pr:8", FireAt: now.Add(-time.Second), CreatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
+	}); err != nil || !ok {
+		t.Fatalf("upsert: ok=%v err=%v", ok, err)
 	}
 	if due, _ := st.ClaimDue(ctx, now, time.Minute, 10); len(due) != 1 {
 		t.Fatalf("first claim: %v", due)
@@ -540,6 +540,89 @@ func TestDeferRetryWait(t *testing.T) {
 	monthly := &launchDenial{resetAt: nextMonthStart(time.Now().UTC())}
 	if _, ok := deferRetryWait(monthly, 0); ok {
 		t.Fatal("a monthly-cap denial must be terminal, not parked for weeks")
+	}
+}
+
+// ghSyncPayloadAt is a synchronize delivery carrying the forge's own
+// event timestamp — the only ordering signal a webhook delivery has.
+func ghSyncPayloadAt(sha, updatedAt string) string {
+	return `{
+	  "action": "synchronize", "number": 7,
+	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "pull_request": {"number": 7, "title": "T", "body": "b",
+	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
+	    "updated_at": "` + updatedAt + `",
+	    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+	  "sender": {"login": "alice"}
+	}`
+}
+
+// The parked payload must be the NEWEST head, not the last-arrived one —
+// the R4f7eab regression. Forges do not guarantee delivery order, and a
+// retried or slow delivery landing after a later one is exactly this
+// feature's regime. Replacing by arrival parked the STALE head: the
+// sweep reviewed it and posted `revi/review` on a commit that was no
+// longer the head, leaving the real head with no status.
+func TestSyncDebounce_OutOfOrderDeliveryDoesNotParkTheStaleHead(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeferred = webhooks.NewMemoryDeferredLaunchStore()
+	s.syncDebounce = 3 * time.Minute
+	got := fanoutLauncher(s)
+	var cancelled []string
+	s.webhookCancelRun = func(runID string) error {
+		cancelled = append(cancelled, runID)
+		return nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ReviewOnSync = true
+	cfg.Overlap = schedgate.OverlapSupersede
+	if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	deliver := func(sha, at string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghSyncPayloadAt(sha, at), prforge.EventHeaderPullRequest, pt))
+		return w
+	}
+
+	deliver("sha-new", "2026-09-03T10:15:30Z")
+	// The OLDER push's delivery arrives late (a forge retry, a slow
+	// dispatch): it must neither replace the parked payload nor supersede.
+	w := deliver("sha-old", "2026-09-03T10:15:00Z")
+	if w.Code != 200 {
+		t.Fatalf("an out-of-order delivery must be filtered (200), got %d: %s", w.Code, w.Body.String())
+	}
+	if len(cancelled) != 0 {
+		t.Fatalf("a stale delivery must not supersede a newer head's run, cancelled %v", cancelled)
+	}
+
+	s.sweepDeferredWebhookLaunches(context.Background(), time.Now().UTC().Add(4*time.Minute))
+	if len(*got) != 1 {
+		t.Fatalf("want exactly one launch, got %v", botsOf(*got))
+	}
+	if sha := (*got)[0].vars["head_sha"]; sha != "sha-new" {
+		t.Fatalf("launched head = %q, want the NEWEST head sha-new", sha)
+	}
+}
+
+// The ordering rule itself: only two present keys order anything, and
+// equal keys are not stale (a forge stamping two events in the same
+// second must keep the arrival-order outcome, never drop the second).
+func TestDeferredPayloadIsStale(t *testing.T) {
+	for _, tc := range []struct {
+		incoming, stored string
+		want             bool
+	}{
+		{"2026-09-03T10:15:00Z", "2026-09-03T10:15:30Z", true},
+		{"2026-09-03T10:15:30Z", "2026-09-03T10:15:00Z", false},
+		{"2026-09-03T10:15:30Z", "2026-09-03T10:15:30Z", false},
+		{"", "2026-09-03T10:15:30Z", false},
+		{"2026-09-03T10:15:00Z", "", false},
+		{"2026-09-03 10:15:00 UTC", "2026-09-03 10:15:30 UTC", true}, // GitLab's shape
+	} {
+		if got := webhooks.DeferredPayloadIsStale(tc.incoming, tc.stored); got != tc.want {
+			t.Errorf("IsStale(%q, %q) = %v, want %v", tc.incoming, tc.stored, got, tc.want)
+		}
 	}
 }
 

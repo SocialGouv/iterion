@@ -864,12 +864,13 @@ func gitlabMRMeta(p gitlab.Parsed) webhookEventMeta {
 		subject = p.SubjectID()
 	}
 	return webhookEventMeta{
-		Kind:         "merge_request",
-		Action:       p.Action,
-		ProjectPath:  p.ProjectPath,
-		SubjectID:    subject,
-		SubjectSHA:   p.HeadSHA,
-		SenderHandle: p.SenderUsername,
+		Kind:           "merge_request",
+		Action:         p.Action,
+		ProjectPath:    p.ProjectPath,
+		SubjectID:      subject,
+		SubjectSHA:     p.HeadSHA,
+		SenderHandle:   p.SenderUsername,
+		EventUpdatedAt: p.UpdatedAt,
 	}
 }
 

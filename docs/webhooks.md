@@ -163,9 +163,13 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `/revi` and a re-request click stay immediate — a human is waiting on
   those. During the window the required check is simply absent, the same
   honest "nothing is reviewing this yet" as the seconds between push and
-  launch; the in-flight claim still lands at the real launch. Two
-  properties of the window are worth knowing when a parked review does
-  not appear: the **config at fire time governs** — disabling the
+  launch; the in-flight claim still lands at the real launch. What gets
+  parked is the **newest** head, not the last-arrived one: forges do not
+  guarantee delivery order, so the payloads are ordered by the forge's
+  own event timestamp and a delivery that lost the race answers
+  `200 {"status":"filtered"}` rather than overwriting a newer parked
+  push. Two further properties are worth knowing when a parked review
+  does not appear: the **config at fire time governs** — disabling the
   webhook, clearing `review_on_sync`, or removing the bot from
   `bot_ids` during the window drops the parked launch (with a
   `filtered` delivery naming why), because the sweep re-enters none of

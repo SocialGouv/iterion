@@ -65,7 +65,14 @@ type DeferredLaunchStore interface {
 	// subject is REPLACED wholesale (newest payload wins), its FireAt
 	// pushed back — the debounce — its Generation bumped and any sweep
 	// lease cleared (a fresh push re-arms even a subject mid-claim).
-	Upsert(ctx context.Context, d DeferredLaunch) error
+	//
+	// accepted is false — with a nil error — when the stored payload is
+	// strictly NEWER than d (DeferredPayloadIsStale): the row is left
+	// untouched and the caller must treat its delivery as superseded, not
+	// as a store failure. The distinction is load-bearing: the caller's
+	// error path launches immediately rather than losing the review,
+	// which on a stale payload is precisely the wrong thing to do.
+	Upsert(ctx context.Context, d DeferredLaunch) (accepted bool, err error)
 	// ClaimDue atomically LEASES and returns up to limit rows whose
 	// FireAt is at or before now and whose previous lease (if any) has
 	// expired: each row goes to one caller across replicas for the
@@ -95,6 +102,32 @@ type DeferredLaunchStore interface {
 	// that died (closed/merged) inside its quiet window, whose parked
 	// review must never fire.
 	DeleteBySubject(ctx context.Context, subjectKey string) error
+}
+
+// DeferredPayloadIsStale reports whether an INCOMING parked payload is
+// older than the one already stored, using each side's DeferredLaunch
+// OrderKey — the forge's own timestamp for the event.
+//
+// Arrival order cannot serve. Forges do not guarantee webhook delivery
+// order, and a retried or slow delivery landing after a later one is
+// exactly the regime the push debounce targets (pushes seconds apart).
+// Replacing by arrival would park the STALE head: three minutes later
+// the sweep reviews it and posts `revi/review` on a commit that is no
+// longer the head, leaving the real head with no status and the merge
+// blocked until someone pushes again.
+//
+// Both keys must be present to order anything — a payload without one
+// is accepted, which is the pre-ordering behaviour. Comparison is
+// lexicographic, which orders every fixed-width forge timestamp
+// correctly (GitHub "2026-09-03T10:15:22Z", GitLab
+// "2026-09-03 10:15:22 UTC"); equal keys are NOT stale, so two events
+// the forge stamped in the same second keep the arrival-order outcome
+// rather than dropping the second.
+func DeferredPayloadIsStale(incoming, stored string) bool {
+	if incoming == "" || stored == "" {
+		return false
+	}
+	return incoming < stored
 }
 
 // Limits are the monthly call caps applied to a delivery. Zero means

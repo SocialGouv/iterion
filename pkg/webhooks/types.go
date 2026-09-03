@@ -585,6 +585,11 @@ type DeferredLaunch struct {
 	// writes a new payload with Attempts zero, so a developer pushing
 	// over a struggling row hands it a full budget again.
 	Attempts int `bson:"attempts,omitempty" json:"attempts,omitempty"`
+	// OrderKey orders two payloads for the same subject: the FORGE's own
+	// timestamp for the event, verbatim. Upsert refuses to replace a
+	// strictly newer parked payload with an older one — see
+	// DeferredPayloadIsStale for why arrival order cannot serve.
+	OrderKey string `bson:"order_key,omitempty" json:"order_key,omitempty"`
 
 	// Event metadata, mirrored from the handler's parse so the sweep can
 	// rebuild delivery rows + supersede scoping without the raw payload.

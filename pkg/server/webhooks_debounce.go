@@ -134,7 +134,9 @@ func (s *Server) dropReplayedTargets(ctx context.Context, targets []forgeLaunchT
 // deferSyncLaunch parks the resolved targets for the quiet window and
 // answers the forge. The supersede pass runs NOW, not at fire time: a
 // run already reviewing a head this push just obsoleted should stop
-// burning tokens immediately.
+// burning tokens immediately — but only once the store has ACCEPTED
+// this payload as the current one, so a late delivery of an older head
+// cannot cancel the live review of a newer one.
 func (s *Server) deferSyncLaunch(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -158,9 +160,6 @@ func (s *Server) deferSyncLaunch(
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusDuplicate})
 		return
 	}
-	for _, t := range targets {
-		s.supersedeLiveRuns(ctx, cfg, meta, t.BotID)
-	}
 	d := webhooks.DeferredLaunch{
 		SubjectKey:   deferSubjectKey(cfg, meta),
 		TenantID:     cfg.TenantID,
@@ -176,6 +175,10 @@ func (s *Server) deferSyncLaunch(
 		SenderHandle: meta.SenderHandle,
 		PayloadHash:  payloadHash,
 		SourceIP:     srcIP,
+		// The forge's own timestamp orders two payloads for one subject.
+		// Arrival order cannot: forges do not guarantee delivery order,
+		// and pushes seconds apart are this feature's whole regime.
+		OrderKey: meta.EventUpdatedAt,
 		// Mirror the request-derived server base: on a deployment with no
 		// PublicURL the launch tail resolves the forge publish grant's
 		// endpoint from the inbound request, which the sweep won't have.
@@ -187,16 +190,39 @@ func (s *Server) deferSyncLaunch(
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
 		})
 	}
-	if err := s.webhookDeferred.Upsert(ctx, d); err != nil {
+	accepted, err := s.webhookDeferred.Upsert(ctx, d)
+	if err != nil {
 		// The park failed — launching immediately is strictly better than
 		// dropping the review (the pre-debounce behaviour, and the forge
 		// has already been promised a review of this head). The inbound
 		// request rides along: the denial path writes CORS headers off it.
+		// insertAndLaunchWebhookMulti runs the supersede pass itself, which
+		// is why this lane's own supersede sits below, on the parked path.
 		if s.logger != nil {
 			s.logger.Warn("webhooks: defer of %s %s failed (%v) — launching immediately instead", cfg.ID, meta.SubjectID, err)
 		}
 		s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 		return
+	}
+	if !accepted {
+		// A strictly NEWER push is already parked for this subject: this
+		// delivery arrived out of order (a forge retry, a slow dispatch).
+		// Nothing to do — and emphatically no supersede, which would
+		// cancel the live review of a head this one predates.
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			"out-of-order delivery: a newer push on this subject is already parked")
+		if s.logger != nil {
+			s.logger.Info("webhooks: %s/%s %s ignored %s — a newer push is already parked (delivery arrived out of order)",
+				cfg.Provider, meta.ProjectPath, meta.SubjectID, meta.SubjectSHA)
+		}
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+	// Only NOW, with this payload accepted as the subject's current one:
+	// a run reviewing a head this push just obsoleted stops burning
+	// tokens immediately.
+	for _, t := range targets {
+		s.supersedeLiveRuns(ctx, cfg, meta, t.BotID)
 	}
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusDeferred)
 	if s.logger != nil {

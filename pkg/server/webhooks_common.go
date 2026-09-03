@@ -105,6 +105,13 @@ type webhookEventMeta struct {
 	SubjectURL      string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
 	SubjectSHA      string // head SHA, when known
 	SenderHandle    string // username for audit (logged only, never in delivery audit row v1)
+	// EventUpdatedAt is the FORGE's own timestamp for the subject at this
+	// event (GitHub/Forgejo `pull_request.updated_at`, GitLab
+	// `object_attributes.updated_at`), verbatim. Not for display: it is
+	// the only ordering signal a webhook delivery carries, and forges do
+	// not guarantee delivery order — see webhooks.DeferredPayloadIsStale.
+	// Empty when the payload omits it.
+	EventUpdatedAt string
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
