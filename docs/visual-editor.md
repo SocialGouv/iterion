@@ -151,6 +151,20 @@ team store.
 
 ![Studio command palette with navigation and recent runs](images/studio/command-palette.png)
 
+**Project switcher** — add and switch between project folders. In web mode
+"Add project" takes an absolute path typed by hand. A server-side folder
+picker is available as an **opt-in**: set `ITERION_BROWSE_ROOT` to the
+directory you are willing to expose, and the dialog grows a *Browse* button
+that drills into that tree (the button's caption names the root). Unset — the
+default — `GET /api/filesystem/list` answers `403` and no part of the host
+filesystem is listable, so a deployment never exposes it by accident. The
+browser is confined to the root: a requested path is resolved through
+`EvalSymlinks` and refused when it lands outside, so neither `..` nor a
+symlink escapes
+([pkg/server/filesystem.go:resolveBrowsePath](../pkg/server/filesystem.go)).
+It lists directories only, never files. The desktop app uses the native OS
+picker instead and needs no variable.
+
 **Bot catalog** — enable/disable bots and import new ones from a repository.
 
 ![Studio bot catalog manager](images/studio/catalog.png)
