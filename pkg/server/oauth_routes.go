@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -241,6 +242,13 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 	if pasteState == "" {
 		pasteState = frag
 	}
+	// Validate the name BEFORE consuming the pending authorization: a
+	// refused label must not cost the operator a restarted connect.
+	accountLabel, err := normalizeOAuthAccountLabel(r.URL.Query().Get("account_label"))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	pending, err := s.oauthPending.Take(r.Context(), ownerKey, kind)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "no pending authorization (expired? restart the connect)")
@@ -268,7 +276,7 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusInternalServerError, "build credentials: %v", err)
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, r.URL.Query().Get("account_label"))
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, accountLabel)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -294,7 +302,12 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "empty body — paste the credentials.json / auth.json content")
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, r.URL.Query().Get("account_label"))
+	accountLabel, err := normalizeOAuthAccountLabel(r.URL.Query().Get("account_label"))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, accountLabel)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
@@ -304,9 +317,26 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 	writeJSON(w, toOAuthView(rec))
 }
 
+// maxOAuthAccountLabel bounds the account name. It is a display string —
+// a handle a human recalls ("jothedev", "SocialGouv Revi") — and the
+// connect paths take it as a query parameter, where nothing but the
+// server's header limit would otherwise bound it.
+const maxOAuthAccountLabel = 120
+
+// normalizeOAuthAccountLabel is the one place a label is accepted from a
+// caller (both connect paths and the rename), so the bound holds everywhere.
+func normalizeOAuthAccountLabel(raw string) (string, error) {
+	label := strings.TrimSpace(raw)
+	if n := utf8.RuneCountInString(label); n > maxOAuthAccountLabel {
+		return "", fmt.Errorf("account_label is %d characters, max %d", n, maxOAuthAccountLabel)
+	}
+	return label, nil
+}
+
 // sealOAuthRecord validates a credentials blob, extracts expiry/scope
 // metadata, seals it bound to (ownerKey, kind), and upserts the record.
-// Shared by the browser flow and the paste path.
+// Shared by the browser flow and the paste path; accountLabel arrives
+// already normalized by the handler.
 func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string) (secrets.OAuthRecord, error) {
 	now := time.Now().UTC()
 	rec := secrets.OAuthRecord{
@@ -365,7 +395,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// there would answer "whose subscription paid?" with the wrong person.
 	// Absent beats wrong: the operator names it (`account_label`) or the
 	// listing shows no name.
-	rec.AccountLabel = strings.TrimSpace(accountLabel)
+	rec.AccountLabel = accountLabel
 	if rec.AccountLabel == "" {
 		if prev, err := s.oauthStore.Get(ctx, ownerKey, kind); err == nil && prev.Fingerprint == rec.Fingerprint {
 			rec.AccountLabel = prev.AccountLabel
@@ -439,7 +469,11 @@ func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "account_label required (send \"\" to clear it)")
 		return
 	}
-	label := strings.TrimSpace(*req.AccountLabel)
+	label, err := normalizeOAuthAccountLabel(*req.AccountLabel)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	// Store-level metadata write, not Get → Upsert: the latter would carry
 	// the sealed payload this handler read back over whatever a concurrent
 	// refresh committed in between.

@@ -109,6 +109,15 @@ export default function OAuthConnections({
     reload();
   };
 
+  // A connect form opens with the name the connection already carries: a
+  // claude_code re-connect always mints a new fingerprint (the blob is the
+  // identity), so without this every routine rotation through the studio
+  // would un-name the credential. The operator clears or changes it on a
+  // real account swap.
+  const openWithCurrentName = (kind: OAuthKind) => {
+    setLabel(conns.find((c) => c.kind === kind)?.account_label ?? "");
+  };
+
   // --- browser OAuth (claude_code) ---
   const startConnect = async (kind: OAuthKind) => {
     setBusy(true);
@@ -118,6 +127,7 @@ export default function OAuthConnections({
       window.open(authorize_url, "_blank", "noopener,noreferrer");
       setConnecting(kind);
       setCode("");
+      openWithCurrentName(kind);
     } catch (e) {
       setMutErr(errorMessage(e));
     } finally {
@@ -417,6 +427,7 @@ export default function OAuthConnections({
                         onClick={() => {
                           setPasteKind(kind);
                           setDraft("");
+                          openWithCurrentName(kind);
                         }}
                       >
                         {conn ? "Update credentials" : "Connect"}
@@ -428,6 +439,7 @@ export default function OAuthConnections({
                         onClick={() => {
                           setPasteKind(kind);
                           setDraft("");
+                          openWithCurrentName(kind);
                         }}
                       >
                         Advanced: paste file

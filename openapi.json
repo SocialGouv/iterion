@@ -8998,6 +8998,202 @@
         ]
       }
     },
+    "/api/teams/{id}/oauth/connections": {
+      "get": {
+        "operationId": "getTeamsByIdOauthConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/oauth/connections",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/oauth/{kind}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/oauth/{kind}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/oauth/{kind}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/authorize/complete": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindAuthorizeComplete",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/authorize/complete",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/authorize/start": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindAuthorizeStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/authorize/start",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/credentials": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindCredentials",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/credentials",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/plugin-sources": {
       "get": {
         "operationId": "getTeamsByIdPluginSources",

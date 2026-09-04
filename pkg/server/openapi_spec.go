@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -43,6 +46,25 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		return nil, fmt.Errorf("temp run store: %w", err)
 	}
 
+	// A REAL auth service over a memory identity store, not a bare
+	// &auth.Service{}: the team-scoped families (team OAuth-forfait, …)
+	// register only when authStore() resolves, and a nil store silently
+	// left every one of them out of the published spec and the generated
+	// client. Nothing here is ever invoked; the store only has to exist.
+	signer, err := auth.NewJWTSigner(strings.Repeat("0", 43), 15*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("spec signer: %w", err)
+	}
+	authSvc, err := auth.NewService(auth.Config{
+		Store:      identity.NewMemoryStore(),
+		Sessions:   auth.NewMemorySessionStore(),
+		Signer:     signer,
+		RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("spec auth service: %w", err)
+	}
+
 	cfg := Config{
 		StoreDir:                tmp,
 		WorkDir:                 tmp,
@@ -51,7 +73,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 
 		// Gate fields — non-nil stubs so every register*() fires. None are
 		// invoked here (registration only calls s.mux.Handle).
-		AuthService:        &auth.Service{},
+		AuthService:        authSvc,
 		Sealer:             specNoopSealer{},
 		ApiKeys:            secrets.NewMemoryApiKeyStore(),
 		GenericSecrets:     secrets.NewMemoryGenericSecretStore(),
