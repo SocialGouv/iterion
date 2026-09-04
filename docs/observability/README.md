@@ -44,6 +44,37 @@ ITERION_PROMETHEUS_ADDR=:9464 iterion run bots/whats-next/main.bot
 curl -s localhost:9464/metrics | grep iterion_
 ```
 
+The `/metrics` server is **fail-soft**: if the address is already taken the
+run continues and the failure is only logged, so the dashboard stays empty
+with no obvious cause. Set `ITERION_PROMETHEUS_REQUIRED=1` to bind up front
+instead and fail the command with
+`prometheus: bind :9464 (ITERION_PROMETHEUS_REQUIRED=1): …`.
+
+### Feeding the collector (traces)
+
+Prometheus scraping alone leaves `otel-collector` and `tempo` idle — they
+need the run to push. Point the run's OTLP/gRPC exporter at the collector's
+gRPC receiver:
+
+```bash
+ITERION_PROMETHEUS_ADDR=:9464 \
+ITERION_OTLP_GRPC_ENDPOINT=localhost:4317 \
+CLAWD_OTLP_GRPC_INSECURE=1 \
+  iterion run bots/whats-next/main.bot
+```
+
+`ITERION_OTLP_GRPC_ENDPOINT` is an iterion-prefixed alias for
+`CLAWD_OTLP_GRPC_ENDPOINT`; it is applied only when the `CLAWD_` form is
+unset, so a deployment running both can keep the `CLAWD_*` names for
+claw-internal traffic. The remaining knobs stay on their upstream names —
+`CLAWD_OTLP_GRPC_INSECURE` (required here: the collector serves plaintext),
+`CLAWD_OTLP_GRPC_HEADERS`, `CLAWD_SERVICE_NAME`, `CLAWD_SERVICE_VERSION`
+([pkg/cli/run_telemetry.go:startOTLPGRPCFromEnv](../../pkg/cli/run_telemetry.go)).
+
+This run-scoped exporter is distinct from the process-wide OTel wiring
+driven by `OTEL_EXPORTER_OTLP_ENDPOINT` and from Sentry tracing — see
+[../observability.md](../observability.md).
+
 Tear down:
 
 ```bash
