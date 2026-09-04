@@ -756,9 +756,9 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 }
 
 // forgeConnectionForPR picks the team connection to publish through:
-// the pinned connection when given, else the connection of a repo
-// integration matching the repo slug, else the LATEST team connection on
-// the PR's forge host. A nil forgeConnections store yields (empty, false):
+// the pinned connection when given, else the connection of the repo's
+// LATEST integration on the PR's forge host, else the LATEST team
+// connection on that host. A nil forgeConnections store yields (empty, false):
 // every caller (approve, publish, pending, reconcile) inherits the guard
 // here instead of repeating it.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
@@ -784,16 +784,12 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 			s.logger.Warn("forge: pinned connection %s is not usable for %s on %s — resolving another", preferredConnID, repo, host)
 		}
 	}
-	if s.forgeIntegrations != nil {
-		if ris, err := s.forgeIntegrations.ListByTenant(ctx, teamID); err == nil {
-			for _, ri := range ris {
-				if !strings.EqualFold(ri.RepoFullName, repo) {
-					continue
-				}
-				if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
-					return c, true
-				}
-			}
+	// The repo's integration, LATEST provisioning first — the same choice
+	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
+	// a newer connection posts under that one and not the row left behind.
+	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
+		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
+			return c, true
 		}
 	}
 	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)

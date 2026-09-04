@@ -187,3 +187,36 @@ func TestPatchSecurityRead_DatesAWatchOnlyConnectionFromTheMint(t *testing.T) {
 		t.Fatalf("watch-only clock = %v, want the mint's expiry %v", got.AccessTokenExpiresAt, until)
 	}
 }
+
+// A repo provisioned twice on one host (re-provisioned onto a newer
+// connection, the older integration left behind) must resolve to the LATEST
+// provisioning's connection — the same choice repoIntegrationFor makes for
+// the policy, so the verdict, the pending claim and the approve all post
+// under the connection the operator currently intends.
+func TestForgeConnectionForPR_IntegrationPicksLatestProvisioning(t *testing.T) {
+	s := newForgeTestServer(t)
+	ctx := context.Background()
+	for _, c := range []forge.Connection{
+		{ID: "conn-older", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeRuntime, CreatedAt: time.Now().Add(-48 * time.Hour)},
+		{ID: "conn-newer", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeRuntime, CreatedAt: time.Now().Add(-1 * time.Hour)},
+	} {
+		if err := s.forgeConnections.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ri := range []forge.RepoIntegration{
+		{ID: "ri-older", TenantID: "t1", ConnectionID: "conn-older", RepoFullName: "SocialGouv/x", CreatedAt: time.Now().Add(-48 * time.Hour)},
+		{ID: "ri-newer", TenantID: "t1", ConnectionID: "conn-newer", RepoFullName: "SocialGouv/x", CreatedAt: time.Now().Add(-1 * time.Hour)},
+	} {
+		if err := s.forgeIntegrations.Create(ctx, ri); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := s.forgeConnectionForPR(ctx, "t1", "", "github.com", "SocialGouv/x")
+	if !ok {
+		t.Fatal("resolver returned no match")
+	}
+	if got.ID != "conn-newer" {
+		t.Fatalf("integration branch picked %q, want conn-newer (the latest provisioning) — publish, pending and approve all read through this", got.ID)
+	}
+}
