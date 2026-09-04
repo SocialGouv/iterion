@@ -878,13 +878,19 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 	// sequential floor — thin enough that a loaded machine read its own
 	// noise as a regression (measured: 123ms against a 120ms ceiling under
 	// a full-package run, green in isolation). Eight cards widen the gap
-	// to 8 units versus 2 at no extra cost, and the ceiling now sits
-	// between them with room on both sides (observed parallel ~100-115ms,
+	// to 8 units versus 2 at no extra cost (observed parallel ~100-115ms,
 	// sequential floor 320ms).
+	//
+	// The ceiling is set ONE budget under the sequential floor, not lower:
+	// a genuinely sequential drain still always trips it (≥320ms), while
+	// everything below is CI scheduling noise this test must not read as a
+	// regression — a 5-budget ceiling (200ms) ejected two green merge-queue
+	// groups in 12h on 202.5ms and 222ms measurements, ~2× the observed
+	// parallel time but nowhere near sequential.
 	const (
 		drainCards  = 8
 		cardBudget  = 40 * time.Millisecond
-		drainCeling = 5 * cardBudget
+		drainCeling = (drainCards - 1) * cardBudget
 	)
 	c.shutdownRevertBudget, c.shutdownReleaseBudget = cardBudget, cardBudget
 	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
