@@ -335,7 +335,9 @@ func prforgeInAllowlist(allow []string, login string) bool {
 // cross-forge commenters sensibly.
 func prforgePermRank(perm string) int {
 	switch strings.ToLower(strings.TrimSpace(perm)) {
-	case "admin":
+	case "owner", "admin":
+		// "owner" is Forgejo/Gitea's answer for the repository owner; GitHub
+		// reports the same account as admin.
 		return 5
 	case "maintain":
 		return 4

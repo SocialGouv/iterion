@@ -791,6 +791,7 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, ""},
 		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard"},
 		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "own pull request"},
+		{"a Forgejo repo owner is accepted with no floor pinned", "owner-olga", "owner", "", true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
