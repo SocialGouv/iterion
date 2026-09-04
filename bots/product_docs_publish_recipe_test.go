@@ -2,6 +2,8 @@ package bots
 
 import (
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -131,5 +133,32 @@ func TestPublishRecipeHandsOffADigest(t *testing.T) {
 		t.Fatalf("%s: the hand-off gives the deploy target the mutable :${TAG} alias — "+
 			"an unchanged tag is an unchanged pod spec, so a rebuilt site never rolls "+
 			"out and the truth gate still reports success", publishRecipePath)
+	}
+}
+
+var shBlock = regexp.MustCompile("(?s)```sh\n(.*?)```")
+
+// TestPublishRecipeShellBlocksParse runs `sh -n` over every shell block in the
+// recipe. This prose is EXECUTABLE — the agent pastes it into a shell holding a
+// registry-write token — so a stray quote or an unbalanced brace does not
+// degrade the run, it kills the publish pass under `set -e` after the build has
+// already been paid for. POSIX `sh` is the strict check: the block runs in the
+// agent's bash, but nothing in it needs a bashism.
+func TestPublishRecipeShellBlocksParse(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not on PATH")
+	}
+	blocks := shBlock.FindAllStringSubmatch(publishRecipe(t), -1)
+	if len(blocks) == 0 {
+		t.Fatalf("%s: no ```sh block found — the recipe's commands are what the "+
+			"agent actually runs, and this guard is now vacuous", publishRecipePath)
+	}
+	for i, m := range blocks {
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(m[1])
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s: shell block %d does not parse (%v): %s\n%s",
+				publishRecipePath, i, err, out, m[1])
+		}
 	}
 }

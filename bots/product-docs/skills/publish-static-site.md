@@ -21,6 +21,8 @@ called out — they are the ones that silently cost a pass when ignored.
   `${BASE_URL}/` (root), one deployment per product.
 - `IMAGE` — the image repository, no tag (e.g. `ghcr.io/<org>/prody-<product>`).
 - `REGISTRY_USER` — the login the token authenticates as; may be empty.
+- `SLUG` — the deploy slug the deploy-target skill derives its scope and host
+  from; empty means `prody-<product id>`. You only pass it on (§3).
 - `TOOLS_REF` — the SocialGouv/iterion ref the converter is fetched from.
 
 ## Credentials — by reference only
@@ -31,13 +33,9 @@ content. **The authoritative path is the one your system prompt renders**
 `$REGISTRY_TOKEN` is only the SANDBOX's shortcut to that same path: iterion
 writes a file secret's `env:` into the container spec, so on a host run
 nothing sets it. An unset `$REGISTRY_TOKEN` means "not in a sandbox" — it
-never means "no token". Pin the path once, before step 2, and fail on the
-real cause:
-
-```sh
-REGISTRY_TOKEN_PATH="${REGISTRY_TOKEN:-<the registry_token path from your system prompt>}"
-test -r "$REGISTRY_TOKEN_PATH"        # a path problem must surface HERE, not as a 401
-```
+never means "no token". Step 2 opens by pinning the path from the variable
+when it exists and from your system prompt when it does not, then proving it
+readable — so a path problem surfaces as a path problem and never as a 401.
 
 NEVER cat, echo, print or interpolate the file. `$DEPLOY_CREDENTIAL` follows
 the same rule and the same fallback, and belongs to the deploy-target skill —
@@ -81,6 +79,9 @@ export in scope.
 
 ```sh
 set -e
+: "${SCRATCH:?re-export it (step 1): an empty SCRATCH aims every path below at /}"
+REGISTRY_TOKEN_PATH="${REGISTRY_TOKEN:-<the registry_token path from your system prompt>}"
+test -r "$REGISTRY_TOKEN_PATH"                    # a path problem surfaces HERE, not as a 401
 export DOCKER_CONFIG="$SCRATCH/.docker"           # the login must not escape scratch
 rm -rf "$DOCKER_CONFIG"; mkdir -p "$DOCKER_CONFIG"; chmod 700 "$DOCKER_CONFIG"
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT               # …even if a step below fails
@@ -97,6 +98,7 @@ crane --platform linux/amd64 append \
 DIGEST="$(crane digest "${IMAGE}:${TAG}")"        # the registry's own answer — and the push
 IMAGE_REF="${IMAGE}@${DIGEST}"                    # is not done until it can give one
 rm -rf "$DOCKER_CONFIG"                            # the token outlives nothing
+echo "IMAGE_REF=${IMAGE_REF}"                      # you need to SEE it: it goes in the manifest
 ```
 
 - ghcr.io accepts any non-empty username with a token; `iterion` is the
