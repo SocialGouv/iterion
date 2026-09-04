@@ -1,13 +1,15 @@
 package cloudpublisher
 
 import (
-	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"bytes"
 	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -352,5 +354,64 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 	}
 	if len(published) != 0 {
 		t.Fatalf("no message should be published, got %d", len(published))
+	}
+}
+
+
+// #659 pt 1: an operator investigating "whose credential funded that
+// run?" must find the answer in the server logs — not in
+// `/proc/<pid>/environ` inside a pod (measured, 2026-09-03). The seal
+// path used to print per-tier SKIPPED lines but nothing on a GRANT, so
+// the log was one-sided. resolveAndSealCredentials now emits ONE INFO
+// line per run naming every credential that lands in the sealed bundle,
+// with its TIER (byok / oauth-forfait / pool / platform), slot (provider
+// or oauth kind) and fingerprint. Never plaintext.
+//
+// The oracle is the LOG output, not the return value — the return has
+// always been informative enough, the gap was the operator's inability
+// to correlate it to a run without ad-hoc grep pipelines.
+func TestResolveAndSealCredentials_LogsGrantedCredentialSet(t *testing.T) {
+	var buf bytes.Buffer
+	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	apiKeys := secrets.NewMemoryApiKeyStore()
+	tenantCtx := store.WithTenant(context.Background(), "team-1")
+	id := secrets.NewApiKeyID()
+	sealed, err := secrets.SealAPIKey(sealer, id, []byte("sk-ant-real"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apiKeys.Create(tenantCtx, secrets.ApiKey{
+		ID: id, ScopeTeamID: "team-1", Provider: secrets.ProviderAnthropic,
+		Name: "k1", Last4: "real", SealedSecret: sealed,
+		Fingerprint: secrets.FingerprintSHA256("sk-ant-real"),
+	}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	p := &Publisher{
+		apiKeys:    apiKeys,
+		sealer:     sealer,
+		runSecrets: secrets.NewMemoryRunSecretsStore(),
+		logger:     iterlog.New(iterlog.LevelInfo, &buf),
+	}
+	if _, err := p.resolveAndSealCredentials(tenantCtx, "run-log-1", "", "team-1", "u1", "bot",
+		&ir.Workflow{}, nil, nil, model.ModelOverrides{}); err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "GRANTED for run=run-log-1") {
+		t.Fatalf("expected a GRANTED line for the run; got:\n%s", log)
+	}
+	if !strings.Contains(log, "byok(api_key:anthropic") {
+		t.Fatalf("expected the tier/slot naming; got:\n%s", log)
+	}
+	if strings.Contains(log, "sk-ant-real") {
+		t.Fatalf("secret plaintext leaked into the log line: %s", log)
+	}
+	if !strings.Contains(log, "fp="+secrets.FingerprintSHA256("sk-ant-real")) {
+		t.Fatalf("expected the credential fingerprint in the log; got:\n%s", log)
 	}
 }

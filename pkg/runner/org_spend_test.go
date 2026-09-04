@@ -8,6 +8,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -36,7 +37,7 @@ func TestRecordOrgSpendKey(t *testing.T) {
 			usage.runOutputTokens = 50
 			usage.mu.Unlock()
 
-			r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: tc.orgID}, usage)
+			r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: tc.orgID}, usage)
 
 			now := time.Now().UTC()
 			got, err := counter.Usage(context.Background(), tc.wantKey, now)
@@ -96,12 +97,12 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 		usage.mu.Lock()
 		usage.runCostUSD = 1
 		usage.mu.Unlock()
-		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, usage)
+		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, usage)
 	})
 	t.Run("zero totals record nothing", func(t *testing.T) {
 		counter := orgusage.NewMemoryCounter()
 		r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.Nop()}}
-		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil))
+		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil))
 		if u, _ := counter.Usage(context.Background(), "org-1", time.Now().UTC()); u.CostUSD != 0 || u.InputTokens != 0 {
 			t.Fatalf("zero-spend attempt recorded usage: %+v", u)
 		}
@@ -113,14 +114,14 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 		usage.mu.Lock()
 		usage.runCostUSD = 2
 		usage.mu.Unlock()
-		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1"}, usage)
+		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1"}, usage)
 		if u, _ := counter.Usage(context.Background(), "", time.Now().UTC()); u.CostUSD != 0 {
 			t.Fatalf("tenant-less spend recorded: %+v", u)
 		}
 	})
 	t.Run("nil usage", func(t *testing.T) {
 		r := &Runner{cfg: Config{OrgUsage: orgusage.NewMemoryCounter(), Logger: iterlog.Nop()}}
-		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, nil)
+		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, nil)
 	})
 }
 
@@ -153,5 +154,69 @@ func TestMetricsEmitter_RunTotalsAccumulate(t *testing.T) {
 	}
 	if cost <= 0 {
 		t.Errorf("cost = %v, want > 0 for a priced claw model", cost)
+	}
+}
+
+
+// #659 pt 2: at metering time the runner bumps `last_used_at` on every
+// API key whose fingerprint sits in the resolved credentials, so the
+// studio distinguishes an idle key from one currently serving. The
+// launch-grant-only bump left `last_used_at` frozen for hours on keys
+// actively spending — measured live 2026-09-03 ("2.5h idle while
+// serving a third run's delegate the whole time").
+//
+// The oracle is the STORE: after recordOrgSpend, the key's
+// last_used_at moves to the metering timestamp — even though msg.SecretsRef
+// was never touched (the runner reads Credentials from ctx, which
+// injectCredentials stamped for the whole executeRun).
+func TestRecordOrgSpend_BumpsApiKeyFingerprintUsed(t *testing.T) {
+	apiKeys := secrets.NewMemoryApiKeyStore()
+	tenantCtx := store.WithTenant(context.Background(), "team-a")
+	id := secrets.NewApiKeyID()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := secrets.SealAPIKey(sealer, id, []byte("sk-ant-live"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := secrets.FingerprintSHA256("sk-ant-live")
+	if err := apiKeys.Create(tenantCtx, secrets.ApiKey{
+		ID: id, ScopeTeamID: "team-a", Provider: secrets.ProviderAnthropic,
+		Name: "live", SealedSecret: sealed, Fingerprint: fp,
+	}); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if got, _ := apiKeys.Get(tenantCtx, id); got.LastUsedAt != nil {
+		t.Fatalf("fresh key must have no last_used_at")
+	}
+
+	r := &Runner{cfg: Config{
+		ApiKeys:  apiKeys,
+		OrgUsage: orgusage.NewMemoryCounter(),
+		Logger:   iterlog.Nop(),
+	}}
+	usage := newMetricsEmitter(nil, nil)
+	usage.mu.Lock()
+	usage.runCostUSD = 1
+	usage.mu.Unlock()
+
+	// Simulate what injectCredentials stamps on the executeRun ctx.
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): fp},
+	})
+	r.recordOrgSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, usage)
+
+	// Best-effort store writes settle synchronously in the memory store.
+	got, err := apiKeys.Get(tenantCtx, id)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if got.LastUsedAt == nil {
+		t.Fatalf("last_used_at not bumped — the metering-time bump did not run")
+	}
+	if time.Since(*got.LastUsedAt) > 5*time.Second {
+		t.Fatalf("last_used_at stale (%s ago)", time.Since(*got.LastUsedAt))
 	}
 }

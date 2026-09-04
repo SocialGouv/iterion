@@ -172,6 +172,16 @@ type ApiKeyStore interface {
 	ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error)
 	// MarkUsed updates last_used_at without altering anything else.
 	MarkUsed(ctx context.Context, id string, at time.Time) error
+	// MarkFingerprintUsed bumps last_used_at on every key whose stable
+	// audit identity matches the given fingerprint. Called by the runner
+	// at metering time (recordOrgSpend) so an operator can tell an idle
+	// key from one that is actively serving — a distinction the previous
+	// launch-grant-only signal could not make (#659 pt 2). Match by
+	// fingerprint on purpose: the runner knows what the bundle sealed,
+	// not the row ids under it; and no tenant filter, since the run may
+	// legitimately spend a key sourced from another tier (pool grant,
+	// platform tier). A missing fingerprint is a no-op, not an error.
+	MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error
 	// ClearDefault removes the is_default flag from any other key in
 	// the same (team, user, provider) tuple. Used when a new key is
 	// created with is_default=true or an existing one is promoted.
@@ -465,6 +475,26 @@ func (m *MemoryApiKeyStore) MarkUsed(_ context.Context, id string, at time.Time)
 	return nil
 }
 
+// MarkFingerprintUsed bumps last_used_at on every key that carries this
+// fingerprint. Empty fingerprint is a no-op (nothing to look up), never an
+// error — a runner metering a key that predates fingerprint stamping just
+// leaves the observation on the floor rather than failing the report.
+func (m *MemoryApiKeyStore) MarkFingerprintUsed(_ context.Context, fingerprint string, at time.Time) error {
+	if fingerprint == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := at
+	for id, k := range m.keys {
+		if k.Fingerprint == fingerprint {
+			k.LastUsedAt = &t
+			m.keys[id] = k
+		}
+	}
+	return nil
+}
+
 func (m *MemoryApiKeyStore) ClearDefault(_ context.Context, teamID, userID string, provider Provider, exceptID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -613,6 +643,24 @@ func (s *MongoApiKeyStore) MarkUsed(ctx context.Context, id string, at time.Time
 	}
 	if _, err := s.coll.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
 		return fmt.Errorf("secrets: mark used: %w", err)
+	}
+	return nil
+}
+
+// MarkFingerprintUsed updates last_used_at on every row matching the
+// fingerprint — no tenant filter, since the runner may legitimately meter
+// a key that belongs to another tenant (pool grant, platform tier). A
+// missing fingerprint (empty string) is a no-op — the metering path calls
+// this per stamped fp on the run doc, and a run predating fingerprint
+// stamping simply carries none. UpdateMany matches every matching row: the
+// rare case where two rows share a fingerprint (an operator saved the
+// same secret twice) still gets both bumped.
+func (s *MongoApiKeyStore) MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error {
+	if fingerprint == "" {
+		return nil
+	}
+	if _, err := s.coll.UpdateMany(ctx, bson.M{"fingerprint": fingerprint}, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
+		return fmt.Errorf("secrets: mark fingerprint used: %w", err)
 	}
 	return nil
 }

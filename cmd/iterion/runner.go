@@ -314,6 +314,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		RunSecrets:          runSecretsStore,
 		Sealer:              sealer,
 		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
+		// BYOK store shared with the publisher — the runner bumps
+		// `last_used_at` at metering time so the studio distinguishes an
+		// idle key from one currently serving (#659 pt 2).
+		ApiKeys: secrets.NewMongoApiKeyStore(st.DB()),
 		MemoryStore:         memStore,
 		OrgUsage:            orgUsageCounter,
 		CredPool:            credBroker,

@@ -249,7 +249,7 @@ func TestAdminLLM_OAuthPasteStoresUnderThePlatformOwner(t *testing.T) {
 	_, oauth, sealer, _, hs, adminTok, _ := newAdminLLMServer(t)
 
 	code, body := llmDo(t, hs, "POST", "/api/admin/llm/oauth/claude_code/credentials", adminTok,
-		`{"claudeAiOauth":{"accessToken":"sk-ant-platform-forfait"}}`)
+		`{"claudeAiOauth":{"accessToken":"sk-ant-platform-forfait","expiresAt":4102444800000,"scopes":["user:inference"]}}`)
 	if code != http.StatusOK {
 		t.Fatalf("paste: status=%d body=%s", code, body)
 	}
@@ -350,7 +350,7 @@ func TestAdminLLM_OAuthAuditsOnlyRealMutations(t *testing.T) {
 
 	// A real connect, then a real delete, DO audit — exactly one each.
 	if code, _ := llmDo(t, hs, "POST", "/api/admin/llm/oauth/claude_code/credentials", adminTok,
-		`{"claudeAiOauth":{"accessToken":"sk-ant-real"}}`); code != http.StatusOK {
+		`{"claudeAiOauth":{"accessToken":"sk-ant-real","expiresAt":4102444800000,"scopes":["user:inference"]}}`); code != http.StatusOK {
 		t.Fatal("real connect failed")
 	}
 	// Guard the fixture: the connect really landed under the platform owner.

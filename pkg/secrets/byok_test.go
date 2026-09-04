@@ -296,3 +296,51 @@ func TestResolve_UsablePredicateDoesNotFilterPins(t *testing.T) {
 		t.Fatalf("expected the pinned key despite the predicate, got %+v", r)
 	}
 }
+
+
+// MarkFingerprintUsed bumps last_used_at on every row whose stable audit
+// identity matches — the seam the runner drives at metering time so a
+// key currently serving is distinguishable from an idle one (#659 pt 2).
+// The launch-grant-only MarkUsed(id, ...) never moved after admission,
+// leaving the studio with a frozen last_used_at on keys actively being
+// spent — measured live 2026-09-03.
+func TestMemoryApiKey_MarkFingerprintUsed(t *testing.T) {
+	store := NewMemoryApiKeyStore()
+	sealer := newSealer(t)
+	k1 := mkKey(t, store, sealer, "team-a", "u1", ProviderAnthropic, "k1", "sk-ant-live", false)
+	k2 := mkKey(t, store, sealer, "team-b", "u2", ProviderAnthropic, "k2", "sk-ant-other", false)
+
+	if k1.LastUsedAt != nil || k2.LastUsedAt != nil {
+		t.Fatalf("fresh keys must have no last_used_at: %v %v", k1.LastUsedAt, k2.LastUsedAt)
+	}
+
+	t.Run("empty fingerprint is a no-op", func(t *testing.T) {
+		if err := store.MarkFingerprintUsed(context.Background(), "", time.Now()); err != nil {
+			t.Fatalf("empty fp errored: %v", err)
+		}
+		if got, _ := store.Get(context.Background(), k1.ID); got.LastUsedAt != nil {
+			t.Fatalf("empty fp bumped a row: %v", got.LastUsedAt)
+		}
+	})
+
+	t.Run("unknown fingerprint is a no-op", func(t *testing.T) {
+		if err := store.MarkFingerprintUsed(context.Background(), "no-such-fp", time.Now()); err != nil {
+			t.Fatalf("unknown fp errored: %v", err)
+		}
+	})
+
+	t.Run("matching fingerprint bumps THAT key, not the sibling", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Second)
+		if err := store.MarkFingerprintUsed(context.Background(), k1.Fingerprint, now); err != nil {
+			t.Fatalf("mark: %v", err)
+		}
+		got1, _ := store.Get(context.Background(), k1.ID)
+		got2, _ := store.Get(context.Background(), k2.ID)
+		if got1.LastUsedAt == nil || !got1.LastUsedAt.Equal(now) {
+			t.Fatalf("k1.last_used_at = %v, want %v (the metering bump did not land)", got1.LastUsedAt, now)
+		}
+		if got2.LastUsedAt != nil {
+			t.Fatalf("k2.last_used_at = %v, want nil (only k1's fingerprint was metered)", got2.LastUsedAt)
+		}
+	})
+}

@@ -9,36 +9,91 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
-// org's monthly usage bucket. Called at the end of every execution
+// org's monthly usage bucket AND bumps `last_used_at` on every credential
+// the run actually spent tokens on. Called at the end of every execution
 // attempt — paused/cancelled/failed attempts incurred real spend too,
 // and a redelivered attempt re-charges only what it re-executed.
-// Detached ctx: a Mongo blip must not fail the run path; the miss is
-// logged and the Prometheus counters still carry the global totals.
-func (r *Runner) recordOrgSpend(msg *queue.RunMessage, usage *metricsEmitter) {
-	if r.cfg.OrgUsage == nil || usage == nil || msg.TenantID == "" {
+// Detached ctx on both writes: a Mongo blip must not fail the run path;
+// misses are logged and the Prometheus counters still carry the global
+// totals. The `last_used_at` bump reads the credential fingerprints out
+// of ctx (secrets.WithCredentials was set by injectCredentials), so it
+// keys on what the delegate actually spent — not what was granted at
+// launch, which is the mute-frozen-at-launch signal the previous shape
+// left an operator with (#659 pt 2).
+func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usage *metricsEmitter) {
+	if usage == nil {
 		return
 	}
 	costUSD, in, out := usage.RunTotals()
-	if costUSD <= 0 && in <= 0 && out <= 0 {
+	spent := costUSD > 0 || in > 0 || out > 0
+	if !spent {
 		return
 	}
-	// Charge the same usage key the launch gate metered the run on:
-	// the parent org (caps sum across the org's teams — charging the
-	// team key instead leaves the org's cost-cap document at zero, so
-	// the cap never trips in a multi-team org). OrgID is empty on
-	// pre-orgid messages and org-less pre-backfill teams — both were
-	// metered on the team key, so fall back to it.
-	key := msg.OrgID
-	if key == "" {
-		key = msg.TenantID
+	now := time.Now().UTC()
+
+	// Half 1: org usage bucket — the existing behaviour.
+	if r.cfg.OrgUsage != nil && msg.TenantID != "" {
+		// Charge the same usage key the launch gate metered the run on:
+		// the parent org (caps sum across the org's teams — charging the
+		// team key instead leaves the org's cost-cap document at zero,
+		// so the cap never trips in a multi-team org). OrgID is empty on
+		// pre-orgid messages and org-less pre-backfill teams — both were
+		// metered on the team key, so fall back to it.
+		key := msg.OrgID
+		if key == "" {
+			key = msg.TenantID
+		}
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.cfg.OrgUsage.AddSpend(bg, key, now, costUSD, in, out); err != nil {
+			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
+		}
+		cancel()
+	}
+
+	// Half 2: per-credential last_used_at bump. Best-effort: nothing to
+	// bump when the bundle carried no fingerprints (legacy run, env
+	// fallback) or the ApiKey store is not wired.
+	r.markCredFingerprintsUsed(ctx, msg, now)
+}
+
+// markCredFingerprintsUsed bumps `last_used_at` on every API key whose
+// fingerprint sits in the run's injected credentials. Best-effort: a
+// missing store, empty fingerprints, or a store failure all quietly
+// leave the observation on the floor rather than fail the run. Detached
+// context (5s bound) so the metering path is unaffected by cancellation.
+func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
+	if r.cfg.ApiKeys == nil {
+		return
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok || len(creds.Fingerprints) == 0 {
+		return
+	}
+	// Deduplicate: several slots may map to the same fingerprint (an
+	// OAuth kind and the anthropic API key both keyed on the same
+	// account) and the update is idempotent, but the DB round-trips
+	// are not free.
+	seen := map[string]bool{}
+	fps := make([]string, 0, len(creds.Fingerprints))
+	for _, fp := range creds.Fingerprints {
+		if fp != "" && !seen[fp] {
+			seen[fp] = true
+			fps = append(fps, fp)
+		}
+	}
+	if len(fps) == 0 {
+		return
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.cfg.OrgUsage.AddSpend(bg, key, time.Now().UTC(), costUSD, in, out); err != nil {
-		r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
+	for _, fp := range fps {
+		if err := r.cfg.ApiKeys.MarkFingerprintUsed(bg, fp, at); err != nil {
+			r.cfg.Logger.Warn("runner: mark api-key fingerprint used (run %s fp=%s): %v", msg.RunID, fp, err)
+		}
 	}
 }
 

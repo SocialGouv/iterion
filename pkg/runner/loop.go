@@ -608,6 +608,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
+	// ApiKeys, when non-nil, is the BYOK store shared with the publisher.
+	// The runner bumps `last_used_at` on every credential the run actually
+	// spent tokens on at metering time (recordOrgSpend), so the studio
+	// distinguishes an idle key from one currently serving — the mute
+	// launch-grant-only signal fixed by #659 pt 2. nil disables the bump;
+	// today's launch-time-only behaviour is preserved byte-identical.
+	ApiKeys secrets.ApiKeyStore
+
 	// UsageCapSource answers the operator's ceiling on the LLM
 	// subscription's own usage windows (pkg/usagecap) — consulted per
 	// evaluation, so a DB-backed source (usagecap.Resolver) makes a
@@ -1581,8 +1589,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// Charge the run's spend whatever the outcome — paused, cancelled and
 	// failed attempts incurred real LLM spend. The credential pool's half is
 	// reported by the caller instead, which alone knows whether this
-	// delivery is the last one.
-	defer func() { r.recordOrgSpend(msg, usage) }()
+	// delivery is the last one. Ctx captures the credentials the executor
+	// runs under so #659 pt 2's `last_used_at` bump reads the same
+	// fingerprints the delegate actually spent tokens on.
+	defer func() { r.recordOrgSpend(ctx, msg, usage) }()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),

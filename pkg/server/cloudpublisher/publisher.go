@@ -685,6 +685,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		return res, nil
 	}
 
+	// #659 pt 1: log the granted credential set once per run, symmetric
+	// with the per-tier SKIPPED lines above. This is what lets an
+	// operator answer "which credential funded that run?" from the
+	// server logs, instead of grepping /proc/<pid>/environ inside a pod
+	// (measured, 2026-09-03). Only fingerprints (never plaintext) and
+	// tier tags — bundle.PlatformSourced already tracks the platform
+	// vs tenant/tier split.
+	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
+
 	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
 	if err != nil {
 		return res, fmt.Errorf("cloudpublisher: seal bundle: %w", err)
@@ -1376,6 +1385,60 @@ func providersSummary(provs []string) string {
 		return "pinned=<none>"
 	}
 	return "pinned=" + strings.Join(provs, ",")
+}
+
+// logGrantedCredentials emits ONE INFO line per run listing which
+// credential funded which slot at the end of resolveAndSealCredentials.
+// Symmetric with the per-tier SKIPPED log lines the file already emits
+// (a grant used to be silent — #659 pt 1), and the answer an operator
+// needed to `grep run=<id>` for instead of `/proc/<pid>/environ` inside
+// a pod (measured, 2026-09-03). The line carries the credential's
+// TIER (byok / oauth-forfait / pool / platform), the slot name
+// (provider or oauth kind), and the FINGERPRINT — never plaintext.
+func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, grant *credpool.Grant) {
+	if logger == nil {
+		return
+	}
+	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
+	// API keys — the PlatformSourced map tells apart platform-tier
+	// grants (deployment-wide fallback keys) from tenant BYOK.
+	for _, prov := range allKnownProviders {
+		if _, ok := bundle.APIKeys[prov]; !ok {
+			continue
+		}
+		tier := "byok"
+		if bundle.PlatformSourced[string(prov)] {
+			tier = "platform"
+		}
+		fp := apiKeyFPs[prov]
+		if fp == "" {
+			fp = "<unstamped>"
+		}
+		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
+	}
+	// OAuth-forfait — grant != nil means a donor's subscription came in
+	// via the pool tier; the platform sentinel marks the deployment's
+	// own fallback forfait; otherwise it is a user-or-org connect.
+	for _, kind := range []string{string(secrets.OAuthKindClaudeCode), string(secrets.OAuthKindCodex)} {
+		if _, ok := bundle.OAuthCredentials[kind]; !ok {
+			continue
+		}
+		tier := "oauth-forfait"
+		if grant != nil && string(grant.Ref) == kind && grant.Source == credpool.SourceOAuth {
+			tier = "pool"
+		} else if bundle.PlatformSourced[kind] {
+			tier = "platform"
+		}
+		fp := bundle.OAuthFingerprints[kind]
+		if fp == "" {
+			fp = "<unstamped>"
+		}
+		parts = append(parts, fmt.Sprintf("%s(oauth:%s fp=%s)", tier, kind, fp))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	logger.Info("cloudpublisher: credentials GRANTED for run=%s — %s", runID, strings.Join(parts, ", "))
 }
 
 // SubmitLaunch persists the run as queued in Mongo, then publishes
