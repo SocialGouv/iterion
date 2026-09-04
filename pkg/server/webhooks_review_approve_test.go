@@ -946,6 +946,40 @@ func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 	}
 }
 
+// The approve lane answers 200 on EVERY exit — a repeated 5xx is what makes
+// a forge disable the hook, and with it every launch, re-review and
+// override. The authz check is the exit most likely to fire during a forge
+// incident (the gate returns an error whenever the permission API does), and
+// it is reachable by any commenter. It must answer 200/launch_error — a row
+// the forge's "Redeliver" re-evaluates — and stay silent on the PR, since
+// the error text is raw forge detail.
+func TestReviewApprove_AuthzCheckFailureIs200NotA502(t *testing.T) {
+	s, gc, commenter, cfg, pt := approveWorld(t)
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return false, "", errInsufficientScope
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("mallory"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a forge failure in the authz check must not 5xx (forges disable the hook), got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusLaunchError {
+		t.Fatalf("want launch_error (retryable via Redeliver), got %v", resp)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("an unresolved authz check must write no status, got %d", gc.setCalls)
+	}
+	if len(commenter.bodies) != 0 {
+		t.Fatalf("the forge error must not be published on the PR, got %v", commenter.bodies)
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusLaunchError || !approveReplyContains(rows[0].Error, "authz check") {
+		t.Fatalf("want one launch_error audit row naming the authz check, got %+v", rows)
+	}
+}
+
 // `/revi approve` is intercepted before the scope/route/bot admission every
 // other command lane applies, so its authorization refusal is reachable by
 // anyone who can comment on the PR — and the gate's reason is

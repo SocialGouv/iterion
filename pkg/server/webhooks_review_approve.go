@@ -199,8 +199,21 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	}
 	authorized, gateReason, aerr := gate(ctx, gateCfg, provider, p, route)
 	if aerr != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
-		httpError(w, http.StatusBadGateway, "authorization check failed")
+		// 200/launch_error, not 502 — the same discipline every other exit in
+		// this handler keeps. aerr is a FORGE failure (the gate returns it
+		// when CollaboratorPermission errors: a GitHub 5xx, a secondary
+		// rate-limit on a busy org, a network blip), and this branch is
+		// reachable by anyone who can comment, so a forge incident would 5xx
+		// every /revi approve until the forge disables the hook — taking
+		// every launch, re-review and override with it. Nothing is lost: the
+		// launch_error row is NOT terminal, so the forge's "Redeliver" is
+		// still the operator's retry. Silent on the PR for the same reason
+		// the refusal below is: any commenter reaches it, and the error text
+		// is raw forge/credential detail.
+		why := "authz check: " + aerr.Error()
+		s.warnApproveDidNotLand(provider, p, why)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
 		return
 	}
 	if !authorized {
