@@ -1,8 +1,8 @@
 package cloudpublisher
 
 import (
-	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"context"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"io"
 	"testing"
 

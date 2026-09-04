@@ -526,4 +526,3 @@ func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
 		}
 	})
 }
-

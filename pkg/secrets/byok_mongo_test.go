@@ -164,7 +164,6 @@ func TestMongoApiKey_ScopeWithoutMatchingTenantIsUnreachable(t *testing.T) {
 	}
 }
 
-
 // The Mongo twin of TestMemoryApiKey_MarkFingerprintUsed: the metering
 // bump must land in prod on the real store, not only in unit-test
 // memory. Skipped without ITERION_TEST_MONGO_URI (mongo-conformance CI

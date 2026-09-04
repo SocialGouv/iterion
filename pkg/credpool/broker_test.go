@@ -718,7 +718,6 @@ func TestBroker_reciprocityAdmitsAForeignDonor(t *testing.T) {
 	}
 }
 
-
 // Every abstention arrives as a *NoDonorError naming WHY the pool did
 // not serve — the fix for #654, which observed a run fall silently
 // through the pool tier onto the platform credential ("half a day of

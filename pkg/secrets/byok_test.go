@@ -297,7 +297,6 @@ func TestResolve_UsablePredicateDoesNotFilterPins(t *testing.T) {
 	}
 }
 
-
 // MarkFingerprintUsed bumps last_used_at on every row whose stable audit
 // identity matches — the seam the runner drives at metering time so a
 // key currently serving is distinguishable from an idle one (#659 pt 2).

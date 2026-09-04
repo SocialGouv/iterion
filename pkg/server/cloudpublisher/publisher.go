@@ -1424,7 +1424,7 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 			continue
 		}
 		tier := "oauth-forfait"
-		if grant != nil && string(grant.Ref) == kind && grant.Source == credpool.SourceOAuth {
+		if grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth {
 			tier = "pool"
 		} else if bundle.PlatformSourced[kind] {
 			tier = "platform"

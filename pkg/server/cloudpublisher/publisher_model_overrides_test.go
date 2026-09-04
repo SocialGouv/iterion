@@ -130,7 +130,6 @@ func TestSubmitResumeReplaysRunDocOverrides(t *testing.T) {
 	}
 }
 
-
 // The pool's wants-derivation must read the launch-time model overrides,
 // not only the DSL. #668: a bot with an agent + judge, both pinned to
 // claw/openai by launch-time overrides, still had the pool tier walk on

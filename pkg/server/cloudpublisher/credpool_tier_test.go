@@ -1,10 +1,10 @@
 package cloudpublisher
 
 import (
-	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"strings"
 	"testing"
 	"time"
@@ -335,7 +335,6 @@ func TestPoolTier_grantCarriesTheDonorCredentialsIdentity(t *testing.T) {
 		t.Errorf("OAuthFingerprints[claude_code] = %q, want %q — the borrower's meter would follow the slot, not the lent credential", got, want)
 	}
 }
-
 
 // acquireFromPool must LOG A WARN naming the reason at the moment an
 // abstention becomes final. The mute prod incident (2026-09-03, half a

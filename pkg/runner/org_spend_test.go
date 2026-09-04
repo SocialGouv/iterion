@@ -157,7 +157,6 @@ func TestMetricsEmitter_RunTotalsAccumulate(t *testing.T) {
 	}
 }
 
-
 // #659 pt 2: at metering time the runner bumps `last_used_at` on every
 // API key whose fingerprint sits in the resolved credentials, so the
 // studio distinguishes an idle key from one currently serving. The

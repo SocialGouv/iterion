@@ -317,14 +317,14 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		// BYOK store shared with the publisher — the runner bumps
 		// `last_used_at` at metering time so the studio distinguishes an
 		// idle key from one currently serving (#659 pt 2).
-		ApiKeys: secrets.NewMongoApiKeyStore(st.DB()),
-		MemoryStore:         memStore,
-		OrgUsage:            orgUsageCounter,
-		CredPool:            credBroker,
-		UsageCapSource:      usageCapSource,
-		UsageCaps:           usageCapStore,
-		BotsPaths:           botsPaths,
-		BotSources:          botsource.NewMongoStore(st.DB()),
+		ApiKeys:        secrets.NewMongoApiKeyStore(st.DB()),
+		MemoryStore:    memStore,
+		OrgUsage:       orgUsageCounter,
+		CredPool:       credBroker,
+		UsageCapSource: usageCapSource,
+		UsageCaps:      usageCapStore,
+		BotsPaths:      botsPaths,
+		BotSources:     botsource.NewMongoStore(st.DB()),
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's

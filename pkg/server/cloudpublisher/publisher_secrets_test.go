@@ -357,7 +357,6 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 	}
 }
 
-
 // #659 pt 1: an operator investigating "whose credential funded that
 // run?" must find the answer in the server logs — not in
 // `/proc/<pid>/environ` inside a pod (measured, 2026-09-03). The seal
