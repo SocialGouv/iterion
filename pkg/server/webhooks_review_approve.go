@@ -165,9 +165,17 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// so the reply names the reason a reader will act on; re-checked below
 	// when the head could only be loaded through the write path's client.
 	pr, prLoaded, prErr := s.loadPRHeadForApprove(ctx, cfg, p)
-	if prErr != nil {
-		s.approveFailWithReply(ctx, w, cfg, meta, provider, p, forge.Connection{}, false, "resolve PR head: "+prErr.Error(), payloadHash, srcIP)
-		return
+	if prErr != nil && s.logger != nil {
+		// The binding is this lane's FALLBACK identity, not its authority: a
+		// failed read through it is not a failed approve. Making it terminal
+		// would break every /revi approve on a webhook that has both a
+		// working connection and a stale/revoked forge_token — the
+		// half-configured shape this lane was built for. prLoaded is false,
+		// so the write path's client resolves the head below and the
+		// self-approve check re-runs there; a world with no usable credential
+		// at all still fails one round-trip later, where the reply can name
+		// which identity failed.
+		s.logger.Debug("webhooks: %s %s#%d /revi approve: PR head not readable through the forge_token binding (%v) — deferring to the write path's client", provider, p.ProjectPath, p.IssueNumber, prErr)
 	}
 	if prLoaded && isSelfApprove(pr, p) {
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)

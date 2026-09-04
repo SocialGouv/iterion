@@ -930,6 +930,52 @@ func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 	}
 }
 
+// A webhook carrying BOTH a working covering connection and a stale /
+// revoked / wrong-scope forge_token binding — the half-configured shape this
+// lane's fallback exists for. The binding is the FALLBACK identity, so a PR
+// head it cannot read must not end the approve: the write path's client
+// resolves the head (and re-runs the self-approve check) one round-trip
+// later. Making that read terminal broke every /revi approve on this shape.
+func TestReviewApprove_StaleBindingReadDoesNotAbortTheApprove(t *testing.T) {
+	// A forge that refuses everything: the identity behind the binding is
+	// revoked, so its PR read errors.
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer broken.Close()
+
+	s := newWebhookTestServer(t)
+	seedCoveringConnection(t, s, forge.Connection{
+		ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub,
+		ForgeBaseURL: broken.URL,
+	}, "acme/widgets")
+	gc := &fakeGateClient{headSHA: "abc1234"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	commenter := &stubCommenter{}
+	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return commenter, nil }
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ForgeBaseURL = broken.URL
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	seedForgeToken(t, s, &cfg, "ghp_revoked")
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "revi-approved" || gc.setCalls != 1 {
+		t.Fatalf("a failed read through the fallback binding must not abort the approve (resp=%v setCalls=%d replies=%v)", resp, gc.setCalls, commenter.bodies)
+	}
+	if len(commenter.bodies) != 0 {
+		t.Fatalf("the fallback's read error must not be surfaced on the PR, got %v", commenter.bodies)
+	}
+}
+
 // A team connection on the SAME forge host that does not cover this repo —
 // another project provisioned through iterion, or a leftover connection —
 // must not suppress the webhook's forge_token binding. Coverage is proven by
