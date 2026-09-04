@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -346,10 +347,34 @@ func (s *Server) handleDLQPeek(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"message": view, "payload": payload})
 }
 
+// handleDLQReplay re-enqueues a parked message. The run's doc is read
+// first, because a replay is only a delivery: the runner admits it against
+// the doc, and a run an operator cancelled is dropped there (the cancel
+// wins over the message) — so "replayed" would be answered and nothing
+// would happen. The refusal lands at the moment the operator acts, naming
+// the status and the way out. A doc that cannot be read fails CLOSED: a
+// side-effectful act is not performed on an unverifiable premise.
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	seq, ok := dlqSeq(r)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "invalid seq")
+		return
+	}
+	view, _, err := s.queue.PeekDLQ(r.Context(), seq)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "dlq replay: %v", err)
+		return
+	}
+	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(r.Context()), view.RunID)
+	switch {
+	case errors.Is(err, store.ErrRunNotFound):
+		httpError(w, http.StatusConflict, "dlq replay: run %s has no run document — nothing a runner could execute; discard the message instead (DELETE /api/admin/dlq/%d)", view.RunID, seq)
+		return
+	case err != nil:
+		httpError(w, http.StatusBadGateway, "dlq replay: run %s status unreadable, replay refused: %v", view.RunID, err)
+		return
+	case run.Status == store.RunStatusCancelled:
+		httpError(w, http.StatusConflict, "dlq replay: run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it", view.RunID)
 		return
 	}
 	runID, err := s.queue.RepublishDLQ(r.Context(), seq)
