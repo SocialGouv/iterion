@@ -961,9 +961,17 @@ schema publish_output:
   url: string
   summary: string
 
+## verify_publish input — the agent's URL AND the verdict it came with.
+## The publish agent is instructed to stop and report on a missing
+## playbook, a rejected credential, an unpullable image or a host the
+## platform will not serve; every one of those arrives as an empty url,
+## and without the agent's own verdict the gate can only call it a URL
+## problem and throw the remedy away.
 schema verify_publish_input:
   url: string
   base_url: string
+  deployed: bool
+  summary: string
 
 schema verify_publish_output:
   verified: bool
@@ -2004,12 +2012,26 @@ agent publish:
 ## propagation, not a cold deploy.
 tool verify_publish:
   input: verify_publish_input
-  command: `URL={{input.url}} BASE={{input.base_url}} python3 -c "
+  command: `URL={{input.url}} BASE={{input.base_url}} DEPLOYED={{input.deployed}} SUMMARY={{input.summary}} python3 -c "
 import json, os, time, urllib.request
 u = (os.environ.get('URL') or '').strip()
 base = (os.environ.get('BASE') or '').strip().rstrip('/')
+dep = (os.environ.get('DEPLOYED') or '').strip().lower() in ('1', 'true', 'yes')
+## One line, bounded: the agent's verdict travels into this node's
+## detail, the run events and the report.
+note = ' '.join((os.environ.get('SUMMARY') or '').split())[:400]
 if not u:
-    print(json.dumps({'verified': False, 'url': '', 'detail': 'publish agent returned no URL'}))
+    ## An empty url is the shape of EVERY honest refusal the publish
+    ## agent is instructed to make -- no playbook, a rejected
+    ## credential, an image the cluster cannot pull, a host outside the
+    ## base URL. Calling that 'returned no URL' discards the remedy the
+    ## agent just worked out and sends the operator looking at the wrong
+    ## thing. The run still FAILS -- publish was asked for and did not
+    ## happen -- but it fails saying why.
+    why = 'publish reported deployed=' + ('true' if dep else 'false') + ' with no URL'
+    if note:
+        why = why + ' -- ' + note
+    print(json.dumps({'verified': False, 'url': '', 'detail': why}))
     raise SystemExit(1)
 if not u.endswith('/'):
     u = u + '/'
@@ -2218,6 +2240,11 @@ workflow product_docs:
   ## edges then dead-ends the run with NO_OUTGOING_EDGE. The fallback
   ## makes the safe route structural: no publish signal → done.
   publish_gate -> done
-  publish -> verify_publish with { url: "{{outputs.publish.url}}", base_url: "{{vars.publish_base_url}}" }
+  publish -> verify_publish with {
+    url: "{{outputs.publish.url}}",
+    base_url: "{{vars.publish_base_url}}",
+    deployed: "{{outputs.publish.deployed}}",
+    summary: "{{outputs.publish.summary}}"
+  }
   verify_publish -> surface_site_link with { url: "{{outputs.verify_publish.url}}" }
   surface_site_link -> done

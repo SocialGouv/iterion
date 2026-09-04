@@ -1707,6 +1707,8 @@ func TestProductDocsVerifyPublish(t *testing.T) {
 	runJSON(t, resolveCommand(t, command, map[string]string{
 		"input.url":      srv.URL + "/site/",
 		"input.base_url": srv.URL,
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
 	}), &got)
 	if !got.Verified {
 		t.Fatalf("a live page under the base was not verified: %+v", got)
@@ -1715,6 +1717,8 @@ func TestProductDocsVerifyPublish(t *testing.T) {
 	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
 		"input.url":      srv.URL + "/site/",
 		"input.base_url": "https://elsewhere.example",
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
 	}), "not under publish_base_url")
 }
 
@@ -1757,17 +1761,49 @@ func TestProductDocsVerifyPublishRedirect(t *testing.T) {
 	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
 		"input.url":      srv.URL + "/off/",
 		"input.base_url": srv.URL,
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
 	}), "outside publish_base_url")
 
 	var got verifyPublishOut
 	runJSON(t, resolveCommand(t, command, map[string]string{
 		"input.url":      srv.URL + "/deep/",
 		"input.base_url": srv.URL,
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
 	}), &got)
 	if !got.Verified {
 		t.Fatalf("a redirect that stays under the operator's base is how a healthy "+
 			"host serves an index — it must not be refused: %+v", got)
 	}
+}
+
+// TestProductDocsVerifyPublishCarriesTheAgentsReason pins the failure DETAIL
+// on the path the branch made common. The publish agent is instructed to stop
+// and report — no deploy-target playbook, a rejected registry token, an image
+// the cluster cannot pull, a host outside the base URL — and every one of those
+// arrives here as an empty url. Reporting that as "returned no URL" throws away
+// the remedy the agent just worked out and points the operator at the wrong
+// thing. The run must still FAIL (publish was asked for and did not happen).
+func TestProductDocsVerifyPublishCarriesTheAgentsReason(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "verify_publish")
+
+	// Multi-line, quote-bearing agent prose: it reaches the shell through a
+	// template ref, so this also pins that the value stays one shell word.
+	const summary = "ImagePullBackOff: the ghcr package is PRIVATE.\nRemedy: flip it public once, then re-run."
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      "",
+		"input.base_url": "https://docs.example",
+		"input.deployed": "false",
+		"input.summary":  summary,
+	}), "ImagePullBackOff")
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      "",
+		"input.base_url": "https://docs.example",
+		"input.deployed": "false",
+		"input.summary":  summary,
+	}), "deployed=false")
 }
 
 type verifyPublishOut struct {
