@@ -356,10 +356,31 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		if v.ClaudeAIOauth.AccessToken == "" {
 			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.accessToken")
 		}
-		if v.ClaudeAIOauth.ExpiresAt > 0 {
-			t := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
-			rec.AccessTokenExpiresAt = &t
+		// Ingestion gate — the runtime backstop is #624's evidence-based skip,
+		// this end catches the garbage before it ever reaches a run: an
+		// accessToken with a newline/tab/ANSI escape is a transcript, not a
+		// bearer token, and every downstream call would die with a legible
+		// "Header has invalid value" for hours before the cause was found.
+		if err := secrets.ValidateTokenShape("claudeAiOauth.accessToken", v.ClaudeAIOauth.AccessToken); err != nil {
+			return secrets.OAuthRecord{}, err
 		}
+		// A claude_code record without an expiresAt or scopes is what the CLI
+		// reads as "Not logged in" — the credential exists on the server side
+		// and can never serve a run. Refusing it here means the operator sees
+		// the problem at paste time, not on a paid fleet of dead-on-arrival
+		// runs. The clock is stamped at the same time the caller stamps
+		// CreatedAt so a nearly-expired paste is caught by the same call.
+		if v.ClaudeAIOauth.ExpiresAt <= 0 {
+			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.expiresAt — a claude_code record without it is read by the CLI as 'Not logged in'; re-run `claude login` and paste the fresh credentials.json")
+		}
+		exp := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
+		if !exp.After(now) {
+			return secrets.OAuthRecord{}, fmt.Errorf("credentials.json accessToken already expired at %s — re-run `claude login` and paste the fresh credentials.json", exp.Format(time.RFC3339))
+		}
+		if len(v.ClaudeAIOauth.Scopes) == 0 {
+			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.scopes — a claude_code record without any scope is read by the CLI as 'Not logged in'; re-run `claude login` and paste the fresh credentials.json")
+		}
+		rec.AccessTokenExpiresAt = &exp
 		rec.NotRefreshable = v.ClaudeAIOauth.RefreshToken == ""
 		rec.Scopes = v.ClaudeAIOauth.Scopes
 	case secrets.OAuthKindCodex:
@@ -369,6 +390,11 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		}
 		if v.Tokens.AccessToken == "" {
 			return secrets.OAuthRecord{}, errors.New("auth.json missing tokens.access_token")
+		}
+		// Same shape gate as claude_code — a whitespace/control char in a
+		// bearer token is a paste accident, not a legal credential.
+		if err := secrets.ValidateTokenShape("tokens.access_token", v.Tokens.AccessToken); err != nil {
+			return secrets.OAuthRecord{}, err
 		}
 		if v.Tokens.ExpiresIn > 0 {
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()

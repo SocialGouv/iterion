@@ -522,6 +522,44 @@ func ValidGenericSecretName(name string) bool {
 	return true
 }
 
+// ValidateTokenShape rejects credential material that could not possibly
+// authenticate — a bearer token or api-key value must be a single line of
+// printable ASCII/UTF-8, never a terminal transcript, credentials.json paste
+// or CLI banner. The check is format-agnostic on purpose (no vendor prefix
+// pin, which changes over time) and covers the two paid ingestion failures:
+// an accessToken with embedded newlines/ANSI escapes rendering every LLM
+// call `Bearer <transcript>` → 401, and an api-key secret with a leading
+// tab/space that fools string-equality auth on the server side.
+//
+// Empty and NUL bytes are refused too — an empty value is caught by the
+// caller's own presence check but doubling up here means a future call site
+// cannot introduce the regression by accident.
+//
+// The kind argument is used only to phrase the error message so an operator
+// sees WHAT the server rejected (accessToken vs api-key secret).
+func ValidateTokenShape(kind, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is empty", kind)
+	}
+	for i, r := range value {
+		switch {
+		case r == 0x00:
+			return fmt.Errorf("%s contains a NUL byte at position %d — this looks like binary data, not a token", kind, i)
+		case r == '\n' || r == '\r':
+			return fmt.Errorf("%s contains a newline at position %d — this looks like a terminal transcript or credentials.json paste, not a bare token", kind, i)
+		case r == '\t':
+			return fmt.Errorf("%s contains a tab at position %d — strip leading/trailing whitespace before pasting", kind, i)
+		case r == ' ':
+			return fmt.Errorf("%s contains a space at position %d — a bearer token has none", kind, i)
+		case r < 0x20:
+			return fmt.Errorf("%s contains a control character (U+%04X) at position %d — this looks like a terminal transcript, not a bare token", kind, r, i)
+		case r == 0x7f:
+			return fmt.Errorf("%s contains a DEL byte at position %d — strip control characters before pasting", kind, i)
+		}
+	}
+	return nil
+}
+
 // compile-time interface checks
 var (
 	_ GenericSecretStore = (*FileGenericSecretStore)(nil)

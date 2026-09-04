@@ -186,6 +186,15 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		httpError(w, http.StatusBadRequest, "name + secret required")
 		return
 	}
+	// Ingestion gate — reject a pasted transcript / credentials.json blob
+	// before it lands in the store. The exact backstop as sealOAuthRecord:
+	// a bearer token has no whitespace or control character, and letting
+	// one through here would burn a fleet of runs on 401s before the cause
+	// is found.
+	if err := secrets.ValidateTokenShape("api-key secret", req.Secret); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	if req.MaxConcurrentRuns < 0 {
 		httpError(w, http.StatusBadRequest, "max_concurrent_runs must be >= 0 (0 = uncapped)")
 		return
@@ -254,6 +263,13 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 		key.Name = *req.Name
 	}
 	if req.Secret != nil && *req.Secret != "" {
+		// Same ingestion gate as create — a rotate that pastes a transcript
+		// is exactly as bad as a create that pastes one, and the runtime
+		// error is identical (401 on every call). Refuse it here.
+		if err := secrets.ValidateTokenShape("api-key secret", *req.Secret); err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
 		sealed, err := secrets.SealAPIKey(s.sealer, key.ID, []byte(*req.Secret))
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "seal: %v", err)

@@ -89,3 +89,72 @@ func TestApiKeyTenantCtx_KeepsTheActiveTeamWhenNoPathTeam(t *testing.T) {
 		t.Fatalf("want the active team team-a, got %q (ok=%v)", got, ok)
 	}
 }
+
+// A BYOK secret with whitespace or a control character cannot possibly
+// authenticate: a bearer token has none, and the shape has been paid for
+// live (a transcript pasted as accessToken, hours of dead-on-arrival runs
+// before the cause was found). #627's ingestion gate refuses it before it
+// ever lands in the store — same contract as sealOAuthRecord.
+//
+// The oracle is the STORE, not the response status: a 400 with a silent
+// write would still leave the garbage on disk for the runs to pick up.
+func TestCreateApiKey_RejectsMalformedSecret(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{5}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := &tenantSpyKeyStore{ApiKeyStore: secrets.NewMemoryApiKeyStore()}
+	srv := &Server{apiKeys: spy, sealer: sealer}
+
+	cases := []struct {
+		name, body, wantInErr string
+	}{
+		{"newline in secret", `{"provider":"anthropic","name":"bad","secret":"sk-ant-good\nWelcome"}`, "newline"},
+		{"tab in secret", `{"provider":"anthropic","name":"bad","secret":"\tsk-ant-good"}`, "tab"},
+		{"space in secret", `{"provider":"anthropic","name":"bad","secret":"sk-ant good"}`, "space"},
+		// The JSON string "[32msecret" carries a real ESC byte, which
+		// is a control character even though it looks like ANSI on screen.
+		{"ANSI escape (terminal transcript)", `{"provider":"anthropic","name":"bad","secret":"\u001b[32msk-ant-good\u001b[0m"}`, "control character"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/api/teams/team-a/api-keys", strings.NewReader(tc.body))
+			r.SetPathValue("id", "team-a")
+			ctx := auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"})
+			r = r.WithContext(store.WithTenant(ctx, "team-a"))
+
+			w := httptest.NewRecorder()
+			srv.handleCreateTeamApiKey(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s, want 400 (garbage secret rejected at ingestion)", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantInErr) {
+				t.Fatalf("error body = %q, want it to mention %q", w.Body.String(), tc.wantInErr)
+			}
+		})
+	}
+}
+
+// A well-formed secret still passes and lands sealed — the shape gate is
+// format-agnostic on the token contents (no vendor prefix pin) so a legal
+// value crosses it unchanged.
+func TestCreateApiKey_AcceptsHealthySecret(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{5}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := &tenantSpyKeyStore{ApiKeyStore: secrets.NewMemoryApiKeyStore()}
+	srv := &Server{apiKeys: spy, sealer: sealer}
+
+	body := `{"provider":"anthropic","name":"healthy","secret":"sk-ant-api03-realkey"}`
+	r := httptest.NewRequest("POST", "/api/teams/team-a/api-keys", strings.NewReader(body))
+	r.SetPathValue("id", "team-a")
+	ctx := auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"})
+	r = r.WithContext(store.WithTenant(ctx, "team-a"))
+
+	w := httptest.NewRecorder()
+	srv.handleCreateTeamApiKey(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("healthy create = %d body=%s", w.Code, w.Body.String())
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -213,7 +214,10 @@ func TestOAuthAccountLabel(t *testing.T) {
 	srv, hs, signer, store := oauthTestServer(t)
 	jo := oauthJWT(t, signer, "jo")
 	blob := func(tok string) string {
-		return `{"claudeAiOauth":{"accessToken":"` + tok + `","refreshToken":"rt","expiresAt":4102444800000}}`
+		// Include a scope: sealOAuthRecord's ingestion gate refuses a
+		// claude_code record with no scope (the shape the CLI reads as
+		// "Not logged in").
+		return `{"claudeAiOauth":{"accessToken":"` + tok + `","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
 	}
 	codexBlob := func(tok, account string) string {
 		return `{"tokens":{"access_token":"` + tok + `","refresh_token":"rt","account_id":"` + account + `"},"auth_mode":"chatgpt"}`
@@ -417,3 +421,109 @@ func (s *oauthUpsertSpy) Upsert(ctx context.Context, rec secrets.OAuthRecord) er
 	s.upserts++
 	return s.OAuthStore.Upsert(ctx, rec)
 }
+
+// TestOAuthCredentialIngestionValidatesShape locks the paid failures behind
+// the /api/me/oauth/{kind}/credentials paste path (#627):
+//   - a claude_code accessToken with an embedded newline (terminal-transcript
+//     paste, the shape the prod incident reported): every downstream call
+//     would die on `Bearer <transcript>` — refused at ingestion.
+//   - a claude_code record with no scopes and/or no expiresAt: the shape the
+//     CLI reads as "Not logged in" — refused at ingestion so the operator
+//     sees it at paste time, not on a fleet of dead-on-arrival runs.
+//   - a claude_code record with an ALREADY-EXPIRED accessToken.
+//   - a healthy full-shape blob still passes and lands sealed.
+//
+// The oracle is the STORE (no record must have been written), not just the
+// response status — a 400 with a silent write would still leave the garbage
+// on disk for the runs to pick up.
+func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
+	_, hs, signer, oauthStore := oauthTestServer(t)
+	alice := oauthJWT(t, signer, "alice")
+
+	claudeBlob := func(tok string, expiresAtMs int64, scopes string) string {
+		exp := ""
+		if expiresAtMs > 0 {
+			exp = fmt.Sprintf(`,"expiresAt":%d`, expiresAtMs)
+		}
+		sc := ""
+		if scopes != "" {
+			sc = `,"scopes":` + scopes
+		}
+		return `{"claudeAiOauth":{"accessToken":"` + tok + `","refreshToken":"rt"` + exp + sc + `}}`
+	}
+
+	for _, tc := range []struct {
+		name, blob, wantInErr string
+	}{
+		{
+			name:      "accessToken carrying an embedded newline",
+			blob:      `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good\nWelcome to claude","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`,
+			wantInErr: "newline",
+		},
+		{
+			name:      "accessToken carrying a tab",
+			blob:      `{"claudeAiOauth":{"accessToken":"\tsk-ant-oat01-good","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`,
+			wantInErr: "tab",
+		},
+		{
+			name:      "accessToken carrying a space",
+			blob:      `{"claudeAiOauth":{"accessToken":"sk-ant-oat01 good","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`,
+			wantInErr: "space",
+		},
+		{
+			name:      "accessToken carrying an ANSI escape (terminal transcript)",
+			blob:      `{"claudeAiOauth":{"accessToken":"\u001b[32msk-ant-oat01-good\u001b[0m","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`,
+			wantInErr: "control character",
+		},
+		{
+			name:      "claude_code with no scopes",
+			blob:      claudeBlob("sk-ant-oat01-good", 4102444800000, ""),
+			wantInErr: "scopes",
+		},
+		{
+			name:      "claude_code with no expiresAt",
+			blob:      claudeBlob("sk-ant-oat01-good", 0, `["user:inference"]`),
+			wantInErr: "expiresAt",
+		},
+		{
+			name:      "claude_code with an already-expired accessToken",
+			blob:      claudeBlob("sk-ant-oat01-good", time.Now().Add(-time.Hour).UnixMilli(), `["user:inference"]`),
+			wantInErr: "expired",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Wipe first so a residue from an earlier subtest cannot mask a
+			// silent write here.
+			_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+
+			code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, tc.blob)
+			if code != http.StatusBadRequest {
+				t.Fatalf("upload = %d body=%s, want 400 (garbage credential rejected at ingestion)", code, body)
+			}
+			if !strings.Contains(body, tc.wantInErr) {
+				t.Fatalf("error body = %q, want it to mention %q", body, tc.wantInErr)
+			}
+			// The store is the oracle: nothing must have been persisted.
+			if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err == nil {
+				t.Fatal("a rejected credential was silently stored — every downstream call would now die on a Bearer transcript")
+			}
+		})
+	}
+
+	t.Run("healthy full-shape blob still passes", func(t *testing.T) {
+		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
+		if code != http.StatusOK {
+			t.Fatalf("upload = %d body=%s, want 200 for a well-shaped credential", code, body)
+		}
+		rec, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		if err != nil {
+			t.Fatalf("store Get: %v", err)
+		}
+		if len(rec.SealedPayload) == 0 || len(rec.Scopes) == 0 || rec.AccessTokenExpiresAt == nil {
+			t.Fatalf("healthy blob landed with wrong shape: sealed=%d scopes=%v expiresAt=%v", len(rec.SealedPayload), rec.Scopes, rec.AccessTokenExpiresAt)
+		}
+	})
+}
+
