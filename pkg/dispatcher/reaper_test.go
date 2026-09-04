@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -661,6 +662,11 @@ type orderRecordingTracker struct {
 	mu          sync.Mutex // ops — shutdown drains entries in parallel now
 	ops         []string
 	slowRefresh time.Duration
+	// live/peak count RefreshStates calls IN FLIGHT AT ONCE. The drain's
+	// parallelism is a property of how many slow calls overlap, which is
+	// exactly what a sequential drain cannot do — and unlike a wall-clock
+	// figure it does not move when the runner is loaded.
+	live, peak atomic.Int32
 }
 
 func (r *orderRecordingTracker) record(op string) {
@@ -672,6 +678,14 @@ func (r *orderRecordingTracker) record(op string) {
 // RefreshStates is the revert's first act; slowing it is how a shared
 // deadline starves whatever the revert is followed by.
 func (r *orderRecordingTracker) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
+	n := r.live.Add(1)
+	for {
+		got := r.peak.Load()
+		if n <= got || r.peak.CompareAndSwap(got, n) {
+			break
+		}
+	}
+	defer r.live.Add(-1)
 	if r.slowRefresh > 0 {
 		select {
 		case <-time.After(r.slowRefresh):
@@ -871,26 +885,23 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 		state: newState(), stop: make(chan struct{}), done: make(chan struct{}),
 		ws: newWsBridge(iterlog.Nop()),
 	}
-	// The SEPARATION is what this asserts, not a wall-clock figure.
-	// Sequential costs drainCards budgets; the parallel drain runs
-	// ceil(drainCards/4) batches (its semaphore is 4). At 4 cards those
-	// were 4 units versus 1, and the ceiling sat one unit below the
-	// sequential floor — thin enough that a loaded machine read its own
-	// noise as a regression (measured: 123ms against a 120ms ceiling under
-	// a full-package run, green in isolation). Eight cards widen the gap
-	// to 8 units versus 2 at no extra cost (observed parallel ~100-115ms,
-	// sequential floor 320ms).
+	// The SEPARATION is what this asserts, and it is read from the drain
+	// itself rather than from the clock. A wall-clock ceiling cannot
+	// separate "sequential" from "parallel on a loaded runner": parallel
+	// here is ~100-115ms and sequential is drainCards × cardBudget, so any
+	// threshold lives inside a band CI noise crosses. It did, twice — a
+	// 5-budget ceiling ejected two green merge-queue groups in 12h (202.5ms
+	// and 222ms), and the 7-budget ceiling that replaced it ejected a third
+	// four hours later on 310ms, ten milliseconds under the floor it was
+	// meant to sit below.
 	//
-	// The ceiling is set ONE budget under the sequential floor, not lower:
-	// a genuinely sequential drain still always trips it (≥320ms), while
-	// everything below is CI scheduling noise this test must not read as a
-	// regression — a 5-budget ceiling (200ms) ejected two green merge-queue
-	// groups in 12h on 202.5ms and 222ms measurements, ~2× the observed
-	// parallel time but nowhere near sequential.
+	// What a sequential drain CANNOT do is overlap its slow calls. The
+	// tracker counts RefreshStates calls in flight at once: sequential
+	// peaks at 1 whatever the machine is doing, parallel peaks at the
+	// drain's semaphore width. That reading is immune to scheduling.
 	const (
-		drainCards  = 8
-		cardBudget  = 40 * time.Millisecond
-		drainCeling = (drainCards - 1) * cardBudget
+		drainCards = 8
+		cardBudget = 40 * time.Millisecond
 	)
 	c.shutdownRevertBudget, c.shutdownReleaseBudget = cardBudget, cardBudget
 	c.cfg.Store(&Config{Agent: AgentConfig{RunningState: native.StateInProgress}})
@@ -916,12 +927,16 @@ func TestShutdown_DrainIsBoundedByOneCardsBudgets(t *testing.T) {
 	c.shutdown()
 	elapsed := time.Since(start)
 
-	// Sequential would be ≥ drainCards × cardBudget of dead revert
-	// contexts; parallel is one card's worth plus scheduling noise.
-	if elapsed > drainCeling {
-		t.Fatalf("drain took %s for %d cards (ceiling %s, sequential floor %s) — sequential again: under a real "+
-			"grace period the SIGKILL beats the tail and those claims stay on disk",
-			elapsed, drainCards, drainCeling, time.Duration(drainCards)*cardBudget)
+	// A sequential drain runs one slow call at a time, so its peak is 1 —
+	// whatever the runner is doing. Anything above proves the reverts
+	// overlap, which is the property: a fleet of slow reverts costs a
+	// fraction of drainCards budgets, not all of them, so the SIGKILL does
+	// not beat the tail and leave those claims on disk. elapsed is reported
+	// for diagnosis only; it is not the gate.
+	if peak := rec.peak.Load(); peak < 2 {
+		t.Fatalf("the drain ran %d slow revert(s) at a time for %d cards (elapsed %s, one card's budget %s) — "+
+			"sequential again: under a real grace period the SIGKILL beats the tail and those claims stay on disk",
+			peak, drainCards, elapsed, cardBudget)
 	}
 	for id := range c.state.running {
 		if cur, _ := board.Get(id); cur.Claim != "" {
