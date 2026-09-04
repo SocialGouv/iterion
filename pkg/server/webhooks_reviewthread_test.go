@@ -190,7 +190,7 @@ func TestGitHubWebhook_ReviQuestionRoutesViaCommandRegistry(t *testing.T) {
 		return true, "allowlist", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feature/x", TargetBranch: "main", HeadSHA: "abc123"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feature/x", TargetBranch: "main", HeadSHA: "abc123"}, nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.BotIDs = []string{"review-pr", "revi-converse"}

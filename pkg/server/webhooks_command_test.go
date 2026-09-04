@@ -141,7 +141,7 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 		return true, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
 	}
 	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
 		calls++
@@ -185,7 +185,7 @@ func TestGitHubIssueComment_BillyPushBackStamped(t *testing.T) {
 		return true, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
 	}
 	var gotVars map[string]string
 	var gotRef string
@@ -224,7 +224,7 @@ func TestGitHubIssueComment_BillyPushBackAsPR(t *testing.T) {
 		return true, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/x", TargetBranch: "main"}, nil
 	}
 	var gotVars map[string]string
 	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
@@ -265,7 +265,7 @@ func TestGitHubIssueComment_BillyBoardCardCarriesPRContext(t *testing.T) {
 		return true, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
 	}
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 		return "run-board-billy", nil
@@ -576,7 +576,7 @@ func TestGitHubIssueComment_SeedsDeclaredReviewConsumer(t *testing.T) {
 		return true, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
 	}
 	var gotPRURL string
 	s.webhookHandoff = func(_ context.Context, _ webhooks.Config, _ bundle.HandoffKind, q handoffQuery) string {
