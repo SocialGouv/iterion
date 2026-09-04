@@ -429,8 +429,9 @@ Three ways, in order of preference:
    every other `/command`**: the commenter must hold a live repo role at or
    above `MinReplierRole` (default **maintainer** when the webhook pins
    nothing — the operator's explicit pin always wins, but the default matches
-   the "maintainer" wording above) or be in `AuthorizedRepliers`, verified
-   via the forge permission API. Two additional guards close self-approve
+   the "maintainer" wording above), verified via the forge permission API —
+   role only: the webhook's `AuthorizedRepliers` allowlist (who may talk back
+   to the bot) does not apply to a force-green. Two additional guards close self-approve
    loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
    the PR author cannot approve their own PR (a maintainer must). The status
    carries "approved by @user: reason" and links to the comment as the audit

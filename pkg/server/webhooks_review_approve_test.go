@@ -844,3 +844,90 @@ func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 		t.Fatalf("the refusal must name both missing credentials, got %q", rows[0].Error)
 	}
 }
+
+// A force-green is ROLE-only: AuthorizedRepliers is "who may talk back to
+// the bot", not "who may bypass the merge queue". An allowlisted login with
+// no repo permission is refused, with a reply.
+func TestReviewApprove_AllowlistDoesNotBypassTheRoleFloor(t *testing.T) {
+	s, f, cfg, pt := approveTokenWorld(t)
+	s.webhookPRForgeCommandGate = nil // the real gate
+	cfg.AuthorizedRepliers = []string{"outsider"}
+	// no f.perms entry for outsider → the forge answers 404 → "none"
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("outsider"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	statuses, comments := f.snapshot()
+	if len(statuses) != 0 {
+		t.Fatalf("an allowlisted login with no repo role force-greened the gate: %v", statuses)
+	}
+	if len(comments) != 1 || !approveReplyContains(comments[0], "@outsider", "replier not authorized") {
+		t.Fatalf("want one reply naming the role refusal, got %v", comments)
+	}
+}
+
+// The review bot not being enabled on the webhook is a configuration
+// refusal like every other: it replies with the reason instead of staying
+// silent.
+func TestReviewApprove_BotNotPermittedRepliesWithReason(t *testing.T) {
+	s, gc, commenter, cfg, pt := approveWorld(t)
+	cfg.BotIDs = []string{"feature-dev"}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK || gc.setCalls != 0 {
+		t.Fatalf("status=%d setCalls=%d body=%s", w.Code, gc.setCalls, w.Body.String())
+	}
+	if len(commenter.bodies) != 1 || !approveReplyContains(commenter.bodies[0], "@maintainer-jane", "not enabled on this webhook") {
+		t.Fatalf("want one reply naming the disabled review bot, got %v", commenter.bodies)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered {
+		t.Fatalf("want one filtered row, got %+v", rows)
+	}
+}
+
+func seedAcceptedApproveClaim(t *testing.T, s *Server, cfg webhooks.Config, id string, age time.Duration) {
+	t.Helper()
+	p, err := prforge.ParseIssueComment([]byte(approveBodyByJane))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+		ID: id, TenantID: cfg.TenantID, WebhookID: cfg.ID, Status: webhooks.StatusAccepted,
+		IdempotencyKey: approveIdempotencyKey(cfg, p), ReceivedAt: time.Now().UTC().Add(-age),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A claim left `accepted` by a writer that died before recording its
+// outcome must not become a zero-signal duplicate forever: past
+// approveClaimStaleAfter it is reused — the status write is idempotent on
+// the forge — and flipped on the same row.
+func TestReviewApprove_StaleAcceptedClaimIsReused(t *testing.T) {
+	s, gc, _, cfg, pt := approveWorld(t)
+	seedAcceptedApproveClaim(t, s, cfg, "dead-writer", 48*time.Hour)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 1 {
+		t.Fatalf("a 48h-old accepted claim must be reused and the status written, got setCalls=%d body=%s", gc.setCalls, w.Body.String())
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].ID != "dead-writer" || rows[0].Status != webhooks.StatusLaunched {
+		t.Fatalf("the stale claim must be flipped in place to launched, got %+v", rows)
+	}
+}
+
+// A claim younger than approveClaimStaleAfter is a writer still in flight:
+// the redelivery short-circuits as a duplicate without writing.
+func TestReviewApprove_YoungAcceptedClaimIsDuplicate(t *testing.T) {
+	s, gc, _, cfg, pt := approveWorld(t)
+	seedAcceptedApproveClaim(t, s, cfg, "in-flight", time.Minute)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if gc.setCalls != 0 || resp["status"] != webhooks.StatusDuplicate {
+		t.Fatalf("a young accepted claim must short-circuit as duplicate (setCalls=%d resp=%v)", gc.setCalls, resp)
+	}
+}

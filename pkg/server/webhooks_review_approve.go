@@ -19,6 +19,13 @@ import (
 // collaborator holds. An operator's explicit cfg.MinReplierRole always wins.
 const approveMinReplierRole = "maintainer"
 
+// approveClaimStaleAfter bounds how long an `accepted` approve claim is
+// trusted to be in flight. A writer that dies between the claim and its
+// outcome leaves the row accepted; past this age the claim is reused — the
+// status write is idempotent on the forge — instead of answering duplicate
+// forever.
+const approveClaimStaleAfter = 10 * time.Minute
+
 // gateContextVar is the var every gating bot exposes to name the commit-status
 // context it posts under, and that a repo pins — to ONE shared value — so a
 // single required check can span several bots (docs/merge-gate.md).
@@ -110,27 +117,33 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// normal command path applies before authorizing a /command.
 	reviewer := s.roleBots().Reviewer
 	if !cfg.AllowsBot(reviewer) {
-		filtered("bot " + reviewer + " not permitted by this webhook")
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: the review bot "+reviewer+" is not enabled on this webhook", payloadHash, srcIP)
 		return
 	}
 	// Replay check, before any forge I/O. A prior delivery of this comment
-	// that already approved (launched) or is mid-write (accepted) answers
-	// `duplicate`: a second status write is pure waste. A prior launch_error
-	// is NOT terminal — the forge's "Redeliver" is the operator's retry after
-	// a transient failure — so its row is reused by the claim below.
-	// Refusals are audited under their own keys (recordTerminalWebhookDelivery)
-	// so a redelivery after the operator fixes the setup re-evaluates.
+	// that already approved (launched) or is mid-write (accepted, younger
+	// than approveClaimStaleAfter) answers `duplicate`: a second status
+	// write is pure waste. A prior launch_error is NOT terminal — the
+	// forge's "Redeliver" is the operator's retry after a transient failure
+	// — and neither is a claim whose writer died before recording an
+	// outcome; both rows are reused by the claim below. Refusals are audited
+	// under their own keys (recordTerminalWebhookDelivery) so a redelivery
+	// after the operator fixes the setup re-evaluates.
 	idemKey := approveIdempotencyKey(cfg, p)
-	var priorFailure *webhooks.Delivery
+	var priorRow *webhooks.Delivery
 	if s.webhookDeliveries != nil {
 		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
-			if existing.Status != webhooks.StatusLaunchError {
+			staleClaim := existing.Status == webhooks.StatusAccepted && time.Since(existing.ReceivedAt) > approveClaimStaleAfter
+			if existing.Status != webhooks.StatusLaunchError && !staleClaim {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusDuplicate, "delivery_id": existing.ID})
 				return
 			}
+			if staleClaim && s.logger != nil {
+				s.logger.Warn("webhooks: %s %s#%d /revi approve: reusing claim %s left accepted %s ago — its writer never recorded an outcome", provider, p.ProjectPath, p.IssueNumber, existing.ID, time.Since(existing.ReceivedAt).Round(time.Minute))
+			}
 			ex := existing
-			priorFailure = &ex
+			priorRow = &ex
 		}
 	}
 	// The PR author cannot approve their own PR — a self-approve is a
@@ -146,20 +159,25 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)
 		return
 	}
-	// Authorize EXACTLY like every other PR-comment command (not the
-	// issue-author-trust gate): the commenter's live repo role against a
-	// floor, plus the WhoAmI loop-guard that rejects the review bot's own
-	// comment. The floor defaults to approveMinReplierRole when the webhook
-	// pins none; an operator's explicit cfg.MinReplierRole always wins.
+	// Authorize through the same PR-comment command gate as every other
+	// /command (not the issue-author-trust gate): the commenter's live repo
+	// role against a floor, plus the WhoAmI loop-guard that rejects the
+	// review bot's own comment. The floor defaults to approveMinReplierRole
+	// when the webhook pins none; an operator's explicit cfg.MinReplierRole
+	// always wins. ROLE-only: the webhook's AuthorizedRepliers allowlist is
+	// "who may talk back to the bot", not "who may force-green a required
+	// check", so the gate sees it empty here.
 	route := webhooks.CommandRoute{BotID: reviewer}
 	if strings.TrimSpace(cfg.MinReplierRole) == "" {
 		route.MinReplierRole = approveMinReplierRole
 	}
+	gateCfg := cfg
+	gateCfg.AuthorizedRepliers = nil
 	gate := s.webhookPRForgeCommandGate
 	if gate == nil {
 		gate = s.realWebhookPRForgeCommandGate
 	}
-	authorized, gateReason, aerr := gate(ctx, cfg, provider, p, route)
+	authorized, gateReason, aerr := gate(ctx, gateCfg, provider, p, route)
 	if aerr != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
 		httpError(w, http.StatusBadGateway, "authorization check failed")
@@ -218,13 +236,18 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// Claim the approve under its stable key BEFORE the forge write: the
 	// store's unique constraint on the key is what keeps two replicas
 	// handling the same redelivery from both writing the status. A prior
-	// failed row is reused (an Insert would collide with its own key).
+	// failed or stale row is reused (an Insert would collide with its own
+	// key); a failed row keeps its received-at, a stale claim gets a fresh
+	// one so a twin arriving during this retry reads it as in flight.
 	claim := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	claim.IdempotencyKey = idemKey
 	claim.BotID = reviewer
 	if s.webhookDeliveries != nil {
-		if priorFailure != nil {
-			claim.ID, claim.ReceivedAt = priorFailure.ID, priorFailure.ReceivedAt
+		if priorRow != nil {
+			claim.ID = priorRow.ID
+			if priorRow.Status == webhooks.StatusLaunchError {
+				claim.ReceivedAt = priorRow.ReceivedAt
+			}
 			if err := s.webhookDeliveries.Update(ctx, claim); err != nil {
 				s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "reset failed delivery: "+err.Error(), payloadHash, srcIP)
 				return
