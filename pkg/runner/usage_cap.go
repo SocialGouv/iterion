@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -184,6 +185,24 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		}
 		return nil
 	}
+	// The cap meters the Anthropic wire — its readings come from the
+	// claude_code delegate and nowhere else — and the key below is built
+	// from the run's anthropic-wire credentials (or the platform's). A run
+	// whose every route is pinned off that wire (claw/openai, codex) can
+	// never spend what the cap protects: parking it for the anthropic
+	// weekly reset strands it for nothing, which is how a fully pinned
+	// two-node rite froze for five days while its single-node sibling
+	// sailed through (#668). Read under the launch's own overrides, on
+	// PRIMARY routes only — a rescue `fallbacks:` route onto the wire
+	// fires on a failure the mid-run guard already refuses, and cannot
+	// justify refusing the run before it starts. Every uncertainty
+	// answers "reachable".
+	if !model.AnthropicWireReachable(wf, modelOverridesFromMsg(msg.ModelOverrides)) {
+		if logger != nil {
+			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
+		}
+		return nil
+	}
 	rctx, cancel := context.WithTimeout(ctx, usageCapStoreTimeout)
 	defer cancel()
 	key := usageCapKey(ctx, msg)
@@ -229,4 +248,21 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		ResetAt:     d.ResetsAt,
 		SelfImposed: true,
 	}
+}
+
+// admitAttempt is the last gate before an attempt can spend anything, and
+// the moment it takes hold of what it will spend. The pre-flight decides
+// whether the run may start at all; only once it has, the attempt stamps
+// its credentials as held, so a multi-hour attempt does not read as an
+// idle key for its whole duration (#659 pt 2).
+//
+// The order is the point, both ways: a run parked on a ceiling never held
+// anything (stamping it would date a key that served nothing), and a run
+// that starts must not wait until it ends to say which key it is spending.
+func (r *Runner) admitAttempt(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) error {
+	if err := r.usageCapPreflight(ctx, wf, msg, r.cfg.Logger); err != nil {
+		return err
+	}
+	r.markCredFingerprintsUsed(ctx, msg, time.Now().UTC())
+	return nil
 }

@@ -608,6 +608,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
+	// ApiKeys, when non-nil, is the BYOK store shared with the publisher.
+	// The runner bumps `last_used_at` on every credential the run actually
+	// spent tokens on at metering time (recordOrgSpend), so the studio
+	// distinguishes an idle key from one currently serving — the mute
+	// launch-grant-only signal fixed by #659 pt 2. nil disables the bump;
+	// today's launch-time-only behaviour is preserved byte-identical.
+	ApiKeys secrets.ApiKeyStore
+
 	// UsageCapSource answers the operator's ceiling on the LLM
 	// subscription's own usage windows (pkg/usagecap) — consulted per
 	// evaluation, so a DB-backed source (usagecap.Resolver) makes a
@@ -1403,7 +1411,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// container: at this point the run has cost nothing yet, so a capped
 	// run parks for free instead of paying a workspace and one LLM call to
 	// rediscover a ceiling another pod already measured.
-	if capErr := r.usageCapPreflight(ctx, wf, msg, r.cfg.Logger); capErr != nil {
+	if capErr := r.admitAttempt(ctx, wf, msg); capErr != nil {
 		return capErr
 	}
 
@@ -1581,8 +1589,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// Charge the run's spend whatever the outcome — paused, cancelled and
 	// failed attempts incurred real LLM spend. The credential pool's half is
 	// reported by the caller instead, which alone knows whether this
-	// delivery is the last one.
-	defer func() { r.recordOrgSpend(msg, usage) }()
+	// delivery is the last one. Ctx captures the credentials the executor
+	// runs under so #659 pt 2's `last_used_at` bump reads the same
+	// fingerprints the delegate actually spent tokens on.
+	defer func() { r.recordOrgSpend(ctx, msg, usage) }()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
@@ -2033,10 +2043,6 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 	return out, nil
 }
 
-// modelOverridesFromMsg folds the wire pins into the executor's override
-// set — the runner-side twin of runview's launch-entry fold, so a cloud
-// run resolves per-node models exactly like a local launch with the same
-// flags.
 // runFallbackFromMsg folds the wire chain into the IR form the executor
 // applies. Names are stamped here (not on the wire) so every consumer
 // reports the stages under the recognisable launch-route label.
@@ -2056,18 +2062,14 @@ func runFallbackFromMsg(entries queue.RunFallback) []ir.Fallback {
 	return out
 }
 
+// modelOverridesFromMsg adapts the wire pins onto model.OverridesFrom —
+// the one fold runview's launch entries and the publisher's launch/resume
+// entries also go through, so a cloud run resolves per-node models
+// exactly like a local launch with the same flags.
 func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	return o
+	return model.OverridesFrom(out)
 }

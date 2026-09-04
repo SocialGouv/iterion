@@ -46,13 +46,14 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
 | `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:50-63](../pkg/secrets/byok.go#L50)) |
 | `name` | human label |
-| `last4` / `fingerprint` | shown in UI; the key itself is never returned |
+| `last4` / `fingerprint` | shown in UI; the key itself is never returned. `fingerprint` is `FingerprintSHA256(plaintext)` — the audit identity the run document, the GRANTED log line and the metering bump all key on; indexed (sparse) by `EnsureSchema` |
 | `sealed_secret` | the ciphertext (`SealAPIKey(sealer, keyID, plaintext)`); JSON-hidden (`json:"-"`) |
 | `is_default` | the default for its `(team, user, provider)` tuple — `ClearDefault` keeps it unique |
-| `last_used_at` | best-effort observability (`MarkUsed`, fired detached off the launch path) |
+| `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`, no tenant filter — a lent or platform key moves on its own row). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends |
 | `expires_at` | optional |
 
-- Interface: `ApiKeyStore` (Create/Get/Update/Delete/ListByTeam/ListByUser/MarkUsed/ClearDefault) — [byok.go:112](../pkg/secrets/byok.go#L112).
+- Interface: `ApiKeyStore` (Create/Get/GetOwned/Update/Delete/ListByTeam/ListByUser/MarkUsed/MarkFingerprintUsed/ClearDefault) — [pkg/secrets/byok.go](../pkg/secrets/byok.go). `GetOwned` is the credential pool's cross-tenant read, bounded by ownership; `MarkFingerprintUsed` the runner's metering bump.
+- Ingestion gate: the create and rotate routes refuse (`400`) a value whose shape could not authenticate — [`secrets.ValidateAPIKeyShape`](../pkg/secrets/credential_shape.go): a bearer token with any white-space, control or invisible character for the bearer providers; anything but a JSON object for `bedrock` / `vertex`, whose credential is a document. See the ingestion-gate section of [cloud-llm-credentials.md](cloud-llm-credentials.md).
 - Backings: `MongoApiKeyStore` (prod) + `MemoryApiKeyStore` (tests).
 - Wired in the server at [cmd/iterion/server.go:193](../cmd/iterion/server.go#L193) (`NewMongoApiKeyStore(st.DB())` + `EnsureSchema`), handed to both the HTTP server (`ApiKeys:` config) and the cloud publisher.
 

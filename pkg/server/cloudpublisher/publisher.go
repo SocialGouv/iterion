@@ -26,6 +26,7 @@ import (
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -342,7 +343,7 @@ func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID strin
 // tenant has none — seals the resulting bundle, and persists it under a
 // fresh secrets ref. An empty ref means no credentials are available; the
 // runner then falls back to env.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string) (credResolution, error) {
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry) (credResolution, error) {
 	if p.runSecrets == nil || p.sealer == nil {
 		return credResolution{}, nil
 	}
@@ -575,7 +576,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    credentials" is the condition the pool exists for.
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
-		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf); grant != nil {
+		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks); grant != nil {
 			// The lent credential goes in the slot its KIND belongs to, so
 			// the runner cannot tell a donation from the tenant's own.
 			switch grant.Source {
@@ -587,7 +588,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// parked by the readings of the account it replaced.
 				setOAuthFingerprint(&bundle, grant.Ref, grant.Fingerprint)
 			case credpool.SourceAPIKey:
-				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
+				prov := secrets.Provider(grant.Ref)
+				bundle.APIKeys[prov] = string(grant.Payload)
+				// The lent key's own audit identity — the same hash the
+				// BYOK record carries and the runner derives, so the
+				// GRANTED line, the run-document stamp and the metering-time
+				// last_used_at bump all name the donor's key, not an
+				// unstamped slot.
+				apiKeyFPs[prov] = secrets.FingerprintSHA256(string(grant.Payload))
 			}
 			res.grant = grant
 		}
@@ -680,9 +688,34 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	}
 	sort.Strings(res.fingerprints)
 
-	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
+	// The moment "no LLM credential" becomes definitive: every tier
+	// abstained, and the runner will either spend its pod's ambient env or
+	// fail at the first LLM call. ONE Warn here, naming the tiers consulted
+	// — the per-tier lines above say which said no and why. A workflow that
+	// cannot call a model (tool-only, a nil workflow is unknown) spends
+	// nothing and gets no Warn.
+	//
+	// Generic secrets do not fund an LLM call: a webhook-launched review
+	// resolves a forge or tracker token into this same bundle, which is the
+	// most common cloud shape, so gating the Warn on the whole bundle would
+	// silence it exactly where it matters.
+	noLLMCred := len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0
+	if noLLMCred && (wf == nil || wf.UsesLLM()) {
+		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
+			runID, tenantID)
+	}
+	if noLLMCred && len(bundle.GenericSecrets) == 0 {
 		return res, nil
 	}
+
+	// #659 pt 1: log the granted credential set once per run, symmetric
+	// with the per-tier SKIPPED lines above. This is what lets an
+	// operator answer "which credential funded that run?" from the
+	// server logs, instead of grepping /proc/<pid>/environ inside a pod
+	// (measured, 2026-09-03). Only fingerprints (never plaintext) and
+	// tier tags — bundle.PlatformSourced already tracks the platform
+	// vs tenant/tier split.
+	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
 
 	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
 	if err != nil {
@@ -1130,29 +1163,92 @@ func providerOfWant(w credpool.Credential) string {
 	return ""
 }
 
-// wantsFor narrows the pool request to donations a run can actually spend.
+// buildModelOverrides folds launch entries into the executor's overrides.
+// A tiny type-adapter over model.OverridesFrom — the single source of
+// truth now lives in pkg/backend/model, next to ModelOverrides itself,
+// so the runner's own fold consumes the same helper.
+func buildModelOverrides(entries []runview.ModelOverrideEntry) model.ModelOverrides {
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+	}
+	return model.OverridesFrom(out)
+}
+
+// buildModelOverridesFromRun is the resume-path twin (persisted form).
+func buildModelOverridesFromRun(entries []store.RunModelOverride) model.ModelOverrides {
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+	}
+	return model.OverridesFrom(out)
+}
+
+// runFallbackEntries adapts the launch's fallback chain onto
+// model.FallbackEntry, so the wants derivation sees the operator's
+// run-level `--fallback` alongside per-node fallbacks.
+func runFallbackEntries(entries []runview.FallbackEntry) []model.FallbackEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]model.FallbackEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.FallbackEntry{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+	}
+	return out
+}
+
+// runFallbackEntriesFromRun is the resume-path twin.
+func runFallbackEntriesFromRun(entries []store.RunFallbackEntry) []model.FallbackEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]model.FallbackEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.FallbackEntry{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+	}
+	return out
+}
+
+// knownPoolProviders is the provider vocabulary the wants derivation
+// resolves against — derived from allKnownProviders so the two cannot
+// drift. A hint outside it names a pin the pool cannot serve by name.
+var knownPoolProviders = func() map[string]bool {
+	m := make(map[string]bool, len(allKnownProviders))
+	for _, p := range allKnownProviders {
+		m[strings.ToLower(string(p))] = true
+	}
+	return m
+}()
+
+// wantsFor narrows the pool request to donations a run can actually spend,
+// and returns the resolution it narrowed on for the log lines.
 //
 // A bot that pins `model: "anthropic/…"` has no use for a lent z.ai key:
 // granting one would consume a unit of the donor's daily runs and hold a
 // concurrency slot for a run that then fails at the first LLM call, and
-// every retry would pick the same wrong donation. A run that pins nothing
-// takes the full order — claw substitutes the first available provider, so
-// any donation serves it.
-func wantsFor(wf *ir.Workflow) []credpool.Credential {
-	pinned := map[string]bool{}
-	if wf != nil {
-		for _, n := range wf.Nodes {
-			f, ok := n.(interface{ GetLLMFields() *ir.LLMFields })
-			if !ok {
-				continue
-			}
-			if prov, _, cut := strings.Cut(f.GetLLMFields().Model, "/"); cut && prov != "" {
-				pinned[prov] = true
-			}
-		}
+// every retry would pick the same wrong donation. The narrowing is exact
+// per provider because the delegates are: a `zai` hint spends a z.ai key
+// and nothing else (no fall-through to the OAuth dir), `anthropic` spends
+// the Anthropic key or the claude_code forfait.
+//
+// And it FAILS OPEN. A run that pins nothing takes the FULL order — claw
+// substitutes the first available provider, so any donation serves it —
+// and so does any run with ONE route the walk cannot resolve (no pin, an
+// explicit "auto", a ${VAR} empty here, a name nobody knows, a
+// model-answering node with no LLMFields): that route takes whatever the
+// process holds, so narrowing on its pinned peers would drop the very
+// donation it needs. A run whose cross-family reviewer pins openai but
+// whose implementer pins nothing keeps the claude_code forfait in its
+// wants, and a typo in a provider hint costs a Warn, never the pool tier.
+func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) ([]credpool.Credential, model.ProviderResolution) {
+	res := model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders)
+	if !res.NarrowSafe || len(res.Providers) == 0 {
+		return poolWantOrder, res
 	}
-	if len(pinned) == 0 {
-		return poolWantOrder
+	pinned := make(map[string]bool, len(res.Providers))
+	for _, p := range res.Providers {
+		pinned[p] = true
 	}
 	out := make([]credpool.Credential, 0, len(poolWantOrder))
 	for _, w := range poolWantOrder {
@@ -1160,21 +1256,51 @@ func wantsFor(wf *ir.Workflow) []credpool.Credential {
 			out = append(out, w)
 		}
 	}
-	return out
+	return out, res
 }
 
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
 // pool is wired, none serves this requester, or every donor is currently
 // unavailable — all ordinary outcomes that must let the launch proceed
-// exactly as it would have without a pool.
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow) *credpool.Grant {
+// exactly as it would have without a pool. Every abstention is logged Warn
+// at the moment it becomes final: the run is about to spend someone else's
+// credential (platform tier) or fail at the LLM call, both worth a line an
+// operator can grep instead of half a day of investigation on a path that
+// decides who pays (#654).
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) *credpool.Grant {
 	if p.credPool == nil {
+		// No pool at all — a static configuration fact. Debug, not Warn:
+		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
+		// platform-funded deployment with no pool would emit one per
+		// credential-less launch, forever. The definitive "no credential"
+		// Warn at the end of resolveAndSealCredentials is the signal.
+		p.logger.Debug("cloudpublisher: credential pool NOT CONSULTED for run %s — no pool broker wired (reason=%s)",
+			runID, credpool.ReasonPoolDisabled)
 		return nil
 	}
-	wants := wantsFor(wf)
+	// One walk per launch: the wants, the diagnostics and the consulted
+	// line all read the same resolution.
+	wants, res := wantsFor(wf, overrides, runFallbacks)
+	if len(res.Unknown) > 0 {
+		// A pin nobody knows never narrows the request to nothing: the
+		// walk widened to the full order instead. Name the pin — a typo
+		// in `provider:` is worth one line, not a silently skipped tier.
+		p.logger.Warn("cloudpublisher: credential pool asked for the FULL order for run %s — provider hint(s) match no known provider: %s (%s)",
+			runID, strings.Join(res.Unknown, ","), providersSummary(res.Providers))
+	}
 	if len(wants) == 0 {
+		// Every route resolved to a KNOWN provider the pool never lends.
+		// The want order covers every known provider today, so this is
+		// the guard for a narrower order tomorrow, not a live path.
+		p.logger.Warn("cloudpublisher: credential pool NOT CONSULTED for run %s — bot pins provider(s) no donation matches (%s)",
+			runID, providersSummary(res.Providers))
 		return nil
 	}
+	// Trace the derived wants once per run — the pointer the incident
+	// this fix serves (#668) asked for so an operator can see what the
+	// resolver is asking on their behalf, not only what it got back.
+	p.logger.Info("cloudpublisher: credential pool consulted for run %s — wants=%s (%s narrow_safe=%v)",
+		runID, wantsSummary(wants), providersSummary(res.Providers), res.NarrowSafe)
 	grant, err := p.credPool.Acquire(ctx, credpool.Request{
 		RunID:    runID,
 		OrgID:    orgID,
@@ -1184,17 +1310,133 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		Wants:    wants,
 	})
 	if err != nil {
-		if !errors.Is(err, credpool.ErrNoDonor) {
-			// A store failure must not fail the launch: the pool is a
-			// best-effort extra tier, and a run with no credential still
-			// surfaces a legible error at the LLM call site.
-			p.logger.Warn("cloudpublisher: credential pool lookup for run %s: %v", runID, err)
+		// A typed abstention names the reason: distinguishing "the audience
+		// refused me" from "every donor was cooling" is exactly the class
+		// of ambiguity that turned a half-day of investigation into "the
+		// pool answered nothing".
+		var nd *credpool.NoDonorError
+		if errors.As(err, &nd) {
+			if nd.Reason == credpool.ReasonNoEnabledPool {
+				// Static configuration, like the nil broker above.
+				p.logger.Debug("cloudpublisher: credential pool NOT CONSULTED for run %s — no enabled pool (reason=%s)", runID, nd.Reason)
+				return nil
+			}
+			// A pool EXISTS and refused: which pools opened, how many
+			// pledges of a wanted kind were walked, and what state held
+			// each one out (paused / unhealthy / out_of_hours /
+			// bot_filtered / cooling / exhausted / serving).
+			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_enabled=%d pools_admitted=%d pledges_considered=%d skips=%s wants=%s",
+				runID, nd.Reason, nd.PoolsEnabled, nd.PoolsAdmitted, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(wants))
+			return nil
 		}
+		if errors.Is(err, credpool.ErrNoDonor) {
+			// A wrapper we did not recognise still counts as an abstention;
+			// keep it visible instead of falling silently to the next tier.
+			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
+			return nil
+		}
+		// A store failure must not fail the launch: the pool is a
+		// best-effort extra tier, and a run with no credential still
+		// surfaces a legible error at the LLM call site.
+		p.logger.Warn("cloudpublisher: credential pool lookup for run %s: %v", runID, err)
 		return nil
 	}
 	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s %s allowance=$%.2f)",
 		runID, grant.DonorID, grant.Credential, grant.RemainingUSD)
 	return grant
+}
+
+// wantsSummary renders a wants list for the abstention log — the field
+// that answers "was this decision even made against the right set?".
+func wantsSummary(wants []credpool.Credential) string {
+	if len(wants) == 0 {
+		return "<none>"
+	}
+	parts := make([]string, 0, len(wants))
+	for _, w := range wants {
+		parts = append(parts, string(w.Source)+":"+w.Ref)
+	}
+	return strings.Join(parts, ",")
+}
+
+// providersSummary renders a set of provider names for a log line.
+// "<none>" when empty — the log stays readable when a walk found nothing.
+func providersSummary(provs []string) string {
+	if len(provs) == 0 {
+		return "pinned=<none>"
+	}
+	return "pinned=" + strings.Join(provs, ",")
+}
+
+// pledgeSkipSummary renders the per-pledge decline states an abstention
+// carries — `<pledge-id>:<status>` per donor, "<none>" when the walk
+// considered nobody.
+func pledgeSkipSummary(skips []credpool.PledgeSkip) string {
+	if len(skips) == 0 {
+		return "<none>"
+	}
+	parts := make([]string, 0, len(skips))
+	for _, sk := range skips {
+		parts = append(parts, sk.PledgeID+":"+string(sk.Status))
+	}
+	return strings.Join(parts, ",")
+}
+
+// logGrantedCredentials emits ONE INFO line per run listing which
+// credential funded which slot at the end of resolveAndSealCredentials.
+// Symmetric with the per-tier SKIPPED log lines the file already emits
+// (a grant used to be silent — #659 pt 1), and the answer an operator
+// needed to `grep run=<id>` for instead of `/proc/<pid>/environ` inside
+// a pod (measured, 2026-09-03). The line carries the credential's
+// TIER (byok / oauth-forfait / pool / platform), the slot name
+// (provider or oauth kind), and the FINGERPRINT — never plaintext.
+func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, grant *credpool.Grant) {
+	if logger == nil {
+		return
+	}
+	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
+	// API keys — the PlatformSourced map tells apart platform-tier
+	// grants (deployment-wide fallback keys) from tenant BYOK.
+	for _, prov := range allKnownProviders {
+		if _, ok := bundle.APIKeys[prov]; !ok {
+			continue
+		}
+		tier := "byok"
+		switch {
+		case grant != nil && grant.Source == credpool.SourceAPIKey && grant.Ref == string(prov):
+			tier = "pool"
+		case bundle.PlatformSourced[string(prov)]:
+			tier = "platform"
+		}
+		fp := apiKeyFPs[prov]
+		if fp == "" {
+			fp = "<unstamped>"
+		}
+		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
+	}
+	// OAuth-forfait — grant != nil means a donor's subscription came in
+	// via the pool tier; the platform sentinel marks the deployment's
+	// own fallback forfait; otherwise it is a user-or-org connect.
+	for _, kind := range []string{string(secrets.OAuthKindClaudeCode), string(secrets.OAuthKindCodex)} {
+		if _, ok := bundle.OAuthCredentials[kind]; !ok {
+			continue
+		}
+		tier := "oauth-forfait"
+		if grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth {
+			tier = "pool"
+		} else if bundle.PlatformSourced[kind] {
+			tier = "platform"
+		}
+		fp := bundle.OAuthFingerprints[kind]
+		if fp == "" {
+			fp = "<unstamped>"
+		}
+		parts = append(parts, fmt.Sprintf("%s(oauth:%s fp=%s)", tier, kind, fp))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	logger.Info("cloudpublisher: credentials GRANTED for run=%s — %s", runID, strings.Join(parts, ", "))
 }
 
 // SubmitLaunch persists the run as queued in Mongo, then publishes
@@ -1290,7 +1532,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     NO run record behind (never a stray queued/running run for a launch
 	//     that could not resolve its mandatory credentials).
 	orgID := p.orgIDForTeam(ctx, tenantID)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -1607,7 +1849,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback))
 	// Armed before the error check — see SubmitLaunch.
 	if creds.grant != nil {
 		defer func() {

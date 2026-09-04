@@ -18,7 +18,101 @@ import (
 // whatever it would have done with no pool at all (env credentials, or a
 // visible "no credentials" at the LLM call site). Callers should log it and
 // carry on, never abort the launch on it.
+//
+// Concrete abstentions arrive as *NoDonorError, which unwraps to this
+// sentinel so a caller using errors.Is(err, ErrNoDonor) keeps working;
+// use errors.As to extract the reason for a Warn log.
 var ErrNoDonor = errors.New("credpool: no eligible donor")
+
+// NoDonorReason names WHY the pool abstained on this request. The four
+// values match the four return sites in Acquire/resolvePools, so a caller
+// can distinguish "the deployment has no pool at all" from "every donor
+// declined this request" without parsing prose.
+type NoDonorReason string
+
+const (
+	// ReasonPoolDisabled: nil *Broker — the deployment never wired a pool,
+	// or a store required to serve one is missing.
+	ReasonPoolDisabled NoDonorReason = "pool_disabled"
+	// ReasonNoEnabledPool: pools.ListEnabled returned nothing — an operator
+	// created no pool, or every pool is off (kill switch).
+	ReasonNoEnabledPool NoDonorReason = "no_enabled_pool"
+	// ReasonAudienceRejected: some pool(s) exist, but none opened its
+	// audience to this requester (wrong org / no reciprocity / not on the
+	// team allowlist).
+	ReasonAudienceRejected NoDonorReason = "audience_rejected"
+	// ReasonNoEligiblePledge: pools admitted the request, candidate pledges
+	// were walked, but every one declined (parked, out of its sharing
+	// window, ceiling reached, bot allow-list, concurrency, ledger refusal,
+	// donor is the requester, credential vanished).
+	ReasonNoEligiblePledge NoDonorReason = "no_eligible_pledge"
+)
+
+// PledgeSkip records why one candidate pledge did not serve the
+// request. The per-pledge Status the ticket asks for — pause, unhealthy,
+// out_of_hours, bot_filtered, cooling, no_credential — collapsed to
+// `no_eligible_pledge` before round 1 G5.
+type PledgeSkip struct {
+	PledgeID string
+	Status   Status
+}
+
+// NoDonorError is a typed ErrNoDonor: it carries the reason for the
+// abstention plus the exact counts the walk saw and the per-pledge
+// skips, so an operator investigating a run that landed on the platform
+// tier can tell whether the pool was mute because no pool exists,
+// because the audience refused them, or because every donor was cooling
+// down — and specifically which donor was in which state.
+//
+// PoolsEnabled counts every pool `pools.ListEnabled` returned;
+// PoolsAdmitted counts the subset whose audience opened to this
+// request. On `audience_rejected` PoolsAdmitted is 0 by construction;
+// on `no_eligible_pledge` PoolsAdmitted > 0 and PoolsEnabled ≥
+// PoolsAdmitted. PledgesConsidered counts pledges the walk actually
+// looked at (source+ref matches a wanted credential) — a pool full of
+// kinds the run cannot spend no longer inflates the count (round 1 G6).
+//
+// Unwrap returns ErrNoDonor so callers using errors.Is keep working;
+// use errors.As(&NoDonorError{}) to read Reason / Skips.
+type NoDonorError struct {
+	Reason NoDonorReason
+	// PoolsEnabled is every enabled pool the walk saw.
+	PoolsEnabled int
+	// PoolsAdmitted is the subset whose audience admitted this request.
+	PoolsAdmitted int
+	// PledgesConsidered counts pledges of a wanted (Source, Ref) —
+	// pledges of a kind the run cannot spend are never counted.
+	PledgesConsidered int
+	// Skips names every pledge the walk considered and the reason it
+	// declined. Empty at reasons other than `no_eligible_pledge`.
+	Skips []PledgeSkip
+}
+
+// Error renders the sentinel prose followed by the reason and counts.
+// Kept short — the caller usually logs it inside a longer sentence.
+func (e *NoDonorError) Error() string {
+	if e == nil {
+		return ErrNoDonor.Error()
+	}
+	return fmt.Sprintf("%s (reason=%s pools_enabled=%d pools_admitted=%d pledges_considered=%d skips=%d)",
+		ErrNoDonor.Error(), e.Reason, e.PoolsEnabled, e.PoolsAdmitted, e.PledgesConsidered, len(e.Skips))
+}
+
+// Unwrap keeps `errors.Is(err, ErrNoDonor)` true for every abstention.
+func (e *NoDonorError) Unwrap() error { return ErrNoDonor }
+
+// noDonor builds a typed abstention. Small helper so a new site doesn't
+// forget to wrap the sentinel (which would leave `errors.As` failing
+// silently at the caller — the same class of defect #654 fixes).
+func noDonor(reason NoDonorReason, poolsEnabled, poolsAdmitted, pledgesConsidered int, skips []PledgeSkip) error {
+	return &NoDonorError{
+		Reason:            reason,
+		PoolsEnabled:      poolsEnabled,
+		PoolsAdmitted:     poolsAdmitted,
+		PledgesConsidered: pledgesConsidered,
+		Skips:             skips,
+	}
+}
 
 // Broker selects a donor for a run and closes the loop when it ends.
 //
@@ -135,7 +229,7 @@ type Grant struct {
 // currently eligible.
 func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	if b == nil {
-		return nil, ErrNoDonor
+		return nil, noDonor(ReasonPoolDisabled, 0, 0, 0, nil)
 	}
 	if req.RunID == "" {
 		return nil, fmt.Errorf("credpool: acquire without a run id")
@@ -160,7 +254,7 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// so the retry is admitted as new.
 	b.supersedeOpenLeases(ctx, req.RunID, now)
 
-	allowed, err := b.resolvePools(ctx, req)
+	poolsEnabled, allowed, err := b.resolvePools(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -168,61 +262,137 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// Want-major: the preference between credentials is the caller's
 	// (subscriptions before metered keys), and outranks which pool holds
 	// them. Within a want, the requester's own org pool was sorted first.
+	//
+	// A pledge is counted only when it matches one of the requested
+	// wants AND could ever serve this requester — a pool full of kinds
+	// the run cannot spend never inflates the number an operator reads
+	// (round 1 G6), and neither does the requester's own pledge, which
+	// the walk drops without a skip (a donor never serves their own
+	// run). Counting it left the line reading "one donor considered,
+	// none declined", which is the silence #654 exists to end. Skips
+	// accumulate every
+	// pledge that DID match and yet declined, with its per-pledge
+	// status (round 1 G5): "no_eligible_pledge" now discloses which
+	// donor was paused, unhealthy, out-of-hours, bot-filtered, cooling.
+	pledgesConsidered := 0
+	seenPledge := map[string]bool{}
+	for _, pc := range allowed {
+		for _, p := range pc.candidates {
+			if !seenPledge[p.ID] && p.UserID != req.UserID && wantMatchesPledge(req.Wants, p) {
+				seenPledge[p.ID] = true
+				pledgesConsidered++
+			}
+		}
+	}
+	var allSkips []PledgeSkip
+	seenSkip := map[string]bool{}
 	for _, want := range req.Wants {
 		for _, pc := range allowed {
-			grant, err := b.acquireKind(ctx, pc.pool, pc.candidates, req, want, now)
+			grant, skips, err := b.acquireKind(ctx, pc.pool, pc.candidates, req, want, now)
 			if err != nil {
 				return nil, err
+			}
+			for _, s := range skips {
+				if !seenSkip[s.PledgeID] {
+					seenSkip[s.PledgeID] = true
+					allSkips = append(allSkips, s)
+				}
 			}
 			if grant != nil {
 				return grant, nil
 			}
 		}
 	}
-	return nil, ErrNoDonor
+	return nil, noDonor(ReasonNoEligiblePledge, poolsEnabled, len(allowed), pledgesConsidered, allSkips)
+}
+
+// wantMatchesPledge reports whether the pledge is of a kind any of the
+// requested wants would take — the eligibility filter for the "how many
+// pledges did the walk actually consider?" count.
+func wantMatchesPledge(wants []Credential, p Pledge) bool {
+	for _, w := range wants {
+		if p.Source == w.Source && p.Ref == w.Ref {
+			return true
+		}
+	}
+	return false
 }
 
 // acquireKind tries one credential kind against an already-resolved
-// candidate list. Returns (nil, nil) when no donor of that kind can serve —
-// the caller falls through to the next kind.
-func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge, req Request, want Credential, now time.Time) (*Grant, error) {
+// candidate list. Returns (nil, skips, nil) when no donor of that kind
+// can serve — the caller falls through to the next kind. `skips` names
+// every candidate the walk did NOT admit and the per-pledge status the
+// caller can carry on NoDonorError.
+func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge, req Request, want Credential, now time.Time) (*Grant, []PledgeSkip, error) {
 	eligible := make([]Pledge, 0, len(candidates))
+	var skips []PledgeSkip
 	for _, p := range candidates {
 		if p.Source != want.Source || p.Ref != want.Ref {
 			continue
 		}
 		// A donor never serves their own run: they would be lending to
 		// themselves, consuming pool bookkeeping for nothing and skewing
-		// the fairness ranking against the other donors.
+		// the fairness ranking against the other donors. Not a "skip"
+		// worth reporting: no operator investigation ever asks that.
 		if p.UserID == req.UserID {
 			continue
 		}
-		if ok, _ := p.AvailableForLaunch(now, req.BotID); ok {
+		if ok, status := p.AvailableForLaunch(now, req.BotID); ok {
 			eligible = append(eligible, p)
+		} else {
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
 		}
 	}
 	if len(eligible) == 0 {
-		return nil, nil
+		return nil, skips, nil
 	}
 
 	ranked, err := b.rank(ctx, eligible, now)
 	if err != nil {
-		return nil, err
+		return nil, skips, err
 	}
 
 	// Walk the ranking: a donor whose ledger refuses (raced to their cap,
-	// concurrency full) simply yields to the next.
+	// concurrency full) or whose credential is gone simply yields to the
+	// next — and lands on the skips list under the status tryPledge
+	// decided, so the operator can tell "exhausted" from "serving" from
+	// "unhealthy" from "paused".
 	for _, p := range ranked {
-		grant, err := b.tryPledge(ctx, pool, p, req, now)
+		grant, status, err := b.tryPledge(ctx, pool, p, req, now)
 		if err != nil {
 			b.logger.Warn("credpool: pledge %s unusable for run %s: %v", p.ID, req.RunID, err)
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusUnhealthy})
 			continue
 		}
 		if grant != nil {
-			return grant, nil
+			return grant, skips, nil
 		}
+		skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
 	}
-	return nil, nil
+	return nil, skips, nil
+}
+
+// skipStatus names why a ledger decline held a pledge out, for the skips
+// an abstention reports. A full slot set is "serving" by definition. A
+// SPEND ceiling met while the donor has runs in flight also reads
+// "serving": part of what tripped it is allowance PROMISED to those runs,
+// which clears as they end — the same distinction the pledge view draws
+// for the donor, approximated here without the second ledger read that
+// view pays (an operator reading a log line, not a contributor reading
+// their own page). With nothing in flight the ceiling was really spent.
+//
+// A runs-per-day ceiling is NOT that shape: the count is consumed at
+// admission and never given back, so it reads "exhausted" whether or not
+// something is in flight — the same cause must not name itself two ways
+// depending on when the operator looked.
+func (d DenyReason) skipStatus(live LiveCommitment) Status {
+	if d == DenyRunsPerDay {
+		return StatusExhausted
+	}
+	if d == DenyConcurrency || live.Runs > 0 {
+		return StatusServing
+	}
+	return StatusExhausted
 }
 
 // poolCandidates is one pool this requester may draw on, with its pledges.
@@ -246,13 +416,14 @@ type poolCandidates struct {
 // owning org is unreachable configuration. A deployment runs a handful of
 // pools, so this is a small list, and the requester's own org pool wins
 // when several would serve.
-func (b *Broker) resolvePools(ctx context.Context, req Request) ([]poolCandidates, error) {
+func (b *Broker) resolvePools(ctx context.Context, req Request) (poolsEnabled int, allowed []poolCandidates, err error) {
 	pools, err := b.pools.ListEnabled(ctx)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	if len(pools) == 0 {
-		return nil, ErrNoDonor
+	poolsEnabled = len(pools)
+	if poolsEnabled == 0 {
+		return 0, nil, noDonor(ReasonNoEnabledPool, 0, 0, 0, nil)
 	}
 	// Own-org pool first: a team drawing on its own pool must not be
 	// diverted to a community one that happens to sort earlier.
@@ -264,11 +435,11 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) ([]poolCandidate
 		return pools[i].ID < pools[j].ID
 	})
 	now := b.now()
-	allowed := make([]poolCandidates, 0, len(pools))
+	allowed = make([]poolCandidates, 0, len(pools))
 	for _, pool := range pools {
-		candidates, err := b.pledges.ListByPool(ctx, pool.ID)
-		if err != nil {
-			return nil, err
+		candidates, lerr := b.pledges.ListByPool(ctx, pool.ID)
+		if lerr != nil {
+			return 0, nil, lerr
 		}
 		hasActivePledge := false
 		if pool.Audience.NeedsPledgeLookup() && req.UserID != "" {
@@ -289,9 +460,9 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) ([]poolCandidate
 		}
 	}
 	if len(allowed) == 0 {
-		return nil, ErrNoDonor
+		return poolsEnabled, nil, noDonor(ReasonAudienceRejected, poolsEnabled, 0, 0, nil)
 	}
-	return allowed, nil
+	return poolsEnabled, allowed, nil
 }
 
 // rank orders eligible pledges by fairness: least consumed today first
@@ -344,7 +515,10 @@ func (b *Broker) rank(ctx context.Context, eligible []Pledge, now time.Time) ([]
 // tryPledge attempts one donor: concurrency + ledger admission, then
 // unsealing the credential and recording the lease. Returns (nil, nil) when
 // the donor declined for a quota reason — the caller moves on.
-func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request, now time.Time) (*Grant, error) {
+// tryPledge admits one eligible pledge or explains why not: a nil grant
+// with a Status names the decline (exhausted, serving, unhealthy) for the
+// abstention's skips; an error is a store failure the caller reports.
+func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request, now time.Time) (*Grant, Status, error) {
 	// What this donor already has at stake: the runs they are serving and
 	// the allowance promised to them. Both bound this admission — without
 	// the promised half, ten runs launched together would each be handed
@@ -355,7 +529,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	// itself.
 	liveRuns, committed, err := b.leases.LiveCommitment(ctx, p.ID, req.RunID, now)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	live := LiveCommitment{Runs: liveRuns, CommittedUSD: committed}
 
@@ -367,7 +541,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	// against it forever would let a crash-looping run draw unmetered.
 	readmitting, err := b.leases.HasServedAttempt(ctx, req.RunID, p.ID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var remaining float64
@@ -378,11 +552,11 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		remaining, deny, err = b.ledger.Reserve(ctx, p.ID, now, p.Limits, live)
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if deny != DenyNone {
 		b.logger.Debug("credpool: pledge %s declined run %s (%s)", p.ID, req.RunID, deny)
-		return nil, nil
+		return nil, deny.skipStatus(live), nil
 	}
 
 	// From here on, any failure must give back whatever was consumed.
@@ -396,14 +570,14 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	payload, fingerprint, gone, err := b.openCredential(ctx, p, now)
 	if err != nil {
 		release()
-		return nil, err
+		return nil, "", err
 	}
 	if gone != "" {
 		release()
 		// The donor pledged a credential that is no longer usable. Park the
 		// pledge rather than re-discovering this on every launch.
 		b.markUnhealthy(ctx, p.ID, HealthTokenExpired, gone)
-		return nil, nil
+		return nil, StatusUnhealthy, nil
 	}
 
 	lease := Lease{
@@ -423,7 +597,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	}
 	if err := b.leases.Put(ctx, lease); err != nil {
 		release()
-		return nil, fmt.Errorf("credpool: record lease: %w", err)
+		return nil, "", fmt.Errorf("credpool: record lease: %w", err)
 	}
 
 	// Best-effort fairness bookkeeping; a miss only costs tie-break
@@ -441,7 +615,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		Payload:      payload,
 		Fingerprint:  fingerprint,
 		RemainingUSD: remaining,
-	}, nil
+	}, "", nil
 }
 
 // meteredNote flags, in the launch log, the case where the allowance is

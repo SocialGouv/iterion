@@ -217,6 +217,31 @@ cap is blocking, so the common case pays nothing). The mid-run guard stays
 armed in both cases, so a workflow that turns out to spend anyway is still
 stopped at the call.
 
+**And only when it could spend the wire the cap meters.** The readings come
+from the claude_code delegate's session telemetry and nowhere else, and the
+pre-flight key is built from the run's Anthropic-wire credentials (or the
+platform's). A run whose every route is pinned off that wire — both LLM nodes
+on `claw` + `openai/…`, a `codex` bot — cannot spend the capped subscription,
+and parking it for the anthropic weekly reset strands it for nothing: a fully
+pinned two-node rite froze for five days that way while its single-node
+sibling on the identical pin ran (#668). The cloud runner's pre-flight asks
+[`model.AnthropicWireReachable`](../pkg/backend/model/wire_reach.go) under the
+launch's own overrides, and lets the run through when the answer is no. Every
+uncertainty answers "reachable" and keeps the guard armed: an empty, `auto` or
+`claude_code` backend, `claw`/`pi` with a provider it cannot resolve, any
+`anthropic`/`zai` hint on any backend, a model-answering node with no
+`LLMFields`.
+
+**Primary routes only.** A `fallbacks:` route or a run-level `--fallback`
+stage onto the wire does not arm the pre-flight: the primary can carry the
+whole run without ever touching the wire, and the rescue route fires only on
+a failure the mid-run guard and the delegate's own usage-window
+classification already refuse at dispatch. Refusing such a run in advance
+would park work that could not possibly spend the capped subscription — the
+one thing the pre-flight promises not to do. The credential the rescue route
+needs is still sealed into the run: the wants derivation widens on the chain,
+it is only this guard that ignores it.
+
 ## Cloud
 
 Every pod sees only its own session, so readings are shared through the

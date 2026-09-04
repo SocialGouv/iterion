@@ -106,6 +106,19 @@ func (p Provider) Valid() bool {
 	return false
 }
 
+// CredentialIsJSON reports whether this provider's BYOK value is a JSON
+// credential document rather than a bearer token: Bedrock takes an
+// AWS-style credential object, Vertex a service-account file. The shape
+// gate at ingestion reads this so the two are not refused as "a terminal
+// transcript" for containing newlines and spaces.
+func (p Provider) CredentialIsJSON() bool {
+	switch p {
+	case ProviderBedrock, ProviderVertex:
+		return true
+	}
+	return false
+}
+
 // ApiKey is a BYOK record: a single API key (or AWS-style credential
 // blob, JSON-encoded inside SealedSecret) attached to a team and
 // optionally scoped to a single user. The plaintext secret is never
@@ -172,6 +185,16 @@ type ApiKeyStore interface {
 	ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error)
 	// MarkUsed updates last_used_at without altering anything else.
 	MarkUsed(ctx context.Context, id string, at time.Time) error
+	// MarkFingerprintUsed bumps last_used_at on every key whose stable
+	// audit identity matches the given fingerprint. Called by the runner
+	// at metering time (recordOrgSpend) so an operator can tell an idle
+	// key from one that is actively serving — a distinction the previous
+	// launch-grant-only signal could not make (#659 pt 2). Match by
+	// fingerprint on purpose: the runner knows what the bundle sealed,
+	// not the row ids under it; and no tenant filter, since the run may
+	// legitimately spend a key sourced from another tier (pool grant,
+	// platform tier). A missing fingerprint is a no-op, not an error.
+	MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error
 	// ClearDefault removes the is_default flag from any other key in
 	// the same (team, user, provider) tuple. Used when a new key is
 	// created with is_default=true or an existing one is promoted.
@@ -465,6 +488,26 @@ func (m *MemoryApiKeyStore) MarkUsed(_ context.Context, id string, at time.Time)
 	return nil
 }
 
+// MarkFingerprintUsed bumps last_used_at on every key that carries this
+// fingerprint. Empty fingerprint is a no-op (nothing to look up), never an
+// error — a runner metering a key that predates fingerprint stamping just
+// leaves the observation on the floor rather than failing the report.
+func (m *MemoryApiKeyStore) MarkFingerprintUsed(_ context.Context, fingerprint string, at time.Time) error {
+	if fingerprint == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := at
+	for id, k := range m.keys {
+		if k.Fingerprint == fingerprint {
+			k.LastUsedAt = &t
+			m.keys[id] = k
+		}
+	}
+	return nil
+}
+
 func (m *MemoryApiKeyStore) ClearDefault(_ context.Context, teamID, userID string, provider Provider, exceptID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -505,6 +548,11 @@ func (s *MongoApiKeyStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "scope_user", Value: 1}, {Key: "provider", Value: 1}}, Options: options.Index().SetName("team_user_provider")},
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "provider", Value: 1}, {Key: "is_default", Value: 1}}, Options: options.Index().SetName("team_provider_default")},
+		// MarkFingerprintUsed's predicate: every attempt start and end
+		// bumps by fingerprint, with no tenant filter (a lent or platform
+		// key moves on its own row). Unindexed it was a collection scan
+		// per attempt. Sparse: rows that predate stamping carry none.
+		{Keys: bson.D{{Key: "fingerprint", Value: 1}}, Options: options.Index().SetName("fingerprint").SetSparse(true)},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("secrets: ensure api_keys indexes: %w", err)
@@ -613,6 +661,24 @@ func (s *MongoApiKeyStore) MarkUsed(ctx context.Context, id string, at time.Time
 	}
 	if _, err := s.coll.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
 		return fmt.Errorf("secrets: mark used: %w", err)
+	}
+	return nil
+}
+
+// MarkFingerprintUsed updates last_used_at on every row matching the
+// fingerprint — no tenant filter, since the runner may legitimately meter
+// a key that belongs to another tenant (pool grant, platform tier). A
+// missing fingerprint (empty string) is a no-op — the metering path calls
+// this per stamped fp on the run doc, and a run predating fingerprint
+// stamping simply carries none. UpdateMany matches every matching row: the
+// rare case where two rows share a fingerprint (an operator saved the
+// same secret twice) still gets both bumped.
+func (s *MongoApiKeyStore) MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error {
+	if fingerprint == "" {
+		return nil
+	}
+	if _, err := s.coll.UpdateMany(ctx, bson.M{"fingerprint": fingerprint}, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
+		return fmt.Errorf("secrets: mark fingerprint used: %w", err)
 	}
 	return nil
 }
