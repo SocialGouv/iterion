@@ -525,6 +525,30 @@ func TestDLQAdmin_ReplayOfAMissingRunIsRefused(t *testing.T) {
 	}
 }
 
+// A DELETED run leaves a tombstone, and LoadRun answers ErrRunDeleted
+// rather than ErrRunNotFound: nothing is alive behind the id either way,
+// so the replay must be refused the same way (409, discard) — not as a
+// transient read failure the operator is told to retry.
+func TestDLQAdmin_ReplayOfADeletedRunIsRefused(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.seedRun(t, "run-del", store.RunStatusFinished)
+	if err := w.runs.DeleteRun(context.Background(), "run-del"); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+	w.q.park(24, "run-del", "max deliver exhausted")
+
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/24/replay", w.admin)
+	if code != http.StatusConflict {
+		t.Fatalf("replay of a deleted run: status=%d want 409 body=%s", code, body)
+	}
+	if !strings.Contains(string(body), "run-del") || !strings.Contains(string(body), "discard") {
+		t.Fatalf("the refusal must name the run and point at the discard, got %s", body)
+	}
+	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
+		t.Fatalf("a refused replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
 // unreadableRunStore fails every run read — the store being down.
 type unreadableRunStore struct{ store.RunStore }
 

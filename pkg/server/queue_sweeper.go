@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -367,8 +366,11 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(r.Context()), view.RunID)
 	switch {
-	case errors.Is(err, store.ErrRunNotFound):
-		httpError(w, http.StatusConflict, "dlq replay: run %s has no run document — nothing a runner could execute; discard the message instead (DELETE /api/admin/dlq/%d)", view.RunID, seq)
+	case store.RunAbsent(err):
+		// Never existed, or deleted and tombstoned: nothing is alive behind
+		// the id either way, and a tombstone must not read as a transient
+		// failure the operator is told to retry.
+		httpError(w, http.StatusConflict, "dlq replay: run %s has no live run document (missing or deleted) — nothing a runner could execute; discard the message instead (DELETE /api/admin/dlq/%d)", view.RunID, seq)
 		return
 	case err != nil:
 		httpError(w, http.StatusBadGateway, "dlq replay: run %s status unreadable, replay refused: %v", view.RunID, err)
