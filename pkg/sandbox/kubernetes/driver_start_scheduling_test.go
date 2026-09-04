@@ -157,3 +157,17 @@ func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
 		t.Fatalf("the error must carry kubectl's stderr, got %v", err)
 	}
 }
+
+// A failure with nothing on stderr (a killed probe) must not end in a
+// dangling separator.
+func TestNodeLabelCoverageWithoutStderrKeepsTheExitError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, _, err := NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
+	if err == nil || err.Error() != "kubectl get nodes: exit status 1" {
+		t.Fatalf("want the bare exit error, got %q", err)
+	}
+}

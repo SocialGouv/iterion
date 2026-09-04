@@ -269,25 +269,63 @@ func TestRunSpreadCoverageStrictCheck(t *testing.T) {
 			t.Fatalf("expected a 2 of 3 warning, got %+v", r.Checks)
 		}
 	})
-	// In-cluster the runner's namespaced Role cannot list nodes: the check
-	// must say why it could not answer and what to run instead.
-	t.Run("list refused warns with the reason and the operator command", func(t *testing.T) {
+	// The cause is asserted only when known: in-cluster the runner's
+	// namespaced Role cannot list nodes (Forbidden), a slow cluster exhausts
+	// the probe budget, anything else stays what kubectl said — and every
+	// case hands over the operator command.
+	failingKubectl := func(t *testing.T, script string) {
+		t.Helper()
 		dir := t.TempDir()
-		script := "#!/bin/sh\necho 'Error from server (Forbidden): nodes is forbidden: User \"system:serviceaccount:ns:runner\" cannot list resource \"nodes\" in API group \"\" at the cluster scope' >&2\nexit 1\n"
 		if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-		r := &SandboxStrictReport{}
-		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+	}
+	oneWarning := func(t *testing.T, r *SandboxStrictReport) SandboxCheck {
+		t.Helper()
 		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Status != CheckWarn {
 			t.Fatalf("expected one warning, got %+v", r.Checks)
 		}
-		if !strings.Contains(r.Checks[0].Detail, "Forbidden") {
-			t.Fatalf("the warning must carry kubectl's reason, got %+v", r.Checks[0])
-		}
 		if !strings.Contains(r.Checks[0].Remediation, "kubectl get nodes -L example.com/rack") {
 			t.Fatalf("the remediation must hand over the operator command, got %+v", r.Checks[0])
+		}
+		return r.Checks[0]
+	}
+	t.Run("list forbidden names the chart's Role", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\necho 'Error from server (Forbidden): nodes is forbidden: User \"system:serviceaccount:ns:runner\" cannot list resource \"nodes\" in API group \"\" at the cluster scope' >&2\nexit 1\n")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Detail, "Forbidden") || !strings.Contains(c.Remediation, "namespace-scoped") {
+			t.Fatalf("a Forbidden must be explained by the namespaced Role, got %+v", c)
+		}
+	})
+	t.Run("list timeout names the probe budget, not RBAC", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\nsleep 5\n")
+		t.Setenv("ITERION_SANDBOX_DOCTOR_TIMEOUT", "200ms")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Remediation, "did not answer within 200ms") || strings.Contains(c.Remediation, "namespace-scoped") {
+			t.Fatalf("a timed-out probe must be named as such, got %+v", c)
+		}
+	})
+	t.Run("other list errors keep kubectl's reason and claim no cause", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\necho 'Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout' >&2\nexit 1\n")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Detail, "Unable to connect") || strings.Contains(c.Remediation, "namespace-scoped") || strings.Contains(c.Remediation, "did not answer") {
+			t.Fatalf("an unknown cause must not be asserted, got %+v", c)
+		}
+	})
+	t.Run("an empty node list does not blame RBAC", func(t *testing.T) {
+		kubectlNodesShim(t, `{"items":[]}`)
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if strings.Contains(c.Remediation, "RBAC") || !strings.Contains(c.Remediation, "right cluster") {
+			t.Fatalf("a successful empty list is a context problem, not RBAC, got %+v", c)
 		}
 	})
 }

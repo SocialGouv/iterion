@@ -68,7 +68,9 @@ func TestSchedulingFromEnvParsesQuantities(t *testing.T) {
 // A typo must fail with the variable and the value named, never be rendered
 // for the API server to reject on every pod.
 func TestSchedulingFromEnvRejectsMalformedQuantities(t *testing.T) {
-	for _, v := range []string{"2 cores", "4GB", "-1", "1,5", "Gi", "two", "2ki", "1e", ".", "1u", "1n"} {
+	// `1e400` matches the grammar and overflows float64: refused, not rendered
+	// for the API server to reject on every pod.
+	for _, v := range []string{"2 cores", "4GB", "-1", "1,5", "Gi", "two", "2ki", "1e", ".", "1u", "1n", "1e400"} {
 		_, err := schedulingFromEnv(envOf(map[string]string{RequestsMemoryEnvVar: v}))
 		if err == nil {
 			t.Errorf("%q must be refused", v)
@@ -81,12 +83,15 @@ func TestSchedulingFromEnvRejectsMalformedQuantities(t *testing.T) {
 }
 
 // A zero quantity renders a resources block that schedules exactly like no
-// resources block — the one lie the policy exists to prevent.
+// resources block — the one lie the policy exists to prevent. `1e-400` is a
+// zero too: it underflows float64, and ParseFloat reports no error for it.
 func TestSchedulingFromEnvRejectsZeroQuantities(t *testing.T) {
-	for _, v := range []string{"0", "0.0", "0Gi", "0m", "+0", "0e3", ".0"} {
-		_, err := schedulingFromEnv(envOf(map[string]string{RequestsCPUEnvVar: v}))
-		if err == nil || !strings.Contains(err.Error(), "zero") || !strings.Contains(err.Error(), RequestsCPUEnvVar) {
-			t.Errorf("%q must be refused as a zero quantity naming the variable, got %v", v, err)
+	for _, v := range []string{"0", "0.0", "0Gi", "0m", "+0", "0e3", ".0", "1e-400", "0.0e0"} {
+		for _, env := range []string{RequestsCPUEnvVar, RequestsMemoryEnvVar} {
+			_, err := schedulingFromEnv(envOf(map[string]string{env: v}))
+			if err == nil || !strings.Contains(err.Error(), "zero") || !strings.Contains(err.Error(), env) {
+				t.Errorf("%s=%q must be refused as a zero quantity naming the variable, got %v", env, v, err)
+			}
 		}
 	}
 }

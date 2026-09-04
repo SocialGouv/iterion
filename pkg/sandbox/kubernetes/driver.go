@@ -123,28 +123,23 @@ var suffixScale = map[string]float64{
 // number).
 func splitQuantity(v string) (number, suffix string) {
 	v = strings.TrimPrefix(v, "+")
+	// Scanned from the right: the number ends at its last digit or dot, and a
+	// valid exponent ends in a digit too (`1e3`, `1e+3`), so it stays inside
+	// the number; `E` and `Ei` end in a letter and are suffixes.
 	for i := len(v) - 1; i >= 0; i-- {
-		c := v[i]
-		if (c >= '0' && c <= '9') || c == '.' {
+		if c := v[i]; (c >= '0' && c <= '9') || c == '.' {
 			return v[:i+1], v[i+1:]
-		}
-		// An exponent's sign or digits are part of the number: stop at 'e'/'E'
-		// only when what precedes it is numeric and what follows it starts an
-		// exponent (`1e3`, `1e+3`) — not a suffix (`1E`, `1Ei`).
-		if (c == 'e' || c == 'E') && i > 0 && i < len(v)-1 &&
-			((v[i-1] >= '0' && v[i-1] <= '9') || v[i-1] == '.') &&
-			(v[i+1] == '+' || v[i+1] == '-' || (v[i+1] >= '0' && v[i+1] <= '9')) {
-			return v, ""
 		}
 	}
 	return "", v
 }
 
-// quantityValue converts a quantity matched by quantityRe to a float for
-// comparisons (a request against its limit). Precision is irrelevant here:
-// the API server re-parses the strings themselves. A value it cannot
-// evaluate is an error, never a silent zero: a zero would pass a limit
-// check it should fail.
+// quantityValue converts a quantity matched by quantityRe to a float for the
+// zero check and for comparisons (a request against its limit). Precision is
+// irrelevant here: the API server re-parses the strings themselves. A value
+// it cannot evaluate (an exponent out of float64 range, an unknown suffix)
+// is an error, never a silent zero; a value that evaluates to zero (`0`,
+// `0.0`, `0Gi`, an underflowing `1e-400`) is the caller's to refuse.
 func quantityValue(v string) (float64, error) {
 	number, suffix := splitQuantity(v)
 	f, err := strconv.ParseFloat(number, 64)
@@ -203,18 +198,6 @@ func (s podScheduling) String() string {
 	return strings.Join(parts, ", ")
 }
 
-// zeroQuantity reports a quantity whose mantissa has no non-zero digit
-// (`0`, `0.0`, `0Gi`, `0m`): it renders a resources block that schedules
-// exactly like no resources block, which is the one thing the policy exists
-// to prevent — an operator reading the pod would believe the floor is set.
-func zeroQuantity(v string) bool {
-	mantissa := strings.TrimLeft(v, "+")
-	if i := strings.IndexFunc(mantissa, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }); i >= 0 {
-		mantissa = mantissa[:i]
-	}
-	return !strings.ContainsAny(mantissa, "123456789")
-}
-
 // ValidateSchedulingEnv parses the scheduling policy from the process
 // environment and returns the error every sandbox Start would return. The
 // runner calls it at bootstrap so a misconfigured pod never becomes ready —
@@ -252,7 +235,16 @@ func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
 		if !quantityRe.MatchString(v) {
 			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a Kubernetes quantity (want e.g. 500m, 2, 4Gi)", q.env, v)
 		}
-		if zeroQuantity(v) {
+		// Evaluated for every set variable, not only when a limit exists: a
+		// zero (`0`, `0Gi`, an underflowing `1e-400`) renders a resources block
+		// that schedules exactly like no resources block, which is the one
+		// thing the policy exists to prevent — an operator reading the pod
+		// would believe the floor is set.
+		value, err := quantityValue(v)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", q.env, err)
+		}
+		if value == 0 {
 			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is a zero quantity — it schedules like no request at all; unset the variable instead", q.env, v)
 		}
 		_, suffix := splitQuantity(v)

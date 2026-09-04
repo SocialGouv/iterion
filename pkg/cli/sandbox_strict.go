@@ -370,10 +370,23 @@ func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictRepo
 	labelled, total, err := kubernetes.NodeLabelCoverage(probeCtx, key)
 	switch {
 	case err != nil:
+		// The cause is asserted only when the cluster (or the probe) said it:
+		// a Forbidden is the chart's namespaced Role, a deadline is the probe
+		// budget; anything else stays what kubectl said.
+		var cause string
+		switch {
+		case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
+			cause = "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
+		case strings.Contains(err.Error(), "Forbidden"):
+			cause = "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
+		default:
+			cause = "could not list nodes; "
+		}
 		report.add("k8s spread key coverage", CheckWarn, err.Error(),
-			"could not list nodes (the chart's runner Role is namespace-scoped and grants no nodes/list); from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
+			cause+"from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
 	case total == 0:
-		report.add("k8s spread key coverage", CheckWarn, "no node visible", "verify RBAC on nodes/list, then that every schedulable node carries the label "+key)
+		report.add("k8s spread key coverage", CheckWarn, "no node visible",
+			"the list answered with no node — check the context points at the right cluster, then from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
 	case labelled == 0:
 		report.add("k8s spread key coverage", CheckFail, fmt.Sprintf("no node carries %s (%d nodes)", key, total),
 			"every run pod would stay Pending — set ITERION_SANDBOX_K8S_SPREAD to hostname or to a label the nodes carry")

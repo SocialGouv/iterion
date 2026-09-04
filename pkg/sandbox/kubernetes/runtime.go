@@ -163,7 +163,10 @@ func NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, er
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, 0, fmt.Errorf("kubectl get nodes: %w: %s", err, strings.TrimSpace(stderr.String()))
+		if reason := strings.TrimSpace(stderr.String()); reason != "" {
+			return 0, 0, fmt.Errorf("kubectl get nodes: %w: %s", err, reason)
+		}
+		return 0, 0, fmt.Errorf("kubectl get nodes: %w", err)
 	}
 	var nodes struct {
 		Items []struct {
