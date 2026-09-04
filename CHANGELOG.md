@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.100.3](https://github.com/SocialGouv/iterion/compare/v3.100.2...v3.100.3) (2026-09-04)
+
+### Bug Fixes
+
+* **cloudpublisher:** the walk consults the operator's hard caps — a capped forfait is passed over like a refused one ([#678](https://github.com/SocialGouv/iterion/issues/678)) ([aa91cb8](https://github.com/SocialGouv/iterion/commit/aa91cb8e705131e590345ce759e4db0b6b482ad1)), closes [#677](https://github.com/SocialGouv/iterion/issues/677)
+
+    <details><summary>why</summary>
+
+    Measured 2026-09-04 on a production tenant: a weekly forfait at 97% utilization (provider still ALLOWING, hard cap 95, reset four days out) was granted by the resolution on four consecutive retry attempts; the runner's pre-flight parked each one in ~1s, and because a park writes no refusal reading, no signal ever engaged the credential-tier fallback — a fresh org-tier forfait at ~0% sat unreached the whole time. Two closures:
+
+    </details>
+
 ## [3.100.2](https://github.com/SocialGouv/iterion/compare/v3.100.1...v3.100.2) (2026-09-04)
 
 ### Bug Fixes
