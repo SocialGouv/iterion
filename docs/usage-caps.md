@@ -226,12 +226,21 @@ and parking it for the anthropic weekly reset strands it for nothing: a fully
 pinned two-node rite froze for five days that way while its single-node
 sibling on the identical pin ran (#668). The cloud runner's pre-flight asks
 [`model.AnthropicWireReachable`](../pkg/backend/model/wire_reach.go) under the
-launch's own overrides and fallback chain, and lets the run through when the
-answer is no. Every uncertainty answers "reachable" and keeps the guard
-armed: an empty, `auto` or `claude_code` backend, `claw`/`pi` with a provider
-it cannot resolve, any `anthropic`/`zai` hint on any backend, a
-model-answering node with no `LLMFields`, a `fallbacks:` route or run-level
-`--fallback` stage with any of those.
+launch's own overrides, and lets the run through when the answer is no. Every
+uncertainty answers "reachable" and keeps the guard armed: an empty, `auto` or
+`claude_code` backend, `claw`/`pi` with a provider it cannot resolve, any
+`anthropic`/`zai` hint on any backend, a model-answering node with no
+`LLMFields`.
+
+**Primary routes only.** A `fallbacks:` route or a run-level `--fallback`
+stage onto the wire does not arm the pre-flight: the primary can carry the
+whole run without ever touching the wire, and the rescue route fires only on
+a failure the mid-run guard and the delegate's own usage-window
+classification already refuse at dispatch. Refusing such a run in advance
+would park work that could not possibly spend the capped subscription — the
+one thing the pre-flight promises not to do. The credential the rescue route
+needs is still sealed into the run: the wants derivation widens on the chain,
+it is only this guard that ignores it.
 
 ## Cloud
 
