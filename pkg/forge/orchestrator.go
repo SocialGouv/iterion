@@ -856,9 +856,13 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // syncSchedules replaces the integration's ScheduledBot rows with one per
 // schedule invocation (with a suggested cron) of the enabled bots, so the
 // cloud scheduler fires them. Clean-slate (delete-then-create) keeps it
-// idempotent across re-provisions; operator tuning on surviving bots'
-// rows (pause state, overlap/guard policy, a customised cron) is carried
-// over by bot id so re-provisioning one bot doesn't reset the others.
+// idempotent across re-provisions; what a surviving bot's row accumulated
+// is carried over by bot id, so re-provisioning one bot resets nothing on
+// the others: its id (runs record `source.schedule_id` and the audit trail
+// targets it), the operator's vars merged OVER the manifest's default_vars
+// (a bot whose scheduled behaviour hinges on a var — `open_mr`, `mode` —
+// must not silently revert to its defaults), the last fire, the pause
+// state, the overlap/guard policy and a customised cron.
 // No-op when no schedule store is wired.
 func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
 	if o.Schedules == nil {
@@ -907,6 +911,9 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				if strings.TrimSpace(crons[bot]) == "" && strings.TrimSpace(prev.Cron) != "" {
 					sb.Cron = prev.Cron
 				}
+				sb.ID = prev.ID
+				sb.Vars = mergeScheduleVars(inv.Schedule.DefaultVars, prev.Vars)
+				sb.LastFireAt = prev.LastFireAt
 				sb.Disabled = prev.Disabled
 				sb.Overlap = prev.Overlap
 				sb.MaxConcurrent = prev.MaxConcurrent
@@ -930,6 +937,23 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 		}
 	}
 	return nil
+}
+
+// mergeScheduleVars lays the operator's vars over the manifest's
+// default_vars: a default only fills a key the operator never set. nil when
+// neither side has anything, so an untouched row stays `vars: null`.
+func mergeScheduleVars(defaults, operator map[string]string) map[string]string {
+	if len(defaults) == 0 && len(operator) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(defaults)+len(operator))
+	for k, v := range defaults {
+		out[k] = v
+	}
+	for k, v := range operator {
+		out[k] = v
+	}
+	return out
 }
 
 func keysOfInvByBot(m map[string][]bundle.Invocation) []string {

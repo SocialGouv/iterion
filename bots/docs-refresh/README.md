@@ -104,6 +104,12 @@ Retired in v3 (the obligation machinery): `coverage_target_pct`,
 
 ## PR finalization (opt-in)
 
+A scheduled run clones the repo on an ephemeral pod, so this tail is its
+only delivery path: the manifest's `schedule` invocation declares
+`default_vars: {mode: incremental, open_mr: "true"}`, and a schedule row
+built from it (studio enable dialog, forge provisioning) delivers by
+construction. A `full` reconciliation is a deliberate manual launch.
+
 `open_mr=true` appends the feature-dev-verbatim PR tail: a deterministic
 `forge_auth_probe` checks for a push credential (mounted `forge_token`
 secret, `*_TOKEN` env, or host `gh` auth) and only then the

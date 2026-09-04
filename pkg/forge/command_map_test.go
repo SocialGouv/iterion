@@ -188,3 +188,73 @@ func TestSyncSchedules_CronOverride(t *testing.T) {
 		t.Errorf("operator cron override should win, got %+v", rows)
 	}
 }
+
+// TestSyncSchedules_ReprovisionKeepsOperatorRow: a re-provision rebuilds the
+// row from the manifest but must keep what the operator and the ticker wrote
+// on it — the id (runs and audit entries point at it), the vars (merged over
+// the manifest's default_vars, operator keys winning), the last fire and the
+// cron. Losing the vars is how a weekly that depended on `open_mr` silently
+// stopped delivering.
+func TestSyncSchedules_ReprovisionKeepsOperatorRow(t *testing.T) {
+	mem := cloudsched.NewMemoryStore()
+	now := time.Unix(1700000000, 0).UTC()
+	var idc int
+	o := &Orchestrator{
+		Schedules: mem,
+		Now:       func() time.Time { return now },
+		NewID:     func() string { idc++; return "sched-" + string(rune('a'+idc)) },
+	}
+	const repo = "https://github.com/org/app.git"
+	inv := map[string][]bundle.Invocation{
+		"docs-refresh": {{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 3 * * *"}}},
+	}
+	ctx := context.Background()
+	if err := o.syncSchedules(ctx, "t1", "ri-1", repo, inv, map[string]string{"docs-refresh": "0 4 * * 1"}, "u1"); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row after the first sync, got %d", len(rows))
+	}
+	first := rows[0]
+
+	// The operator tunes the row, then the ticker fires it once.
+	vars := map[string]string{"mode": "incremental", "open_mr": "true"}
+	if _, err := mem.Update(ctx, first.ID, cloudsched.SchedulePatch{Vars: &vars, UpdatedAt: now}); err != nil {
+		t.Fatalf("operator patch: %v", err)
+	}
+	fired := now.Add(time.Hour)
+	if won, err := mem.ClaimTick(ctx, first.ID, first.NextFireAt, fired.Add(24*time.Hour), fired); err != nil || !won {
+		t.Fatalf("claim tick: won=%v err=%v", won, err)
+	}
+
+	// Re-provision with no explicit cron; the manifest meanwhile gained a
+	// default for a key the operator already set and one brand-new key.
+	inv["docs-refresh"][0].Schedule.DefaultVars = map[string]string{"mode": "full", "scope_notes": "weekly"}
+	if err := o.syncSchedules(ctx, "t1", "ri-1", repo, inv, nil, "u1"); err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	rows, _ = mem.ListByIntegration(ctx, "t1", "ri-1")
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row after the re-sync, got %d", len(rows))
+	}
+	got := rows[0]
+	if got.ID != first.ID {
+		t.Errorf("re-provision must keep the row id (runs and audit point at it): %q -> %q", first.ID, got.ID)
+	}
+	want := map[string]string{"mode": "incremental", "open_mr": "true", "scope_notes": "weekly"}
+	if len(got.Vars) != len(want) {
+		t.Errorf("vars: want %v, got %v", want, got.Vars)
+	}
+	for k, v := range want {
+		if got.Vars[k] != v {
+			t.Errorf("vars[%q]: want %q, got %q (operator keys must win over manifest defaults, new defaults must land)", k, v, got.Vars[k])
+		}
+	}
+	if got.LastFireAt == nil || !got.LastFireAt.Equal(fired) {
+		t.Errorf("last fire must survive the re-provision: want %v, got %v", fired, got.LastFireAt)
+	}
+	if got.Cron != "0 4 * * 1" {
+		t.Errorf("the operator's cron must survive a re-provision without an explicit cron: got %q", got.Cron)
+	}
+}
