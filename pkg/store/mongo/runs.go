@@ -709,6 +709,27 @@ func (s *Store) SetRunBudgetOverrides(ctx context.Context, id string, o *store.R
 	return nil
 }
 
+// SetRunBudgetSnapshot persists the effective caps (see store.RunStore).
+// Granular $set (with $unset for nil), like SetRunBudgetOverrides, so the
+// status transition a resume just applied stays intact.
+func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.RunBudget) error {
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	update := bson.M{"$set": bson.M{"updated_at": time.Now().UTC()}}
+	if b == nil {
+		update["$unset"] = bson.M{"budget": ""}
+	} else {
+		update["$set"].(bson.M)["budget"] = b
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run budget snapshot: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped
 // with fingerprint (see store.RunStore). Deliberately NO tenant filter —
 // a platform key serves every tenant on one ceiling.

@@ -496,31 +496,28 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
-	// E2 (#652 review round 1): apply the resume budget override to wf
-	// BEFORE the branch fork, so every downstream path (cloud publish,
-	// detached, in-process) executes against the raised caps. The
-	// executor snapshots Budget at construction time, so this must
-	// happen before BuildExecutor below. Same ordering + merge contract
-	// as Launch (service_launch.go:250).
-	//
-	// The persisted r.Budget snapshot (studio Overview) is also
-	// refreshed so the operator sees the raised cap immediately, not
-	// the launch-time figure that just killed the run. Best-effort:
-	// a store blip here does not fail the resume.
-	if spec.Budget != nil && !spec.Budget.IsZero() {
+	// The budget a resume executes against composes, per field, the ask
+	// persisted at launch (the doc's replay source) and THIS resume's
+	// ask — non-zero wins, zero inherits — applied to wf BEFORE the
+	// branch fork so every downstream path (cloud publish, detached,
+	// in-process) sees the same caps. The executor snapshots Budget at
+	// construction time, so this must happen before BuildExecutor below.
+	// Same merge the cloud wire performs (resolveResumeBudgetAsk).
+	if fromDoc := runtime.BudgetOverridesFromRun(r.BudgetOverrides); fromDoc != nil {
+		ir.ApplyBudgetOverrides(wf, *fromDoc)
+	}
+	raised := spec.Budget != nil && !spec.Budget.IsZero()
+	if raised {
 		ir.ApplyBudgetOverrides(wf, *spec.Budget)
-		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
-			r.Budget = snap
-			if serr := s.store.SaveRun(parent, r); serr != nil && s.logger != nil {
-				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
-			}
-		}
 	}
 
 	// Cloud-mode resume: republish the RunMessage with ResumeSpec
 	// set so the runner pool re-enters the engine via Engine.Resume.
 	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
-	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
+	// in MongoRunStore.SaveCheckpoint (CASVersion increment). The doc's
+	// effective-caps snapshot is the publisher's to stamp, from the
+	// merged ask, after its own status CAS — not this layer's: the wire
+	// carries the merge, and the doc copy loaded above is stale by then.
 	if s.publisher != nil {
 		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
 			return nil, err
@@ -528,6 +525,21 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		closed := make(chan struct{})
 		close(closed)
 		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
+	}
+
+	// Local paths (detached subprocess, in-process): the engine stamps
+	// Run.Budget only at launch, so a raised cap is written here — the
+	// studio Overview shows the cap the run now executes against, not
+	// the launch-time figure that just killed it. Granular on purpose: a
+	// whole-doc SaveRun from the copy loaded at the top of this method
+	// would revert any transition that landed since (a cancel, a
+	// finish). Best-effort: a store blip here does not fail the resume.
+	if raised {
+		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
+			if serr := s.store.SetRunBudgetSnapshot(parent, spec.RunID, snap); serr != nil && s.logger != nil {
+				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
+			}
+		}
 	}
 
 	if detachedEnabled() {

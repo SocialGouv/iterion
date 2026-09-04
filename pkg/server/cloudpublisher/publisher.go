@@ -41,6 +41,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -1712,11 +1713,24 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// asked for a change on THIS resume — an ask-less resume leaves
 	// the doc untouched. Granular SetRunBudgetOverrides so the CAS
 	// status transition above (queued) stays intact. Best-effort.
+	//
+	// The doc's effective-caps snapshot (Run.Budget, the studio
+	// Overview's denominator) is stamped alongside, from the SAME merged
+	// ask the wire carries: the engine stamps it only at launch, so
+	// without this write the doc would keep showing the launch-time cap
+	// for the rest of the resumed run. The platform ceiling is the
+	// runner's to apply (its environment, not the publisher's); a cap
+	// raised above it is clamped on the pod and logged there.
 	if spec.Budget != nil && !spec.Budget.IsZero() {
 		merged := resolveResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
 		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		if err := p.store.SetRunBudgetOverrides(persistCtx, spec.RunID, runBudgetOverrides(merged)); err != nil && p.logger != nil {
 			p.logger.Warn("cloudpublisher: persist merged budget ask for %s after resume: %v", spec.RunID, err)
+		}
+		if snap := runtime.EffectiveBudgetSnapshot(wf, merged); snap != nil {
+			if err := p.store.SetRunBudgetSnapshot(persistCtx, spec.RunID, snap); err != nil && p.logger != nil {
+				p.logger.Warn("cloudpublisher: refresh budget snapshot for %s after resume: %v", spec.RunID, err)
+			}
 		}
 		persistCancel()
 	}
@@ -2174,7 +2188,7 @@ func runBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
 //
 // #652 part 2.
 func resolveResumeBudgetAsk(fromSpec *ir.BudgetOverrides, fromDoc *store.RunBudgetOverrides) *ir.BudgetOverrides {
-	base := budgetOverridesFromRun(fromDoc)
+	base := runtime.BudgetOverridesFromRun(fromDoc)
 	if fromSpec == nil || fromSpec.IsZero() {
 		return base
 	}
@@ -2200,22 +2214,6 @@ func resolveResumeBudgetAsk(fromSpec *ir.BudgetOverrides, fromDoc *store.RunBudg
 		base.CapImposed = true
 	}
 	return base
-}
-
-// budgetOverridesFromRun replays a run doc's persisted budget ask onto a
-// resume publication, where clampBudgetToGrant re-clamps it against the
-// resume's own grant exactly like a fresh launch.
-func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
-	if o == nil {
-		return nil
-	}
-	return &ir.BudgetOverrides{
-		MaxCostUSD:          o.MaxCostUSD,
-		MaxTokens:           o.MaxTokens,
-		MaxDuration:         o.MaxDuration,
-		MaxIterations:       o.MaxIterations,
-		MaxParallelBranches: o.MaxParallelBranches,
-	}
 }
 
 // runFallbackOf converts the launch's run-level fallback chain into the

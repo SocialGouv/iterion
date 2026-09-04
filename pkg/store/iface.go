@@ -95,6 +95,19 @@ type RunStore interface {
 	// the resume has already CAS-transitioned the doc to `queued`.
 	SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error
 
+	// SetRunBudgetSnapshot updates the persisted EFFECTIVE caps
+	// (Run.Budget, the studio Overview's denominator) — the display twin
+	// of the ask above. Written by every resume surface that raises a
+	// cap, right after its own status transition: the engine stamps
+	// Run.Budget only at launch (runResolveDoc), so without this write
+	// the doc keeps showing the launch-time figure that just killed the
+	// run. Nil clears the field. Granular for the same reason as
+	// SetRunBudgetOverrides: the doc copy a resume loaded at its top is
+	// stale by the time the caps are known, and a whole-doc SaveRun from
+	// it would revert any transition (a cancel, a runner's terminal
+	// write, the sweeper's flip) that landed in between.
+	SetRunBudgetSnapshot(ctx context.Context, runID string, b *RunBudget) error
+
 	// PatchRunSteering persists the live-steering state (accumulated
 	// loop grants + absolute budget raises) on the run record so a
 	// resume re-applies them. nil map / nil raises leave the stored

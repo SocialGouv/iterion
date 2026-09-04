@@ -132,6 +132,63 @@ func TestSubmitResume_PersistsMergedAskOntoRunDoc(t *testing.T) {
 	}
 }
 
+// The doc's effective-caps snapshot (Run.Budget, what the studio Overview
+// draws) must read the MERGED ask the wire enforces — the doc's launch
+// ask per field, this resume's ask over it, the .bot's own cap only
+// where neither says anything. The engine stamps Run.Budget at launch
+// only, so a resume that raises a cap has to stamp it itself: doc ask
+// {$50, 2h30m}, .bot says $20, resume --max-duration 4h → the doc must
+// read $50 / 4h, never the .bot's $20 nor the launch's 2h30m.
+func TestSubmitResume_StampsTheMergedCapOnTheDocSnapshot(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
+	const runID = "run-snapshot-merged-cap"
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: runID, TenantID: "team-a", OwnerID: "u1",
+		Status:          store.RunStatusFailedResumable,
+		Budget:          &store.RunBudget{MaxCostUSD: 50, MaxDuration: "2h30m", MaxTokens: 5000}, // the engine's launch stamp
+		BudgetOverrides: &store.RunBudgetOverrides{MaxCostUSD: 50, MaxDuration: "2h30m"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	p := &Publisher{
+		store:      st,
+		publishRun: func(context.Context, *queue.RunMessage) error { return nil },
+	}
+	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20, MaxDuration: "2h30m", MaxTokens: 5000}}
+	spec := runview.ResumeSpec{
+		RunID: runID, FilePath: "wf.bot",
+		Source: "workflow wf:\n  entry: done\n",
+		Budget: &ir.BudgetOverrides{MaxDuration: "4h"},
+	}
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	got, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Budget == nil {
+		t.Fatal("Budget = nil after resume; the snapshot stamp did not fire")
+	}
+	if got.Budget.MaxDuration != "4h" {
+		t.Fatalf("doc Budget.MaxDuration = %q, want 4h — the doc keeps showing the launch-time cap that killed the run for the rest of the resumed run", got.Budget.MaxDuration)
+	}
+	if got.Budget.MaxCostUSD != 50 {
+		t.Fatalf("doc Budget.MaxCostUSD = %v, want the doc ask's 50 (the wire enforces the per-field merge; a stamp from wf+spec alone would under-report the .bot's 20)", got.Budget.MaxCostUSD)
+	}
+	if got.Budget.MaxTokens != 5000 {
+		t.Fatalf("doc Budget.MaxTokens = %v, want the .bot's 5000 inherited where no ask says otherwise", got.Budget.MaxTokens)
+	}
+	// The status CAS SubmitResume applied stays intact: the stamp is granular.
+	if got.Status != store.RunStatusQueued {
+		t.Fatalf("status after the stamp = %s, want queued (the snapshot write must not revert the resume's own transition)", got.Status)
+	}
+}
+
 // A resume with NO budget override must leave the doc's BudgetOverrides
 // untouched — an unattended auto-retry running `resolveResumeBudgetAsk`
 // with a nil spec.Budget must not clobber the launch ask.

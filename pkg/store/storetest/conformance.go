@@ -82,6 +82,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
+	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -2630,5 +2631,59 @@ func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
 	err = s.SetRunBudgetOverrides(ctx, "does-not-exist", &store.RunBudgetOverrides{MaxCostUSD: 1})
 	if err == nil {
 		t.Fatal("SetRunBudgetOverrides on missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// testSetRunBudgetSnapshot exercises the granular effective-caps setter
+// every resume surface that raises a cap writes. Contract: replaces
+// Run.Budget wholesale, nil clears, touches nothing else on the doc — a
+// transition that landed between the resume's load and this write (here
+// a cancel with its typed cause) must survive, which a whole-doc SaveRun
+// from the stale copy would revert.
+func testSetRunBudgetSnapshot(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "bs_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Budget = &store.RunBudget{MaxCostUSD: 20, MaxDuration: "2h30m", MaxTokens: 5000}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	// The concurrent transition the granular write must not revert.
+	if err := s.UpdateRunStatusCoded(ctx, "bs_run", store.RunStatusCancelled, "cancelled by the operator", store.FailureCancelled); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	if err := s.SetRunBudgetSnapshot(ctx, "bs_run", &store.RunBudget{MaxCostUSD: 50, MaxDuration: "4h", MaxTokens: 5000}); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.Budget == nil || got.Budget.MaxCostUSD != 50 || got.Budget.MaxDuration != "4h" || got.Budget.MaxTokens != 5000 {
+		t.Fatalf("Budget after set = %+v, want the raised effective caps", got.Budget)
+	}
+	if got.Status != store.RunStatusCancelled || got.FailureCode != store.FailureCancelled {
+		t.Fatalf("status/code after SetRunBudgetSnapshot = %s/%q, want cancelled/CANCELLED untouched (a whole-doc replace from the pre-cancel copy reverts the operator's cancel)", got.Status, got.FailureCode)
+	}
+
+	if err := s.SetRunBudgetSnapshot(ctx, "bs_run", nil); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot(nil): %v", err)
+	}
+	got, err = s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.Budget != nil {
+		t.Fatalf("Budget after nil set = %+v, want nil (clear)", got.Budget)
+	}
+	if err := s.SetRunBudgetSnapshot(ctx, "does-not-exist", &store.RunBudget{MaxCostUSD: 1}); err == nil {
+		t.Fatal("SetRunBudgetSnapshot on a missing run returned nil, want ErrRunNotFound")
 	}
 }

@@ -32,3 +32,42 @@ func SnapshotBudgetForPersist(b *ir.Budget) *store.RunBudget {
 		MaxParallelBranches: b.MaxParallelBranches,
 	}
 }
+
+// BudgetOverridesFromRun lifts the budget ask persisted on a run doc
+// back into the override shape ApplyBudgetOverrides consumes — the
+// resume path's replay source, on every surface (in-process, detached,
+// cloud publish). Nil in, nil out. The one converter, so the doc→wire
+// and doc→engine readings of the ask cannot drift.
+func BudgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
+	if o == nil {
+		return nil
+	}
+	return &ir.BudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+	}
+}
+
+// EffectiveBudgetSnapshot projects what a run's caps become once ask is
+// applied over the workflow's declared budget — the same "non-zero
+// wins, zero inherits" merge ApplyBudgetOverrides performs on the
+// executor side — WITHOUT mutating wf: a publisher stamping the doc from
+// the merged ask must not edit the workflow it was handed. Nil when
+// neither the workflow nor the ask carries a cap.
+func EffectiveBudgetSnapshot(wf *ir.Workflow, ask *ir.BudgetOverrides) *store.RunBudget {
+	var eff ir.Budget
+	if wf != nil && wf.Budget != nil {
+		eff = *wf.Budget
+	}
+	scratch := &ir.Workflow{Budget: &eff}
+	if ask != nil && !ask.IsZero() {
+		ir.ApplyBudgetOverrides(scratch, *ask)
+	}
+	if *scratch.Budget == (ir.Budget{}) {
+		return nil
+	}
+	return SnapshotBudgetForPersist(scratch.Budget)
+}
