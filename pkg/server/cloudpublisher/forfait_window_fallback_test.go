@@ -281,3 +281,63 @@ func TestForfaitWindowClosed_restoredWhenNoTierCanServe(t *testing.T) {
 		t.Fatalf("the refused forfait must be RESTORED when no tier can serve, got %q", got)
 	}
 }
+
+// A hard OPERATOR cap closes the window exactly like a provider refusal:
+// the runner's pre-flight parks on it before any node runs, so handing the
+// capped forfait over just replays the park on every retry. Measured on
+// 2026-09-04: a weekly forfait at 97% (provider still ALLOWING) was
+// re-granted on four consecutive attempts while the next tier sat idle —
+// the park writes no refusal, so no signal ever broke the loop.
+func TestForfaitWindowClosed_operatorHardCapFallsThrough(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
+	meterSays(t, f, fp, usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Status: usagecap.StatusWarning, Utilization: 0.97,
+		ResetsAt: time.Now().Add(4 * 24 * time.Hour), ObservedAt: time.Now(),
+	})
+
+	// Without a policy the walk stays refusal-evidence-only: utilization
+	// alone must not bench a credential (the shipped no-cap deployment).
+	if got := bundleToken(t, f, "run-no-policy"); !contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("no policy: run must keep the tenant's forfait, got %q", got)
+	}
+
+	// A soft cap warns; it never closes the window.
+	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
+		Week: usagecap.WindowPolicy{MaxPercent: 95, Mode: usagecap.ModeSoft}})
+	if got := bundleToken(t, f, "run-soft-cap"); !contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("soft cap: run must keep the tenant's forfait, got %q", got)
+	}
+
+	// Hard cap at/below the reading's utilization: the pre-flight would
+	// park this run — the walk must fall through to the pool instead.
+	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
+		Week: usagecap.WindowPolicy{MaxPercent: 95, Mode: usagecap.ModeHard}})
+	got := bundleToken(t, f, "run-hard-cap")
+	if got == "" {
+		t.Fatal("the run got NO credential: the cap skip must fall through, not empty the bundle")
+	}
+	if contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("the hard-capped forfait was handed over anyway: %q", got)
+	}
+	if !contains(got, "sk-ant-donated") {
+		t.Fatalf("expected the donor's credential from the pool, got %q", got)
+	}
+}
+
+// A hard cap with NO reset instant must NOT close the window: benching a
+// credential on a utilization snapshot with no reopening date would be a
+// permanent skip on stale numbers.
+func TestForfaitWindowClosed_operatorCapWithoutResetStaysUsable(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
+	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
+		Week: usagecap.WindowPolicy{MaxPercent: 95, Mode: usagecap.ModeHard}})
+	meterSays(t, f, fp, usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Status: usagecap.StatusWarning, Utilization: 0.97,
+		ObservedAt: time.Now(),
+	})
+	if got := bundleToken(t, f, "run-capped-no-reset"); !contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("no reset instant: run must keep the tenant's forfait, got %q", got)
+	}
+}

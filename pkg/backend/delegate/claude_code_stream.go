@@ -1008,6 +1008,16 @@ func classifyRateLimit(text string, now time.Time) (kind string, window usagecap
 	if !isUsageWindowText(lower) {
 		return RateLimitKindTransient, "", time.Time{}
 	}
+	// The refusal names its window between "your" and "limit" ("weekly",
+	// "session"…). Naming it matters beyond retry timing: a nameless
+	// window records NO reading (both recording sites are gated on the
+	// name), so a real weekly wall stays invisible to the resolution
+	// walk, which re-grants the same walled credential on every retry.
+	// Only the weekly noun maps today; "session"/bare-5h shapes keep ""
+	// until they get a window constant of their own.
+	if strings.Contains(lower, "weekly") {
+		return RateLimitKindUsageWindow, usagecap.WindowSevenDay, parseResetHint(lower, now)
+	}
 	return RateLimitKindUsageWindow, "", parseResetHint(lower, now)
 }
 
