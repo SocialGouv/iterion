@@ -38,6 +38,90 @@ func seedRunningResume(t *testing.T, s store.RunStore, runID string) *store.Chec
 	return cp
 }
 
+// ctxHonouringStore refuses every write the park issues once the ctx it
+// is handed is done — what the Mongo driver does, and what the fs store
+// (which ignores ctx) does not. The cancel and drain arms park on the
+// very ctx that was just cancelled, so a test on the fs store alone
+// certifies a stub.
+type ctxHonouringStore struct{ store.RunStore }
+
+func (s ctxHonouringStore) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("save checkpoint %s: %w", id, err)
+	}
+	return s.RunStore.SaveCheckpoint(ctx, id, cp)
+}
+
+func (s ctxHonouringStore) UpdateRunStatusIfCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode, from []store.RunStatus) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("update status if %s: %w", id, err)
+	}
+	return s.RunStore.UpdateRunStatusIfCoded(ctx, id, status, runErr, code, from)
+}
+
+func (s ctxHonouringStore) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("fail resumable %s: %w", id, err)
+	}
+	return s.RunStore.FailRunResumable(ctx, id, cp, runErr, code)
+}
+
+func (s ctxHonouringStore) UpdateRunStatusCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("update status %s: %w", id, err)
+	}
+	return s.RunStore.UpdateRunStatusCoded(ctx, id, status, runErr, code)
+}
+
+// The operator-cancel arm on a ctx-honouring store: the ctx is the one
+// that was just cancelled, so a park written on it lands nowhere — the
+// run reads `running` with the park logged as "context canceled". The
+// write must ride a detached ctx, and the error handed to the runner must
+// carry ErrRunCancelled so the delivery is acked, not burnt.
+func TestParkResumeSandboxFailure_OperatorCancelLandsOnACtxHonouringStore(t *testing.T) {
+	fs := tmpStore(t)
+	e := &Engine{store: ctxHonouringStore{fs}, logger: iterlog.Nop()}
+	const runID = "run-resume-sandbox-cancel-mongo"
+	cp := seedRunningResume(t, fs, runID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := e.parkResumeSandboxFailure(ctx, runID, cp, "entry", errors.New("docker start: context canceled"))
+
+	r, _ := fs.LoadRun(context.Background(), runID)
+	if r.Status != store.RunStatusCancelled || r.FailureCode != store.FailureCancelled {
+		t.Fatalf("status/code = %s/%q, want cancelled/CANCELLED — the park was written on the cancelled ctx and a ctx-honouring store refused it (the run reads running forever on Mongo)", r.Status, r.FailureCode)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "campaign" {
+		t.Fatalf("checkpoint = %+v, want kept", r.Checkpoint)
+	}
+	if !errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("returned error = %v, want ErrRunCancelled — a bare wrap classifies as a generic failure and the runner naks an operator cancel", err)
+	}
+}
+
+// The drain arm on a ctx-honouring store: same detached write, and the
+// error carries ErrRunInterrupted so the runner naks it exempt from the
+// DLQ park.
+func TestParkResumeSandboxFailure_DrainLandsOnACtxHonouringStore(t *testing.T) {
+	fs := tmpStore(t)
+	e := &Engine{store: ctxHonouringStore{fs}, logger: iterlog.Nop()}
+	const runID = "run-resume-sandbox-drain-mongo"
+	cp := seedRunningResume(t, fs, runID)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrRunInterrupted)
+	err := e.parkResumeSandboxFailure(ctx, runID, cp, "entry", errors.New("kubectl exec: signal: killed"))
+
+	r, _ := fs.LoadRun(context.Background(), runID)
+	if r.Status != store.RunStatusFailedResumable || r.FailureCode != store.FailureInterrupted {
+		t.Fatalf("status/code = %s/%q, want failed_resumable/INTERRUPTED — the park was refused on the cancelled ctx", r.Status, r.FailureCode)
+	}
+	if !errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("returned error = %v, want ErrRunInterrupted — without it the drain misses the DLQ exemption", err)
+	}
+}
+
 func TestParkResumeSandboxFailure_PhaseTimeoutIsTypedAndKeepsTheCheckpoint(t *testing.T) {
 	s := tmpStore(t)
 	e := &Engine{store: s, logger: iterlog.Nop()}
@@ -46,7 +130,10 @@ func TestParkResumeSandboxFailure_PhaseTimeoutIsTypedAndKeepsTheCheckpoint(t *te
 
 	sbErr := fmt.Errorf("kubernetes: workspace copy phase timed out: %w",
 		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract stalled")))
-	e.parkResumeSandboxFailure(context.Background(), runID, cp, "entry", sbErr)
+	perr := e.parkResumeSandboxFailure(context.Background(), runID, cp, "entry", sbErr)
+	if !errors.Is(perr, sandbox.ErrPhaseTimeout) || errors.Is(perr, ErrRunInterrupted) || errors.Is(perr, ErrRunCancelled) {
+		t.Fatalf("returned error = %v, want the driver's phase-timeout sentinel kept and no interruption/cancel dressing (the runner classifies it as a delayed nak)", perr)
+	}
 
 	r, err := s.LoadRun(context.Background(), runID)
 	if err != nil {

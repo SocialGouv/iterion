@@ -632,8 +632,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
-		e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
-		return nil, nil, fmt.Errorf("runtime: sandbox: %w", sbErr)
+		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
 	}
 
 	rs := e.newRunState(runID, r.Inputs)
@@ -708,29 +707,53 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 // overwritten. Every write is loud on failure: a park that does not
 // land leaves the run `running` until the orphan reconcile catches it,
 // and that must be said, not swallowed.
-func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp *store.Checkpoint, fallbackNode string, sbErr error) {
+//
+// The writes ride a DETACHED, bounded context: on the cancel and drain
+// arms the run ctx is the very ctx that was just cancelled, and a store
+// that honours it (Mongo) would refuse every write — the run would read
+// `running` forever with the park logged as "context canceled". Same
+// convention as the node loop's handleContextDoneWithCheckpoint and the
+// launch path's markFailedBestEffort.
+//
+// The returned error is what the runner classifies, so it carries the
+// same sentinel the status carries — ErrRunCancelled for an operator
+// cancel (acked, never redelivered), ErrRunInterrupted for a drain
+// (naked, exempt from the DLQ park), the driver's own sandbox.ErrPhaseTimeout
+// for a stall (naked with a delay) — mirroring setupErr on the launch
+// path. A bare wrap would read as a generic failure: an operator cancel
+// burning a delivery, a drain parked on the DLQ.
+func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp *store.Checkpoint, fallbackNode string, sbErr error) error {
 	if cp == nil {
 		cp = &store.Checkpoint{NodeID: fallbackNode}
 	}
 	status, msg, code := setupFailureStatus(ctx, "sandbox start", sbErr)
+	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancelWrite()
 	if status == store.RunStatusCancelled {
-		if err := e.store.SaveCheckpoint(ctx, runID, cp); err != nil && e.logger != nil {
+		if err := e.store.SaveCheckpoint(writeCtx, runID, cp); err != nil && e.logger != nil {
 			e.logger.Warn("runtime: resume: save checkpoint on cancel during sandbox start for run %s: %v", runID, err)
 		}
-		if _, err := e.store.UpdateRunStatusIfCoded(ctx, runID, store.RunStatusCancelled, msg, code,
-			[]store.RunStatus{store.RunStatusRunning}); err != nil && e.logger != nil {
+		changed, err := e.store.UpdateRunStatusIfCoded(writeCtx, runID, store.RunStatusCancelled, msg, code,
+			[]store.RunStatus{store.RunStatusRunning})
+		if err != nil && e.logger != nil {
 			e.logger.Warn("runtime: resume: could not record the cancel during sandbox start for run %s: %v — run left non-terminal", runID, err)
+		} else if !changed && e.logger != nil {
+			e.logger.Warn("runtime: resume: cancel during sandbox start for run %s not recorded — the doc had already left `running` (a publisher or peer wrote its terminal status first; that recorded reason stands)", runID)
 		}
-		return
+		return fmt.Errorf("%w: sandbox start: %v", ErrRunCancelled, sbErr)
 	}
-	if err := e.store.FailRunResumable(ctx, runID, cp, msg, code); err != nil {
+	if err := e.store.FailRunResumable(writeCtx, runID, cp, msg, code); err != nil {
 		// Fall back to a plain terminal status so the run does not linger
 		// as `running`; if THAT fails too the run is stuck non-terminal
 		// (an orphan the operator must hand-hack), so say so.
-		if uerr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, msg, code); uerr != nil && e.logger != nil {
+		if uerr := e.store.UpdateRunStatusCoded(writeCtx, runID, store.RunStatusFailed, msg, code); uerr != nil && e.logger != nil {
 			e.logger.Warn("runtime: resume: could not finalize run %s after sandbox failure (FailRunResumable: %v; UpdateRunStatus fallback: %v) — run left non-terminal", runID, err, uerr)
 		}
 	}
+	if code == store.FailureInterrupted {
+		return fmt.Errorf("%w: sandbox start: %v", ErrRunInterrupted, sbErr)
+	}
+	return fmt.Errorf("runtime: sandbox: %w", sbErr)
 }
 
 // resumeFromFailure resumes a failed_resumable run by re-executing from
@@ -778,8 +801,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
-		e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, sbErr)
-		return fmt.Errorf("runtime: sandbox: %w", sbErr)
+		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, sbErr)
 	}
 	defer sandboxCleanup()
 

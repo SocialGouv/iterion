@@ -439,6 +439,16 @@ func TestClassifyExecResult(t *testing.T) {
 		{"sandbox phase timeout naks for a fresh pod, after a delay", fmt.Errorf("runtime: sandbox: %w",
 			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed"))),
 			"sandbox_setup_timeout", actionNakDelayed},
+		// The resume arms' sandbox-start park returns the same sentinels the
+		// status carries (runtime.parkResumeSandboxFailure): an operator
+		// cancel during sandbox start acks, a drain naks exempt from the DLQ
+		// park. A bare "runtime: sandbox: docker start: context canceled"
+		// would classify as a generic failure — an operator cancel burning a
+		// delivery, a drain parked on the DLQ.
+		{"resume-arm cancel during sandbox start acks", fmt.Errorf("%w: sandbox start: %v", runtime.ErrRunCancelled, errors.New("docker start: context canceled")),
+			"cancelled", actionAck},
+		{"resume-arm drain during sandbox start naks", fmt.Errorf("%w: sandbox start: %v", runtime.ErrRunInterrupted, errors.New("kubectl exec: signal: killed")),
+			"interrupted", actionNak},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
