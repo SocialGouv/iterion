@@ -527,6 +527,20 @@ const bankBudget = 10 * time.Minute
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
+// withDeliveryAttempt suffixes a precondition log line with the JetStream
+// attempt count and stream sequence, so a drop reads on its own line as a
+// first-delivery pre-cancel arrival (delivery=1) or a redelivery
+// (delivery>=2) of one identifiable message. An outcome that logs nothing
+// stays silent.
+func withDeliveryAttempt(format string, args []any, numDelivered int, streamSeq uint64) (string, []any) {
+	if format == "" {
+		return "", nil
+	}
+	out := make([]any, 0, len(args)+2)
+	out = append(out, args...)
+	return format + " (delivery=%d seq=%d)", append(out, numDelivered, streamSeq)
+}
+
 func logAt(logger *iterlog.Logger, level logLevel, format string, args ...any) {
 	if format == "" {
 		return
@@ -1134,7 +1148,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// cancelled before we picked it up (T-32 cancel-queued path),
 	// ack the JetStream delivery without doing any work.
 	pre := r.resolveDeliveryPreconditions(msg)
-	logAt(logger, pre.level, pre.logFmt, pre.logArgs...)
+	preFmt, preArgs := withDeliveryAttempt(pre.logFmt, pre.logArgs, delivery.NumDelivered(), delivery.StreamSeq())
+	logAt(logger, pre.level, preFmt, preArgs...)
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
 		dispatchTerminal(logger, delivery, pre.action, pre.op, msg.RunID)

@@ -1094,3 +1094,15 @@ func TestRecordRunGitMeta(t *testing.T) {
 		}
 	})
 }
+
+// A precondition drop must carry the JetStream attempt count and stream
+// sequence on its own line; a silent outcome stays silent.
+func TestWithDeliveryAttempt(t *testing.T) {
+	f, a := withDeliveryAttempt("runner: run %s is cancelled — dropping redelivery (resume=%v)", []any{"run-1", true}, 2, 77)
+	if got := fmt.Sprintf(f, a...); got != "runner: run run-1 is cancelled — dropping redelivery (resume=true) (delivery=2 seq=77)" {
+		t.Fatalf("rendered %q", got)
+	}
+	if f, a := withDeliveryAttempt("", nil, 3, 9); f != "" || a != nil {
+		t.Fatalf("silent outcome must stay silent, got %q %v", f, a)
+	}
+}
