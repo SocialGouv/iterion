@@ -216,14 +216,14 @@ emitter when a consumer needs an exact payload contract.
 
 | Family | Persisted event types |
 |---|---|
-| Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
-| Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
-| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback`, `model_drift` |
+| Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_rewound`, `run_workspace_reset`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
+| Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `usage_cap`, `artifact_written`, `plan_written`, `run_attachment_published` |
+| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback`, `model_drift`, `session_degraded`, `persist_session_degraded` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |
 | Operator messages | `user_message_queued`, `user_message_delivered`, `user_message_consumed`, `user_message_cancelled` |
-| Worktree | `worktree_branch_failed` |
+| Worktree/banking | `worktree_branch_failed`, `run_bank_attempt`, `run_bank_refused`, `run_bank_superseded` |
 
 `alert` is deliberately not persisted: it is an ephemeral broker event.
 `run_health` is its persisted, replayable counterpart. A single torn JSONL
