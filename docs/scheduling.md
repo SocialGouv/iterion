@@ -379,6 +379,15 @@ you have accepted their loss.
   tick at clone (`Invalid username or token`) while manual launches keep
   working. If a schedule is stuck in that state, recreate it with the
   repo attached (or bind the bot to the connection's managed secret).
+- **A repo-bound schedule survives a re-provision.** Re-provisioning the
+  repo integration (enabling another bot, `POST …/forge/repo-bots`)
+  rebuilds its schedule rows from the manifests, but each surviving bot's
+  row keeps its id (runs and audit entries point at it), the vars the
+  operator set — merged over the manifest's `schedule.default_vars`,
+  operator keys winning — its last fire, pause state, overlap/guard policy
+  and customised cron. A bot whose scheduled behaviour hinges on a var
+  should still declare it in `default_vars`, so a row created from scratch
+  delivers too.
 
 ## Implementation
 
