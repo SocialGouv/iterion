@@ -679,10 +679,13 @@ discovered by claude_code via `--setting-sources project`), `hooks` (JSON
 fragments idempotently merged into `.claude/settings.json`), and
 `lifecycle` (index/refresh). Builtins are embedded
 ([pkg/plugin/builtin/](pkg/plugin/builtin/)); `rtk` ships **enabled**,
-`graphify` + `repo-falcon` + `firecrawl` (web search/scrape MCP —
+`graphify` + `repo-falcon` + `codeindex` (repo-indexing engine — MCP tools,
+commands, an agent, a lifecycle index and a `rg`→indexed-search rewriter) +
+`firecrawl` (web search/scrape MCP —
 [docs/web-search.md](docs/web-search.md)) ship **disabled**. Installed plugins live under
-`~/.iterion/plugins/<name>/`, enable state in `~/.iterion/plugins.yaml`. Manage
-with `iterion plugin list|info|enable|disable|run|install|uninstall`. The plugin
+`~/.iterion/plugins/<name>/`, enable state in `~/.iterion/plugins.yaml`,
+per-plugin settings in the manifest's `config:` block. Manage
+with `iterion plugin list|info|config|enable|disable|run|install|uninstall`. The plugin
 system never injects Go code (static `CGO_ENABLED=0` binaries rule out Go
 `plugin`); it wires manifests into existing seams (rewrite chain, MCP catalog,
 skill mirroring). Marketplace entries carry a `kind` (`bot`|`plugin`) so both
