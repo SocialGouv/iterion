@@ -392,7 +392,7 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
-	if err := validateResumable(r, spec.Answers); err != nil {
+	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
 	_, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
@@ -449,7 +449,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			r = reconciled
 		}
 	}
-	if err := validateResumable(r, spec.Answers); err != nil {
+	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return nil, err
 	}
 
@@ -563,17 +563,24 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			if err != nil {
 				return err
 			}
-			if err := validateResumable(r2, spec.Answers); err != nil {
+			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err
 			}
 			return eng.Resume(ctx, spec.RunID, spec.Answers)
 		})
 }
 
-// validateResumable returns nil if r is in a state from which Resume
-// can proceed; otherwise it returns a descriptive error.
-func validateResumable(r *store.Run, answers map[string]any) error {
-	if !r.Status.CanOperatorResume() {
+// validateResumable returns nil if r is in a state from which Resume can
+// proceed; otherwise it returns a descriptive error. When automatic is true
+// the check uses CanAutoResume() — machinery must never override an operator's
+// cancel — else it falls back to the wider CanOperatorResume() (paused,
+// failed_resumable, cancelled). Same predicate ride SubmitResume.
+func validateResumable(r *store.Run, answers map[string]any, automatic bool) error {
+	if automatic {
+		if !r.Status.CanAutoResume() {
+			return fmt.Errorf("run %q cannot be auto-resumed (status: %s) — CanAutoResume() excludes it deliberately", r.ID, r.Status)
+		}
+	} else if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
 	}
 	if r.Status.RequiresResumeAnswers() && len(answers) == 0 {

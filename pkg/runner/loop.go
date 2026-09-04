@@ -229,19 +229,11 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 		// whose nak beat the checkpoint write lands here too and now
 		// waits for that explicit resume instead of self-restarting.
 		//
-		// PR-closed cancels are terminal EVEN with an explicit resume:
-		// the stop-on-close webhook lane cancels every live run bound to a
-		// closed/merged PR (webhooks_common.go stopRunsForDeadPR), but a
-		// redelivery in flight when that cancel landed — from the retry
-		// sweeper's SubmitResume or a plain JetStream retry of the previous
-		// attempt — carries msg.Resume set and would otherwise proceed,
-		// resurrecting a review of a dead PR seconds after it merged (run
-		// 01a06885 on #646, live 03/09/2026: `run_workspace_reset
-		// reason=resume` 2s after the cancel, forfait consumed). Detected
-		// via store.IsPRClosedCancel over preRun.Error — the cancel reason
-		// (RunEndReasonPRClosed) is the ONE piece of state the redelivered
-		// message doesn't carry itself, and it survives CancelRunWithReason's
-		// "<reason> (was <status>: <prior>)" wrapping.
+		// A PR-closed cancel is terminal even with an explicit resume: the
+		// redelivered message does not carry the cancel, so the reason on
+		// the doc (via store.IsPRClosedCancel, which survives
+		// CancelRunWithReason's "(was <status>: <prior>)" wrapping) is the
+		// only signal that the PR is gone.
 		if store.IsPRClosedCancel(preRun.Error) {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
@@ -1059,7 +1051,11 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}
 
 	logger := r.cfg.Logger
-	logger.Info("runner: processing run %s (workflow=%s)", msg.RunID, msg.WorkflowName)
+	// NumDelivered pairs every subsequent line (admission drop, exec outcome)
+	// with the JetStream attempt count — a drop on the first delivery is a
+	// pre-cancel arrival, on ≥2 it is a redelivery. Cheap to include here so
+	// downstream logs don't each have to name it.
+	logger.Info("runner: processing run %s (workflow=%s delivery=%d)", msg.RunID, msg.WorkflowName, delivery.NumDelivered())
 
 	// runs_active{status=running}: incremented as soon as the runner
 	// commits to executing this delivery (post-decode), decremented in

@@ -1556,7 +1556,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// The runview layer validates first, but SubmitResume repeats the
 	// boundary check because another request may have changed the row
 	// since that read.
-	if !priorStatus.CanOperatorResume() {
+	//
+	// Automatic resumes (retry sweeper, --auto-resume) gate on the NARROWER
+	// CanAutoResume() — cancelled is excluded there, so a cancel that landed
+	// between the sweeper's ClaimRunRetry and this republish (the exact race
+	// #663 D1 probed) is refused here even before the CAS. Operator resumes
+	// keep the wider surface (paused / failed_resumable / cancelled).
+	if spec.Automatic {
+		if !priorStatus.CanAutoResume() {
+			return fmt.Errorf("cloudpublisher: run %s is not auto-resumable from status %s (CanAutoResume() excludes it deliberately)", spec.RunID, priorStatus)
+		}
+	} else if !priorStatus.CanOperatorResume() {
 		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -155,9 +156,26 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		RunID:    ref.ID,
 		FilePath: filePath,
 		Source:   source,
+		// Machinery resume: refuse a cancelled doc even with retry_after
+		// still set on the record. Without this a cancel that lands after
+		// ClaimRunRetry wins races the SubmitResume CAS `cancelled → queued`
+		// (which clears run.Error), delivering a message with no PR-closed
+		// marker to the runner — the review runs on the merged PR (#663 D1).
+		Automatic: true,
 	}
 	if lb != nil {
 		retrySpec.BundleDir, retrySpec.BotBundle = lb.BundleDir, lb.Ref
+	}
+	// Narrow the race window: read the run right before the resume and refuse
+	// if it is no longer auto-resumable (cancelled by stop-on-close, moved
+	// to a paused state by another writer). The SubmitResume CAS is the
+	// authoritative close, but this pre-check spares the queue publish + a
+	// rollback on the common case.
+	if r, err := s.cfg.Store.LoadRun(runCtx, ref.ID); err == nil && r != nil && !r.Status.CanAutoResume() {
+		adm.rollback(s.logger)
+		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+			fmt.Sprintf("auto-retry abandoned: run is %s (%s)", r.Status, strings.TrimSpace(r.Error)))
+		return
 	}
 	if _, err := resumer.Resume(runCtx, retrySpec); err != nil {
 		// Could be transient (a publish blip) or permanent (the bot was
