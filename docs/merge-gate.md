@@ -111,9 +111,15 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > is even considered, so the fork re-review exposure above cannot occur
 > there. A repo collaborator can still launch a bot on fork code
 > deliberately with a `/command`, which gates on the commenter's
-> permission. On **GitLab** there is no fork/cross-project guard at all,
-> so a forked-MR auto-review *is* reachable — bound that lane with an
-> `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
+> permission. On **GitLab** the inbound MR lane has no fork/cross-project
+> guard, so a forked-MR auto-review *is* reachable — bound that lane with
+> an `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
+> The two lanes that resolve the MR through the API instead — auto-fix and
+> gate relaunch, both fail-closed on an unproven head repo — do guard on
+> GitLab: a same-project MR qualifies (the MR's source and target project
+> ids agree, so the head lives in the project the lane queried), a fork MR
+> is refused (GitLab's MR payload names the source project's id only, never
+> its path, so the head stays unproven).
 
 ## Activating the blocking gate on a repo
 

@@ -2,7 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -511,6 +515,136 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 	idem := knowledge.ChecksumHex([]byte("autofix|" + team + "|" + repo + "|7|" + head))
 	if _, err := s.webhookDeliveries.GetByIdempotencyKey(context.Background(), idem); err != nil {
 		t.Errorf("no per-head claim was recorded (%v) — the loop would be unbounded", err)
+	}
+}
+
+// TestAutofixOnGitLabResolvesTheHeadRepo drives the lane through the REAL
+// GitLab client — no gate-client stub. The fail-closed fork guard reads
+// forge.PullRef.HeadRepoFullName, which only the provider adapter can supply,
+// so a stub that fills it in certifies nothing about GitLab. A same-project MR
+// must launch the fixer on the MR's source branch; a fork MR must be refused —
+// the MR payload names no source project path, so its head is unproven, which
+// is the right answer for a lane that pushes to the base repo.
+func TestAutofixOnGitLabResolvesTheHeadRepo(t *testing.T) {
+	const (
+		team   = "t1"
+		repo   = "acme/widgets"
+		head   = "cafe1234cafe1234cafe1234cafe1234cafe1234"
+		gateNm = "iterion/review"
+	)
+	cases := []struct {
+		name          string
+		sourceProject int
+		wantLaunch    bool
+	}{
+		{"a same-project MR launches the fixer", 3, true},
+		{"a fork MR is refused — its head repo cannot be proven", 5, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch p := r.URL.EscapedPath(); {
+				case strings.HasSuffix(p, "/projects/acme%2Fwidgets/merge_requests/7"):
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"iid": 7, "title": "feat: x", "state": "opened", "sha": head,
+						"source_branch": "feat/x", "target_branch": "main",
+						"source_project_id": c.sourceProject, "target_project_id": 3,
+						"web_url": "https://gl/acme/widgets/-/merge_requests/7",
+						"author":  map[string]any{"username": "alice"},
+					})
+				case strings.HasSuffix(p, "/projects/acme%2Fwidgets/repository/commits/"+head+"/statuses"):
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"id": 1, "status": "failed", "name": gateNm, "description": "2 findings"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(gl.Close)
+			prURL := gl.URL + "/acme/widgets/-/merge_requests/7"
+
+			s := newWebhookTestServer(t)
+			s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.Store = rs
+			conn := forge.Connection{
+				ID: "c-gl", TenantID: team, Provider: forge.ProviderGitLab, Kind: forge.KindPAT,
+				Status: forge.StatusActive, ForgeBaseURL: gl.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
+			}
+			sealed, err := forge.SealPAT(s.sealer, conn.ID, "glpat-connection")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.SealedPayload = sealed
+			conns := forge.NewMemoryConnectionStore()
+			if err := conns.Create(context.Background(), conn); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeConnections = conns
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
+			s.forgePublishTokens.Register("run-token", ForgePublishGrant{TeamID: team, ConnectionID: conn.ID, Repo: repo})
+			ints := forge.NewMemoryRepoIntegrationStore()
+			if err := ints.Create(context.Background(), forge.RepoIntegration{
+				ID: "i1", TenantID: team, ConnectionID: conn.ID, RepoFullName: repo,
+				BotIDs: []string{"fixer-bot"}, WebhookID: "w1", AutoFixOnGateFailure: true,
+				LaunchVars: map[string]string{gateContextVar: gateNm},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeIntegrations = ints
+			if err := s.webhookConfigs.Create(context.Background(), webhooks.Config{
+				ID: "w1", TenantID: team, BotIDs: []string{"fixer-bot"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var launches int
+			var gotBot, gotRepoURL, gotRef string
+			s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, repoURL, repoRef, _ string, _, _ map[string]string) (string, error) {
+				launches++
+				gotBot, gotRepoURL, gotRef = botID, repoURL, repoRef
+				return "run-fixer", nil
+			}
+
+			id, err := store.GenerateRunID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := rs.CreateRun(context.Background(), id, "reviewer-bot", map[string]any{
+				"pr_url": prURL, "gate_context": gateNm, "head_sha": head,
+				forgePublishVarToken: "run-token",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.BotID = "reviewer-bot"
+			run.Status = store.RunStatusFinished
+			if err := rs.SaveRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.autofixForRun(context.Background(), trigger.Event{
+				Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+				Subject: trigger.Subject{ID: run.ID},
+			}); err != nil {
+				t.Fatalf("handler returned %v", err)
+			}
+			if !c.wantLaunch {
+				if launches != 0 {
+					t.Fatalf("launched %s on a fork MR — the fixer would push to a base-repo ref", gotBot)
+				}
+				return
+			}
+			if launches != 1 {
+				t.Fatalf("a same-project GitLab MR with a red gate must launch the fixer once, got %d launches — the head repo the fork guard reads was not resolved by the adapter", launches)
+			}
+			if gotBot != "fixer-bot" || gotRepoURL != forge.CloneURLFor(gl.URL, repo) || gotRef != "feat/x" {
+				t.Fatalf("launched %s on %s@%s, want fixer-bot on %s@feat/x", gotBot, gotRepoURL, gotRef, forge.CloneURLFor(gl.URL, repo))
+			}
+		})
 	}
 }
 

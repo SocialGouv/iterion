@@ -14,37 +14,58 @@ import (
 // gitlabMR is the GitLab merge-request shape (read). Like issues, an MR is
 // addressed by its per-project `iid`; `state` is "opened"/"merged"/"closed",
 // `sha` is the head commit, `work_in_progress`/`draft` flag a draft.
+// `source_project_id`/`target_project_id` name the projects the head and
+// base branches live in — ids only; the payload never carries the source
+// project's path.
 type gitlabMR struct {
-	IID            int        `json:"iid"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description"`
-	State          string     `json:"state"`
-	WebURL         string     `json:"web_url"`
-	SourceBranch   string     `json:"source_branch"`
-	TargetBranch   string     `json:"target_branch"`
-	SHA            string     `json:"sha"`
-	Draft          bool       `json:"draft"`
-	WorkInProgress bool       `json:"work_in_progress"`
-	Author         gitlabUser `json:"author"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	IID             int        `json:"iid"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	State           string     `json:"state"`
+	WebURL          string     `json:"web_url"`
+	SourceBranch    string     `json:"source_branch"`
+	TargetBranch    string     `json:"target_branch"`
+	SourceProjectID int64      `json:"source_project_id"`
+	TargetProjectID int64      `json:"target_project_id"`
+	SHA             string     `json:"sha"`
+	Draft           bool       `json:"draft"`
+	WorkInProgress  bool       `json:"work_in_progress"`
+	Author          gitlabUser `json:"author"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
-// toRef normalizes a GitLab MR onto forge.PullRef. state "opened"→"open",
-// "merged"/"closed" pass through; draft is the OR of the two GitLab flags.
-func (mr gitlabMR) toRef() forge.PullRef {
+// toRef normalizes a GitLab MR onto forge.PullRef. project is the reference
+// the caller addressed the MR under — an MR lives in its TARGET project.
+// state "opened"→"open", "merged"/"closed" pass through; draft is the OR of
+// the two GitLab flags.
+//
+// HeadRepoFullName is that same reference when the source and target
+// project ids agree: the head branch then lives in the project the caller
+// queried, and a SameRepoAs against the caller's own reference holds by
+// construction, whichever form (path or numeric id) the caller addressed
+// the project by. A fork MR (differing ids) leaves it empty — the payload
+// names no source project path — and so does a payload without the ids:
+// every same-repo-only lane reads an empty head as "not proven" and
+// refuses, which is the right answer for a fork and for an unknown.
+func (mr gitlabMR) toRef(project string) forge.PullRef {
+	head := ""
+	if mr.SourceProjectID > 0 && mr.SourceProjectID == mr.TargetProjectID {
+		head = strings.TrimSpace(project)
+	}
 	return forge.PullRef{
-		Number:       mr.IID,
-		Title:        mr.Title,
-		State:        normMRState(mr.State),
-		URL:          mr.WebURL,
-		SourceBranch: mr.SourceBranch,
-		TargetBranch: mr.TargetBranch,
-		HeadSHA:      mr.SHA,
-		Author:       mr.Author.Username,
-		Draft:        mr.Draft || mr.WorkInProgress,
-		CreatedAt:    mr.CreatedAt,
-		UpdatedAt:    mr.UpdatedAt,
+		Number:           mr.IID,
+		Title:            mr.Title,
+		State:            normMRState(mr.State),
+		URL:              mr.WebURL,
+		SourceBranch:     mr.SourceBranch,
+		TargetBranch:     mr.TargetBranch,
+		HeadSHA:          mr.SHA,
+		HeadRepoFullName: head,
+		Author:           mr.Author.Username,
+		Draft:            mr.Draft || mr.WorkInProgress,
+		CreatedAt:        mr.CreatedAt,
+		UpdatedAt:        mr.UpdatedAt,
 		// GitLab has no first-class field for arbitrary issue linkage in the
 		// MR payload, so LinkedIssues is parsed best-effort from title+body.
 		LinkedIssues: forge.ParseIssueRefs(false, mr.Title, mr.Description),
@@ -103,7 +124,7 @@ func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts fo
 	}
 	out := make([]forge.PullRef, 0, len(mrs))
 	for _, mr := range mrs {
-		out = append(out, mr.toRef())
+		out = append(out, mr.toRef(repo))
 	}
 	return out, nil
 }
@@ -118,7 +139,7 @@ func (c *AdminClient) GetPullRequest(ctx context.Context, repo string, number in
 	if code != http.StatusOK {
 		return forge.PullRef{}, statusErr("get merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 // gitlabCommitStatus is one per-job commit status (the GitLab
@@ -292,7 +313,7 @@ func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewP
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("create merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 // UpdatePull applies a partial update. State transitions map onto GitLab's
@@ -324,7 +345,7 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("update merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 // MergePull merges a merge request via PUT /merge_requests/{iid}/merge, which
@@ -355,7 +376,7 @@ func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, op
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("merge merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 var _ forge.PullClient = (*AdminClient)(nil)
