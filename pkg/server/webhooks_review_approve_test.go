@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -89,10 +90,10 @@ func TestGitHubComment_ReviewApprove_UsesCommandGate(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var gateCalls int
 	var gotBot string
-	s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
+	s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
 		gateCalls++
 		gotBot = route.BotID
-		return false, "replier not authorized", nil // deny
+		return gateRefused, "replier not authorized", nil // deny
 	}
 	launched := 0
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -165,8 +166,8 @@ func TestReviewApprove_ThroughConnectionAdmin_NotForgeTokenBinding(t *testing.T)
 	}
 	// Authorize the commenter (WhoAmI + role gate live in the command
 	// gate, which we bypass here — the fix is orthogonal to admission).
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	// The repo pinned the gate context on the manifest union (docs/merge-gate.md
 	// §Overriding). The approve resolves this and writes success under it.
@@ -215,8 +216,8 @@ func TestReviewApprove_WriteFailure_RepliesOnPRAnd200(t *testing.T) {
 	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) {
 		return commenter, nil
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -231,8 +232,14 @@ func TestReviewApprove_WriteFailure_RepliesOnPRAnd200(t *testing.T) {
 	if len(commenter.bodies) != 1 {
 		t.Fatalf("a failed approve must post ONE reply on the PR so the maintainer sees why, got %d", len(commenter.bodies))
 	}
-	if got := commenter.bodies[0]; !approveReplyContains(got, "@maintainer-jane", "I can't approve", "insufficient scope") {
-		t.Fatalf("reply must name the maintainer AND state why:\n%s", got)
+	// The reply says what failed and what to do; the forge's own error text
+	// is internal detail that stays on the audit row (a public PR is not the
+	// place for it).
+	if got := commenter.bodies[0]; !approveReplyContains(got, "@maintainer-jane", "I can't approve", "status") || approveReplyContains(got, "insufficient scope") {
+		t.Fatalf("reply must name the maintainer and the failed write without pasting the forge error:\n%s", got)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusLaunchError || !approveReplyContains(rows[0].Error, "insufficient scope") {
+		t.Fatalf("the audit row keeps the forge error, got %+v", rows)
 	}
 }
 
@@ -277,8 +284,8 @@ func TestReviewApprove_AuthorCannotApproveOwnPR(t *testing.T) {
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return authored, nil }
 	commenter := &stubCommenter{}
 	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return commenter, nil }
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -324,9 +331,9 @@ func TestReviewApprove_DefaultsFloorToMaintainerWhenUnpinned(t *testing.T) {
 	gc := &fakeGateClient{headSHA: "abc1234"}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	var gotRoles []string
-	s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
+	s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
 		gotRoles = append(gotRoles, route.MinReplierRole)
-		return true, "authorized", nil
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -369,9 +376,9 @@ func TestReviewApprove_PinRaisesTheFloorNeverLowersIt(t *testing.T) {
 			gc := &fakeGateClient{headSHA: "abc"}
 			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 			var gotRoles []string
-			s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
+			s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
 				gotRoles = append(gotRoles, route.MinReplierRole)
-				return true, "authorized", nil
+				return gateAuthorized, "authorized", nil
 			}
 			cfg, pt := ghConfig(t, s)
 			cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -401,8 +408,8 @@ func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	}
 	commenter := &stubCommenter{}
 	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return commenter, nil }
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -415,6 +422,9 @@ func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	}
 	if len(commenter.bodies) != 1 {
 		t.Fatalf("gate client error must post a reply on the PR, got %d", len(commenter.bodies))
+	}
+	if got := commenter.bodies[0]; approveReplyContains(got, "insufficient scope") {
+		t.Fatalf("the reply pasted the forge error text onto the PR:\n%s", got)
 	}
 	var resp map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
@@ -438,8 +448,8 @@ func TestReviewApprove_IdempotentOnRedelivery(t *testing.T) {
 	gc := &fakeGateClient{headSHA: "abc1234"}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return &stubCommenter{}, nil }
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -516,8 +526,8 @@ func approveWorld(t *testing.T) (*Server, *fakeGateClient, *stubCommenter, webho
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	commenter := &stubCommenter{}
 	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return commenter, nil }
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -865,8 +875,8 @@ func approveBodyFrom(sender string) string {
 // on the forge, under the pinned context, on the resolved head.
 func TestReviewApprove_TokenBindingWritesTheStatusWithoutAConnection(t *testing.T) {
 	s, f, cfg, pt := approveTokenWorld(t)
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
@@ -894,7 +904,10 @@ func TestReviewApprove_TokenBindingWritesTheStatusWithoutAConnection(t *testing.
 // The real command gate, against the real (fake-served) permission API: the
 // approve floor is maintainer, an operator's pin may raise it and never
 // lower it, and neither the review bot's own comment nor the PR author can
-// approve.
+// approve. A commenter the GATE refuses is answered in silence — the
+// delivery audit names the reason, the PR gets no bot comment, because
+// anyone able to comment can reach that branch. A refusal AFTER the gate
+// (the author approving their own PR) is a maintainer's, and is told.
 func TestReviewApprove_RealGateFloor(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -902,17 +915,18 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 		perm       string
 		cfgFloor   string
 		wantStatus bool
-		wantReply  string // "" when the status must land
+		wantSilent string // the gate refused: this reason on the audit row, no reply
+		wantReply  string // refused past the gate: this reply on the PR
 	}{
-		{"write is refused when the webhook pins no floor", "dev-dan", "write", "", false, "replier not authorized"},
-		{"a developer pin does not lower the floor: write is refused", "dev-dan", "write", "developer", false, "replier not authorized"},
-		{"a reporter pin does not lower the floor: triage is refused", "triager-tom", "triage", "reporter", false, "replier not authorized"},
-		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, ""},
-		{"an owner pin raises the floor: maintain is refused", "maintainer-jane", "maintain", "owner", false, "replier not authorized"},
-		{"an owner pin raises the floor: admin is accepted", "admin-ann", "admin", "owner", true, ""},
-		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard"},
-		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "own pull request"},
-		{"a Forgejo repo owner is accepted with no floor pinned", "owner-olga", "owner", "", true, ""},
+		{"write is refused when the webhook pins no floor", "dev-dan", "write", "", false, "replier not authorized", ""},
+		{"a developer pin does not lower the floor: write is refused", "dev-dan", "write", "developer", false, "replier not authorized", ""},
+		{"a reporter pin does not lower the floor: triage is refused", "triager-tom", "triage", "reporter", false, "replier not authorized", ""},
+		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, "", ""},
+		{"an owner pin raises the floor: maintain is refused", "maintainer-jane", "maintain", "owner", false, "replier not authorized", ""},
+		{"an owner pin raises the floor: admin is accepted", "admin-ann", "admin", "owner", true, "", ""},
+		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard", ""},
+		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "", "own pull request"},
+		{"a Forgejo repo owner is accepted with no floor pinned", "owner-olga", "owner", "", true, "", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -935,10 +949,110 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 			if len(statuses) != 0 {
 				t.Fatalf("must not write a status, got %v", statuses)
 			}
+			if c.wantSilent != "" {
+				if len(comments) != 0 {
+					t.Fatalf("a commenter the gate refuses gets NO reply (any PR commenter can drive one), got %v", comments)
+				}
+				if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered || !approveReplyContains(rows[0].Error, c.wantSilent) {
+					t.Fatalf("the refusal must be audited as filtered with %q, got %+v", c.wantSilent, rows)
+				}
+				return
+			}
 			if len(comments) != 1 || !approveReplyContains(comments[0], "@"+c.sender, c.wantReply) {
 				t.Fatalf("want one reply naming @%s and %q, got %v", c.sender, c.wantReply, comments)
 			}
 		})
+	}
+}
+
+func approveBodyFromID(sender string, id int) string {
+	return `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","user":{"login":"alice"},"pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":` + fmt.Sprint(id) + `,"body":"/revi approve","html_url":"https://github.com/acme/widgets/pull/7#issuecomment-` + fmt.Sprint(id) + `"},"sender":{"login":"` + sender + `"}}`
+}
+
+// /revi approve is intercepted before any scope or route admission, so a
+// drive-by commenter with no repo role reaches the gate on every comment.
+// Each comment is its own idempotency key: N comments must cost N silent
+// filtered rows — no bot comment on the PR, and no PR read either, since the
+// head is only resolved for a commenter who cleared the floor.
+func TestReviewApprove_UnauthorizedCommenterIsRefusedInSilence(t *testing.T) {
+	s, f, cfg, pt := approveTokenWorld(t)
+	s.webhookPRForgeCommandGate = nil // the real gate; "outsider" has no role → 404 → none
+	for _, id := range []int{556, 557, 558} {
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFromID("outsider", id), prforge.EventHeaderIssueComment, pt))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	statuses, comments := f.snapshot()
+	if len(statuses) != 0 {
+		t.Fatalf("an unauthorized commenter force-greened the gate: %v", statuses)
+	}
+	if len(comments) != 0 {
+		t.Fatalf("three drive-by comments produced %d bot comments under the org's identity, want 0: %v", len(comments), comments)
+	}
+	if pulls := f.bearersFor("pull"); len(pulls) != 0 {
+		t.Fatalf("the PR head was read %d time(s) for a commenter who never cleared the floor, want 0", len(pulls))
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 3 {
+		t.Fatalf("want one filtered audit row per comment, got %+v", rows)
+	}
+	for _, r := range rows {
+		if r.Status != webhooks.StatusFiltered || !approveReplyContains(r.Error, "replier not authorized") {
+			t.Fatalf("each refusal must be audited as filtered with its reason, got %+v", r)
+		}
+	}
+}
+
+// A gate that could not be EVALUATED — no credential to read the commenter's
+// standing — is a configuration miss the maintainer has to fix, and is told
+// so on the PR. The reason the gate produced names internal state (a
+// connection id, a forge's error text): that stays on the audit row and in
+// the log, never in the comment.
+func TestReviewApprove_UnevaluableGateRepliesWithoutInternals(t *testing.T) {
+	s, gc, commenter, cfg, pt := approveWorld(t)
+	const internal = "connection conn-app covers github.com/acme/widgets but its client cannot serve (forge: 422 permissions not granted to this installation), and this webhook has no forge_token binding to fall back on"
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateUnevaluable, internal, nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK || gc.setCalls != 0 {
+		t.Fatalf("status=%d setCalls=%d body=%s", w.Code, gc.setCalls, w.Body.String())
+	}
+	if len(commenter.bodies) != 1 {
+		t.Fatalf("an unevaluable gate is a configuration miss: the maintainer must be told on the PR, got %v", commenter.bodies)
+	}
+	if got := commenter.bodies[0]; !approveReplyContains(got, "@maintainer-jane", "I cannot approve here") ||
+		approveReplyContains(got, "conn-app") || approveReplyContains(got, "422") || approveReplyContains(got, "not granted") {
+		t.Fatalf("the reply must say what to fix and carry no connection id or forge error text, got:\n%s", got)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered || !approveReplyContains(rows[0].Error, "conn-app", "not granted") {
+		t.Fatalf("the audit row keeps the internal detail, got %+v", rows)
+	}
+}
+
+// The disabled-bot refusal is a configuration miss like every other, and is
+// told on the PR — to a MAINTAINER. For a commenter the gate refuses it is
+// not reached at all: the gate runs first, so nobody learns which bots a
+// webhook enables by typing a command.
+func TestReviewApprove_DisabledReviewBotIsSilentForAnUnauthorizedCommenter(t *testing.T) {
+	s, gc, commenter, cfg, pt := approveWorld(t)
+	cfg.BotIDs = []string{"feature-dev"}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateRefused, "replier not authorized: mallory", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("mallory"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK || gc.setCalls != 0 {
+		t.Fatalf("status=%d setCalls=%d body=%s", w.Code, gc.setCalls, w.Body.String())
+	}
+	if len(commenter.bodies) != 0 {
+		t.Fatalf("an unauthorized commenter was told which bots this webhook enables: %v", commenter.bodies)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered || !approveReplyContains(rows[0].Error, "replier not authorized") {
+		t.Fatalf("want one filtered row carrying the gate's refusal, got %+v", rows)
 	}
 }
 
@@ -948,8 +1062,8 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.forgeConnections = forge.NewMemoryConnectionStore()
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
@@ -969,7 +1083,7 @@ func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 
 // A force-green is ROLE-only: AuthorizedRepliers is "who may talk back to
 // the bot", not "who may bypass the merge queue". An allowlisted login with
-// no repo permission is refused, with a reply.
+// no repo permission is refused by the gate — in silence, audited.
 func TestReviewApprove_AllowlistDoesNotBypassTheRoleFloor(t *testing.T) {
 	s, f, cfg, pt := approveTokenWorld(t)
 	s.webhookPRForgeCommandGate = nil // the real gate
@@ -984,8 +1098,11 @@ func TestReviewApprove_AllowlistDoesNotBypassTheRoleFloor(t *testing.T) {
 	if len(statuses) != 0 {
 		t.Fatalf("an allowlisted login with no repo role force-greened the gate: %v", statuses)
 	}
-	if len(comments) != 1 || !approveReplyContains(comments[0], "@outsider", "replier not authorized") {
-		t.Fatalf("want one reply naming the role refusal, got %v", comments)
+	if len(comments) != 0 {
+		t.Fatalf("a commenter the gate refuses gets no reply, got %v", comments)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered || !approveReplyContains(rows[0].Error, "replier not authorized") {
+		t.Fatalf("want one filtered row naming the role refusal, got %+v", rows)
 	}
 }
 
@@ -1174,8 +1291,8 @@ func TestReviewApprove_BindingOnlyReadFailureIsALaunchError(t *testing.T) {
 	f.revokedBearer = "Bearer ghp_hand_owned"
 	// The gate would refuse on the revoked token too; stub it so the read
 	// through the write path is the only thing under test.
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))

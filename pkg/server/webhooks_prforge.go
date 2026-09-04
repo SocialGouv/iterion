@@ -78,13 +78,13 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	if gate == nil {
 		gate = s.realWebhookPRForgeCommandGate
 	}
-	authorized, reason, aerr := gate(ctx, cfg, provider, p, route)
+	outcome, reason, aerr := gate(ctx, cfg, provider, p, route)
 	if aerr != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
 		httpError(w, http.StatusBadGateway, "authorization check failed")
 		return
 	}
-	if !authorized {
+	if outcome != gateAuthorized {
 		filtered(reason)
 		return
 	}
@@ -250,40 +250,59 @@ func prforgeNoteMeta(p prforge.ParsedNote) webhookEventMeta {
 	}
 }
 
+// prforgeGateOutcome is what the command gate decided about a commenter.
+// The two refusals are kept apart for the one lane that talks back on the
+// PR: a REFUSED commenter is anyone able to type on the PR, and is answered
+// in silence — a reply there is a bot comment any drive-by can drive — while
+// an UNEVALUABLE gate is a configuration miss a maintainer has to fix.
+type prforgeGateOutcome int
+
+const (
+	// gateAuthorized: the commenter cleared the route's floor.
+	gateAuthorized prforgeGateOutcome = iota
+	// gateRefused: the commenter was evaluated and does not clear it — a
+	// role below the floor, or the bot's own comment (loop-guard).
+	gateRefused
+	// gateUnevaluable: nothing to read the commenter's standing with — no
+	// usable forge host, no credential that serves — so nothing was decided
+	// about them.
+	gateUnevaluable
+)
+
 // realWebhookPRForgeCommandGate is the production replier gate for a GitHub /
 // Forgejo command comment: resolve the forge client (the covering connection,
 // else the bot's forge_token binding), reject the bot's own comment
 // (loop-guard), then authorize the commenter — allowlist OR a
 // repo-permission >= the route's MinReplierRole (falling back to the webhook
-// default). ok=false + reason for benign refusals; err only for infra failure.
-func (s *Server) realWebhookPRForgeCommandGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
+// default). A refusal carries its reason; err only for infra failure.
+func (s *Server) realWebhookPRForgeCommandGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
 	baseURL, refusal := prforgeBaseURL(cfg, p)
 	if refusal != "" {
-		return false, refusal, nil
+		return gateUnevaluable, refusal, nil
 	}
 	api, apiRefusal := s.prforgeReplierAPIFor(ctx, cfg, provider, baseURL, p.ProjectPath, route.BotID)
 	if apiRefusal != "" {
-		return false, apiRefusal, nil
+		return gateUnevaluable, apiRefusal, nil
 	}
 	if id, err := api.WhoAmI(ctx); err == nil && id.Login != "" && strings.EqualFold(id.Login, p.AuthorLogin) {
-		return false, "self comment (loop-guard)", nil
+		return gateRefused, "self comment (loop-guard)", nil
 	}
 	// Allowlist short-circuit (no API call).
 	if prforgeInAllowlist(cfg.AuthorizedRepliers, p.AuthorLogin) {
-		return true, "allowlist", nil
+		return gateAuthorized, "allowlist", nil
 	}
 	perm, err := api.CollaboratorPermission(ctx, p.ProjectPath, p.AuthorLogin)
 	if err != nil {
-		return false, "", err
+		return gateUnevaluable, "", err
 	}
 	minRole := route.MinReplierRole
 	if minRole == "" {
 		minRole = cfg.MinReplierRole
 	}
 	if prforgePermRank(perm) >= replierMinRoleRank(minRole) {
-		return true, "role", nil
+		return gateAuthorized, "role", nil
 	}
-	return false, "replier not authorized: " + p.AuthorLogin, nil
+	return gateRefused, "replier not authorized: " + p.AuthorLogin, nil
 }
 
 // prforgeReplierClient builds the right minimal forge client for the gate.

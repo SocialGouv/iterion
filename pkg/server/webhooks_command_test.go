@@ -137,8 +137,8 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 	var calls int
 	var gotBot, gotRef string
 	var gotVars map[string]string
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
@@ -181,8 +181,8 @@ func TestGitHubIssueComment_BillyPushBackStamped(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
@@ -220,8 +220,8 @@ func TestGitHubIssueComment_BillyPushBackAsPR(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/x", TargetBranch: "main"}, nil
@@ -261,8 +261,8 @@ func TestGitHubIssueComment_BillyBoardCardCarriesPRContext(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", Mode: "board", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
@@ -309,8 +309,8 @@ func TestGitHubIssueComment_PRResolutionFailureIsVisible(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{}, fmt.Errorf("forge unreachable")
@@ -340,8 +340,8 @@ func TestGitHubIssueComment_ClosedPRFiltered(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "merged", SourceBranch: "feat/export", TargetBranch: "main"}, nil
@@ -537,8 +537,8 @@ func TestGitHubIssueComment_BillyUnauthorizedRejected(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return false, "replier not authorized: mallory", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateRefused, "replier not authorized: mallory", nil
 	}
 	launched := 0
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -572,8 +572,8 @@ func TestGitHubIssueComment_SeedsDeclaredReviewConsumer(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"fixit": {{BotID: "fixer-bot", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
@@ -668,8 +668,8 @@ func TestGitHubIssueComment_ForkPRFiltered(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	// The resolver returns a fork PR: HeadRepoFullName differs from the
 	// base repo. The command handler must filter it as a fork (200) and
@@ -705,8 +705,8 @@ func TestGitHubIssueComment_SameRepoStillLaunches(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{
@@ -744,8 +744,8 @@ func TestGitHubIssueComment_EmptyHeadRepoFailsClosed(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil

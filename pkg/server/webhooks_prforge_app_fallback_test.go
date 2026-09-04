@@ -237,8 +237,14 @@ func TestPRForgeAppFallback_StatusesWithheldWithoutTokenIsANamedRefusal(t *testi
 	if got := f.bearersFor("status"); len(got) != 0 {
 		t.Fatalf("no status write may be attempted with a token known to lack the grant, got %v", got)
 	}
-	if _, comments := f.snapshot(); len(comments) != 1 || !strings.Contains(comments[0], "statuses") {
+	_, comments := f.snapshot()
+	if len(comments) != 1 || !strings.Contains(comments[0], "statuses") {
 		t.Fatalf("the maintainer must be told which grant is missing, got %v", comments)
+	}
+	// What to approve, on which App — never the connection id or GitHub's
+	// error text, which stay on the audit row.
+	if strings.Contains(comments[0], "c-app") || strings.Contains(comments[0], "not granted") {
+		t.Fatalf("the reply pasted internal detail onto the PR:\n%s", comments[0])
 	}
 }
 

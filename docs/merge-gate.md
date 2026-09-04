@@ -455,7 +455,19 @@ Three ways, in order of preference:
    its reads still work and only the status write would 403). In both
    cases the lane warns and reads, writes and replies through the
    binding; with no binding, the refusal names the withheld grant to
-   approve on the App. *(GitHub + Forgejo today;
+   approve on the App. **Who is told what:** the role gate runs before
+   anything the lane says on the PR. A commenter it refuses — below the
+   floor, or the bot's own comment — gets **no reply**; the webhook's
+   delivery audit records the refusal. `/revi approve` is intercepted
+   before any scope or route admission, so that branch is reachable by
+   anyone who can comment, and a bot comment there would be one any
+   drive-by could drive, N times for N comments. Past the gate the
+   commenter is a maintainer, and every configuration refusal or forge
+   failure (bot not enabled, no connection and no binding, withheld
+   grant, no gate context, no head sha, a rejected status write) is told
+   on the PR as **what to fix**; connection ids and the forge's own error
+   text stay in the server log and on the audit row, never in the
+   comment. *(GitHub + Forgejo today;
    GitLab `/revi approve` on a note is a follow-on.)*
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.

@@ -186,8 +186,8 @@ func TestGitHubWebhook_ReviQuestionRoutesViaCommandRegistry(t *testing.T) {
 		gotBot, gotVars = botID, vars
 		return "run-q-1", nil
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "allowlist", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "allowlist", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feature/x", TargetBranch: "main", HeadSHA: "abc123"}, nil
