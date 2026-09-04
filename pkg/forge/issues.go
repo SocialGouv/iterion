@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -103,9 +104,30 @@ type PullRef struct {
 	Draft        bool      `json:"draft,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
+	// differs from the base repo (the endpoint's own path parameter) for a
+	// fork PR; empty when the provider omits it. Read by IsCrossRepo for the
+	// fork guard on lanes that resolve a PR via the forge API and therefore
+	// cannot rely on the webhook payload's own head.repo field.
+	HeadRepoFullName string `json:"head_repo_full_name,omitempty"`
 	// LinkedIssues are issue numbers this PR references / closes, best-effort
 	// parsed from the title/body ("fixes #12", "Closes #7", "!?").
 	LinkedIssues []int `json:"linked_issues,omitempty"`
+}
+
+// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
+// than baseRepo — the fork-guard signal, matching pkg/webhooks/prforge.Parsed's
+// same-named method. Returns false when HeadRepoFullName is empty (a legacy
+// payload / provider that omits it): a caller that must fail-closed on
+// unknown fork status has to combine this with an emptiness check on
+// HeadRepoFullName, as the auto-launch lane already does via the parsed
+// webhook payload. Passing an empty baseRepo returns false — this method
+// judges cross-repo only when both sides are known.
+func (p PullRef) IsCrossRepo(baseRepo string) bool {
+	if p.HeadRepoFullName == "" || baseRepo == "" {
+		return false
+	}
+	return !strings.EqualFold(p.HeadRepoFullName, baseRepo)
 }
 
 // PullListOptions filters ListPullRequests.
