@@ -1587,52 +1587,98 @@ func TestProductDocsSourceStampRecordsFullSHA(t *testing.T) {
 
 // TestProductDocsPublishGate pins the publish tail's deterministic
 // pre-flight, executing the real node body: the tail opens only on the
-// explicit opt-in + a serve base URL + a named bucket + all three S3
-// secrets present at their TEMPLATE-resolved paths (host and sandbox
+// explicit opt-in + a base URL + a named image repository + both
+// credentials present at their TEMPLATE-resolved paths (host and sandbox
 // runs resolve differently; a hardcoded mount path silently disabled
-// publishing on host runs).
+// publishing on host runs) + the operator's deploy-target playbook
+// actually mirrored into the workspace.
 func TestProductDocsPublishGate(t *testing.T) {
 	requireGitPython(t)
 	command := toolCommand(t, "product-docs/main.bot", "publish_gate")
 
 	secretsDir := t.TempDir()
 	paths := map[string]string{}
-	for _, n := range []string{"onyxia_s3_access_key", "onyxia_s3_secret_key", "onyxia_s3_session_token"} {
+	for _, n := range []string{"deploy_credential", "registry_token"} {
 		p := filepath.Join(secretsDir, n)
 		if err := os.WriteFile(p, []byte("v"), 0o600); err != nil {
 			t.Fatalf("write secret fixture: %v", err)
 		}
 		paths[n] = p
 	}
-	run := func(t *testing.T, publish, base, bucket, missing string) publishGateOut {
+	// A workspace with the deploy-target skill in one of the two shapes the
+	// engine mirrors: <name>/SKILL.md (skill library, pkg/runtime/library_skills.go)
+	// and the flat <name>.md (plugin contribution, pkg/runtime/contributions.go).
+	// `rel` empty seeds no skill at all.
+	workspace := func(t *testing.T, rel string) string {
+		t.Helper()
+		ws := t.TempDir()
+		if rel == "" {
+			return ws
+		}
+		p := filepath.Join(ws, ".claude", "skills", filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("seed deploy-target skill: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("# deploy-target\n"), 0o644); err != nil {
+			t.Fatalf("seed deploy-target skill: %v", err)
+		}
+		return ws
+	}
+	wsReady := workspace(t, "deploy-target/SKILL.md")
+	wsFlat := workspace(t, "deploy-target.md")
+	wsBare := workspace(t, "")
+
+	// The gate probes the RUN's cwd as well as vars.workspace_dir (a tool node
+	// executes in the run workDir, which is also where the engine mirrors). Pin
+	// the process cwd to an empty directory so only the workspace_dir half is
+	// under test and the repo's own tree cannot answer for it.
+	emptyCwd := t.TempDir()
+	run := func(t *testing.T, publish, base, image, missing, ws string) publishGateOut {
 		t.Helper()
 		refs := map[string]string{
-			"vars.publish":                         publish,
-			"vars.publish_base_url":                base,
-			"vars.publish_s3_bucket":               bucket,
-			"secrets.onyxia_s3_access_key.path":    paths["onyxia_s3_access_key"],
-			"secrets.onyxia_s3_secret_key.path":    paths["onyxia_s3_secret_key"],
-			"secrets.onyxia_s3_session_token.path": paths["onyxia_s3_session_token"],
+			"vars.publish":                   publish,
+			"vars.publish_base_url":          base,
+			"vars.publish_image":             image,
+			"vars.workspace_dir":             ws,
+			"secrets.deploy_credential.path": paths["deploy_credential"],
+			"secrets.registry_token.path":    paths["registry_token"],
 		}
 		if missing != "" {
 			refs["secrets."+missing+".path"] = filepath.Join(secretsDir, "absent")
 		}
 		var got publishGateOut
-		runJSON(t, resolveCommand(t, command, refs), &got)
+		runJSON(t, "cd "+shQuote(emptyCwd)+" && "+resolveCommand(t, command, refs), &got)
 		return got
 	}
 
-	if got := run(t, "true", "https://serve.example", "demo-bucket", ""); !got.DoPublish || got.Reason != "ready" {
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", "", wsReady); !got.DoPublish || got.Reason != "ready" {
 		t.Fatalf("all preconditions met yet the gate refused: %+v", got)
 	}
-	if got := run(t, "false", "https://serve.example", "demo-bucket", ""); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", "", wsFlat); !got.DoPublish || got.Reason != "ready" {
+		t.Fatalf("a plugin-contributed deploy-target.md is the shape app-dev and review-env document — the gate must accept it: %+v", got)
+	}
+	if got := run(t, "false", "https://docs.example", "registry.example/org/prody-demo", "", wsReady); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
 		t.Fatalf("publish=false must route the tail out with its reason: %+v", got)
 	}
-	if got := run(t, "true", "https://serve.example", "", ""); got.DoPublish || !strings.Contains(got.Reason, "bucket") {
-		t.Fatalf("an empty bucket must refuse the tail (no personal default): %+v", got)
+	if got := run(t, "true", "", "registry.example/org/prody-demo", "", wsReady); got.DoPublish || !strings.Contains(got.Reason, "publish_base_url") {
+		t.Fatalf("an empty base URL must refuse the tail: %+v", got)
 	}
-	if got := run(t, "true", "https://serve.example", "demo-bucket", "onyxia_s3_secret_key"); got.DoPublish || !strings.Contains(got.Reason, "onyxia_s3_secret_key") {
-		t.Fatalf("a missing secret must be named in the refusal: %+v", got)
+	if got := run(t, "true", "https://docs.example", "", "", wsReady); got.DoPublish || !strings.Contains(got.Reason, "image") {
+		t.Fatalf("an empty image repository must refuse the tail (no default names a deployment): %+v", got)
+	}
+	// The gate is platform-agnostic: it names the CREDENTIAL that is missing,
+	// never a platform, and refuses with either one absent.
+	for _, missing := range []string{"deploy_credential", "registry_token"} {
+		if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", missing, wsReady); got.DoPublish || !strings.Contains(got.Reason, missing) {
+			t.Fatalf("a missing %s must be named in the refusal: %+v", missing, got)
+		}
+	}
+	// `skills:` is a SOFT reference — the runtime skips one it cannot resolve
+	// with a log line and never fails the run. Without this probe the publish
+	// agent enters with a registry-write token, a cluster credential and no
+	// platform playbook, and improvises a deployment for 60 steps.
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", "", wsBare); got.DoPublish || !strings.Contains(got.Reason, "deploy-target") {
+		t.Fatalf("an unattached deploy-target playbook must refuse the tail, naming it: %+v", got)
 	}
 }
 
@@ -1661,6 +1707,8 @@ func TestProductDocsVerifyPublish(t *testing.T) {
 	runJSON(t, resolveCommand(t, command, map[string]string{
 		"input.url":      srv.URL + "/site/",
 		"input.base_url": srv.URL,
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
 	}), &got)
 	if !got.Verified {
 		t.Fatalf("a live page under the base was not verified: %+v", got)
@@ -1669,7 +1717,93 @@ func TestProductDocsVerifyPublish(t *testing.T) {
 	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
 		"input.url":      srv.URL + "/site/",
 		"input.base_url": "https://elsewhere.example",
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
 	}), "not under publish_base_url")
+}
+
+// TestProductDocsVerifyPublishRedirect pins the half of "verifies THE
+// OPERATOR'S deployment" that the requested-url check alone cannot carry:
+// urllib follows redirects silently, so an in-scope URL that 302s to an SSO
+// login, a platform error page or an unrelated host used to answer 200 with a
+// <title> and pass. Under the retired S3 static target a redirect was
+// implausible; under an arbitrary operator ingress it is the common shape.
+func TestProductDocsVerifyPublishRedirect(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "verify_publish")
+
+	// Stands in for whatever the deployment redirects AT — an SSO portal, a
+	// platform 404, another tenant's app. It answers 200 with a title, which is
+	// the whole point: the content heuristic cannot tell it apart.
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html><head><title>Sign in</title></head></html>"))
+	}))
+	defer elsewhere.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/off/":
+			http.Redirect(w, r, elsewhere.URL+"/login", http.StatusFound)
+		case "/deep/", "/deep/index.html":
+			// An in-scope redirect (the trailing-slash / index shape a healthy
+			// static host performs) must still verify.
+			if r.URL.Path == "/deep/" {
+				http.Redirect(w, r, "/deep/index.html", http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte("<html><head><title>Demo</title></head></html>"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      srv.URL + "/off/",
+		"input.base_url": srv.URL,
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
+	}), "outside publish_base_url")
+
+	var got verifyPublishOut
+	runJSON(t, resolveCommand(t, command, map[string]string{
+		"input.url":      srv.URL + "/deep/",
+		"input.base_url": srv.URL,
+		"input.deployed": "true",
+		"input.summary":  "built and deployed",
+	}), &got)
+	if !got.Verified {
+		t.Fatalf("a redirect that stays under the operator's base is how a healthy "+
+			"host serves an index — it must not be refused: %+v", got)
+	}
+}
+
+// TestProductDocsVerifyPublishCarriesTheAgentsReason pins the failure DETAIL
+// on the path the branch made common. The publish agent is instructed to stop
+// and report — no deploy-target playbook, a rejected registry token, an image
+// the cluster cannot pull, a host outside the base URL — and every one of those
+// arrives here as an empty url. Reporting that as "returned no URL" throws away
+// the remedy the agent just worked out and points the operator at the wrong
+// thing. The run must still FAIL (publish was asked for and did not happen).
+func TestProductDocsVerifyPublishCarriesTheAgentsReason(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "verify_publish")
+
+	// Multi-line, quote-bearing agent prose: it reaches the shell through a
+	// template ref, so this also pins that the value stays one shell word.
+	const summary = "ImagePullBackOff: the ghcr package is PRIVATE.\nRemedy: flip it public once, then re-run."
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      "",
+		"input.base_url": "https://docs.example",
+		"input.deployed": "false",
+		"input.summary":  summary,
+	}), "ImagePullBackOff")
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      "",
+		"input.base_url": "https://docs.example",
+		"input.deployed": "false",
+		"input.summary":  summary,
+	}), "deployed=false")
 }
 
 type verifyPublishOut struct {

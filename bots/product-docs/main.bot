@@ -217,26 +217,40 @@ vars:
 
   ## ─── Publication (opt-in) ─────────────────────────────────────
   ## publish=true converts the product docs into a static site
-  ## (GitBook blocks → MkDocs Material), pushes it to the SSP Cloud
-  ## datalab S3 bucket and verifies the public URL served by the
-  ## standing serve service. The platform HOW lives in the
-  ## org-private `deploy-onyxia-sspcloud` skill the publish agent
-  ## loads explicitly — swap deploy target by swapping that skill.
+  ## (GitBook blocks → MkDocs Material), packages it as a container
+  ## image pushed to the operator's registry, and hands that image to
+  ## the attached `deploy-target` skill — the platform playbook —
+  ## which puts it live and returns the URL. The platform lives
+  ## ENTIRELY in that skill + the mounted deploy_credential /
+  ## registry_token secrets; no platform literal appears in this DSL.
+  ## Swap platforms by attaching another deploy-target skill and
+  ## credential.
   publish: bool = false
 
-  ## Base URL of the standing serve service (its user-port ingress),
-  ## e.g. https://user-devthejo-918000-user.user.lab.sspcloud.fr.
-  ## Required when publish=true: publish_gate refuses to enter the
-  ## tail without it.
+  ## Base URL the deploy target serves the site at. Required when
+  ## publish=true: publish_gate refuses the tail without it, and
+  ## verify_publish accepts no URL outside it — neither the one the
+  ## agent returns nor the one a redirect lands on. The truth gate
+  ## verifies THE OPERATOR'S deployment, never the URL the agent
+  ## narrated.
   publish_base_url: string = ""
 
-  ## URL path segment of the published site; empty = the product id.
-  publish_site: string = ""
+  ## Image repository the packaged site is pushed to, WITHOUT a tag
+  ## (the publish agent tags it with the docs commit, then deploys the
+  ## DIGEST that push resolved to — a tag is an alias whose content can
+  ## move, and an unchanged tag is an unchanged pod spec). Names a
+  ## deployment, never a person: no default, publish_gate refuses the
+  ## tail when it is empty.
+  publish_image: string = ""
 
-  ## The target bucket names a deployment, never a person: no default.
-  ## publish_gate refuses the tail when it is empty.
-  publish_s3_bucket: string = ""
-  publish_s3_prefix: string = "sites"
+  ## Login the registry token authenticates as; empty = the registry's
+  ## own convention for token logins (the publish-static-site skill
+  ## names it per registry).
+  publish_registry_user: string = ""
+
+  ## DNS-safe slug the deploy target derives the app's namespace and
+  ## host from; empty = prody-<product id>.
+  publish_slug: string = ""
 
   ## Ref of SocialGouv/iterion the publish agent fetches the
   ## GitBook→MkDocs converter from (raw URL). Defaults to main (where
@@ -255,20 +269,32 @@ secrets:
     as: file
     optional: true
 
-  ## SSP Cloud datalab S3 (Onyxia STS) — the publish tail's push
-  ## credentials, one value per file (see the deploy-onyxia-sspcloud
-  ## skill). optional:true so every non-publishing run works
-  ## unchanged; publish_gate routes the tail out cleanly when they
-  ## are absent. They are STS tokens with a ~7-day expiry — the
-  ## publish agent reports expiry per the skill instead of retrying.
-  onyxia_s3_access_key:
+  ## Deployment credential (opt-in). A single READ-ONLY file the
+  ## publish agent uses BY REFERENCE and is instructed never to open —
+  ## what it CONTAINS and how it is consumed are decided entirely by the
+  ## attached deploy-target skill; this bot never knows. optional:true
+  ## so every non-publishing run works unchanged; publish_gate routes
+  ## the tail out cleanly when it is absent. On cloud, bind it to this
+  ## bot as a team-scoped secret named `deploy_credential`.
+  ##
+  ## `env:` is a SANDBOX convenience, not the contract: the engine
+  ## writes it into the container spec, so on a host run
+  ## $DEPLOY_CREDENTIAL is unset. The reliable reference is the path
+  ## `{{secrets.deploy_credential.path}}` renders — which is what
+  ## publish_system hands the agent, and what publish_gate probes.
+  deploy_credential:
     as: file
+    env: DEPLOY_CREDENTIAL
     optional: true
-  onyxia_s3_secret_key:
+
+  ## Registry credential (opt-in): the token the packaged site image is
+  ## pushed with, one value in a READ-ONLY file, fed to the registry
+  ## login on stdin — never on argv, never printed. Same env/path
+  ## contract as deploy_credential above: $REGISTRY_TOKEN is the
+  ## sandbox shortcut, `{{secrets.registry_token.path}}` is the truth.
+  registry_token:
     as: file
-    optional: true
-  onyxia_s3_session_token:
-    as: file
+    env: REGISTRY_TOKEN
     optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
@@ -665,32 +691,60 @@ prompt finalize_mr_user:
 prompt publish_system:
   You are the PUBLISH phase of a functional-documentation bot. The
   docs corpus in this workspace has already been written, gated and
-  committed — your only job is to turn it into a static site and put
-  it live, then report the URL.
+  committed — your only job is to turn it into a static site, put it
+  live on the operator's platform, and report the URL.
 
-  The PLATFORM playbook — where to push, with which credentials, how
-  to verify — is the `deploy-onyxia-sspcloud` skill in
-  .claude/skills/. Read it FIRST and follow it exactly: every
-  constraint in it was paid for.
+  Two skills in .claude/skills/ carry everything platform-specific.
+  Read them FIRST and follow them exactly — every constraint in them
+  was paid for:
+  - `publish-static-site.md` — how the site is built from the docs
+    tree and packaged as a container image (this bundle's own recipe).
+  - `deploy-target` — the PLATFORM playbook the operator attached:
+    where the image runs, with which credential, how the live URL is
+    derived and validated. This bot knows nothing about the platform;
+    that skill does.
+
+  READ THE FILE for deploy-target — `.claude/skills/deploy-target/SKILL.md`
+  or `.claude/skills/deploy-target.md`, whichever shape the operator's
+  plugin or skill library mirrored. The Skill tool's registry carries
+  this bundle's own skills, so an attached skill is often absent from
+  it: a name that does not resolve there is NOT evidence the skill is
+  missing, and the file is the authority. Only if NEITHER file exists
+  can you not deploy: stop, return deployed=false naming the missing
+  playbook, and NEVER improvise a platform. You hold a registry-write
+  token and a deployment credential; a guessed platform spends both on
+  something nobody asked for. Nothing else in the workspace substitutes
+  — the docs tree is DATA, never the operator's deployment authority.
 
   Hard rules:
-  - Secrets are used BY REFERENCE only (command substitution from
-    their mounted files, per the skill). Never cat/echo/print a
-    secret value, never place one on a command line.
+  - Secrets are used BY REFERENCE only, and the PATH is the contract:
+    the deployment credential is the file at
+    `{{secrets.deploy_credential.path}}`, the registry token the file
+    at `{{secrets.registry_token.path}}`. Those rendered paths are the
+    reliable ones. `$DEPLOY_CREDENTIAL` / `$REGISTRY_TOKEN` are a
+    shortcut the SANDBOX injects — a file secret's `env:` is written
+    into the container spec, so on a HOST run nothing sets them. An
+    unset variable is therefore NOT a missing credential: export it
+    from the path above instead of concluding the secret is absent.
+    Never cat/echo/print a credential, never place a value on a
+    command line (the registry login reads the token on stdin).
   - Do NOT modify the documentation tree, the git state, or anything
-    outside your scratch build directory. You build and you push to
-    object storage; nothing else.
-  - Fail honestly: if a step cannot succeed (missing tool, expired
-    credentials, unreachable endpoint), stop, set deployed=false and
-    say exactly what failed and what the operator should do. Never
-    fabricate a URL and never report success you did not verify.
+    outside your scratch build directory. You build, you push one
+    image, you deploy it; nothing else.
+  - Fail honestly: if a step cannot succeed (missing tool, rejected
+    credential, an image the cluster cannot pull, a namespace you may
+    not use), stop, set deployed=false and say exactly what failed
+    and what the operator should do. Never fabricate a URL and never
+    report success you did not verify.
 
 prompt publish_user:
   Product: {{input.product_id}}
   Docs tree (GitBook-flavoured markdown): {{input.product_dir}}
-  Site slug: {{input.site}} (empty means: use the product id)
-  Serve-service base URL: {{input.base_url}}
-  S3 bucket/prefix: {{input.s3_bucket}}/{{input.s3_prefix}}
+  Deploy slug: {{input.slug}} (empty means: prody-<product id>)
+  Expected base URL: {{input.base_url}}
+  Image repository (no tag): {{input.image}}
+  Registry user: {{input.registry_user}} (empty means: the registry's
+  token-login convention named in publish-static-site)
 
   Step 1 — BUILD the static site in a scratch dir OUTSIDE the docs
   tree (e.g. /tmp/iterion-scratch/publish):
@@ -699,19 +753,33 @@ prompt publish_user:
   - python3 -m venv + pip install 'mkdocs-material' 'mkdocs>=1.6,<2'
   - Run the converter: --src {{input.product_dir}} --out <scratch>
     --site-name from the docs README title (fallback: the product
-    id), --site-url {{input.base_url}}/<site>/
+    id), --site-url {{input.base_url}}/
   - mkdocs build from <scratch> (config the converter generated).
     A converter or build FAILURE is a stop-and-report, not something
     to patch around: the converter fails closed on constructs it
     does not know, and that is a finding to surface.
 
-  Step 2 — DEPLOY the built site and VERIFY the live URL, exactly as
-  the deploy-onyxia-sspcloud skill prescribes (tooling, bucket
-  guard, mirror, poll, content check).
+  Step 2 — PACKAGE the built site as an image, push it to
+  {{input.image}}:<docs commit short sha> and resolve the DIGEST the
+  registry serves back for it, exactly as publish-static-site
+  prescribes (base image, layer layout, port, numeric user, stdin
+  login, digest resolution).
+
+  Step 3 — DEPLOY that image BY DIGEST ({{input.image}}@sha256:…, never
+  the tag: the tag is an alias whose content can move, and an
+  unchanged tag is an unchanged pod spec, so nothing rolls out and the
+  cluster keeps serving the previous build) and VALIDATE the live URL,
+  exactly as the deploy-target skill prescribes (tooling, namespace,
+  manifest with the image's port and numeric user, rollout, URL poll).
+  The URL you
+  return must sit under the expected base URL: if the platform
+  derives a different host from the slug, report the mismatch
+  (deployed=false) instead of returning a URL the truth gate will
+  refuse.
 
   Return JSON: {"deployed": bool, "url": "<live url or empty>",
-  "summary": "<what was built and pushed, page count, or the honest
-  failure and its remedy>"}
+  "summary": "<what was built, the image reference pushed, where it
+  runs, page count — or the honest failure and its remedy>"}
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -872,8 +940,9 @@ schema surface_pr_link_input:
 ## ─── Publication schemas (opt-in) ───────────────────────────────
 
 ## publish_gate output — deterministic "can we publish?" so the
-## publish agent is only ever entered when the var opt-in, the serve
-## base URL and all three S3 secrets are actually present.
+## publish agent is only ever entered when the var opt-in, the base
+## URL, the image repository, both credentials and the operator's
+## deploy-target playbook are actually present.
 schema publish_gate_output:
   do_publish: bool
   reason: string
@@ -881,10 +950,10 @@ schema publish_gate_output:
 schema publish_input:
   product_id: string
   product_dir: string
-  site: string
+  slug: string
   base_url: string
-  s3_bucket: string
-  s3_prefix: string
+  image: string
+  registry_user: string
   tools_ref: string
 
 schema publish_output:
@@ -892,9 +961,17 @@ schema publish_output:
   url: string
   summary: string
 
+## verify_publish input — the agent's URL AND the verdict it came with.
+## The publish agent is instructed to stop and report on a missing
+## playbook, a rejected credential, an unpullable image or a host the
+## platform will not serve; every one of those arrives as an empty url,
+## and without the agent's own verdict the gate can only call it a URL
+## problem and throw the remedy away.
 schema verify_publish_input:
   url: string
   base_url: string
+  deployed: bool
+  summary: string
 
 schema verify_publish_output:
   verified: bool
@@ -1857,82 +1934,154 @@ if u:
 ## ─── Nodes : publication tail (opt-in) ──────────────────────────
 
 ## publish_gate — DETERMINISTIC pre-flight for the publish tail.
-## publish is an LLM agent; entering it with no opt-in, no serve URL
-## or no S3 credentials burns a turn to rediscover in shell what a
-## 10-line probe already knows. Read-only, idempotent.
+## publish is an LLM agent; entering it with no opt-in, no base URL,
+## no image repository, no credential or no platform playbook burns a
+## turn to rediscover in shell what a 20-line probe already knows —
+## and the playbook case is worse than a wasted turn, since the agent
+## holds a registry token and a deploy credential while it improvises.
+## Read-only, idempotent.
 tool publish_gate:
   ## Secret paths come from the TEMPLATE ({{secrets.X.path}}), which the
   ## engine resolves for sandboxed AND host runs alike — a hardcoded
-  ## /run/iterion/secrets/ only exists under the sandbox bind-mount and
-  ## silently disabled publishing everywhere else.
-  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} BUCKET={{vars.publish_s3_bucket}} SEC_A={{secrets.onyxia_s3_access_key.path}} SEC_B={{secrets.onyxia_s3_secret_key.path}} SEC_C={{secrets.onyxia_s3_session_token.path}} python3 -c "
+  ## mount path only exists under the sandbox bind-mount and silently
+  ## disabled publishing everywhere else.
+  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} IMAGE={{vars.publish_image}} CRED={{secrets.deploy_credential.path}} REG={{secrets.registry_token.path}} WS={{vars.workspace_dir}} python3 -c "
 import os, json
 pub = (os.environ.get('PUB') or '').strip().lower() in ('1', 'true', 'yes')
 base = (os.environ.get('BASE') or '').strip()
-bucket = (os.environ.get('BUCKET') or '').strip()
-paths = {'onyxia_s3_access_key': os.environ.get('SEC_A') or '', 'onyxia_s3_secret_key': os.environ.get('SEC_B') or '', 'onyxia_s3_session_token': os.environ.get('SEC_C') or ''}
+image = (os.environ.get('IMAGE') or '').strip()
+paths = {'deploy_credential': os.environ.get('CRED') or '', 'registry_token': os.environ.get('REG') or ''}
 missing = [n for n, p in paths.items() if not (p and os.path.isfile(p))]
-ok = pub and bool(base) and bool(bucket) and not missing
+## The PLATFORM playbook is a soft reference on both ends -- the compiler
+## only warns on a malformed skill NAME, and the runtime skips one it
+## cannot resolve with a log line -- so an unattached deploy-target
+## reaches the publish agent as nothing louder than a start-up warning,
+## and the agent improvises a deployment holding a registry-write token
+## and a cluster credential. Probe its ABSENCE here, which is the only
+## half that is conclusive: presence is not provenance (a file checked
+## into the docs repo shadows a rejected contribution), so this clears a
+## necessary condition and certifies nothing. publish_system carries the
+## STOP clause that covers the rest.
+## Both mirror shapes: <name>/SKILL.md (skill library) and the flat
+## <name>.md (plugin contribution). Both candidate roots too: tool nodes
+## run in the run workDir, which is also where the engine mirrors, and
+## vars.workspace_dir names the same tree -- either answering is enough.
+roots = [r for r in (os.getcwd(), (os.environ.get('WS') or '').strip()) if r]
+shapes = [('deploy-target', 'SKILL.md'), ('deploy-target.md',)]
+skill = any(os.path.isfile(os.path.join(r, '.claude', 'skills', *s)) for r in roots for s in shapes)
+ok = pub and bool(base) and bool(image) and not missing and skill
 if not pub:
     reason = 'publish disabled (vars.publish=false)'
 elif not base:
     reason = 'publish_base_url is empty'
-elif not bucket:
-    reason = 'publish_s3_bucket is empty -- name the target bucket, there is no default'
+elif not image:
+    reason = 'publish_image is empty -- name the image repository the site is pushed to, there is no default'
 elif missing:
-    reason = 'missing S3 secrets: ' + ', '.join(missing)
+    reason = 'missing credentials: ' + ', '.join(missing)
+elif not skill:
+    reason = 'no deploy-target skill attached -- the platform playbook must reach the workspace as a plugin or skill-library skill named deploy-target; without it the publish agent has no platform to deploy to'
 else:
     reason = 'ready'
 print(json.dumps({'do_publish': ok, 'reason': reason}))
 "`
   output: publish_gate_output
 
+## publish — the skill-driven publish agent. The platform playbook is
+## the operator-attached `deploy-target` skill (a plugin or library
+## skill, resolved by name); the build + packaging recipe is the
+## bundle's own publish-static-site skill, mirrored with the rest.
 agent publish:
   backend: "claude_code"
   model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_PRODUCT_DOCS_PUBLISH_EFFORT:-medium}"
-  skills: ["deploy-onyxia-sspcloud"]
+  skills: ["deploy-target"]
   input: publish_input
   output: publish_output
   system: publish_system
   user: publish_user
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
+  tool_max_steps: 60
 
 ## verify_publish — DETERMINISTIC truth gate on the live URL. The
 ## agent's own verification is necessary but not sufficient: this
 ## node re-checks from outside the agent's narrative and FAILS the
-## run when the site is not actually serving. Polls ≤ 2 min for the
-## serve loop (60 s sync) to pick the push up.
+## run when the site is not actually serving. Polls ≤ 2 min: the
+## deploy-target skill already waits for its own rollout and validates
+## the URL before returning, so this is a RE-measurement from outside,
+## not the first wait — the window covers the tail of an ingress/DNS
+## propagation, not a cold deploy.
 tool verify_publish:
   input: verify_publish_input
-  command: `URL={{input.url}} BASE={{input.base_url}} python3 -c "
+  command: `URL={{input.url}} BASE={{input.base_url}} DEPLOYED={{input.deployed}} SUMMARY={{input.summary}} python3 -c "
 import json, os, time, urllib.request
 u = (os.environ.get('URL') or '').strip()
 base = (os.environ.get('BASE') or '').strip().rstrip('/')
+dep = (os.environ.get('DEPLOYED') or '').strip().lower() in ('1', 'true', 'yes')
+## One line, bounded: the agent's verdict travels into this node's
+## detail, the run events and the report.
+note = ' '.join((os.environ.get('SUMMARY') or '').split())[:400]
 if not u:
-    print(json.dumps({'verified': False, 'url': '', 'detail': 'publish agent returned no URL'}))
+    ## An empty url is the shape of EVERY honest refusal the publish
+    ## agent is instructed to make -- no playbook, a rejected
+    ## credential, an image the cluster cannot pull, a host outside the
+    ## base URL. Calling that 'returned no URL' discards the remedy the
+    ## agent just worked out and sends the operator looking at the wrong
+    ## thing. The run still FAILS -- publish was asked for and did not
+    ## happen -- but it fails saying why.
+    why = 'publish reported deployed=' + ('true' if dep else 'false') + ' with no URL'
+    if note:
+        why = why + ' -- ' + note
+    print(json.dumps({'verified': False, 'url': '', 'detail': why}))
     raise SystemExit(1)
 if not u.endswith('/'):
     u = u + '/'
+## anchored() is the LANDING check, deliberately looser than the one
+## below: the redirect an ingress legitimately performs is an http ->
+## https upgrade, so scheme is ignored there and only the operator's
+## host+path anchors. A lookalike suffix domain still cannot satisfy it
+## -- the trailing / is required.
+def anchored(candidate):
+    c = (candidate or '').split('://', 1)[-1]
+    b = base.split('://', 1)[-1]
+    return bool(b) and (c == b or c.startswith(b + '/'))
 ## The truth gate verifies THE OPERATOR'S deployment, not whatever URL
 ## the agent narrated: any live page would answer 200 with a title.
+## The url the agent RETURNS is held to the anchor exactly, scheme
+## included -- it is a claim, not a redirect.
 if not base or not u.startswith(base + '/'):
     print(json.dumps({'verified': False, 'url': u, 'detail': 'returned url is not under publish_base_url (' + (base or '<empty>') + ')'}))
     raise SystemExit(1)
-code, body = 0, ''
+code, body, final = 0, '', ''
 for i in range(12):
     try:
         r = urllib.request.urlopen(u, timeout=10)
         code = r.getcode()
+        ## urlopen follows redirects SILENTLY, so the checked-above url
+        ## proves nothing about what answered. An ingress fronting an SSO
+        ## login, a platform error page or an unrelated host is exactly
+        ## the shape a 302 takes -- re-anchor on where we LANDED.
+        final = r.geturl() or u
         body = r.read(65536).decode('utf-8', 'replace')
     except Exception:
-        code, body = 0, ''
+        code, body, final = 0, '', ''
+    ## A served page ENDS the poll, right or wrong. The retry window is
+    ## for a rollout that has not answered yet; re-asking the same url
+    ## cannot change WHO answered it, so keeping an off-base redirect in
+    ## the loop only spends two minutes to reach the same verdict.
     if code == 200 and '<title>' in body:
         break
     time.sleep(10)
-if code != 200 or '<title>' not in body:
+## Name WHICH half failed: 'http 200 after 12 tries' reads as a
+## contradiction, and an operator debugging an ingress that answers but
+## serves the wrong body needs to know it answered.
+if code != 200:
     print(json.dumps({'verified': False, 'url': u, 'detail': 'http ' + str(code) + ' after 12 tries'}))
+    raise SystemExit(1)
+if '<title>' not in body:
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'http 200 but the body carries no <title> -- something answers here, it is not the built site'}))
+    raise SystemExit(1)
+if not anchored(final):
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'redirected to ' + final + ', outside publish_base_url (' + base + ') -- something is answering, but not the deployment'}))
     raise SystemExit(1)
 print(json.dumps({'verified': True, 'url': u, 'detail': 'http 200, title present'}))
 "`
@@ -2078,10 +2227,10 @@ workflow product_docs:
   publish_gate -> publish when do_publish with {
     product_id: "{{outputs.catalog_ingest.product_id}}",
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
-    site: "{{vars.publish_site}}",
+    slug: "{{vars.publish_slug}}",
     base_url: "{{vars.publish_base_url}}",
-    s3_bucket: "{{vars.publish_s3_bucket}}",
-    s3_prefix: "{{vars.publish_s3_prefix}}",
+    image: "{{vars.publish_image}}",
+    registry_user: "{{vars.publish_registry_user}}",
     tools_ref: "{{vars.publish_tools_ref}}"
   }
   publish_gate -> done when not do_publish
@@ -2091,6 +2240,11 @@ workflow product_docs:
   ## edges then dead-ends the run with NO_OUTGOING_EDGE. The fallback
   ## makes the safe route structural: no publish signal → done.
   publish_gate -> done
-  publish -> verify_publish with { url: "{{outputs.publish.url}}", base_url: "{{vars.publish_base_url}}" }
+  publish -> verify_publish with {
+    url: "{{outputs.publish.url}}",
+    base_url: "{{vars.publish_base_url}}",
+    deployed: "{{outputs.publish.deployed}}",
+    summary: "{{outputs.publish.summary}}"
+  }
   verify_publish -> surface_site_link with { url: "{{outputs.verify_publish.url}}" }
   surface_site_link -> done
