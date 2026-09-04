@@ -2021,7 +2021,7 @@ if not u.endswith('/'):
 def anchored(candidate):
     c = (candidate or '').split('://', 1)[-1]
     b = base.split('://', 1)[-1]
-    return bool(b) and (c == b + '/' or c.startswith(b + '/'))
+    return bool(b) and (c == b or c.startswith(b + '/'))
 ## The truth gate verifies THE OPERATOR'S deployment, not whatever URL
 ## the agent narrated: any live page would answer 200 with a title.
 ## The url the agent RETURNS is held to the anchor exactly, scheme
@@ -2049,8 +2049,14 @@ for i in range(12):
     if code == 200 and '<title>' in body:
         break
     time.sleep(10)
-if code != 200 or '<title>' not in body:
+## Name WHICH half failed: 'http 200 after 12 tries' reads as a
+## contradiction, and an operator debugging an ingress that answers but
+## serves the wrong body needs to know it answered.
+if code != 200:
     print(json.dumps({'verified': False, 'url': u, 'detail': 'http ' + str(code) + ' after 12 tries'}))
+    raise SystemExit(1)
+if '<title>' not in body:
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'http 200 but the body carries no <title> -- something answers here, it is not the built site'}))
     raise SystemExit(1)
 if not anchored(final):
     print(json.dumps({'verified': False, 'url': u, 'detail': 'redirected to ' + final + ', outside publish_base_url (' + base + ') -- something is answering, but not the deployment'}))
