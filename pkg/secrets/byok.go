@@ -535,6 +535,11 @@ func (s *MongoApiKeyStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "scope_user", Value: 1}, {Key: "provider", Value: 1}}, Options: options.Index().SetName("team_user_provider")},
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "provider", Value: 1}, {Key: "is_default", Value: 1}}, Options: options.Index().SetName("team_provider_default")},
+		// MarkFingerprintUsed's predicate: every attempt start and end
+		// bumps by fingerprint, with no tenant filter (a lent or platform
+		// key moves on its own row). Unindexed it was a collection scan
+		// per attempt. Sparse: rows that predate stamping carry none.
+		{Keys: bson.D{{Key: "fingerprint", Value: 1}}, Options: options.Index().SetName("fingerprint").SetSparse(true)},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("secrets: ensure api_keys indexes: %w", err)

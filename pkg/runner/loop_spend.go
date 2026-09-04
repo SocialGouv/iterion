@@ -13,18 +13,25 @@ import (
 )
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
-// org's monthly usage bucket AND bumps `last_used_at` on every credential
-// the run actually spent tokens on. Called at the end of every execution
-// attempt — paused/cancelled/failed attempts incurred real spend too,
-// and a redelivered attempt re-charges only what it re-executed.
-// Detached ctx on both writes: a Mongo blip must not fail the run path;
-// misses are logged and the Prometheus counters still carry the global
-// totals. The `last_used_at` bump reads the credential fingerprints out
-// of ctx (secrets.WithCredentials was set by injectCredentials), so it
-// keys on what the delegate actually spent — not what was granted at
-// launch, which is the mute-frozen-at-launch signal the previous shape
-// left an operator with (#659 pt 2).
+// org's monthly usage bucket AND bumps `last_used_at` on every API key
+// the attempt held. Called at the end of every execution attempt —
+// paused/cancelled/failed attempts incurred real spend too, and a
+// redelivered attempt re-charges only what it re-executed. Detached ctx
+// on both writes: a Mongo blip must not fail the run path; misses are
+// logged and the Prometheus counters still carry the global totals.
+//
+// The bump is NOT behind the spend gate. RunTotals is a lossy signal —
+// a delegate that streams no usage, a run refused at its first call —
+// and the key was held for the whole attempt either way; gating the bump
+// on it is what left `last_used_at` frozen for hours on a key that was
+// serving (#659 pt 2). Bumped at attempt START too (injectCredentials);
+// nothing moves it DURING a turn — there is no live per-call signal to
+// key on, so a long attempt shows its start until it ends.
 func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usage *metricsEmitter) {
+	now := time.Now().UTC()
+	// Half 2 first: the held keys are a fact of the attempt, whatever it
+	// measured.
+	r.markCredFingerprintsUsed(ctx, msg, now)
 	if usage == nil {
 		return
 	}
@@ -33,7 +40,6 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 	if !spent {
 		return
 	}
-	now := time.Now().UTC()
 
 	// Half 1: org usage bucket — the existing behaviour.
 	if r.cfg.OrgUsage != nil && msg.TenantID != "" {
@@ -53,18 +59,17 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 		}
 		cancel()
 	}
-
-	// Half 2: per-credential last_used_at bump. Best-effort: nothing to
-	// bump when the bundle carried no fingerprints (legacy run, env
-	// fallback) or the ApiKey store is not wired.
-	r.markCredFingerprintsUsed(ctx, msg, now)
 }
 
 // markCredFingerprintsUsed bumps `last_used_at` on every API key whose
-// fingerprint sits in the run's injected credentials. Best-effort: a
-// missing store, empty fingerprints, or a store failure all quietly
-// leave the observation on the floor rather than fail the run. Detached
-// context (5s bound) so the metering path is unaffected by cancellation.
+// fingerprint sits in the run's injected credentials — at attempt start
+// (from injectCredentials) and at attempt end (from recordOrgSpend).
+// Best-effort: a missing store, empty fingerprints, or a store failure
+// all quietly leave the observation on the floor rather than fail the
+// run. Detached context (5s bound) so the metering path is unaffected by
+// cancellation. Cross-tenant by design: the store matches on the
+// fingerprint alone, so a lent or platform key moves on ITS row, and an
+// operator who saved one secret on two tenants sees both move.
 func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
 	if r.cfg.ApiKeys == nil {
 		return
@@ -73,13 +78,17 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 	if !ok || len(creds.Fingerprints) == 0 {
 		return
 	}
-	// Deduplicate: several slots may map to the same fingerprint (an
-	// OAuth kind and the anthropic API key both keyed on the same
-	// account) and the update is idempotent, but the DB round-trips
-	// are not free.
+	// Only API-key slots: an OAuth slot's fingerprint (a subscription's
+	// connect-time identity) lives in the OAuth store and would only
+	// cost the api_keys collection a lookup that matches nothing.
+	// Deduplicated: the update is idempotent, the round-trips are not
+	// free.
 	seen := map[string]bool{}
 	fps := make([]string, 0, len(creds.Fingerprints))
-	for _, fp := range creds.Fingerprints {
+	for slot, fp := range creds.Fingerprints {
+		if secrets.OAuthKind(slot).Valid() {
+			continue
+		}
 		if fp != "" && !seen[fp] {
 			seen[fp] = true
 			fps = append(fps, fp)

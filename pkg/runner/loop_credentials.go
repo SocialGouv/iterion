@@ -138,7 +138,12 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		cancelRefresh = func() { once.Do(func() { close(stopRefresh) }) }
 		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles)
 	}
-	return secrets.WithCredentials(ctx, creds), cleanup, nil
+	ctx = secrets.WithCredentials(ctx, creds)
+	// The attempt holds these keys from here on: say so now, not only when
+	// it ends — a multi-hour attempt otherwise reads as an idle key for
+	// its whole duration (#659 pt 2).
+	r.markCredFingerprintsUsed(ctx, msg, time.Now().UTC())
+	return ctx, cleanup, nil
 }
 
 // deleteRunSecrets best-effort removes the persistent sealed bundle for

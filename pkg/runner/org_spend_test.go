@@ -157,12 +157,14 @@ func TestMetricsEmitter_RunTotalsAccumulate(t *testing.T) {
 	}
 }
 
-// #659 pt 2: at metering time the runner bumps `last_used_at` on every
-// API key whose fingerprint sits in the resolved credentials, so the
-// studio distinguishes an idle key from one currently serving. The
-// launch-grant-only bump left `last_used_at` frozen for hours on keys
-// actively spending — measured live 2026-09-03 ("2.5h idle while
-// serving a third run's delegate the whole time").
+// #659 pt 2: the runner bumps `last_used_at` on every API key whose
+// fingerprint sits in the resolved credentials, at the START and at the
+// END of each attempt — nothing moves it during a turn (there is no live
+// per-call signal), so the studio can tell a key idle for hours from one
+// an attempt is holding, to attempt granularity. The launch-grant-only
+// bump left `last_used_at` frozen for hours on keys actively spending —
+// measured live 2026-09-03 ("2.5h idle while serving a third run's
+// delegate the whole time").
 //
 // The oracle is the STORE: after recordOrgSpend, the key's
 // last_used_at moves to the metering timestamp — even though msg.SecretsRef
@@ -217,5 +219,116 @@ func TestRecordOrgSpend_BumpsApiKeyFingerprintUsed(t *testing.T) {
 	}
 	if time.Since(*got.LastUsedAt) > 5*time.Second {
 		t.Fatalf("last_used_at stale (%s ago)", time.Since(*got.LastUsedAt))
+	}
+}
+
+// seedFingerprintedKey stores one sealed anthropic key carrying the
+// fingerprint of its plaintext, the way the BYOK route stamps it.
+func seedFingerprintedKey(t *testing.T, apiKeys secrets.ApiKeyStore, sealer secrets.Sealer, plaintext string) (id, fp string) {
+	t.Helper()
+	tenantCtx := store.WithTenant(context.Background(), "team-a")
+	id = secrets.NewApiKeyID()
+	sealed, err := secrets.SealAPIKey(sealer, id, []byte(plaintext))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp = secrets.FingerprintSHA256(plaintext)
+	if err := apiKeys.Create(tenantCtx, secrets.ApiKey{
+		ID: id, ScopeTeamID: "team-a", Provider: secrets.ProviderAnthropic,
+		Name: "live", SealedSecret: sealed, Fingerprint: fp,
+	}); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	return id, fp
+}
+
+// An attempt that measured nothing still HELD the key — a delegate that
+// streamed no usage, a run refused at its first call. RunTotals is lossy;
+// the bump must not hide behind it (the 2.5h incident reproduces exactly
+// when it does).
+func TestRecordOrgSpend_BumpsFingerprintEvenWithZeroUsage(t *testing.T) {
+	apiKeys := secrets.NewMemoryApiKeyStore()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, fp := seedFingerprintedKey(t, apiKeys, sealer, "sk-ant-quiet")
+	r := &Runner{cfg: Config{ApiKeys: apiKeys, OrgUsage: orgusage.NewMemoryCounter(), Logger: iterlog.Nop()}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): fp},
+	})
+	// Zero totals: the gate that used to swallow the bump.
+	r.recordOrgSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil))
+	got, err := apiKeys.Get(store.WithTenant(context.Background(), "team-a"), id)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if got.LastUsedAt == nil {
+		t.Fatal("last_used_at not bumped on a zero-usage attempt end — the bump is still behind the spend gate")
+	}
+}
+
+// The attempt-START half: injectCredentials stamps the credentials into
+// ctx and bumps the held keys right there, so a multi-hour attempt does
+// not read as an idle key until it ends. Proven through the real
+// sealed-bundle path, not by calling the bump directly.
+func TestInjectCredentials_BumpsHeldKeysAtAttemptStart(t *testing.T) {
+	sealer := testSealer(t)
+	apiKeys := secrets.NewMemoryApiKeyStore()
+	id, _ := seedFingerprintedKey(t, apiKeys, sealer, "sk-ant-held")
+	rs := secrets.NewMemoryRunSecretsStore()
+	sealed, err := secrets.SealRunBundle(sealer, "run-1", secrets.RunBundle{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-held"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", SealedBundle: sealed}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer, ApiKeys: apiKeys}}
+	_, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	if err != nil {
+		t.Fatalf("injectCredentials: %v", err)
+	}
+	defer cleanup()
+	got, err := apiKeys.Get(store.WithTenant(context.Background(), "team-a"), id)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if got.LastUsedAt == nil {
+		t.Fatal("last_used_at not bumped at attempt start — the key reads idle until the attempt ends")
+	}
+}
+
+// fingerprintSpyStore records which fingerprints the runner asked the
+// api_keys store to bump.
+type fingerprintSpyStore struct {
+	secrets.ApiKeyStore
+	asked []string
+}
+
+func (s *fingerprintSpyStore) MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error {
+	s.asked = append(s.asked, fingerprint)
+	return s.ApiKeyStore.MarkFingerprintUsed(ctx, fingerprint, at)
+}
+
+// An OAuth slot's fingerprint is a subscription's identity in the OAuth
+// store; asking the api_keys collection for it is a lookup that matches
+// nothing. Only API-key slots reach the store.
+func TestMarkCredFingerprintsUsed_SkipsOAuthSlots(t *testing.T) {
+	spy := &fingerprintSpyStore{ApiKeyStore: secrets.NewMemoryApiKeyStore()}
+	r := &Runner{cfg: Config{ApiKeys: spy, Logger: iterlog.Nop()}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		Fingerprints: map[string]string{
+			string(secrets.ProviderAnthropic):   "aaaa000011112222",
+			string(secrets.ProviderOpenAI):      "aaaa000011112222", // same secret on two slots: asked once
+			string(secrets.OAuthKindClaudeCode): "cccc333344445555",
+			string(secrets.OAuthKindCodex):      "dddd333344445555",
+		},
+	})
+	r.markCredFingerprintsUsed(ctx, &queue.RunMessage{RunID: "run-1"}, time.Now().UTC())
+	if len(spy.asked) != 1 || spy.asked[0] != "aaaa000011112222" {
+		t.Fatalf("store asked for %v, want exactly the one API-key fingerprint", spy.asked)
 	}
 }

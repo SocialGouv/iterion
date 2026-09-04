@@ -588,7 +588,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// parked by the readings of the account it replaced.
 				setOAuthFingerprint(&bundle, grant.Ref, grant.Fingerprint)
 			case credpool.SourceAPIKey:
-				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
+				prov := secrets.Provider(grant.Ref)
+				bundle.APIKeys[prov] = string(grant.Payload)
+				// The lent key's own audit identity — the same hash the
+				// BYOK record carries and the runner derives, so the
+				// GRANTED line, the run-document stamp and the metering-time
+				// last_used_at bump all name the donor's key, not an
+				// unstamped slot.
+				apiKeyFPs[prov] = secrets.FingerprintSHA256(string(grant.Payload))
 			}
 			res.grant = grant
 		}
@@ -1389,7 +1396,10 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 			continue
 		}
 		tier := "byok"
-		if bundle.PlatformSourced[string(prov)] {
+		switch {
+		case grant != nil && grant.Source == credpool.SourceAPIKey && grant.Ref == string(prov):
+			tier = "pool"
+		case bundle.PlatformSourced[string(prov)]:
 			tier = "platform"
 		}
 		fp := apiKeyFPs[prov]

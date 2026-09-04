@@ -172,6 +172,32 @@ func TestMongoApiKey_MarkFingerprintUsed(t *testing.T) {
 	s, ctx := mongoKeyStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
+	// The bump runs at every attempt start and end with no tenant filter;
+	// its predicate must be indexed or it is a collection scan per
+	// attempt (#659). The schema is the contract, so it is asserted here.
+	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	cur, err := s.coll.Indexes().List(ctx)
+	if err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	var indexes []struct {
+		Name string `bson:"name"`
+	}
+	if err := cur.All(ctx, &indexes); err != nil {
+		t.Fatalf("decode indexes: %v", err)
+	}
+	hasFP := false
+	for _, ix := range indexes {
+		if ix.Name == "fingerprint" {
+			hasFP = true
+		}
+	}
+	if !hasFP {
+		t.Fatalf("no index on fingerprint after EnsureSchema; got %+v", indexes)
+	}
+
 	// Two rows sharing a fingerprint (an operator saved the same secret
 	// twice on different tenants) — the update must land on BOTH, so a
 	// run spending either row moves the meter on both.
