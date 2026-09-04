@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.100.0](https://github.com/SocialGouv/iterion/compare/v3.99.1...v3.100.0) (2026-09-04)
+
+### Features
+
+* **review:** Revi cost-reduction pass — severity floor at the source, pacer supervisor, live cost signal, push debounce ([#651](https://github.com/SocialGouv/iterion/issues/651)) ([2bd3bbc](https://github.com/SocialGouv/iterion/commit/2bd3bbca3ed9a66fd8b3f1c5cba2e7c9e3066e4b)), references [acme/b#7](https://github.com/acme/b/issues/7) [acme/a#7](https://github.com/acme/a/issues/7) [acme/b#7](https://github.com/acme/b/issues/7) [acme/a#7](https://github.com/acme/a/issues/7)
+
+    <details><summary>why</summary>
+
+    Measured in prod (2026-09-03, 9-run sample): reviewer_claude (opus/high) is 85-93% of a $1.4-$10.5 run (median $3.6), ~28 runs in 3h. The reviewer's judging quality is untouched (stays opus/high); the waste is cut around it:
+
+    </details>
+
 ## [3.99.1](https://github.com/SocialGouv/iterion/compare/v3.99.0...v3.99.1) (2026-09-04)
 
 ### Bug Fixes
