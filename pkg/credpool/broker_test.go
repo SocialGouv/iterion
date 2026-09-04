@@ -891,6 +891,20 @@ func TestBroker_AbstentionSkipsNameEachPledgeStatus(t *testing.T) {
 			t.Errorf("skip = %+v, want exhausted", got)
 		}
 	})
+	t.Run("exhausted (daily run ceiling, WITH a run still in flight)", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{MaxRunsPerDay: 1})
+		if _, err := h.broker.Acquire(ctx, h.request("r1")); err != nil {
+			t.Fatalf("first run must be served: %v", err)
+		}
+		// r1 is NOT settled: the day's single run is spent all the same —
+		// a runs-per-day count is consumed at admission and never returned,
+		// so the same cause must not read "serving" here and "exhausted"
+		// once r1 ends.
+		if got := skipOf(t, h, "r2"); got.Status != StatusExhausted {
+			t.Errorf("skip = %+v, want exhausted even with a run in flight", got)
+		}
+	})
 	t.Run("serving (every allowed slot busy)", func(t *testing.T) {
 		h := newHarness(t)
 		h.donor(t, "alice", Limits{MaxConcurrentRuns: 1})
@@ -954,5 +968,34 @@ func TestBroker_AbstentionCountsMeanOneThingEach(t *testing.T) {
 	}
 	if !strings.Contains(nd.Error(), "pools_enabled=2") || !strings.Contains(nd.Error(), "pools_admitted=1") {
 		t.Errorf("Error() = %q, want both pool counts rendered", nd.Error())
+	}
+}
+
+// The requester's own pledge is dropped by the walk without a skip (a
+// donor never serves their own run), so counting it produced the least
+// useful line the pool can print: "one donor considered, none declined"
+// — the silence #654 exists to end, dressed as a number.
+func TestBroker_AbstentionDoesNotCountTheRequestersOwnPledge(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	// The ONLY matching pledge belongs to the requester.
+	if err := h.pledges.Upsert(ctx, Pledge{
+		ID: PledgeID("requester", SourceOAuth, string(secrets.OAuthKindClaudeCode)), PoolID: "pool-1",
+		UserID: "requester", Credential: Credential{Source: SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
+		Enabled: true, Health: HealthOK,
+	}); err != nil {
+		t.Fatalf("seed own pledge: %v", err)
+	}
+
+	_, err := h.broker.Acquire(ctx, h.request("r"))
+	var nd *NoDonorError
+	if !errors.As(err, &nd) {
+		t.Fatalf("want *NoDonorError, got %v", err)
+	}
+	if nd.PledgesConsidered != 0 {
+		t.Errorf("pledges_considered = %d, want 0 — the requester's own pledge could never serve them", nd.PledgesConsidered)
+	}
+	if len(nd.Skips) != 0 {
+		t.Errorf("skips = %+v, want none", nd.Skips)
 	}
 }

@@ -264,8 +264,13 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// them. Within a want, the requester's own org pool was sorted first.
 	//
 	// A pledge is counted only when it matches one of the requested
-	// wants — a pool full of kinds the run cannot spend never inflates
-	// the number an operator reads (round 1 G6). Skips accumulate every
+	// wants AND could ever serve this requester — a pool full of kinds
+	// the run cannot spend never inflates the number an operator reads
+	// (round 1 G6), and neither does the requester's own pledge, which
+	// the walk drops without a skip (a donor never serves their own
+	// run). Counting it left the line reading "one donor considered,
+	// none declined", which is the silence #654 exists to end. Skips
+	// accumulate every
 	// pledge that DID match and yet declined, with its per-pledge
 	// status (round 1 G5): "no_eligible_pledge" now discloses which
 	// donor was paused, unhealthy, out-of-hours, bot-filtered, cooling.
@@ -273,7 +278,7 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	seenPledge := map[string]bool{}
 	for _, pc := range allowed {
 		for _, p := range pc.candidates {
-			if !seenPledge[p.ID] && wantMatchesPledge(req.Wants, p) {
+			if !seenPledge[p.ID] && p.UserID != req.UserID && wantMatchesPledge(req.Wants, p) {
 				seenPledge[p.ID] = true
 				pledgesConsidered++
 			}
@@ -369,13 +374,21 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 
 // skipStatus names why a ledger decline held a pledge out, for the skips
 // an abstention reports. A full slot set is "serving" by definition. A
-// spend/run ceiling met while the donor has runs in flight also reads
+// SPEND ceiling met while the donor has runs in flight also reads
 // "serving": part of what tripped it is allowance PROMISED to those runs,
 // which clears as they end — the same distinction the pledge view draws
 // for the donor, approximated here without the second ledger read that
 // view pays (an operator reading a log line, not a contributor reading
 // their own page). With nothing in flight the ceiling was really spent.
+//
+// A runs-per-day ceiling is NOT that shape: the count is consumed at
+// admission and never given back, so it reads "exhausted" whether or not
+// something is in flight — the same cause must not name itself two ways
+// depending on when the operator looked.
 func (d DenyReason) skipStatus(live LiveCommitment) Status {
+	if d == DenyRunsPerDay {
+		return StatusExhausted
+	}
 	if d == DenyConcurrency || live.Runs > 0 {
 		return StatusServing
 	}
