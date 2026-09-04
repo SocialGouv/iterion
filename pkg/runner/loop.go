@@ -2043,10 +2043,6 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 	return out, nil
 }
 
-// modelOverridesFromMsg folds the wire pins into the executor's override
-// set — the runner-side twin of runview's launch-entry fold, so a cloud
-// run resolves per-node models exactly like a local launch with the same
-// flags.
 // runFallbackFromMsg folds the wire chain into the IR form the executor
 // applies. Names are stamped here (not on the wire) so every consumer
 // reports the stages under the recognisable launch-route label.
@@ -2066,18 +2062,14 @@ func runFallbackFromMsg(entries queue.RunFallback) []ir.Fallback {
 	return out
 }
 
+// modelOverridesFromMsg adapts the wire pins onto model.OverridesFrom —
+// the one fold runview's launch entries and the publisher's launch/resume
+// entries also go through, so a cloud run resolves per-node models
+// exactly like a local launch with the same flags.
 func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	return o
+	return model.OverridesFrom(out)
 }

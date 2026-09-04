@@ -293,21 +293,14 @@ func toRunFallback(entries []FallbackEntry) []ir.Fallback {
 	return out
 }
 
-// toModelOverrides folds the launch entries into the engine's ModelOverrides.
+// toModelOverrides folds the launch entries into the engine's ModelOverrides
+// through model.OverridesFrom — the one fold every launch surface shares.
 func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	return o
+	return model.OverridesFrom(out)
 }
 
 // toRunModelOverrides converts the launch entries into the persisted,

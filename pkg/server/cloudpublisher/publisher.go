@@ -343,7 +343,7 @@ func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID strin
 // tenant has none — seals the resulting bundle, and persists it under a
 // fresh secrets ref. An empty ref means no credentials are available; the
 // runner then falls back to env.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides) (credResolution, error) {
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry) (credResolution, error) {
 	if p.runSecrets == nil || p.sealer == nil {
 		return credResolution{}, nil
 	}
@@ -576,7 +576,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    credentials" is the condition the pool exists for.
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
-		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides); grant != nil {
+		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks); grant != nil {
 			// The lent credential goes in the slot its KIND belongs to, so
 			// the runner cannot tell a donation from the tenant's own.
 			switch grant.Source {
@@ -1140,141 +1140,91 @@ func providerOfWant(w credpool.Credential) string {
 	return ""
 }
 
-// buildModelOverrides folds the launch-time per-node/-group directives
-// (studio Launch dropdowns / --model / --backend / --provider) into the
-// engine's effective-per-node lookup — the same type the executor consults.
-// Kept in publisher.go on purpose: this file's node-walks (wants
-// derivation, wants=0 diagnostic) must read the SAME overrides the runner
-// applies, and duplicating the fold here beats importing an unexported
-// helper from runview.
+// buildModelOverrides folds launch entries into the executor's overrides.
+// A tiny type-adapter over model.OverridesFrom — the single source of
+// truth now lives in pkg/backend/model, next to ModelOverrides itself,
+// so the runner's own fold consumes the same helper.
 func buildModelOverrides(entries []runview.ModelOverrideEntry) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	return o
+	return model.OverridesFrom(out)
 }
 
-// buildModelOverridesFromRun is the resume-path twin: the launch's
-// overrides were stamped on the run document as []store.RunModelOverride
-// (display-safe form). Replayed here so a resumed run walks its
-// credential resolution under exactly the pins the operator used.
+// buildModelOverridesFromRun is the resume-path twin (persisted form).
 func buildModelOverridesFromRun(entries []store.RunModelOverride) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	return o
+	return model.OverridesFrom(out)
 }
 
-// effectiveNodeTargeting resolves the (backend, model, provider) actually
-// spent by an LLM node — the DSL values, then any launch-time override
-// (studio Launch dropdowns / --model / --backend / --provider) applied on
-// top. It is the ONE place in this file that turns "what a node targets"
-// into a triple, so every node-walk (the pool's wants-derivation, the
-// wants=0 diagnostic, any future site that decides "which providers does
-// this run actually need?") reads the SAME effective view the runner will.
-//
-// A judge kind pinned to claw/openai by override used to be invisible
-// here: wantsFor read only the DSL Model, and a launch that pinned the
-// judge to openai still made the pool request say "anthropic" (#668).
-//
-// Returns "", "", "" for a node that carries no LLMFields (routers,
-// tools, human, compute…) — those spend no credential.
-func effectiveNodeTargeting(node ir.Node, overrides model.ModelOverrides) (backend, mdl, provider string) {
-	f, ok := node.(interface{ GetLLMFields() *ir.LLMFields })
-	if !ok {
-		return "", "", ""
-	}
-	fields := f.GetLLMFields()
-	backend, mdl, provider = fields.Backend, fields.Model, fields.Provider
-	if overrides.Empty() {
-		return
-	}
-	ov := overrides.ForNode(node.NodeID(), node.NodeKind())
-	if ov.Backend != "" {
-		backend = ov.Backend
-	}
-	if ov.Model != "" {
-		mdl = ov.Model
-	}
-	if ov.Provider != "" {
-		provider = ov.Provider
-	}
-	return
-}
-
-// pinnedProviders walks every LLM node under overrides and returns the
-// set of providers the run's effective targeting actually asks for. The
-// order is deterministic (alphabetical), so log lines are diffable.
-//
-// A provider is derived from EITHER the explicit `provider:` field OR
-// the `<prov>/<model>` prefix on `model:`. The DSL already accepts a
-// provider on either field, and picking either half unifies the two so
-// a node that pins provider only ("--provider openai") counts the same
-// as one that pins the model qualifier ("openai/gpt-5").
-func pinnedProviders(wf *ir.Workflow, overrides model.ModelOverrides) []string {
-	if wf == nil {
+// runFallbackEntries adapts the launch's fallback chain onto
+// model.FallbackEntry, so the wants derivation sees the operator's
+// run-level `--fallback` alongside per-node fallbacks.
+func runFallbackEntries(entries []runview.FallbackEntry) []model.FallbackEntry {
+	if len(entries) == 0 {
 		return nil
 	}
-	pinned := map[string]bool{}
-	for _, n := range wf.Nodes {
-		_, mdl, prov := effectiveNodeTargeting(n, overrides)
-		if prov != "" {
-			pinned[prov] = true
-			continue
-		}
-		if p, _, cut := strings.Cut(mdl, "/"); cut && p != "" {
-			pinned[p] = true
-		}
+	out := make([]model.FallbackEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.FallbackEntry{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	if len(pinned) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(pinned))
-	for p := range pinned {
-		out = append(out, p)
-	}
-	sort.Strings(out)
 	return out
 }
 
-// wantsFor narrows the pool request to donations a run can actually spend.
+// runFallbackEntriesFromRun is the resume-path twin.
+func runFallbackEntriesFromRun(entries []store.RunFallbackEntry) []model.FallbackEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]model.FallbackEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.FallbackEntry{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+	}
+	return out
+}
+
+// knownPoolProviders is the provider vocabulary the wants derivation
+// resolves against — derived from allKnownProviders so the two cannot
+// drift. A hint outside it names a pin the pool cannot serve by name.
+var knownPoolProviders = func() map[string]bool {
+	m := make(map[string]bool, len(allKnownProviders))
+	for _, p := range allKnownProviders {
+		m[strings.ToLower(string(p))] = true
+	}
+	return m
+}()
+
+// wantsFor narrows the pool request to donations a run can actually spend,
+// and returns the resolution it narrowed on for the log lines.
 //
 // A bot that pins `model: "anthropic/…"` has no use for a lent z.ai key:
 // granting one would consume a unit of the donor's daily runs and hold a
 // concurrency slot for a run that then fails at the first LLM call, and
-// every retry would pick the same wrong donation. A run that pins nothing
-// takes the full order — claw substitutes the first available provider, so
-// any donation serves it.
+// every retry would pick the same wrong donation. The narrowing is exact
+// per provider because the delegates are: a `zai` hint spends a z.ai key
+// and nothing else (no fall-through to the OAuth dir), `anthropic` spends
+// the Anthropic key or the claude_code forfait.
 //
-// Overrides ride the SAME derivation as the DSL, so a launch that pins
-// every LLM node to claw/openai (studio Launch dropdowns / --model) is
-// reflected in the wants — the missing wire that let a judge-kind
-// override slip past this walk in #668.
-func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides) []credpool.Credential {
-	provs := pinnedProviders(wf, overrides)
-	if len(provs) == 0 {
-		return poolWantOrder
+// And it FAILS OPEN. A run that pins nothing takes the FULL order — claw
+// substitutes the first available provider, so any donation serves it —
+// and so does any run with ONE route the walk cannot resolve (no pin, an
+// explicit "auto", a ${VAR} empty here, a name nobody knows, a
+// model-answering node with no LLMFields): that route takes whatever the
+// process holds, so narrowing on its pinned peers would drop the very
+// donation it needs. A run whose cross-family reviewer pins openai but
+// whose implementer pins nothing keeps the claude_code forfait in its
+// wants, and a typo in a provider hint costs a Warn, never the pool tier.
+func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) ([]credpool.Credential, model.ProviderResolution) {
+	res := model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders)
+	if !res.NarrowSafe || len(res.Providers) == 0 {
+		return poolWantOrder, res
 	}
-	pinned := make(map[string]bool, len(provs))
-	for _, p := range provs {
+	pinned := make(map[string]bool, len(res.Providers))
+	for _, p := range res.Providers {
 		pinned[p] = true
 	}
 	out := make([]credpool.Credential, 0, len(poolWantOrder))
@@ -1283,7 +1233,7 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides) []credpool.Creden
 			out = append(out, w)
 		}
 	}
-	return out
+	return out, res
 }
 
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
@@ -1294,7 +1244,7 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides) []credpool.Creden
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides) *credpool.Grant {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) *credpool.Grant {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact, but log it once per
 		// run so the trace of "which tier funded this run" starts at the
@@ -1303,21 +1253,29 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			runID, credpool.ReasonPoolDisabled)
 		return nil
 	}
-	wants := wantsFor(wf, overrides)
+	// One walk per launch: the wants, the diagnostics and the consulted
+	// line all read the same resolution.
+	wants, res := wantsFor(wf, overrides, runFallbacks)
+	if len(res.Unknown) > 0 {
+		// A pin nobody knows never narrows the request to nothing: the
+		// walk widened to the full order instead. Name the pin — a typo
+		// in `provider:` is worth one line, not a silently skipped tier.
+		p.logger.Warn("cloudpublisher: credential pool asked for the FULL order for run %s — provider hint(s) match no known provider: %s (%s)",
+			runID, strings.Join(res.Unknown, ","), providersSummary(res.Providers))
+	}
 	if len(wants) == 0 {
-		// The bot pins providers the pool never lends: asking would burn a
-		// walk that could not possibly succeed. Log it: today this is what
-		// "the pool was consulted and answered nothing" looks like when the
-		// judge-kind override arrived (see #668).
+		// Every route resolved to a KNOWN provider the pool never lends.
+		// The want order covers every known provider today, so this is
+		// the guard for a narrower order tomorrow, not a live path.
 		p.logger.Warn("cloudpublisher: credential pool NOT CONSULTED for run %s — bot pins provider(s) no donation matches (%s)",
-			runID, poolWantsSummary(wf, overrides))
+			runID, providersSummary(res.Providers))
 		return nil
 	}
 	// Trace the derived wants once per run — the pointer the incident
 	// this fix serves (#668) asked for so an operator can see what the
 	// resolver is asking on their behalf, not only what it got back.
-	p.logger.Info("cloudpublisher: credential pool consulted for run %s — wants=%s (pinned providers=%s)",
-		runID, wantsSummary(wants), providersSummary(pinnedProviders(wf, overrides)))
+	p.logger.Info("cloudpublisher: credential pool consulted for run %s — wants=%s (%s narrow_safe=%v)",
+		runID, wantsSummary(wants), providersSummary(res.Providers), res.NarrowSafe)
 	grant, err := p.credPool.Acquire(ctx, credpool.Request{
 		RunID:    runID,
 		OrgID:    orgID,
@@ -1358,24 +1316,13 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 // that answers "was this decision even made against the right set?".
 func wantsSummary(wants []credpool.Credential) string {
 	if len(wants) == 0 {
-		return "none"
+		return "<none>"
 	}
 	parts := make([]string, 0, len(wants))
 	for _, w := range wants {
-		parts = append(parts, w.String())
+		parts = append(parts, string(w.Source)+":"+w.Ref)
 	}
 	return strings.Join(parts, ",")
-}
-
-// poolWantsSummary is the wants=0 branch's diagnostic: it names the pins
-// the workflow carries under the launch's overrides, so an operator can
-// tell WHY the pool was skipped before it was asked. Kept small — the log
-// line rides the launch path.
-func poolWantsSummary(wf *ir.Workflow, overrides model.ModelOverrides) string {
-	if wf == nil {
-		return "pinned=<no-workflow>"
-	}
-	return providersSummary(pinnedProviders(wf, overrides))
 }
 
 // providersSummary renders a set of provider names for a log line.
@@ -1534,7 +1481,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     NO run record behind (never a stray queued/running run for a launch
 	//     that could not resolve its mandatory credentials).
 	orgID := p.orgIDForTeam(ctx, tenantID)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides))
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -1851,7 +1798,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides))
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback))
 	// Armed before the error check — see SubmitLaunch.
 	if creds.grant != nil {
 		defer func() {

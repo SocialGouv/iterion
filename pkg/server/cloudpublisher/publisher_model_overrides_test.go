@@ -195,7 +195,8 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 		overrides.SetModel("mutants_adversary", "openai/gpt-5.6-sol")
 		overrides.SetProvider("mutants_adversary", "openai")
 
-		got := provs(wantsFor(wf, overrides))
+		w, _ := wantsFor(wf, overrides, nil)
+		got := provs(w)
 		if contains(got, "anthropic") {
 			t.Fatalf("wants still asks for anthropic: %v — the judge-kind override is not reaching wantsFor", got)
 		}
@@ -212,7 +213,8 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 		overrides.SetProvider("judge", "openai")
 		overrides.SetModel("judge", "openai/gpt-5")
 
-		got := provs(wantsFor(wf, overrides))
+		w, _ := wantsFor(wf, overrides, nil)
+		got := provs(w)
 		// The agent still wants anthropic (unchanged), but the judge now
 		// contributes openai — the mixed set the run actually needs.
 		if !contains(got, "anthropic") || !contains(got, "openai") {
@@ -221,7 +223,8 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 	})
 
 	t.Run("empty overrides → identical to the pre-fix DSL walk", func(t *testing.T) {
-		got := provs(wantsFor(wf, model.ModelOverrides{}))
+		w, _ := wantsFor(wf, model.ModelOverrides{}, nil)
+		got := provs(w)
 		if !contains(got, "anthropic") {
 			t.Fatalf("wants without overrides must still see the DSL pin: got %v", got)
 		}
@@ -230,19 +233,23 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 		}
 	})
 
-	t.Run("wants=0 route: fake-provider pin still produces empty wants", func(t *testing.T) {
-		// Extra guardrail: an operator adding a fake-provider pin ends up
-		// with an empty wants list (documented in the poolWantsSummary
-		// diagnostic), which is what triggers the acquireFromPool
-		// wants=0 Warn line.
+	t.Run("wants=0 route: a pin that matches no known provider fails OPEN", func(t *testing.T) {
+		// Round 1 G2: a pin the pool does not know (fake-provider,
+		// unknown ${VAR}, "auto") must NOT narrow the wants to nothing.
+		// The pre-round-1 code did narrow — a bot's provider-hint typo
+		// silently skipped the pool tier — the exact regression the
+		// review caught end-to-end on secured-renovacy. Widen instead:
+		// EffectiveProviders returns narrowSafe=false, wantsFor falls
+		// back to the full order.
 		wfFake := &ir.Workflow{Nodes: map[string]ir.Node{
 			"a": &ir.AgentNode{
 				BaseNode:  ir.BaseNode{ID: "a"},
 				LLMFields: ir.LLMFields{Model: "fake-provider/gpt-x"},
 			},
 		}}
-		if len(wantsFor(wfFake, model.ModelOverrides{})) != 0 {
-			t.Fatal("a fake-provider pin must produce an empty wants list, so the wants=0 Warn is what an operator sees")
+		got, _ := wantsFor(wfFake, model.ModelOverrides{}, nil)
+		if len(got) != len(poolWantOrder) {
+			t.Fatalf("unknown-provider pin narrowed wants to %d, want the full %d (fail open)", len(got), len(poolWantOrder))
 		}
 	})
 }
