@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.100.2](https://github.com/SocialGouv/iterion/compare/v3.100.1...v3.100.2) (2026-09-04)
+
+### Bug Fixes
+
+* **runner:** a re-execution restores the chain its earlier attempt banked ([#674](https://github.com/SocialGouv/iterion/issues/674)) ([ea2b274](https://github.com/SocialGouv/iterion/commit/ea2b274811a6f820200109bb8782838e162106a8)), closes [#652](https://github.com/SocialGouv/iterion/issues/652), references [#652](https://github.com/SocialGouv/iterion/issues/652)
+
+    <details><summary>why</summary>
+
+    A resume or redelivery of a repo-targeted run re-cloned the target branch and started the remaining nodes on a bare tree: the commits the earlier attempt had banked (final_branch/final_commit) or parked (an attempt ref) stayed reachable on the forge but never reached the workspace, so a campaign that had committed three passes planned its fourth on nothing and the PR tail had nothing to deliver — docs-refresh 01a055f9 (33 commits) and Billy 01a06728 (#652).
+
+    </details>
+
 ## [3.100.1](https://github.com/SocialGouv/iterion/compare/v3.100.0...v3.100.1) (2026-09-04)
 
 ### Bug Fixes
