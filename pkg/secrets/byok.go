@@ -106,6 +106,19 @@ func (p Provider) Valid() bool {
 	return false
 }
 
+// CredentialIsJSON reports whether this provider's BYOK value is a JSON
+// credential document rather than a bearer token: Bedrock takes an
+// AWS-style credential object, Vertex a service-account file. The shape
+// gate at ingestion reads this so the two are not refused as "a terminal
+// transcript" for containing newlines and spaces.
+func (p Provider) CredentialIsJSON() bool {
+	switch p {
+	case ProviderBedrock, ProviderVertex:
+		return true
+	}
+	return false
+}
+
 // ApiKey is a BYOK record: a single API key (or AWS-style credential
 // blob, JSON-encoded inside SealedSecret) attached to a team and
 // optionally scoped to a single user. The plaintext secret is never

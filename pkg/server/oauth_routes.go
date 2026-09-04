@@ -276,8 +276,11 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusInternalServerError, "build credentials: %v", err)
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, accountLabel)
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, accountLabel, credentialServerBuilt)
 	if err != nil {
+		if s.refuseOAuthCredential(w, r, ownerKey, kind, "browser", err) {
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -307,8 +310,11 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, accountLabel)
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, accountLabel, credentialPasted)
 	if err != nil {
+		if s.refuseOAuthCredential(w, r, ownerKey, kind, "paste", err) {
+			return
+		}
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -333,11 +339,42 @@ func normalizeOAuthAccountLabel(raw string) (string, error) {
 	return label, nil
 }
 
+// credentialOrigin says who built the blob sealOAuthRecord is gating: a
+// human paste, or the server itself out of a token exchange. The
+// presence rules differ — a pasted claude_code record must carry what
+// the CLI needs to consider itself logged in (expiresAt, scopes), while
+// the exchange legitimately omits an expiry or a scope (the refresh
+// tests model scope-less responses) and the server-built blob only gets
+// the token-shape check.
+type credentialOrigin int
+
+const (
+	credentialPasted credentialOrigin = iota
+	credentialServerBuilt
+)
+
+// refuseOAuthCredential is the refusal branch both connect paths share:
+// a typed shape refusal answers 400 with the reason, and leaves a trace —
+// a Warn and an audit event naming the field and the reason, never the
+// value — so a paste that would have burned a fleet of runs on 401s is
+// findable after the fact. Reports whether it handled the error.
+func (s *Server) refuseOAuthCredential(w http.ResponseWriter, r *http.Request, ownerKey string, kind secrets.OAuthKind, flow string, err error) bool {
+	var se *secrets.ShapeError
+	if !errors.As(err, &se) {
+		return false
+	}
+	s.logger.Warn("oauth: owner=%s kind=%s credential REFUSED at ingestion (flow=%s field=%s): %s", ownerKey, kind, flow, se.Field, se.Reason)
+	s.auditOAuthByOwner(r, ownerKey, "refused", kind, map[string]any{"flow": flow, "field": se.Field, "reason": se.Reason})
+	httpError(w, http.StatusBadRequest, "%s", err.Error())
+	return true
+}
+
 // sealOAuthRecord validates a credentials blob, extracts expiry/scope
 // metadata, seals it bound to (ownerKey, kind), and upserts the record.
 // Shared by the browser flow and the paste path; accountLabel arrives
-// already normalized by the handler.
-func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string) (secrets.OAuthRecord, error) {
+// already normalized by the handler. Every refusal of the blob's SHAPE is
+// a *secrets.ShapeError; anything else is a parse, seal or store failure.
+func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string, origin credentialOrigin) (secrets.OAuthRecord, error) {
 	now := time.Now().UTC()
 	rec := secrets.OAuthRecord{
 		// ID is derived in the OAuth store's Upsert (memory + Mongo
@@ -354,7 +391,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 			return secrets.OAuthRecord{}, err
 		}
 		if v.ClaudeAIOauth.AccessToken == "" {
-			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.accessToken")
+			return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.accessToken", Reason: "is missing from credentials.json"}
 		}
 		// Ingestion gate — the runtime backstop is #624's evidence-based skip,
 		// this end catches the garbage before it ever reaches a run: an
@@ -364,32 +401,45 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		if err := secrets.ValidateTokenShape("claudeAiOauth.accessToken", v.ClaudeAIOauth.AccessToken); err != nil {
 			return secrets.OAuthRecord{}, err
 		}
-		// A claude_code record without an expiresAt or scopes is what the CLI
-		// reads as "Not logged in" — the credential exists on the server side
-		// and can never serve a run. Refusing it here means the operator sees
-		// the problem at paste time, not on a paid fleet of dead-on-arrival
-		// runs. The clock is stamped at the same time the caller stamps
-		// CreatedAt so a nearly-expired paste is caught by the same call.
-		if v.ClaudeAIOauth.ExpiresAt <= 0 {
-			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.expiresAt — a claude_code record without it is read by the CLI as 'Not logged in'; re-run `claude login` and paste the fresh credentials.json")
-		}
-		exp := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
-		if !exp.After(now) {
-			return secrets.OAuthRecord{}, fmt.Errorf("credentials.json accessToken already expired at %s — re-run `claude login` and paste the fresh credentials.json", exp.Format(time.RFC3339))
-		}
-		if len(v.ClaudeAIOauth.Scopes) == 0 {
-			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.scopes — a claude_code record without any scope is read by the CLI as 'Not logged in'; re-run `claude login` and paste the fresh credentials.json")
-		}
-		rec.AccessTokenExpiresAt = &exp
 		rec.NotRefreshable = v.ClaudeAIOauth.RefreshToken == ""
 		rec.Scopes = v.ClaudeAIOauth.Scopes
+		if v.ClaudeAIOauth.ExpiresAt > 0 {
+			exp := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
+			rec.AccessTokenExpiresAt = &exp
+		}
+		if origin == credentialPasted {
+			// A pasted claude_code record without an expiresAt or scopes is
+			// what the CLI reads as "Not logged in" — the credential exists
+			// server-side and can never serve a run. Refuse it at paste
+			// time, not on a paid fleet of dead-on-arrival runs.
+			if rec.AccessTokenExpiresAt == nil {
+				return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.expiresAt", Reason: "is missing from credentials.json — a claude_code record without it is read by the CLI as 'Not logged in'; paste the current credentials.json of a logged-in Claude Code (run any `claude` command first so it is fresh)"}
+			}
+			if len(rec.Scopes) == 0 {
+				return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.scopes", Reason: "is missing from credentials.json — a claude_code record without any scope is read by the CLI as 'Not logged in'; paste the current credentials.json of a logged-in Claude Code"}
+			}
+		}
+		// An EXPIRED access token is only dead when nothing can renew it.
+		// With a refreshToken the record is exactly what the refresh worker
+		// exists for (ExpiringBefore lists expired records too, and RunOnce
+		// refreshes every refreshable one), so a stale export from a
+		// logged-in machine connects and heals on the worker's next pass.
+		// Without one, only a fresh paste can help — and `claude login` is
+		// the wrong advice for a machine that IS logged in and merely
+		// exported a stale file.
+		if rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(now) {
+			if rec.NotRefreshable {
+				return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.accessToken", Reason: fmt.Sprintf("already expired at %s and the record carries no refreshToken, so nothing can renew it — paste the current credentials.json of a logged-in Claude Code (it carries a refreshToken), or connect through the browser flow", rec.AccessTokenExpiresAt.Format(time.RFC3339))}
+			}
+			s.logger.Info("oauth: owner=%s kind=%s accessToken expired at %s but refreshable — accepted; the refresh worker renews it on its next pass", ownerKey, kind, rec.AccessTokenExpiresAt.Format(time.RFC3339))
+		}
 	case secrets.OAuthKindCodex:
 		v, err := secrets.ParseCodexView(blob)
 		if err != nil {
 			return secrets.OAuthRecord{}, err
 		}
 		if v.Tokens.AccessToken == "" {
-			return secrets.OAuthRecord{}, errors.New("auth.json missing tokens.access_token")
+			return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "tokens.access_token", Reason: "is missing from auth.json"}
 		}
 		// Same shape gate as claude_code — a whitespace/control char in a
 		// bearer token is a paste accident, not a legal credential.

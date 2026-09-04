@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -486,8 +488,10 @@ func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
 			wantInErr: "expiresAt",
 		},
 		{
-			name:      "claude_code with an already-expired accessToken",
-			blob:      claudeBlob("sk-ant-oat01-good", time.Now().Add(-time.Hour).UnixMilli(), `["user:inference"]`),
+			// With a refreshToken an expired record is accepted (the refresh
+			// worker renews it); only the unrenewable shape is refused.
+			name:      "claude_code with an already-expired accessToken and no refreshToken",
+			blob:      fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good","expiresAt":%d,"scopes":["user:inference"]}}`, time.Now().Add(-time.Hour).UnixMilli()),
 			wantInErr: "expired",
 		},
 	} {
@@ -525,4 +529,208 @@ func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
 			t.Fatalf("healthy blob landed with wrong shape: sealed=%d scopes=%v expiresAt=%v", len(rec.SealedPayload), rec.Scopes, rec.AccessTokenExpiresAt)
 		}
 	})
+}
+
+// An expired access token is only dead when nothing can renew it. The
+// refresh worker heals exactly the expired-but-refreshable record
+// (ExpiringBefore lists expired ones; RunOnce refreshes every refreshable
+// one), and every producer funnels through sealOAuthRecord — so refusing
+// that shape at paste time left a stale export from a LOGGED-IN machine
+// unconnectable, with `claude login` as the wrong remedy (#627 round 1).
+func TestOAuthCredentialIngestion_ExpiredIsRefusedOnlyWithoutARefreshToken(t *testing.T) {
+	_, hs, signer, oauthStore := oauthTestServer(t)
+	alice := oauthJWT(t, signer, "alice")
+	expired := time.Now().Add(-time.Hour).UnixMilli()
+
+	t.Run("expired + refreshToken → accepted, refreshable", func(t *testing.T) {
+		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		blob := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-stale","refreshToken":"rt","expiresAt":%d,"scopes":["user:inference"]}}`, expired)
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
+		if code != http.StatusOK {
+			t.Fatalf("upload = %d body=%s, want 200 (the refresh worker renews it)", code, body)
+		}
+		var view oauthConnectionView
+		if err := json.Unmarshal([]byte(body), &view); err != nil {
+			t.Fatalf("decode view: %v", err)
+		}
+		if !view.Refreshable {
+			t.Fatalf("view.refreshable = false, want true: %s", body)
+		}
+		rec, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		if err != nil {
+			t.Fatalf("stored record: %v", err)
+		}
+		if rec.NotRefreshable || rec.AccessTokenExpiresAt == nil || rec.AccessTokenExpiresAt.After(time.Now()) {
+			t.Fatalf("stored record = %+v, want refreshable with its past expiry kept (ExpiringBefore must list it)", rec)
+		}
+	})
+
+	t.Run("expired + no refreshToken → refused, remedy names the refreshToken", func(t *testing.T) {
+		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		blob := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-stale","expiresAt":%d,"scopes":["user:inference"]}}`, expired)
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
+		if code != http.StatusBadRequest {
+			t.Fatalf("upload = %d body=%s, want 400", code, body)
+		}
+		if !strings.Contains(body, "expired") || !strings.Contains(body, "refreshToken") || strings.Contains(body, "claude login") {
+			t.Fatalf("remedy must say the record cannot be renewed and what to paste instead, never `claude login`: %s", body)
+		}
+		if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err == nil {
+			t.Fatal("a refused credential was silently stored")
+		}
+	})
+
+	t.Run("missing expiresAt → refused", func(t *testing.T) {
+		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good","refreshToken":"rt","scopes":["user:inference"]}}`
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
+		if code != http.StatusBadRequest || !strings.Contains(body, "expiresAt") {
+			t.Fatalf("upload = %d body=%s, want 400 naming expiresAt", code, body)
+		}
+	})
+}
+
+// The ASCII-only gate let a NO-BREAK SPACE glued to the token through the
+// chokepoint and SEALED it. End to end through the paste path: refused,
+// naming the rune, nothing stored.
+func TestOAuthCredentialIngestion_RefusesUnicodeWhitespaceEndToEnd(t *testing.T) {
+	_, hs, signer, oauthStore := oauthTestServer(t)
+	alice := oauthJWT(t, signer, "alice")
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good\u00a0tail","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
+	if code != http.StatusBadRequest || !strings.Contains(body, "U+00A0") {
+		t.Fatalf("upload = %d body=%s, want 400 naming U+00A0", code, body)
+	}
+	if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err == nil {
+		t.Fatal("an NBSP-glued token was sealed through the chokepoint")
+	}
+}
+
+// cannedTokenTransport answers the Anthropic token exchange in-process.
+type cannedTokenTransport struct {
+	status int
+	body   string
+	seen   *http.Request
+}
+
+func (c *cannedTokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.seen = r
+	return &http.Response{
+		StatusCode: c.status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Request:    r,
+	}, nil
+}
+
+// seedPending puts a browser-flow pending authorization for owner+kind
+// and returns its state.
+func seedPending(t *testing.T, srv *Server, ownerKey string) string {
+	t.Helper()
+	sealedVerifier, err := secrets.SealOAuthVerifier(srv.sealer, ownerKey, secrets.OAuthKindClaudeCode, "verifier-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := srv.oauthPending.Put(t.Context(), secrets.OAuthPending{
+		OwnerKey: ownerKey, Kind: secrets.OAuthKindClaudeCode, SealedVerifier: sealedVerifier,
+		State: "state-x", RedirectURI: "https://example.invalid/cb", CreatedAt: now, ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return "state-x"
+}
+
+// The browser flow builds the blob itself: BuildAnthropicCredentials
+// omits expiresAt when the exchange returns no expires_in and scopes when
+// it returns no scope (the repo's refresh tests model scope-less
+// responses). The paste-path presence rules do not apply to it — and
+// with the pending authorization already consumed, a refusal costs the
+// operator a restarted connect, so the server-built blob gets the
+// token-shape check only. A shape refusal there is a 400, not a 500.
+func TestOAuthBrowserCompletion_ServerBuiltBlobIsNotHeldToPasteRules(t *testing.T) {
+	srv, hs, signer, oauthStore := oauthTestServer(t)
+	alice := oauthJWT(t, signer, "alice")
+	srv.oauthPending = secrets.NewMemoryOAuthPendingStore()
+	srv.cfg.AnthropicOAuthClientID = "client-x"
+
+	t.Run("scope-less, expiry-less exchange → stored", func(t *testing.T) {
+		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		state := seedPending(t, srv, "alice")
+		rt := &cannedTokenTransport{status: 200, body: `{"access_token":"sk-ant-oat01-browser-token","refresh_token":"rt-browser","token_type":"Bearer"}`}
+		srv.httpClient = &http.Client{Transport: rt}
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/authorize/complete", alice, `{"code":"code-x","state":"`+state+`"}`)
+		if code != http.StatusOK {
+			t.Fatalf("complete = %d body=%s, want 200", code, body)
+		}
+		if rt.seen == nil {
+			t.Fatal("the exchange never reached the token endpoint")
+		}
+		rec, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		if err != nil {
+			t.Fatalf("stored record: %v", err)
+		}
+		if rec.NotRefreshable || rec.AccessTokenExpiresAt != nil || len(rec.Scopes) != 0 {
+			t.Fatalf("stored record = %+v, want refreshable with no expiry and no scopes (as the exchange answered)", rec)
+		}
+	})
+
+	t.Run("exchange answers a malformed token → 400, nothing stored", func(t *testing.T) {
+		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		state := seedPending(t, srv, "alice")
+		srv.httpClient = &http.Client{Transport: &cannedTokenTransport{status: 200, body: `{"access_token":"sk-ant-oat01-browser\ntoken","refresh_token":"rt"}`}}
+		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/authorize/complete", alice, `{"code":"code-x","state":"`+state+`"}`)
+		if code != http.StatusBadRequest || !strings.Contains(body, "newline") {
+			t.Fatalf("complete = %d body=%s, want 400 naming the newline", code, body)
+		}
+		if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err == nil {
+			t.Fatal("a refused credential was stored")
+		}
+	})
+}
+
+// A refusal leaves a trace: a Warn and, on an audited owner (a team's
+// org credential), an audit event naming the field and the reason —
+// never the value. Before this only the success path wrote anything.
+func TestOAuthCredentialIngestion_RefusalLeavesATrace(t *testing.T) {
+	srv, hs, signer, oauthStore := oauthTestServer(t)
+	var logs bytes.Buffer
+	srv.logger = iterlog.New(iterlog.LevelWarn, &logs)
+	auditStore := audit.NewMemoryStore()
+	srv.auditStore = auditStore
+	tok, _, err := signer.IssueAccess(auth.Identity{UserID: "root", Email: "root@x", IsSuperAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good\nWelcome","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/teams/team-x/oauth/claude_code/credentials", tok, blob)
+	if code != http.StatusBadRequest {
+		t.Fatalf("upload = %d body=%s, want 400", code, body)
+	}
+	if _, err := oauthStore.Get(t.Context(), secrets.OrgOwnerKey("team-x"), secrets.OAuthKindClaudeCode); err == nil {
+		t.Fatal("a refused credential was stored")
+	}
+	if l := logs.String(); !strings.Contains(l, "REFUSED at ingestion") || !strings.Contains(l, "claudeAiOauth.accessToken") || strings.Contains(l, "sk-ant-oat01-good") {
+		t.Fatalf("want a Warn naming the field and never the value; got:\n%s", l)
+	}
+	// The audit insert is detached; poll briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := auditStore.ListByTenant(t.Context(), "team-x", audit.Page{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			if e.Action == "oauth.org.refused" {
+				if e.Meta["field"] != "claudeAiOauth.accessToken" || e.Meta["reason"] == nil || strings.Contains(fmt.Sprint(e.Meta), "sk-ant-oat01-good") {
+					t.Fatalf("audit event = %+v, want field + reason and never the value", e)
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no oauth.org.refused audit event; got %+v", events)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
