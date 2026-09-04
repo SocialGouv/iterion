@@ -35,6 +35,11 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 	newWorld := func(t *testing.T) (*Server, *stubCommenter) {
 		t.Helper()
 		s := newWebhookTestServer(t)
+		// Wire the real bots/ catalog so pauseNoticeRoleForBot can read
+		// each bot's manifest produces:/consumes: to derive its role
+		// (reviewer vs fixer), never a bot id — the engine stays
+		// bot-agnostic (CLAUDE.md).
+		s.cfg.Bots.Paths = []string{botsDirAbs(t)}
 		rs, err := store.New(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -67,6 +72,11 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// BotID selects the pause-notice ROLE via the bot's manifest
+		// (produces: review → reviewer; consumes: review → fixer). Without
+		// it the role stays unknown and the notice is silent — the correct
+		// behaviour for a bot that gates without either shape.
+		run.BotID = "review-pr"
 		run.Status = store.RunStatusFailedResumable
 		run.Error = errText
 		run.RetryState = &store.RunRetryState{RetryAfter: &at, Reason: "usage_window", Attempts: 2}
@@ -125,28 +135,103 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		}
 	})
 
-	t.Run("a bot that owes no verdict stays silent", func(t *testing.T) {
+	t.Run("a bot that gates nothing (no gate_context) stays silent", func(t *testing.T) {
 		s, c := newWorld(t)
 		at := time.Now().UTC().Add(time.Hour)
 		id, err := store.GenerateRunID()
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A fixer launched on the PR: it holds a publish grant (the server
-		// mints one for any bot with a pr_url) but claims no check.
+		// A run launched on the PR without a gate_context: it holds a
+		// publish grant (the server mints one for any bot with a pr_url)
+		// but claims no check, so a park there tells nobody nothing useful.
 		run, err := s.cfg.Store.CreateRun(context.Background(), id, "branch-improve-loop", map[string]any{
 			"pr_url": prURL, forgePublishVarToken: "run-token",
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
+		run.BotID = "branch-improve-loop"
 		run.Status = store.RunStatusFailedResumable
 		run.RetryState = &store.RunRetryState{RetryAfter: &at}
 
 		s.noticeGatePausedForRetry(context.Background(), run)
 
 		if len(c.bodies) != 0 {
-			t.Fatalf("only a run owing a gate verdict may say \"the verdict lands here\", got %v", c.bodies)
+			t.Fatalf("a run gating nothing must post nothing, got %v", c.bodies)
+		}
+	})
+
+	// A fixer (branch-improve-loop) that DOES carry gate_context (Billy
+	// publishes his own verdict on the head he pushes — merge-gate.md
+	// §Two bots, étape 3) must get the FIXER-specific notice: no
+	// "verdict lands here" promise (his resume just re-clones the head,
+	// there's no head-anchored review claim to answer) and, critically,
+	// an explicit "don't push" — a push mid-park recreates the mid-run
+	// collision revi-billy-loop.md forbids (the run 01a06728 dogfood
+	// on #646 03/09/2026 wrongly posted the reviewer notice on Billy).
+	t.Run("fixer with gate_context gets the don't-push notice, not the reviewer one", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(2 * time.Hour)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "branch-improve-loop", map[string]any{
+			"pr_url": prURL, forgePublishVarToken: "run-token", "gate_context": "revi/review",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = "branch-improve-loop"
+		run.Status = store.RunStatusFailedResumable
+		run.RetryState = &store.RunRetryState{RetryAfter: &at, Reason: "usage_window", Attempts: 1}
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 1 {
+			t.Fatalf("a fixer with a gate context must post exactly one notice, got %d", len(c.bodies))
+		}
+		body := c.bodies[0]
+		if !strings.Contains(body, "Fix run paused") {
+			t.Fatalf("fixer notice must say \"Fix run paused\" (not \"Review paused\"):\n%s", body)
+		}
+		if !strings.Contains(body, "Don't push to this branch") {
+			t.Fatalf("fixer notice MUST warn against pushing meanwhile:\n%s", body)
+		}
+		if strings.Contains(body, "The verdict lands here") {
+			t.Fatal("a fixer does not promise a verdict — the reviewer's line must not appear")
+		}
+		if strings.Contains(body, "a new push restarts it sooner") {
+			t.Fatal("a fixer has no \"restarts sooner\" mode — a push mid-park is the collision revi-billy-loop.md forbids")
+		}
+	})
+
+	// An unknown bot (not in the catalog, or one that neither produces nor
+	// consumes reviews) stays silent even with a gate_context — a bot that
+	// gates without either shape has no established etiquette to inherit,
+	// so posting the reviewer text there would fabricate a promise.
+	t.Run("unknown role stays silent even with gate_context", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(time.Hour)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "workflow-x", map[string]any{
+			"pr_url": prURL, forgePublishVarToken: "run-token", "gate_context": "custom/gate",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = "no-such-bot-in-the-catalog"
+		run.Status = store.RunStatusFailedResumable
+		run.RetryState = &store.RunRetryState{RetryAfter: &at}
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 0 {
+			t.Fatalf("unknown role must not post the reviewer or fixer notice, got %v", c.bodies)
 		}
 	})
 

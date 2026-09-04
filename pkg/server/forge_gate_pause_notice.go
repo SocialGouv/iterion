@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -53,13 +54,25 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	if prURL == "" || token == "" {
 		return // holds no publish grant: nothing to tell anyone
 	}
-	// Holding a grant is NOT owing a verdict — the server mints one for
-	// ANY bot launched with a pr_url (the brancher, the docs amender, the
-	// fixer). The notice says "review paused … the verdict lands here",
-	// which for a fixer parked on the same quota is simply false, and
-	// there is no claimed check for it to explain. Same two conditions the
-	// reconciler uses to decide a run owes the gate a verdict.
+	// Holding a grant is NOT enough to warrant a notice — the server mints
+	// one for ANY bot launched with a pr_url (the brancher, the docs
+	// amender, and every fixer). And a run whose repo pinned the gate off
+	// isn't blocking a merge, so a park there tells nobody nothing useful.
+	// Filter both classes: no gate_context OR the operator disabled the gate.
 	if strings.TrimSpace(runInputString(run, "gate_context")) == "" || runGateDisabled(run) {
+		return
+	}
+	// Derive the run's ROLE from its bot manifest, never from a bot id —
+	// the engine stays bot-agnostic (CLAUDE.md), same discipline as the
+	// hand-off machinery next door (webhooks_handoff.go). Two roles need
+	// distinct notices: a REVIEWER's park promises a verdict here (and a
+	// push restarts it sooner — safe, it re-review). A FIXER's does neither:
+	// its resume re-clones the branch head, so a push mid-park recreates
+	// exactly the collision docs/revi-billy-loop.md forbids. An unknown
+	// role stays silent — a bot that gates but produces neither shape has
+	// no established etiquette to inherit.
+	role := s.pauseNoticeRoleForBot(run.BotID)
+	if role == pauseNoticeRoleUnknown {
 		return
 	}
 	debugf := func(format string, args ...any) {
@@ -107,7 +120,7 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 		debugf("no comment client for %s: %v", conn.Provider, err)
 		return
 	}
-	body := gatePauseNoticeBody(run, time.Now().UTC())
+	body := gatePauseNoticeBody(run, role, time.Now().UTC())
 	if _, err := commenter.CommentIssue(ctx, repo, number, body); err != nil {
 		debugf("%v", err)
 		return
@@ -145,20 +158,76 @@ func (s *Server) issueCommenterFor(ctx context.Context, conn forge.Connection) (
 	return c, nil
 }
 
+// pauseNoticeRole is the run's kind for pause-notice purposes: reviewer,
+// fixer, or unknown (silent). Derived from the bot manifest's
+// produces:/consumes: kinds, so a new reviewer or fixer bot inherits the
+// right etiquette by declaring the right shape — the engine names no bot.
+type pauseNoticeRole int
+
+const (
+	pauseNoticeRoleUnknown pauseNoticeRole = iota
+	pauseNoticeRoleReviewer
+	pauseNoticeRoleFixer
+)
+
+// pauseNoticeRoleForBot classifies the bot behind a parked run. A bot that
+// PRODUCES a review is a reviewer (Revi and any peer); one that CONSUMES a
+// review to answer it is a fixer (Billy and any peer). Consumes wins over
+// produces on the (unlikely) both — a bot that produces its own review of
+// its own fixes is a fixer, and the fixer notice's push-back warning is the
+// one that matters. Missing bot / entry / catalog → unknown (silent).
+func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return pauseNoticeRoleUnknown
+	}
+	entry, ok, err := s.effectiveFindByName(botID)
+	if err != nil || !ok {
+		return pauseNoticeRoleUnknown
+	}
+	for _, c := range entry.Consumes {
+		if c.Kind == bundle.HandoffKindReview {
+			return pauseNoticeRoleFixer
+		}
+	}
+	for _, p := range entry.Produces {
+		if p.Kind == bundle.HandoffKindReview {
+			return pauseNoticeRoleReviewer
+		}
+	}
+	return pauseNoticeRoleUnknown
+}
+
 // gatePauseNoticeBody renders the comment. Written for the developer whose
 // PR it lands on, not for an operator: what happened, when it resumes, and
-// whether waiting suffices.
-func gatePauseNoticeBody(run *store.Run, now time.Time) string {
+// whether waiting suffices. The role selects the etiquette — a reviewer
+// promises a verdict and welcomes a push (it re-reviews); a fixer's resume
+// re-clones the branch head, so a push mid-park recreates the mid-run
+// collision docs/revi-billy-loop.md forbids.
+func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) string {
 	at := run.RetryState.RetryAfter.UTC()
 	var b strings.Builder
 	b.WriteString(gatePauseNoticeMarker)
-	b.WriteString("\n⏸️ **Review paused — the LLM provider's quota is exhausted.** Nothing is wrong with this pull request.\n\n")
-	fmt.Fprintf(&b, "iterion parked the review and will resume it **automatically at %s**%s",
+	switch role {
+	case pauseNoticeRoleFixer:
+		b.WriteString("\n⏸️ **Fix run paused — the LLM provider's quota is exhausted.** Nothing is wrong with this pull request.\n\n")
+	default: // reviewer (and any future gating role) reads as a review pause
+		b.WriteString("\n⏸️ **Review paused — the LLM provider's quota is exhausted.** Nothing is wrong with this pull request.\n\n")
+	}
+	fmt.Fprintf(&b, "iterion parked the run and will resume it **automatically at %s**%s",
 		at.Format("15:04 UTC on 2006-01-02"), humanizeIn(at, now))
 	if run.RetryState.Attempts > 0 {
 		fmt.Fprintf(&b, " — attempt %d", run.RetryState.Attempts)
 	}
-	b.WriteString(". The verdict lands here when it does; a new push restarts it sooner.\n")
+	switch role {
+	case pauseNoticeRoleFixer:
+		// The resume re-clones the branch head: a push meanwhile recreates
+		// the mid-run collision revi-billy-loop.md forbids, and Billy has
+		// no "sooner" mode — he only starts back on his own resume tick.
+		b.WriteString(". **Don't push to this branch meanwhile** — the run re-clones the branch head when it resumes.\n")
+	default:
+		b.WriteString(". The verdict lands here when it does; a new push restarts it sooner.\n")
+	}
 	if cause := gatePauseCause(run); cause != "" {
 		fmt.Fprintf(&b, "\n> %s\n", cause)
 		if isSpendCeilingCause(cause) {
