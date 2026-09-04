@@ -757,9 +757,15 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 
 // forgeConnectionForPR picks the team connection to publish through:
 // the pinned connection when given, else the connection of a repo
-// integration matching the repo slug, else the first team connection on the
-// PR's forge host.
+// integration matching the repo slug, else the LATEST team connection on
+// the PR's forge host. Nil forgeConnections → (empty, false) so every
+// caller (approve, publish, pending, reconcile) inherits the nil guard
+// here rather than repeating it or panicking (#662 A5, one probed
+// panic before).
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
+	if s == nil || s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
 	matches := func(c forge.Connection) bool {
 		// A watch-only connection sits on the same host and would be picked by
 		// the "first connection on this host" fallback below — then every
@@ -795,10 +801,26 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	if err != nil {
 		return forge.Connection{}, false
 	}
+	// #662 A7: pick the LATEST matching connection, not the first. ListByTenant
+	// sorts created_at ascending on both stores, so a repo re-provisioned onto
+	// a newer connection would inherit the stale one — the sibling
+	// repoIntegrationForRepo (right above) already takes the latest on that
+	// integration lookup for the same reason. Same tie-breaker (id) on an
+	// exact created-at collision. Publish + pending + reconcile all read
+	// through this helper, so the class-wide fix is here.
+	var best forge.Connection
+	found := false
 	for _, c := range conns {
-		if matches(c) {
-			return c, true
+		if !matches(c) {
+			continue
 		}
+		if !found || c.CreatedAt.After(best.CreatedAt) ||
+			(c.CreatedAt.Equal(best.CreatedAt) && c.ID < best.ID) {
+			best, found = c, true
+		}
+	}
+	if found {
+		return best, true
 	}
 	return forge.Connection{}, false
 }

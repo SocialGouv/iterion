@@ -427,19 +427,18 @@ Three ways, in order of preference:
    force-green the `revi/review` status on the current head, for a finding
    they dispute. Authorized through the **same PR-comment command gate as
    every other `/command`**: the commenter must hold a live repo role at or
-   above `MinReplierRole` (or be in `AuthorizedRepliers`), verified via the
-   forge permission API, and the review bot's own comment can't self-approve
-   (WhoAmI loop-guard) — an arbitrary contributor cannot wave a finding
-   through. The status carries "approved by @user: reason" and links to the
-   comment as the audit trail. It does **not** launch a re-review. *(GitHub +
-   Forgejo today; GitLab `/revi approve` on a note is a follow-on.)*
-   **Known gap (SocialGouv/iterion#662):** on a GitHub App integration the
-   command currently fails with `set commit status: forge: insufficient
-   scope` (the webhook answers 502) — until it lands, the admin can write the
-   same status by hand (`POST /repos/{owner}/{repo}/statuses/{sha}`, the
-   repo's `gate_context`, `state: success`, "approved by @user: reason" as
-   the description, the comment URL as `target_url`), which the armed
-   auto-merge then picks up like any other green.
+   above `MinReplierRole` (default **maintainer** when the webhook pins
+   nothing — the operator's explicit pin always wins, but the default matches
+   the "maintainer" wording above) or be in `AuthorizedRepliers`, verified
+   via the forge permission API. Two additional guards close self-approve
+   loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
+   the PR author cannot approve their own PR (a maintainer must). The status
+   carries "approved by @user: reason" and links to the comment as the audit
+   trail. It does **not** launch a re-review. Works on GitHub App
+   integrations (posts through the connection's installation token so the
+   `statuses` scope is present) and hand-owned webhooks with a `forge_token`
+   binding (falls back to the token client). *(GitHub + Forgejo today;
+   GitLab `/revi approve` on a note is a follow-on.)*
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.
 

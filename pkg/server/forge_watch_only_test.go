@@ -55,6 +55,52 @@ func TestForgeConnectionForPR_PreferredWatchOnlyIsRefused(t *testing.T) {
 	}
 }
 
+// #662 A5: forgeConnectionForPR dereferences s.forgeConnections; every
+// sibling caller (publish, pending, reconcile) already guarded first, the
+// approve lane didn't, and the probe panicked (forge_publish.go:794). The
+// class-wide fix moves the nil guard INSIDE the helper.
+func TestForgeConnectionForPR_NilStoreReturnsFalseDoesNotPanic(t *testing.T) {
+	s := &Server{}
+	// No forgeConnections wired — pre-fix this deref-panicked.
+	got, ok := s.forgeConnectionForPR(context.Background(), "t1", "", "github.com", "SocialGouv/x")
+	if ok {
+		t.Fatalf("nil store must return (empty, false), got %v", got)
+	}
+}
+
+// #662 A7: fallback picks the LATEST connection on the host, not the first.
+// ListByTenant sorts created_at ascending on both stores, so a repo
+// re-provisioned onto a newer connection would inherit the stale one — the
+// sibling repoIntegrationForRepo already takes the latest for the same
+// reason. Shared helper serves publish + pending + reconcile too.
+func TestForgeConnectionForPR_FallbackPicksLatestConnection(t *testing.T) {
+	s := newForgeTestServer(t)
+	// The older connection was replaced by a newer one on the same host.
+	older := forge.Connection{
+		ID: "conn-older", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
+		Status: forge.StatusActive, ForgeBaseURL: "https://github.com",
+		Purpose: forge.PurposeRuntime, CreatedAt: time.Now().Add(-48 * time.Hour),
+	}
+	newer := forge.Connection{
+		ID: "conn-newer", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
+		Status: forge.StatusActive, ForgeBaseURL: "https://github.com",
+		Purpose: forge.PurposeRuntime, CreatedAt: time.Now().Add(-1 * time.Hour),
+	}
+	if err := s.forgeConnections.Create(context.Background(), older); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgeConnections.Create(context.Background(), newer); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.forgeConnectionForPR(context.Background(), "t1", "", "github.com", "SocialGouv/x")
+	if !ok {
+		t.Fatal("resolver returned no match")
+	}
+	if got.ID != "conn-newer" {
+		t.Fatalf("fallback picked %q, want the LATEST connection conn-newer — publish/pending/reconcile all read through this", got.ID)
+	}
+}
+
 // The health DTO is assembled at TWO endpoints (the health view and the
 // refresh route) and rendered by the same card. Guarding only the site in
 // front of you leaves the other one telling the operator to "fix" the very
