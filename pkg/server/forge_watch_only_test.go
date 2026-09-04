@@ -188,6 +188,74 @@ func TestPatchSecurityRead_DatesAWatchOnlyConnectionFromTheMint(t *testing.T) {
 	}
 }
 
+// The repo's newest integration can sit on a watch-only connection (the
+// security-read App is provisioned on the same repos it watches). Selecting
+// that row and then rejecting its connection sends the resolver to the
+// host-wide fallback — the latest runtime connection on the host, which
+// does not cover the repo — instead of the older integration that does;
+// and the launch-context policy would be read off the watch-only row. The
+// watch-only filter belongs in the integration lookup itself.
+func TestRepoIntegrationFor_SkipsWatchOnlyRows(t *testing.T) {
+	s := newForgeTestServer(t)
+	ctx := context.Background()
+	now := time.Now()
+	for _, c := range []forge.Connection{
+		{ID: "conn-a", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeRuntime, CreatedAt: now.Add(-72 * time.Hour)},
+		{ID: "conn-b", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeRuntime, CreatedAt: now.Add(-48 * time.Hour)},
+		{ID: "conn-watch", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeSecurityRead, CreatedAt: now.Add(-1 * time.Hour)},
+	} {
+		if err := s.forgeConnections.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ri := range []forge.RepoIntegration{
+		{ID: "ri-a", TenantID: "t1", ConnectionID: "conn-a", RepoFullName: "SocialGouv/x", CreatedAt: now.Add(-72 * time.Hour), LaunchVars: map[string]string{"gate_context": "iterion/review"}},
+		{ID: "ri-watch", TenantID: "t1", ConnectionID: "conn-watch", RepoFullName: "SocialGouv/x", CreatedAt: now.Add(-1 * time.Hour)},
+	} {
+		if err := s.forgeIntegrations.Create(ctx, ri); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ri, ok := s.repoIntegrationFor(ctx, "t1", "github.com", "SocialGouv/x")
+	if !ok || ri.ID != "ri-a" {
+		t.Fatalf("repoIntegrationFor = (%q, %v), want ri-a — the watch-only row carries no launch policy and no usable connection", ri.ID, ok)
+	}
+	conn, ok := s.forgeConnectionForPR(ctx, "t1", "", "github.com", "SocialGouv/x")
+	if !ok || conn.ID != "conn-a" {
+		t.Fatalf("forgeConnectionForPR = (%q, %v), want conn-a (the older integration that covers the repo), not the host-wide latest", conn.ID, ok)
+	}
+}
+
+// The same walk pins a repo-bound schedule to an integration id for its
+// lifecycle (DeleteByIntegration). A watch-only row is the wrong anchor:
+// de-provisioning the vulnerability watch would then delete the schedule.
+func TestResolveRepoIntegrationID_SkipsWatchOnlyRows(t *testing.T) {
+	s := newForgeTestServer(t)
+	ctx := context.Background()
+	now := time.Now()
+	for _, c := range []forge.Connection{
+		{ID: "conn-watch", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeSecurityRead, CreatedAt: now.Add(-72 * time.Hour)},
+		{ID: "conn-a", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp, Status: forge.StatusActive, ForgeBaseURL: "https://github.com", Purpose: forge.PurposeRuntime, CreatedAt: now.Add(-1 * time.Hour)},
+	} {
+		if err := s.forgeConnections.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The watch-only row is the OLDER one, so a store listing ascending by
+	// created_at walks it first.
+	for _, ri := range []forge.RepoIntegration{
+		{ID: "ri-watch", TenantID: "t1", ConnectionID: "conn-watch", RepoFullName: "SocialGouv/x", CreatedAt: now.Add(-72 * time.Hour)},
+		{ID: "ri-a", TenantID: "t1", ConnectionID: "conn-a", RepoFullName: "SocialGouv/x", CreatedAt: now.Add(-1 * time.Hour)},
+	} {
+		if err := s.forgeIntegrations.Create(ctx, ri); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.resolveRepoIntegrationID(ctx, "t1", "https://github.com/SocialGouv/x"); got != "ri-a" {
+		t.Fatalf("resolveRepoIntegrationID = %q, want ri-a — a schedule anchored on the watch-only row dies with the vulnerability watch", got)
+	}
+}
+
 // A repo provisioned twice on one host (re-provisioned onto a newer
 // connection, the older integration left behind) must resolve to the LATEST
 // provisioning's connection — the same choice repoIntegrationFor makes for

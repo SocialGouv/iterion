@@ -722,7 +722,12 @@ func (s *Server) repoLaunchPolicy(ctx context.Context, ri forge.RepoIntegration,
 // repoIntegrationFor finds a team's integration for a repo on a given forge
 // host. The host is part of the identity: the same slug on another forge is a
 // different repo, and applying its policy — or minting a grant on its
-// connection — would cross two unrelated projects.
+// connection — would cross two unrelated projects. A watch-only
+// connection's row is not a candidate either: the security-read App is
+// provisioned on the repos it watches, and its row carries neither a launch
+// policy nor a connection that can post — selecting it would hand
+// forgeConnectionForPR a connection it must reject, and the host-wide
+// fallback then lands on a connection that does not cover the repo at all.
 func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo string) (forge.RepoIntegration, bool) {
 	if s.forgeIntegrations == nil || s.forgeConnections == nil || strings.TrimSpace(repo) == "" {
 		return forge.RepoIntegration{}, false
@@ -738,7 +743,7 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 			continue
 		}
 		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
-		if cerr != nil || conn.TenantID != teamID || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+		if cerr != nil || conn.TenantID != teamID || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
 			continue
 		}
 		// One repo provisioned twice on the same host — through two connections,
