@@ -201,6 +201,17 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	if pr.State != "" && pr.State != "open" {
 		return nil
 	}
+	// Fork guard, fail-CLOSED. Autofix pushes commits (fixer.RepoURL is the
+	// BASE repo's CloneURL and RepoRef is the PR's SourceBranch), so a fork
+	// PR — or one whose head repo cannot be verified — would push LLM
+	// commits to a branch on the BASE repo. SameRepoAs returns false on
+	// empty HeadRepoFullName (deleted-fork payloads), so refuse both.
+	if !pr.SameRepoAs(repo) {
+		if s.logger != nil {
+			s.logger.Warn("gate auto-fix: refusing %s#%d — fork PR or unverifiable head repo (head=%q base=%q)", repo, number, pr.HeadRepoFullName, repo)
+		}
+		return nil
+	}
 
 	// The forge is the authority on the verdict — never our own bookkeeping,
 	// which a second replica would not share and a restart would lose. No read

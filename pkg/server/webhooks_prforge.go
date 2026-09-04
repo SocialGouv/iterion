@@ -114,17 +114,19 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 			filtered("PR is " + resolved.State + " — command ignored")
 			return
 		}
-		// Fork guard: on a fork PR the launch pair (base repo's CloneURL +
-		// PR head ref) does NOT name one repository — the head ref lives in
-		// the head repo, so the checkout misses (or, worse, hits a
+		// Fork guard, fail-CLOSED: on a fork PR the launch pair (base repo's
+		// CloneURL + PR head ref) does NOT name one repository — the head ref
+		// lives in the head repo, so the checkout misses (or, worse, hits a
 		// same-named branch on the base and the bot answers grounded in the
-		// wrong code, under the bot's identity). Same posture as the auto
-		// path (webhooks_github.go IsCrossRepo check on the parsed payload)
-		// and the review-thread reply lane (`p.IsCrossRepo()` right below).
-		// The command handler resolves the PR via the forge API, so the
-		// head repo comes from forge.PullRef, not the webhook payload.
-		if resolved.IsCrossRepo(p.ProjectPath) {
-			filtered("fork PR — /" + cmd + " runs are same-repo only")
+		// wrong code, under the bot's identity). Empty HeadRepoFullName is
+		// EQUALLY unsafe here — probed live on a deleted-fork PR, both
+		// GitHub and Forgejo emit `head.repo: null` when the head repo no
+		// longer exists (always a fork), so the earlier IsCrossRepo-only
+		// check let the fixer launch with repoURL=<base> repoRef=main. Use
+		// SameRepoAs (empty head → false, i.e. refuse) so the launch pair
+		// must be PROVEN same-repo before the bot runs.
+		if !resolved.SameRepoAs(p.ProjectPath) {
+			filtered("fork PR or unverifiable head repo — /" + cmd + " runs are same-repo only")
 			return
 		}
 		pr = &resolved

@@ -120,14 +120,45 @@ type PullRef struct {
 // same-named method. Returns false when HeadRepoFullName is empty (a legacy
 // payload / provider that omits it): a caller that must fail-closed on
 // unknown fork status has to combine this with an emptiness check on
-// HeadRepoFullName, as the auto-launch lane already does via the parsed
-// webhook payload. Passing an empty baseRepo returns false — this method
-// judges cross-repo only when both sides are known.
+// HeadRepoFullName, or use SameRepoAs — which returns false on empty head.
+// Passing an empty baseRepo returns false — this method judges cross-repo
+// only when both sides are known.
 func (p PullRef) IsCrossRepo(baseRepo string) bool {
-	if p.HeadRepoFullName == "" || baseRepo == "" {
+	return !SameRepo(p.HeadRepoFullName, baseRepo) && p.HeadRepoFullName != "" && baseRepo != ""
+}
+
+// SameRepoAs reports whether the PR's head branch lives in the SAME repo as
+// baseRepo — the fail-CLOSED counterpart to IsCrossRepo. Every launch pair
+// combining `<base repo>.CloneURL + pr.SourceBranch` MUST clear this before
+// dispatching, because an empty head repo means "provider omitted the field
+// OR the head repo was deleted/blocked" — both cases the deleted-fork probe
+// hit on the launch (repoURL=base repoRef=main → the fixer would push LLM
+// commits to the BASE repo's main).
+//
+// Empty head repo → false (never proven safe). Empty base → false. Both set
+// and case-insensitively equal → true. This is what the command lane, the
+// autofix lane, and the gate-relaunch lane must all consult before launching.
+func (p PullRef) SameRepoAs(baseRepo string) bool {
+	return SameRepo(p.HeadRepoFullName, baseRepo)
+}
+
+// SameRepo reports whether two "owner/repo" identifiers name the same
+// repository, case-insensitively (owner/repo names are uniquely
+// case-insensitive on every supported forge). Empty on either side → false:
+// "unknown" is never proven equal, so a caller that fails-closed inherits
+// the safe answer for free.
+//
+// Shared vocabulary used by three predicates that once had two semantics:
+// forge.PullRef.SameRepoAs / IsCrossRepo (this file), and prforge.Parsed /
+// prforge.ParsedReviewComment IsCrossRepo (pkg/webhooks/prforge). Before
+// this consolidation the prforge pair compared with `!=`, so
+// "Owner/Repo" vs "owner/repo" registered as a fork on GitLab-mirrored
+// event bodies whose casing does not match the base repo's stored form.
+func SameRepo(a, b string) bool {
+	if a == "" || b == "" {
 		return false
 	}
-	return !strings.EqualFold(p.HeadRepoFullName, baseRepo)
+	return strings.EqualFold(a, b)
 }
 
 // PullListOptions filters ListPullRequests.

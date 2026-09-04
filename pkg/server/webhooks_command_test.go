@@ -730,13 +730,14 @@ func TestGitHubIssueComment_SameRepoStillLaunches(t *testing.T) {
 	}
 }
 
-// TestGitHubIssueComment_LegacyPayloadNoHeadRepoStillLaunches pins the
-// legacy-payload fallback: a provider that omits head.repo yields an empty
-// HeadRepoFullName; the fork guard must NOT then filter — filtering on
-// unknown head-repo would break every command lane on providers whose PR
-// endpoint doesn't return it. Fail-open on the unknown; the auto-launch
-// lane's payload-side guard remains the primary defence for GitHub.
-func TestGitHubIssueComment_LegacyPayloadNoHeadRepoStillLaunches(t *testing.T) {
+// TestGitHubIssueComment_EmptyHeadRepoFailsClosed pins the deleted-fork /
+// legacy-payload fail-CLOSED semantics (B1): both GitHub and Forgejo emit
+// `head.repo: null` when the head repo no longer exists, which is ALWAYS a
+// fork. An earlier IsCrossRepo-only guard treated empty HeadRepoFullName as
+// safe, letting the fixer launch with repoURL=<base> repoRef=main and push
+// LLM commits to the BASE repo's main. SameRepoAs is false on empty head,
+// so the command lane now refuses.
+func TestGitHubIssueComment_EmptyHeadRepoFailsClosed(t *testing.T) {
 	s := newWebhookTestServer(t)
 	cfg, pt := ghConfig(t, s)
 	cfg.BotIDs = []string{"review-pr", "feature-dev"}
@@ -752,11 +753,11 @@ func TestGitHubIssueComment_LegacyPayloadNoHeadRepoStillLaunches(t *testing.T) {
 	var launched int
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 		launched++
-		return "run-ok", nil
+		return "run-forbidden", nil
 	}
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
-	if launched != 1 {
-		t.Fatalf("empty HeadRepoFullName must not trip the fork guard (launched=%d)", launched)
+	if launched != 0 {
+		t.Fatalf("empty HeadRepoFullName is a deleted-fork signal — MUST NOT launch (launched=%d)", launched)
 	}
 }

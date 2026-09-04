@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // EventHeaderReviewComment is the X-GitHub-Event value for a comment in a
@@ -88,7 +90,7 @@ type ParsedReviewComment struct {
 // (minimal/legacy payloads) is treated as same-repo to avoid falsely gating
 // a trusted internal PR.
 func (p ParsedReviewComment) IsCrossRepo() bool {
-	return p.HeadRepoFullName != "" && p.HeadRepoFullName != p.ProjectPath
+	return !forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) && p.HeadRepoFullName != ""
 }
 
 // ParseReviewComment decodes a pull_request_review_comment webhook body

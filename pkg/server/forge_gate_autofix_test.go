@@ -213,6 +213,41 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 	})
 
+	// Fork guard — the autofix push pair (base CloneURL + pr.SourceBranch)
+	// does not name one repository on a fork. #642 class fix (B2): the
+	// autofix lane resolves the same forge.PullRef the command lane does,
+	// so it inherits the SameRepoAs check. Empty HeadRepoFullName
+	// (deleted-fork payloads) MUST refuse too — see B1.
+	t.Run("a fork PR never gets an unattended fix", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm,
+				headRepo: "mallory/widgets"}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Fatal("autofix launched on a fork PR — the fixer would push LLM commits to the base repo")
+		}
+	})
+	t.Run("an empty head repo fails closed too", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return emptyHeadGateClient{stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Fatal("autofix launched with an empty HeadRepoFullName — deleted-fork payloads must fail closed")
+		}
+	})
+
 	// A resumable failure whose retry is ARMED is not a dead run: the sweeper
 	// will resume it and the gate it left is about to change. (One with no
 	// retry armed is final — same distinction the reconciler applies.)
@@ -505,16 +540,41 @@ type stubGateClient struct {
 	state   forge.CommitState
 	ctxName string
 	desc    string
+	// headRepo overrides the PullRef.HeadRepoFullName the stub returns.
+	// Empty defaults to the base repo the endpoint was called with (i.e. a
+	// same-repo PR), so pre-B2 fixtures stay same-repo without edits.
+	headRepo string
 }
 
-func (c stubGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
-	return forge.PullRef{Number: number, State: "open", HeadSHA: c.head, SourceBranch: "feat/x", TargetBranch: "main"}, nil
+func (c stubGateClient) GetPullRequest(_ context.Context, base string, number int) (forge.PullRef, error) {
+	head := c.headRepo
+	if head == "" {
+		head = base
+	}
+	return forge.PullRef{
+		Number: number, State: "open", HeadSHA: c.head,
+		SourceBranch: "feat/x", TargetBranch: "main",
+		HeadRepoFullName: head,
+	}, nil
 }
 func (c stubGateClient) SetCommitStatus(context.Context, string, string, forge.CommitStatus) error {
 	return nil
 }
 func (c stubGateClient) ListCommitStatuses(context.Context, string, string) ([]forge.CommitStatus, error) {
 	return []forge.CommitStatus{{Context: c.ctxName, State: c.state, Description: c.desc}}, nil
+}
+
+// emptyHeadGateClient answers GetPullRequest with HeadRepoFullName="" — the
+// deleted-fork payload shape (both GitHub and Forgejo emit `head.repo: null`
+// when the head repo no longer exists, and the parser leaves it empty).
+type emptyHeadGateClient struct{ stubGateClient }
+
+func (c emptyHeadGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
+	return forge.PullRef{
+		Number: number, State: "open", HeadSHA: c.head,
+		SourceBranch: "feat/x", TargetBranch: "main",
+		// HeadRepoFullName deliberately empty.
+	}, nil
 }
 
 // TestReviewFixerIsDerivedNotNamed: the lane must pick the fixer from what a bot

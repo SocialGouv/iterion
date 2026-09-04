@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // Parsed is the normalized PR view the inbound handler consumes. It
@@ -156,7 +158,7 @@ func labelNames(labels []Label) []string {
 // repo (minimal/legacy payloads) is treated as same-repo to avoid falsely
 // gating a trusted internal PR.
 func (p Parsed) IsCrossRepo() bool {
-	return p.HeadRepoFullName != "" && p.HeadRepoFullName != p.ProjectPath
+	return !forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) && p.HeadRepoFullName != ""
 }
 
 // IsReviewable reports whether the PR action should AUTO-trigger a
