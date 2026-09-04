@@ -65,3 +65,38 @@ func TestPublishRecipeScopesRegistryLogin(t *testing.T) {
 			"still outlives the push", publishRecipePath)
 	}
 }
+
+// TestPublishRecipeDoesNotTrustSecretEnvVars guards the second half of the
+// credential contract: a file secret's `env:` reaches the process environment
+// through exactly one path — pkg/runtime/sandbox_secret_files.go writes it into
+// the SANDBOX spec. On a host run the only per-run env addition a delegated
+// claude_code spawn gets is the devbox PATH (pkg/runtime/devbox_host.go), so
+// `$REGISTRY_TOKEN` is unset. A recipe that redirects from it under `set -e`
+// dies on an unopenable path, and the "Known refusals" section then teaches the
+// agent to report a credential problem that does not exist.
+func TestPublishRecipeDoesNotTrustSecretEnvVars(t *testing.T) {
+	src := publishRecipe(t)
+
+	const loginCmd = `crane auth login "$REGISTRY_HOST"`
+	login := strings.Index(src, loginCmd)
+	if login < 0 {
+		t.Skipf("%s: the recipe no longer logs in with crane — this guard has nothing "+
+			"to hold", publishRecipePath)
+	}
+	line := src[login:]
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	if strings.Contains(line, `"$REGISTRY_TOKEN"`) {
+		t.Fatalf("%s: the login reads from $REGISTRY_TOKEN directly — that variable is "+
+			"injected only under a sandbox, so on a host run this redirect fails and the "+
+			"agent misreports it as a rejected token. Redirect from the path pinned with "+
+			"the ${REGISTRY_TOKEN:-<rendered path>} fallback instead.\n  %s",
+			publishRecipePath, line)
+	}
+	if !strings.Contains(src, `REGISTRY_TOKEN_PATH="${REGISTRY_TOKEN:-`) {
+		t.Fatalf("%s: the recipe has no fallback from $REGISTRY_TOKEN to the path the "+
+			"workflow renders — a host run then has no way to reach the token",
+			publishRecipePath)
+	}
+}

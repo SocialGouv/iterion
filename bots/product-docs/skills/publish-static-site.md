@@ -25,10 +25,23 @@ called out — they are the ones that silently cost a pass when ignored.
 
 ## Credentials — by reference only
 
-`$REGISTRY_TOKEN` is the PATH of a read-only file holding the registry
-token. NEVER cat, echo, print or interpolate it; the login below reads it on
-stdin. `$DEPLOY_CREDENTIAL` belongs to the deploy-target skill — do not touch
-it here.
+The registry token is a read-only FILE; you need its PATH, never its
+content. **The authoritative path is the one your system prompt renders**
+(it appears again in the prompt's "Mounted secret files" list).
+`$REGISTRY_TOKEN` is only the SANDBOX's shortcut to that same path: iterion
+writes a file secret's `env:` into the container spec, so on a host run
+nothing sets it. An unset `$REGISTRY_TOKEN` means "not in a sandbox" — it
+never means "no token". Pin the path once, before step 2, and fail on the
+real cause:
+
+```sh
+REGISTRY_TOKEN_PATH="${REGISTRY_TOKEN:-<the registry_token path from your system prompt>}"
+test -r "$REGISTRY_TOKEN_PATH"        # a path problem must surface HERE, not as a 401
+```
+
+NEVER cat, echo, print or interpolate the file. `$DEPLOY_CREDENTIAL` follows
+the same rule and the same fallback, and belongs to the deploy-target skill —
+do not touch it here.
 
 ## 1. Build
 
@@ -76,7 +89,7 @@ cp -R "$SCRATCH/mk/site/." "$STAGE/usr/share/nginx/html/"
 tar -C "$STAGE" -cf "$SCRATCH/site-layer.tar" usr
 TAG="$(git rev-parse --short=12 HEAD)"            # the docs commit the site was built from
 REGISTRY_HOST="${IMAGE%%/*}"                       # e.g. ghcr.io
-crane auth login "$REGISTRY_HOST" -u "${REGISTRY_USER:-iterion}" --password-stdin < "$REGISTRY_TOKEN"
+crane auth login "$REGISTRY_HOST" -u "${REGISTRY_USER:-iterion}" --password-stdin < "$REGISTRY_TOKEN_PATH"
 crane --platform linux/amd64 append \
   -b nginxinc/nginx-unprivileged:1.27-alpine \
   -f "$SCRATCH/site-layer.tar" \
@@ -121,7 +134,11 @@ rollout is healthy and the URL answers 200 with the site's title.
   Package settings → Change visibility → Public), then re-run the publish.
 - **`401` on `crane auth login`**: the registry token is wrong, expired or
   lacks `write:packages`. Report which registry refused it; never print the
-  token.
+  token. This is a REFUSAL by the registry — do not confuse it with the login
+  failing to read its input at all (an unset `$REGISTRY_TOKEN` on a host run,
+  caught by the `test -r` above). Reporting "the token lacks `write:packages`"
+  when the shell simply could not open a file sends the operator to rotate a
+  credential that was never wrong.
 - **A base URL the platform will not serve** (the host the deploy skill
   derives from the slug differs from `BASE_URL`): report the two hosts as a
   mismatch instead of returning a URL the workflow's truth gate refuses.
