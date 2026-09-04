@@ -570,6 +570,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	// The budget ask is validated at admission, before any store access:
+	// a malformed max_duration ("4 hours") would otherwise ride
+	// RunMessage.Budget onto the queue, fail the runner's
+	// applyBudgetOverrides on EVERY redelivery, and burn the delivery
+	// budget into a DLQ park. Same gate as handleLaunchRun.
+	budget := req.Budget.toOverrides()
+	if budget != nil {
+		if err := budget.Validate(); err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid budget: %v", err)
+			span.SetStatus(codes.Error, "invalid budget")
+			return
+		}
+	}
 	// Load the run once: its persisted FilePath is the fallback when the body
 	// omits one, and its TenantID is required to scope the resume's Mongo
 	// queries (see below). LoadRunCtx looks a run up by id without a tenant
@@ -672,7 +685,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Answers:  answers,
 		Force:    req.Force,
 		Timeout:  timeout,
-		Budget:   req.Budget.toOverrides(),
+		Budget:   budget,
 	}
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref

@@ -418,6 +418,16 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
 	}
+	// E3 (part of #652 review round 1): validate the resume budget
+	// ask synchronously — a malformed max_duration ("4 hours") would
+	// otherwise ride RunMessage.Budget through the cloud queue, fail
+	// the runner's applyBudgetOverrides on EVERY redelivery, and burn
+	// the delivery budget into a DLQ park. Same pre-flight as Launch.
+	if spec.Budget != nil {
+		if err := spec.Budget.Validate(); err != nil {
+			return nil, fmt.Errorf("budget: %w", err)
+		}
+	}
 
 	// Wait out a previous runner that is still tearing down, BEFORE anything
 	// takes a resource it holds. This is the top of the resume path on purpose:
@@ -484,6 +494,27 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
+	}
+
+	// E2 (#652 review round 1): apply the resume budget override to wf
+	// BEFORE the branch fork, so every downstream path (cloud publish,
+	// detached, in-process) executes against the raised caps. The
+	// executor snapshots Budget at construction time, so this must
+	// happen before BuildExecutor below. Same ordering + merge contract
+	// as Launch (service_launch.go:250).
+	//
+	// The persisted r.Budget snapshot (studio Overview) is also
+	// refreshed so the operator sees the raised cap immediately, not
+	// the launch-time figure that just killed the run. Best-effort:
+	// a store blip here does not fail the resume.
+	if spec.Budget != nil && !spec.Budget.IsZero() {
+		ir.ApplyBudgetOverrides(wf, *spec.Budget)
+		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
+			r.Budget = snap
+			if serr := s.store.SaveRun(parent, r); serr != nil && s.logger != nil {
+				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
+			}
+		}
 	}
 
 	// Cloud-mode resume: republish the RunMessage with ResumeSpec

@@ -5,7 +5,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// snapshotBudgetForPersist projects the EFFECTIVE ir.Budget onto the
+// SnapshotBudgetForPersist projects the EFFECTIVE ir.Budget onto the
 // display-only store.RunBudget persisted on the run. The effective budget
 // is simply what `e.workflow.Budget` holds by the time the run doc is
 // stamped at runResolveDoc: applyBudgetOverrides (CLI) and
@@ -19,7 +19,7 @@ import (
 // no cap and the studio Overview degrades to bare stats. MaxDuration is
 // resolved through ExpandEnvWithDefault so a "${DUR:-30m}" source persists
 // as the concrete "30m" the frontend parses.
-func snapshotBudgetForPersist(b *ir.Budget) *store.RunBudget {
+func SnapshotBudgetForPersist(b *ir.Budget) *store.RunBudget {
 	if b == nil {
 		return nil
 	}

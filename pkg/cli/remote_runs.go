@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // remoteRunSummary mirrors runview.RunSummary's CLI-visible fields.
@@ -545,6 +547,19 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 		req["timeout"] = opts.Timeout
 	}
 	if budget := resumeBudgetBody(opts); budget != nil {
+		// E3 (#652 review round 1): validate client-side so a typo
+		// (--max-duration "4 hours") fails immediately with an
+		// actionable message, before the round trip. The server
+		// re-validates as the authoritative gate.
+		if err := (ir.BudgetOverrides{
+			MaxCostUSD:          opts.MaxCostUSD,
+			MaxTokens:           opts.MaxTokens,
+			MaxDuration:         opts.MaxDuration,
+			MaxIterations:       opts.MaxIterations,
+			MaxParallelBranches: opts.MaxParallelBranches,
+		}).Validate(); err != nil {
+			return fmt.Errorf("invalid budget: %w", err)
+		}
 		req["budget"] = budget
 	}
 	return RemoteRunsAction(ctx, c, p, id, "resume", req)

@@ -315,7 +315,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// with a denominator. A resume that raises a cap re-parses the
 		// budget, so overwriting is correct; the non-nil guard preserves a
 		// prior snapshot if a --force resume dropped the budget: block.
-		if b := snapshotBudgetForPersist(e.workflow.Budget); b != nil {
+		if b := SnapshotBudgetForPersist(e.workflow.Budget); b != nil {
 			run.Budget = b
 		}
 		if e.bundle != nil {
