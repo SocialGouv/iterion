@@ -189,6 +189,59 @@ func TestPRForgeAppFallback_AppOnlyStillLandsThroughTheMint(t *testing.T) {
 	}
 }
 
+// An installation that CAN mint but withholds statuses:write — created
+// before the merge gate, or one that declined the permission — is served
+// by the App client's baseline re-mint, so its reads work and the token
+// looks healthy; only the status write 403s. The approve lane exists to
+// write that status: with a forge_token binding on the webhook, the write
+// must go through the binding, and the withheld token must never be sent
+// a status write.
+func TestPRForgeAppFallback_StatusesWithheldWritesThroughTheToken(t *testing.T) {
+	s, f, cfg, pt := appConnWorld(t, false, true)
+	f.mintDenyStatuses = true
+	f.perms["maintainer-jane"] = "maintain"
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if w.Code != http.StatusOK || resp["status"] != "revi-approved" {
+		t.Fatalf("approve must land through the binding when the installation withholds statuses, got %d %v (status bearers=%v)", w.Code, resp, f.bearersFor("status"))
+	}
+	if got := f.bearersFor("status"); len(got) != 1 || got[0] != "Bearer ghp_hand_owned" {
+		t.Fatalf("the status write must ride the forge_token binding and nothing else, got %v", got)
+	}
+	if f.mintsBaseline == 0 {
+		t.Fatal("the connection must have been tried first (no baseline re-mint recorded)")
+	}
+}
+
+// The same installation with NO binding: a refusal that names the withheld
+// grant — the thing the operator must approve on the App — not a bare
+// "insufficient scope" from a status write that was never going to land.
+func TestPRForgeAppFallback_StatusesWithheldWithoutTokenIsANamedRefusal(t *testing.T) {
+	s, f, cfg, pt := appConnWorld(t, false, false)
+	f.mintDenyStatuses = true
+	f.perms["maintainer-jane"] = "maintain"
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a withheld grant must never 5xx the hook, got %d body=%s", w.Code, w.Body.String())
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered {
+		t.Fatalf("a withheld grant is a configuration refusal: want one filtered row, got %+v", rows)
+	}
+	if !strings.Contains(rows[0].Error, "statuses") || !strings.Contains(rows[0].Error, "c-app") || strings.Contains(rows[0].Error, "insufficient scope") {
+		t.Fatalf("the refusal must name the withheld statuses grant on the connection, never a bare insufficient scope, got %q", rows[0].Error)
+	}
+	if got := f.bearersFor("status"); len(got) != 0 {
+		t.Fatalf("no status write may be attempted with a token known to lack the grant, got %v", got)
+	}
+	if _, comments := f.snapshot(); len(comments) != 1 || !strings.Contains(comments[0], "statuses") {
+		t.Fatalf("the maintainer must be told which grant is missing, got %v", comments)
+	}
+}
+
 // A mint-failing App connection and NO token binding is a refusal, not a
 // 5xx: the delivery is audited with a reason naming BOTH the unusable
 // connection and the missing binding, so the operator knows which of the

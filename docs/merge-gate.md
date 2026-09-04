@@ -440,11 +440,16 @@ Three ways, in order of preference:
    trail. It does **not** launch a re-review. Works on GitHub App
    integrations (posts through the connection's installation token so the
    `statuses` scope is present) and hand-owned webhooks with a `forge_token`
-   binding (the token client serves when no connection covers the repo —
-   and when the covering connection's client cannot serve, e.g. an
-   installation whose grant lags the requested permissions fails the
-   token mint: the lane warns and reads, writes and replies through the
-   binding instead of failing). *(GitHub + Forgejo today;
+   binding. The token client serves when no connection covers the repo,
+   and when the covering connection cannot serve the write — for exactly
+   two reasons: its installation-token mint fails (a grant that lags the
+   requested permissions, a rotated App key), or the installation
+   withholds `statuses:write` (one created before the merge gate, or one
+   that declined the permission: the App client re-mints without it, so
+   its reads still work and only the status write would 403). In both
+   cases the lane warns and reads, writes and replies through the
+   binding; with no binding, the refusal names the withheld grant to
+   approve on the App. *(GitHub + Forgejo today;
    GitLab `/revi approve` on a note is a follow-on.)*
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.

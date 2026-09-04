@@ -377,13 +377,15 @@ func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Confi
 	if connOK {
 		gc, err := s.gateClientFor(ctx, conn)
 		if err == nil && gc != nil {
-			err = preflightForgeClient(ctx, gc)
+			// The write needs the statuses permission — the one an App
+			// client's token can lack while every read still works.
+			err = preflightForgeClient(ctx, gc, forgeNeedStatuses)
 		}
 		switch {
 		case err != nil:
 			connErr = err
 			if s.logger != nil {
-				s.logger.Warn("webhooks: /revi approve on %s/%s: connection %s covers the repo but its client cannot serve (%v) — writing through the webhook's forge_token binding instead", host, projectPath, conn.ID, err)
+				s.logger.Warn("webhooks: /revi approve on %s/%s: connection %s covers the repo but its client cannot serve the status write (%v) — writing through the webhook's forge_token binding instead", host, projectPath, conn.ID, err)
 			}
 		case gc == nil:
 			return approveWritePath{conn: conn, connOK: true}, "provider " + string(conn.Provider) + " has no commit-status capability", nil
@@ -396,6 +398,13 @@ func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Confi
 		return approveWritePath{conn: conn, connOK: connOK}, "", err
 	}
 	if token == "" {
+		if errors.Is(connErr, forge.ErrPermissionsNotGranted) {
+			// A withheld grant is a configuration miss, not a forge outage:
+			// the operator approves the permission on the App installation
+			// (or binds forge_token on the webhook) and a redelivery
+			// re-evaluates. Named, so the reply says what to approve.
+			return approveWritePath{conn: conn, connOK: true}, "connection " + conn.ID + " cannot write the merge-gate status (" + connErr.Error() + ") — approve statuses:write on the GitHub App installation, or bind forge_token on this webhook", nil
+		}
 		if connErr != nil {
 			// The connection is the only credential this lane holds and it
 			// cannot serve: a forge-side failure, told to the maintainer

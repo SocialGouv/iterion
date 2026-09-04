@@ -139,17 +139,26 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 // forgePreflighter is the optional capability of a forge client whose
 // construction is lazy: a GitHub App client mints its installation token on
 // its first call, so a client forgeAdminFor built without error can still be
-// unable to serve. A lane that holds another credential asks before acting.
+// unable to serve — and a token it did mint can still lack a permission the
+// installation withholds. A lane that holds another credential asks before
+// acting, naming the permissions its calls need beyond the baseline.
 type forgePreflighter interface {
-	Preflight(ctx context.Context) error
+	PreflightFor(ctx context.Context, need ...string) error
 }
 
+// forgeNeedStatuses is the permission a lane that WRITES a merge-gate
+// commit status asks the preflight for: the one the App client re-mints
+// without when an installation withholds it, so a client whose mint
+// succeeded can still be unable to write the status.
+const forgeNeedStatuses = forgegithub.PermissionStatuses
+
 // preflightForgeClient reports whether a freshly built forge client can
-// serve. A client without the capability is taken at its construction's
-// word — its credential was opened and validated when it was built.
-func preflightForgeClient(ctx context.Context, c any) error {
+// serve the calls that need the named permissions. A client without the
+// capability is taken at its construction's word — its credential was
+// opened and validated when it was built.
+func preflightForgeClient(ctx context.Context, c any, need ...string) error {
 	if p, ok := c.(forgePreflighter); ok {
-		return p.Preflight(ctx)
+		return p.PreflightFor(ctx, need...)
 	}
 	return nil
 }

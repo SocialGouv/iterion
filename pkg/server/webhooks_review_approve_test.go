@@ -662,12 +662,21 @@ type fakeGitHubForge struct {
 	// permissions-not-granted 422 — the shape of an installation whose
 	// grant lags the permission set iterion requests.
 	mintFail bool
-	mints    int
+	// mintDenyStatuses refuses only a mint that asks for `statuses` and
+	// serves the baseline with a token the status endpoint then 403s — an
+	// installation created before the merge gate, or one that declined
+	// statuses:write.
+	mintDenyStatuses bool
+	mints            int
+	mintsBaseline    int // mints that did NOT ask for statuses
 	// bearers records, per endpoint, the Authorization values the forge
 	// saw — the proof of WHICH credential served a call: the minted
 	// installation token (ghs_…) or the webhook's hand-owned binding.
 	bearers map[string][]string
 }
+
+// bearerNoStatuses is the installation token minted without statuses:write.
+const bearerNoStatuses = "Bearer ghs_nostatus"
 
 func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	t.Helper()
@@ -683,16 +692,28 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		f.mu.Unlock()
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		_, asksStatuses := req.Permissions["statuses"]
 		f.mu.Lock()
 		f.mints++
-		fail := f.mintFail
+		if !asksStatuses {
+			f.mintsBaseline++
+		}
+		fail, denyStatuses := f.mintFail, f.mintDenyStatuses
 		f.mu.Unlock()
-		if fail {
+		if fail || (denyStatuses && asksStatuses) {
 			reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "The permissions requested are not granted to this installation."})
 			return
 		}
-		reply(w, http.StatusCreated, map[string]any{"token": "ghs_inst", "expires_at": "2099-01-01T00:00:00Z"})
+		token := "ghs_inst"
+		if denyStatuses {
+			token = "ghs_nostatus"
+		}
+		reply(w, http.StatusCreated, map[string]any{"token": token, "expires_at": "2099-01-01T00:00:00Z"})
 	})
 	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, r *http.Request) {
 		seen("user", r)
@@ -722,6 +743,10 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/statuses/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		seen("status", r)
+		if r.Header.Get("Authorization") == bearerNoStatuses {
+			reply(w, http.StatusForbidden, map[string]any{"message": "Resource not accessible by integration"})
+			return
+		}
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		body["sha"] = r.PathValue("sha")
