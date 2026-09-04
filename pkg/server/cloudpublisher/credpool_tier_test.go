@@ -24,6 +24,7 @@ type poolFixture struct {
 	pub     *Publisher
 	rs      *secrets.MemoryRunSecretsStore
 	sealer  secrets.Sealer
+	pools   *credpool.MemoryPoolStore
 	pledges *credpool.MemoryPledgeStore
 	ledger  *credpool.MemoryLedger
 }
@@ -76,7 +77,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 			credPool:   broker,
 			logger:     iterlog.New(iterlog.LevelError, nil),
 		},
-		rs: rs, sealer: sealer, pledges: pledges, ledger: ledger,
+		rs: rs, sealer: sealer, pools: pools, pledges: pledges, ledger: ledger,
 	}
 }
 
@@ -353,16 +354,48 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		var buf bytes.Buffer
 		return &buf
 	}
+	// The logger's level glyphs: Warn lines carry ⚠️, Debug lines 🔍.
+	const warnGlyph, debugGlyph = "⚠️", "🔍"
 
-	t.Run("nil broker → warn(pool_disabled)", func(t *testing.T) {
+	t.Run("nil broker → DEBUG(pool_disabled), never a Warn", func(t *testing.T) {
+		// A deployment with no pool is static configuration; a Warn per
+		// credential-less launch would be forwarded to the error tracker
+		// forever. The signal is the terminal "no credential" Warn.
 		buf := bufFor(t)
-		p := &Publisher{logger: iterlog.New(iterlog.LevelInfo, buf)}
+		p := &Publisher{logger: iterlog.New(iterlog.LevelDebug, buf)}
 		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil); g != nil {
 			t.Fatalf("nil broker must not grant, got %+v", g)
 		}
 		log := buf.String()
-		if !strings.Contains(log, "⚠️") || !strings.Contains(log, "run-1") || !strings.Contains(log, "pool_disabled") {
-			t.Fatalf("want a Warn line naming run-1 and pool_disabled; got:\n%s", log)
+		if strings.Contains(log, warnGlyph) {
+			t.Fatalf("nil broker must not Warn; got:\n%s", log)
+		}
+		if !strings.Contains(log, debugGlyph) || !strings.Contains(log, "run-1") || !strings.Contains(log, "pool_disabled") {
+			t.Fatalf("want a Debug line naming run-1 and pool_disabled; got:\n%s", log)
+		}
+	})
+
+	t.Run("no enabled pool → DEBUG(no_enabled_pool), never a Warn", func(t *testing.T) {
+		buf := bufFor(t)
+		f := newPoolFixture(t, credpool.Limits{})
+		f.pub.logger = iterlog.New(iterlog.LevelDebug, buf)
+		pool, err := f.pools.GetByOrg(context.Background(), poolOrg)
+		if err != nil {
+			t.Fatalf("get pool: %v", err)
+		}
+		pool.Enabled = false
+		if err := f.pools.Upsert(context.Background(), pool); err != nil {
+			t.Fatalf("disable pool: %v", err)
+		}
+		if g := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil); g != nil {
+			t.Fatalf("disabled pool must not grant, got %+v", g)
+		}
+		log := buf.String()
+		if strings.Contains(log, warnGlyph) {
+			t.Fatalf("a disabled pool is static configuration and must not Warn; got:\n%s", log)
+		}
+		if !strings.Contains(log, debugGlyph) || !strings.Contains(log, "run-np") || !strings.Contains(log, "no_enabled_pool") {
+			t.Fatalf("want a Debug line naming run-np and no_enabled_pool; got:\n%s", log)
 		}
 	})
 
@@ -386,17 +419,18 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 			t.Fatalf("unknown pin must fail open and take the donor; got no grant. log:\n%s", buf.String())
 		}
 		log := buf.String()
-		if !strings.Contains(log, "⚠️") || !strings.Contains(log, "run-2") || !strings.Contains(log, "fake-provider") || !strings.Contains(log, "FULL order") {
+		if !strings.Contains(log, warnGlyph) || !strings.Contains(log, "run-2") || !strings.Contains(log, "fake-provider") || !strings.Contains(log, "FULL order") {
 			t.Fatalf("want a Warn line naming run-2, the unknown pin and the widening; got:\n%s", log)
 		}
 	})
 
-	t.Run("no eligible pledge → warn(no_eligible_pledge)", func(t *testing.T) {
+	t.Run("no eligible pledge → WARN(no_eligible_pledge) naming each pledge's state", func(t *testing.T) {
 		buf := bufFor(t)
 		f := newPoolFixture(t, credpool.Limits{})
 		f.pub.logger = iterlog.New(iterlog.LevelInfo, buf)
 		// Disable the donor: audience opens, walk finds nothing eligible.
-		pledge, _ := f.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+		pledgeID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+		pledge, _ := f.pledges.Get(context.Background(), pledgeID)
 		pledge.Enabled = false
 		_ = f.pledges.Upsert(context.Background(), pledge)
 
@@ -404,8 +438,57 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 			t.Fatalf("no eligible pledge must not grant, got %+v", g)
 		}
 		log := buf.String()
-		if !strings.Contains(log, "⚠️") || !strings.Contains(log, "run-3") || !strings.Contains(log, "no_eligible_pledge") {
+		if !strings.Contains(log, warnGlyph) || !strings.Contains(log, "run-3") || !strings.Contains(log, "no_eligible_pledge") {
 			t.Fatalf("want a Warn line naming run-3 and no_eligible_pledge; got:\n%s", log)
 		}
+		// The per-pledge state the ticket asks for rides the same line.
+		if !strings.Contains(log, "pools_enabled=1") || !strings.Contains(log, "pools_admitted=1") || !strings.Contains(log, "skips="+pledgeID+":paused") {
+			t.Fatalf("want the counts and the paused donor named on the Warn line; got:\n%s", log)
+		}
 	})
+}
+
+// The definitive "no credential at all" Warn: once per resolution, at the
+// END of resolveAndSealCredentials, when every tier abstained on a run
+// that CAN call a model — and not for a tool-only workflow, which spends
+// nothing and would otherwise page the tracker on every launch.
+func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t *testing.T) {
+	spending := &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}}}
+	toolOnly := &ir.Workflow{Nodes: map[string]ir.Node{"t": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "t"}}}}
+
+	for _, tc := range []struct {
+		name     string
+		wf       *ir.Workflow
+		wantWarn bool
+	}{
+		{"spending workflow, every tier abstained", spending, true},
+		{"nil workflow (unknown) is treated as spending", nil, true},
+		{"tool-only workflow spends nothing", toolOnly, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			f := newPoolFixture(t, credpool.Limits{})
+			f.pub.logger = iterlog.New(iterlog.LevelInfo, &buf)
+			// Disable the donor so the pool declines too.
+			pledge, _ := f.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+			pledge.Enabled = false
+			_ = f.pledges.Upsert(context.Background(), pledge)
+
+			ctx := store.WithTenant(context.Background(), poolTeam)
+			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", tc.wf, nil, nil, model.ModelOverrides{}, nil)
+			if err != nil {
+				t.Fatalf("resolveAndSealCredentials: %v", err)
+			}
+			if creds.secretsRef != "" {
+				t.Fatalf("nothing should have been sealed, got ref %q", creds.secretsRef)
+			}
+			got := strings.Count(buf.String(), "no credential resolved for run=run-terminal")
+			if tc.wantWarn && got != 1 {
+				t.Fatalf("want exactly one terminal Warn, got %d; log:\n%s", got, buf.String())
+			}
+			if !tc.wantWarn && got != 0 {
+				t.Fatalf("a tool-only run must not Warn; log:\n%s", buf.String())
+			}
+		})
+	}
 }

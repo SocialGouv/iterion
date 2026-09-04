@@ -682,6 +682,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	sort.Strings(res.fingerprints)
 
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
+		// The moment "no credential" becomes definitive: every tier
+		// abstained, and the runner will either spend its pod's ambient
+		// env or fail at the first LLM call. ONE Warn here, naming the
+		// tiers consulted — the per-tier lines above say which said no
+		// and why. A workflow that cannot call a model (tool-only, a
+		// nil workflow is unknown) spends nothing and gets no Warn.
+		if wf == nil || wf.UsesLLM() {
+			p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
+				runID, tenantID)
+		}
 		return res, nil
 	}
 
@@ -1246,10 +1256,12 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []mo
 // decides who pays (#654).
 func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) *credpool.Grant {
 	if p.credPool == nil {
-		// No pool at all — a static configuration fact, but log it once per
-		// run so the trace of "which tier funded this run" starts at the
-		// pool tier for every run, not only the ones that got a grant.
-		p.logger.Warn("cloudpublisher: credential pool NOT CONSULTED for run %s — no pool broker wired (reason=%s)",
+		// No pool at all — a static configuration fact. Debug, not Warn:
+		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
+		// platform-funded deployment with no pool would emit one per
+		// credential-less launch, forever. The definitive "no credential"
+		// Warn at the end of resolveAndSealCredentials is the signal.
+		p.logger.Debug("cloudpublisher: credential pool NOT CONSULTED for run %s — no pool broker wired (reason=%s)",
 			runID, credpool.ReasonPoolDisabled)
 		return nil
 	}
@@ -1291,8 +1303,17 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		// pool answered nothing".
 		var nd *credpool.NoDonorError
 		if errors.As(err, &nd) {
-			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_considered=%d pledges_considered=%d wants=%s",
-				runID, nd.Reason, nd.PoolsConsidered, nd.PledgesConsidered, wantsSummary(wants))
+			if nd.Reason == credpool.ReasonNoEnabledPool {
+				// Static configuration, like the nil broker above.
+				p.logger.Debug("cloudpublisher: credential pool NOT CONSULTED for run %s — no enabled pool (reason=%s)", runID, nd.Reason)
+				return nil
+			}
+			// A pool EXISTS and refused: which pools opened, how many
+			// pledges of a wanted kind were walked, and what state held
+			// each one out (paused / unhealthy / out_of_hours /
+			// bot_filtered / cooling / exhausted / serving).
+			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_enabled=%d pools_admitted=%d pledges_considered=%d skips=%s wants=%s",
+				runID, nd.Reason, nd.PoolsEnabled, nd.PoolsAdmitted, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(wants))
 			return nil
 		}
 		if errors.Is(err, credpool.ErrNoDonor) {
@@ -1332,6 +1353,20 @@ func providersSummary(provs []string) string {
 		return "pinned=<none>"
 	}
 	return "pinned=" + strings.Join(provs, ",")
+}
+
+// pledgeSkipSummary renders the per-pledge decline states an abstention
+// carries — `<pledge-id>:<status>` per donor, "<none>" when the walk
+// considered nobody.
+func pledgeSkipSummary(skips []credpool.PledgeSkip) string {
+	if len(skips) == 0 {
+		return "<none>"
+	}
+	parts := make([]string, 0, len(skips))
+	for _, sk := range skips {
+		parts = append(parts, sk.PledgeID+":"+string(sk.Status))
+	}
+	return strings.Join(parts, ",")
 }
 
 // logGrantedCredentials emits ONE INFO line per run listing which

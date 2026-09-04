@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -755,7 +756,7 @@ func TestBroker_AbstentionCarriesTypedReason(t *testing.T) {
 		}
 	})
 
-	t.Run("audience refuses → audience_rejected + pools_considered", func(t *testing.T) {
+	t.Run("audience refuses → audience_rejected + pools_enabled", func(t *testing.T) {
 		h := newHarness(t)
 		// A pool that opens itself only to its own org, called from a
 		// different org, is the reference case for audience rejection.
@@ -775,8 +776,8 @@ func TestBroker_AbstentionCarriesTypedReason(t *testing.T) {
 		if nd.Reason != ReasonAudienceRejected {
 			t.Errorf("reason = %q, want %q", nd.Reason, ReasonAudienceRejected)
 		}
-		if nd.PoolsConsidered != 1 {
-			t.Errorf("pools_considered = %d, want 1", nd.PoolsConsidered)
+		if nd.PoolsEnabled != 1 {
+			t.Errorf("pools_enabled = %d, want 1", nd.PoolsEnabled)
 		}
 	})
 
@@ -799,11 +800,159 @@ func TestBroker_AbstentionCarriesTypedReason(t *testing.T) {
 		if nd.Reason != ReasonNoEligiblePledge {
 			t.Errorf("reason = %q, want %q", nd.Reason, ReasonNoEligiblePledge)
 		}
-		if nd.PoolsConsidered != 1 {
-			t.Errorf("pools_considered = %d, want 1 (audience opened one pool)", nd.PoolsConsidered)
+		if nd.PoolsEnabled != 1 || nd.PoolsAdmitted != 1 {
+			t.Errorf("pools_enabled/admitted = %d/%d, want 1/1", nd.PoolsEnabled, nd.PoolsAdmitted)
 		}
 		if nd.PledgesConsidered != 1 {
 			t.Errorf("pledges_considered = %d, want 1 (one pledge on the pool, disabled)", nd.PledgesConsidered)
 		}
+		// #654 G5: the per-pledge skip carries the exact status the ticket
+		// asks for (paused / unhealthy / out_of_hours / bot_filtered /
+		// cooling), so an operator no longer sees the whole set collapse
+		// to a single reason.
+		if len(nd.Skips) != 1 || nd.Skips[0].Status != StatusPaused {
+			t.Errorf("skips = %+v, want one entry with status=%q for the paused donor", nd.Skips, StatusPaused)
+		}
 	})
+}
+
+// #654 G5: `no_eligible_pledge` used to swallow every per-pledge state —
+// a paused donor, a dead token, a closed sharing window, a bot allow-list
+// miss, a cooling quota, a spent ceiling and a full slot set all read the
+// same. Each case below seeds ONE donor in exactly that state and reads
+// the status the abstention names for them.
+func TestBroker_AbstentionSkipsNameEachPledgeStatus(t *testing.T) {
+	ctx := context.Background()
+	skipOf := func(t *testing.T, h *harness, runID string) PledgeSkip {
+		t.Helper()
+		_, err := h.broker.Acquire(ctx, h.request(runID))
+		var nd *NoDonorError
+		if !errors.As(err, &nd) {
+			t.Fatalf("want *NoDonorError, got %v", err)
+		}
+		if nd.Reason != ReasonNoEligiblePledge {
+			t.Fatalf("reason = %q, want %q", nd.Reason, ReasonNoEligiblePledge)
+		}
+		if len(nd.Skips) != 1 {
+			t.Fatalf("skips = %+v, want exactly the one donor", nd.Skips)
+		}
+		return nd.Skips[0]
+	}
+
+	t.Run("paused", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Enabled = false })
+		if got := skipOf(t, h, "r"); got.Status != StatusPaused || got.PledgeID != PledgeID("alice", SourceOAuth, "claude_code") {
+			t.Errorf("skip = %+v, want alice paused", got)
+		}
+	})
+	t.Run("unhealthy (auth failing)", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Health = HealthAuthFailed })
+		if got := skipOf(t, h, "r"); got.Status != StatusUnhealthy {
+			t.Errorf("skip = %+v, want unhealthy", got)
+		}
+	})
+	t.Run("out_of_hours", func(t *testing.T) {
+		h := newHarness(t)
+		// h.now is 12:00 UTC; a 01:00–02:00 window is shut.
+		h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Window = &Window{StartHour: 1, EndHour: 2} })
+		if got := skipOf(t, h, "r"); got.Status != StatusOutOfHours {
+			t.Errorf("skip = %+v, want out_of_hours", got)
+		}
+	})
+	t.Run("bot_filtered", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Bots = []string{"some-other-bot"} })
+		if got := skipOf(t, h, "r"); got.Status != StatusBotFiltered {
+			t.Errorf("skip = %+v, want bot_filtered", got)
+		}
+	})
+	t.Run("cooling", func(t *testing.T) {
+		h := newHarness(t)
+		until := h.now.Add(time.Hour)
+		h.donor(t, "alice", Limits{}, func(p *Pledge) { p.CooldownUntil = &until })
+		if got := skipOf(t, h, "r"); got.Status != StatusCooling {
+			t.Errorf("skip = %+v, want cooling", got)
+		}
+	})
+	t.Run("exhausted (daily run ceiling really spent)", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{MaxRunsPerDay: 1})
+		if _, err := h.broker.Acquire(ctx, h.request("r1")); err != nil {
+			t.Fatalf("first run must be served: %v", err)
+		}
+		// Settle the run so nothing is in flight: the next refusal is a
+		// ceiling REALLY spent, not allowance promised to a live run.
+		if err := h.broker.Report(ctx, "r1", Outcome{Condition: ConditionOK}); err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		if got := skipOf(t, h, "r2"); got.Status != StatusExhausted {
+			t.Errorf("skip = %+v, want exhausted", got)
+		}
+	})
+	t.Run("serving (every allowed slot busy)", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{MaxConcurrentRuns: 1})
+		if _, err := h.broker.Acquire(ctx, h.request("r1")); err != nil {
+			t.Fatalf("first run must be served: %v", err)
+		}
+		if got := skipOf(t, h, "r2"); got.Status != StatusServing {
+			t.Errorf("skip = %+v, want serving", got)
+		}
+	})
+	t.Run("credential gone (parked as unhealthy)", func(t *testing.T) {
+		h := newHarness(t)
+		h.donor(t, "alice", Limits{})
+		if err := h.oauth.Delete(ctx, "alice", secrets.OAuthKindClaudeCode); err != nil {
+			t.Fatalf("delete donor credential: %v", err)
+		}
+		if got := skipOf(t, h, "r"); got.Status != StatusUnhealthy {
+			t.Errorf("skip = %+v, want unhealthy", got)
+		}
+	})
+}
+
+// #654 G6: the counts an abstention carries mean one thing each.
+// PoolsEnabled is every enabled pool; PoolsAdmitted the subset whose
+// audience opened to this request; PledgesConsidered only the pledges of
+// a kind the run asked for — a pool full of codex subscriptions does not
+// inflate the count on a claude_code request.
+func TestBroker_AbstentionCountsMeanOneThingEach(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	// A second enabled pool, closed to the requester's org.
+	if err := h.pools.Upsert(ctx, Pool{ID: "pool-closed", OrgID: "someone-else", Enabled: true}); err != nil {
+		t.Fatalf("seed pool: %v", err)
+	}
+	// One matching donor, paused; one codex pledge the request never asks for.
+	h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Enabled = false })
+	if err := h.pledges.Upsert(ctx, Pledge{
+		ID: PledgeID("bob", SourceOAuth, string(secrets.OAuthKindCodex)), PoolID: "pool-1",
+		UserID: "bob", Credential: Credential{Source: SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
+		Enabled: true, Health: HealthOK,
+	}); err != nil {
+		t.Fatalf("seed codex pledge: %v", err)
+	}
+
+	_, err := h.broker.Acquire(ctx, h.request("r"))
+	var nd *NoDonorError
+	if !errors.As(err, &nd) {
+		t.Fatalf("want *NoDonorError, got %v", err)
+	}
+	if nd.PoolsEnabled != 2 {
+		t.Errorf("pools_enabled = %d, want 2 (both enabled pools)", nd.PoolsEnabled)
+	}
+	if nd.PoolsAdmitted != 1 {
+		t.Errorf("pools_admitted = %d, want 1 (the closed pool's audience refused)", nd.PoolsAdmitted)
+	}
+	if nd.PledgesConsidered != 1 {
+		t.Errorf("pledges_considered = %d, want 1 (bob's codex pledge is not a wanted kind)", nd.PledgesConsidered)
+	}
+	if len(nd.Skips) != 1 || nd.Skips[0].PledgeID != PledgeID("alice", SourceOAuth, "claude_code") {
+		t.Errorf("skips = %+v, want alice only", nd.Skips)
+	}
+	if !strings.Contains(nd.Error(), "pools_enabled=2") || !strings.Contains(nd.Error(), "pools_admitted=1") {
+		t.Errorf("Error() = %q, want both pool counts rendered", nd.Error())
+	}
 }
