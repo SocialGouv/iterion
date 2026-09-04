@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.101.1](https://github.com/SocialGouv/iterion/compare/v3.101.0...v3.101.1) (2026-09-04)
+
+### Bug Fixes
+
+* **docs-refresh:** 3.5.7 — scan_hints stops manufacturing the same false positives every pass ([#680](https://github.com/SocialGouv/iterion/issues/680)) ([e1786cc](https://github.com/SocialGouv/iterion/commit/e1786cc3bc48bce89ac3ea957f463543bbce5da2))
+
+    <details><summary>why</summary>
+
+    A link written /dsl is SITE-absolute: every static-site generator routes it from the site root. os.path.join drops everything left of an absolute path, so the scanner asked the filesystem for /dsl and reported it dead. On prod run 01a055f9 that was 20 of the 22 hints, every one false, and the remaining 2 were explicit HTML anchors the heading-only collector could not see.
+
+    </details>
+
 ## [3.101.0](https://github.com/SocialGouv/iterion/compare/v3.100.3...v3.101.0) (2026-09-04)
 
 ### Features
