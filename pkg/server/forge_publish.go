@@ -792,10 +792,11 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	// The repo's integration, LATEST provisioning first — the same choice
 	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
 	// a newer connection posts under that one and not the row left behind.
-	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
-		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
-			return c, true
-		}
+	// This is exactly forgeConnectionCoveringRepo, so the two resolvers agree
+	// on what "covers" means by construction and differ only in what this one
+	// does NEXT.
+	if c, ok := s.forgeConnectionCoveringRepo(ctx, teamID, host, repo); ok {
+		return c, true
 	}
 	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)
 	if err != nil {
