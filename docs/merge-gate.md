@@ -426,12 +426,14 @@ Three ways, in order of preference:
 2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR to
    force-green the `revi/review` status on the current head, for a finding
    they dispute. Authorized through the **same PR-comment command gate as
-   every other `/command`**: the commenter must hold a live repo role at or
-   above `MinReplierRole` (default **maintainer** when the webhook pins
-   nothing — the operator's explicit pin always wins, but the default matches
-   the "maintainer" wording above), verified via the forge permission API —
-   role only: the webhook's `AuthorizedRepliers` allowlist (who may talk back
-   to the bot) does not apply to a force-green. Two additional guards close self-approve
+   every other `/command`**: the commenter must hold a live repo role of at
+   least **maintainer**, verified via the forge permission API. The webhook's
+   `min_replier_role` pin may RAISE that floor (pin `owner` and only owners
+   may approve) and never lowers it: that pin is the talk-back floor — who
+   may question a bot — and an operator who lowers it so reporters can ask
+   the converse bot must not lower the merge-queue bypass with it. Role
+   only, for the same reason: the webhook's `AuthorizedRepliers` allowlist
+   (who may talk back to the bot) does not apply to a force-green. Two additional guards close self-approve
    loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
    the PR author cannot approve their own PR (a maintainer must). The status
    carries "approved by @user: reason" and links to the comment as the audit

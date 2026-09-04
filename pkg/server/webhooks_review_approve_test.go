@@ -342,35 +342,46 @@ func TestReviewApprove_DefaultsFloorToMaintainerWhenUnpinned(t *testing.T) {
 	}
 }
 
-// And an explicit operator floor is NEVER silently replaced (CLAUDE.md §1).
-func TestReviewApprove_OperatorFloorIsNotReplaced(t *testing.T) {
-	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
+// The webhook's min_replier_role is the talk-back floor (who may question
+// the bot); a force-green of a required check has its own, higher floor. An
+// operator lowering the talk-back floor so reporters can ask the converse
+// bot must not lower the merge-queue bypass with it — the pin may only
+// RAISE the approve floor. The route floor the gate receives is therefore
+// the higher of the pin and the maintainer default.
+func TestReviewApprove_PinRaisesTheFloorNeverLowersIt(t *testing.T) {
+	cases := []struct {
+		pin, wantRoute string
+	}{
+		{"", "maintainer"},
+		{"reporter", "maintainer"},
+		{"developer", "maintainer"},
+		{"maintainer", "maintainer"},
+		{"owner", "owner"},
 	}
-	s.forgeConnections = conns
-	gc := &fakeGateClient{headSHA: "abc"}
-	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
-	var gotRoles []string
-	var gotCfgRoles []string
-	s.webhookPRForgeCommandGate = func(_ context.Context, cfg webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
-		gotRoles = append(gotRoles, route.MinReplierRole)
-		gotCfgRoles = append(gotCfgRoles, cfg.MinReplierRole)
-		return true, "authorized", nil
-	}
-	cfg, pt := ghConfig(t, s)
-	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
-	cfg.MinReplierRole = "developer" // operator's explicit floor — must survive
-	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","user":{"login":"alice"},"pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/revi approve","html_url":"https://github.com/acme/widgets/pull/7#issuecomment-556"},"sender":{"login":"dev-dan"}}`
-	w := httptest.NewRecorder()
-	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
-	if len(gotCfgRoles) != 1 || gotCfgRoles[0] != "developer" {
-		t.Fatalf("cfg.MinReplierRole must survive as-is on the gate call, got %v", gotCfgRoles)
-	}
-	// route.MinReplierRole stays empty so the gate reads cfg.MinReplierRole.
-	if len(gotRoles) != 1 || gotRoles[0] != "" {
-		t.Fatalf("route.MinReplierRole must NOT override the operator's cfg.MinReplierRole, got %v", gotRoles)
+	for _, c := range cases {
+		t.Run("pin="+c.pin, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			conns := forge.NewMemoryConnectionStore()
+			if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeConnections = conns
+			gc := &fakeGateClient{headSHA: "abc"}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			var gotRoles []string
+			s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
+				gotRoles = append(gotRoles, route.MinReplierRole)
+				return true, "authorized", nil
+			}
+			cfg, pt := ghConfig(t, s)
+			cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+			cfg.MinReplierRole = c.pin
+			w := httptest.NewRecorder()
+			s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+			if len(gotRoles) != 1 || gotRoles[0] != c.wantRoute {
+				t.Fatalf("pin %q must give the gate route floor %q, got %v", c.pin, c.wantRoute, gotRoles)
+			}
+		})
 	}
 }
 
@@ -823,9 +834,9 @@ func TestReviewApprove_TokenBindingWritesTheStatusWithoutAConnection(t *testing.
 }
 
 // The real command gate, against the real (fake-served) permission API: the
-// approve floor defaults to maintainer when the webhook pins none, an
-// operator's own pin wins, and neither the review bot's own comment nor the
-// PR author can approve.
+// approve floor is maintainer, an operator's pin may raise it and never
+// lower it, and neither the review bot's own comment nor the PR author can
+// approve.
 func TestReviewApprove_RealGateFloor(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -836,8 +847,11 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 		wantReply  string // "" when the status must land
 	}{
 		{"write is refused when the webhook pins no floor", "dev-dan", "write", "", false, "replier not authorized"},
-		{"write is accepted when the operator pins developer", "dev-dan", "write", "developer", true, ""},
+		{"a developer pin does not lower the floor: write is refused", "dev-dan", "write", "developer", false, "replier not authorized"},
+		{"a reporter pin does not lower the floor: triage is refused", "triager-tom", "triage", "reporter", false, "replier not authorized"},
 		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, ""},
+		{"an owner pin raises the floor: maintain is refused", "maintainer-jane", "maintain", "owner", false, "replier not authorized"},
+		{"an owner pin raises the floor: admin is accepted", "admin-ann", "admin", "owner", true, ""},
 		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard"},
 		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "own pull request"},
 		{"a Forgejo repo owner is accepted with no floor pinned", "owner-olga", "owner", "", true, ""},

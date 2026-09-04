@@ -14,11 +14,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
-// approveMinReplierRole is the commenter role floor for /revi approve when
-// the webhook pins no MinReplierRole: a force-green of a required check is a
-// maintainer affordance (docs/merge-gate.md), not one every write-permission
-// collaborator holds. An operator's explicit cfg.MinReplierRole always wins.
+// approveMinReplierRole is the commenter role floor for /revi approve: a
+// force-green of a required check is a maintainer affordance
+// (docs/merge-gate.md), not one every write-permission collaborator holds.
+// The webhook's MinReplierRole is the talk-back floor — who may question a
+// bot — and may only RAISE this one: an operator who lowers it so reporters
+// can ask the converse bot must not lower the merge-queue bypass with it.
 const approveMinReplierRole = "maintainer"
+
+// approveFloor is the role floor the approve gate enforces for a webhook:
+// its MinReplierRole pin when that pin is stricter than
+// approveMinReplierRole, the maintainer default otherwise.
+func approveFloor(pinned string) string {
+	if strings.TrimSpace(pinned) != "" && webhooks.ReplierRoleRank(pinned) > webhooks.ReplierRoleRank(approveMinReplierRole) {
+		return strings.TrimSpace(pinned)
+	}
+	return approveMinReplierRole
+}
 
 // approveClaimStaleAfter bounds how long an `accepted` approve claim is
 // trusted to be in flight. A writer that dies between the claim and its
@@ -164,15 +176,13 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// Authorize through the same PR-comment command gate as every other
 	// /command (not the issue-author-trust gate): the commenter's live repo
 	// role against a floor, plus the WhoAmI loop-guard that rejects the
-	// review bot's own comment. The floor defaults to approveMinReplierRole
-	// when the webhook pins none; an operator's explicit cfg.MinReplierRole
-	// always wins. ROLE-only: the webhook's AuthorizedRepliers allowlist is
+	// review bot's own comment. The floor is approveFloor: maintainer, or
+	// the webhook's MinReplierRole when that pin is stricter — the pin is
+	// the talk-back floor and can raise this one, never lower it. ROLE-only
+	// for the same reason: the webhook's AuthorizedRepliers allowlist is
 	// "who may talk back to the bot", not "who may force-green a required
 	// check", so the gate sees it empty here.
-	route := webhooks.CommandRoute{BotID: reviewer}
-	if strings.TrimSpace(cfg.MinReplierRole) == "" {
-		route.MinReplierRole = approveMinReplierRole
-	}
+	route := webhooks.CommandRoute{BotID: reviewer, MinReplierRole: approveFloor(cfg.MinReplierRole)}
 	gateCfg := cfg
 	gateCfg.AuthorizedRepliers = nil
 	gate := s.webhookPRForgeCommandGate
