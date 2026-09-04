@@ -78,8 +78,15 @@ func ValidateAPIKeyShape(provider Provider, value string) error {
 	if trimmed == "" {
 		return &ShapeError{Field: "api-key secret", Reason: "is empty"}
 	}
-	if !strings.HasPrefix(trimmed, "{") || !json.Valid([]byte(trimmed)) {
+	var doc map[string]json.RawMessage
+	if !strings.HasPrefix(trimmed, "{") || json.Unmarshal([]byte(trimmed), &doc) != nil {
 		return &ShapeError{Field: "api-key secret", Reason: fmt.Sprintf("must be a JSON credential object for provider %s (an AWS-style credential document, a service-account file), not a bearer token", provider)}
+	}
+	// An EMPTY object parses and carries nothing: a credential that cannot
+	// authenticate is refused at ingestion like any other, rather than
+	// discovered at the first call.
+	if len(doc) == 0 {
+		return &ShapeError{Field: "api-key secret", Reason: fmt.Sprintf("is an empty JSON object — a %s credential document must carry its fields", provider)}
 	}
 	return nil
 }

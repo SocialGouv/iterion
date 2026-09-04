@@ -74,6 +74,8 @@ func TestValidateAPIKeyShape_PerProvider(t *testing.T) {
 		{"bedrock JSON array refused", ProviderBedrock, "[1,2]", "JSON credential object"},
 		{"bedrock truncated JSON refused", ProviderBedrock, "{\"aws_access_key_id\":", "JSON credential object"},
 		{"vertex empty refused", ProviderVertex, "   ", "empty"},
+		{"bedrock empty JSON object refused", ProviderBedrock, "{}", "empty JSON object"},
+		{"vertex empty JSON object refused", ProviderVertex, "{ }", "empty JSON object"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
