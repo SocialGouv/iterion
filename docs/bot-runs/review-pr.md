@@ -592,3 +592,6 @@ way to perform. Mono now says so in as many words.
   dry-run.
 - Use Revi as a routine second pass over Willy/Featurly/Billy output — it catches
   second-order issues the implementer's own review loop can miss.
+
+<!-- Live probe note: this very PR exercised the 0.7.0 stack end to end —
+     PR-open review (immediate), then this push (debounced). -->
