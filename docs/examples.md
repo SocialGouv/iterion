@@ -74,6 +74,7 @@ The manifests are authoritative for inputs, invocation modes, required capabilit
 | [`composition/`](../examples/composition/) | `group`/`use`, nested bots, and parallel sub-bot execution. |
 | [`cursors/`](../examples/cursors/) | Cursor declarations and per-node calibration. |
 | [`events/`](../examples/events/) | In-run `emit`/`wait` coordination. |
+| [`fallbacks/`](../examples/fallbacks/) | `fallbacks:` cross-backend routes (ADR-087): the `model_fallback` event and the `_served_by` / `_fallback_used` stamps a downstream gate reads. |
 | [`turing/`](../examples/turing/) | Fuelled expression/loop semantics. |
 | [`supervisor/`](../examples/supervisor/) | Concurrent supervisor declarations and steering. |
 | [`ultracode/`](../examples/ultracode/) | Ultracode compression mode. |
