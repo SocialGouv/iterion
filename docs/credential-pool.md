@@ -75,6 +75,21 @@ A pledge only ever answers a request for its OWN source and ref: a
 subscription never stands in for a metered key, because they are billed to
 different places.
 
+**What the run is asked for** (`wantsFor`, over
+[`model.EffectiveProviders`](../pkg/backend/model/override_fold.go)) is
+narrowed to the providers the run's routes actually pin — the DSL under the
+launch's model overrides, node `fallbacks:` routes and the run-level
+`--fallback` chain, read the way the executor reads them (`${VAR}` expanded,
+chains split, `provider:model` steps). The narrowing is exact per provider
+because the delegates are: a `zai` hint spends a z.ai key and nothing else,
+`anthropic` the Anthropic key or the claude_code forfait. And it **fails
+open**: one route the walk cannot name — a node with no pin, an explicit
+`auto`, a `${VAR}` empty on the server, a hint nobody knows, a model-answering
+node with no `LLMFields` — widens the request back to the full order, because
+that route takes whatever the process holds. A pin that matches no known
+provider is named in a `Warn` (`asked for the FULL order … provider hint(s)
+match no known provider`) rather than skipping the tier.
+
 ## Enforcement: the run's own budget is the ceiling
 
 A grant carries the donor's **remaining allowance**, and the launch clamps
@@ -104,6 +119,29 @@ its sharing window, or when the requested bot is not in its allow-list.
 Among the rest, selection ranks by the **fraction of what each donor
 offered** that has been consumed today — so a modest pledge is not drained
 before a generous one — with least-recently-served as the tie-break.
+
+**When nobody serves, the server log says why** — once, at the moment the
+abstention is final, at `Warn` (the level that survives
+`ITERION_LOG_LEVEL=info`). The broker returns a typed
+`credpool.NoDonorError` (unwrapping to `ErrNoDonor`) and the publisher
+renders it:
+
+```
+credential pool declined run <id> — reason=no_eligible_pledge pools_enabled=2 pools_admitted=1 pledges_considered=1 skips=<pledge-id>:paused wants=oauth:claude_code,…
+```
+
+`pools_enabled` is every enabled pool, `pools_admitted` those whose audience
+opened to the request, `pledges_considered` only the pledges of a kind the
+run asked for, and `skips` names each considered pledge with the state that
+held it out: `paused`, `unhealthy`, `out_of_hours`, `bot_filtered`,
+`cooling`, `exhausted` (a ceiling really spent), `serving` (every slot busy,
+or a ceiling met while the donor has runs in flight). `audience_rejected`
+gets the same treatment. Two reasons are static configuration and log at
+`Debug` instead — `pool_disabled` (no broker wired) and `no_enabled_pool` —
+so a platform-funded deployment without a pool does not page the error
+tracker on every launch. The definitive signal for a run that resolved
+**no credential at all** (every tier abstained, on a workflow that can call
+a model) is one `Warn` at the end of resolution naming the tiers consulted.
 
 Two states are set from a run's outcome:
 

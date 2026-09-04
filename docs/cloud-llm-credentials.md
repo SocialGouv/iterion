@@ -116,6 +116,36 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   Re-run `codex login` with "Sign in with ChatGPT" and upload the file
   unedited.
 
+## Ingestion gate — what a `400` on provisioning means
+
+Both provisioning paths refuse, at write time, a credential whose SHAPE could
+not authenticate — the two paid failures were a terminal transcript pasted as
+an accessToken and a bare record the CLI reads as "Not logged in", each
+accepted silently and each burning a fleet of runs on 401s before the cause
+was found (#627). The gate is
+[`secrets.ValidateTokenShape` / `ValidateAPIKeyShape`](../pkg/secrets/credential_shape.go):
+
+- **A bearer token is one run of visible characters.** Any white-space
+  (ASCII or not — a no-break space glued on by a rendered page counts), any
+  control, format or non-printing rune, NUL, invalid UTF-8: refused, naming
+  the rune and its position, never the value.
+- **Providers whose credential is a JSON document** (`bedrock`, `vertex` —
+  [`Provider.CredentialIsJSON`](../pkg/secrets/byok.go)) must send a JSON
+  **object**; the token rule does not apply to them.
+- **A pasted `claude_code` credentials.json** must carry `expiresAt` and a
+  non-empty `scopes` (absent → the CLI considers itself logged out). An
+  expired `accessToken` is refused **only when the record has no
+  `refreshToken`**; with one, the record is accepted and the refresh worker
+  renews it. The browser flow builds its own blob from the token exchange and
+  is held to the token-shape check only (an exchange may answer without an
+  expiry or a scope).
+- **Codex `auth.json`**: the token-shape check on `tokens.access_token`.
+
+A refusal answers `400` with the reason, and leaves a trace an operator can
+find after the fact: a `Warn` in the server log and an audit event
+(`byok.refused`, `oauth.org.refused`, `platform.llm_*.refused`) naming the
+field and the reason — never the value. Nothing is stored on a refusal.
+
 ## Provisioning cookbook (via `iterion remote`, authenticated)
 
 ```sh
@@ -124,14 +154,18 @@ iterion remote api-keys create --provider anthropic --name mykey --from-file ~/a
 iterion remote api-keys create --provider openai   --name mykey --from-file ~/openai.key
 
 # Anthropic OAuth-forfait (cloud upload reaches claude_code and claw;
-# pi bridge pending) — send the WHOLE credentials.json. A body carrying only
-# accessToken is accepted but stored
-# NON-refreshable (`sealOAuthRecord` sets NotRefreshable when refreshToken is
-# absent), so the connection dies silently at the next token expiry:
+# pi bridge pending) — send the WHOLE credentials.json. The server REFUSES
+# (400, see "Ingestion gate" below) a claude_code paste missing expiresAt or
+# scopes (the shape the CLI reads as "Not logged in") and a body without a
+# refreshToken whose token has already expired; a body with a refreshToken
+# is accepted even when the token has expired — the refresh worker renews
+# it on its next pass:
 iterion remote api POST /api/me/oauth/claude_code/credentials \
   --data "@$HOME/.claude/.credentials.json"
 # (Linux/WSL path. On macOS Claude Code keeps these in the Keychain, so there
-#  may be no file to read until you export it.)
+#  may be no file to read until you export it. Run any `claude` command first
+#  so the file is fresh: a stale export carries a refreshToken and connects,
+#  but the first refresh is what makes it serve.)
 
 # OpenAI ChatGPT-forfait (claw + openai/* model) — the Codex auth.json.
 # Note `"@$HOME/…"`, not `@~/…`: the shell only expands a tilde at the START

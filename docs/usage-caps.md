@@ -217,6 +217,22 @@ cap is blocking, so the common case pays nothing). The mid-run guard stays
 armed in both cases, so a workflow that turns out to spend anyway is still
 stopped at the call.
 
+**And only when it could spend the wire the cap meters.** The readings come
+from the claude_code delegate's session telemetry and nowhere else, and the
+pre-flight key is built from the run's Anthropic-wire credentials (or the
+platform's). A run whose every route is pinned off that wire — both LLM nodes
+on `claw` + `openai/…`, a `codex` bot — cannot spend the capped subscription,
+and parking it for the anthropic weekly reset strands it for nothing: a fully
+pinned two-node rite froze for five days that way while its single-node
+sibling on the identical pin ran (#668). The cloud runner's pre-flight asks
+[`model.AnthropicWireReachable`](../pkg/backend/model/wire_reach.go) under the
+launch's own overrides and fallback chain, and lets the run through when the
+answer is no. Every uncertainty answers "reachable" and keeps the guard
+armed: an empty, `auto` or `claude_code` backend, `claw`/`pi` with a provider
+it cannot resolve, any `anthropic`/`zai` hint on any backend, a
+model-answering node with no `LLMFields`, a `fallbacks:` route or run-level
+`--fallback` stage with any of those.
+
 ## Cloud
 
 Every pod sees only its own session, so readings are shared through the
