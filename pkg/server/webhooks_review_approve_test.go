@@ -577,14 +577,16 @@ func TestReviewApprove_ConcurrentTwinLosingTheClaimDoesNotWrite(t *testing.T) {
 	s, gc, _, cfg, pt := approveWorld(t)
 	inner := s.webhookDeliveries
 	s.webhookDeliveries = getBlindDeliveryStore{inner}
-	// The twin's claim already sits under the stable key.
+	// The twin's claim already sits under the stable key, freshly received:
+	// a claim older than approveClaimStaleAfter would be a dead writer's,
+	// which the replay check reuses — not the in-flight twin modelled here.
 	p, err := prforge.ParseIssueComment([]byte(approveBodyByJane))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := inner.Insert(context.Background(), webhooks.Delivery{
 		ID: "twin", TenantID: cfg.TenantID, WebhookID: cfg.ID, Status: webhooks.StatusAccepted,
-		IdempotencyKey: approveIdempotencyKey(cfg, p),
+		IdempotencyKey: approveIdempotencyKey(cfg, p), ReceivedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
