@@ -81,7 +81,18 @@ func logDeliveryErr(logger *iterlog.Logger, op, runID string, err error) {
 // delivery.Ack())` recurs on every ack-and-return path in processOne;
 // this helper is the single point that pairs the action with its
 // breadcrumb.
-func ackTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID string) {
+// jsDelivery is the slice of *natsq.Delivery the admission, lock and
+// terminal-dispatch helpers touch — an interface so those decisions are
+// unit-testable without a JetStream message.
+type jsDelivery interface {
+	Ack() error
+	Nak() error
+	NakWithDelay(delay time.Duration) error
+	Term() error
+	NumDelivered() int
+}
+
+func ackTerminal(logger *iterlog.Logger, delivery jsDelivery, op, runID string) {
 	logDeliveryErr(logger, op, runID, delivery.Ack())
 }
 
@@ -89,7 +100,7 @@ func ackTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID str
 // logDeliveryErr. Use for transient failures where JetStream
 // redelivery is the safety net (lock held, store transient, heartbeat
 // loss, generic engine failure).
-func nakTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID string) {
+func nakTerminal(logger *iterlog.Logger, delivery jsDelivery, op, runID string) {
 	logDeliveryErr(logger, op, runID, delivery.Nak())
 }
 
@@ -97,7 +108,7 @@ func nakTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID str
 // logDeliveryErr. Use for poisoned/forged messages whose redelivery
 // would loop forever (decode failure, run-not-found, tenant
 // mismatch, DLQ-parked).
-func termTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID string) {
+func termTerminal(logger *iterlog.Logger, delivery jsDelivery, op, runID string) {
 	logDeliveryErr(logger, op, runID, delivery.Term())
 }
 
@@ -109,6 +120,10 @@ const (
 	actionAck deliveryAction = iota
 	actionNak
 	actionTerm
+	// actionNakDelayed re-offers the delivery after preconditionOutcome.delay
+	// — the under-lock adoption's answer to a running doc younger than the
+	// staleness floor, so the remaining deliveries are not burnt inside it.
+	actionNakDelayed
 )
 
 // logLevel mirrors the three log channels processOne uses for its
@@ -133,6 +148,7 @@ type preconditionOutcome struct {
 	finalStatus string
 	op          string // for logDeliveryErr
 	action      deliveryAction
+	delay       time.Duration // actionNakDelayed only
 	level       logLevel
 	logFmt      string
 	logArgs     []any
@@ -164,6 +180,11 @@ type execOutcome struct {
 // logs outcome.{level,logFmt,logArgs} and invokes the corresponding
 // {ack,nak,term}Terminal with outcome.{op, finalStatus} on the
 // delivery before returning.
+//
+// It never WRITES the run: this runs before the per-run lock, and the
+// lock is the only liveness authority. A `running` doc proceeds as-is;
+// whether it is an orphan is decided under the lock
+// (adoptRunningUnderLock).
 //
 // Tenant validation is intentionally OUT of this helper: the failed-
 // Term log message for a tenant mismatch is a security-shaped alarm
@@ -209,15 +230,23 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 			logArgs:     []any{msg.RunID, preErr},
 		}
 	}
-	// Redelivered launch messages can arrive after the first attempt
-	// already persisted resumable state (failed_resumable,
-	// paused_operator, or cancellation-with-checkpoint during shutdown).
-	// Re-running them through Engine.Run would be a poison loop because
-	// runResolveDoc refuses to restart non-queued statuses; convert the
-	// in-memory dispatch to Resume so JetStream redelivery actually uses
-	// the checkpoint it exists to protect. A pre-pickup user-cancelled run
-	// has no checkpoint and remains a stale delivery to ack/drop.
-	switch preRun.Status {
+	return dispositionForStatus(msg, preRun)
+}
+
+// dispositionForStatus is the status switch of the admission gauntlet,
+// shared by the pre-lock pass and by the under-lock re-read of a running
+// doc: the same status must mean the same thing wherever it is read.
+//
+// Redelivered launch messages can arrive after the first attempt
+// already persisted resumable state (failed_resumable,
+// paused_operator, or cancellation-with-checkpoint during shutdown).
+// Re-running them through Engine.Run would be a poison loop because
+// runResolveDoc refuses to restart non-queued statuses; convert the
+// in-memory dispatch to Resume so JetStream redelivery actually uses
+// the checkpoint it exists to protect. A pre-pickup user-cancelled run
+// has no checkpoint and remains a stale delivery to ack/drop.
+func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
+	switch run.Status {
 	case store.RunStatusCancelled:
 		// Cancelled is terminal for a REDELIVERED launch message,
 		// checkpoint or not: auto-resuming here turned any lost ack of
@@ -243,120 +272,183 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 			msg.Resume = &queue.ResumeSpec{}
 			return preconditionOutcome{
 				proceed: true,
-				preRun:  preRun,
+				preRun:  run,
 				level:   logInfo,
 				logFmt:  "runner: run %s redelivered in status %s — resuming",
-				logArgs: []any{msg.RunID, preRun.Status},
+				logArgs: []any{msg.RunID, run.Status},
 			}
 		}
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusPausedWaitingHuman:
 		return preconditionOutcome{
-			finalStatus: string(preRun.Status),
+			finalStatus: string(run.Status),
 			op:          "ack-stale-status",
 			action:      actionAck,
 			level:       logInfo,
 			logFmt:      "runner: run %s already in status %s — dropping stale delivery",
-			logArgs:     []any{msg.RunID, preRun.Status},
-		}
-	case store.RunStatusRunning:
-		// A `running` document + no live NATS-KV lease is an orphaned
-		// run: the holder pod died before its terminal write. Without
-		// this case a redelivered resume message would hit Engine.Resume
-		// with `running`, throw `cannot resume run … with status
-		// "running"`, and burn every retry — up to eight in a couple of
-		// minutes — before the DLQ park. Observed live 2026-09-03 (#669
-		// part 2): seven redeliveries in two minutes, then DLQ_PARKED
-		// announced as a quota pause.
-		if adopted := r.adoptStaleRunning(msg, preRun); adopted != nil {
-			return *adopted
+			logArgs:     []any{msg.RunID, run.Status},
 		}
 	}
-	return preconditionOutcome{proceed: true, preRun: preRun}
+	// running (a live owner, or an orphan — told apart under the lock),
+	// queued (the publisher's pre-flip of this very attempt), and any
+	// status this switch does not know: proceed.
+	return preconditionOutcome{proceed: true, preRun: run}
 }
 
-// adoptStaleRunning promotes an orphaned `running` run to
-// `failed_resumable` and converts the delivery into a resume so the
-// checkpoint the doc still points at is honoured. Returns nil when the
-// lease is present (the run has a live owner — abstain and let the
-// existing per-run lock CAS handle the race), the lease check is not
-// wired, or the lease/CAS probe fails (the orphan sweeper's 60s tick
-// remains the reconciliation net). Never mutates preRun.Status on the
-// caller's copy — the CAS is the only truth.
-func (r *Runner) adoptStaleRunning(msg *queue.RunMessage, preRun *store.Run) *preconditionOutcome {
-	checker := r.resolveLeaseChecker()
-	if checker == nil {
-		return nil
+// runningAdoptionFloor is how old a `running` doc's last write must be
+// before a delivery that holds the run's lock may adopt it as an orphan.
+// The lock proves nobody holds the LEASE; it does not prove the previous
+// holder is gone. A pod whose lease lapsed while it was alive (a NATS
+// blip longer than the TTL, a GC pause) keeps writing from `running`
+// during its unwind, and its terminal write is unconditional — it would
+// land on top of the adopter's resumed run. Sized on that mechanism:
+//
+//	lease TTL (DefaultLockTTL)          60s   the lapse itself
+//	+ heartbeat tick (HeartbeatInterval) 20s   the pod notices at its next refresh
+//	+ unwind (sandbox export, bank)     120s   the interrupted engine's own exit
+//	+ margin                             40s
+//	= 4m
+//
+// A doc written more recently than that is re-offered after the
+// remainder (a delayed Nak) instead of burning a delivery. Not the
+// sweeper's 10m: that floor guards a lock-less probe against a run
+// between claim and first heartbeat; here the lock is held, and the
+// question is only how long a dead pod's last words can arrive late. The
+// floor is a heuristic, not a fence: a pod silent for longer than the
+// floor before losing its lease could still be unwinding.
+const runningAdoptionFloor = 4 * time.Minute
+
+// lockProvesLiveness reports whether a held run lock is a liveness
+// authority: the NATS-KV lease is (the queue sweeper and the k8s reaper
+// trust the same signal); the Mongo store's lock-less no-op is not, and
+// under it an orphan cannot be told from a live owner — the admission
+// then leaves the status to the engine, as it always did.
+func (r *Runner) lockProvesLiveness() bool {
+	return r.cfg.NATS != nil || r.lockLivenessOverride
+}
+
+// maxDeliver is the queue's redelivery budget for the promote log line,
+// 0 when no queue is wired.
+func (r *Runner) maxDeliver() int {
+	if r.cfg.NATS == nil {
+		return 0
 	}
-	leaseCtx, leaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer leaseCancel()
-	locked, lerr := checker.IsRunLocked(leaseCtx, msg.RunID)
-	if lerr != nil {
-		// Lease unknown — fail safe: the sweeper's periodic probe will
-		// notice the same orphan later. A single warn per attempt so a
-		// persistent probe outage is visible.
-		return &preconditionOutcome{
+	return r.cfg.NATS.MaxDeliver()
+}
+
+// adoptRunningUnderLock decides what to do with a doc the pre-lock pass
+// read as `running`, now that this delivery holds the run's lock: nobody
+// holds the lease, so either the holder pod died before its terminal
+// write (an orphan — #669 part 2: seven redeliveries in two minutes each
+// refused on `cannot resume run … with status "running"`, then a DLQ
+// park) or it lapsed while alive and is still unwinding. The doc is
+// re-read under the lock (the pre-lock copy is stale by construction),
+// a status a peer moved meanwhile takes the ordinary disposition, a
+// young `running` doc is re-offered after the floor's remainder, and an
+// old one is promoted to failed_resumable — the continuation is
+// redelivery_pending, because THIS delivery resumes it next: a `final`
+// marker would let the board dispatcher block its card, the stuck-card
+// watchdog re-park it into a duplicate run and the outcome router route
+// it, all inside the seconds before the resume claims it. The delivery
+// is converted into a resume so the checkpoint is honoured.
+func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run, delivery jsDelivery, now time.Time) preconditionOutcome {
+	if !r.lockProvesLiveness() {
+		return preconditionOutcome{
 			proceed: true,
 			preRun:  preRun,
-			level:   logWarn,
-			logFmt:  "runner: run %s in status running: lease probe failed (%v) — falling through to admission; the sweeper is the reconciliation net",
-			logArgs: []any{msg.RunID, lerr},
+			level:   logInfo,
+			logFmt:  "runner: run %s reads running with no lease authority wired — an orphan cannot be told from a live owner, leaving the status to the engine",
+			logArgs: []any{msg.RunID},
 		}
 	}
-	if locked {
-		// Live owner — this delivery is racing an actual in-flight run;
-		// the per-run lock in processOne is the authoritative gate.
-		return nil
+	loadCtx, loadCancel := context.WithTimeout(
+		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		5*time.Second)
+	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	loadCancel()
+	if err != nil || run == nil {
+		// The lock is released on the way out; a redelivery re-reads.
+		return preconditionOutcome{
+			finalStatus: "store_load_transient",
+			op:          "nak-store-load-transient",
+			action:      actionNak,
+			level:       logWarn,
+			logFmt:      "runner: run %s: re-read under the lock failed (%v) — naking",
+			logArgs:     []any{msg.RunID, err},
+		}
 	}
-	// Orphan: CAS to failed_resumable and hand the delivery back as a
-	// resume so JetStream redelivery uses the checkpoint the run doc
-	// preserved. UpdateRunOutcome is a CAS on the expected status set,
-	// so a peer that raced us to the same conclusion loses without
-	// harm. Detach the write ctx: the caller has a very short LoadRun
-	// budget above and Shutdown may be firing.
+	if run.Status != store.RunStatusRunning {
+		// A peer moved it between our two reads (its own terminal write
+		// landing late, the sweeper, an operator): the ordinary
+		// disposition applies to what the doc says now.
+		return dispositionForStatus(msg, run)
+	}
+	age := runningAdoptionFloor
+	if !run.UpdatedAt.IsZero() {
+		age = now.Sub(run.UpdatedAt)
+	}
+	delivered, maxDeliver := delivery.NumDelivered(), r.maxDeliver()
+	if age < runningAdoptionFloor {
+		remaining := runningAdoptionFloor - age
+		return preconditionOutcome{
+			finalStatus: "running_young",
+			op:          "nak-running-young",
+			action:      actionNakDelayed,
+			delay:       remaining,
+			level:       logWarn,
+			logFmt:      "runner: run %s reads running under our lock but its doc was written %s ago (< %s adoption floor — a lapsed-but-alive pod may still be unwinding); delivery %d/%d re-offered in %s",
+			logArgs:     []any{msg.RunID, age.Round(time.Second), runningAdoptionFloor, delivered, maxDeliver, remaining.Round(time.Second)},
+		}
+	}
 	casCtx, casCancel := context.WithTimeout(
 		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
 		5*time.Second)
 	defer casCancel()
 	changed, cerr := r.cfg.Store.UpdateRunOutcome(casCtx, msg.RunID,
 		store.RunStatusFailedResumable,
-		"promoted from running: NATS-KV lease absent, holder pod is gone (admission-time orphan)",
-		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal},
+		fmt.Sprintf("promoted from running under the delivery's lock: no lease holder, last doc write %s ago (admission-time orphan)", age.Round(time.Second)),
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending},
 		[]store.RunStatus{store.RunStatusRunning})
 	if cerr != nil {
-		// The CAS write itself failed (store outage, etc.). Fall
-		// through: an unmodified `running` doc still lets Engine.Resume
-		// hit the "cannot resume" error, which redelivery retries — the
-		// old behaviour, no regression, and the failure is loud.
-		return &preconditionOutcome{
+		// The CAS itself failed (store outage). Fall through unchanged:
+		// the engine refuses a running doc, the delivery naks, the next
+		// one re-decides — loud, and no worse than before.
+		return preconditionOutcome{
 			proceed: true,
-			preRun:  preRun,
+			preRun:  run,
 			level:   logWarn,
-			logFmt:  "runner: run %s stale-running orphan CAS failed (%v) — falling through to admission",
+			logFmt:  "runner: run %s: stale-running promote CAS failed (%v) — falling through to the engine",
 			logArgs: []any{msg.RunID, cerr},
 		}
 	}
 	if !changed {
-		// A peer already promoted it (status drifted off `running`
-		// between our LoadRun and CAS). Fall through: the current
-		// status may already be a resumable one the switch above would
-		// have handled; the next admission will see the new status.
-		return &preconditionOutcome{
-			proceed: true,
-			preRun:  preRun,
-			level:   logInfo,
-			logFmt:  "runner: run %s stale-running status drifted before promote — deferring to next admission",
-			logArgs: []any{msg.RunID},
+		// Moved between the re-read and the CAS: read once more and take
+		// what the doc says now.
+		reCtx, reCancel := context.WithTimeout(
+			store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+			5*time.Second)
+		moved, merr := r.cfg.Store.LoadRun(reCtx, msg.RunID)
+		reCancel()
+		if merr != nil || moved == nil {
+			return preconditionOutcome{
+				finalStatus: "store_load_transient",
+				op:          "nak-store-load-transient",
+				action:      actionNak,
+				level:       logWarn,
+				logFmt:      "runner: run %s: re-read after a declined promote failed (%v) — naking",
+				logArgs:     []any{msg.RunID, merr},
+			}
 		}
+		return dispositionForStatus(msg, moved)
 	}
 	if msg.Resume == nil {
 		msg.Resume = &queue.ResumeSpec{}
 	}
-	return &preconditionOutcome{
+	return preconditionOutcome{
 		proceed: true,
-		preRun:  preRun,
+		preRun:  run,
 		level:   logWarn,
-		logFmt:  "runner: run %s promoted from stale running (no live lease) — resuming (#669 part 2)",
-		logArgs: []any{msg.RunID},
+		logFmt:  "runner: run %s adopted from stale running (lock acquired, no lease holder; prior status running, last doc write %s ago; delivery %d/%d) — resuming from its checkpoint",
+		logArgs: []any{msg.RunID, age.Round(time.Second), delivered, maxDeliver},
 	}
 }
 
@@ -643,7 +735,7 @@ func logAt(logger *iterlog.Logger, level logLevel, format string, args ...any) {
 
 // dispatchTerminal performs the JetStream state transition selected
 // by `action` and surfaces any error via logDeliveryErr.
-func dispatchTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, action deliveryAction, op, runID string) {
+func dispatchTerminal(logger *iterlog.Logger, delivery jsDelivery, action deliveryAction, op, runID string) {
 	switch action {
 	case actionAck:
 		ackTerminal(logger, delivery, op, runID)
@@ -652,6 +744,16 @@ func dispatchTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, action d
 	case actionTerm:
 		termTerminal(logger, delivery, op, runID)
 	}
+}
+
+// dispatchPrecondition dispatches an admission outcome, including the
+// delayed Nak the under-lock adoption uses to wait out its floor.
+func dispatchPrecondition(logger *iterlog.Logger, delivery jsDelivery, out preconditionOutcome, runID string) {
+	if out.action == actionNakDelayed {
+		logDeliveryErr(logger, out.op, runID, delivery.NakWithDelay(out.delay))
+		return
+	}
+	dispatchTerminal(logger, delivery, out.action, out.op, runID)
 }
 
 // Config is the runner bootstrap.
@@ -855,25 +957,10 @@ type Runner struct {
 	sandboxRunsMu sync.Mutex
 	sandboxRuns   map[string]sandbox.Run
 
-	// leaseCheckOverride replaces the r.cfg.NATS lease probe in unit
-	// tests exercising the admission path without a live queue.
-	// Nil in production; the runner uses r.cfg.NATS then.
-	leaseCheckOverride runLeaseChecker
-}
-
-// resolveLeaseChecker returns whatever probe is currently wired for the
-// admission path's orphan check. Nil when no queue is wired (local mode,
-// tests without an override), which keeps the admission behaviour
-// backwards-compatible: fall through to the existing "cannot resume"
-// failure loop rather than promote a run under an untestable premise.
-func (r *Runner) resolveLeaseChecker() runLeaseChecker {
-	if r.leaseCheckOverride != nil {
-		return r.leaseCheckOverride
-	}
-	if r.cfg.NATS == nil {
-		return nil
-	}
-	return r.cfg.NATS
+	// lockLivenessOverride declares, in unit tests without a queue, that
+	// the store's run lock is a liveness authority (the filesystem flock
+	// is one). False in production; the runner reads r.cfg.NATS then.
+	lockLivenessOverride bool
 }
 
 type inFlight struct {
@@ -1253,7 +1340,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	logAt(logger, pre.level, pre.logFmt, pre.logArgs...)
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
-		dispatchTerminal(logger, delivery, pre.action, pre.op, msg.RunID)
+		dispatchPrecondition(logger, delivery, pre, msg.RunID)
 		return
 	}
 
@@ -1277,6 +1364,20 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
 		}
 	}()
+
+	// A doc still `running` now that we hold its lock has no live lease
+	// holder: an orphan to adopt, or a lapsed-but-alive pod still
+	// unwinding — decided under the lock, never before it. A deferred
+	// answer releases the lock on the way out.
+	if pre.preRun.Status == store.RunStatusRunning {
+		adopt := r.adoptRunningUnderLock(msg, pre.preRun, delivery, time.Now().UTC())
+		logAt(logger, adopt.level, adopt.logFmt, adopt.logArgs...)
+		if !adopt.proceed {
+			finalStatus = adopt.finalStatus
+			dispatchPrecondition(logger, delivery, adopt, msg.RunID)
+			return
+		}
+	}
 
 	// Heartbeat goroutine: refresh the NATS lease while we own it. On
 	// refresh failure it cancels runCtx WITH the interrupted cause so the

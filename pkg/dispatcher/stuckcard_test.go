@@ -38,6 +38,10 @@ func TestDecideStuckCard(t *testing.T) {
 		{"retry armed is platform-owned", run(store.RunStatusFailedResumable, func(r *store.Run) {
 			r.ContinuationState = store.ContinuationRetryArmed
 		}), nil, StuckKeep},
+		{"an orphan adopted by a delivery is platform-owned", run(store.RunStatusFailedResumable, func(r *store.Run) {
+			r.FailureCode = store.FailureProcessOrphaned
+			r.ContinuationState = store.ContinuationRedeliveryPending
+		}), nil, StuckKeep},
 		{"finished completes the card", run(store.RunStatusFinished), nil, StuckComplete},
 		{"terminal failure files the card", run(store.RunStatusFailed), nil, StuckFail},
 		{"resumable goes back to the retry machinery", run(store.RunStatusFailedResumable), nil, StuckRepark},
@@ -97,5 +101,20 @@ func TestDecideStuckCard_CardContext(t *testing.T) {
 	if got := DecideStuckCard(nil, nil, stale); got.Action != StuckReleaseOnly {
 		t.Fatalf("no run + running card past the stamp window = %s (%s), want release — "+
 			"a held card is invisible to the dispatch poll", got.Action, got.Reason)
+	}
+}
+
+// The exact doc the runner's under-lock adoption writes — failed_resumable,
+// PROCESS_ORPHANED, redelivery_pending — is about to be resumed by the very
+// delivery that wrote it. The pre-transfer decision must keep the card:
+// a transfer would re-park it into a duplicate run on cloud.
+func TestDecideTransfer_KeepsAnAdoptedOrphan(t *testing.T) {
+	adopted := &store.Run{
+		ID: "r1", Status: store.RunStatusFailedResumable,
+		FailureCode: store.FailureProcessOrphaned, ContinuationState: store.ContinuationRedeliveryPending,
+	}
+	got := DecideTransfer(adopted, nil, StuckCard{State: "in_progress", RunningState: "in_progress", LaunchStates: []string{"ready"}})
+	if got.Action != StuckKeep {
+		t.Fatalf("action = %s (%s), want keep — the platform owns this run's next seconds", got.Action, got.Reason)
 	}
 }

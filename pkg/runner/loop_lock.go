@@ -18,7 +18,7 @@ import (
 // lock error is a transient-store shape and also Nak'd. Returns
 // (lock, true, "") on success; (nil, false, finalStatus) when the caller
 // must abandon the delivery (finalStatus is the metric label).
-func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, delivery *natsq.Delivery, logger *iterlog.Logger) (store.RunLock, bool, string) {
+func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger) (store.RunLock, bool, string) {
 	// Acquire the distributed lock. Two competing runners on the
 	// same run is the contention this guards against.
 	lock, err := r.cfg.Store.LockRun(runCtx, msg.RunID)

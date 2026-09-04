@@ -19,6 +19,7 @@ import (
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -563,134 +564,6 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	}
 }
 
-// admLeaseChecker plugs a scripted IsRunLocked answer into the admission
-// path — the ADR-095 lease is the queue sweeper's authority too, so this
-// interface must stay in step with the sweeper's.
-type admLeaseChecker struct {
-	locked map[string]bool
-	err    error
-}
-
-func (f *admLeaseChecker) IsRunLocked(_ context.Context, runID string) (bool, error) {
-	if f.err != nil {
-		return false, f.err
-	}
-	return f.locked[runID], nil
-}
-
-// TestAdoptStaleRunning_OrphanIsPromotedToResume pins the admission
-// path's #669 part 2 fix: a `running` doc with no live NATS-KV lease is
-// an orphan (its holder pod died before writing a terminal status),
-// and admission must CAS it to failed_resumable + convert the delivery
-// into a resume — not burn the message's MaxDeliver on
-// `cannot resume run … with status "running"`.
-func TestAdoptStaleRunning_OrphanIsPromotedToResume(t *testing.T) {
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
-	if err := st.SaveRun(ctx, &store.Run{
-		ID:           "run-orphan",
-		TenantID:     "team-1",
-		OwnerID:      "u1",
-		WorkflowName: "wf",
-		Status:       store.RunStatusRunning,
-		Checkpoint:   &store.Checkpoint{NodeID: "n1"},
-	}); err != nil {
-		t.Fatalf("SaveRun: %v", err)
-	}
-
-	r := &Runner{
-		cfg:                Config{Store: st, Logger: iterlog.Nop()},
-		leaseCheckOverride: &admLeaseChecker{locked: map[string]bool{}}, // no lease → orphan
-	}
-	msg := &queue.RunMessage{RunID: "run-orphan", TenantID: "team-1", OwnerID: "u1"}
-	out := r.resolveDeliveryPreconditions(msg)
-	if !out.proceed {
-		t.Fatalf("orphan admission did not proceed: %+v — a `running` doc + no lease is exactly the bug this fix exists to catch", out)
-	}
-	if msg.Resume == nil {
-		t.Fatalf("msg.Resume still nil after orphan promotion — Engine.Resume will now throw `cannot resume run … with status running`, i.e. the friction is unfixed")
-	}
-	got, err := st.LoadRun(ctx, "run-orphan")
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if got.Status != store.RunStatusFailedResumable {
-		t.Fatalf("status after promote = %s, want failed_resumable (the CAS to resumable status is what makes the resume runnable)", got.Status)
-	}
-	if got.FailureCode != store.FailureProcessOrphaned {
-		t.Fatalf("FailureCode after promote = %q, want PROCESS_ORPHANED (audit trail for the orphan-adoption path)", got.FailureCode)
-	}
-}
-
-// A live-lease case must NOT promote: another pod holds the run.
-func TestAdoptStaleRunning_LiveLeaseAbstains(t *testing.T) {
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
-	if err := st.SaveRun(ctx, &store.Run{
-		ID:           "run-alive",
-		TenantID:     "team-1",
-		OwnerID:      "u1",
-		WorkflowName: "wf",
-		Status:       store.RunStatusRunning,
-	}); err != nil {
-		t.Fatalf("SaveRun: %v", err)
-	}
-	r := &Runner{
-		cfg:                Config{Store: st, Logger: iterlog.Nop()},
-		leaseCheckOverride: &admLeaseChecker{locked: map[string]bool{"run-alive": true}},
-	}
-	msg := &queue.RunMessage{RunID: "run-alive", TenantID: "team-1", OwnerID: "u1"}
-	out := r.resolveDeliveryPreconditions(msg)
-	if !out.proceed {
-		t.Fatalf("live-lease running should proceed to per-run lock, got %+v", out)
-	}
-	if msg.Resume != nil {
-		t.Fatalf("live-lease running got Resume set — would clobber the live owner's checkpoint")
-	}
-	got, err := st.LoadRun(ctx, "run-alive")
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if got.Status != store.RunStatusRunning {
-		t.Fatalf("live-lease running was flipped to %s — the owner would then lose its checkpoint claim", got.Status)
-	}
-}
-
-// No lease checker wired (local mode, tests) → today's fall-through
-// behaviour is preserved: proceed with the doc as-is, no CAS.
-func TestAdoptStaleRunning_NoCheckerFallsThrough(t *testing.T) {
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
-	if err := st.SaveRun(ctx, &store.Run{
-		ID: "run-no-checker", TenantID: "team-1", OwnerID: "u1",
-		WorkflowName: "wf", Status: store.RunStatusRunning,
-	}); err != nil {
-		t.Fatalf("SaveRun: %v", err)
-	}
-	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
-	msg := &queue.RunMessage{RunID: "run-no-checker", TenantID: "team-1", OwnerID: "u1"}
-	out := r.resolveDeliveryPreconditions(msg)
-	if !out.proceed {
-		t.Fatalf("no-checker fall-through must proceed, got %+v", out)
-	}
-	if msg.Resume != nil {
-		t.Fatalf("no-checker path must NOT synthesize a resume (the lease-truth is missing — a wrong promote would race)")
-	}
-	got, err := st.LoadRun(ctx, "run-no-checker")
-	if err != nil || got.Status != store.RunStatusRunning {
-		t.Fatalf("status = %s (err %v), want running (no-checker fall-through is a no-op)", got.Status, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // injectCredentials / deleteRunSecrets
 // ---------------------------------------------------------------------------
@@ -1208,4 +1081,274 @@ func TestRecordRunGitMeta(t *testing.T) {
 			t.Error("pod-confirmed empty snapshot was not persisted")
 		}
 	})
+}
+
+// The admission gauntlet runs BEFORE the per-run lock. A `running` doc
+// must leave it untouched: the lease is the only liveness authority, and
+// a write here — with the lease possibly held by a live sibling — would
+// mislabel a live run, then Nak away when the lock refuses. Adoption of
+// an orphan happens under the lock, never here.
+func TestResolveDeliveryPreconditions_RunningIsNotWrittenBeforeTheLock(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: "run-running-prelock", TenantID: "team-1", OwnerID: "u1",
+		WorkflowName: "wf", Status: store.RunStatusRunning,
+		Checkpoint: &store.Checkpoint{NodeID: "n1"},
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: "run-running-prelock", TenantID: "team-1", OwnerID: "u1"}
+	out := r.resolveDeliveryPreconditions(msg)
+	if !out.proceed {
+		t.Fatalf("a running doc must proceed to the lock, got %+v", out)
+	}
+	if msg.Resume != nil {
+		t.Fatal("the delivery was converted to a resume BEFORE the lock — the write it implies raced whoever holds the lease")
+	}
+	got, err := st.LoadRun(ctx, "run-running-prelock")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusRunning {
+		t.Fatalf("status = %s: the doc was written BEFORE the lock — a live sibling's run just got mislabelled", got.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Under-lock adoption of a stale `running` doc
+// ---------------------------------------------------------------------------
+
+// fakeDelivery records the JetStream transition a decision takes.
+type fakeDelivery struct {
+	delivered         int
+	acks, naks, terms int
+	nakDelays         []time.Duration
+}
+
+func (d *fakeDelivery) Ack() error  { d.acks++; return nil }
+func (d *fakeDelivery) Nak() error  { d.naks++; return nil }
+func (d *fakeDelivery) Term() error { d.terms++; return nil }
+func (d *fakeDelivery) NakWithDelay(delay time.Duration) error {
+	d.nakDelays = append(d.nakDelays, delay)
+	return nil
+}
+func (d *fakeDelivery) NumDelivered() int { return d.delivered }
+
+// lockHeldStore answers every LockRun with the lease-held signal: a
+// sibling pod owns the run.
+type lockHeldStore struct{ store.RunStore }
+
+func (lockHeldStore) LockRun(context.Context, string) (store.RunLock, error) {
+	return nil, natsq.ErrLockHeld
+}
+
+// seedRunningRun persists a `running` doc with a checkpoint and returns
+// it as the store reads it (UpdatedAt stamped by the save).
+func seedRunningRun(t *testing.T, st store.RunStore, id string) *store.Run {
+	t.Helper()
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: id, TenantID: "team-1", OwnerID: "u1", WorkflowName: "wf",
+		Status: store.RunStatusRunning, Checkpoint: &store.Checkpoint{NodeID: "n1"},
+		// Every real doc carries a last-write time (CreateRun and each
+		// status transition stamp it); a zero one is the legacy shape.
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	run, err := st.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	return run
+}
+
+func loadStatus(t *testing.T, st store.RunStore, id string) *store.Run {
+	t.Helper()
+	run, err := st.LoadRun(store.WithIdentity(context.Background(), "team-1", "u1"), id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	return run
+}
+
+// A lease held by another pod is a live owner: the delivery naks away and
+// NOTHING is written — adoption never runs, because it runs after the
+// lock and the lock refused.
+func TestAcquireRunLock_LeaseHeldByAnotherNaksWithoutWrite(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-held"
+	seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: lockHeldStore{st}, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	d := &fakeDelivery{delivered: 3}
+
+	_, ok, status := r.acquireRunLock(context.Background(), msg, d, iterlog.Nop())
+
+	if ok || status != "lock_held" {
+		t.Fatalf("acquireRunLock = (%v, %q), want (false, lock_held)", ok, status)
+	}
+	if d.naks != 1 || d.acks != 0 || d.terms != 0 || len(d.nakDelays) != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one Nak (the sibling keeps the run)", d)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning || got.FailureCode != "" {
+		t.Fatalf("doc = %s/%q after a refused lock — a live sibling's run was written to", got.Status, got.FailureCode)
+	}
+	if msg.Resume != nil {
+		t.Fatal("the delivery was converted to a resume although the lock refused")
+	}
+}
+
+// A `running` doc written more recently than the adoption floor is not
+// adopted: the previous holder may be a lapsed-but-alive pod still
+// unwinding, whose unconditional terminal write would land on top of the
+// adopter. The delivery is re-offered after the floor's remainder — a
+// delayed Nak, so the redelivery budget is not burnt inside the floor —
+// and the lock is released for it.
+func TestAdoptRunningUnderLock_YoungDocIsReofferedAfterTheFloor(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-young"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	lock, err := st.LockRun(context.Background(), id)
+	if err != nil {
+		t.Fatalf("LockRun: %v", err)
+	}
+	d := &fakeDelivery{delivered: 2}
+
+	out := r.adoptRunningUnderLock(msg, doc, d, doc.UpdatedAt.Add(time.Minute))
+
+	if out.proceed {
+		t.Fatalf("a doc written 1m ago was adopted (%+v) — inside the %s floor a lapsed pod may still be unwinding", out, runningAdoptionFloor)
+	}
+	if out.action != actionNakDelayed {
+		t.Fatalf("action = %v, want a delayed Nak", out.action)
+	}
+	if want := runningAdoptionFloor - time.Minute; out.delay > want || out.delay < want-2*time.Second {
+		t.Fatalf("delay = %s, want the floor's remainder ≈ %s", out.delay, want)
+	}
+	dispatchPrecondition(iterlog.Nop(), d, out, id)
+	if len(d.nakDelays) != 1 || d.nakDelays[0] != out.delay || d.naks != 0 {
+		t.Fatalf("delivery transitions = %+v, want one NakWithDelay(%s) and no bare Nak (seven bare naks in two minutes is the #669 log)", d, out.delay)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning {
+		t.Fatalf("doc = %s, want running left untouched", got.Status)
+	}
+	if msg.Resume != nil {
+		t.Fatal("a deferred delivery must not be converted to a resume")
+	}
+	// The lock is released on the way out of processOne; the next
+	// delivery must be able to take it.
+	if err := lock.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	next, err := st.LockRun(context.Background(), id)
+	if err != nil {
+		t.Fatalf("the lock was not released for the re-offered delivery: %v", err)
+	}
+	_ = next.Unlock()
+}
+
+// A `running` doc older than the floor, under our lock, is an orphan:
+// promoted to failed_resumable + PROCESS_ORPHANED with continuation
+// redelivery_pending — THIS delivery resumes it next, so nothing that
+// acts on `final` (the board dispatcher, the stuck-card watchdog, the
+// outcome router) may act in the window — and the delivery is converted
+// into a resume so the checkpoint is honoured.
+func TestAdoptRunningUnderLock_OldDocIsAdoptedAsRedeliveryPending(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-orphan"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	d := &fakeDelivery{delivered: 2}
+
+	out := r.adoptRunningUnderLock(msg, doc, d, doc.UpdatedAt.Add(10*time.Minute))
+
+	if !out.proceed {
+		t.Fatalf("an orphan older than the floor was not adopted: %+v", out)
+	}
+	if msg.Resume == nil {
+		t.Fatal("msg.Resume still nil after the promote — Engine.Resume would refuse `running` and burn the delivery (#669 part 2)")
+	}
+	got := loadStatus(t, st, id)
+	if got.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable", got.Status)
+	}
+	if got.FailureCode != store.FailureProcessOrphaned {
+		t.Fatalf("FailureCode = %q, want PROCESS_ORPHANED", got.FailureCode)
+	}
+	if got.ContinuationState != store.ContinuationRedeliveryPending {
+		t.Fatalf("ContinuationState = %q, want redelivery_pending — `final` lets three consumers act on a run this very delivery is about to resume", got.ContinuationState)
+	}
+	if !strings.Contains(out.logFmt, "delivery %d/%d") || !strings.Contains(out.logFmt, "last doc write") {
+		t.Fatalf("the promote line must carry the doc age and the delivery count, got %q", out.logFmt)
+	}
+}
+
+// Without a lease authority (no queue wired, a lock-less store) a held
+// lock proves nothing: the doc is left to the engine, unwritten.
+func TestAdoptRunningUnderLock_NoLeaseAuthorityLeavesTheDocAlone(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-no-authority"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+
+	out := r.adoptRunningUnderLock(msg, doc, &fakeDelivery{}, doc.UpdatedAt.Add(time.Hour))
+
+	if !out.proceed || msg.Resume != nil {
+		t.Fatalf("no-authority path must proceed unchanged, got %+v (resume=%v)", out, msg.Resume != nil)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning {
+		t.Fatalf("doc = %s, want running — a wrong promote under an untestable premise", got.Status)
+	}
+}
+
+// The pre-lock copy is stale by construction: a peer's terminal write
+// that landed between the two reads is honoured through the ordinary
+// disposition — resumed now, not deferred on the stale copy's age, and
+// with no CAS of our own over its cause.
+func TestAdoptRunningUnderLock_PeerMovedTheDocTakesItsDisposition(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-moved"
+	stale := seedRunningRun(t, st, id)
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.UpdateRunStatusCoded(ctx, id, store.RunStatusFailedResumable, "interrupted at node n1", store.FailureInterrupted); err != nil {
+		t.Fatalf("peer write: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+
+	// The stale copy reads young: judged on it, the delivery would be
+	// deferred for the floor's remainder while the doc is resumable NOW.
+	out := r.adoptRunningUnderLock(msg, stale, &fakeDelivery{}, stale.UpdatedAt.Add(time.Minute))
+
+	if !out.proceed || msg.Resume == nil {
+		t.Fatalf("a peer-moved failed_resumable must convert to a resume now, got %+v (resume=%v)", out, msg.Resume != nil)
+	}
+	if got := loadStatus(t, st, id); got.FailureCode != store.FailureInterrupted {
+		t.Fatalf("FailureCode = %q, want the peer's INTERRUPTED kept — the adoption must not overwrite a cause it did not establish", got.FailureCode)
+	}
 }
