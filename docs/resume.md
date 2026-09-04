@@ -166,14 +166,35 @@ When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.
 
 **Cloud runs.** `POST /api/runs/{id}/resume` (and `iterion remote runs
-resume`) carries **no budget-override fields**: a run that died on a cap
-cannot be re-budgeted from the resume request. The consumed accounting rides
-the checkpoint, so a bare resume of a duration death restarts and dies again
-at the exit-grace ceiling. The working escape hatch is the source itself —
-resume with `{"source": "<the workflow text with a larger cap>", "force":
-true}`: the checkpoint restarts at the failed node with the new caps, the run
-record keeps showing the launch-time budget (a snapshot). A cloud twin of the
-CLI overrides is tracked as SocialGouv/iterion#652.
+resume`) accepts the same budget-override flags as the local CLI —
+`--max-cost-usd`, `--max-tokens`, `--max-duration`, `--max-iterations`,
+`--max-parallel-branches`. The wire body carries them as
+`{"budget": {"max_duration": "4h", ...}}`; a non-zero field beats the
+launch ask persisted on the run doc for THIS resume publication (a zero
+field inherits). Without an override the resume replays from the run
+doc as before.
+
+Two mechanics matter when raising a cap here:
+
+- **The consumed accounting travels across resume.** The checkpoint
+  restores `budget_elapsed_ns`, `budget_cost_usd`, `budget_tokens` and
+  `budget_iterations` on every axis, so a resume with no override
+  restarts against the same clock that killed it. Measure: a run
+  parked on a 2h30m duration cap (elapsed = 9902 s) resumed bare walks
+  another 5 min and dies at 9901.6 s + 10% = the exit-grace ceiling.
+  The escape hatch is exactly what `--max-*` on resume raises.
+- **The cap raised on THIS resume rides the RunMessage only.** It does
+  NOT overwrite the launch ask on the run doc, so a subsequent
+  unattended auto-retry (usage-window sweeper) reverts to the launch
+  value. The pattern is therefore "operator raises cap on the manual
+  resume that unblocks the run; the run completes, and the launch ask
+  goes back to being the reference for future retries". Persisting a
+  cap-raise across attempts is a separate follow-up.
+
+Both the source-swap trick (`{"source": "<the workflow text with a
+larger cap>", "force": true}`) and the `--max-*` flags reach the same
+`resolveResumeBudgetAsk` choke point in `cloudpublisher.SubmitResume` —
+the two are equivalent recoveries, use whichever is closer to hand.
 
 ## Rewind: resume from an *earlier* node
 
