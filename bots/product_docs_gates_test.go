@@ -1597,22 +1597,21 @@ func TestProductDocsPublishGate(t *testing.T) {
 
 	secretsDir := t.TempDir()
 	paths := map[string]string{}
-	for _, n := range []string{"onyxia_s3_access_key", "onyxia_s3_secret_key", "onyxia_s3_session_token"} {
+	for _, n := range []string{"deploy_credential", "registry_token"} {
 		p := filepath.Join(secretsDir, n)
 		if err := os.WriteFile(p, []byte("v"), 0o600); err != nil {
 			t.Fatalf("write secret fixture: %v", err)
 		}
 		paths[n] = p
 	}
-	run := func(t *testing.T, publish, base, bucket, missing string) publishGateOut {
+	run := func(t *testing.T, publish, base, image, missing string) publishGateOut {
 		t.Helper()
 		refs := map[string]string{
-			"vars.publish":                         publish,
-			"vars.publish_base_url":                base,
-			"vars.publish_s3_bucket":               bucket,
-			"secrets.onyxia_s3_access_key.path":    paths["onyxia_s3_access_key"],
-			"secrets.onyxia_s3_secret_key.path":    paths["onyxia_s3_secret_key"],
-			"secrets.onyxia_s3_session_token.path": paths["onyxia_s3_session_token"],
+			"vars.publish":                   publish,
+			"vars.publish_base_url":          base,
+			"vars.publish_image":             image,
+			"secrets.deploy_credential.path": paths["deploy_credential"],
+			"secrets.registry_token.path":    paths["registry_token"],
 		}
 		if missing != "" {
 			refs["secrets."+missing+".path"] = filepath.Join(secretsDir, "absent")
@@ -1622,17 +1621,24 @@ func TestProductDocsPublishGate(t *testing.T) {
 		return got
 	}
 
-	if got := run(t, "true", "https://serve.example", "demo-bucket", ""); !got.DoPublish || got.Reason != "ready" {
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", ""); !got.DoPublish || got.Reason != "ready" {
 		t.Fatalf("all preconditions met yet the gate refused: %+v", got)
 	}
-	if got := run(t, "false", "https://serve.example", "demo-bucket", ""); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
+	if got := run(t, "false", "https://docs.example", "registry.example/org/prody-demo", ""); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
 		t.Fatalf("publish=false must route the tail out with its reason: %+v", got)
 	}
-	if got := run(t, "true", "https://serve.example", "", ""); got.DoPublish || !strings.Contains(got.Reason, "bucket") {
-		t.Fatalf("an empty bucket must refuse the tail (no personal default): %+v", got)
+	if got := run(t, "true", "", "registry.example/org/prody-demo", ""); got.DoPublish || !strings.Contains(got.Reason, "publish_base_url") {
+		t.Fatalf("an empty base URL must refuse the tail: %+v", got)
 	}
-	if got := run(t, "true", "https://serve.example", "demo-bucket", "onyxia_s3_secret_key"); got.DoPublish || !strings.Contains(got.Reason, "onyxia_s3_secret_key") {
-		t.Fatalf("a missing secret must be named in the refusal: %+v", got)
+	if got := run(t, "true", "https://docs.example", "", ""); got.DoPublish || !strings.Contains(got.Reason, "image") {
+		t.Fatalf("an empty image repository must refuse the tail (no default names a deployment): %+v", got)
+	}
+	// The gate is platform-agnostic: it names the CREDENTIAL that is missing,
+	// never a platform, and refuses with either one absent.
+	for _, missing := range []string{"deploy_credential", "registry_token"} {
+		if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", missing); got.DoPublish || !strings.Contains(got.Reason, missing) {
+			t.Fatalf("a missing %s must be named in the refusal: %+v", missing, got)
+		}
 	}
 }
 
