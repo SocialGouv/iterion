@@ -113,13 +113,8 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 		return
 	}
 	if s.logger != nil {
-		if run.FailureCode == store.FailureDLQParked {
-			s.logger.Info("forge gate: run %s parked on the DLQ — operator notice posted on %s (replay via iterion remote admin dlq)",
-				run.ID, prURL)
-		} else {
-			s.logger.Info("forge gate: run %s parked on a provider quota — pause notice posted on %s (retry at %s)",
-				run.ID, prURL, run.RetryState.RetryAfter.Format(time.RFC3339))
-		}
+		s.logger.Info("forge gate: run %s parked on a provider quota — pause notice posted on %s (retry at %s)",
+			run.ID, prURL, run.RetryState.RetryAfter.Format(time.RFC3339))
 	}
 }
 
@@ -153,17 +148,7 @@ func (s *Server) issueCommenterFor(ctx context.Context, conn forge.Connection) (
 // gatePauseNoticeBody renders the comment. Written for the developer whose
 // PR it lands on, not for an operator: what happened, when it resumes, and
 // whether waiting suffices.
-//
-// A DLQ_PARKED run branches on FailureCode: an operator resume never clears
-// the RunRetryState left by the pre-park usage-window (#669 part 3), so a
-// bare RetryAfter-driven notice would falsely promise an automatic resume
-// for a run that only replay-by-hand can wake. The FailureCode is the
-// truth — DLQ_PARKED means the queue exhausted its deliveries and only an
-// operator (`iterion remote admin dlq`) can replay the message.
 func gatePauseNoticeBody(run *store.Run, now time.Time) string {
-	if run.FailureCode == store.FailureDLQParked {
-		return gatePauseNoticeBodyDLQParked(run)
-	}
 	at := run.RetryState.RetryAfter.UTC()
 	var b strings.Builder
 	b.WriteString(gatePauseNoticeMarker)
@@ -181,20 +166,6 @@ func gatePauseNoticeBody(run *store.Run, now time.Time) string {
 				"account admin raises it (or when the month rolls over), not on a\n" +
 				"provider window schedule.\n")
 		}
-	}
-	return b.String()
-}
-
-// gatePauseNoticeBodyDLQParked renders the DLQ variant: the queue exhausted
-// its deliveries for this run (max_deliveries), so nothing wakes it on a
-// schedule — an operator has to replay the parked message.
-func gatePauseNoticeBodyDLQParked(run *store.Run) string {
-	var b strings.Builder
-	b.WriteString(gatePauseNoticeMarker)
-	b.WriteString("\n⏸️ **Review parked on the DLQ — needs an operator.** Nothing is wrong with this pull request.\n\n")
-	b.WriteString("iterion exhausted its redelivery budget for this run and parked the message on the dead-letter queue. Waiting will NOT resume it — an operator has to replay it with `iterion remote admin dlq` (or discard it).\n")
-	if cause := gatePauseCause(run); cause != "" {
-		fmt.Fprintf(&b, "\n> %s\n", cause)
 	}
 	return b.String()
 }
