@@ -437,10 +437,19 @@ Three ways, in order of preference:
    loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
    the PR author cannot approve their own PR (a maintainer must). The status
    carries "approved by @user: reason" and links to the comment as the audit
-   trail. It does **not** launch a re-review. Works on GitHub App
+   trail. It does **not** launch a re-review. An **authorization** refusal is
+   SILENT on the PR — the command is intercepted before the scope/route/bot
+   admission the other lanes apply, so any commenter reaches it, and its
+   reason names credentials (connection ids, forge errors); the reason lands
+   on the delivery audit row and in the log. Every refusal *after* the gate
+   (a disabled review bot, an unpinned `gate_context`, a credential that
+   cannot write) keeps its maintainer-facing reply. Works on GitHub App
    integrations (posts through the connection's installation token so the
    `statuses` scope is present) and hand-owned webhooks with a `forge_token`
-   binding. The token client serves when no connection covers the repo,
+   binding. **Covering** means the repo has an integration row on that
+   connection — sharing the forge host is not coverage, and treating it as
+   such would suppress the binding below with a credential that cannot see
+   the repo. The token client serves when no connection covers the repo,
    and when the covering connection cannot serve the write — for exactly
    two reasons: its installation-token mint fails (a grant that lags the
    requested permissions, a rotated App key), or the installation

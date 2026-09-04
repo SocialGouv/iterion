@@ -204,7 +204,19 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		return
 	}
 	if !authorized {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: "+gateReason, payloadHash, srcIP)
+		// SILENT, unlike every refusal below it. This one is reachable by
+		// ANYONE who can comment on the PR — `/revi approve` is intercepted
+		// before the scope/route/bot admission the other command lanes apply
+		// — and gateReason is credential-resolution text: connection ids and
+		// raw forge errors from prforgeReplierAPIFor. Replying would publish
+		// them, under the org's App identity, to an unauthorized sender. The
+		// reason stays on the delivery audit row and in the Warn log, where
+		// the maintainer investigating a refused approve reads it; every
+		// other command lane refuses the same way (filtered(reason)).
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s %s#%d /revi approve by @%s not authorized: %s", provider, p.ProjectPath, p.IssueNumber, p.AuthorLogin, gateReason)
+		}
+		filtered(gateReason)
 		return
 	}
 

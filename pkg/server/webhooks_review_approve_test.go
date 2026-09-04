@@ -865,17 +865,22 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 		perm       string
 		cfgFloor   string
 		wantStatus bool
-		wantReply  string // "" when the status must land
+		wantReason string // the refusal, on the delivery audit row; "" when the status lands
+		// wantReply: the refusal is ALSO told on the PR. An AUTHORIZATION
+		// refusal never is — it is reachable by any commenter and its reason
+		// carries credential-resolution detail — so only the self-approve
+		// refusal, caught before the gate, talks back.
+		wantReply bool
 	}{
-		{"write is refused when the webhook pins no floor", "dev-dan", "write", "", false, "replier not authorized"},
-		{"a developer pin does not lower the floor: write is refused", "dev-dan", "write", "developer", false, "replier not authorized"},
-		{"a reporter pin does not lower the floor: triage is refused", "triager-tom", "triage", "reporter", false, "replier not authorized"},
-		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, ""},
-		{"an owner pin raises the floor: maintain is refused", "maintainer-jane", "maintain", "owner", false, "replier not authorized"},
-		{"an owner pin raises the floor: admin is accepted", "admin-ann", "admin", "owner", true, ""},
-		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard"},
-		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "own pull request"},
-		{"a Forgejo repo owner is accepted with no floor pinned", "owner-olga", "owner", "", true, ""},
+		{"write is refused when the webhook pins no floor", "dev-dan", "write", "", false, "replier not authorized", false},
+		{"a developer pin does not lower the floor: write is refused", "dev-dan", "write", "developer", false, "replier not authorized", false},
+		{"a reporter pin does not lower the floor: triage is refused", "triager-tom", "triage", "reporter", false, "replier not authorized", false},
+		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, "", false},
+		{"an owner pin raises the floor: maintain is refused", "maintainer-jane", "maintain", "owner", false, "replier not authorized", false},
+		{"an owner pin raises the floor: admin is accepted", "admin-ann", "admin", "owner", true, "", false},
+		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard", false},
+		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "own pull request", true},
+		{"a Forgejo repo owner is accepted with no floor pinned", "owner-olga", "owner", "", true, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -898,8 +903,19 @@ func TestReviewApprove_RealGateFloor(t *testing.T) {
 			if len(statuses) != 0 {
 				t.Fatalf("must not write a status, got %v", statuses)
 			}
-			if len(comments) != 1 || !approveReplyContains(comments[0], "@"+c.sender, c.wantReply) {
-				t.Fatalf("want one reply naming @%s and %q, got %v", c.sender, c.wantReply, comments)
+			// The reason is always auditable, whether or not it is published.
+			rows := approveDeliveries(t, s, cfg)
+			if len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered || !approveReplyContains(rows[0].Error, c.wantReason) {
+				t.Fatalf("want one filtered audit row carrying %q, got %+v", c.wantReason, rows)
+			}
+			if !c.wantReply {
+				if len(comments) != 0 {
+					t.Fatalf("an authorization refusal must stay silent on the PR (any commenter reaches it, and the reason names credentials), got %v", comments)
+				}
+				return
+			}
+			if len(comments) != 1 || !approveReplyContains(comments[0], "@"+c.sender, c.wantReason) {
+				t.Fatalf("want one reply naming @%s and %q, got %v", c.sender, c.wantReason, comments)
 			}
 		})
 	}
@@ -927,6 +943,35 @@ func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 	}
 	if !approveReplyContains(rows[0].Error, "no team connection covers", "no forge_token binding") {
 		t.Fatalf("the refusal must name both missing credentials, got %q", rows[0].Error)
+	}
+}
+
+// `/revi approve` is intercepted before the scope/route/bot admission every
+// other command lane applies, so its authorization refusal is reachable by
+// anyone who can comment on the PR — and the gate's reason is
+// credential-resolution text (connection ids, raw forge errors). Replying
+// would publish internal configuration to a drive-by commenter, under the
+// org's App identity. The reply seam is wired here and must stay untouched.
+func TestReviewApprove_UnauthorizedCommenterGetsNoBotReply(t *testing.T) {
+	s, gc, commenter, cfg, pt := approveWorld(t)
+	const reason = "connection conn-app covers github.com/acme/widgets but its client cannot serve (forge: credential rejected)"
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return false, reason, nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("mallory"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("an unauthorized approve must write no status, got %d", gc.setCalls)
+	}
+	if len(commenter.bodies) != 0 {
+		t.Fatalf("the refusal must not be published on the PR — it names internal configuration: %v", commenter.bodies)
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered || rows[0].Error != reason {
+		t.Fatalf("the reason must survive on the delivery audit row, got %+v", rows)
 	}
 }
 
@@ -1020,7 +1065,8 @@ func TestReviewApprove_UnrelatedSameHostConnectionDoesNotSuppressTheBinding(t *t
 
 // A force-green is ROLE-only: AuthorizedRepliers is "who may talk back to
 // the bot", not "who may bypass the merge queue". An allowlisted login with
-// no repo permission is refused, with a reply.
+// no repo permission is refused — silently on the PR, with the reason on the
+// delivery audit row.
 func TestReviewApprove_AllowlistDoesNotBypassTheRoleFloor(t *testing.T) {
 	s, f, cfg, pt := approveTokenWorld(t)
 	s.webhookPRForgeCommandGate = nil // the real gate
@@ -1035,8 +1081,12 @@ func TestReviewApprove_AllowlistDoesNotBypassTheRoleFloor(t *testing.T) {
 	if len(statuses) != 0 {
 		t.Fatalf("an allowlisted login with no repo role force-greened the gate: %v", statuses)
 	}
-	if len(comments) != 1 || !approveReplyContains(comments[0], "@outsider", "replier not authorized") {
-		t.Fatalf("want one reply naming the role refusal, got %v", comments)
+	if len(comments) != 0 {
+		t.Fatalf("the role refusal must not talk back to an unauthorized commenter, got %v", comments)
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || !approveReplyContains(rows[0].Error, "replier not authorized") {
+		t.Fatalf("want one audit row naming the role refusal, got %+v", rows)
 	}
 }
 
