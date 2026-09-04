@@ -87,14 +87,15 @@ trap 'rm -rf "$DOCKER_CONFIG"' EXIT               # …even if a step below fail
 STAGE="$SCRATCH/layer"; rm -rf "$STAGE"; mkdir -p "$STAGE/usr/share/nginx/html"
 cp -R "$SCRATCH/mk/site/." "$STAGE/usr/share/nginx/html/"
 tar -C "$STAGE" -cf "$SCRATCH/site-layer.tar" usr
-TAG="$(git rev-parse --short=12 HEAD)"            # the docs commit the site was built from
+TAG="$(git -C "$PRODUCT_DIR" rev-parse --short=12 HEAD)"   # -C: your cwd is not the repo
 REGISTRY_HOST="${IMAGE%%/*}"                       # e.g. ghcr.io
 crane auth login "$REGISTRY_HOST" -u "${REGISTRY_USER:-iterion}" --password-stdin < "$REGISTRY_TOKEN_PATH"
 crane --platform linux/amd64 append \
   -b nginxinc/nginx-unprivileged:1.27-alpine \
   -f "$SCRATCH/site-layer.tar" \
   -t "${IMAGE}:${TAG}"
-crane manifest "${IMAGE}:${TAG}" >/dev/null       # the push is not done until the registry serves it
+DIGEST="$(crane digest "${IMAGE}:${TAG}")"        # the registry's own answer — and the push
+IMAGE_REF="${IMAGE}@${DIGEST}"                    # is not done until it can give one
 rm -rf "$DOCKER_CONFIG"                            # the token outlives nothing
 ```
 
@@ -104,8 +105,16 @@ rm -rf "$DOCKER_CONFIG"                            # the token outlives nothing
 - If you run the block in pieces, keep the `DOCKER_CONFIG` export in scope
   for every `crane` call and remove the directory yourself at the end: an
   unscoped login is a credential left behind, not a convenience.
-- The tag is the docs commit: the same content always yields the same
-  reference, and a redeploy of an unchanged corpus is a no-op rollout.
+- **Deploy the DIGEST, not the tag.** `${IMAGE}:${TAG}` is a human-readable
+  alias and nothing more. The tag is the docs commit, but the image's content
+  is the docs *plus* the converter (`TOOLS_REF`) *plus* the floating
+  `nginx-unprivileged` base — so an unchanged docs commit can carry different
+  bytes under the same tag. Hand a deploy target that tag and the pod spec
+  does not change, so nothing rolls out: the cluster keeps serving the image
+  it pulled last time, and the workflow's truth gate (a 200 with a title)
+  cannot tell a fresh site from a stale one. `${IMAGE}@${DIGEST}` moves
+  whenever any of the three do, so the rollout is forced by construction and
+  `imagePullPolicy` stops mattering.
 - Never `docker`, never `buildx`, never a curl-installed daemon: the
   measured failure mode of a bot that improvises container tooling is a
   live URL that delivers nothing.
@@ -114,7 +123,9 @@ rm -rf "$DOCKER_CONFIG"                            # the token outlives nothing
 
 Set, for the deploy skill's manifest:
 
-- `IMAGE="${IMAGE}:${TAG}"` (the exact reference `crane manifest` served)
+- `IMAGE="${IMAGE_REF}"` — the DIGEST reference (`${IMAGE}@sha256:…`) the
+  registry served, NEVER the `:${TAG}` alias. Report the tag in your summary
+  for humans; deploy the digest.
 - `PORT=8080`
 - `runAsUser: 101` (nginx-unprivileged's numeric user — replace the skill
   manifest's default user, never leave a mismatch)

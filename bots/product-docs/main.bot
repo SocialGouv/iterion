@@ -750,14 +750,19 @@ prompt publish_user:
     to patch around: the converter fails closed on constructs it
     does not know, and that is a finding to surface.
 
-  Step 2 — PACKAGE the built site as an image and push it to
-  {{input.image}}:<docs commit short sha>, exactly as
-  publish-static-site prescribes (base image, layer layout, port,
-  numeric user, stdin login, manifest check).
+  Step 2 — PACKAGE the built site as an image, push it to
+  {{input.image}}:<docs commit short sha> and resolve the DIGEST the
+  registry serves back for it, exactly as publish-static-site
+  prescribes (base image, layer layout, port, numeric user, stdin
+  login, digest resolution).
 
-  Step 3 — DEPLOY that image and VALIDATE the live URL, exactly as the
-  deploy-target skill prescribes (tooling, namespace, manifest with
-  the image's port and numeric user, rollout, URL poll). The URL you
+  Step 3 — DEPLOY that image BY DIGEST ({{input.image}}@sha256:…, never
+  the tag: the tag is an alias whose content can move, and an
+  unchanged tag is an unchanged pod spec, so nothing rolls out and the
+  cluster keeps serving the previous build) and VALIDATE the live URL,
+  exactly as the deploy-target skill prescribes (tooling, namespace,
+  manifest with the image's port and numeric user, rollout, URL poll).
+  The URL you
   return must sit under the expected base URL: if the platform
   derives a different host from the slug, report the mismatch
   (deployed=false) instead of returning a URL the truth gate will

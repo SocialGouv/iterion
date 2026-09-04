@@ -100,3 +100,36 @@ func TestPublishRecipeDoesNotTrustSecretEnvVars(t *testing.T) {
 			publishRecipePath)
 	}
 }
+
+// TestPublishRecipeHandsOffADigest guards the rollout property. The image's
+// content is the docs PLUS the converter (TOOLS_REF) PLUS the floating
+// nginx-unprivileged base, while the tag is only the docs commit — so the same
+// tag can carry different bytes. A deploy target handed that tag sees an
+// unchanged pod spec, rolls nothing out, and keeps serving the previously
+// pulled image; `verify_publish` asserts a 200 with a title, so it cannot tell
+// that apart from a fresh site. Only a digest reference forces the rollout.
+func TestPublishRecipeHandsOffADigest(t *testing.T) {
+	src := publishRecipe(t)
+
+	if !strings.Contains(src, `DIGEST="$(crane digest "${IMAGE}:${TAG}")"`) {
+		t.Fatalf("%s: the recipe never resolves the pushed manifest digest, so it has "+
+			"no immutable reference to hand the deploy target", publishRecipePath)
+	}
+	_, handoff, found := strings.Cut(src, "## 3. Hand-off to the deploy-target skill")
+	if !found {
+		t.Fatalf("%s: no hand-off section — the deploy target is told nothing about "+
+			"which reference to run", publishRecipePath)
+	}
+	if i := strings.Index(handoff, "\n## "); i >= 0 {
+		handoff = handoff[:i]
+	}
+	if !strings.Contains(handoff, `IMAGE="${IMAGE_REF}"`) {
+		t.Fatalf("%s: the hand-off does not give the deploy target the digest "+
+			"reference ${IMAGE_REF}", publishRecipePath)
+	}
+	if strings.Contains(handoff, `IMAGE="${IMAGE}:${TAG}"`) {
+		t.Fatalf("%s: the hand-off gives the deploy target the mutable :${TAG} alias — "+
+			"an unchanged tag is an unchanged pod spec, so a rebuilt site never rolls "+
+			"out and the truth gate still reports success", publishRecipePath)
+	}
+}
