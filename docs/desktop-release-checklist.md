@@ -42,7 +42,7 @@ If any of these is missing or expired:
 - [ ] Tag and push: `git tag v<X.Y.Z> && git push origin v<X.Y.Z>` (or use the `release-it` flow).
 - [ ] Watch `desktop-release.yml` succeed end-to-end.
 - [ ] Watch `release.yml` (CLI) succeed end-to-end (parallel job on the same tag).
-- [ ] Watch `brew-update.yml` (`workflow_run` on the above) succeed and patch the brew tap's cask SHA.
+- [ ] Watch `brew-update.yml` succeed and patch the tap. It hooks `workflow_run` on *both* pipelines above, so it runs **twice** for one tag: whichever finishes first sees only its own artefacts and updates only its file (`Formula/iterion.rb` for the CLI, `Cask/iterion-desktop.rb` for the desktop ZIP); the second pass fills in the rest. A run that logs `tap already up to date` is a healthy no-op, not a failure.
 
 ## 6. Post-publish verification
 
@@ -68,7 +68,7 @@ If a release artefact ships a critical bug after publication:
 
 - [ ] **Yank the manifest**: edit the GitHub Release to remove or replace `iterion-desktop-manifest.json` so existing users don't auto-update to the broken version. New users land on a stale version, which is preferred.
 - [ ] **Re-tag a `vX.Y.Z+1` patch release** with the fix and publish; auto-update will lift users off the broken version.
-- [ ] **Revert the brew cask** to the previous good version manually (the cask edits live in the iterion-brew tap repo).
+- [ ] **Revert the brew cask** to the previous good version manually. The tap is *this* repository (`brew tap socialgouv/iterion https://github.com/SocialGouv/iterion`), so the edit is a commit on `main` putting `version` and `sha256` in [`Cask/iterion-desktop.rb`](../Cask/iterion-desktop.rb) back to the last good release. Note that `brew-update.yml` rewrites that file from the release artefacts on the next release pipeline, so the revert only holds until the patch release lands.
 - [ ] **Communicate**: pin a notice on the GitHub Release describing the issue, recommended action, and patch ETA.
 - [ ] **Post-mortem**: track the regression that escaped CI/QA; add a scenario to [desktop-qa-checklist.md](desktop-qa-checklist.md) so it can't recur.
 
