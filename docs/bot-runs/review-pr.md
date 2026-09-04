@@ -8,6 +8,52 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-03/04 — cost-reduction pass (0.7.0) shipped through 4 rounds of its own review (PR #651)
+- Status: validated (the review loop itself; the cost delta is measured over the following days)
+- Versions: bot 0.6.0 reviewing → 0.7.0 shipped · iterion `2bd3bbca3` (v3.100.0)
+- Method: the PR that ships the cost levers was reviewed BY the pre-change bot
+  (mono/claude, opus/high) — 4 rounds, webhook-launched on each push, merge
+  queue at the end. Baseline measured first on prod (9 finished runs,
+  2026-09-03 morning): reviewer_claude = 85–93% of $1.42–$10.54/run
+  (median ~$3.6), ~28 runs/3h, ~18% cancelled "superseded" mid-flight.
+- Result: merged through the queue after rounds of 7 → 2 → 3(medium-only,
+  gate green) → 0-blocking findings. Round-1 review cost ~$3.6 (46k tok) on a
+  31-file diff — consistent with the baseline. One queue ejection (silent,
+  during an unrelated merge) and one Anthropic session-limit parking
+  (USAGE_LIMIT_BLOCKED, reset on the 5h window) crossed the loop; the
+  usage-window retry machinery resumed the parked review on its own.
+- Value: every round produced REAL findings. Round 1: the debounce subject
+  key missed the project path (cross-repo collision on an org webhook,
+  [high]) + 6 mediums/lows all legitimate. Round 2 caught the pacer being
+  SILENTLY INERT (unexpanded `${VAR:-…}` model pin split into a garbage
+  provider — the exact "declared capability dead with green tests" class) and
+  GitLab having no closed-MR lane at all. Round 3's mediums (redelivery
+  self-supersede, denial-drop, arrival-order parking) were all real too.
+- Findings / misses: nothing false-positive across 12 findings; the
+  open-questions channel (6 + 1) was sharp (cost_gt mono/dual semantics,
+  audit of debounced pushes, lease/batch sizing). The reviewer twice found
+  defects OUTSIDE its diff impossible (supersede ProjectPath class, fixed
+  proactively by grep; arrival-order, deferred then fixed by the night
+  fixer).
+- Engine hardening: the whole PR — source-level severity floor
+  (`severity_threshold` default medium), TOKEN FRUGALITY contract, pacer
+  supervisor (haiku, cost_gt=8), mid-node `usage_progress` events feeding a
+  now-live cost_gt, `ITERION_VIBE_MODEL_EMIT` (converge → sonnet), budget
+  20→12 / findings 40→15, and the 3-min synchronize debounce
+  (`ITERION_WEBHOOK_SYNC_DEBOUNCE`). Plus C190 widened to judge nodes and
+  supervisor model env expansion.
+- Zero-touch loop note: the red gate auto-launched Billy twice. The first
+  died on the provider session limit ($5.75 spent, work stranded in the pod
+  workspace — cancelled, hand-fixed instead). The second (after the queue
+  ejection) rebased the branch and fixed all 3 round-3 findings overnight,
+  including one (R4f7eab) already carded as follow-up — card closed.
+- Lessons for next run: (1) a supervisor/model pin with `${…}` must be
+  proven by a LIVE eval, not a unit test that hands it pre-expanded;
+  (2) when the merge queue holds the branch, park local fixes — the fixer
+  may land them first; (3) the deploy is three layers (platform bot push =
+  instant; server follows :edge on rollout; runner needs the infra-apps
+  digest bump) and a lever is only live when ITS layer rolled.
+
 ## 2026-09-02 — ticket conformance (v0.6.0) first dogfood: fetch + verdict + 3 real findings on its own feature branch (run 01a06405)
 - Status: validated (local half — the PR-summary section and the forge publish path stay for the prod e2e)
 - Versions: bot 0.6.0 · iterion 754321763 (worktree revi-ticket-context)
