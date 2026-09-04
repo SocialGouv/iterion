@@ -217,7 +217,7 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 	// does not name one repository on a fork. #642 class fix (B2): the
 	// autofix lane resolves the same forge.PullRef the command lane does,
 	// so it inherits the SameRepoAs check. Empty HeadRepoFullName
-	// (deleted-fork payloads) MUST refuse too — see B1.
+	// (deleted-fork payloads) MUST refuse too.
 	t.Run("a fork PR never gets an unattended fix", func(t *testing.T) {
 		w := build(t, nil)
 		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {

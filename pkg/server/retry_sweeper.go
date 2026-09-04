@@ -156,11 +156,10 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		RunID:    ref.ID,
 		FilePath: filePath,
 		Source:   source,
-		// Machinery resume: refuse a cancelled doc even with retry_after
-		// still set on the record. Without this a cancel that lands after
-		// ClaimRunRetry wins races the SubmitResume CAS `cancelled → queued`
-		// (which clears run.Error), delivering a message with no PR-closed
-		// marker to the runner — the review runs on the merged PR (#663 D1).
+		// Machinery resume: a cancelled doc is refused even with retry_after
+		// still set on the record — the SubmitResume CAS would otherwise
+		// flip cancelled → queued (clearing run.Error) and the runner would
+		// receive a message with no PR-closed marker left on the doc.
 		Automatic: true,
 	}
 	if lb != nil {

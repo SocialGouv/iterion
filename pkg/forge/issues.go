@@ -130,14 +130,14 @@ func (p PullRef) IsCrossRepo(baseRepo string) bool {
 // SameRepoAs reports whether the PR's head branch lives in the SAME repo as
 // baseRepo — the fail-CLOSED counterpart to IsCrossRepo. Every launch pair
 // combining `<base repo>.CloneURL + pr.SourceBranch` MUST clear this before
-// dispatching, because an empty head repo means "provider omitted the field
-// OR the head repo was deleted/blocked" — both cases the deleted-fork probe
-// hit on the launch (repoURL=base repoRef=main → the fixer would push LLM
-// commits to the BASE repo's main).
+// dispatching: an empty head repo means the provider omitted the field OR
+// the head repo was deleted/blocked, and launching on it aims the bot at
+// repoURL=<base> repoRef=<head branch> — a fixer would push LLM commits to
+// the BASE repo's branch of that name.
 //
 // Empty head repo → false (never proven safe). Empty base → false. Both set
-// and case-insensitively equal → true. This is what the command lane, the
-// autofix lane, and the gate-relaunch lane must all consult before launching.
+// and case-insensitively equal → true. The command lane, the autofix lane
+// and the gate-relaunch lane all consult this before launching.
 func (p PullRef) SameRepoAs(baseRepo string) bool {
 	return SameRepo(p.HeadRepoFullName, baseRepo)
 }
@@ -148,12 +148,10 @@ func (p PullRef) SameRepoAs(baseRepo string) bool {
 // "unknown" is never proven equal, so a caller that fails-closed inherits
 // the safe answer for free.
 //
-// Shared vocabulary used by three predicates that once had two semantics:
-// forge.PullRef.SameRepoAs / IsCrossRepo (this file), and prforge.Parsed /
-// prforge.ParsedReviewComment IsCrossRepo (pkg/webhooks/prforge). Before
-// this consolidation the prforge pair compared with `!=`, so
-// "Owner/Repo" vs "owner/repo" registered as a fork on GitLab-mirrored
-// event bodies whose casing does not match the base repo's stored form.
+// The one vocabulary behind every cross-repo predicate — PullRef.SameRepoAs
+// / IsCrossRepo here, prforge.Parsed / prforge.ParsedReviewComment
+// IsCrossRepo in pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo"
+// never disagree between the payload side and the API side.
 func SameRepo(a, b string) bool {
 	if a == "" || b == "" {
 		return false

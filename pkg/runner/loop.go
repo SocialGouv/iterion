@@ -1065,10 +1065,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}
 
 	logger := r.cfg.Logger
-	// NumDelivered pairs every subsequent line (admission drop, exec outcome)
-	// with the JetStream attempt count — a drop on the first delivery is a
-	// pre-cancel arrival, on ≥2 it is a redelivery. Cheap to include here so
-	// downstream logs don't each have to name it.
+	// The attempt count on the opening line pairs the run with its JetStream
+	// delivery for every line that follows.
 	logger.Info("runner: processing run %s (workflow=%s delivery=%d)", msg.RunID, msg.WorkflowName, delivery.NumDelivered())
 
 	// runs_active{status=running}: incremented as soon as the runner

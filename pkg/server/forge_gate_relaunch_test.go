@@ -412,7 +412,7 @@ func TestGateRelaunch(t *testing.T) {
 
 	// The relaunch pair — CloneURLFor(base) + d.pr.SourceBranch — is the
 	// same fork-unsafe pair the auto-launch and autofix lanes guard against.
-	// #642 class fix (B2): SameRepoAs is false on a different owner AND on
+	// #642: SameRepoAs is false on a different owner AND on
 	// empty HeadRepoFullName (deleted-fork payloads), so the relaunch is
 	// refused before the tail publishes a fresh grant to a fork ref.
 	t.Run("a fork PR is never relaunched", func(t *testing.T) {

@@ -37,7 +37,7 @@ func TestValidateResumable_AcceptsPausedOperatorWithoutAnswers(t *testing.T) {
 	}
 }
 
-// #663 D1: validateResumable(automatic=true) uses CanAutoResume() — cancelled
+// #663: validateResumable(automatic=true) uses CanAutoResume() — cancelled
 // is refused there (an operator's cancel is a decision automation must never
 // override). An in-flight sweeper resume that raced a stop-on-close cancel
 // must not flip the doc back into a resumable shape.

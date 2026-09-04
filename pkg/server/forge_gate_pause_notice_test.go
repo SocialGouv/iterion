@@ -205,10 +205,9 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		if strings.Contains(body, "a new push restarts it sooner") {
 			t.Fatal("a fixer has no \"restarts sooner\" mode — a push mid-park is the collision revi-billy-loop.md forbids")
 		}
-		// #650 C4: the fixer wording must be behaviour-neutral on HOW the
-		// resume re-anchors — a sibling branch is landing "re-anchor on the
-		// banked branch when it fast-forwards", so the notice must not
-		// promise "re-clones the branch head".
+		// #650: the fixer wording must be behaviour-neutral on HOW the
+		// resume re-anchors — the resume path owns that — so the notice
+		// must not promise "re-clones the branch head".
 		if strings.Contains(body, "re-clones the branch head") {
 			t.Fatalf("fixer notice must use the behaviour-neutral \"re-reads the branch from the forge\" wording; got:\n%s", body)
 		}
@@ -217,11 +216,11 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		}
 	})
 
-	// #650 C1: an unknown role (bot not in catalog, or one that gates but
+	// #650: an unknown role (bot not in catalog, or one that gates but
 	// exposes no reviewer/fixer shape) must NOT stay silent — the run
 	// already holds a required check via gate_context, and 32 of 35 catalog
 	// bots classify as unknown; silence there would strand a developer on
-	// a check with no signal (Vetty was the probed example). Post a
+	// a check with no signal (Vetty, for one). Post a
 	// role-NEUTRAL notice (no push-side claim either way).
 	t.Run("unknown role posts a neutral notice with no push-side claim", func(t *testing.T) {
 		s, c := newWorld(t)
@@ -257,7 +256,7 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		}
 	})
 
-	// #650 C2: the launcher accepts both underscored and dashed spellings
+	// #650: the launcher accepts both underscored and dashed spellings
 	// (review-pr / review_pr — botregistry.NormalizeName folds them), but
 	// effectiveFindByName was exact-match only, so a run whose BotID
 	// persisted as "review_pr" classified as unknown. The pause notice's

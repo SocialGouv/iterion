@@ -373,17 +373,15 @@ type ResumeSpec struct {
 	// Supervisors re-states the run-level supervisors kill switch
 	// ("", "on", "off"), for the same reason AutoMemory does.
 	Supervisors string
-	// Automatic marks a machine-initiated resume (retry sweeper, --auto-resume,
-	// cloudsched, orphan sweeper) — the resume gate then uses CanAutoResume()
-	// instead of CanOperatorResume(). CanAutoResume deliberately excludes
-	// cancelled: an operator's cancel is a decision automation must never
-	// override. Without this an in-flight sweeper Resume of a run cancelled by
-	// stop-on-close after the sweeper's ClaimRunRetry won a race would flip
-	// cancelled → queued via the CAS (both store twins clear Error on the
-	// transition), delivering the message with no PR-closed marker on the doc
-	// and structurally unreachable from the runner admission guard — the
-	// review re-runs on the merged PR (#663 D1). Operator surfaces
-	// (HTTP resume, studio, MCP) leave this false.
+	// Automatic marks a machine-initiated resume — the retry sweeper, or any
+	// caller resuming without an operator's request: the resume gate then
+	// applies CanAutoResume() instead of CanOperatorResume(). CanAutoResume
+	// excludes cancelled (an operator's cancel is a decision automation never
+	// overrides), so a cancel landing between a sweeper's claim and its
+	// publish is refused instead of being flipped back to queued by the CAS —
+	// which clears run.Error, the only PR-closed marker the runner admission
+	// reads. Operator surfaces (HTTP resume, WS answers, chat commands,
+	// studio, MCP) leave this false.
 	Automatic bool
 }
 

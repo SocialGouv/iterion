@@ -55,20 +55,20 @@ func TestForgeConnectionForPR_PreferredWatchOnlyIsRefused(t *testing.T) {
 	}
 }
 
-// #662 A5: forgeConnectionForPR dereferences s.forgeConnections; every
+// #662: forgeConnectionForPR dereferences s.forgeConnections; every
 // sibling caller (publish, pending, reconcile) already guarded first, the
 // approve lane didn't, and the probe panicked (forge_publish.go:794). The
 // class-wide fix moves the nil guard INSIDE the helper.
 func TestForgeConnectionForPR_NilStoreReturnsFalseDoesNotPanic(t *testing.T) {
 	s := &Server{}
-	// No forgeConnections wired — pre-fix this deref-panicked.
+	// No forgeConnections wired.
 	got, ok := s.forgeConnectionForPR(context.Background(), "t1", "", "github.com", "SocialGouv/x")
 	if ok {
 		t.Fatalf("nil store must return (empty, false), got %v", got)
 	}
 }
 
-// #662 A7: fallback picks the LATEST connection on the host, not the first.
+// #662: fallback picks the LATEST connection on the host, not the first.
 // ListByTenant sorts created_at ascending on both stores, so a repo
 // re-provisioned onto a newer connection would inherit the stale one — the
 // sibling repoIntegrationForRepo already takes the latest for the same

@@ -118,13 +118,12 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		// CloneURL + PR head ref) does NOT name one repository — the head ref
 		// lives in the head repo, so the checkout misses (or, worse, hits a
 		// same-named branch on the base and the bot answers grounded in the
-		// wrong code, under the bot's identity). Empty HeadRepoFullName is
-		// EQUALLY unsafe here — probed live on a deleted-fork PR, both
-		// GitHub and Forgejo emit `head.repo: null` when the head repo no
-		// longer exists (always a fork), so the earlier IsCrossRepo-only
-		// check let the fixer launch with repoURL=<base> repoRef=main. Use
-		// SameRepoAs (empty head → false, i.e. refuse) so the launch pair
-		// must be PROVEN same-repo before the bot runs.
+		// wrong code, under the bot's identity). An empty HeadRepoFullName
+		// is equally unsafe: both GitHub and Forgejo emit `head.repo: null`
+		// once the head repo is deleted or blocked, which only a fork can
+		// be, and launching on it aims the bot at repoURL=<base>
+		// repoRef=<head branch>. SameRepoAs is false on an empty head, so
+		// the launch pair must be PROVEN same-repo before the bot runs.
 		if !resolved.SameRepoAs(p.ProjectPath) {
 			filtered("fork PR or unverifiable head repo — /" + cmd + " runs are same-repo only")
 			return

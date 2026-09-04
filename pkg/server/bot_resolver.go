@@ -330,13 +330,12 @@ func (s *Server) botExists(botID string) bool {
 	return err == nil
 }
 
-// effectiveFindByName returns the effective (platform-overlaid) entry for an
-// exact name, with a NormalizeName fallback so callers that see the launcher-
-// normalised form (review_pr → review-pr) still resolve — the launcher
-// accepts both, so a bot registered as "review-pr" whose run.BotID persisted
-// as "review_pr" would otherwise classify as unknown here (#650 C2). The
-// hand-off lookup (handoffConsumersFor) shares this method, so the tolerant
-// match benefits every caller.
+// effectiveFindByName returns the effective (platform-overlaid) entry for a
+// bot name: an exact match first, then the NormalizeName-folded spelling
+// (review_pr → review-pr), because the launcher accepts both and a run's
+// persisted BotID may carry either. The hand-off lookup
+// (handoffConsumersFor), the pause-notice role and the bots route all read
+// through here.
 func (s *Server) effectiveFindByName(name string) (botregistry.EntryWithSchema, bool, error) {
 	entries, err := s.effectiveEntriesWithSchema()
 	if err != nil {

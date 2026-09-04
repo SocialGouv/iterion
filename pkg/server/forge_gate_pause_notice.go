@@ -183,10 +183,9 @@ func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
 	}
 	entry, ok, err := s.effectiveFindByName(botID)
 	if err != nil {
-		// #650 C3: a catalog read error silently classified as unknown made
-		// an infrastructure failure indistinguishable from a manifest that
-		// declares no role. Warn on the same signal the sibling
-		// handoffConsumersFor already Warns on.
+		// A catalog read error is an infrastructure failure, distinct from
+		// a manifest that declares no role: Warn on it (the same signal
+		// handoffConsumersFor Warns on) and fall back to the neutral notice.
 		if s.logger != nil {
 			s.logger.Warn("forge gate: pause-notice role for %s falls back to neutral, cannot read the bot catalog: %v", botID, err)
 		}
@@ -235,9 +234,8 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 	switch role {
 	case pauseNoticeRoleFixer:
 		// The resumed run re-reads the branch from the forge, so a push in
-		// between can collide with what it pushes back. Behaviour-neutral
-		// on how the run re-anchors (a sibling branch is making the resume
-		// re-anchor on the banked branch when it fast-forwards, #652).
+		// between can collide with what it pushes back. Says nothing about
+		// HOW the run re-anchors — that belongs to the resume path.
 		b.WriteString(". **Don't push to this branch meanwhile** — the resumed run re-reads the branch from the forge, so a push in between can collide with what it pushes back.\n")
 	case pauseNoticeRoleReviewer:
 		b.WriteString(". The verdict lands here when it does; a new push restarts it sooner.\n")

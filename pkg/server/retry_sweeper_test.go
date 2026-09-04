@@ -113,7 +113,7 @@ func (f *fakeRetryStore) LoadRun(_ context.Context, id string) (*store.Run, erro
 	}
 	// Default to the shape a run under retry is EXPECTED to have —
 	// failed_resumable, which is what CanAutoResume() accepts. A test that
-	// wants a different status (e.g. cancelled — #663 D1's regression)
+	// wants a different status (e.g. cancelled — #663's regression)
 	// stamps loadRun[id] explicitly.
 	return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 }
@@ -197,7 +197,7 @@ func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
 	}
 }
 
-// TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead pins #663 D1:
+// TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead pins #663:
 // stop-on-close can land between ClaimRunRetry winning and the SubmitResume
 // CAS. Without the pre-Resume Auto check, the sweeper republishes a queue
 // message whose priorStatus is `cancelled` and (in production) both store
@@ -222,7 +222,7 @@ func TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead(t *testing.T) {
 	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-cancelled", at)}}, resumer, time.Now().UTC())
 
 	if len(resumer.calls) != 0 {
-		t.Fatalf("Resume called %d times on a cancelled run — the sweeper would have re-run a review on a merged PR (#663 D1)", len(resumer.calls))
+		t.Fatalf("Resume called %d times on a cancelled run — the sweeper would have re-run a review on a merged PR (#663)", len(resumer.calls))
 	}
 	got, ok := st.abandoned["run-cancelled"]
 	if !ok {
@@ -236,12 +236,10 @@ func TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead(t *testing.T) {
 	}
 }
 
-// #663 D1 (part b): a machine caller that DOES construct a resume with
-// Automatic=true and reaches SubmitResume must be refused there too — the
-// runview.Resume boundary and the cloudpublisher CAS both gate on
-// CanAutoResume. Verified via validateResumable directly (SubmitResume calls
-// through it via the runview Resume path). See
-// TestValidateResumable_AutomaticRefusesCancelled.
+// The two resume boundaries refuse the same automatic resume of a cancelled
+// run: runview (TestValidateResumable_AutomaticRefusesCancelled) and the
+// publisher, doc and queue untouched (cloudpublisher's
+// TestSubmitResume_AutomaticRefusesCancelled).
 
 func TestSweepDueRetries_LostClaimDoesNotResume(t *testing.T) {
 	st := newFakeRetryStore() // claimWins empty → every claim loses

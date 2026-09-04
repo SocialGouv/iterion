@@ -256,7 +256,7 @@ func (e *sentinelErr) Error() string { return e.msg }
 
 var errInsufficientScope = &sentinelErr{msg: "forge: insufficient scope"}
 
-// #662 A1 (self-approve): a PR author cannot approve their own PR — that
+// #662 (self-approve): a PR author cannot approve their own PR — that
 // is a merge-queue-bypass in another shape, and docs/merge-gate.md
 // documents /revi approve as a "maintainer" affordance. Refused BEFORE
 // the command gate so the maintainer sees a specific reason on the PR.
@@ -303,7 +303,7 @@ func (a *authoredGateClient) GetPullRequest(_ context.Context, _ string, number 
 	return forge.PullRef{Number: number, HeadSHA: a.headSHA, Author: a.author}, nil
 }
 
-// #662 A1 (approve floor): when cfg.MinReplierRole is empty the approve
+// #662 (approve floor): when cfg.MinReplierRole is empty the approve
 // lane defaults the gate floor to "maintainer" (docs/merge-gate.md
 // documents this override as a maintainer affordance). Route's
 // MinReplierRole is set BEFORE the gate stub runs, so a probing stub
@@ -368,9 +368,8 @@ func TestReviewApprove_OperatorFloorIsNotReplaced(t *testing.T) {
 	}
 }
 
-// #662 A3: a gate-client resolution ERROR must NOT 502 the delivery — the
-// pre-fix path returned StatusBadGateway, which is exactly the hook-
-// disabling 5xx class this ticket asked to remove.
+// #662: a gate-client resolution ERROR must NOT 502 the delivery — a 5xx
+// is the class forges answer by disabling the hook.
 func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	s := newWebhookTestServer(t)
 	conns := forge.NewMemoryConnectionStore()
@@ -410,7 +409,7 @@ func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	}
 }
 
-// #662 A6: idempotency — a redelivered comment (forge "Redeliver", or a
+// #662: idempotency — a redelivered comment (forge "Redeliver", or a
 // retry after a 5xx) must not run the approve flow twice.
 func TestReviewApprove_IdempotentOnRedelivery(t *testing.T) {
 	s := newWebhookTestServer(t)

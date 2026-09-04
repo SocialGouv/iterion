@@ -758,10 +758,9 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 // forgeConnectionForPR picks the team connection to publish through:
 // the pinned connection when given, else the connection of a repo
 // integration matching the repo slug, else the LATEST team connection on
-// the PR's forge host. Nil forgeConnections → (empty, false) so every
-// caller (approve, publish, pending, reconcile) inherits the nil guard
-// here rather than repeating it or panicking (#662 A5, one probed
-// panic before).
+// the PR's forge host. A nil forgeConnections store yields (empty, false):
+// every caller (approve, publish, pending, reconcile) inherits the guard
+// here instead of repeating it.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
 	if s == nil || s.forgeConnections == nil {
 		return forge.Connection{}, false
@@ -801,13 +800,12 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	if err != nil {
 		return forge.Connection{}, false
 	}
-	// #662 A7: pick the LATEST matching connection, not the first. ListByTenant
-	// sorts created_at ascending on both stores, so a repo re-provisioned onto
-	// a newer connection would inherit the stale one — the sibling
-	// repoIntegrationForRepo (right above) already takes the latest on that
-	// integration lookup for the same reason. Same tie-breaker (id) on an
-	// exact created-at collision. Publish + pending + reconcile all read
-	// through this helper, so the class-wide fix is here.
+	// The LATEST matching connection wins, not the first: ListByTenant sorts
+	// created_at ascending on both stores, so a repo re-provisioned onto a
+	// newer connection would otherwise inherit the stale one — the rule
+	// repoIntegrationForRepo applies to the integration lookup. Id breaks an
+	// exact created_at tie. Publish, pending and reconcile all read through
+	// this helper.
 	var best forge.Connection
 	found := false
 	for _, c := range conns {
