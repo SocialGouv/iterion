@@ -159,9 +159,12 @@ func (s *Server) issueCommenterFor(ctx context.Context, conn forge.Connection) (
 }
 
 // pauseNoticeRole is the run's kind for pause-notice purposes: reviewer,
-// fixer, or unknown (silent). Derived from the bot manifest's
-// produces:/consumes: kinds, so a new reviewer or fixer bot inherits the
-// right etiquette by declaring the right shape — the engine names no bot.
+// fixer, or unknown. Derived from the bot manifest's produces:/consumes:
+// kinds, so a new reviewer or fixer bot inherits the right etiquette by
+// declaring the right shape — the engine names no bot. Unknown is NOT
+// silent: the run already holds a required check (gate_context is set), so
+// it still gets a notice — the role-NEUTRAL one, which makes no push-side
+// claim either way.
 type pauseNoticeRole int
 
 const (
@@ -175,7 +178,8 @@ const (
 // review to answer it is a fixer (Billy and any peer). Consumes wins over
 // produces on the (unlikely) both — a bot that produces its own review of
 // its own fixes is a fixer, and the fixer notice's push-back warning is the
-// one that matters. Missing bot / entry / catalog → unknown (silent).
+// one that matters. Missing bot / entry / catalog → unknown, i.e. the
+// role-neutral notice.
 func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
 	botID = strings.TrimSpace(botID)
 	if botID == "" {

@@ -528,9 +528,6 @@ func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool
 // deadlines it may outlive (hours).
 const bankBudget = 10 * time.Minute
 
-// logAt routes a pre-formatted log triple (level, fmt, args) to the
-// matching Logger channel. Used by processOne to drain the log
-// metadata carried in preconditionOutcome / execOutcome.
 // withDeliveryAttempt suffixes a precondition log line with the JetStream
 // attempt count and stream sequence, so a drop reads on its own line as a
 // first-delivery pre-cancel arrival (delivery=1) or a redelivery
@@ -545,6 +542,9 @@ func withDeliveryAttempt(format string, args []any, numDelivered int, streamSeq 
 	return format + " (delivery=%d seq=%d)", append(out, numDelivered, streamSeq)
 }
 
+// logAt routes a pre-formatted log triple (level, fmt, args) to the
+// matching Logger channel. Used by processOne to drain the log
+// metadata carried in preconditionOutcome / execOutcome.
 func logAt(logger *iterlog.Logger, level logLevel, format string, args ...any) {
 	if format == "" {
 		return
