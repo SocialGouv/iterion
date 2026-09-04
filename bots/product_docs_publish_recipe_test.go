@@ -162,3 +162,83 @@ func TestPublishRecipeShellBlocksParse(t *testing.T) {
 		}
 	}
 }
+
+const productDocsBotPath = "product-docs/main.bot"
+
+// publishSystemPrompt returns the body of `prompt publish_system:` — up to the
+// next top-level declaration, which is the only reliable terminator (a blank
+// line is not: the prompt has several).
+func publishSystemPrompt(t *testing.T) string {
+	t.Helper()
+	src, err := os.ReadFile(productDocsBotPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", productDocsBotPath, err)
+	}
+	_, after, found := strings.Cut(string(src), "\nprompt publish_system:\n")
+	if !found {
+		t.Fatalf("%s: no `prompt publish_system:` block — the publish agent's operating "+
+			"rules have moved and these guards no longer measure anything",
+			productDocsBotPath)
+	}
+	// Fail rather than fall back to "the rest of the file": a guard that
+	// silently widens its scope keeps passing on prose that has moved out of
+	// the block it is supposed to measure.
+	i := regexp.MustCompile(`(?m)^(prompt|schema|agent|tool|judge|cursor|workflow) `).
+		FindStringIndex(after)
+	if i == nil {
+		t.Fatalf("%s: no top-level declaration after `prompt publish_system:` — the "+
+			"block's end cannot be located, so these guards would grep the whole file",
+			productDocsBotPath)
+	}
+	return after[:i[0]]
+}
+
+// TestPublishSystemKeepsItsSafetyClauses is an anti-deletion guard on the two
+// clauses in publish_system that a reword would silently drop, both of which
+// this bot pays for in credentials.
+//
+// It is not a semantic proof — a grep cannot tell a rule from a quotation of
+// one. It catches the likelier regression: someone tightening the prompt and
+// losing a guard with it. If you reword deliberately, update the literal here
+// in the same change.
+func TestPublishSystemKeepsItsSafetyClauses(t *testing.T) {
+	prompt := publishSystemPrompt(t)
+
+	// 1. STOP rather than improvise. `skills: ["deploy-target"]` is soft on both
+	// ends (pkg/dsl/ir/validate_skills.go warns on the NAME only;
+	// pkg/runtime/library_skills.go skips an unresolvable ref with a log line),
+	// so nothing but this clause and publish_gate stands between an unattached
+	// playbook and an agent improvising a deployment with a registry-write token
+	// and a cluster credential.
+	for _, want := range []string{
+		".claude/skills/deploy-target/SKILL.md",
+		".claude/skills/deploy-target.md",
+		"NEVER improvise a platform",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("%s: publish_system no longer carries %q — without it an unattached "+
+				"deploy-target reaches a privileged agent as nothing but a start-up warning",
+				productDocsBotPath, want)
+		}
+	}
+
+	// 2. The credential PATH is the contract. A file secret's `env:` is written
+	// into the SANDBOX spec only (pkg/runtime/sandbox_secret_files.go), so on a
+	// host run $DEPLOY_CREDENTIAL and $REGISTRY_TOKEN are unset. A prompt that
+	// names only the variables teaches the agent to report a missing credential
+	// that is mounted and readable.
+	for _, want := range []string{
+		"{{secrets.deploy_credential.path}}",
+		"{{secrets.registry_token.path}}",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("%s: publish_system no longer renders %s — the agent is left with an "+
+				"env var that only a sandboxed run sets", productDocsBotPath, want)
+		}
+	}
+	if !strings.Contains(prompt, "unset variable is therefore NOT a missing credential") {
+		t.Errorf("%s: publish_system no longer says an unset $DEPLOY_CREDENTIAL / "+
+			"$REGISTRY_TOKEN is not a missing credential — on a host run that is exactly "+
+			"the wrong conclusion, and the bot reports a false remedy", productDocsBotPath)
+	}
+}
