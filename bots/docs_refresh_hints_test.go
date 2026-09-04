@@ -102,6 +102,72 @@ func TestDocsRefreshHintsProducer(t *testing.T) {
 		}
 	}
 
+	t.Run("site_absolute_links_and_html_anchors_are_not_dead", func(t *testing.T) {
+		// The two noise classes measured on prod run 01a055f9 (2026-09-04):
+		// 20 of its 22 hints were root-absolute links a static-site
+		// generator routes from the site root, and both "dead anchors"
+		// pointed at explicit HTML anchors. The agent re-adjudicated all of
+		// them on EVERY pass, because the dismissals ledger lives in a
+		// per-run scratch the cloud wipes — so the waste repeats forever
+		// until the scanner stops emitting them.
+		ws := t.TempDir()
+		write(t, ws, "docs/index.md", `# Docs
+
+Start with the [DSL](/dsl) and the [plugins](/plugins).
+Deploy with the [cloud overview](/cloud-overview), then read
+[the webhooks re-request lane](/webhooks#re-request-review).
+A folder page: [references](/references).
+`)
+		write(t, ws, "docs/dsl.md", "# DSL\n")
+		write(t, ws, "docs/plugins.md", "# Plugins\n")
+		write(t, ws, "docs/cloud-overview.md", "# Cloud overview\n")
+		write(t, ws, "docs/references/index.md", "# References\n")
+		// The heading carries its anchor as explicit HTML, exactly as
+		// docs/webhooks.md does upstream: the slug of the heading TEXT is
+		// not the anchor, so only an anchor-aware collector resolves it.
+		write(t, ws, "docs/webhooks.md", `# Webhooks
+
+### <a name="re-request-review"></a>Re-request a review
+
+Body.
+`)
+		got := run(t, ws, "", nil)
+
+		for _, h := range got.Hints {
+			if h.Kind == "dead_link" || h.Kind == "dead_anchor" {
+				t.Errorf("%s on %q (%s): a link a generator resolves must not be reported — %s",
+					h.Kind, h.Value, h.Doc, h.Note)
+			}
+		}
+		if got.CheckedLinks == 0 {
+			t.Fatal("no link was checked at all — the fixture would pass vacuously")
+		}
+	})
+
+	t.Run("site_absolute_link_to_nothing_stays_a_soft_signal", func(t *testing.T) {
+		// Precision is not silence: a site-absolute link that resolves to no
+		// page anywhere is still worth surfacing. The note must say the
+		// resolution is soft, because a generator rewrite can serve a route
+		// that has no page file — that honesty is what lets the agent judge
+		// instead of trusting the scanner.
+		ws := t.TempDir()
+		write(t, ws, "docs/index.md", "# Docs\n\nSee [the ghost](/no-such-page).\n")
+		got := run(t, ws, "", nil)
+
+		var found bool
+		for _, h := range got.Hints {
+			if h.Kind == "dead_link" && h.Value == "/no-such-page" {
+				found = true
+				if !strings.Contains(h.Note, "rewrite may still serve it") {
+					t.Errorf("the note must flag the signal as soft, got %q", h.Note)
+				}
+			}
+		}
+		if !found {
+			t.Error("a site-absolute link resolving to no page must still be surfaced")
+		}
+	})
+
 	t.Run("foreign_flag_examples_produce_zero_noise", func(t *testing.T) {
 		// The exact noise class that burned ~40 min on live run 019f8b50:
 		// docs quoting OTHER tools' flags. v3 must surface NOTHING here.
