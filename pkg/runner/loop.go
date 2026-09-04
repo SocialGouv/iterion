@@ -1411,7 +1411,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// container: at this point the run has cost nothing yet, so a capped
 	// run parks for free instead of paying a workspace and one LLM call to
 	// rediscover a ceiling another pod already measured.
-	if capErr := r.usageCapPreflight(ctx, wf, msg, r.cfg.Logger); capErr != nil {
+	if capErr := r.admitAttempt(ctx, wf, msg); capErr != nil {
 		return capErr
 	}
 

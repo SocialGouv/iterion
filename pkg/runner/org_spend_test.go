@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // TestRecordOrgSpendKey pins the usage key the runner charges spend to:
@@ -268,11 +269,12 @@ func TestRecordOrgSpend_BumpsFingerprintEvenWithZeroUsage(t *testing.T) {
 	}
 }
 
-// The attempt-START half: injectCredentials stamps the credentials into
-// ctx and bumps the held keys right there, so a multi-hour attempt does
-// not read as an idle key until it ends. Proven through the real
-// sealed-bundle path, not by calling the bump directly.
-func TestInjectCredentials_BumpsHeldKeysAtAttemptStart(t *testing.T) {
+// The attempt-START half, and its order: admitAttempt bumps the held keys
+// as soon as the run is admitted, so a multi-hour attempt does not read as
+// an idle key until it ends — and NOT before the pre-flight, so a run
+// parked on a ceiling never dates a key it will not spend. Proven through
+// the real sealed-bundle path, not by calling the bump directly.
+func TestAdmitAttempt_BumpsHeldKeysOnceAdmitted(t *testing.T) {
 	sealer := testSealer(t)
 	apiKeys := secrets.NewMemoryApiKeyStore()
 	id, _ := seedFingerprintedKey(t, apiKeys, sealer, "sk-ant-held")
@@ -287,17 +289,68 @@ func TestInjectCredentials_BumpsHeldKeysAtAttemptStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer, ApiKeys: apiKeys}}
-	_, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("injectCredentials: %v", err)
 	}
 	defer cleanup()
+
+	read := func(t *testing.T) *secrets.ApiKey {
+		t.Helper()
+		got, err := apiKeys.Get(store.WithTenant(context.Background(), "team-a"), id)
+		if err != nil {
+			t.Fatalf("read key: %v", err)
+		}
+		return &got
+	}
+	// Holding the plaintext is not spending it: nothing is stamped until
+	// the run is admitted.
+	if k := read(t); k.LastUsedAt != nil {
+		t.Fatal("last_used_at stamped by injectCredentials alone — a run the pre-flight parks would date a key it never spent")
+	}
+	if err := r.admitAttempt(ctx, nil, msg); err != nil {
+		t.Fatalf("admitAttempt on an uncapped runner: %v", err)
+	}
+	if k := read(t); k.LastUsedAt == nil {
+		t.Fatal("last_used_at not bumped once the attempt was admitted — the key reads idle until the attempt ends")
+	}
+}
+
+// The other side of the order: a run the pre-flight parks must leave every
+// key exactly as idle as it found it.
+func TestAdmitAttempt_ParkedRunStampsNothing(t *testing.T) {
+	sealer := testSealer(t)
+	apiKeys := secrets.NewMemoryApiKeyStore()
+	id, fp := seedFingerprintedKey(t, apiKeys, sealer, "sk-ant-capped")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-capped"},
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): fp},
+	})
+	msg := &queue.RunMessage{RunID: "run-capped", TenantID: "team-a"}
+
+	caps := usagecap.NewMemStore()
+	if err := caps.Record(context.Background(), usageCapKey(ctx, msg), usagecap.Reading{
+		Window:      usagecap.WindowSevenDay,
+		Utilization: 0.95,
+		Status:      usagecap.StatusRejected,
+		ResetsAt:    time.Now().UTC().Add(5 * 24 * time.Hour),
+		ObservedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := capRunner(capTestPolicy(), caps, &capStatusStore{})
+	r.cfg.ApiKeys = apiKeys
+	if err := r.admitAttempt(ctx, capLLMWorkflow(), msg); err == nil {
+		t.Fatal("a capped run must be parked by the pre-flight")
+	}
 	got, err := apiKeys.Get(store.WithTenant(context.Background(), "team-a"), id)
 	if err != nil {
 		t.Fatalf("read key: %v", err)
 	}
-	if got.LastUsedAt == nil {
-		t.Fatal("last_used_at not bumped at attempt start — the key reads idle until the attempt ends")
+	if got.LastUsedAt != nil {
+		t.Fatalf("a parked run stamped last_used_at (%v) on a key it never spent", got.LastUsedAt)
 	}
 }
 

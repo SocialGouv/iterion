@@ -249,3 +249,20 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		SelfImposed: true,
 	}
 }
+
+// admitAttempt is the last gate before an attempt can spend anything, and
+// the moment it takes hold of what it will spend. The pre-flight decides
+// whether the run may start at all; only once it has, the attempt stamps
+// its credentials as held, so a multi-hour attempt does not read as an
+// idle key for its whole duration (#659 pt 2).
+//
+// The order is the point, both ways: a run parked on a ceiling never held
+// anything (stamping it would date a key that served nothing), and a run
+// that starts must not wait until it ends to say which key it is spending.
+func (r *Runner) admitAttempt(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) error {
+	if err := r.usageCapPreflight(ctx, wf, msg, r.cfg.Logger); err != nil {
+		return err
+	}
+	r.markCredFingerprintsUsed(ctx, msg, time.Now().UTC())
+	return nil
+}
