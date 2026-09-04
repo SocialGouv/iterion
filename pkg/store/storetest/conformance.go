@@ -2595,6 +2595,13 @@ func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
 	if err := s.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
+	seeded, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun seeded: %v", err)
+	}
+	// Mongo stores updated_at at millisecond resolution, so give the
+	// setter's stamp a tick it can be strictly greater in.
+	time.Sleep(2 * time.Millisecond)
 
 	// Raise the cap — SubmitResume's E4 write.
 	if err := s.SetRunBudgetOverrides(ctx, "bo_run", &store.RunBudgetOverrides{MaxCostUSD: 120, MaxDuration: "4h", MaxTokens: 5_000_000}); err != nil {
@@ -2610,10 +2617,19 @@ func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
 	if got.BudgetOverrides.MaxCostUSD != 120 || got.BudgetOverrides.MaxDuration != "4h" || got.BudgetOverrides.MaxTokens != 5_000_000 {
 		t.Fatalf("BudgetOverrides after set = %+v, want the raised ask", got.BudgetOverrides)
 	}
-	// The peer field must survive — SetRunBudgetOverrides must not
-	// clobber the status (SubmitResume relies on this).
+	// The peer field must survive. NOTE this is a SERIAL call, so it
+	// does NOT prove the granularity the interface promises: a
+	// load-modify-save satisfies it trivially, nothing having changed
+	// between the load and the save. The granular shape is pinned
+	// per-twin instead (fs: TestSetRunBudgetOverridesDoesNotReplaceTheDocument
+	// on updated_at + the peer fields; mongo: the $set/$unset itself).
 	if got.Status != store.RunStatusQueued {
 		t.Fatalf("Status after SetRunBudgetOverrides = %s, want queued (a whole-doc replace would revert the CAS transition)", got.Status)
+	}
+	// updated_at is the half a whole-document replace fails even
+	// serially — SaveRun stamps no timestamp of its own.
+	if !got.UpdatedAt.After(seeded.UpdatedAt) {
+		t.Fatalf("UpdatedAt after SetRunBudgetOverrides = %s, want it advanced past %s (the setter owns budget_overrides AND updated_at)", got.UpdatedAt, seeded.UpdatedAt)
 	}
 
 	// Nil clears (the field is opt-in).

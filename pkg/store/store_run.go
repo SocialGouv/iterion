@@ -1004,15 +1004,22 @@ func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID s
 }
 
 // SetRunBudgetOverrides persists the operator's launch-time budget ask
-// (see RunStore). Load-modify-save, like the other fs-side patches: no
-// partial update on the filesystem store.
-func (s *FilesystemRunStore) SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error {
-	r, err := s.LoadRun(ctx, runID)
+// (see RunStore). Load-modify-save under the store mutex, like
+// SetRunBudgetSnapshot below, so a status transition racing this write
+// is never reverted: SaveRun replaces the whole document from a copy
+// loaded before the lock, which would undo a cancel — and would apply
+// its own failure-code and pause-pointer normalisation to a field-scoped
+// write that has no business touching either.
+func (s *FilesystemRunStore) SetRunBudgetOverrides(_ context.Context, runID string, o *RunBudgetOverrides) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
 	if err != nil {
 		return err
 	}
 	r.BudgetOverrides = o
-	return s.SaveRun(ctx, r)
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
 }
 
 // SetRunBudgetSnapshot persists the effective caps (see RunStore).
