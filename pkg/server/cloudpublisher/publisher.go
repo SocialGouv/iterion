@@ -1715,35 +1715,42 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// run doc, so a subsequent unattended auto-retry (usage-window
 	// sweeper) keeps the raised cap rather than reverting to the
 	// launch ask that already killed the run. Only when the operator
-	// asked for a change on THIS resume — an ask-less resume leaves
-	// the doc untouched. Granular SetRunBudgetOverrides so the CAS
+	// asked for a change on THIS resume — an ask-less resume leaves the
+	// ASK untouched, and the ask is persisted UN-CLAMPED on purpose: the
+	// donor allowance is re-derived against the current grant on every
+	// resume, so a run capped at $5 today correctly replays its $120 ask
+	// once the donor recovers. Granular SetRunBudgetOverrides so the CAS
 	// status transition above (queued) stays intact. Best-effort.
-	//
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer persistCancel()
+	if spec.Budget != nil && !spec.Budget.IsZero() {
+		if err := p.store.SetRunBudgetOverrides(persistCtx, spec.RunID, runtime.RunBudgetOverridesOf(merged)); err != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: persist merged budget ask for %s after resume: %v", spec.RunID, err)
+		}
+	}
 	// The doc's effective-caps snapshot (Run.Budget, the studio
-	// Overview's denominator) is stamped alongside, from the figure the
-	// WIRE carries — merged AND clamped to the donor's allowance — never
-	// from the un-clamped ask: the engine stamps it only at launch (post-
-	// clamp, so the field means "enforced"), and a resume that stamped
-	// the ask would flip its meaning to "asked" for the rest of the run
-	// (the studio reading $120 while the pod dies at the donor's $5, with
-	// CapImposed denying the exit grace). The ask itself (the replay
-	// source) is persisted un-clamped on purpose: the allowance is
-	// re-derived on every resume. What this stamp cannot see is the
+	// Overview's denominator) is stamped on EVERY resume that puts a
+	// budget on the wire — ask or no ask — from the figure the wire
+	// carries (merged AND clamped to the donor's allowance), never from
+	// the ask: the allowance moves between resumes in both directions
+	// (an ask-less auto-retry can find a $5 donor after a $500 one, or
+	// the reverse), and the engine stamps this field only at launch
+	// (post-clamp, so the field means "enforced"). Enforcement is
+	// correct on the wire in every case; without this stamp it is the
+	// doc that lies — the studio reading $120 while the pod dies at the
+	// donor's $5 with CapImposed denying the exit grace, or $5 while the
+	// run may spend $120. A nil wire means nothing changed: the runner's
+	// post-ceiling launch stamp stands. What this stamp cannot see is the
 	// PLATFORM ceiling (ITERION_CLOUD_MAX_*): it lives in the runner's
 	// environment, not the publisher's, and a cap raised above it is
 	// clamped on the pod and logged there — the doc over-reports by that
 	// margin until the engine re-stamps on resume (ticketed).
-	if spec.Budget != nil && !spec.Budget.IsZero() {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		if err := p.store.SetRunBudgetOverrides(persistCtx, spec.RunID, runtime.RunBudgetOverridesOf(merged)); err != nil && p.logger != nil {
-			p.logger.Warn("cloudpublisher: persist merged budget ask for %s after resume: %v", spec.RunID, err)
-		}
+	if wire != nil {
 		if snap := runtime.EffectiveBudgetSnapshot(wf, runtime.BudgetOverridesFromWire(wire)); snap != nil {
 			if err := p.store.SetRunBudgetSnapshot(persistCtx, spec.RunID, snap); err != nil && p.logger != nil {
 				p.logger.Warn("cloudpublisher: refresh budget snapshot for %s after resume: %v", spec.RunID, err)
 			}
 		}
-		persistCancel()
 	}
 	// Disarm any usage-window retry the retry sweeper had armed for this
 	// run: an operator (or the auto-retry) is resuming it NOW, and a

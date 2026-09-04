@@ -19,8 +19,16 @@ import (
 // grace), and at launch the runner stamps Run.Budget post-clamp. A resume
 // that stamped the ask flips the field's meaning from "enforced" to
 // "asked" within one run: the studio reads $120 while the pod dies
-// BUDGET_EXCEEDED at the donor's $5.
-func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
+// BUDGET_EXCEEDED at the donor's $5. And the allowance is re-derived on
+// EVERY resume — the ask-less auto-retry included — so the stamp must
+// follow the wire on every resume, in both directions.
+
+// donorClampedPublisher builds a publisher whose only credential is a
+// pooled donor subscription with the given daily allowance; the pool
+// admits the requesting team by name (no identity store, so the run's
+// org resolves to ""). Every publish is captured.
+func donorClampedPublisher(t *testing.T, maxUSDPerDay float64) (*Publisher, store.RunStore, *[]*queue.RunMessage) {
+	t.Helper()
 	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
@@ -31,8 +39,6 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 	pools := credpool.NewMemoryPoolStore()
 	if err := pools.Upsert(ctx, credpool.Pool{
 		ID: "pool-1", OrgID: poolOrg, Enabled: true,
-		// The requesting team is admitted by name: the publisher under test
-		// has no identity store, so the run's org resolves to "".
 		Audience: credpool.Audience{Teams: []string{poolTeam}},
 	}); err != nil {
 		t.Fatalf("seed pool: %v", err)
@@ -41,7 +47,7 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 	if err := pledges.Upsert(ctx, credpool.Pledge{
 		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
-		Enabled: true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
+		Enabled: true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: maxUSDPerDay},
 	}); err != nil {
 		t.Fatalf("seed pledge: %v", err)
 	}
@@ -52,12 +58,11 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 	if broker == nil {
 		t.Fatal("broker is nil with every dependency wired")
 	}
-
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	var published *queue.RunMessage
+	published := &[]*queue.RunMessage{}
 	p := &Publisher{
 		store:      st,
 		runSecrets: secrets.NewMemoryRunSecretsStore(),
@@ -65,19 +70,39 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 		credPool:   broker,
 		logger:     iterlog.New(iterlog.LevelError, nil),
 		publishRun: func(_ context.Context, m *queue.RunMessage) error {
-			published = m
+			*published = append(*published, m)
 			return nil
 		},
 	}
-	tctx := store.WithIdentity(ctx, poolTeam, "requester")
-	const runID = "run-donor-clamped-resume"
+	return p, st, published
+}
+
+func seedDonorRun(t *testing.T, st store.RunStore, runID string, budget *store.RunBudget, ask *store.RunBudgetOverrides) context.Context {
+	t.Helper()
+	tctx := store.WithIdentity(context.Background(), poolTeam, "requester")
 	if err := st.SaveRun(tctx, &store.Run{
 		ID: runID, TenantID: poolTeam, OwnerID: "requester",
-		Status: store.RunStatusFailedResumable,
-		Budget: &store.RunBudget{MaxCostUSD: 20}, // the launch stamp
+		Status:          store.RunStatusFailedResumable,
+		Budget:          budget,
+		BudgetOverrides: ask,
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
+	return tctx
+}
+
+func lastPublished(t *testing.T, published *[]*queue.RunMessage) *queue.RunMessage {
+	t.Helper()
+	if len(*published) == 0 {
+		t.Fatal("nothing published")
+	}
+	return (*published)[len(*published)-1]
+}
+
+func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
+	p, st, published := donorClampedPublisher(t, 5)
+	const runID = "run-donor-clamped-resume"
+	tctx := seedDonorRun(t, st, runID, &store.RunBudget{MaxCostUSD: 20}, nil) // the launch stamp
 	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20}}
 	spec := runview.ResumeSpec{
 		RunID: runID, FilePath: "wf.bot",
@@ -87,11 +112,9 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 	if err := p.SubmitResume(tctx, spec, wf, "hash"); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
-	if published == nil || published.Budget == nil {
-		t.Fatal("nothing published or budget dropped from the wire")
-	}
-	if published.Budget.MaxCostUSD != 5 || !published.Budget.CapImposed {
-		t.Fatalf("wire budget = %+v, want the donor's $5 with CapImposed (the premise: the grant clamps the wire)", published.Budget)
+	msg := lastPublished(t, published)
+	if msg.Budget == nil || msg.Budget.MaxCostUSD != 5 || !msg.Budget.CapImposed {
+		t.Fatalf("wire budget = %+v, want the donor's $5 with CapImposed (the premise: the grant clamps the wire)", msg.Budget)
 	}
 	got, err := st.LoadRun(tctx, runID)
 	if err != nil {
@@ -104,5 +127,58 @@ func TestSubmitResume_StampsTheClampedWireCapNotTheAsk(t *testing.T) {
 	// re-derived against the CURRENT grant on every resume.
 	if got.BudgetOverrides == nil || got.BudgetOverrides.MaxCostUSD != 120 {
 		t.Fatalf("doc BudgetOverrides = %+v, want the raw $120 ask persisted un-clamped", got.BudgetOverrides)
+	}
+}
+
+// Over-report: an earlier resume stamped $120 under a $500 donor; the
+// ask-less auto-retry lands on a $5 donor. The wire says 5 + CapImposed,
+// and so must the doc — the ask stays 120.
+func TestSubmitResume_AskLessResumeRestampsTheDocWhenTheAllowanceShrinks(t *testing.T) {
+	p, st, published := donorClampedPublisher(t, 5)
+	const runID = "run-donor-shrank"
+	tctx := seedDonorRun(t, st, runID, &store.RunBudget{MaxCostUSD: 120}, &store.RunBudgetOverrides{MaxCostUSD: 120})
+	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20}}
+	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"} // ask-less
+	if err := p.SubmitResume(tctx, spec, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	msg := lastPublished(t, published)
+	if msg.Budget == nil || msg.Budget.MaxCostUSD != 5 || !msg.Budget.CapImposed {
+		t.Fatalf("wire budget = %+v, want {5, CapImposed} (the premise)", msg.Budget)
+	}
+	got, err := st.LoadRun(tctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Budget == nil || got.Budget.MaxCostUSD != 5 {
+		t.Fatalf("doc Budget = %+v after an ask-less resume onto a $5 donor, want 5 — the studio shows $120 while the pod dies at $5 with no exit grace", got.Budget)
+	}
+	if got.BudgetOverrides == nil || got.BudgetOverrides.MaxCostUSD != 120 {
+		t.Fatalf("doc BudgetOverrides = %+v, want the $120 ask left un-clamped (a later resume must replay it once the donor recovers)", got.BudgetOverrides)
+	}
+}
+
+// Under-report: an earlier resume was clamped to $5; the ask-less
+// auto-retry lands on a $500 donor. The wire says 120 (no clamp), and so
+// must the doc.
+func TestSubmitResume_AskLessResumeRestampsTheDocWhenTheAllowanceRecovers(t *testing.T) {
+	p, st, published := donorClampedPublisher(t, 500)
+	const runID = "run-donor-recovered"
+	tctx := seedDonorRun(t, st, runID, &store.RunBudget{MaxCostUSD: 5}, &store.RunBudgetOverrides{MaxCostUSD: 120})
+	wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 20}}
+	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"} // ask-less
+	if err := p.SubmitResume(tctx, spec, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	msg := lastPublished(t, published)
+	if msg.Budget == nil || msg.Budget.MaxCostUSD != 120 || msg.Budget.CapImposed {
+		t.Fatalf("wire budget = %+v, want {120, no clamp} (the premise)", msg.Budget)
+	}
+	got, err := st.LoadRun(tctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Budget == nil || got.Budget.MaxCostUSD != 120 {
+		t.Fatalf("doc Budget = %+v after an ask-less resume onto a $500 donor, want 120 — the studio shows $5 while the run may spend $120", got.Budget)
 	}
 }
