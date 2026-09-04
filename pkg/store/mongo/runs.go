@@ -688,6 +688,27 @@ func (s *Store) SetRunCredFingerprints(ctx context.Context, id string, fingerpri
 	return nil
 }
 
+// SetRunBudgetOverrides persists the operator's launch-time budget ask
+// (see store.RunStore). Granular $set (with $unset for nil) so the CAS
+// status transition SubmitResume just applied stays intact.
+func (s *Store) SetRunBudgetOverrides(ctx context.Context, id string, o *store.RunBudgetOverrides) error {
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	update := bson.M{"$set": bson.M{"updated_at": time.Now().UTC()}}
+	if o == nil {
+		update["$unset"] = bson.M{"budget_overrides": ""}
+	} else {
+		update["$set"].(bson.M)["budget_overrides"] = o
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run budget overrides: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped
 // with fingerprint (see store.RunStore). Deliberately NO tenant filter —
 // a platform key serves every tenant on one ceiling.

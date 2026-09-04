@@ -169,32 +169,36 @@ repeating the old cap causes the re-executed node to hit the same guard.
 resume`) accepts the same budget-override flags as the local CLI —
 `--max-cost-usd`, `--max-tokens`, `--max-duration`, `--max-iterations`,
 `--max-parallel-branches`. The wire body carries them as
-`{"budget": {"max_duration": "4h", ...}}`; a non-zero field beats the
-launch ask persisted on the run doc for THIS resume publication (a zero
-field inherits). Without an override the resume replays from the run
-doc as before.
+`{"budget": {"max_duration": "4h", ...}}`; the override MERGES per
+field over the launch ask persisted on the run doc — a non-zero field
+in the spec beats the doc, a zero field inherits it. Passing only
+`--max-duration 4h` therefore raises the duration without erasing the
+launch's cost/tokens caps. Without any override the resume replays
+from the doc as before.
 
 Two mechanics matter when raising a cap here:
 
 - **The consumed accounting travels across resume.** The checkpoint
-  restores `budget_elapsed_ns`, `budget_cost_usd`, `budget_tokens` and
-  `budget_iterations` on every axis, so a resume with no override
-  restarts against the same clock that killed it. Measure: a run
-  parked on a 2h30m duration cap (elapsed = 9902 s) resumed bare walks
-  another 5 min and dies at 9901.6 s + 10% = the exit-grace ceiling.
-  The escape hatch is exactly what `--max-*` on resume raises.
-- **The cap raised on THIS resume rides the RunMessage only.** It does
-  NOT overwrite the launch ask on the run doc, so a subsequent
-  unattended auto-retry (usage-window sweeper) reverts to the launch
-  value. The pattern is therefore "operator raises cap on the manual
-  resume that unblocks the run; the run completes, and the launch ask
-  goes back to being the reference for future retries". Persisting a
-  cap-raise across attempts is a separate follow-up.
+  restores `budget_elapsed_ns`, `budget_cost_usd`, `budget_tokens_used`
+  and `budget_iterations_used` on every axis, so a resume with no
+  override restarts against the same clock that killed it. Measure: a
+  run parked on a 2h30m duration cap (elapsed = 9902 s) resumed bare
+  walks another 5 min and dies at 9901.6 s + 10% = the exit-grace
+  ceiling. The escape hatch is exactly what `--max-*` on resume raises.
+- **The merged ask is persisted onto the run doc.** So a subsequent
+  unattended auto-retry (usage-window sweeper) keeps the raised cap
+  instead of reverting to the launch ask that already killed the run.
+  A run resumed with `--max-cost-usd 120` retries at $120, not at the
+  launch's $10.
 
-Both the source-swap trick (`{"source": "<the workflow text with a
-larger cap>", "force": true}`) and the `--max-*` flags reach the same
-`resolveResumeBudgetAsk` choke point in `cloudpublisher.SubmitResume` —
-the two are equivalent recoveries, use whichever is closer to hand.
+The `--max-*` flags are the recommended path. The historical
+"source-swap" recovery (POST `{"source": "<the .bot with a larger
+cap>", "force": true}`) is NOT equivalent: it edits `wf.Budget` before
+compile, and `resolveResumeBudgetAsk` then still merges the persisted
+launch ask over top — on a run whose launch ask carried an explicit
+cap the swap is overridden and the run dies at the persisted cap.
+Prefer the flags; the swap is retained as a last-resort escape for the
+case where no launch ask was ever recorded.
 
 ## Rewind: resume from an *earlier* node
 

@@ -81,6 +81,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
+	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -2556,5 +2557,69 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-anthropic", ""); err != nil || n != 2 {
 		t.Errorf("alive(fp-anthropic) after re-stamp = %d/%v, want 2", n, err)
+	}
+}
+
+// testSetRunBudgetOverrides exercises the granular budget-ask setter
+// SubmitResume calls when the operator raises a cap on THIS resume
+// (E4, #652 review round 1). Contract: replaces the field wholesale,
+// nil clears, touches nothing else on the doc — SubmitResume has
+// already CAS-transitioned the status to `queued` and a whole-doc
+// SaveRun would clobber it.
+func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	// Seed a run with a launch-time budget ask; also set a peer field
+	// (Status) so the granular-update contract is verifiable.
+	if _, err := s.CreateRun(ctx, "bo_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Status = store.RunStatusQueued
+	r.BudgetOverrides = &store.RunBudgetOverrides{MaxCostUSD: 50, MaxDuration: "2h30m"}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// Raise the cap — SubmitResume's E4 write.
+	if err := s.SetRunBudgetOverrides(ctx, "bo_run", &store.RunBudgetOverrides{MaxCostUSD: 120, MaxDuration: "4h", MaxTokens: 5_000_000}); err != nil {
+		t.Fatalf("SetRunBudgetOverrides: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.BudgetOverrides == nil {
+		t.Fatal("BudgetOverrides = nil after set")
+	}
+	if got.BudgetOverrides.MaxCostUSD != 120 || got.BudgetOverrides.MaxDuration != "4h" || got.BudgetOverrides.MaxTokens != 5_000_000 {
+		t.Fatalf("BudgetOverrides after set = %+v, want the raised ask", got.BudgetOverrides)
+	}
+	// The peer field must survive — SetRunBudgetOverrides must not
+	// clobber the status (SubmitResume relies on this).
+	if got.Status != store.RunStatusQueued {
+		t.Fatalf("Status after SetRunBudgetOverrides = %s, want queued (a whole-doc replace would revert the CAS transition)", got.Status)
+	}
+
+	// Nil clears (the field is opt-in).
+	if err := s.SetRunBudgetOverrides(ctx, "bo_run", nil); err != nil {
+		t.Fatalf("SetRunBudgetOverrides(nil): %v", err)
+	}
+	got, err = s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.BudgetOverrides != nil {
+		t.Fatalf("BudgetOverrides after nil set = %+v, want nil (clear)", got.BudgetOverrides)
+	}
+
+	// A missing run returns ErrRunNotFound.
+	err = s.SetRunBudgetOverrides(ctx, "does-not-exist", &store.RunBudgetOverrides{MaxCostUSD: 1})
+	if err == nil {
+		t.Fatal("SetRunBudgetOverrides on missing run returned nil, want ErrRunNotFound")
 	}
 }

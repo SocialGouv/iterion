@@ -999,6 +999,18 @@ func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID s
 	return s.SaveRun(ctx, r)
 }
 
+// SetRunBudgetOverrides persists the operator's launch-time budget ask
+// (see RunStore). Load-modify-save, like the other fs-side patches: no
+// partial update on the filesystem store.
+func (s *FilesystemRunStore) SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error {
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	r.BudgetOverrides = o
+	return s.SaveRun(ctx, r)
+}
+
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped
 // with fingerprint (see RunStore). Scan-and-filter like the other
 // fs-side reverse queries — local scale, no secondary index.

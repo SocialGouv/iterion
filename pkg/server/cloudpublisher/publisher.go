@@ -1705,6 +1705,21 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
 	}
+	// E4 (#652 review round 1): persist the MERGED budget ask onto the
+	// run doc, so a subsequent unattended auto-retry (usage-window
+	// sweeper) keeps the raised cap rather than reverting to the
+	// launch ask that already killed the run. Only when the operator
+	// asked for a change on THIS resume — an ask-less resume leaves
+	// the doc untouched. Granular SetRunBudgetOverrides so the CAS
+	// status transition above (queued) stays intact. Best-effort.
+	if spec.Budget != nil && !spec.Budget.IsZero() {
+		merged := resolveResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
+		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err := p.store.SetRunBudgetOverrides(persistCtx, spec.RunID, runBudgetOverrides(merged)); err != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: persist merged budget ask for %s after resume: %v", spec.RunID, err)
+		}
+		persistCancel()
+	}
 	// Disarm any usage-window retry the retry sweeper had armed for this
 	// run: an operator (or the auto-retry) is resuming it NOW, and a
 	// surviving retry_after re-fires the sweeper days later on a run that
@@ -1714,10 +1729,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// resume: the sweep's ClaimRunRetry CAS still checks the run status
 	// (which is now queued/running), so the worst case is one spurious
 	// abandon audit line.
+	//
+	// E5 (#652 review round 1): bound the detached-context write like
+	// every other sibling detached store call (publisher.go:1553's
+	// rollback uses 10s, usage_retry follows the same convention) so a
+	// wedged store cannot pin the resume goroutine indefinitely.
 	if retryStore := store.AsRunRetryStore(p.store); retryStore != nil {
-		if err := retryStore.ClearRunRetry(context.WithoutCancel(ctx), spec.RunID); err != nil && p.logger != nil {
+		clearCtx, clearCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err := retryStore.ClearRunRetry(clearCtx, spec.RunID); err != nil && p.logger != nil {
 			p.logger.Warn("cloudpublisher: clear armed retry for %s after manual resume: %v", spec.RunID, err)
 		}
+		clearCancel()
 	}
 	return nil
 }
@@ -2136,17 +2158,48 @@ func runBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
 	}
 }
 
-// resolveResumeBudgetAsk chooses between a THIS-RESUME override (the
-// CLI/API budget flags on the resume request) and the persisted launch
-// ask that lives on the run doc. The this-resume override wins when
-// non-nil and non-empty — that IS the "raise the cap + resume"
-// recovery — else the doc's replay is honoured (today's behaviour, and
-// the only path an unattended auto-retry can travel). #652 part 2.
+// resolveResumeBudgetAsk MERGES the THIS-RESUME override (the CLI/API
+// budget flags on the resume request) OVER the persisted launch ask
+// on the run doc, per field. The contract is the same "non-zero wins,
+// zero inherits" rule ApplyBudgetOverrides enforces on the executor
+// side, and the same shape ir.BudgetOverrides itself documents.
+//
+// Wholesale-replace (an earlier variant of this helper) was E1's
+// finding: `--max-duration 4h` alone erased the launch's $50 / 5e6-
+// token envelope on the wire, ApplyBudgetOverrides then left the
+// .bot's own cap in place, and restoreCheckpoint put the banked
+// spend back over it — the run died on BUDGET_EXCEEDED before the
+// first node. Zero-value fields in the spec inherit the doc value;
+// non-zero fields override.
+//
+// #652 part 2.
 func resolveResumeBudgetAsk(fromSpec *ir.BudgetOverrides, fromDoc *store.RunBudgetOverrides) *ir.BudgetOverrides {
-	if fromSpec != nil && !fromSpec.IsZero() {
-		return fromSpec
+	base := budgetOverridesFromRun(fromDoc)
+	if fromSpec == nil || fromSpec.IsZero() {
+		return base
 	}
-	return budgetOverridesFromRun(fromDoc)
+	if base == nil {
+		base = &ir.BudgetOverrides{}
+	}
+	if fromSpec.MaxCostUSD > 0 {
+		base.MaxCostUSD = fromSpec.MaxCostUSD
+	}
+	if fromSpec.MaxTokens > 0 {
+		base.MaxTokens = fromSpec.MaxTokens
+	}
+	if fromSpec.MaxDuration != "" {
+		base.MaxDuration = fromSpec.MaxDuration
+	}
+	if fromSpec.MaxIterations > 0 {
+		base.MaxIterations = fromSpec.MaxIterations
+	}
+	if fromSpec.MaxParallelBranches > 0 {
+		base.MaxParallelBranches = fromSpec.MaxParallelBranches
+	}
+	if fromSpec.CapImposed {
+		base.CapImposed = true
+	}
+	return base
 }
 
 // budgetOverridesFromRun replays a run doc's persisted budget ask onto a

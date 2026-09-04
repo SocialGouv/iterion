@@ -84,6 +84,17 @@ type RunStore interface {
 	SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error
 	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
 
+	// SetRunBudgetOverrides updates the persisted launch-time budget
+	// ask on the run — the resume path's replay source. Called by
+	// SubmitResume when the operator raises a cap on THIS resume, so
+	// a subsequent unattended auto-retry keeps the raised cap rather
+	// than reverting to the launch ask that already killed the run
+	// (E4, #652 review round 1). Nil clears the field. Granular:
+	// touches only budget_overrides + updated_at, no other field is
+	// disturbed — SaveRun's whole-doc replace is unsafe here because
+	// the resume has already CAS-transitioned the doc to `queued`.
+	SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error
+
 	// PatchRunSteering persists the live-steering state (accumulated
 	// loop grants + absolute budget raises) on the run record so a
 	// resume re-applies them. nil map / nil raises leave the stored
