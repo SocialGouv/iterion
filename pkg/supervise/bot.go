@@ -179,22 +179,35 @@ func resolveModelWith(specModel, providerHint string, providers []detect.Provide
 
 // ctxFundsProvider maps the run's ctx credentials onto claw providers: a
 // per-provider API key funds its provider (ResolveWithContext →
-// providersWithKey), and the codex ChatGPT forfait funds openai
-// (Registry.openAIFromCtxForfait reads OAuthDir("codex")), mirroring
-// that path's env kill-switches. Anthropic's OAuth forfait is
-// deliberately NOT mapped: it is usable only by the claude_code CLI —
-// claw's anthropic factory reads env vars alone and ResolveWithContext
-// has no anthropic OAuth-dir branch — so claiming it funds the
-// anthropic provider would resolve an unauthenticated client.
+// providersWithKey), and each subscription forfait funds the provider its
+// ctx branch in Registry.ResolveWithContext can build a client from —
+// codex → openai (openAIFromCtxForfait), claude_code → anthropic
+// (anthropicFromCtxForfait) — mirroring each path's kill-switches.
+//
+// Keeping this in step with those branches is the whole job: a provider
+// claimed as funded but with no ctx branch behind it resolves an
+// UNAUTHENTICATED client, which fails 401 per eval instead of parking
+// supervision on a clean ErrNoSupervisorModel.
 func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
 	return func(provider string) bool {
 		if creds.APIKeys[secrets.Provider(provider)] != "" {
 			return true
 		}
-		if provider == "openai" &&
-			os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" &&
-			os.Getenv("OPENAI_BASE_URL") == "" {
-			return creds.OAuthCredentialFiles["codex"] != ""
+		switch provider {
+		case "openai":
+			if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" || os.Getenv("OPENAI_BASE_URL") != "" {
+				return false
+			}
+			return creds.OAuthCredentialFiles[string(secrets.OAuthKindCodex)] != ""
+		case "anthropic":
+			// The forfait bearer is not the credential a z.ai/bigmodel
+			// facade expects, and the opt-out refuses the path outright.
+			base := strings.ToLower(os.Getenv("ANTHROPIC_BASE_URL"))
+			if secrets.ForbidSubscriptionOAuth() ||
+				strings.Contains(base, "z.ai") || strings.Contains(base, "bigmodel") {
+				return false
+			}
+			return creds.OAuthCredentialFiles[string(secrets.OAuthKindClaudeCode)] != ""
 		}
 		return false
 	}
@@ -230,7 +243,12 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 	}
 	res, err := model.GenerateObjectDirect[Decision](ctx, e.client, opts)
 	if err != nil {
-		return nil, EvalUsage{}, fmt.Errorf("supervise: evaluation call: %w", err)
+		// Name the model that failed: a supervisor's model can come from a DSL
+		// pin, an env override, the supervised nodes' provider or the host
+		// detector, and an auth error says nothing about which of those was
+		// taken. Reading "anthropic: API error 401" with no spec is what made a
+		// dead pacer look like a provider outage rather than a resolution bug.
+		return nil, EvalUsage{}, fmt.Errorf("supervise: evaluation call (model %s): %w", e.modelSpec, err)
 	}
 	usage := EvalUsage{
 		InputTokens:  res.TotalUsage.InputTokens,

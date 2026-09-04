@@ -278,6 +278,64 @@ func LoadCodexCredentialsFrom(dir string) (CodexCredentialsView, error) {
 	return ParseCodexView(data)
 }
 
+// LoadAnthropicCredentialsFrom reads and parses a Claude Code
+// .credentials.json from an EXPLICIT CLAUDE_CONFIG_DIR-shaped directory, the
+// anthropic twin of LoadCodexCredentialsFrom. This is the cloud path: the
+// runner materialises the tenant's resolved Claude forfait into a per-run temp
+// dir (Credentials.OAuthDir("claude_code")), where the in-process claw factory
+// reads it instead of the pod's (empty) ~/.claude. Empty dir → error.
+func LoadAnthropicCredentialsFrom(dir string) (AnthropicCredentialsView, error) {
+	if strings.TrimSpace(dir) == "" {
+		return AnthropicCredentialsView{}, fmt.Errorf("secrets: empty claude_code credentials dir")
+	}
+	path := filepath.Join(dir, ClaudeCodeCredentialsFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return AnthropicCredentialsView{}, fmt.Errorf("secrets: read %s: %w", path, err)
+	}
+	return ParseAnthropicView(data)
+}
+
+// AnthropicForfaitAccessToken returns the Claude Code OAuth access token
+// materialised in a CLAUDE_CONFIG_DIR-shaped dir, or "" for every failure
+// mode (no dir, absent file, malformed JSON, blank token) — a missing file is
+// the ordinary "not a forfait host" case, not an error to propagate.
+//
+// It exists because three readers were extracting the same field from the same
+// file independently (the CLI env builder, the forfait usage prober, the claw
+// ctx factory); the fourth would have drifted. The token is never logged.
+func AnthropicForfaitAccessToken(dir string) string {
+	view, err := LoadAnthropicCredentialsFrom(dir)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(view.ClaudeAIOauth.AccessToken)
+}
+
+// ClaudeCodeConfigDir returns the on-disk CLAUDE_CONFIG_DIR the Claude Code
+// CLI stores its forfait credentials in, honouring the env override and
+// falling back to `~/.claude`. Returns "" when no home directory resolves,
+// which callers treat as "no forfait on this host".
+func ClaudeCodeConfigDir() string {
+	if d := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude")
+}
+
+// AnthropicForfaitAccessTokenFromDisk is the desktop twin of
+// LoadCodexCredentialsFromDisk: the Claude Code forfait token from this host's
+// own config dir, or "" when there is none. Used by the in-process claw
+// anthropic factory so a laptop with a Claude subscription authenticates the
+// same way one with a ChatGPT subscription already did.
+func AnthropicForfaitAccessTokenFromDisk() string {
+	return AnthropicForfaitAccessToken(ClaudeCodeConfigDir())
+}
+
 // LoadCodexCredentialsFromDisk reads and parses Codex CLI's auth.json from
 // its standard location. Returns the parsed view on success; on missing or
 // malformed file it returns the zero view plus a non-nil error. Callers

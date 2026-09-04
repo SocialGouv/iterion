@@ -98,6 +98,20 @@ func (r *Registry) registerDefaults() {
 				}
 			}
 		}
+		// Desktop forfait, last: with no env credential at all, read this
+		// host's own Claude Code credentials — the twin of the openai factory's
+		// LoadCodexCredentialsFromDisk below. Without it the most common desktop
+		// setup (a Claude subscription, no API key) builds a client with NO
+		// credential and every claw call answers 401.
+		//
+		// Only when the wire is un-redirected: an operator who pointed
+		// ANTHROPIC_BASE_URL at a gateway chose that destination, and a
+		// subscription bearer must not be sent there implicitly. An explicit
+		// ANTHROPIC_AUTH_TOKEN still reaches any base URL — that one IS the
+		// operator's choice.
+		if apiKey == "" && authToken == "" && baseURL == "" {
+			authToken = secrets.AnthropicForfaitAccessTokenFromDisk()
+		}
 		cfg := api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
@@ -454,6 +468,16 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 				return client, err
 			}
 		}
+		// Same for anthropic and the Claude Code forfait. Without this the
+		// fall-through below reaches the env factory, which on a runner pod
+		// sees no ANTHROPIC_* var and returns a client with NO credential —
+		// non-nil, so the caller proceeds, and every call answers 401
+		// "x-api-key header is required" (issue #687: Revi's pacer).
+		if providerName == "anthropic" {
+			if client, ok, err := r.anthropicFromCtxForfait(ctx, modelID); ok {
+				return client, err
+			}
+		}
 		// No tenant-scoped credential for this provider — fall back to the
 		// shared resolver (env vars + cache).
 		return r.Resolve(spec)
@@ -526,6 +550,54 @@ func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (ap
 	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL")}
 	applyCodexOAuth(&cfg, view)
 	client, cerr := openaiprovider.New().NewClient(withClientIdentity(cfg))
+	return client, true, cerr
+}
+
+// anthropicFromCtxForfait builds an Anthropic client from the tenant's
+// per-run-materialised Claude Code forfait (Credentials.OAuthDir("claude_code")),
+// the twin of openAIFromCtxForfait. claw's anthropic provider takes the access
+// token as an OAuth bearer and sends `Authorization: Bearer` plus the
+// `anthropic-beta: oauth-2025-04-20` header the API requires — the same wire the
+// env factory builds from ANTHROPIC_AUTH_TOKEN.
+//
+// Returns ok=false (caller falls back to the shared resolver) when no dir is
+// resolved, when the blob carries no access token, or when the base URL points
+// at a z.ai/bigmodel facade — there the bearer is a BYOK key, not a forfait
+// token, so a subscription token would be the wrong credential entirely.
+//
+// Returns ok=true WITH an error when the operator forbade subscription-OAuth
+// spending: that is a refusal to surface, not a reason to fall through to an
+// unauthenticated client.
+//
+// BILLING: like the env path, this spends the subscription's EXTRA-USAGE
+// balance rather than the plan's limits, hence the same one-time notice.
+func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
+	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+	lowBase := strings.ToLower(baseURL)
+	if strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel") {
+		return nil, false, nil
+	}
+	dir := oauthDirLookup(ctx, string(secrets.OAuthKindClaudeCode))
+	if dir == "" {
+		return nil, false, nil
+	}
+	view, err := secrets.LoadAnthropicCredentialsFrom(dir)
+	if err != nil || view.ClaudeAIOauth.AccessToken == "" {
+		return nil, false, nil
+	}
+	if secrets.ForbidSubscriptionOAuth() {
+		return nil, true, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
+	}
+	claudeForfaitWarnOnce.Do(func() {
+		iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
+			secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
+	})
+	cfg := api.ProviderConfig{
+		Model:      modelID,
+		BaseURL:    baseURL,
+		OAuthToken: view.ClaudeAIOauth.AccessToken,
+	}
+	client, cerr := anthropicprovider.New().NewClient(withClientIdentity(cfg))
 	return client, true, cerr
 }
 
