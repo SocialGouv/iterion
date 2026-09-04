@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.101.2](https://github.com/SocialGouv/iterion/compare/v3.101.1...v3.101.2) (2026-09-04)
+
+### Bug Fixes
+
+* **credentials:** the wants a run actually needs, and a refusal that says why ([#682](https://github.com/SocialGouv/iterion/issues/682)) ([d2f7cee](https://github.com/SocialGouv/iterion/commit/d2f7cee5c54d1f02f7b1721899f5dda238ca3557)), references [#627](https://github.com/SocialGouv/iterion/issues/627) [#668](https://github.com/SocialGouv/iterion/issues/668) [#654](https://github.com/SocialGouv/iterion/issues/654) [#668](https://github.com/SocialGouv/iterion/issues/668) [#668](https://github.com/SocialGouv/iterion/issues/668) [#659](https://github.com/SocialGouv/iterion/issues/659) [#659](https://github.com/SocialGouv/iterion/issues/659) [#668](https://github.com/SocialGouv/iterion/issues/668) [#668](https://github.com/SocialGouv/iterion/issues/668) [#659](https://github.com/SocialGouv/iterion/issues/659) [#627](https://github.com/SocialGouv/iterion/issues/627) [#654](https://github.com/SocialGouv/iterion/issues/654) [#659](https://github.com/SocialGouv/iterion/issues/659) [#668](https://github.com/SocialGouv/iterion/issues/668) [#654](https://github.com/SocialGouv/iterion/issues/654) [#627](https://github.com/SocialGouv/iterion/issues/627)
+
+    <details><summary>why</summary>
+
+    Two paid failures in prod, hours apart, were accepted silently by the server: a claude_code accessToken pasted as a terminal transcript (embedded newlines/ANSI escapes) and a claude_code record missing expiresAt/scopes — the shape the CLI reads as "Not logged in". Both lived on disk after ingestion, so every downstream call from a full fleet of runs would die on 401 for hours before the cause was found.
+
+    </details>
+
 ## [3.101.1](https://github.com/SocialGouv/iterion/compare/v3.101.0...v3.101.1) (2026-09-04)
 
 ### Bug Fixes
