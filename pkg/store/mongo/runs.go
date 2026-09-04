@@ -912,6 +912,23 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		set["continuation_state"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
 			bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}}
 	}
+	// A `final` continuation says nobody on the platform owns the run's
+	// future; an armed retry says the sweeper does. The two cannot both
+	// be true, and a doc carrying both gets BOTH automations — the gate
+	// reconciler's dead-review repair AND the sweeper's auto-resume, two
+	// runs of the bot on one PR head. Every final writer (the DLQ park,
+	// the orphan sweeper, the PR-close cancel) therefore disarms
+	// retry_after here, at the one tail they all go through; the rest
+	// of the retry bookkeeping (attempts, reason, last_error) is the
+	// run's history and stays. Same guarded $unsetField shape as the
+	// pause pointer above: a doc with no retry state must not grow one.
+	if meta.Continuation == store.ContinuationFinal {
+		set[retryStateField] = bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{bson.M{"$type": "$" + retryStateField}, "object"}},
+			bson.M{"$unsetField": bson.M{"field": "retry_after", "input": "$" + retryStateField}},
+			"$" + retryStateField,
+		}}
+	}
 	return set
 }
 

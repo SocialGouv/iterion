@@ -648,6 +648,12 @@ func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStat
 	} else if transition {
 		r.ContinuationState = ""
 	}
+	// A final continuation and an armed retry contradict each other (see
+	// the Mongo twin, statusTransitionSet): disarm at the tail every final
+	// writer goes through, keeping the rest of the retry bookkeeping.
+	if meta.Continuation == ContinuationFinal && r.RetryState != nil {
+		r.RetryState.RetryAfter = nil
+	}
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
 	// A transition always states its own message (empty included); a

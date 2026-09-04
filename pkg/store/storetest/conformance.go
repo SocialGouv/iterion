@@ -66,6 +66,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
+	t.Run("FinalContinuationDisarmsRetry", func(t *testing.T) { testFinalContinuationDisarmsRetry(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
 	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
@@ -2631,6 +2632,88 @@ func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
 	err = s.SetRunBudgetOverrides(ctx, "does-not-exist", &store.RunBudgetOverrides{MaxCostUSD: 1})
 	if err == nil {
 		t.Fatal("SetRunBudgetOverrides on missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// testFinalContinuationDisarmsRetry pins the transition-tail rule: a
+// `final` continuation (the DLQ park, the orphan sweeper, the PR-close
+// cancel) disarms retry_state.retry_after on both twins, because a doc
+// carrying both a final continuation and an armed retry gets BOTH
+// automations — the gate reconciler's dead-review repair and the
+// sweeper's auto-resume. The rest of the retry bookkeeping is history and
+// stays; a non-final write leaves the retry armed; a doc that never
+// carried retry state does not grow one.
+func testFinalContinuationDisarmsRetry(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_final_disarms_retry"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	at := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Millisecond)
+	r.Status = store.RunStatusFailedResumable
+	r.ContinuationState = store.ContinuationRetryArmed
+	r.RetryState = &store.RunRetryState{RetryAfter: &at, Reason: "usage_window", Code: "USAGE_LIMIT_BLOCKED", Attempts: 1}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// The runner's redelivery promote is not final: the retry stays armed.
+	changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "",
+		store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending}, []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("redelivery promote: changed=%v err=%v", changed, err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState == nil || got.RetryState.RetryAfter == nil || !got.RetryState.RetryAfter.Equal(at) {
+		t.Fatalf("retry state after a non-final write = %+v, want retry_after %s still armed", got.RetryState, at)
+	}
+
+	// The DLQ park is final: the arming goes, the bookkeeping stays.
+	changed, err = s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "max deliveries exhausted (parked on DLQ)",
+		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal}, []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("DLQ park: changed=%v err=%v", changed, err)
+	}
+	got, err = s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState == nil {
+		t.Fatal("retry state gone after the final write — attempts/reason are the run's history and must stay")
+	}
+	if got.RetryState.RetryAfter != nil {
+		t.Fatalf("retry_after = %s after a final continuation, want disarmed — the sweeper would auto-resume a DLQ-parked run the gate reconciler already repaired", got.RetryState.RetryAfter)
+	}
+	if got.RetryState.Attempts != 1 || got.RetryState.Reason != "usage_window" || got.RetryState.Code != "USAGE_LIMIT_BLOCKED" {
+		t.Fatalf("retry bookkeeping after the final write = %+v, want attempts/reason/code kept", got.RetryState)
+	}
+	if got.ContinuationState != store.ContinuationFinal || got.FailureCode != store.FailureDLQParked {
+		t.Fatalf("continuation/code = %q/%q, want final/DLQ_PARKED (the disarm must not disturb the transition)", got.ContinuationState, got.FailureCode)
+	}
+
+	// A doc that never carried retry state must not grow one.
+	const bare = "run_final_no_retry_state"
+	if _, err := s.CreateRun(ctx, bare, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := s.UpdateRunOutcome(ctx, bare, store.RunStatusFailedResumable, "orphaned",
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal}, nil); err != nil {
+		t.Fatalf("final write on a bare doc: %v", err)
+	}
+	got, err = s.LoadRun(ctx, bare)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState != nil {
+		t.Fatalf("a final write materialised retry state %+v on a doc that never had one", got.RetryState)
 	}
 }
 
