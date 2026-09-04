@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.101.3](https://github.com/SocialGouv/iterion/compare/v3.101.2...v3.101.3) (2026-09-04)
+
+### Bug Fixes
+
+* **runner:** a stalled resume is adopted, re-budgeted and told apart from a quota pause ([#689](https://github.com/SocialGouv/iterion/issues/689)) ([9f7bc53](https://github.com/SocialGouv/iterion/commit/9f7bc5391a6e157b3d16fe49a3f3e958c0de1838)), references [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#652](https://github.com/SocialGouv/iterion/issues/652) [#669](https://github.com/SocialGouv/iterion/issues/669) [652/#669](https://github.com/SocialGouv/iterion/issues/669) [#652](https://github.com/SocialGouv/iterion/issues/652) [#669](https://github.com/SocialGouv/iterion/issues/669) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [resume#1](https://github.com/resume/issues/1) [resume#2](https://github.com/resume/issues/2)
+
+    <details><summary>why</summary>
+
+    A DLQ-parked run reached noticeGatePausedForRetry with the same RetryState the pre-park usage-window carried, so the PR got a second "the LLM provider's quota is exhausted … resume automatically at HH:MM" — but nothing wakes a DLQ-parked run automatically; only `iterion remote admin dlq` replays it. Observed live 2026-09-03: the comment sent the operator down the wrong path.
+
+    </details>
+
 ## [3.101.2](https://github.com/SocialGouv/iterion/compare/v3.101.1...v3.101.2) (2026-09-04)
 
 ### Bug Fixes
