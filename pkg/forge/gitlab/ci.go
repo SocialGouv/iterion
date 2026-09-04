@@ -28,12 +28,27 @@ type gitlabMR struct {
 	Author         gitlabUser `json:"author"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+	// GitLab names the two sides of an MR by numeric project id only — there
+	// is no `head.repo.full_name` twin of the GitHub/Forgejo payload. Equal
+	// ids mean the source branch lives in the very project the MR was queried
+	// under, which is what proves "same repo" for toRef.
+	SourceProjectID int `json:"source_project_id"`
+	TargetProjectID int `json:"target_project_id"`
 }
 
 // toRef normalizes a GitLab MR onto forge.PullRef. state "opened"→"open",
 // "merged"/"closed" pass through; draft is the OR of the two GitLab flags.
-func (mr gitlabMR) toRef() forge.PullRef {
-	return forge.PullRef{
+//
+// repo is the project path the MR was addressed under (GitLab scopes an MR
+// iid to its TARGET project, so repo is that project). HeadRepoFullName is
+// filled with it only when source_project_id equals target_project_id: GitLab
+// gives no path for the source project, so equality with the project we just
+// queried is the only head-repo identity this payload proves. A fork (ids
+// differ) or an older/partial payload (either id zero) leaves it EMPTY, which
+// every fail-closed caller — PullRef.SameRepoAs, the command / gate-autofix /
+// gate-relaunch guards — reads as "not proven same-repo" and refuses.
+func (mr gitlabMR) toRef(repo string) forge.PullRef {
+	ref := forge.PullRef{
 		Number:       mr.IID,
 		Title:        mr.Title,
 		State:        normMRState(mr.State),
@@ -49,6 +64,10 @@ func (mr gitlabMR) toRef() forge.PullRef {
 		// MR payload, so LinkedIssues is parsed best-effort from title+body.
 		LinkedIssues: forge.ParseIssueRefs(false, mr.Title, mr.Description),
 	}
+	if mr.SourceProjectID != 0 && mr.SourceProjectID == mr.TargetProjectID {
+		ref.HeadRepoFullName = strings.TrimSpace(repo)
+	}
+	return ref
 }
 
 // normMRState maps GitLab's MR state onto the forge vocabulary:
@@ -103,7 +122,7 @@ func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts fo
 	}
 	out := make([]forge.PullRef, 0, len(mrs))
 	for _, mr := range mrs {
-		out = append(out, mr.toRef())
+		out = append(out, mr.toRef(repo))
 	}
 	return out, nil
 }
@@ -118,7 +137,7 @@ func (c *AdminClient) GetPullRequest(ctx context.Context, repo string, number in
 	if code != http.StatusOK {
 		return forge.PullRef{}, statusErr("get merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 // gitlabCommitStatus is one per-job commit status (the GitLab
@@ -292,7 +311,7 @@ func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewP
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("create merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 // UpdatePull applies a partial update. State transitions map onto GitLab's
@@ -324,7 +343,7 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("update merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 // MergePull merges a merge request via PUT /merge_requests/{iid}/merge, which
@@ -355,7 +374,7 @@ func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, op
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("merge merge request", code)
 	}
-	return mr.toRef(), nil
+	return mr.toRef(repo), nil
 }
 
 var _ forge.PullClient = (*AdminClient)(nil)
