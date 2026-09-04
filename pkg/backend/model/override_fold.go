@@ -211,18 +211,13 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 // EVERY step resolved to a known provider (an empty field, an "auto"
 // step, an empty ${VAR} or an unknown name all answer false).
 func (a *providerAccumulator) chain(raw string) bool {
-	expanded := strings.TrimSpace(ir.ExpandEnvWithDefault(raw))
-	if expanded == "" {
-		return false
+	hints, unresolved := chainHints(raw)
+	if unresolved {
+		a.narrowSafe = false
 	}
-	resolved := true
-	for _, part := range strings.Split(expanded, ",") {
-		token := strings.TrimSpace(part)
-		if token == "" {
-			continue // stray, leading or trailing comma
-		}
-		hint, _, _ := ir.SplitProviderStep(token)
-		if !a.hint(hint) {
+	resolved := !unresolved
+	for _, h := range hints {
+		if !a.hint(h) {
 			resolved = false
 		}
 	}
@@ -245,6 +240,35 @@ func (a *providerAccumulator) hint(raw string) bool {
 		a.narrowSafe = false
 		return false
 	}
+}
+
+// chainHints splits a `provider:` field into its lower-cased hints the
+// way the executor's resolveProviderChain does: env expansion on the whole
+// field first, then `,`, then the `provider:model` step form. Reports
+// unresolved=true when the field is empty or any step is "auto" — a step
+// that defers to whatever the process holds.
+func chainHints(raw string) (hints []string, unresolved bool) {
+	expanded := strings.TrimSpace(ir.ExpandEnvWithDefault(raw))
+	if expanded == "" {
+		return nil, true
+	}
+	for _, part := range strings.Split(expanded, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue // stray, leading or trailing comma
+		}
+		hint, _, _ := ir.SplitProviderStep(token)
+		hint = strings.ToLower(strings.TrimSpace(hint))
+		if hint == "" || hint == "auto" {
+			unresolved = true
+			continue
+		}
+		hints = append(hints, hint)
+	}
+	if len(hints) == 0 {
+		unresolved = true
+	}
+	return hints, unresolved
 }
 
 // providerFromModelPrefix extracts the provider half of a

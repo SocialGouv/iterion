@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -181,6 +182,21 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if !wf.AlwaysReachesLLM() {
 		if logger != nil {
 			logger.Debug("runner: run %s makes no model call — usage cap not applied", msg.RunID)
+		}
+		return nil
+	}
+	// The cap meters the Anthropic wire — its readings come from the
+	// claude_code delegate and nowhere else — and the key below is built
+	// from the run's anthropic-wire credentials (or the platform's). A run
+	// whose every route is pinned off that wire (claw/openai, codex) can
+	// never spend what the cap protects: parking it for the anthropic
+	// weekly reset strands it for nothing, which is how a fully pinned
+	// two-node rite froze for five days while its single-node sibling
+	// sailed through (#668). Read under the launch's own overrides and
+	// fallback chain; every uncertainty answers "reachable".
+	if !model.AnthropicWireReachable(wf, modelOverridesFromMsg(msg.ModelOverrides), runFallbackEntriesFromMsg(msg.Fallback)) {
+		if logger != nil {
+			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
 		}
 		return nil
 	}
