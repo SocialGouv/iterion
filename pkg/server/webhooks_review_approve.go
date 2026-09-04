@@ -111,12 +111,14 @@ func reviewApproveReason(cmd, args string) (reason string, ok bool) {
 // reason — never a 5xx, which forges answer by disabling the hook and every
 // future launch, re-review and override with it.
 //
-// The status is written through the team connection's admin client — the
-// resolution publish and the gate reconciler use, so a GitHub App
-// integration mints its per-call installation token, which carries the
-// statuses scope — or through the webhook's forge_token binding, for a
-// hand-owned webhook with no connection row and for a connection whose
-// client cannot serve (resolveApproveWritePath).
+// The PR head is read and the status written through ONE client: the team
+// connection's admin client — the resolution publish and the gate
+// reconciler use, so a GitHub App integration mints its per-call
+// installation token, which carries the statuses scope — or the webhook's
+// forge_token binding, for a hand-owned webhook with no connection row and
+// for a connection whose client cannot serve (resolveApproveWritePath). The
+// binding is never consulted while the connection serves, so a stale one
+// pinned next to a healthy connection costs nothing.
 func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, reason, payloadHash, srcIP string) {
 	meta := prforgeNoteMeta(p)
 	filtered := func(why string) {
@@ -159,19 +161,6 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 			ex := existing
 			priorRow = &ex
 		}
-	}
-	// The PR author cannot approve their own PR — a self-approve is a
-	// merge-queue bypass in another shape. Checked before the command gate
-	// so the reply names the reason a reader will act on; re-checked below
-	// when the head could only be loaded through the write path's client.
-	pr, prLoaded, prErr := s.loadPRHeadForApprove(ctx, cfg, p)
-	if prErr != nil {
-		s.approveFailWithReply(ctx, w, cfg, meta, provider, p, forge.Connection{}, false, "resolve PR head: "+prErr.Error(), payloadHash, srcIP)
-		return
-	}
-	if prLoaded && isSelfApprove(pr, p) {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)
-		return
 	}
 	// Authorize through the same PR-comment command gate as every other
 	// /command (not the issue-author-trust gate): the commenter's live repo
@@ -222,18 +211,21 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: "+pathRefusal, payloadHash, srcIP)
 		return
 	}
+	// The head is read through the client the status is written with — one
+	// credential resolution, one read. The binding is the fallback for the
+	// read exactly when it is the fallback for the write; its own failure
+	// only surfaces when it is the sole credential the lane holds.
 	gc := path.gc
-	if !prLoaded {
-		loaded, err := gc.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
-		if err != nil {
-			s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "resolve PR head: "+err.Error(), payloadHash, srcIP)
-			return
-		}
-		pr = loaded
-		if isSelfApprove(pr, p) {
-			s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)
-			return
-		}
+	pr, err := gc.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
+	if err != nil {
+		s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "resolve PR head: "+err.Error(), payloadHash, srcIP)
+		return
+	}
+	// The PR author cannot approve their own PR — a self-approve is a
+	// merge-queue bypass in another shape.
+	if isSelfApprove(pr, p) {
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)
+		return
 	}
 	if strings.TrimSpace(pr.HeadSHA) == "" {
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: the forge returned no head sha for this PR", payloadHash, srcIP)
@@ -325,30 +317,6 @@ func isSelfApprove(pr forge.PullRef, p prforge.ParsedNote) bool {
 
 func selfApproveReply(p prforge.ParsedNote) string {
 	return "@" + p.AuthorLogin + " you cannot approve your own pull request — a maintainer must run /revi approve here"
-}
-
-// loadPRHeadForApprove resolves the PR head through the webhook's
-// forge_token binding, when there is one, so the self-approve check can run
-// before the command gate. loaded=false with no error means no token is
-// bound; the write path's client resolves the head later in that case.
-func (s *Server) loadPRHeadForApprove(ctx context.Context, cfg webhooks.Config, p prforge.ParsedNote) (pr forge.PullRef, loaded bool, err error) {
-	baseURL, refusal := prforgeBaseURL(cfg, p)
-	if refusal != "" {
-		return forge.PullRef{}, false, nil
-	}
-	token, terr := s.resolveForgeToken(ctx, cfg, s.roleBots().Reviewer)
-	if terr != nil || token == "" {
-		return forge.PullRef{}, false, nil
-	}
-	gc, ok := prforgeReplierClient(cfg.Provider, s.forgeHTTPClient(), baseURL, token).(forgeGateClient)
-	if !ok {
-		return forge.PullRef{}, false, nil
-	}
-	pr, err = gc.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
-	if err != nil {
-		return forge.PullRef{}, false, err
-	}
-	return pr, true, nil
 }
 
 // approveWritePath is the client the approval status is written through,

@@ -673,6 +673,22 @@ type fakeGitHubForge struct {
 	// saw — the proof of WHICH credential served a call: the minted
 	// installation token (ghs_…) or the webhook's hand-owned binding.
 	bearers map[string][]string
+	// revokedBearer, when set, is an Authorization value every endpoint
+	// answers 401 to — a binding whose token was revoked or rotated away
+	// while the webhook still pins it.
+	revokedBearer string
+}
+
+// revoked answers 401 when the request carries the revoked bearer.
+func (f *fakeGitHubForge) revoked(w http.ResponseWriter, r *http.Request) bool {
+	f.mu.Lock()
+	rb := f.revokedBearer
+	f.mu.Unlock()
+	if rb == "" || r.Header.Get("Authorization") != rb {
+		return false
+	}
+	w.WriteHeader(http.StatusUnauthorized)
+	return true
 }
 
 // bearerNoStatuses is the installation token minted without statuses:write.
@@ -717,10 +733,16 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, r *http.Request) {
 		seen("user", r)
+		if f.revoked(w, r) {
+			return
+		}
 		reply(w, http.StatusOK, map[string]any{"login": "iterion-bot", "id": 1})
 	})
 	mux.HandleFunc("GET /api/v3/repos/acme/widgets/collaborators/{user}/permission", func(w http.ResponseWriter, r *http.Request) {
 		seen("permission", r)
+		if f.revoked(w, r) {
+			return
+		}
 		f.mu.Lock()
 		role, ok := f.perms[r.PathValue("user")]
 		f.mu.Unlock()
@@ -732,6 +754,9 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7", func(w http.ResponseWriter, r *http.Request) {
 		seen("pull", r)
+		if f.revoked(w, r) {
+			return
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		reply(w, http.StatusOK, map[string]any{
@@ -743,6 +768,9 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/statuses/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		seen("status", r)
+		if f.revoked(w, r) {
+			return
+		}
 		if r.Header.Get("Authorization") == bearerNoStatuses {
 			reply(w, http.StatusForbidden, map[string]any{"message": "Resource not accessible by integration"})
 			return
@@ -757,6 +785,9 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		seen("comment", r)
+		if f.revoked(w, r) {
+			return
+		}
 		var body struct {
 			Body string `json:"body"`
 		}
@@ -1059,5 +1090,102 @@ func TestReviewApprove_ConnectionOnlyIntegrationAuthorizesWithoutToken(t *testin
 	statuses, comments := f.snapshot()
 	if len(statuses) != 1 || statuses[0]["state"] != "success" || statuses[0]["context"] != "revi/review" {
 		t.Fatalf("connection-only integration must approve through the connection, got statuses=%v comments=%v body=%s", statuses, comments, w.Body.String())
+	}
+}
+
+// approveStaleBindingWorld is the half-configured shape #662 came from: a
+// healthy team connection covers the repo AND the webhook still pins a
+// forge_token binding whose token the forge no longer accepts. The real
+// gate and the real clients talk to the fake forge; the binding's bearer is
+// refused on every endpoint.
+func approveStaleBindingWorld(t *testing.T) (*Server, *fakeGitHubForge, webhooks.Config, string) {
+	t.Helper()
+	s := newWebhookTestServer(t)
+	f := newFakeGitHubForge(t)
+	f.perms["maintainer-jane"] = "maintain"
+	f.perms["alice"] = "admin"
+	conn := forge.Connection{
+		ID: "c-pat", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
+		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
+	}
+	sealed, err := forge.SealPAT(s.sealer, conn.ID, "ghp_connection_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SealedPayload = sealed
+	conns := forge.NewMemoryConnectionStore()
+	if err := conns.Create(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeConnections = conns
+	cfg, pt := ghConfig(t, s)
+	cfg.ForgeBaseURL = f.srv.URL
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	seedForgeToken(t, s, &cfg, "ghp_revoked")
+	f.revokedBearer = "Bearer ghp_revoked"
+	return s, f, cfg, pt
+}
+
+// The forge_token binding is the FALLBACK identity; the covering connection
+// is primary for the status write and for the head read that precedes it. A
+// binding that no longer works — revoked, rotated, wrong scope — must not
+// fail an approve the connection serves end to end, and the self-approve
+// guard must still fire off the head the connection read.
+func TestReviewApprove_StaleBindingDoesNotBlockTheConnection(t *testing.T) {
+	t.Run("a maintainer's approve lands through the connection", func(t *testing.T) {
+		s, f, cfg, pt := approveStaleBindingWorld(t)
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		statuses, comments := f.snapshot()
+		if len(statuses) != 1 || statuses[0]["state"] != "success" {
+			t.Fatalf("the connection serves the read and the write, so the approve must land whatever the binding's health — got statuses=%v comments=%v body=%s", statuses, comments, w.Body.String())
+		}
+		for _, b := range f.bearersFor("pull") {
+			if b == "Bearer ghp_revoked" {
+				t.Errorf("the PR head was read through the fallback binding while the connection could serve it")
+			}
+		}
+	})
+	t.Run("the PR author is still refused, off the head the connection read", func(t *testing.T) {
+		s, f, cfg, pt := approveStaleBindingWorld(t)
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("alice"), prforge.EventHeaderIssueComment, pt))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		statuses, comments := f.snapshot()
+		if len(statuses) != 0 {
+			t.Fatalf("a self-approve wrote a status: %v", statuses)
+		}
+		if len(comments) != 1 || !approveReplyContains(comments[0], "@alice", "own pull request") {
+			t.Fatalf("want the self-approve reply off the head the connection read, got comments=%v body=%s", comments, w.Body.String())
+		}
+	})
+}
+
+// With no connection the binding IS the write path, and a read failure
+// through it is the failure of the only credential the lane holds: a
+// visible launch_error with no status written — never a silent drop.
+func TestReviewApprove_BindingOnlyReadFailureIsALaunchError(t *testing.T) {
+	s, f, cfg, pt := approveTokenWorld(t)
+	f.revokedBearer = "Bearer ghp_hand_owned"
+	// The gate would refuse on the revoked token too; stub it so the read
+	// through the write path is the only thing under test.
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a forge read failure must not 5xx (hook auto-disable class), got %d body=%s", w.Code, w.Body.String())
+	}
+	if statuses, _ := f.snapshot(); len(statuses) != 0 {
+		t.Fatalf("wrote a status without a readable head: %v", statuses)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusLaunchError {
+		t.Fatalf("the only credential failing its read must audit one launch_error row, got %+v", rows)
 	}
 }
