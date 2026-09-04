@@ -632,34 +632,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
-		// Same rationale as resumeFromFailure: a sandbox-start failure
-		// at resume time is almost always recoverable (stale container,
-		// docker hiccup, image pull race). Marking failed_resumable
-		// preserves the captured human answers + checkpoint so a
-		// follow-up /resume can complete once docker is unblocked.
-		//
-		// PRESERVE the rich checkpoint (outputs, loop counters, artifact
-		// versions) — a NodeID-only stub would wipe everything the bot
-		// accumulated and force the next resume to restart from entry,
-		// defeating the failed_resumable contract. Observed 2026-05-25
-		// during the issue #5 dogfood (finding `resume-orphan-gap.md`):
-		// repeated sandbox-failure resumes silently nil'd Outputs across
-		// 4 attempts before a watchexec restart re-fired the entire bot
-		// from `plan`, wasting 1.5h of prior work.
-		preservedCp := r.Checkpoint
-		if preservedCp == nil {
-			preservedCp = &store.Checkpoint{NodeID: humanNodeID}
-		}
-		if err := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error(), ""); err != nil {
-			// FailRunResumable failed too — fall back to a hard
-			// "failed" status flip so the run doesn't appear stuck.
-			// If even that fails, log loudly: the store is in a bad
-			// state and silently dropping the second failure would
-			// leave the run in `running` forever.
-			if uerr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error()); uerr != nil && e.logger != nil {
-				e.logger.Warn("runtime: resume: failed both FailRunResumable (%v) and UpdateRunStatus (%v) for run %s after sandbox error: %v", err, uerr, runID, sbErr)
-			}
-		}
+		e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
 		return nil, nil, fmt.Errorf("runtime: sandbox: %w", sbErr)
 	}
 
@@ -713,6 +686,53 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	return rs, sandboxCleanup, nil
 }
 
+// parkResumeSandboxFailure records a sandbox-start failure met on a
+// resume arm — the one place both arms (pause, failure) write it, so a
+// resumed run's park cannot drift from a launched run's.
+//
+// The run stays RESUMABLE whatever the cause: a stale container, a
+// docker hiccup, an image-pull race clear from the operator's side, and
+// a terminal `failed` would force a fresh launch that loses every
+// committed node. The rich checkpoint is PRESERVED (outputs, loop
+// counters, artifact versions) — a NodeID-only stub would wipe
+// everything the bot accumulated and restart the next resume from the
+// entry; fallbackNode only serves a run that never earned one.
+//
+// The cause is TYPED through the classification the launch path uses
+// (setupFailureStatus), so the runner's retry lane reads a resumed run
+// exactly as a launched one: a sandbox phase timeout lands as
+// SANDBOX_SETUP_TIMEOUT (a redelivery to a fresh pod routinely clears
+// the stall), a drain as INTERRUPTED. An operator cancel is honoured as
+// `cancelled` with the checkpoint kept — the same CAS shape the node
+// loop uses, so a reason the publisher already recorded is never
+// overwritten. Every write is loud on failure: a park that does not
+// land leaves the run `running` until the orphan reconcile catches it,
+// and that must be said, not swallowed.
+func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp *store.Checkpoint, fallbackNode string, sbErr error) {
+	if cp == nil {
+		cp = &store.Checkpoint{NodeID: fallbackNode}
+	}
+	status, msg, code := setupFailureStatus(ctx, "sandbox start", sbErr)
+	if status == store.RunStatusCancelled {
+		if err := e.store.SaveCheckpoint(ctx, runID, cp); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: resume: save checkpoint on cancel during sandbox start for run %s: %v", runID, err)
+		}
+		if _, err := e.store.UpdateRunStatusIfCoded(ctx, runID, store.RunStatusCancelled, msg, code,
+			[]store.RunStatus{store.RunStatusRunning}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: resume: could not record the cancel during sandbox start for run %s: %v — run left non-terminal", runID, err)
+		}
+		return
+	}
+	if err := e.store.FailRunResumable(ctx, runID, cp, msg, code); err != nil {
+		// Fall back to a plain terminal status so the run does not linger
+		// as `running`; if THAT fails too the run is stuck non-terminal
+		// (an orphan the operator must hand-hack), so say so.
+		if uerr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, msg, code); uerr != nil && e.logger != nil {
+			e.logger.Warn("runtime: resume: could not finalize run %s after sandbox failure (FailRunResumable: %v; UpdateRunStatus fallback: %v) — run left non-terminal", runID, err, uerr)
+		}
+	}
+}
+
 // resumeFromFailure resumes a failed_resumable run by re-executing from
 // the failing node (with checkpoint) or by restarting from the workflow
 // entry node (no checkpoint). The "no checkpoint" path matters when a
@@ -758,34 +778,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
-		// Sandbox-start failures on resume are almost always recoverable
-		// from the operator's side: stale containers (force-removable),
-		// docker daemon hiccups, image pull races, etc. Marking the run
-		// `failed_resumable` instead of `failed` keeps the door open for
-		// a second /resume after the operator addresses the underlying
-		// cause — the alternative (status=failed) is terminal and forces
-		// a fresh launch that loses all committed per-package work.
-		// PRESERVE the rich checkpoint — same rationale as the sister
-		// branch in resumeFromPause: a NodeID-only stub here would wipe
-		// Outputs/LoopCounters/etc and force the next resume to restart
-		// from entry. Issue #5's 2026-05-25 dogfood showed this in
-		// practice: 4 sandbox-related sub-failures across the run
-		// silently degraded the checkpoint until a final watchexec
-		// restart re-ran the bot from `plan`, throwing away 1.5h of
-		// fix_claude iterations.
-		preservedCp := cp
-		if preservedCp == nil {
-			preservedCp = &store.Checkpoint{NodeID: e.workflow.Entry}
-		}
-		if frErr := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error(), ""); frErr != nil {
-			// FailRunResumable failed — fall back to a plain terminal status so
-			// the run doesn't linger as `running`. If THAT also fails the run is
-			// stuck non-terminal (an orphan the operator must hand-hack), so
-			// surface it instead of swallowing the error.
-			if usErr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error()); usErr != nil && e.logger != nil {
-				e.logger.Warn("runtime: resume: could not finalize run %s after sandbox failure (FailRunResumable: %v; UpdateRunStatus fallback: %v) — run left non-terminal", runID, frErr, usErr)
-			}
-		}
+		e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, sbErr)
 		return fmt.Errorf("runtime: sandbox: %w", sbErr)
 	}
 	defer sandboxCleanup()
