@@ -280,6 +280,35 @@ different shared `gate_context`, its merge-group workflow must mirror that same
 context (or otherwise run the gate on the merge-group SHA), or the required
 check will remain expected forever.
 
+#### Auto-heal, and when it stands down
+
+A PR the queue **ejects** for a healable reason (`MERGE_CONFLICT`,
+`CI_FAILURE`, `INVALID_MERGE_COMMIT`, `MERGE_CONFLICT_ERROR`) dispatches the
+brancher bot to rebase, reconcile the branch with the new base, and push so
+the PR re-enters the queue — the queue *detects* the break, the bot *repairs*
+it, no human. The heal is bounded to one attempt per head sha, and gated on
+same-repo + project/author allowlist + bot-permitted like every other lane.
+
+The heal **stops the moment the queue takes the PR back** (`enqueued`). This
+is not an optimisation: a heal still running past that point force-pushes the
+branch, and that push cancels the queue build in flight — ejecting the PR a
+second time, so the repair becomes the next breakage. The stop is keyed on the
+heal's own idempotency key at the PR's *current head*, which gives it two
+properties worth knowing:
+
+- a fixer a developer asked for with `/billy` rides a different key and is
+  never touched;
+- a heal that has **already pushed** advanced the head, and that push is what
+  re-enqueued the PR — so the enqueue it caused does not match its own key,
+  and the run is left to finish its delivery tail.
+
+Note what auto-heal cannot tell on its own: `CI_FAILURE` covers both "this
+branch genuinely breaks when combined with the base" and "an unrelated flaky
+test failed on the queue branch". In the second case the bot is dispatched
+against a PR with nothing to fix; it should report that and push nothing, but
+it still costs a run. If a flaky test is ejecting PRs, fix the test — the heal
+lane is not the place to absorb it.
+
 ## One gate, several bots
 
 A required check applies to **every** pull request. So on a repo where
