@@ -100,6 +100,10 @@ func TestSchedulingFromEnvRejectsSuffixOnWrongResource(t *testing.T) {
 	if _, err := schedulingFromEnv(envOf(map[string]string{LimitsCPUEnvVar: "2Gi"})); err == nil || !strings.Contains(err.Error(), "byte suffix") {
 		t.Fatalf("cpu=2Gi must be refused as a byte suffix on CPU, got %v", err)
 	}
+	// `Ei` must be read as a suffix, not as the start of an exponent.
+	if _, err := schedulingFromEnv(envOf(map[string]string{RequestsCPUEnvVar: "1Ei"})); err == nil || !strings.Contains(err.Error(), "byte suffix") {
+		t.Fatalf("cpu=1Ei must be refused as a byte suffix on CPU, got %v", err)
+	}
 }
 
 // A limit without its request becomes the request at admission (the API
@@ -122,15 +126,49 @@ func TestSchedulingFromEnvRequiresRequestUnderLimit(t *testing.T) {
 	if err == nil {
 		t.Fatalf("4G (decimal) is below 4Gi (binary) and must be refused")
 	}
+	// The exbibyte suffix evaluates like every other one: above a gibibyte
+	// as a limit, below a mebibyte never.
+	_, err = schedulingFromEnv(envOf(map[string]string{RequestsMemoryEnvVar: "1Gi", LimitsMemoryEnvVar: "10Ei"}))
+	if err != nil {
+		t.Fatalf("a 10Ei limit over a 1Gi request must be accepted, got %v", err)
+	}
+	_, err = schedulingFromEnv(envOf(map[string]string{RequestsMemoryEnvVar: "1Ei", LimitsMemoryEnvVar: "1Mi"}))
+	if err == nil || !strings.Contains(err.Error(), "below") {
+		t.Fatalf("a 1Mi limit under a 1Ei request must be refused, got %v", err)
+	}
 }
 
 func TestQuantityValue(t *testing.T) {
 	cases := map[string]float64{
 		"2": 2, "500m": 0.5, "4Gi": 4 * (1 << 30), "4G": 4e9, "1e3": 1000, ".5": 0.5, "1.": 1, "+3": 3, "128Mi": 128 * (1 << 20),
+		// `E` and `Ei` start like an exponent and are suffixes: an exponent
+		// needs digits or a sign after the `e`.
+		"2E": 2e18, "1Ei": 1 << 60, "10Ei": 10 * (1 << 60), "1E3": 1000, "1e+3": 1000, "1e-3": 0.001, "1.e2": 100,
 	}
 	for v, want := range cases {
-		if got := quantityValue(v); got != want {
-			t.Errorf("quantityValue(%q) = %v, want %v", v, got, want)
+		got, err := quantityValue(v)
+		if err != nil || got != want {
+			t.Errorf("quantityValue(%q) = %v, %v; want %v", v, got, err, want)
+		}
+	}
+	// What cannot be evaluated is an error, never a silent zero.
+	for _, v := range []string{"", "x", "1x", "1Ei3", "1e"} {
+		if got, err := quantityValue(v); err == nil {
+			t.Errorf("quantityValue(%q) = %v, want an error", v, got)
+		}
+	}
+}
+
+func TestSplitQuantity(t *testing.T) {
+	cases := map[string][2]string{
+		"2": {"2", ""}, "500m": {"500", "m"}, "4Gi": {"4", "Gi"}, "1e3": {"1e3", ""}, "1E3": {"1E3", ""},
+		"1e+3": {"1e+3", ""}, "1e-3": {"1e-3", ""}, "2E": {"2", "E"}, "1Ei": {"1", "Ei"}, "10Ei": {"10", "Ei"},
+		"1.E": {"1.", "E"}, ".5Ei": {".5", "Ei"}, "+1Ei": {"1", "Ei"},
+	}
+	for v, want := range cases {
+		number, suffix := splitQuantity(v)
+		if number != want[0] || suffix != want[1] {
+			t.Errorf("splitQuantity(%q) = (%q, %q), want (%q, %q)", v, number, suffix, want[0], want[1])
 		}
 	}
 }

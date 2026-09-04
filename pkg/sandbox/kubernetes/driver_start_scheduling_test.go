@@ -138,3 +138,22 @@ func TestNodeLabelCoverageCountsLabelledNodes(t *testing.T) {
 		t.Fatalf("coverage for an absent key = %d/%d, %v; want 0/3", labelled, total, err)
 	}
 }
+
+// The chart's runner Role cannot list nodes; the error must carry kubectl's
+// reason, not a bare exit status the doctor cannot explain.
+func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  \"get nodes \"*) echo 'Error from server (Forbidden): nodes is forbidden: User \"system:serviceaccount:ns:runner\" cannot list resource \"nodes\" in API group \"\" at the cluster scope' >&2; exit 1 ;;\n" +
+		"esac\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, _, err := NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
+	if err == nil || !strings.Contains(err.Error(), "Forbidden") || !strings.Contains(err.Error(), "cannot list resource") {
+		t.Fatalf("the error must carry kubectl's stderr, got %v", err)
+	}
+}

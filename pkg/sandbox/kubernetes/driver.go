@@ -129,8 +129,11 @@ func splitQuantity(v string) (number, suffix string) {
 			return v[:i+1], v[i+1:]
 		}
 		// An exponent's sign or digits are part of the number: stop at 'e'/'E'
-		// only when what precedes it is numeric (`1e3`), not a suffix (`1E`).
-		if (c == 'e' || c == 'E') && i > 0 && ((v[i-1] >= '0' && v[i-1] <= '9') || v[i-1] == '.') && i < len(v)-1 {
+		// only when what precedes it is numeric and what follows it starts an
+		// exponent (`1e3`, `1e+3`) — not a suffix (`1E`, `1Ei`).
+		if (c == 'e' || c == 'E') && i > 0 && i < len(v)-1 &&
+			((v[i-1] >= '0' && v[i-1] <= '9') || v[i-1] == '.') &&
+			(v[i+1] == '+' || v[i+1] == '-' || (v[i+1] >= '0' && v[i+1] <= '9')) {
 			return v, ""
 		}
 	}
@@ -139,17 +142,23 @@ func splitQuantity(v string) (number, suffix string) {
 
 // quantityValue converts a quantity matched by quantityRe to a float for
 // comparisons (a request against its limit). Precision is irrelevant here:
-// the API server re-parses the strings themselves.
-func quantityValue(v string) float64 {
+// the API server re-parses the strings themselves. A value it cannot
+// evaluate is an error, never a silent zero: a zero would pass a limit
+// check it should fail.
+func quantityValue(v string) (float64, error) {
 	number, suffix := splitQuantity(v)
 	f, err := strconv.ParseFloat(number, 64)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("quantity %q: %w", v, err)
 	}
-	if scale, ok := suffixScale[suffix]; ok {
-		return f * scale
+	if suffix == "" {
+		return f, nil
 	}
-	return f
+	scale, ok := suffixScale[suffix]
+	if !ok {
+		return 0, fmt.Errorf("quantity %q: unknown suffix %q", v, suffix)
+	}
+	return f * scale, nil
 }
 
 // topologyKeyRe is a prefixed Kubernetes label key (DNS-subdomain prefix,
@@ -269,7 +278,15 @@ func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
 		if pair.req == "" {
 			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q without %s — the API server would copy the limit into the request at admission; set the request explicitly", pair.limEnv, pair.lim, pair.reqEnv)
 		}
-		if quantityValue(pair.lim) < quantityValue(pair.req) {
+		lim, err := quantityValue(pair.lim)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", pair.limEnv, err)
+		}
+		req, err := quantityValue(pair.req)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", pair.reqEnv, err)
+		}
+		if lim < req {
 			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is below %s=%q — a %s limit cannot be lower than its request", pair.limEnv, pair.lim, pair.reqEnv, pair.req, pair.name)
 		}
 	}

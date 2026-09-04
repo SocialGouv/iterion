@@ -153,12 +153,17 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 // NodeLabelCoverage counts the cluster's nodes and those carrying the label
 // key, for the doctor: a topology spread over a key some nodes lack
 // excludes those nodes from scheduling, soft constraint or not, and a key
-// no node carries leaves every pod Pending.
+// no node carries leaves every pod Pending. Listing nodes is a
+// cluster-scoped permission the chart's namespaced runner Role does not
+// grant on purpose, so the error must carry kubectl's reason (Forbidden)
+// for the doctor to say why it could not answer.
 func NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, err error) {
 	cmd := kubectlCmdContext(ctx, "get", "nodes", "-o", "json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, 0, fmt.Errorf("kubectl get nodes: %w", err)
+		return 0, 0, fmt.Errorf("kubectl get nodes: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var nodes struct {
 		Items []struct {
@@ -188,8 +193,10 @@ func podScheduledReason(ctx context.Context, namespace, podName string) string {
 	if err != nil {
 		return ""
 	}
-	reason := strings.TrimSpace(string(out))
-	if reason == "" || reason == ":" {
+	// A scheduled pod has no reason and no message: the jsonpath's literal
+	// ": " then dangles after the status and is dropped here.
+	reason := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(string(out)), ":"))
+	if reason == "" {
 		return ""
 	}
 	return "\nscheduling: " + reason

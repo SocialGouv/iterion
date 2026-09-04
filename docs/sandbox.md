@@ -867,8 +867,11 @@ gates: the runner refuses to start (`runner: sandbox scheduling policy: …`,
 before it claims the rollout epoch — the driver factory skips constructor
 errors, so the driver cannot refuse for it), `iterion sandbox doctor` (basic
 and `--strict`) reports the policy in force or that error — `--strict` also
-checks that the nodes carry a custom spread key — and every `Start` returns
-it. Accept a rollout on the **admitted** pod (`kubectl get pod … -o
+checks that the nodes carry a custom spread key, which needs `nodes/list`, a
+cluster-scoped permission the chart's namespaced runner Role does not grant on
+purpose: in-cluster the check warns with kubectl's reason and the operator runs
+`kubectl get nodes -L <key>` from a context that can — and every `Start`
+returns it. Accept a rollout on the **admitted** pod (`kubectl get pod … -o
 jsonpath='{.spec.containers[0].resources}{.spec.topologySpreadConstraints}'`),
 then on a burst of runs: placement skew, `PodScheduled` reasons, start
 latency. A pod that never becomes Ready reports its `PodScheduled` condition

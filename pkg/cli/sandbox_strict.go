@@ -312,7 +312,7 @@ func runSchedulingPolicyStrictCheck(report *SandboxStrictReport, driver sandbox.
 	policy, err := r.SchedulingPolicy()
 	if err != nil {
 		report.add("sandbox scheduling policy", CheckFail, err.Error(),
-			"fix the ITERION_SANDBOX_K8S_* value in the runner environment (chart config.extraEnv) — every run would fail at sandbox start")
+			"fix the ITERION_SANDBOX_K8S_* value in the runner environment (chart runner.sandbox.scheduling — not config.extraEnv: its ConfigMap value loses to the literal PodTemplate env) — every run would fail at sandbox start")
 		return
 	}
 	report.add("sandbox scheduling policy", CheckPass, policy, "")
@@ -357,7 +357,10 @@ func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *
 
 // runSpreadCoverageStrictCheck compares the nodes carrying the spread key to
 // the cluster's nodes. kubernetes.io/hostname needs no check: every node
-// carries it by construction.
+// carries it by construction. Listing nodes is cluster-scoped and the
+// chart's runner Role is namespace-scoped on purpose, so in-cluster the
+// check cannot answer: it warns with kubectl's reason and hands the
+// operator the command to run from a context that can.
 func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictReport, key string) {
 	if key == "" || key == "kubernetes.io/hostname" {
 		return
@@ -368,7 +371,7 @@ func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictRepo
 	switch {
 	case err != nil:
 		report.add("k8s spread key coverage", CheckWarn, err.Error(),
-			"could not list nodes; verify that every schedulable node carries the label "+key)
+			"could not list nodes (the chart's runner Role is namespace-scoped and grants no nodes/list); from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
 	case total == 0:
 		report.add("k8s spread key coverage", CheckWarn, "no node visible", "verify RBAC on nodes/list, then that every schedulable node carries the label "+key)
 	case labelled == 0:

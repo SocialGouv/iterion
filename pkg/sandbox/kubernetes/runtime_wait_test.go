@@ -43,6 +43,20 @@ func TestWaitForPodRunningNamesTheSchedulingReason(t *testing.T) {
 	}
 }
 
+// A scheduled pod that never became Ready has a status but no reason and no
+// message; the decoration must not end in the jsonpath's dangling colon.
+func TestWaitForPodRunningScheduledPodReportsTheStatusOnly(t *testing.T) {
+	kubectlShim(t, "True : ")
+	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
+	if err == nil {
+		t.Fatal("expected the wait to fail")
+	}
+	msg := err.Error()
+	if !strings.HasSuffix(msg, "\nscheduling: True") {
+		t.Fatalf("a scheduled pod must report `scheduling: True` and nothing after it, got %q", msg)
+	}
+}
+
 func TestWaitForPodRunningWithoutConditionKeepsTheWaitError(t *testing.T) {
 	kubectlShim(t, "")
 	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)

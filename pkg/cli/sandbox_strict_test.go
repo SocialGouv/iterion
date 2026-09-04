@@ -213,6 +213,12 @@ func TestRunSchedulingPolicyStrictCheck(t *testing.T) {
 		if !strings.Contains(r.Checks[0].Detail, "ITERION_SANDBOX_K8S_REQUESTS_CPU") {
 			t.Fatalf("the failure must name the variable, got %+v", r.Checks[0])
 		}
+		// The knobs are literal PodTemplate env from runner.sandbox.scheduling;
+		// a value fixed in config.extraEnv (the shared ConfigMap) is lost to
+		// them — the remediation must send the operator to the right place.
+		if hint := r.Checks[0].Remediation; !strings.Contains(hint, "runner.sandbox.scheduling") || strings.Contains(hint, "(chart config.extraEnv)") {
+			t.Fatalf("the remediation must point at runner.sandbox.scheduling, got %q", hint)
+		}
 	})
 	t.Run("valid policy passes with its summary", func(t *testing.T) {
 		r := &SandboxStrictReport{}
@@ -261,6 +267,27 @@ func TestRunSpreadCoverageStrictCheck(t *testing.T) {
 		runSpreadCoverageStrictCheck(context.Background(), r, "topology.kubernetes.io/zone")
 		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Status != CheckWarn || !strings.Contains(r.Checks[0].Detail, "2 of 3") {
 			t.Fatalf("expected a 2 of 3 warning, got %+v", r.Checks)
+		}
+	})
+	// In-cluster the runner's namespaced Role cannot list nodes: the check
+	// must say why it could not answer and what to run instead.
+	t.Run("list refused warns with the reason and the operator command", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\necho 'Error from server (Forbidden): nodes is forbidden: User \"system:serviceaccount:ns:runner\" cannot list resource \"nodes\" in API group \"\" at the cluster scope' >&2\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Status != CheckWarn {
+			t.Fatalf("expected one warning, got %+v", r.Checks)
+		}
+		if !strings.Contains(r.Checks[0].Detail, "Forbidden") {
+			t.Fatalf("the warning must carry kubectl's reason, got %+v", r.Checks[0])
+		}
+		if !strings.Contains(r.Checks[0].Remediation, "kubectl get nodes -L example.com/rack") {
+			t.Fatalf("the remediation must hand over the operator command, got %+v", r.Checks[0])
 		}
 	})
 }
