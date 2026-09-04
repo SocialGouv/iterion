@@ -45,6 +45,10 @@ func TestAnthropicWireReachable(t *testing.T) {
 		), false},
 		{"pi + anthropic provider", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "pi", Provider: "anthropic"}}), true},
 		{"pi + openai provider", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "pi", Provider: "openai"}}), false},
+		// Round 2 S2: the hint IS the route on pi (it overrides the model's
+		// prefix), so an anthropic hint under an openai/ model is on the wire.
+		{"pi + openai/ prefix + anthropic hint → hint wins", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "pi", Provider: "anthropic", Model: "openai/gpt-5.5"}}), true},
+		{"claw + anthropic/ prefix + openai hint → hint wins, off the wire", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai", Model: "anthropic/claude-opus-4-8"}}), false},
 		{"one off-wire node next to one unpinned node", wfOf(
 			&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai"}},
 			agentWith("b", "", ""),

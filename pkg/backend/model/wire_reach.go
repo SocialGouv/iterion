@@ -81,9 +81,12 @@ func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides, runFallba
 	return false
 }
 
-// routeOnAnthropicWire decides for one route. overrideProvider collapses
-// the chain when set (the executor's precedence); else a `provider/`
-// prefix on the model pins; else the DSL chain is walked.
+// routeOnAnthropicWire decides for one route, in the executor's
+// precedence: a provider override collapses the chain; else the DSL chain
+// decides when it names a hint (the hint IS the route — on pi the hint
+// overrides the model's prefix, on claude_code the prefix is stripped);
+// only a route with no hint at all routes on its model's `provider/`
+// prefix.
 func routeOnAnthropicWire(backend, overrideProvider, chain, mdl string) bool {
 	backend = strings.ToLower(backend)
 	switch backend {
@@ -95,10 +98,13 @@ func routeOnAnthropicWire(backend, overrideProvider, chain, mdl string) bool {
 	switch {
 	case strings.TrimSpace(overrideProvider) != "":
 		hints, unresolved = chainHints(overrideProvider)
-	case providerFromModelPrefix(mdl) != "":
-		hints = []string{providerFromModelPrefix(mdl)}
 	default:
 		hints, unresolved = chainHints(chain)
+		if len(hints) == 0 {
+			if p := providerFromModelPrefix(mdl); p != "" {
+				hints, unresolved = []string{p}, false
+			}
+		}
 	}
 	for _, h := range hints {
 		if anthropicWireProviders[h] {

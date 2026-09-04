@@ -105,6 +105,14 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		}
 		seenAnyLLM = true
 		acc.resolveNode(n, fields, overrides)
+		// `interaction: llm|llm_or_human` answers the node's questions
+		// with a DIRECT generation on `interaction_model` (falling back
+		// to the node's model) — a second route the node may spend on.
+		if inf, ok := n.(interface{ GetInteractionFields() *ir.InteractionFields }); ok {
+			if f := inf.GetInteractionFields(); f != nil && (f.Interaction == ir.InteractionLLM || f.Interaction == ir.InteractionLLMOrHuman) {
+				acc.resolveDirect(f.InteractionModel, fields.Model)
+			}
+		}
 		// A `fallbacks:` route (ADR-087) is a path the run may take: a
 		// primary on claw/openai whose rescue is anthropic MUST be able
 		// to spend an anthropic credential, or the route is unreachable.
@@ -170,58 +178,80 @@ func (a *providerAccumulator) result() ProviderResolution {
 	return res
 }
 
-// resolveNode applies the executor's precedence to one LLM node: a
-// provider override collapses the chain; else a `provider/` prefix on the
-// effective model (override, then DSL) pins; else the DSL `provider:`
-// chain, expanded then split. Anything the walk cannot resolve widens.
+// resolveNode applies the executor's precedence to one LLM node, in the
+// executor's order: a launch-time provider override collapses the chain;
+// else the DSL `provider:` chain decides — the hint IS the route, and the
+// model's `provider/` prefix says nothing about which credential is spent
+// (claude_code strips `anthropic/` and, on a `zai` hint, spends ONLY the
+// z.ai key; pi's documented z.ai form is `model: "anthropic/glm-5.2"` +
+// `provider: "zai"`, the hint overriding the prefix); only a node with no
+// hint at all routes on the prefix of its effective model (override, then
+// DSL), the way claw's registry does. Anything the walk cannot resolve
+// widens.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
 	ov := overrides.ForNode(node.NodeID(), node.NodeKind())
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.hint(ov.Provider)
 		return
 	}
+	if a.chainDecides(fields.Provider) {
+		return
+	}
 	mdl := ov.Model
 	if mdl == "" {
 		mdl = fields.Model
 	}
-	if p := providerFromModelPrefix(mdl); p != "" {
-		a.hint(p)
-		return
-	}
-	if !a.chain(fields.Provider) {
-		a.narrowSafe = false
-	}
+	a.prefixOrWiden(mdl)
 }
 
-// resolveRoute is the fallback-route half: a `provider:model` step has
-// the same two sources as a node (a hint, or a model prefix). A route
-// that pins neither inherits whatever the process holds, which the walk
-// cannot name — widen.
+// resolveRoute is the fallback-route half, with the same precedence: the
+// route's own hint decides; a route without one routes on its model's
+// prefix; one that pins neither inherits whatever the process holds,
+// which the walk cannot name — widen.
 func (a *providerAccumulator) resolveRoute(provider, mdl string) {
-	if p := providerFromModelPrefix(mdl); p != "" {
-		a.hint(p)
+	if a.chainDecides(provider) {
 		return
 	}
-	if !a.chain(provider) {
-		a.narrowSafe = false
-	}
+	a.prefixOrWiden(mdl)
 }
 
-// chain resolves a `provider:` field the executor's way. Reports whether
-// EVERY step resolved to a known provider (an empty field, an "auto"
-// step, an empty ${VAR} or an unknown name all answer false).
-func (a *providerAccumulator) chain(raw string) bool {
+// resolveDirect is the direct-generation half (an `interaction_model`):
+// no hint applies there, the model spec alone routes — its own prefix,
+// or the node model's when it is empty.
+func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) {
+	mdl := interactionModel
+	if strings.TrimSpace(mdl) == "" {
+		mdl = nodeModel
+	}
+	a.prefixOrWiden(mdl)
+}
+
+// chainDecides records a `provider:` chain's hints and reports whether the
+// chain named at least one — in which case it IS the route and the caller
+// looks no further. A chain with hints AND an unresolved step ("auto", an
+// empty ${VAR}) still decides, and still widens.
+func (a *providerAccumulator) chainDecides(raw string) bool {
 	hints, unresolved := chainHints(raw)
+	if len(hints) == 0 {
+		return false
+	}
 	if unresolved {
 		a.narrowSafe = false
 	}
-	resolved := !unresolved
 	for _, h := range hints {
-		if !a.hint(h) {
-			resolved = false
-		}
+		a.hint(h)
 	}
-	return resolved
+	return true
+}
+
+// prefixOrWiden routes on a model spec's `provider/` prefix, or widens
+// when it has none.
+func (a *providerAccumulator) prefixOrWiden(mdl string) {
+	if p := providerFromModelPrefix(mdl); p != "" {
+		a.hint(p)
+		return
+	}
+	a.narrowSafe = false
 }
 
 // hint classifies one provider name. Known → recorded, true. Empty or

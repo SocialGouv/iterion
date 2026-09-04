@@ -274,3 +274,97 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// Round 2 S1: the hint IS the route. The executor's resolveProviderChain
+// never reads the model's `provider/` prefix — on claude_code a `zai` hint
+// spends ONLY the z.ai key (and the `anthropic/` prefix is stripped), on
+// pi the hint overrides the prefix and `model: "anthropic/glm-5.2"` +
+// `provider: "zai"` is THE documented z.ai form. Round 1's walk returned
+// on the prefix first and reported [anthropic] for every one of these,
+// so the only donor able to serve (a z.ai key) was never considered.
+func TestEffectiveProviders_HintWinsOverModelPrefix(t *testing.T) {
+	t.Setenv("RESCUE_PROVIDER", "")
+	nodeOf := func(backend, provider, mdl string) *ir.AgentNode {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: mdl}}
+	}
+	rows := []struct {
+		name      string
+		node      *ir.AgentNode
+		overrides ModelOverrides
+		want      []string
+	}{
+		{"claude_code + anthropic/ prefix + zai hint → zai", nodeOf("claude_code", "zai", "anthropic/claude-opus-4-8"), ModelOverrides{}, []string{"zai"}},
+		{"claude_code + anthropic/ prefix + chain zai,anthropic → the chain", nodeOf("claude_code", "zai,anthropic", "anthropic/claude-opus-4-8"), ModelOverrides{}, []string{"anthropic", "zai"}},
+		{"pi documented z.ai form: anthropic/glm-5.2 + zai → zai", nodeOf("pi", "zai", "anthropic/glm-5.2"), ModelOverrides{}, []string{"zai"}},
+		{"secured-renovacy shape with an anthropic/ model → zai", nodeOf("claude_code", "${RESCUE_PROVIDER:-zai}", "anthropic/claude-opus-4-8"), ModelOverrides{}, []string{"zai"}},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": row.node}}
+			got := EffectiveProviders(wf, row.overrides, nil, knownForTest)
+			if !got.NarrowSafe || !slicesEqual(got.Providers, row.want) {
+				t.Fatalf("got %+v, want %v narrow-safe", got, row.want)
+			}
+		})
+	}
+
+	// A launch `--model agent=anthropic/…` over a `provider: zai` node:
+	// the executor keeps the DSL chain (only a PROVIDER override collapses
+	// it), so the wants still say zai.
+	var modelOnly ModelOverrides
+	modelOnly.SetModel("a", "anthropic/claude-opus-4-8")
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("claude_code", "zai", "")}}
+	if got := EffectiveProviders(wf, modelOnly, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) {
+		t.Fatalf("model override over a zai hint: got %+v, want [zai]", got)
+	}
+	// A PROVIDER override does collapse it.
+	var provOv ModelOverrides
+	provOv.SetProvider("a", "anthropic")
+	if got := EffectiveProviders(wf, provOv, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic"}) {
+		t.Fatalf("provider override over a zai hint: got %+v, want [anthropic]", got)
+	}
+	// No hint at all: the prefix routes (claw's registry).
+	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("claw", "auto", "openai/gpt-5")}}
+	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai"}) {
+		t.Fatalf("auto hint + prefix: got %+v, want [openai]", got)
+	}
+	// A fallback route follows the same rule: its hint beats its prefix.
+	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "a"},
+		LLMFields: ir.LLMFields{Backend: "claude_code", Provider: "anthropic"},
+		Fallbacks: []ir.Fallback{{Name: "rescue", Provider: "zai", Model: "anthropic/glm-5.2"}},
+	}}}
+	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "zai"}) {
+		t.Fatalf("fallback hint over prefix: got %+v, want [anthropic zai]", got)
+	}
+}
+
+// Round 2 S11: `interaction: llm` answers the node's questions with a
+// DIRECT generation on `interaction_model` (falling back to the node's
+// model) — a route no hint applies to. Its prefix joins the wants; a
+// spec with no prefix widens.
+func TestEffectiveProviders_InteractionModelIsARoute(t *testing.T) {
+	node := func(interaction ir.InteractionMode, interactionModel, mdl string) *ir.AgentNode {
+		return &ir.AgentNode{
+			BaseNode:          ir.BaseNode{ID: "a"},
+			LLMFields:         ir.LLMFields{Backend: "claude_code", Provider: "zai", Model: mdl},
+			InteractionFields: ir.InteractionFields{Interaction: interaction, InteractionModel: interactionModel},
+		}
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionLLM, "openai/gpt-5", "")}}
+	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai", "zai"}) {
+		t.Fatalf("interaction_model openai/…: got %+v, want [openai zai]", got)
+	}
+	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionLLMOrHuman, "", "anthropic/claude-opus-4-8")}}
+	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "zai"}) {
+		t.Fatalf("interaction falls back to the node model's prefix: got %+v, want [anthropic zai]", got)
+	}
+	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionLLM, "", "")}}
+	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); got.NarrowSafe {
+		t.Fatalf("interaction on a bare model spec must widen: got %+v", got)
+	}
+	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionHuman, "openai/gpt-5", "")}}
+	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) {
+		t.Fatalf("a human interaction spends nothing on interaction_model: got %+v, want [zai]", got)
+	}
+}
