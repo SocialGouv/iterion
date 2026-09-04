@@ -6,8 +6,10 @@ This index describes the current repository state. Guides and references below a
 
 | Page | Purpose |
 |---|---|
+| [quickstart.md](quickstart.md) | Zero to a running, watched, landed workflow in a few minutes — the first step for developers already using AI coding tools. |
 | [current-state.md](current-state.md) | Living as-built overview: shipped surfaces, runtime/backend status, security defaults, cloud control plane, and known limits. |
 | [why-iterion.md](why-iterion.md) | Product rationale, workflow patterns, and the asymptote lens. |
+| [philosophy.md](philosophy.md) | How design questions are decided: the five principles behind the tactical rules, and the arbitrations already settled. |
 | [install.md](install.md) | Install through the CLI, studio, desktop, Docker, cloud, dispatcher, scheduler, or TypeScript SDK. |
 | [examples.md](examples.md) | Maintained bot catalogue and focused DSL examples. |
 | [cli-reference.md](cli-reference.md) | Complete top-level CLI map plus the commonly used commands and flags. |
@@ -30,6 +32,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [routers.md](routers.md) | Five routing modes, per-item fan-out, and convergence. |
 | [groups-iteration-subbots.md](groups-iteration-subbots.md) | `group`/`use`, edge `foreach`, `fan_out_each`, resources, and nested bots. |
 | [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and all six interaction values, including the node-specific `none` and `async` behavior. |
+| [async-interaction.md](async-interaction.md) | `interaction: async` — questions that do not stop the agent, and the `await_answers` sync point. |
 | [cursors.md](cursors.md) | Prompt-calibration cursor declarations and node activation. |
 | [supervisors.md](supervisors.md) | Concurrent run watchers and steering messages. |
 | [dsl-totality-and-tc.md](dsl-totality-and-tc.md) | Language totality, fuel, liveness, and Turing-completeness boundaries. |
@@ -61,6 +64,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | Required reading for code-mutating workflows: anti-façade and anti-Goodhart rules. |
 | [references/patterns.md](references/patterns.md) | Reusable graph patterns. |
 | [references/productive-session-patterns.md](references/productive-session-patterns.md) | Minimal-framing patterns learned from productive agent sessions. |
+| [references/external-methodologies.md](references/external-methodologies.md) | IACDM and AI-DLC mapped onto iterion: what they validate, what was imported, what was rejected. |
 | [references-bootstrap.md](references-bootstrap.md) | Building grounded reference packs for bot skills. |
 
 ## Run and operate locally
@@ -69,7 +73,10 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [bot-invocations.md](bot-invocations.md) | Manifest-driven command, board, schedule, and forge invocation modes. |
 | [resume.md](resume.md) | Current resume states, checkpoint semantics, overrides, and stale-run safeguards. |
+| [workspace-versioning.md](workspace-versioning.md) | Content-addressed capture/restore of the files a run produces, and the scoped restore behind `iterion rewind`. |
+| [review-scope.md](review-scope.md) | What a human gate shows the operator: everything changed since the previous gate, grouped by the node that changed it. |
 | [merge-policy.md](merge-policy.md) | Worktree finalization, branch ownership, and merge authority. |
+| [worktree-pool.md](worktree-pool.md) | Where a `worktree: auto` store's disk goes, the `ITERION_WORKTREE_POOL_MAX` bound, and reclaiming the rest. |
 | [review-merge-gate.md](review-merge-gate.md) | Review-environment conversation and final merge gate. |
 | [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation, bot/repository `devbox.json` tool provisioning, and egress proxy policy. |
 | [scheduling.md](scheduling.md) | Cron schedules, sub-minute keepalive, overlap guards, and audit history. |
@@ -83,7 +90,10 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [browser-pane.md](browser-pane.md) | Studio browser pane and isolation boundaries. |
 | [post-mortem-shell.md](post-mortem-shell.md) | Controlled shell access after a run. |
 | [persisted-formats.md](persisted-formats.md) | Filesystem run, checkpoint, event, artifact, interaction, attachment, plan, tool-blob, and message contracts. |
+| [mcp-server.md](mcp-server.md) | `iterion mcp` — driving the local engine and a logged-in remote instance from any MCP client. |
+| [observability.md](observability.md) | Process logs, error tracking and tracing: the env vars, what a Sentry/GlitchTip project receives, and the scrubbing. |
 | [observability/README.md](observability/README.md) | Prometheus, OTLP, Grafana, and operational metrics. |
+| [sentry-feedback-loop.md](sentry-feedback-loop.md) | The consuming half: reading production errors back into a development or agent session. |
 
 ## Bots and security automation
 
@@ -93,6 +103,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [security-bots.md](security-bots.md) | Source and dependency audit bots. |
 | [security-bots-distributed.md](security-bots-distributed.md) | Distributed security-bot operation. |
 | [security-patcher.md](security-patcher.md) | Security remediation workflow and boundaries. |
+| [revi-billy-loop.md](revi-billy-loop.md) | The review → fix habit on this repository: `/billy` on a Revi finding, the session gotchas, and the dogfood duty. |
 
 ## Cloud / agent control plane
 
@@ -105,12 +116,16 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [cloud-user.md](cloud-user.md) | Login, teams, invitations, credentials, PATs, and password reset. |
 | [forge-integrations.md](forge-integrations.md) | GitHub/GitLab/Forgejo connections, app/token setup, and bot enablement. |
 | [forge-permissions.md](forge-permissions.md) | Least-privilege forge permissions and minted-token scopes. |
+| [forge-security-read.md](forge-security-read.md) | Org-wide Dependabot-alert read access for a bot, and the coverage trap of a `selected`-scope install. |
 | [forge-conversations.md](forge-conversations.md) | Command/reply routing for PR/MR conversations. |
 | [webhooks.md](webhooks.md) | Inbound provider/generic webhooks, authentication, idempotency, and CRUD. |
 | [outbound-callbacks.md](outbound-callbacks.md) | Signed run-result callbacks to launchers. |
 | [byok.md](byok.md) | Bring-your-own LLM API keys. |
 | [oauth-forfait.md](oauth-forfait.md) | Delegated subscription/OAuth credentials. |
+| [cloud-llm-credentials.md](cloud-llm-credentials.md) | How a cloud run resolves its LLM credential across the tiers, and how to provision one when a run fails on `401`/`429`. |
+| [credential-pool.md](credential-pool.md) | Lending spare subscription or personal-key capacity to a deployment: pledges, ceilings, audience, and leases. |
 | [quotas-and-limits.md](quotas-and-limits.md) | Run, cost, concurrency, rate, memory, and storage limits. |
+| [notifications.md](notifications.md) | Browser web-push when a run pauses on a human form or reaches a terminal state. |
 | [cloud-cli.md](cloud-cli.md) | Full `iterion remote` operator/user CLI. |
 | [cloud-rest-api.md](cloud-rest-api.md) | REST surface by domain and authorization class. |
 
@@ -122,9 +137,15 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [cloud-architecture.md](cloud-architecture.md) | Control/data planes, queue contract, isolation, and multitenancy. |
 | [cloud-admin-guide.md](cloud-admin-guide.md) | Platform and organization administration. |
 | [cloud-admin.md](cloud-admin.md) | Bootstrap admin, SSO, credentials, and rotation. |
+| [platform-bots.md](platform-bots.md) | DB-backed bot overrides, webhook role bots, and the `sandbox: auto` default image — iterated without an image rollout. |
+| [usage-caps.md](usage-caps.md) | Capping the subscription below the provider's own wall, and the runtime-mutable percentages. |
+| [outcome-router.md](outcome-router.md) | `ITERION_OUTCOME_ROUTER`: deciding a terminal run by its launch-frozen contract, with the activation watermark and rollout procedure. |
+| [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md) | What `/healthz` and `/readyz` promise, the lame-duck window, and the grace-period arithmetic. |
 | [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
+| [cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md) | Mandatory runbook for shipping a `queue.RunMessage` schema bump across mixed server/runner fleets. |
 | [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |
 | [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | Pre-exposure security and reliability checklist. |
+| [ci-pipeline-topology.md](ci-pipeline-topology.md) | How the image workflows are split so each artifact's completion is its own redeploy signal. |
 | [ci-performance-buildkit-operator.md](ci-performance-buildkit-operator.md) | BuildKit operator and CI-cache tuning. |
 
 ## Desktop
@@ -147,6 +168,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
 | [live-e2e-coverage.md](live-e2e-coverage.md) | Credentialed/live E2E coverage and compile guards. |
+| [e2e-coverage-matrix.md](e2e-coverage-matrix.md) | The single feature×coverage inventory — one row per operator-observable promise, each terminal or an honest gap. |
 
 ## Point-in-time records
 
@@ -155,6 +177,7 @@ These collections are valuable evidence, but they do not override current code o
 - [adr/](adr/) — immutable architecture decision records; later ADRs may supersede earlier ones.
 - [bot-runs/](bot-runs/) — dated dogfood bilans and lessons for each bot.
 - [c082-board-emit-fix-plan.md](c082-board-emit-fix-plan.md) — retained implementation plan.
+- [cli-permission-seam-spike.md](cli-permission-seam-spike.md) — spike on the permission seam for the `grok` and `kimi` CLI backends.
 - [reviews/](reviews/) — dated codebase reviews.
 - [security/](security/) — dated security audits.
 - [studio-ux-audit-2026-07.md](studio-ux-audit-2026-07.md) — UX audit snapshot.
