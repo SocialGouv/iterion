@@ -170,4 +170,39 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 			t.Fatalf("a non-gating run must post nothing, got %v", c.bodies)
 		}
 	})
+
+	// A DLQ-parked run reaches this path with the same RetryState the
+	// pre-park usage-window carried (an operator resume never clears it —
+	// see #669 part 3), so a bare RetryAfter-driven notice would falsely
+	// promise an automatic resume for a run that only replay-by-hand can
+	// wake. The FailureCode is the truth: DLQ_PARKED means an operator has
+	// to act; the notice must name the DLQ, name the admin path, and NOT
+	// print the "resume automatically at HH:MM" line.
+	t.Run("a DLQ park names the operator path, not a schedule", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(time.Hour)
+		run := parkedRun(t, s, "max deliveries exhausted: some cause (parked on DLQ — replay via /api/admin/dlq)", at)
+		run.FailureCode = store.FailureDLQParked
+		if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 1 {
+			t.Fatalf("a DLQ park must post one operator-shaped notice, got %d", len(c.bodies))
+		}
+		body := c.bodies[0]
+		if strings.Contains(body, "provider's quota is exhausted") {
+			t.Fatalf("DLQ park was announced as a quota pause — the FailureCode-blind read #669 measured live:\n%s", body)
+		}
+		if strings.Contains(body, "resume it **automatically") || strings.Contains(body, at.Format("15:04 UTC")) {
+			t.Fatalf("DLQ park promised an automatic resume that never comes:\n%s", body)
+		}
+		for _, want := range []string{"parked on the DLQ", "iterion remote admin dlq", "operator"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("DLQ notice missing %q:\n%s", want, body)
+			}
+		}
+	})
 }
