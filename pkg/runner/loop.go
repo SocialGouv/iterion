@@ -163,10 +163,29 @@ type execOutcome struct {
 	finalStatus string
 	op          string
 	action      deliveryAction
+	delay       time.Duration // actionNakDelayed only
 	level       logLevel
 	logFmt      string
 	logArgs     []any
 }
+
+// isNakAction reports whether a delivery action hands the message back to
+// JetStream for redelivery — immediately or after a delay. Every consumer
+// that reasons about "will this run come back on its own" (the pool lease
+// report, the continuation promote, the outcome side effects) must read
+// the two the same way: a delayed Nak is still a Nak.
+func isNakAction(a deliveryAction) bool {
+	return a == actionNak || a == actionNakDelayed
+}
+
+// sandboxSetupTimeoutNakDelay spaces the redeliveries of a run whose
+// sandbox setup phase timed out. The stall is infrastructure catching its
+// breath (a stuck kubectl-exec pipe, a rescheduled apiserver, a copy the
+// pod cannot finish in the phase budget); a bare Nak re-offers within
+// seconds, so a copy that ALWAYS stalls burns the whole delivery budget
+// as back-to-back pods (8 × the 15-minute phase budget ≈ 2 hours) before
+// the DLQ park, and nothing on the run's timeline says so in between.
+const sandboxSetupTimeoutNakDelay = 2 * time.Minute
 
 // resolveDeliveryPreconditions runs the pre-lock store gauntlet:
 // LoadRun (with its own short detached timeout context so a runner
@@ -326,11 +345,12 @@ func (r *Runner) lockProvesLiveness() bool {
 	return r.cfg.NATS != nil || r.lockLivenessOverride
 }
 
-// maxDeliver is the queue's redelivery budget for the promote log line,
-// 0 when no queue is wired.
+// maxDeliver is the queue's redelivery budget, 0 when no queue is wired
+// (a test may pin one through maxDeliverOverride, the way
+// lockLivenessOverride pins the lease authority).
 func (r *Runner) maxDeliver() int {
 	if r.cfg.NATS == nil {
-		return 0
+		return r.maxDeliverOverride
 	}
 	return r.cfg.NATS.MaxDeliver()
 }
@@ -389,6 +409,30 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 	delivered, maxDeliver := delivery.NumDelivered(), r.maxDeliver()
 	if age < runningAdoptionFloor {
 		remaining := runningAdoptionFloor - age
+		if maxDeliver > 0 && delivered >= maxDeliver {
+			// The LAST permitted delivery: JetStream will not re-offer it
+			// whatever we answer, so a delayed Nak here would claim a
+			// re-offer that never comes and leave the doc `running` with
+			// nothing saying who reconciles it. Nothing is written — the
+			// floor exists precisely because the previous holder may still
+			// be alive and about to write its own terminal status, and a
+			// DLQ park over a live writer would be clobbered or clobber it.
+			// The server's orphan sweeper owns this doc: once it crosses the
+			// sweeper's staleness floor with no lease, it is flipped to
+			// failed_resumable (PROCESS_ORPHANED, final), which every
+			// consumer that waits on a dead run — the gate reconciler
+			// foremost — already acts on. Term makes the queue's side
+			// explicit instead of letting the message age out on its
+			// ack-wait.
+			return preconditionOutcome{
+				finalStatus: "running_young_last_delivery",
+				op:          "term-running-young-last-delivery",
+				action:      actionTerm,
+				level:       logWarn,
+				logFmt:      "runner: run %s reads running under our lock but its doc was written %s ago (< %s adoption floor — a lapsed-but-alive pod may still be unwinding) and this is the LAST permitted delivery (%d/%d): JetStream will not re-offer it — terming; if the previous holder never writes its terminal status, the orphan sweeper flips the doc to failed_resumable once it crosses the sweeper's staleness floor",
+				logArgs:     []any{msg.RunID, age.Round(time.Second), runningAdoptionFloor, delivered, maxDeliver},
+			}
+		}
 		return preconditionOutcome{
 			finalStatus: "running_young",
 			op:          "nak-running-young",
@@ -546,8 +590,9 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	}
 	// A sandbox setup phase that hit its own bound (workspace copy / git
 	// fixup, sandbox.ErrPhaseTimeout): the engine wrote failed_resumable
-	// + SANDBOX_SETUP_TIMEOUT. Nak so a fresh pod retries — the stall is
-	// a transient infrastructure condition a healthy pod routinely
+	// + SANDBOX_SETUP_TIMEOUT. Nak — after sandboxSetupTimeoutNakDelay,
+	// not at once — so a fresh pod retries once the infrastructure has had
+	// a moment: the stall is a transient condition a healthy pod routinely
 	// clears. Deliberately NOT an interruption: the DLQ park on the last
 	// permitted delivery still applies, so a stall that repeats through
 	// every delivery ends parked and announced instead of naking into
@@ -556,10 +601,11 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 		return execOutcome{
 			finalStatus: "sandbox_setup_timeout",
 			op:          "nak-sandbox-setup-timeout",
-			action:      actionNak,
+			action:      actionNakDelayed,
+			delay:       sandboxSetupTimeoutNakDelay,
 			level:       logWarn,
-			logFmt:      "runner: run %s: sandbox setup phase timed out (resumable) — naking for a fresh pod (%v)",
-			logArgs:     []any{runID, execErr},
+			logFmt:      "runner: run %s: sandbox setup phase timed out (resumable) — re-offered to a fresh pod in %s (%v)",
+			logArgs:     []any{runID, sandboxSetupTimeoutNakDelay, execErr},
 		}
 	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).
@@ -749,11 +795,23 @@ func dispatchTerminal(logger *iterlog.Logger, delivery jsDelivery, action delive
 // dispatchPrecondition dispatches an admission outcome, including the
 // delayed Nak the under-lock adoption uses to wait out its floor.
 func dispatchPrecondition(logger *iterlog.Logger, delivery jsDelivery, out preconditionOutcome, runID string) {
-	if out.action == actionNakDelayed {
-		logDeliveryErr(logger, out.op, runID, delivery.NakWithDelay(out.delay))
+	dispatchDelivery(logger, delivery, out.action, out.delay, out.op, runID)
+}
+
+// dispatchExecOutcome dispatches an execution outcome, including the
+// delayed Nak a sandbox setup timeout is re-offered with.
+func dispatchExecOutcome(logger *iterlog.Logger, delivery jsDelivery, out execOutcome, runID string) {
+	dispatchDelivery(logger, delivery, out.action, out.delay, out.op, runID)
+}
+
+// dispatchDelivery is the one place a delayed Nak is turned into
+// NakWithDelay; every other action goes through dispatchTerminal.
+func dispatchDelivery(logger *iterlog.Logger, delivery jsDelivery, action deliveryAction, delay time.Duration, op, runID string) {
+	if action == actionNakDelayed {
+		logDeliveryErr(logger, op, runID, delivery.NakWithDelay(delay))
 		return
 	}
-	dispatchTerminal(logger, delivery, out.action, out.op, runID)
+	dispatchTerminal(logger, delivery, action, op, runID)
 }
 
 // Config is the runner bootstrap.
@@ -961,6 +1019,9 @@ type Runner struct {
 	// the store's run lock is a liveness authority (the filesystem flock
 	// is one). False in production; the runner reads r.cfg.NATS then.
 	lockLivenessOverride bool
+	// maxDeliverOverride pins the redelivery budget in unit tests without
+	// a queue. 0 in production; the runner reads r.cfg.NATS then.
+	maxDeliverOverride int
 }
 
 type inFlight struct {
@@ -1464,7 +1525,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// nothing — and a lease left open there strands the donor's slot and
 	// committed allowance until the 12h TTL.
 	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
-	r.recordPoolSpend(msg, usage, err, outcome.action == actionNak && redeliverable)
+	r.recordPoolSpend(msg, usage, err, isNakAction(outcome.action) && redeliverable)
 
 	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
@@ -1477,7 +1538,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// and without inventing an episode. A Nak into nothing (last
 	// permitted delivery of an ErrRunInterrupted, exempt from DLQ)
 	// stays unknown, which is honest: nobody owns that run's future.
-	if outcome.action == actionNak && redeliverable && r.cfg.Store != nil {
+	if isNakAction(outcome.action) && redeliverable && r.cfg.Store != nil {
 		bg, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
 		sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
 		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
@@ -1486,22 +1547,57 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			logger.Warn("runner: continuation promote for %s: %v", msg.RunID, serr)
 		}
 		cancel()
+		// A DELAYED redelivery leaves the run parked for minutes with
+		// nothing on its timeline between two attempts: say why, and for
+		// how long, where the operator reads.
+		if outcome.action == actionNakDelayed {
+			r.recordRedeliveryDeferred(msg, outcome, err, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
+		}
 	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
-	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
+	dispatchExecOutcome(logger, delivery, outcome, msg.RunID)
+}
+
+// recordRedeliveryDeferred puts a delayed redelivery on the run's
+// timeline — the only trace, between two attempts, of why the run sits
+// failed_resumable and when the next pod picks it up. Best-effort and
+// bounded like every teardown-path timeline write: a wedged store must
+// not pin the pod, and a missed event never changes the disposition.
+func (r *Runner) recordRedeliveryDeferred(msg *queue.RunMessage, outcome execOutcome, execErr error, delivered, maxDeliver int) {
+	if r.cfg.Store == nil {
+		return
+	}
+	data := map[string]any{
+		"reason":        outcome.finalStatus,
+		"delay_seconds": int(outcome.delay / time.Second),
+		"delivery":      delivered,
+		"max_deliver":   maxDeliver,
+	}
+	if execErr != nil {
+		data["error"] = execErr.Error()
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunRedeliveryDeferred,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_redelivery_deferred: %v", msg.RunID, err)
+	}
 }
 
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
 // dispatch path (no park) is a FINAL disposition that must fire the
 // run-outcome side effects (completion webhook + run.<outcome> event). A
-// Nak is not final — JetStream redelivers and the run auto-resumes, so
-// user-facing "run failed" episodes must wait for a disposition that
-// actually settles the run. Named (rather than inlined) so the
-// err → fires mapping is pinned by a table test next to
+// Nak — immediate or delayed — is not final: JetStream redelivers and the
+// run auto-resumes, so user-facing "run failed" episodes must wait for a
+// disposition that actually settles the run. Named (rather than inlined)
+// so the err → fires mapping is pinned by a table test next to
 // TestClassifyExecResult.
 func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
-	return !errors.Is(execErr, runtime.ErrRunInterrupted) && action != actionNak
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !isNakAction(action)
 }
 
 // startProcessSpan builds the runner-side OTel root span for this

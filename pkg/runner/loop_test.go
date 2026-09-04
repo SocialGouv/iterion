@@ -432,12 +432,13 @@ func TestClassifyExecResult(t *testing.T) {
 		// reordering away from silently regressing.
 		{"budget beats interrupted", errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
 		// A sandbox setup phase that hit its own bound: the engine wrote
-		// failed_resumable + SANDBOX_SETUP_TIMEOUT; Nak so a fresh pod
-		// retries. Its own status label, not "interrupted": the DLQ park
-		// on the last delivery must still apply to it.
-		{"sandbox phase timeout naks for a fresh pod", fmt.Errorf("runtime: sandbox: %w",
+		// failed_resumable + SANDBOX_SETUP_TIMEOUT; Nak — DELAYED — so a
+		// fresh pod retries once the infrastructure has had a moment. Its
+		// own status label, not "interrupted": the DLQ park on the last
+		// delivery must still apply to it.
+		{"sandbox phase timeout naks for a fresh pod, after a delay", fmt.Errorf("runtime: sandbox: %w",
 			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed"))),
-			"sandbox_setup_timeout", actionNak},
+			"sandbox_setup_timeout", actionNakDelayed},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -449,6 +450,71 @@ func TestClassifyExecResult(t *testing.T) {
 				t.Errorf("action = %v, want %v", out.action, c.wantAction)
 			}
 		})
+	}
+}
+
+// A sandbox setup timeout is re-offered with sandboxSetupTimeoutNakDelay,
+// through NakWithDelay — a bare Nak re-offers within seconds, and a copy
+// that always stalls then burns the delivery budget as back-to-back pods
+// (8 × the phase budget before the DLQ park, #669's measured shape).
+func TestClassifyExecResult_SandboxSetupTimeoutIsReofferedAfterADelay(t *testing.T) {
+	err := fmt.Errorf("runtime: sandbox: %w",
+		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed")))
+	out := classifyExecResult(err, "run-1")
+	if out.delay != sandboxSetupTimeoutNakDelay || out.delay <= 0 {
+		t.Fatalf("delay = %s, want %s — an immediate re-offer is 8 back-to-back pods", out.delay, sandboxSetupTimeoutNakDelay)
+	}
+	d := &fakeDelivery{delivered: 3}
+	dispatchExecOutcome(iterlog.Nop(), d, out, "run-1")
+	if len(d.nakDelays) != 1 || d.nakDelays[0] != sandboxSetupTimeoutNakDelay || d.naks != 0 || d.terms != 0 || d.acks != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one NakWithDelay(%s)", d, sandboxSetupTimeoutNakDelay)
+	}
+}
+
+// The delayed redelivery lands on the run's timeline, naming the phase
+// timeout, the delay and the attempt's rank — the only trace between two
+// attempts of why the run sits failed_resumable.
+func TestRecordRedeliveryDeferred_PutsThePhaseTimeoutOnTheTimeline(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-deferred"
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{ID: id, TenantID: "team-1", OwnerID: "u1", Status: store.RunStatusFailedResumable}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	execErr := fmt.Errorf("runtime: sandbox: %w", errors.Join(sandbox.ErrPhaseTimeout, errors.New("workspace copy stalled")))
+	out := classifyExecResult(execErr, id)
+
+	r.recordRedeliveryDeferred(msg, out, execErr, 3, 8)
+
+	events, err := st.LoadEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev *store.Event
+	for _, e := range events {
+		if e.Type == store.EventRunRedeliveryDeferred {
+			ev = e
+		}
+	}
+	if ev == nil {
+		t.Fatal("no run_redelivery_deferred on the timeline — between two attempts the operator sees nothing")
+	}
+	if got, _ := ev.Data["reason"].(string); got != "sandbox_setup_timeout" {
+		t.Fatalf("reason = %q, want sandbox_setup_timeout", got)
+	}
+	if got, _ := ev.Data["delay_seconds"].(float64); int(got) != int(sandboxSetupTimeoutNakDelay/time.Second) {
+		t.Fatalf("delay_seconds = %v, want %d", ev.Data["delay_seconds"], int(sandboxSetupTimeoutNakDelay/time.Second))
+	}
+	if got, _ := ev.Data["error"].(string); !strings.Contains(got, "workspace copy stalled") {
+		t.Fatalf("error = %q, want the engine's cause", got)
+	}
+	if d, _ := ev.Data["delivery"].(float64); int(d) != 3 {
+		t.Fatalf("delivery = %v, want 3", ev.Data["delivery"])
 	}
 }
 
@@ -468,6 +534,11 @@ func TestOutcomeSideEffectsFire(t *testing.T) {
 	}{
 		{"finished fires", nil, true},
 		{"paused fires", runtime.ErrRunPaused, true},
+		// A DELAYED nak is still a nak: the run comes back on its own, so
+		// firing here would push one "run failed" episode per stalled
+		// sandbox attempt.
+		{"sandbox setup timeout (delayed nak) does not fire", fmt.Errorf("runtime: sandbox: %w",
+			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("copy stalled"))), false},
 		{"operator pause fires", runtime.ErrRunPausedOperator, true},
 		{"operator cancel fires", runtime.ErrRunCancelled, true},
 		{"budget exceeded fires (acked, no auto-resume)", runtime.ErrBudgetExceeded, true},
@@ -1259,6 +1330,49 @@ func TestAdoptRunningUnderLock_YoungDocIsReofferedAfterTheFloor(t *testing.T) {
 		t.Fatalf("the lock was not released for the re-offered delivery: %v", err)
 	}
 	_ = next.Unlock()
+}
+
+// A young `running` doc on the LAST permitted delivery: JetStream will not
+// re-offer it whatever we answer, so the delivery must not claim a
+// re-offer ("re-offered in Ns") that never comes. Nothing is written — the
+// floor exists because the previous holder may still be unwinding — the
+// message is termed, and the log names the owner of what happens next:
+// the orphan sweeper.
+func TestAdoptRunningUnderLock_YoungDocOnLastDeliveryTermsAndNamesTheSweeper(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-young-last"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true, maxDeliverOverride: 8}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	d := &fakeDelivery{delivered: 8}
+
+	out := r.adoptRunningUnderLock(msg, doc, d, doc.UpdatedAt.Add(time.Minute))
+
+	if out.proceed {
+		t.Fatalf("a young doc was adopted on the last delivery (%+v) — the floor still applies", out)
+	}
+	if out.action == actionNakDelayed {
+		t.Fatalf("action = delayed Nak on delivery %d/%d — JetStream will not re-offer it, so a 're-offered in Ns' log line is false and nothing parks or reconciles the doc", d.delivered, r.maxDeliver())
+	}
+	if out.action != actionTerm {
+		t.Fatalf("action = %v, want Term (explicit on the queue side; the sweeper owns the doc)", out.action)
+	}
+	if !strings.Contains(out.logFmt, "LAST permitted delivery") || !strings.Contains(out.logFmt, "orphan sweeper") {
+		t.Fatalf("the log must say this is the last delivery and who reconciles the doc, got %q", out.logFmt)
+	}
+	dispatchPrecondition(iterlog.Nop(), d, out, id)
+	if d.terms != 1 || len(d.nakDelays) != 0 || d.naks != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one Term", d)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning || got.FailureCode != "" {
+		t.Fatalf("doc = %s/%q, want running left untouched — a park over a possibly-live writer clobbers or is clobbered", got.Status, got.FailureCode)
+	}
+	if msg.Resume != nil {
+		t.Fatal("the termed delivery was converted to a resume")
+	}
 }
 
 // A `running` doc older than the floor, under our lock, is an orphan:

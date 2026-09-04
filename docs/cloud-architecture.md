@@ -140,6 +140,19 @@ Pinned semantics:
   ([pkg/runner/loop.go](../pkg/runner/loop.go), look for "parking on
   DLQ"). The original NATS message is Term'd; the DLQ copy is the
   recoverable artifact.
+- **Delayed re-offers.** Two outcomes hand the message back with a
+  delay instead of at once, so the redelivery budget is not burnt inside
+  a condition that needs wall-clock time to clear: a run whose sandbox
+  setup phase timed out (`SANDBOX_SETUP_TIMEOUT`, a stuck workspace copy)
+  is re-offered to a fresh pod after 2 minutes, and the run's timeline
+  carries a `run_redelivery_deferred` event naming the reason, the delay
+  and the attempt's rank — the DLQ park still applies on the last
+  delivery; a `running` doc written more recently than the runner's
+  adoption floor (a lapsed-but-alive pod may still be unwinding) is
+  re-offered after the floor's remainder. On the LAST permitted delivery
+  that young doc is Term'd instead and the log says so — JetStream would
+  not re-offer it anyway — and the orphan sweeper below owns it from
+  there; nothing is written over a possibly-live writer.
 - **DLQ retention**: 7 days
   ([pkg/queue/nats/nats.go:DefaultDLQMaxAge](../pkg/queue/nats/nats.go)).
   An operator triages via the admin endpoints
