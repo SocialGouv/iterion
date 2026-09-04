@@ -189,7 +189,7 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 
 	// A delivery from before this requeue must not fail the new attempt.
-	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second))
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second), store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal})
 	if err != nil || changed {
 		t.Fatalf("stale attempt CAS = (%t, %v), want (false, nil)", changed, err)
 	}
@@ -198,12 +198,21 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 
 	// The delivery belonging to this attempt may perform the terminal flip.
-	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second))
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second), store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal})
 	if err != nil || !changed {
 		t.Fatalf("current attempt CAS = (%t, %v), want (true, nil)", changed, err)
 	}
-	if got, _ := s.LoadRun(ctx, runID); got == nil || got.Status != store.RunStatusFailedResumable {
+	got, _ := s.LoadRun(ctx, runID)
+	if got == nil || got.Status != store.RunStatusFailedResumable {
 		t.Fatalf("current attempt left run at %+v, want failed_resumable", got)
+	}
+	// The park's typed WHY rides the same write as the flip: a DLQ park
+	// with an empty code reads as a quota pause to the gate notice.
+	if got.FailureCode != store.FailureDLQParked {
+		t.Fatalf("FailureCode after the admission park = %q, want %s (the notice keys on it)", got.FailureCode, store.FailureDLQParked)
+	}
+	if got.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("ContinuationState after the admission park = %q, want final (nothing on the platform wakes a parked run)", got.ContinuationState)
 	}
 }
 

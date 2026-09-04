@@ -1098,7 +1098,7 @@ func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMe
 // status-only CAS above. queued_at and status are matched in the SAME Mongo
 // update so a concurrent resume cannot slip a newer queued attempt between a
 // read and the failure write.
-func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time, meta store.RunOutcomeMeta) (bool, error) {
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s without published_at", id)
 	}
@@ -1114,10 +1114,9 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 			bson.M{"queued_at": nil},
 		},
 	}))
-	// Queue-park classification is follow-up; the empty code reads as
-	// unknown, which is honest here. The filter pins status=queued, so
-	// the transition-gated episode increment always fires.
-	pipeline := statusTransitionPipeline(statusTransitionSet(store.RunStatusFailedResumable, runErr, store.RunOutcomeMeta{}, now))
+	// The filter pins status=queued, so the transition-gated episode
+	// increment always fires; meta rides the same write as the flip.
+	pipeline := statusTransitionPipeline(statusTransitionSet(store.RunStatusFailedResumable, runErr, meta, now))
 	res, err := s.runs.UpdateOne(ctx, filter, pipeline)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)

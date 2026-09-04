@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 )
 
@@ -86,5 +87,36 @@ func TestPlanAdmissionMismatch(t *testing.T) {
 
 	if plan := planAdmissionMismatch(admissionMismatchFutureEpoch, mismatchErr, 0, env, 99, 0); plan.final {
 		t.Fatal("a missing delivery budget must remain on the delayed-Nak path")
+	}
+}
+
+// The admission park stamps the same typed WHY the generic DLQ park in
+// processOne writes: a parked payload is DLQ_PARKED whatever fence
+// refused it (the gate notice keys on the code, and read "" as a quota
+// pause on this path — #669 part 4). A payload the DLQ could not take
+// keeps the refusal's own cause where one exists and stays honestly
+// unknown otherwise; every outcome is final.
+func TestAdmissionParkOutcome(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   admissionMismatchKind
+		parked bool
+		want   store.FailureCode
+	}{
+		{"schema fence, parked", admissionMismatchSchema, true, store.FailureDLQParked},
+		{"future-epoch fence, parked", admissionMismatchFutureEpoch, true, store.FailureDLQParked},
+		{"schema fence, DLQ refused the payload", admissionMismatchSchema, false, store.FailureQueueSchemaMismatch},
+		{"future-epoch fence, DLQ refused the payload", admissionMismatchFutureEpoch, false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := admissionParkOutcome(c.kind, c.parked)
+			if got.Code != c.want {
+				t.Fatalf("code = %q, want %q", got.Code, c.want)
+			}
+			if got.Continuation != store.ContinuationFinal {
+				t.Fatalf("continuation = %q, want final — nothing on the platform wakes an admission-parked run", got.Continuation)
+			}
+		})
 	}
 }

@@ -591,7 +591,7 @@ func (s *FilesystemRunStore) UpdateRunOutcome(_ context.Context, id string, stat
 // by publishedAt. A later resume refreshes QueuedAt before publishing, so an
 // older delivery cannot clobber that new attempt during its queued→running
 // hand-off window.
-func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (bool, error) {
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store: fail queued attempt %s without published_at", id)
 	}
@@ -605,9 +605,7 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
 		return false, nil
 	}
-	// Classification of the queue-park writer is follow-up work; the
-	// empty code reads as unknown, which is honest here.
-	if err := s.applyStatusTransition(r, RunStatusFailedResumable, runErr, ""); err != nil {
+	if err := s.applyStatusTransitionOutcome(r, RunStatusFailedResumable, runErr, meta); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -272,7 +272,13 @@ type QueuedAttemptStore interface {
 	// FailQueuedRunIfAttempt moves a queued run to failed_resumable only when
 	// its current QueuedAt is not newer than the delivery's PublishedAt. The
 	// comparison and status transition are one atomic store operation.
-	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (changed bool, err error)
+	//
+	// meta is the typed WHY of the flip, persisted with it exactly like
+	// UpdateRunOutcome's: the queue's admission park is a DLQ park
+	// (FailureDLQParked, ContinuationFinal — nothing wakes the run but an
+	// operator's replay), and every reader of the code must see the same
+	// value whichever of the two DLQ writers flipped the doc.
+	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (changed bool, err error)
 }
 
 // AsQueuedAttemptStore returns the attempt-aware status capability, or nil
