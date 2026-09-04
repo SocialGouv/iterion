@@ -28,12 +28,20 @@ var anthropicWireProviders = map[string]bool{"anthropic": true, "zai": true}
 //     first available provider, which may be anthropic);
 //   - any resolved hint that is anthropic or zai, on any backend;
 //   - a model-calling node that exposes no LLMFields (human answering
-//     with a model, subbot, agent-rung recovery), a nil workflow;
-//   - a `fallbacks:` route or run-level stage with any of the above.
+//     with a model, subbot, agent-rung recovery), a nil workflow.
 //
-// Only a run whose EVERY route is pinned off the wire — codex/kimi/grok,
-// or claw/pi with a resolved non-anthropic provider — answers false.
-func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides, runFallbacks []FallbackEntry) bool {
+// PRIMARY routes only. A `fallbacks:` route onto the wire does not arm
+// the guard: the primary can carry the whole run without ever touching
+// it, and the rescue route only fires on a failure the mid-run guard and
+// the delegate's own usage-window classification already refuse at
+// dispatch. Arming on it would refuse IN ADVANCE a run that could not
+// possibly spend the capped subscription — the rule this pre-flight
+// exists to honour.
+//
+// Only a run whose every primary route is pinned off the wire —
+// codex/kimi/grok, or claw/pi with a resolved non-anthropic provider —
+// answers false.
+func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides) bool {
 	if wf == nil {
 		return true
 	}
@@ -51,31 +59,6 @@ func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides, runFallba
 		mdl := firstNonEmpty(ov.Model, fields.Model)
 		if routeOnAnthropicWire(backend, ov.Provider, fields.Provider, mdl) {
 			return true
-		}
-		if gf, ok := n.(interface{ GetFallbacks() []ir.Fallback }); ok {
-			for _, fb := range gf.GetFallbacks() {
-				if fb.Action == ir.FallbackActionSkip {
-					continue
-				}
-				// A route inherits the node's backend and model when it
-				// pins none; its provider is its own ("" = auto).
-				fbBackend := firstNonEmpty(strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)), backend)
-				if routeOnAnthropicWire(fbBackend, fb.Provider, "", firstNonEmpty(fb.Model, mdl)) {
-					return true
-				}
-			}
-		}
-		// The run-level chain lands on agent nodes through
-		// ir.ApplyRunFallback; asked of every LLM node here, which only
-		// ever errs towards keeping the guard armed.
-		for _, fb := range runFallbacks {
-			if fb.Backend == "" && fb.Model == "" && fb.Provider == "" {
-				continue
-			}
-			fbBackend := firstNonEmpty(strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)), backend)
-			if routeOnAnthropicWire(fbBackend, fb.Provider, "", firstNonEmpty(fb.Model, mdl)) {
-				return true
-			}
 		}
 	}
 	return false

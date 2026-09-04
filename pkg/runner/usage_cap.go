@@ -192,9 +192,12 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// never spend what the cap protects: parking it for the anthropic
 	// weekly reset strands it for nothing, which is how a fully pinned
 	// two-node rite froze for five days while its single-node sibling
-	// sailed through (#668). Read under the launch's own overrides and
-	// fallback chain; every uncertainty answers "reachable".
-	if !model.AnthropicWireReachable(wf, modelOverridesFromMsg(msg.ModelOverrides), runFallbackEntriesFromMsg(msg.Fallback)) {
+	// sailed through (#668). Read under the launch's own overrides, on
+	// PRIMARY routes only — a rescue `fallbacks:` route onto the wire
+	// fires on a failure the mid-run guard already refuses, and cannot
+	// justify refusing the run before it starts. Every uncertainty
+	// answers "reachable".
+	if !model.AnthropicWireReachable(wf, modelOverridesFromMsg(msg.ModelOverrides)) {
 		if logger != nil {
 			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
 		}

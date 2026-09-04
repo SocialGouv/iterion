@@ -643,12 +643,15 @@ func TestUsageCapPreflight_SparesARunPinnedOffTheAnthropicWire(t *testing.T) {
 		if err := r.usageCapPreflight(ctx, wf, agentOnly, iterlog.Nop()); err == nil {
 			t.Error("the judge still resolves to claude_code: the capped run must be refused")
 		}
-		// A run-level --fallback onto claude_code is a route the run may
-		// take; the guard stays armed for it.
+		// A run-level --fallback onto claude_code is a RESCUE route: it
+		// fires only on a failure the mid-run guard and the delegate's
+		// usage-window classification already refuse at dispatch. The
+		// pre-flight refuses in advance only what could not possibly
+		// avoid spending, so it must let this run start.
 		rescued := &queue.RunMessage{RunID: "rite-5", ModelOverrides: pin("oracle_campaign", "mutants_adversary"),
 			Fallback: queue.RunFallback{{Backend: "claude_code"}}}
-		if err := r.usageCapPreflight(ctx, wf, rescued, iterlog.Nop()); err == nil {
-			t.Error("a run-level fallback onto claude_code re-opens the wire: the capped run must be refused")
+		if err := r.usageCapPreflight(ctx, wf, rescued, iterlog.Nop()); err != nil {
+			t.Errorf("a rescue route must not park a run whose every primary route is off the wire: %v", err)
 		}
 	})
 }

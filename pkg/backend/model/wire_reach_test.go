@@ -65,11 +65,14 @@ func TestAnthropicWireReachable(t *testing.T) {
 			&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai"}},
 			&ir.HumanNode{BaseNode: ir.BaseNode{ID: "h"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLM}},
 		), true},
-		{"node fallback route onto claude_code", wfOf(&ir.AgentNode{
+		// PRIMARY routes only: a rescue route onto the wire fires on a
+		// failure the mid-run guard already refuses, so it cannot justify
+		// refusing the run before it starts.
+		{"node fallback route onto claude_code does not arm the guard", wfOf(&ir.AgentNode{
 			BaseNode:  ir.BaseNode{ID: "a"},
 			LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai", Model: "openai/gpt-5"},
 			Fallbacks: []ir.Fallback{{Name: "rescue", Backend: "claude_code"}},
-		}), true},
+		}), false},
 		{"node fallback route inheriting an off-wire model", wfOf(&ir.AgentNode{
 			BaseNode:  ir.BaseNode{ID: "a"},
 			LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai", Model: "openai/gpt-5"},
@@ -83,14 +86,14 @@ func TestAnthropicWireReachable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := AnthropicWireReachable(tc.wf, ModelOverrides{}, nil); got != tc.want {
+			if got := AnthropicWireReachable(tc.wf, ModelOverrides{}); got != tc.want {
 				t.Fatalf("AnthropicWireReachable = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestAnthropicWireReachable_OverridesAndRunFallback(t *testing.T) {
+func TestAnthropicWireReachable_Overrides(t *testing.T) {
 	// #668 exactly: a DSL-unpinned judge would resolve to claude_code, but
 	// the launch pinned both the agent and the judge kind to claw/openai.
 	// The overrides are what the executor will honour, so the predicate
@@ -99,7 +102,7 @@ func TestAnthropicWireReachable_OverridesAndRunFallback(t *testing.T) {
 		"oracle_campaign":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "oracle_campaign"}},
 		"mutants_adversary": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "mutants_adversary"}},
 	}}
-	if !AnthropicWireReachable(wf, ModelOverrides{}, nil) {
+	if !AnthropicWireReachable(wf, ModelOverrides{}) {
 		t.Fatal("unpinned run must count as on the wire")
 	}
 	var both ModelOverrides
@@ -108,21 +111,14 @@ func TestAnthropicWireReachable_OverridesAndRunFallback(t *testing.T) {
 		both.SetModel(sel, "openai/gpt-5.6-sol")
 		both.SetProvider(sel, "openai")
 	}
-	if AnthropicWireReachable(wf, both, nil) {
+	if AnthropicWireReachable(wf, both) {
 		t.Fatal("both nodes pinned to claw/openai by override: the run cannot touch the wire")
 	}
 	// Pinning the agent only leaves the judge on claude_code.
 	var agentOnly ModelOverrides
 	agentOnly.SetBackend("oracle_campaign", "claw")
 	agentOnly.SetProvider("oracle_campaign", "openai")
-	if !AnthropicWireReachable(wf, agentOnly, nil) {
+	if !AnthropicWireReachable(wf, agentOnly) {
 		t.Fatal("the judge still resolves to claude_code")
-	}
-	// A run-level --fallback onto claude_code re-opens the wire.
-	if !AnthropicWireReachable(wf, both, []FallbackEntry{{Backend: "claude_code"}}) {
-		t.Fatal("a run-level fallback onto claude_code is a route the run may take")
-	}
-	if AnthropicWireReachable(wf, both, []FallbackEntry{{Backend: "claw", Provider: "openai", Model: "openai/gpt-5"}}) {
-		t.Fatal("a run-level fallback that stays off the wire must not re-arm the guard")
 	}
 }

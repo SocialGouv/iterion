@@ -2074,16 +2074,3 @@ func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 	return model.OverridesFrom(out)
 }
 
-// runFallbackEntriesFromMsg adapts the wire chain onto the neutral shape
-// the pre-run analyses read (the usage-cap wire predicate) — the runner
-// twin of the publisher's launch/resume adapters.
-func runFallbackEntriesFromMsg(entries queue.RunFallback) []model.FallbackEntry {
-	if len(entries) == 0 {
-		return nil
-	}
-	out := make([]model.FallbackEntry, len(entries))
-	for i, e := range entries {
-		out[i] = model.FallbackEntry{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
-	}
-	return out
-}
