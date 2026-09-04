@@ -33,6 +33,32 @@ var (
 	_ prforgeReplierAPI = (*fforgejo.AdminClient)(nil)
 )
 
+// seedCoveringConnection wires a team connection AND the repo-integration row
+// that proves it COVERS repo. The webhook lanes resolve strictly
+// (forgeConnectionCoveringRepo) rather than through the host-wide fallback:
+// a bare connection sitting on the same forge host proves nothing about this
+// repo, and letting it stand in would suppress the webhook's forge_token
+// binding — silently, since GitHub reports a repo an installation cannot see
+// as permission "none" rather than an error. So a fixture that means "a
+// connection covers this repo" has to say so with an integration row, which
+// is exactly what provisioning writes in production.
+func seedCoveringConnection(t *testing.T, s *Server, conn forge.Connection, repo string) {
+	t.Helper()
+	ctx := context.Background()
+	conns := forge.NewMemoryConnectionStore()
+	if err := conns.Create(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeConnections = conns
+	ris := forge.NewMemoryRepoIntegrationStore()
+	if err := ris.Create(ctx, forge.RepoIntegration{
+		ID: "ri-" + conn.ID, TenantID: conn.TenantID, ConnectionID: conn.ID, RepoFullName: repo,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeIntegrations = ris
+}
+
 func TestReviewApproveReason(t *testing.T) {
 	cases := []struct {
 		cmd, args  string
@@ -145,13 +171,9 @@ func TestReviewApprove_ThroughConnectionAdmin_NotForgeTokenBinding(t *testing.T)
 	// filters "no forge token to post the approval status" at this point
 	// and never reaches SetCommitStatus. The fix uses the connection
 	// instead — this test's gate-client seam is what proves it.
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{
+	seedCoveringConnection(t, s, forge.Connection{
 		ID: "conn-app", TenantID: "t1", Provider: forge.ProviderGitHub,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	}, "acme/widgets")
 	// The fake gate client is the seam the publish tests use for the SAME
 	// resolution (postGateStatus → gateClientFor). A run that lands here
 	// exercises the App path in production, because forgeAdminFor mints
@@ -202,13 +224,9 @@ func TestReviewApprove_ThroughConnectionAdmin_NotForgeTokenBinding(t *testing.T)
 // maintainer sees why, and answer 200 to keep the hook alive.
 func TestReviewApprove_WriteFailure_RepliesOnPRAnd200(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{
+	seedCoveringConnection(t, s, forge.Connection{
 		ID: "conn-app", TenantID: "t1", Provider: forge.ProviderGitHub,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	}, "acme/widgets")
 	gc := &fakeGateClient{headSHA: "cafef00d", setErr: errInsufficientScope}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	commenter := &stubCommenter{}
@@ -268,11 +286,7 @@ var errInsufficientScope = &sentinelErr{msg: "forge: insufficient scope"}
 // the command gate so the maintainer sees a specific reason on the PR.
 func TestReviewApprove_AuthorCannotApproveOwnPR(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	seedCoveringConnection(t, s, forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}, "acme/widgets")
 	authored := &authoredGateClient{fakeGateClient: fakeGateClient{headSHA: "abc1234"}, author: "alice"}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return authored, nil }
 	commenter := &stubCommenter{}
@@ -316,11 +330,7 @@ func (a *authoredGateClient) GetPullRequest(_ context.Context, _ string, number 
 // receives it directly.
 func TestReviewApprove_DefaultsFloorToMaintainerWhenUnpinned(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	seedCoveringConnection(t, s, forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}, "acme/widgets")
 	gc := &fakeGateClient{headSHA: "abc1234"}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	var gotRoles []string
@@ -361,11 +371,7 @@ func TestReviewApprove_PinRaisesTheFloorNeverLowersIt(t *testing.T) {
 	for _, c := range cases {
 		t.Run("pin="+c.pin, func(t *testing.T) {
 			s := newWebhookTestServer(t)
-			conns := forge.NewMemoryConnectionStore()
-			if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-				t.Fatal(err)
-			}
-			s.forgeConnections = conns
+			seedCoveringConnection(t, s, forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}, "acme/widgets")
 			gc := &fakeGateClient{headSHA: "abc"}
 			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 			var gotRoles []string
@@ -389,11 +395,7 @@ func TestReviewApprove_PinRaisesTheFloorNeverLowersIt(t *testing.T) {
 // is the class forges answer by disabling the hook.
 func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	seedCoveringConnection(t, s, forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}, "acme/widgets")
 	// gate client seam that ERRORS on resolution (missing App config,
 	// sealer key rotated, connection unreadable).
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
@@ -430,11 +432,7 @@ func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 // retry after a 5xx) must not run the approve flow twice.
 func TestReviewApprove_IdempotentOnRedelivery(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	seedCoveringConnection(t, s, forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}, "acme/widgets")
 	gc := &fakeGateClient{headSHA: "abc1234"}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return &stubCommenter{}, nil }
@@ -507,11 +505,7 @@ func TestResolveGateContextFollowsTheRepoPin(t *testing.T) {
 func approveWorld(t *testing.T) (*Server, *fakeGateClient, *stubCommenter, webhooks.Config, string) {
 	t.Helper()
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	seedCoveringConnection(t, s, forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}, "acme/widgets")
 	gc := &fakeGateClient{headSHA: "abc1234"}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 	commenter := &stubCommenter{}
@@ -936,6 +930,48 @@ func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
 	}
 }
 
+// A team connection on the SAME forge host that does not cover this repo —
+// another project provisioned through iterion, or a leftover connection —
+// must not suppress the webhook's forge_token binding. Coverage is proven by
+// the repo's integration row, never by the host: an unrelated installation
+// answers 404 on this repo's collaborator endpoint, which GitHub's client
+// normalizes to permission "none" WITHOUT an error, so the "connection cannot
+// serve → fall back" branch never fires and a real maintainer reads as
+// unauthorized. The role read, the PR head and the status write must all ride
+// the binding here.
+func TestReviewApprove_UnrelatedSameHostConnectionDoesNotSuppressTheBinding(t *testing.T) {
+	s, f, cfg, pt := approveTokenWorld(t)
+	s.webhookPRForgeCommandGate = nil // the real gate, against the real perms API
+	f.perms["maintainer-jane"] = "maintain"
+	// A live PAT connection on the same host, provisioned for ANOTHER repo.
+	other := forge.Connection{
+		ID: "c-other", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
+		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime,
+		CreatedAt: time.Now(),
+	}
+	sealed, err := forge.SealPAT(s.sealer, other.ID, "ghp_unrelated_project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.SealedPayload = sealed
+	seedCoveringConnection(t, s, other, "acme/unrelated")
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	statuses, comments := f.snapshot()
+	if len(statuses) != 1 || statuses[0]["state"] != "success" {
+		t.Fatalf("the approve must land through the binding, got statuses=%v comments=%v body=%s", statuses, comments, w.Body.String())
+	}
+	for _, endpoint := range []string{"permission", "pull", "status"} {
+		if !bearerIsToken(f.bearersFor(endpoint)) {
+			t.Fatalf("%s must ride the forge_token binding, not the unrelated connection's credential: %v", endpoint, f.bearersFor(endpoint))
+		}
+	}
+}
+
 // A force-green is ROLE-only: AuthorizedRepliers is "who may talk back to
 // the bot", not "who may bypass the merge queue". An allowlisted login with
 // no repo permission is refused, with a reply.
@@ -1040,11 +1076,7 @@ func TestReviewApprove_ConnectionOnlyIntegrationAuthorizesWithoutToken(t *testin
 		t.Fatal(err)
 	}
 	conn.SealedPayload = sealed
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), conn); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	seedCoveringConnection(t, s, conn, "acme/widgets")
 	// No generic secret store: resolveForgeToken yields "". No gate stub and
 	// no gate-client stub: the real gate and the real admin client both talk
 	// to the fake forge through the connection.

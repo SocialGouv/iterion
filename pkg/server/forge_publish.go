@@ -824,6 +824,45 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	return forge.Connection{}, false
 }
 
+// forgeConnectionCoveringRepo is the STRICT resolver: the connection of the
+// repo's own integration row, and nothing else. No host-wide fallback.
+//
+// forgeConnectionForPR's last resort — "the latest team connection on this
+// host" — proves the HOST, never that the credential can see the repo. That
+// is tolerable for publish and for the pending claim, which have no second
+// identity to fall back on and would otherwise post nothing. It is NOT
+// tolerable for the webhook lanes that hold a `forge_token` binding as their
+// documented fallback ("the token client serves when no connection COVERS the
+// repo" — docs/merge-gate.md, docs/webhooks.md): an unrelated connection there
+// SUPPRESSES the binding, and it fails silently. GitHub answers 404 on a repo
+// an installation cannot see, which CollaboratorPermission normalizes to
+// "none" WITHOUT an error (pkg/forge/github/client.go), so the commenter reads
+// as unauthorized and the "cannot serve → fall back" branch never fires; the
+// App preflight cannot catch it either, since it only proves the token minted
+// with the named permissions, not that it reaches this repo.
+//
+// Known limitation, deliberate: an org-wide App install whose repo was never
+// provisioned through iterion has no integration row, so these lanes fall to
+// the binding and refuse when there is none. Proving coverage for that shape
+// needs a per-call repo probe (forge/github.AppClient.ListRepos) on a
+// per-comment path; the integration row is the cheap proof, and provisioning
+// the repo is the operator's fix.
+func (s *Server) forgeConnectionCoveringRepo(ctx context.Context, teamID, host, repo string) (forge.Connection, bool) {
+	if s == nil || s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
+	ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo)
+	if !ok {
+		return forge.Connection{}, false
+	}
+	conn, err := s.forgeConnections.Get(ctx, ri.ConnectionID)
+	if err != nil || conn.TenantID != teamID || conn.IsSecurityReadOnly() ||
+		!strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+		return forge.Connection{}, false
+	}
+	return conn, true
+}
+
 // publicBaseURL is the origin runs use to call back into this server:
 // cfg.PublicURL when configured (cloud / self-hosted), else the launch
 // request's own host (local studio).

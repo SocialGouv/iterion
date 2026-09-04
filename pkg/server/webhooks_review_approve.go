@@ -372,7 +372,7 @@ type approveWritePath struct {
 // through; an error is a forge-side failure with no other credential to
 // fall back on.
 func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, reviewer, baseURL, host, projectPath string) (approveWritePath, string, error) {
-	conn, connOK := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath)
+	conn, connOK := s.forgeConnectionCoveringRepo(ctx, cfg.TenantID, host, projectPath)
 	var connErr error
 	if connOK {
 		gc, err := s.gateClientFor(ctx, conn)
@@ -480,7 +480,7 @@ func (s *Server) updateApproveDelivery(ctx context.Context, d webhooks.Delivery)
 func (s *Server) postApproveReply(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, conn forge.Connection, connOK bool, body string) {
 	baseURL, refusal := prforgeBaseURL(cfg, p)
 	if !connOK && refusal == "" {
-		if c, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", hostOfURL(baseURL), p.ProjectPath); ok {
+		if c, ok := s.forgeConnectionCoveringRepo(ctx, cfg.TenantID, hostOfURL(baseURL), p.ProjectPath); ok {
 			conn, connOK = c, true
 		}
 	}

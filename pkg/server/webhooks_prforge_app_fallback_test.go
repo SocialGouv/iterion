@@ -53,16 +53,12 @@ func appConnWorld(t *testing.T, mintFail, withToken bool) (*Server, *fakeGitHubF
 	f := newFakeGitHubForge(t)
 	f.mintFail = mintFail
 	s.forgeGitHubApp = ForgeGitHubAppConfig{AppID: 42, PrivateKey: testAppKeyPEM(t), AppSlug: "iterion-forge-x"}
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{
+	seedCoveringConnection(t, s, forge.Connection{
 		ID: "c-app", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime,
 		InstallationID: 42, AccountLogin: "iterion-forge-x[bot]", AppSlug: "iterion-forge-x",
 		CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeConnections = conns
+	}, "acme/widgets")
 	cfg, pt := ghConfig(t, s)
 	cfg.ForgeBaseURL = f.srv.URL
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
