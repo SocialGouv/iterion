@@ -519,6 +519,11 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	// exposing store.IsPRClosedCancel as a helper.
 	saveErr("run-cancel-pr-closed", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"},
 		store.RunEndReasonPRClosed+" (was failed_resumable: node \"campaign\": rate_limited)")
+	// An operator cancel of a QUEUED resume: every cloud resume CASes the
+	// doc to queued before publishing, so `cancelled` at admission always
+	// post-dates the publish — whatever the error shape.
+	saveErr("run-cancelled-op", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled")
+	saveErr("run-cancelled-interrupted", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled (was running: runtime: run interrupted)")
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 
@@ -538,7 +543,13 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 		// auto-resume here resurrected operator-cancelled runs (live:
 		// 019f8ba3, three times). Only an explicit resume proceeds.
 		{"cancel checkpoint stays cancelled", "run-cancelled-cp", nil, false, actionAck, "cancelled", false},
-		{"cancel checkpoint explicit resume proceeds", "run-cancelled-cp", &queue.ResumeSpec{}, true, 0, "", true},
+		// A resume message on a cancelled doc: the cancel post-dates the
+		// publish (every cloud resume CASes to queued first), so it is an
+		// operator's decision the message must not override.
+		{"cancel checkpoint with resume set still drops", "run-cancelled-cp", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"operator cancel of a queued resume drops", "run-cancelled-op", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"interrupted-shaped cancel with resume set drops", "run-cancelled-interrupted", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"empty-reason cancel with resume set drops", "run-cancelled-cp", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
 		// #663: a PR-closed cancel is terminal for EVERY redelivery,
 		// including one that carries msg.Resume set (from the retry
 		// sweeper's SubmitResume or a Nak of the previous attempt).

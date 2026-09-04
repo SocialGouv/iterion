@@ -219,21 +219,21 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 	// has no checkpoint and remains a stale delivery to ack/drop.
 	switch preRun.Status {
 	case store.RunStatusCancelled:
-		// Cancelled is terminal for a REDELIVERED launch message,
-		// checkpoint or not: auto-resuming here turned any lost ack of
-		// an operator cancel into a resurrection loop (run 019f8ba3
-		// came back three times, incl. via plain JetStream redelivery
-		// with the runner up, and after every pod roll). The checkpoint
-		// stays on the run doc — an explicit resume (msg.Resume set, or
-		// the resume API) is the only way to continue. A shutdown-drain
-		// whose nak beat the checkpoint write lands here too and now
-		// waits for that explicit resume instead of self-restarting.
+		// Cancelled is terminal for a redelivery — checkpoint or not, resume
+		// or not. Every cloud resume CASes the doc to queued BEFORE it
+		// publishes, so a doc that reads cancelled here was cancelled AFTER
+		// the publish: by an operator, or by stop-on-close. That decision
+		// wins over the message (the runner itself never writes cancelled —
+		// a drain or a lost lease parks failed_resumable), and this read is
+		// the only barrier: the per-run NATS cancel is core NATS, lost when
+		// no runner is subscribed yet. The checkpoint stays on the doc; an
+		// operator's explicit resume re-queues it.
 		//
-		// A PR-closed cancel is terminal even with an explicit resume: the
-		// redelivered message does not carry the cancel, so the reason on
-		// the doc (via store.IsPRClosedCancel, which survives
-		// CancelRunWithReason's "(was <status>: <prior>)" wrapping) is the
-		// only signal that the PR is gone.
+		// A PR-closed cancel keeps its own line: the redelivered message
+		// does not carry the cancel, and the reason on the doc (via
+		// store.IsPRClosedCancel, which survives CancelRunWithReason's
+		// "(was <status>: <prior>)" wrapping) is the only signal that the PR
+		// is gone.
 		if store.IsPRClosedCancel(preRun.Error) {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
@@ -244,15 +244,19 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 				logArgs:     []any{msg.RunID, msg.Resume != nil},
 			}
 		}
-		if msg.Resume == nil {
-			return preconditionOutcome{
-				finalStatus: "cancelled",
-				op:          "ack-already-cancelled",
-				action:      actionAck,
-				level:       logInfo,
-				logFmt:      "runner: run %s is cancelled — dropping redelivery (explicit resume required to continue)",
-				logArgs:     []any{msg.RunID},
-			}
+		level := logInfo
+		if msg.Resume != nil {
+			// A queued resume overridden by a cancel is an operator-visible
+			// decision, not routine housekeeping.
+			level = logWarn
+		}
+		return preconditionOutcome{
+			finalStatus: "cancelled",
+			op:          "ack-cancelled",
+			action:      actionAck,
+			level:       level,
+			logFmt:      "runner: run %s is cancelled (%q) — dropping delivery (resume=%v; an explicit operator resume re-queues it)",
+			logArgs:     []any{msg.RunID, strings.TrimSpace(preRun.Error), msg.Resume != nil},
 		}
 	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
 		if msg.Resume == nil {
