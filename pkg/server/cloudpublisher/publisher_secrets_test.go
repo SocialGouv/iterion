@@ -1,6 +1,7 @@
 package cloudpublisher
 
 import (
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"context"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 		"kubeconfig": {As: "file"},
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{})
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -220,7 +221,7 @@ func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
 		"test_e2e_canary": {As: "file"}, // non-optional, no inline value
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	_, err = p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil)
+	_, err = p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{})
 	if err == nil {
 		t.Fatal("expected launch to fail for an unresolved required secret")
 	}
@@ -246,7 +247,7 @@ func TestResolveAndSealCredentials_OptionalSecretUnresolvedSkips(t *testing.T) {
 		"test_e2e_canary": {As: "file", Optional: true},
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{})
 	if err != nil {
 		t.Fatalf("optional unresolved secret must not fail launch: %v", err)
 	}

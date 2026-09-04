@@ -1,6 +1,7 @@
 package cloudpublisher
 
 import (
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -84,7 +85,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 func (f *poolFixture) resolve(t *testing.T, runID string, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", wf, nil, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", wf, nil, nil, model.ModelOverrides{})
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestWantsFor_narrowsToTheProvidersTheRunPinned(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{
 		"a": &ir.AgentNode{LLMFields: ir.LLMFields{Model: "anthropic/claude-opus-5"}},
 	}}
-	got := wantsFor(wf)
+	got := wantsFor(wf, model.ModelOverrides{})
 	if len(got) == 0 {
 		t.Fatal("a pinned run was left with nothing to ask for")
 	}
@@ -308,7 +309,7 @@ func TestWantsFor_unpinnedRunKeepsTheWholeOrder(t *testing.T) {
 	for _, wf := range []*ir.Workflow{nil, {Nodes: map[string]ir.Node{
 		"a": &ir.AgentNode{LLMFields: ir.LLMFields{Model: ""}},
 	}}} {
-		if got := wantsFor(wf); len(got) != len(poolWantOrder) {
+		if got := wantsFor(wf, model.ModelOverrides{}); len(got) != len(poolWantOrder) {
 			t.Errorf("unpinned run asks for %d want(s), want the full %d", len(got), len(poolWantOrder))
 		}
 	}
@@ -357,7 +358,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 	t.Run("nil broker → warn(pool_disabled)", func(t *testing.T) {
 		buf := bufFor(t)
 		p := &Publisher{logger: iterlog.New(iterlog.LevelInfo, buf)}
-		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", &ir.Workflow{}); g != nil {
+		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", &ir.Workflow{}, model.ModelOverrides{}); g != nil {
 			t.Fatalf("nil broker must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -378,7 +379,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 				LLMFields: ir.LLMFields{Model: "fake-provider/some-model"},
 			},
 		}}
-		if g := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", wf); g != nil {
+		if g := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", wf, model.ModelOverrides{}); g != nil {
 			t.Fatalf("wants==0 must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -396,7 +397,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		pledge.Enabled = false
 		_ = f.pledges.Upsert(context.Background(), pledge)
 
-		if g := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}); g != nil {
+		if g := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}, model.ModelOverrides{}); g != nil {
 			t.Fatalf("no eligible pledge must not grant, got %+v", g)
 		}
 		log := buf.String()
