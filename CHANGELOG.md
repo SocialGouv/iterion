@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.0](https://github.com/SocialGouv/iterion/compare/v3.101.3...v3.102.0) (2026-09-04)
+
+### Features
+
+* **sandbox/kubernetes:** run pods carry resource requests and a soft node spread ([#694](https://github.com/SocialGouv/iterion/issues/694)) ([8243001](https://github.com/SocialGouv/iterion/commit/8243001d56d18f00bc85ef8569f765e54c73384c))
+
+    <details><summary>why</summary>
+
+    A sibling pod that requests nothing scores every node the same, so the scheduler packs a campaign's runs onto whichever node already holds the sandbox image. Measured on a three-worker pool (8 cores each): five of six run pods on one node at 89% CPU while two workers idled, and a behavioural oracle's 300 s application boot budget blown at 459 s — red verdicts on untouched trees, one run burning its 8 h budget on that red.
+
+    </details>
+
 ## [3.101.3](https://github.com/SocialGouv/iterion/compare/v3.101.2...v3.101.3) (2026-09-04)
 
 ### Bug Fixes
