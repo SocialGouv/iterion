@@ -162,18 +162,28 @@ func (s *Server) realWebhookPRForgePRResolver(ctx context.Context, cfg webhooks.
 // PR head. The team connection covering the PR's host+repo comes first: it
 // is the resolution the publish path writes through, so a connection-only
 // integration authorizes without a forge_token binding (an App connection
-// mints its installation token). Without one, the webhook's forge_token
-// binding serves. A non-empty refusal means neither is available.
+// mints its installation token). A connection whose client cannot SERVE —
+// not only one that cannot be built: an App client mints lazily, so its
+// failure is a first-call failure — is passed over for the webhook's
+// forge_token binding, with a Warn. A non-empty refusal means neither is
+// available, and names what was tried.
 func (s *Server) prforgeReplierAPIFor(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, baseURL, projectPath, botID string) (prforgeReplierAPI, string) {
 	host := hostOfURL(baseURL)
+	connRefusal := ""
 	if conn, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath); ok {
 		admin, err := s.forgeAdminFor(ctx, conn)
+		if err == nil {
+			err = preflightForgeClient(ctx, admin)
+		}
 		if err == nil {
 			if api, ok := admin.(prforgeReplierAPI); ok {
 				return api, ""
 			}
-		} else if s.logger != nil {
-			s.logger.Warn("webhooks: connection %s covers %s/%s but its client cannot be built (%v) — reading through the forge_token binding instead", conn.ID, host, projectPath, err)
+			err = fmt.Errorf("provider %s has no replier surface", conn.Provider)
+		}
+		connRefusal = "connection " + conn.ID + " covers " + host + "/" + projectPath + " but its client cannot serve (" + err.Error() + ")"
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s — reading through the forge_token binding instead", connRefusal)
 		}
 	}
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
@@ -181,6 +191,9 @@ func (s *Server) prforgeReplierAPIFor(ctx context.Context, cfg webhooks.Config, 
 		return nil, "forge token resolution failed: " + terr.Error()
 	}
 	if token == "" {
+		if connRefusal != "" {
+			return nil, connRefusal + ", and this webhook has no forge_token binding to fall back on"
+		}
 		return nil, "no forge token resolved and no team connection covers " + host + "/" + projectPath + " (bind forge_token on the webhook, or connect a forge integration for this repo)"
 	}
 	return prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token), ""

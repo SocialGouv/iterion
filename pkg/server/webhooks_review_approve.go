@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -101,8 +102,9 @@ func reviewApproveReason(cmd, args string) (reason string, ok bool) {
 // The status is written through the team connection's admin client — the
 // resolution publish and the gate reconciler use, so a GitHub App
 // integration mints its per-call installation token, which carries the
-// statuses scope — or, for a hand-owned webhook with no connection row,
-// through its forge_token binding.
+// statuses scope — or through the webhook's forge_token binding, for a
+// hand-owned webhook with no connection row and for a connection whose
+// client cannot serve (resolveApproveWritePath).
 func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, reason, payloadHash, srcIP string) {
 	meta := prforgeNoteMeta(p)
 	filtered := func(why string) {
@@ -352,37 +354,57 @@ type approveWritePath struct {
 // through. Preferred: the team connection's admin client — the same
 // resolution publish and the gate reconciler use, so an App integration
 // mints its per-call installation token (which carries the statuses scope).
-// Without a connection row, the webhook's own forge_token binding serves
-// (the hand-owned setup docs/webhooks.md describes). A non-empty refusal is
-// a configuration miss with nothing to write through; an error is a
-// forge-side failure.
+// The webhook's own forge_token binding serves when no connection row
+// covers the repo (the hand-owned setup docs/webhooks.md describes) AND
+// when the covering connection's client cannot serve — an App client mints
+// lazily, so it is preflighted here rather than discovered by the status
+// write. A non-empty refusal is a configuration miss with nothing to write
+// through; an error is a forge-side failure with no other credential to
+// fall back on.
 func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, reviewer, baseURL, host, projectPath string) (approveWritePath, string, error) {
 	conn, connOK := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath)
+	var connErr error
 	if connOK {
 		gc, err := s.gateClientFor(ctx, conn)
-		if err != nil {
-			return approveWritePath{conn: conn, connOK: true}, "", err
+		if err == nil && gc != nil {
+			err = preflightForgeClient(ctx, gc)
 		}
-		if gc == nil {
+		switch {
+		case err != nil:
+			connErr = err
+			if s.logger != nil {
+				s.logger.Warn("webhooks: /revi approve on %s/%s: connection %s covers the repo but its client cannot serve (%v) — writing through the webhook's forge_token binding instead", host, projectPath, conn.ID, err)
+			}
+		case gc == nil:
 			return approveWritePath{conn: conn, connOK: true}, "provider " + string(conn.Provider) + " has no commit-status capability", nil
+		default:
+			return approveWritePath{gc: gc, conn: conn, connOK: true, via: "connection " + conn.ID}, "", nil
 		}
-		return approveWritePath{gc: gc, conn: conn, connOK: true, via: "connection " + conn.ID}, "", nil
 	}
 	token, err := s.resolveForgeToken(ctx, cfg, reviewer)
 	if err != nil {
-		return approveWritePath{}, "", err
+		return approveWritePath{conn: conn, connOK: connOK}, "", err
 	}
 	if token == "" {
+		if connErr != nil {
+			// The connection is the only credential this lane holds and it
+			// cannot serve: a forge-side failure, told to the maintainer
+			// through whichever identity still resolves.
+			return approveWritePath{conn: conn, connOK: true}, "", connErr
+		}
 		return approveWritePath{}, "no team connection covers " + host + "/" + projectPath + " and this webhook has no forge_token binding — connect a forge integration for this repo, or bind forge_token on the webhook", nil
 	}
 	gc, ok := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token).(forgeGateClient)
 	if !ok {
 		return approveWritePath{}, "provider " + string(provider) + " has no commit-status capability", nil
 	}
-	if s.logger != nil {
+	via := "forge_token binding"
+	if connErr != nil {
+		via += " (connection " + conn.ID + " cannot serve: " + connErr.Error() + ")"
+	} else if s.logger != nil {
 		s.logger.Info("webhooks: /revi approve on %s/%s: no team connection covers this repo, writing through the webhook's forge_token binding", host, projectPath)
 	}
-	return approveWritePath{gc: gc, via: "forge_token binding"}, "", nil
+	return approveWritePath{gc: gc, via: via}, "", nil
 }
 
 // approveFilteredWithReply is the configuration-refusal path: audit
@@ -430,46 +452,59 @@ func (s *Server) updateApproveDelivery(ctx context.Context, d webhooks.Delivery)
 
 // postApproveReply best-effort tells the maintainer on the PR why the
 // approve did not land: through the resolved connection when there is one,
-// else the team connection covering the repo, else the webhook's forge_token
-// binding — and nothing at all when the payload's host is not one the token
-// may be sent to. Silent on every miss: the refusal is already on the
-// delivery audit and in the log, and a failed comment must not compound it.
+// else the team connection covering the repo; when the connection posts
+// nothing — none covers the repo, or its client cannot serve — through the
+// webhook's forge_token binding, the other identity this lane holds. The
+// token is never sent to a payload host outside the allowlist. Silent on
+// every miss: the refusal is already on the delivery audit and in the log,
+// and a failed comment must not compound it.
 func (s *Server) postApproveReply(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, conn forge.Connection, connOK bool, body string) {
-	if !connOK {
-		baseURL, refusal := prforgeBaseURL(cfg, p)
-		if refusal != "" {
-			return
-		}
+	baseURL, refusal := prforgeBaseURL(cfg, p)
+	if !connOK && refusal == "" {
 		if c, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", hostOfURL(baseURL), p.ProjectPath); ok {
 			conn, connOK = c, true
-		} else if token, err := s.resolveForgeToken(ctx, cfg, s.roleBots().Reviewer); err == nil && token != "" {
-			if c, ok := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token).(forgeIssueCommenter); ok {
-				if _, err := c.CommentIssue(ctx, p.ProjectPath, int(p.IssueNumber), body); err != nil && s.logger != nil {
-					s.logger.Debug("webhooks: approve reply to %s#%d not posted: %v", p.ProjectPath, p.IssueNumber, err)
-				}
-			}
-			return
 		}
 	}
-	if connOK {
-		s.postApproveRejection(ctx, conn, p.ProjectPath, int(p.IssueNumber), body)
+	if connOK && s.postApproveRejection(ctx, conn, p.ProjectPath, int(p.IssueNumber), body) == nil {
+		return
+	}
+	if refusal != "" {
+		return
+	}
+	token, err := s.resolveForgeToken(ctx, cfg, s.roleBots().Reviewer)
+	if err != nil || token == "" {
+		return
+	}
+	c, ok := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token).(forgeIssueCommenter)
+	if !ok {
+		return
+	}
+	if _, err := c.CommentIssue(ctx, p.ProjectPath, int(p.IssueNumber), body); err != nil && s.logger != nil {
+		s.logger.Debug("webhooks: approve reply to %s#%d not posted: %v", p.ProjectPath, p.IssueNumber, err)
 	}
 }
 
-// postApproveRejection best-effort posts why a /revi approve did not land on
-// the PR the command sat on, through the connection the approve wrote (or
-// tried to write) through. Silent on every miss — the failure is already on
-// the delivery audit; a comment failure on top of it must not compound the
-// confusion.
-func (s *Server) postApproveRejection(ctx context.Context, conn forge.Connection, repo string, number int, body string) {
+// postApproveRejection posts why a /revi approve did not land on the PR the
+// command sat on, through the connection the approve wrote (or tried to
+// write) through. The error is for the caller's fallback only — the failure
+// is already on the delivery audit; a comment failure on top of it must not
+// compound the confusion, so it is logged at Debug and never surfaced.
+func (s *Server) postApproveRejection(ctx context.Context, conn forge.Connection, repo string, number int, body string) error {
 	commenter, err := s.issueCommenterFor(ctx, conn)
-	if err != nil || commenter == nil {
+	if err == nil && commenter == nil {
+		err = fmt.Errorf("provider %s has no comment capability", conn.Provider)
+	}
+	if err != nil {
 		if s.logger != nil {
 			s.logger.Debug("webhooks: approve-rejection reply to %s#%d not posted (no comment client for %s: %v)", repo, number, conn.Provider, err)
 		}
-		return
+		return err
 	}
-	if _, err := commenter.CommentIssue(ctx, repo, number, body); err != nil && s.logger != nil {
-		s.logger.Debug("webhooks: approve-rejection reply to %s#%d not posted: %v", repo, number, err)
+	if _, err := commenter.CommentIssue(ctx, repo, number, body); err != nil {
+		if s.logger != nil {
+			s.logger.Debug("webhooks: approve-rejection reply to %s#%d not posted: %v", repo, number, err)
+		}
+		return err
 	}
+	return nil
 }

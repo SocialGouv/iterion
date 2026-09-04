@@ -136,6 +136,24 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 	return s.forgeAdminForToken(conn.Provider, conn.BaseURL(), token)
 }
 
+// forgePreflighter is the optional capability of a forge client whose
+// construction is lazy: a GitHub App client mints its installation token on
+// its first call, so a client forgeAdminFor built without error can still be
+// unable to serve. A lane that holds another credential asks before acting.
+type forgePreflighter interface {
+	Preflight(ctx context.Context) error
+}
+
+// preflightForgeClient reports whether a freshly built forge client can
+// serve. A client without the capability is taken at its construction's
+// word — its credential was opened and validated when it was built.
+func preflightForgeClient(ctx context.Context, c any) error {
+	if p, ok := c.(forgePreflighter); ok {
+		return p.Preflight(ctx)
+	}
+	return nil
+}
+
 // githubAppConfigForTenant returns the GitHub-App identity (app id + private key
 // + slug) used to mint installation tokens for the least-privilege github_app
 // path. It prefers the tenant's own manifest-created App (its sealed private

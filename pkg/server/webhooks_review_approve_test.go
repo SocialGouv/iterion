@@ -645,21 +645,48 @@ type fakeGitHubForge struct {
 	headSHA  string
 	statuses []map[string]string
 	comments []string
+	// mintFail makes the installation-token mint answer GitHub's
+	// permissions-not-granted 422 — the shape of an installation whose
+	// grant lags the permission set iterion requests.
+	mintFail bool
+	mints    int
+	// bearers records, per endpoint, the Authorization values the forge
+	// saw — the proof of WHICH credential served a call: the minted
+	// installation token (ghs_…) or the webhook's hand-owned binding.
+	bearers map[string][]string
 }
 
 func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	t.Helper()
-	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234"}
+	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234", bearers: map[string][]string{}}
 	reply := func(w http.ResponseWriter, code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	seen := func(endpoint string, r *http.Request) {
+		f.mu.Lock()
+		f.bearers[endpoint] = append(f.bearers[endpoint], r.Header.Get("Authorization"))
+		f.mu.Unlock()
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		f.mints++
+		fail := f.mintFail
+		f.mu.Unlock()
+		if fail {
+			reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "The permissions requested are not granted to this installation."})
+			return
+		}
+		reply(w, http.StatusCreated, map[string]any{"token": "ghs_inst", "expires_at": "2099-01-01T00:00:00Z"})
+	})
+	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, r *http.Request) {
+		seen("user", r)
 		reply(w, http.StatusOK, map[string]any{"login": "iterion-bot", "id": 1})
 	})
 	mux.HandleFunc("GET /api/v3/repos/acme/widgets/collaborators/{user}/permission", func(w http.ResponseWriter, r *http.Request) {
+		seen("permission", r)
 		f.mu.Lock()
 		role, ok := f.perms[r.PathValue("user")]
 		f.mu.Unlock()
@@ -669,7 +696,8 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		}
 		reply(w, http.StatusOK, map[string]any{"permission": role, "role_name": role})
 	})
-	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7", func(w http.ResponseWriter, r *http.Request) {
+		seen("pull", r)
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		reply(w, http.StatusOK, map[string]any{
@@ -680,6 +708,7 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		})
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/statuses/{sha}", func(w http.ResponseWriter, r *http.Request) {
+		seen("status", r)
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		body["sha"] = r.PathValue("sha")
@@ -689,6 +718,7 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		reply(w, http.StatusCreated, map[string]any{"id": 1})
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		seen("comment", r)
 		var body struct {
 			Body string `json:"body"`
 		}
@@ -707,6 +737,19 @@ func (f *fakeGitHubForge) snapshot() (statuses []map[string]string, comments []s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]string(nil), f.statuses...), append([]string(nil), f.comments...)
+}
+
+// bearersFor returns the Authorization values one endpoint received.
+func (f *fakeGitHubForge) bearersFor(endpoint string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.bearers[endpoint]...)
+}
+
+func (f *fakeGitHubForge) mintCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mints
 }
 
 // seedForgeToken stores a sealed team-scoped forge_token the webhook pins

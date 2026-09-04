@@ -449,6 +449,19 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: a.token}, nil
 }
 
+// Preflight mints (or reuses) the installation token and nothing else, so a
+// caller learns BEFORE acting whether the installation can serve. The client
+// is lazy — construction never touches the network — and a mint that fails
+// (a grant narrower than the requested permission set, a rotated App key, a
+// suspended installation) otherwise surfaces on the first real call, past
+// the point where a caller holding another credential could still switch.
+// The token it obtains is cached, so a successful preflight costs the calls
+// that follow nothing.
+func (a *AppClient) Preflight(ctx context.Context) error {
+	_, err := a.rest(ctx)
+	return err
+}
+
 func (a *AppClient) Provider() forge.Provider { return forge.ProviderGitHub }
 
 // WhoAmI returns the App identity — an installation token can't call /user,
