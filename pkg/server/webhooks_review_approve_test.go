@@ -1124,22 +1124,26 @@ func TestReviewApprove_AllowlistDoesNotBypassTheRoleFloor(t *testing.T) {
 	}
 }
 
-// The review bot not being enabled on the webhook is a configuration
-// refusal like every other: it replies with the reason instead of staying
-// silent.
-func TestReviewApprove_BotNotPermittedRepliesWithReason(t *testing.T) {
+// The review bot not being enabled on the webhook is refused the way the
+// generic command lane refuses the same condition: silently. This check runs
+// before ANY check on the sender, so a reply would let any commenter drive a
+// bot comment naming the configured reviewer — once per comment, with no
+// dedupe. The reason stays on the delivery audit row.
+func TestReviewApprove_BotNotPermittedRefusesSilently(t *testing.T) {
 	s, gc, commenter, cfg, pt := approveWorld(t)
 	cfg.BotIDs = []string{"feature-dev"}
 	w := httptest.NewRecorder()
-	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("mallory"), prforge.EventHeaderIssueComment, pt))
 	if w.Code != http.StatusOK || gc.setCalls != 0 {
 		t.Fatalf("status=%d setCalls=%d body=%s", w.Code, gc.setCalls, w.Body.String())
 	}
-	if len(commenter.bodies) != 1 || !approveReplyContains(commenter.bodies[0], "@maintainer-jane", "not enabled on this webhook") {
-		t.Fatalf("want one reply naming the disabled review bot, got %v", commenter.bodies)
+	if len(commenter.bodies) != 0 {
+		t.Fatalf("an unauthenticated commenter must not be able to drive a bot reply, got %v", commenter.bodies)
 	}
-	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered {
-		t.Fatalf("want one filtered row, got %+v", rows)
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered ||
+		!approveReplyContains(rows[0].Error, "not enabled on this webhook") {
+		t.Fatalf("want one filtered row naming the disabled review bot, got %+v", rows)
 	}
 }
 

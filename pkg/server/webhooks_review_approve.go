@@ -128,10 +128,19 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		return
 	}
 	// The review bot must be permitted on this webhook — same admission the
-	// normal command path applies before authorizing a /command.
+	// normal command path applies before authorizing a /command, and refused
+	// the same way it refuses: SILENTLY. This runs before ANY check on the
+	// sender (`/revi approve` is intercepted ahead of the scope/route/bot
+	// admission, and nothing upstream filters by author), so replying would
+	// let any commenter make the org's forge identity post — once per
+	// comment, with no dedupe — and name the configured reviewer bot. The
+	// reason lands on the delivery audit row and in the log.
 	reviewer := s.roleBots().Reviewer
 	if !cfg.AllowsBot(reviewer) {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: the review bot "+reviewer+" is not enabled on this webhook", payloadHash, srcIP)
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s %s#%d /revi approve by @%s refused: the review bot %s is not enabled on this webhook", provider, p.ProjectPath, p.IssueNumber, p.AuthorLogin, reviewer)
+		}
+		filtered("the review bot " + reviewer + " is not enabled on this webhook")
 		return
 	}
 	// Replay check, before any forge I/O. A prior delivery of this comment
