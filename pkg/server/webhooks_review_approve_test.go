@@ -25,6 +25,12 @@ var (
 	_ forgeIssueCommenter = (*fgithub.AdminClient)(nil)
 	_ forgeGateClient     = (*fforgejo.AdminClient)(nil)
 	_ forgeIssueCommenter = (*fforgejo.AdminClient)(nil)
+	// The command gates read commenter roles through the connection's admin
+	// client when one covers the repo: every kind the resolver can return
+	// must carry the replier surface, the App client included.
+	_ prforgeReplierAPI = (*fgithub.AdminClient)(nil)
+	_ prforgeReplierAPI = (*fgithub.AppClient)(nil)
+	_ prforgeReplierAPI = (*fforgejo.AdminClient)(nil)
 )
 
 func TestReviewApproveReason(t *testing.T) {
@@ -930,5 +936,44 @@ func TestReviewApprove_YoungAcceptedClaimIsDuplicate(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if gc.setCalls != 0 || resp["status"] != webhooks.StatusDuplicate {
 		t.Fatalf("a young accepted claim must short-circuit as duplicate (setCalls=%d resp=%v)", gc.setCalls, resp)
+	}
+}
+
+// A connection-only integration (a team connection covers the repo, no
+// forge_token binding on the webhook): the real gate must read the
+// commenter's role through the connection's client — the same resolution
+// the status write already uses — and the approve must land.
+func TestReviewApprove_ConnectionOnlyIntegrationAuthorizesWithoutToken(t *testing.T) {
+	s := newWebhookTestServer(t)
+	f := newFakeGitHubForge(t)
+	f.perms["maintainer-jane"] = "maintain"
+	conn := forge.Connection{
+		ID: "c-pat", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
+		Status: forge.StatusActive, ForgeBaseURL: f.srv.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
+	}
+	sealed, err := forge.SealPAT(s.sealer, conn.ID, "ghp_connection_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SealedPayload = sealed
+	conns := forge.NewMemoryConnectionStore()
+	if err := conns.Create(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeConnections = conns
+	// No generic secret store: resolveForgeToken yields "". No gate stub and
+	// no gate-client stub: the real gate and the real admin client both talk
+	// to the fake forge through the connection.
+	cfg, pt := ghConfig(t, s)
+	cfg.ForgeBaseURL = f.srv.URL
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	statuses, comments := f.snapshot()
+	if len(statuses) != 1 || statuses[0]["state"] != "success" || statuses[0]["context"] != "revi/review" {
+		t.Fatalf("connection-only integration must approve through the connection, got statuses=%v comments=%v body=%s", statuses, comments, w.Body.String())
 	}
 }

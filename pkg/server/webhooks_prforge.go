@@ -146,16 +146,44 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 // the bot's own forge token — the same credential the command gate resolved.
 // The head/base branches feed the launch (checkout ref + branch vars).
 func (s *Server) realWebhookPRForgePRResolver(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error) {
-	token, terr := s.resolveForgeToken(ctx, cfg, route.BotID)
-	if terr != nil || token == "" {
-		return forge.PullRef{}, fmt.Errorf("no forge token resolved: %v", terr)
-	}
 	baseURL, refusal := prforgeBaseURL(cfg, p)
 	if refusal != "" {
 		return forge.PullRef{}, fmt.Errorf("forge base URL: %s", refusal)
 	}
-	api := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
+	api, apiRefusal := s.prforgeReplierAPIFor(ctx, cfg, provider, baseURL, p.ProjectPath, route.BotID)
+	if apiRefusal != "" {
+		return forge.PullRef{}, fmt.Errorf("%s", apiRefusal)
+	}
 	return api.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
+}
+
+// prforgeReplierAPIFor resolves the client a GitHub/Forgejo webhook lane
+// reads the forge through — the commenter's role, the bot's identity, the
+// PR head. The team connection covering the PR's host+repo comes first: it
+// is the resolution the publish path writes through, so a connection-only
+// integration authorizes without a forge_token binding (an App connection
+// mints its installation token). Without one, the webhook's forge_token
+// binding serves. A non-empty refusal means neither is available.
+func (s *Server) prforgeReplierAPIFor(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, baseURL, projectPath, botID string) (prforgeReplierAPI, string) {
+	host := hostOfURL(baseURL)
+	if conn, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath); ok {
+		admin, err := s.forgeAdminFor(ctx, conn)
+		if err == nil {
+			if api, ok := admin.(prforgeReplierAPI); ok {
+				return api, ""
+			}
+		} else if s.logger != nil {
+			s.logger.Warn("webhooks: connection %s covers %s/%s but its client cannot be built (%v) — reading through the forge_token binding instead", conn.ID, host, projectPath, err)
+		}
+	}
+	token, terr := s.resolveForgeToken(ctx, cfg, botID)
+	if terr != nil {
+		return nil, "forge token resolution failed: " + terr.Error()
+	}
+	if token == "" {
+		return nil, "no forge token resolved and no team connection covers " + host + "/" + projectPath + " (bind forge_token on the webhook, or connect a forge integration for this repo)"
+	}
+	return prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token), ""
 }
 
 // buildPRForgeCommandVars composes the launch vars for a generic command on a
@@ -210,20 +238,20 @@ func prforgeNoteMeta(p prforge.ParsedNote) webhookEventMeta {
 }
 
 // realWebhookPRForgeCommandGate is the production replier gate for a GitHub /
-// Forgejo command comment: resolve the bot's forge token, reject the bot's
-// own comment (loop-guard), then authorize the commenter — allowlist OR a
+// Forgejo command comment: resolve the forge client (the covering connection,
+// else the bot's forge_token binding), reject the bot's own comment
+// (loop-guard), then authorize the commenter — allowlist OR a
 // repo-permission >= the route's MinReplierRole (falling back to the webhook
 // default). ok=false + reason for benign refusals; err only for infra failure.
 func (s *Server) realWebhookPRForgeCommandGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
-	token, terr := s.resolveForgeToken(ctx, cfg, route.BotID)
-	if terr != nil || token == "" {
-		return false, "no forge token resolved (configure a forge_token binding)", nil
-	}
 	baseURL, refusal := prforgeBaseURL(cfg, p)
 	if refusal != "" {
 		return false, refusal, nil
 	}
-	api := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
+	api, apiRefusal := s.prforgeReplierAPIFor(ctx, cfg, provider, baseURL, p.ProjectPath, route.BotID)
+	if apiRefusal != "" {
+		return false, apiRefusal, nil
+	}
 	if id, err := api.WhoAmI(ctx); err == nil && id.Login != "" && strings.EqualFold(id.Login, p.AuthorLogin) {
 		return false, "self comment (loop-guard)", nil
 	}
@@ -294,10 +322,6 @@ func prforgeBaseURLFromRef(ref string) (baseURL, refusal string) {
 // write floor this gate enforces). Fail-closed on token resolution, like
 // the GitLab twin.
 func (s *Server) realWebhookPRForgeReviewRequestGate(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (bool, string, error) {
-	token, terr := s.resolveForgeToken(ctx, cfg, botID)
-	if terr != nil || token == "" {
-		return false, "re-request refused: no forge token resolved (configure a forge_token binding)", nil
-	}
 	baseURL := cfg.ForgeBaseURL
 	if baseURL == "" {
 		var refusal string
@@ -306,7 +330,10 @@ func (s *Server) realWebhookPRForgeReviewRequestGate(ctx context.Context, cfg we
 			return false, refusal, nil
 		}
 	}
-	api := prforgeReplierClient(cfg.Provider, s.forgeHTTPClient(), baseURL, token)
+	api, apiRefusal := s.prforgeReplierAPIFor(ctx, cfg, cfg.Provider, baseURL, p.ProjectPath, botID)
+	if apiRefusal != "" {
+		return false, "re-request refused: " + apiRefusal, nil
+	}
 	if prforgeInAllowlist(cfg.AuthorizedRepliers, p.SenderLogin) {
 		return true, "allowlist", nil
 	}
