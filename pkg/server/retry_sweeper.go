@@ -130,7 +130,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// The read is a guard, not a gate: a store that cannot answer leaves
 	// the retry row as the authority, loudly.
 	if run, lerr := s.cfg.Store.LoadRun(runCtx, ref.ID); lerr != nil {
-		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone", ref.ID, lerr)
+		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
 	} else if run != nil && run.FailureCode == store.FailureDLQParked {
 		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
 			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator replay (iterion remote admin dlq) or resume wakes it")
