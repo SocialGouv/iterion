@@ -425,6 +425,20 @@ mcp_server remote_tools:
 
 Supported transports are `stdio`, `http`, and `sse`. Workflow `mcp:` blocks may set `autoload_project`, `servers`, and `disable`; node blocks use `inherit`, `servers`, and `disable`.
 
+Two machine-level dials sit under the DSL, both **on** unless set to `0` or
+`false`:
+
+| Variable | Effect when disabled |
+|---|---|
+| `ITERION_MCP_AUTOLOAD` | The target repo's `.mcp.json` is never read, whatever `autoload_project` says. |
+| `ITERION_MCP_HEALTHCHECK` | Skips the pre-flight probe of the resolved catalog. |
+
+The health check runs on the `iterion run` / `iterion resume` paths just
+before the engine starts, so a misconfigured server fails the run with
+`MCP health check failed: …` instead of surfacing as a broken tool several
+nodes in ([pkg/runview/executor.go:MCPHealthCheck](../pkg/runview/executor.go)).
+Turn it off when a server is reachable only once the run is under way.
+
 The resolved set is **authoritative** on `claude_code`: iterion passes it via
 `--mcp-config --strict-mcp-config`, so the operator's personal user-scope MCP
 servers (`~/.claude.json`) do NOT boot inside bot nodes — a node's `mcp:`
