@@ -409,16 +409,37 @@ func TestReadyzNeverMisreportsAFinishedCheck(t *testing.T) {
 //
 // Mutation coverage: make the losing probe report "stalled" instead of
 // waiting on the shared result → 7 of these 8 come back 503.
+//
+// The oracle is "never two pings of one check IN FLIGHT AT ONCE", not "the
+// ping ran exactly once". The two differ only by scheduling: the pile-up
+// window below is a sleep, so on a loaded machine a goroutine can reach the
+// handler after the shared ping already answered, and legitimately start a
+// fresh one — the registry entry is deleted on completion precisely so the
+// next probe gets a fresh answer rather than a stale one. Asserting the
+// count made that a failure (seen in CI: "the check ran 3 times"), while the
+// property the pod's life depends on — one dependency, one concurrent ping,
+// so a driver that never returns cannot strand N goroutines — held
+// throughout. Measuring concurrency directly keeps the mutation coverage: a
+// losing probe that pings on its own instead of sharing puts 8 pings on the
+// blocked gate at once, and peak reads 8.
 func TestReadyzConcurrentProbesShareOneAnswer(t *testing.T) {
 	t.Parallel()
 
 	gate := make(chan struct{})
-	var launches atomic.Int32
+	var launches, live, peak atomic.Int32
 	srv := New(Config{
 		ReadinessTimeout: time.Second,
 		ReadinessChecks: map[string]ReadinessCheck{
 			"mongo": {Critical: true, Ping: func(ctx context.Context) error {
 				launches.Add(1)
+				n := live.Add(1)
+				for {
+					got := peak.Load()
+					if n <= got || peak.CompareAndSwap(got, n) {
+						break
+					}
+				}
+				defer live.Add(-1)
 				<-gate
 				return nil
 			}},
@@ -448,8 +469,15 @@ func TestReadyzConcurrentProbesShareOneAnswer(t *testing.T) {
 			break
 		}
 	}
-	if got := launches.Load(); got != 1 {
-		t.Errorf("the check ran %d times for %d overlapping probes, want 1 shared run", got, probes)
+	if got := peak.Load(); got != 1 {
+		t.Errorf("%d pings of one check were in flight at once, want 1 — overlapping probes must share the answer", got)
+	}
+	// Non-vacuity: with the ping held on the gate for the whole pile-up
+	// window, probes that arrive during it MUST share. All eight launching
+	// their own would mean nothing was ever shared and the peak above only
+	// read 1 because they ran one after another.
+	if got := launches.Load(); got >= probes {
+		t.Errorf("the check ran %d times for %d probes — nothing was shared", got, probes)
 	}
 }
 
