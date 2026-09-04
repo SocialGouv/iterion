@@ -201,6 +201,27 @@ that would defeat determinism:
 Symlinks, devices, sockets, and other non-regular entries are
 **rejected** at pack time with a clear error.
 
+## Extraction limits
+
+Unpacking is bounded so a hostile or accidentally huge archive cannot
+exhaust the host:
+
+| Cap | Default | Override |
+|---|---|---|
+| Total uncompressed bytes | 256 MiB | `ITERION_BUNDLE_MAX_BYTES` |
+| Number of archive entries | 10000 | `ITERION_BUNDLE_MAX_ENTRIES` |
+
+The entry cap defuses archives made of very many tiny files (inode
+exhaustion). The byte cap is enforced against bytes actually written, not
+against the header's declared size — a crafted archive that understates its
+entries is stopped mid-copy as soon as the budget runs out
+([pkg/bundle/tar.go:writeFile](../pkg/bundle/tar.go)). Extraction also
+refuses absolute paths, `..` traversal, and any component that is a symlink
+escaping the bundle root.
+
+Both variables are read at extraction time, so raising one for a legitimately
+large bundle takes no rebuild — only a re-run with the variable set.
+
 ## Troubleshooting
 
 **`bundle: re-extract <path> required (cache miss; original archive absent)`**
@@ -215,6 +236,12 @@ install or downgrade the bundle (set `schema_version: 1` in
 **`bundle skill "X" shadowed by existing workspace entry`**
 A skill with the same name already exists at `<workDir>/.claude/skills/`.
 The workspace copy wins — rename either to disambiguate.
+
+**`bundle: total size exceeds limit (N bytes)`** /
+**`bundle: too many entries (>N)`**
+The archive is past an extraction cap (see *Extraction limits*). Raise
+`ITERION_BUNDLE_MAX_BYTES` / `ITERION_BUNDLE_MAX_ENTRIES` if the bundle is
+legitimately that big — otherwise the archive is not what you think it is.
 
 **`bundle/pack: symlinks not allowed`**
 The packer refuses symlinks to keep the archive content-stable. Move
