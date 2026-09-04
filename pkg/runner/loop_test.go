@@ -554,6 +554,134 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	}
 }
 
+// admLeaseChecker plugs a scripted IsRunLocked answer into the admission
+// path — the ADR-095 lease is the queue sweeper's authority too, so this
+// interface must stay in step with the sweeper's.
+type admLeaseChecker struct {
+	locked map[string]bool
+	err    error
+}
+
+func (f *admLeaseChecker) IsRunLocked(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.locked[runID], nil
+}
+
+// TestAdoptStaleRunning_OrphanIsPromotedToResume pins the admission
+// path's #669 part 2 fix: a `running` doc with no live NATS-KV lease is
+// an orphan (its holder pod died before writing a terminal status),
+// and admission must CAS it to failed_resumable + convert the delivery
+// into a resume — not burn the message's MaxDeliver on
+// `cannot resume run … with status "running"`.
+func TestAdoptStaleRunning_OrphanIsPromotedToResume(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID:           "run-orphan",
+		TenantID:     "team-1",
+		OwnerID:      "u1",
+		WorkflowName: "wf",
+		Status:       store.RunStatusRunning,
+		Checkpoint:   &store.Checkpoint{NodeID: "n1"},
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	r := &Runner{
+		cfg:                Config{Store: st, Logger: iterlog.Nop()},
+		leaseCheckOverride: &admLeaseChecker{locked: map[string]bool{}}, // no lease → orphan
+	}
+	msg := &queue.RunMessage{RunID: "run-orphan", TenantID: "team-1", OwnerID: "u1"}
+	out := r.resolveDeliveryPreconditions(msg)
+	if !out.proceed {
+		t.Fatalf("orphan admission did not proceed: %+v — a `running` doc + no lease is exactly the bug this fix exists to catch", out)
+	}
+	if msg.Resume == nil {
+		t.Fatalf("msg.Resume still nil after orphan promotion — Engine.Resume will now throw `cannot resume run … with status running`, i.e. the friction is unfixed")
+	}
+	got, err := st.LoadRun(ctx, "run-orphan")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status after promote = %s, want failed_resumable (the CAS to resumable status is what makes the resume runnable)", got.Status)
+	}
+	if got.FailureCode != store.FailureProcessOrphaned {
+		t.Fatalf("FailureCode after promote = %q, want PROCESS_ORPHANED (audit trail for the orphan-adoption path)", got.FailureCode)
+	}
+}
+
+// A live-lease case must NOT promote: another pod holds the run.
+func TestAdoptStaleRunning_LiveLeaseAbstains(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID:           "run-alive",
+		TenantID:     "team-1",
+		OwnerID:      "u1",
+		WorkflowName: "wf",
+		Status:       store.RunStatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	r := &Runner{
+		cfg:                Config{Store: st, Logger: iterlog.Nop()},
+		leaseCheckOverride: &admLeaseChecker{locked: map[string]bool{"run-alive": true}},
+	}
+	msg := &queue.RunMessage{RunID: "run-alive", TenantID: "team-1", OwnerID: "u1"}
+	out := r.resolveDeliveryPreconditions(msg)
+	if !out.proceed {
+		t.Fatalf("live-lease running should proceed to per-run lock, got %+v", out)
+	}
+	if msg.Resume != nil {
+		t.Fatalf("live-lease running got Resume set — would clobber the live owner's checkpoint")
+	}
+	got, err := st.LoadRun(ctx, "run-alive")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusRunning {
+		t.Fatalf("live-lease running was flipped to %s — the owner would then lose its checkpoint claim", got.Status)
+	}
+}
+
+// No lease checker wired (local mode, tests) → today's fall-through
+// behaviour is preserved: proceed with the doc as-is, no CAS.
+func TestAdoptStaleRunning_NoCheckerFallsThrough(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: "run-no-checker", TenantID: "team-1", OwnerID: "u1",
+		WorkflowName: "wf", Status: store.RunStatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: "run-no-checker", TenantID: "team-1", OwnerID: "u1"}
+	out := r.resolveDeliveryPreconditions(msg)
+	if !out.proceed {
+		t.Fatalf("no-checker fall-through must proceed, got %+v", out)
+	}
+	if msg.Resume != nil {
+		t.Fatalf("no-checker path must NOT synthesize a resume (the lease-truth is missing — a wrong promote would race)")
+	}
+	got, err := st.LoadRun(ctx, "run-no-checker")
+	if err != nil || got.Status != store.RunStatusRunning {
+		t.Fatalf("status = %s (err %v), want running (no-checker fall-through is a no-op)", got.Status, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // injectCredentials / deleteRunSecrets
 // ---------------------------------------------------------------------------

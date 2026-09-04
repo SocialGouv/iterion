@@ -258,8 +258,106 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 			logFmt:      "runner: run %s already in status %s — dropping stale delivery",
 			logArgs:     []any{msg.RunID, preRun.Status},
 		}
+	case store.RunStatusRunning:
+		// A `running` document + no live NATS-KV lease is an orphaned
+		// run: the holder pod died before its terminal write. Without
+		// this case a redelivered resume message would hit Engine.Resume
+		// with `running`, throw `cannot resume run … with status
+		// "running"`, and burn every retry — up to eight in a couple of
+		// minutes — before the DLQ park. Observed live 2026-09-03 (#669
+		// part 2): seven redeliveries in two minutes, then DLQ_PARKED
+		// announced as a quota pause.
+		if adopted := r.adoptStaleRunning(msg, preRun); adopted != nil {
+			return *adopted
+		}
 	}
 	return preconditionOutcome{proceed: true, preRun: preRun}
+}
+
+// adoptStaleRunning promotes an orphaned `running` run to
+// `failed_resumable` and converts the delivery into a resume so the
+// checkpoint the doc still points at is honoured. Returns nil when the
+// lease is present (the run has a live owner — abstain and let the
+// existing per-run lock CAS handle the race), the lease check is not
+// wired, or the lease/CAS probe fails (the orphan sweeper's 60s tick
+// remains the reconciliation net). Never mutates preRun.Status on the
+// caller's copy — the CAS is the only truth.
+func (r *Runner) adoptStaleRunning(msg *queue.RunMessage, preRun *store.Run) *preconditionOutcome {
+	checker := r.resolveLeaseChecker()
+	if checker == nil {
+		return nil
+	}
+	leaseCtx, leaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer leaseCancel()
+	locked, lerr := checker.IsRunLocked(leaseCtx, msg.RunID)
+	if lerr != nil {
+		// Lease unknown — fail safe: the sweeper's periodic probe will
+		// notice the same orphan later. A single warn per attempt so a
+		// persistent probe outage is visible.
+		return &preconditionOutcome{
+			proceed: true,
+			preRun:  preRun,
+			level:   logWarn,
+			logFmt:  "runner: run %s in status running: lease probe failed (%v) — falling through to admission; the sweeper is the reconciliation net",
+			logArgs: []any{msg.RunID, lerr},
+		}
+	}
+	if locked {
+		// Live owner — this delivery is racing an actual in-flight run;
+		// the per-run lock in processOne is the authoritative gate.
+		return nil
+	}
+	// Orphan: CAS to failed_resumable and hand the delivery back as a
+	// resume so JetStream redelivery uses the checkpoint the run doc
+	// preserved. UpdateRunOutcome is a CAS on the expected status set,
+	// so a peer that raced us to the same conclusion loses without
+	// harm. Detach the write ctx: the caller has a very short LoadRun
+	// budget above and Shutdown may be firing.
+	casCtx, casCancel := context.WithTimeout(
+		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		5*time.Second)
+	defer casCancel()
+	changed, cerr := r.cfg.Store.UpdateRunOutcome(casCtx, msg.RunID,
+		store.RunStatusFailedResumable,
+		"promoted from running: NATS-KV lease absent, holder pod is gone (admission-time orphan)",
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal},
+		[]store.RunStatus{store.RunStatusRunning})
+	if cerr != nil {
+		// The CAS write itself failed (store outage, etc.). Fall
+		// through: an unmodified `running` doc still lets Engine.Resume
+		// hit the "cannot resume" error, which redelivery retries — the
+		// old behaviour, no regression, and the failure is loud.
+		return &preconditionOutcome{
+			proceed: true,
+			preRun:  preRun,
+			level:   logWarn,
+			logFmt:  "runner: run %s stale-running orphan CAS failed (%v) — falling through to admission",
+			logArgs: []any{msg.RunID, cerr},
+		}
+	}
+	if !changed {
+		// A peer already promoted it (status drifted off `running`
+		// between our LoadRun and CAS). Fall through: the current
+		// status may already be a resumable one the switch above would
+		// have handled; the next admission will see the new status.
+		return &preconditionOutcome{
+			proceed: true,
+			preRun:  preRun,
+			level:   logInfo,
+			logFmt:  "runner: run %s stale-running status drifted before promote — deferring to next admission",
+			logArgs: []any{msg.RunID},
+		}
+	}
+	if msg.Resume == nil {
+		msg.Resume = &queue.ResumeSpec{}
+	}
+	return &preconditionOutcome{
+		proceed: true,
+		preRun:  preRun,
+		level:   logWarn,
+		logFmt:  "runner: run %s promoted from stale running (no live lease) — resuming (#669 part 2)",
+		logArgs: []any{msg.RunID},
+	}
 }
 
 // classifyExecResult turns engine.Run's (success-or-error) outcome
@@ -738,6 +836,26 @@ type Runner struct {
 	// alone never reaches it. See sandbox_registry.go.
 	sandboxRunsMu sync.Mutex
 	sandboxRuns   map[string]sandbox.Run
+
+	// leaseCheckOverride replaces the r.cfg.NATS lease probe in unit
+	// tests exercising the admission path without a live queue.
+	// Nil in production; the runner uses r.cfg.NATS then.
+	leaseCheckOverride runLeaseChecker
+}
+
+// resolveLeaseChecker returns whatever probe is currently wired for the
+// admission path's orphan check. Nil when no queue is wired (local mode,
+// tests without an override), which keeps the admission behaviour
+// backwards-compatible: fall through to the existing "cannot resume"
+// failure loop rather than promote a run under an untestable premise.
+func (r *Runner) resolveLeaseChecker() runLeaseChecker {
+	if r.leaseCheckOverride != nil {
+		return r.leaseCheckOverride
+	}
+	if r.cfg.NATS == nil {
+		return nil
+	}
+	return r.cfg.NATS
 }
 
 type inFlight struct {
