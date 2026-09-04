@@ -98,13 +98,8 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 	// must hold even across spellings.
 	platformSlug := slug
 	if s.botSources != nil {
-		if norm := botregistry.NormalizeName(slug); norm != slug {
-			for _, e := range s.platformBotEntries() {
-				if botregistry.NormalizeName(e.Name) == norm {
-					platformSlug = e.Name
-					break
-				}
-			}
+		if e, ok := s.platformEntryFor(slug); ok {
+			platformSlug = e.Name
 		}
 	}
 	if s.botSources != nil {
@@ -302,15 +297,38 @@ func (s *Server) platformBotManifest(slug string) *bundle.Manifest {
 	return set.manifests[slug]
 }
 
+// platformEntryFor finds the deployment override shadowing a bot name —
+// exact match first, then the NormalizeName-folded spelling, the SAME
+// tolerance effectiveFindByName and botregistry.ResolveBotPath apply. A probe
+// stricter than the resolution it gates is a bypass: `review_pr` would read
+// as "catalog"/"absent" while every resolver hands back the platform entry.
+func (s *Server) platformEntryFor(name string) (botregistry.EntryWithSchema, bool) {
+	entries := s.platformBotEntries()
+	for _, e := range entries {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	nn := botregistry.NormalizeName(name)
+	if nn == "" {
+		return botregistry.EntryWithSchema{}, false
+	}
+	for _, e := range entries {
+		if botregistry.NormalizeName(e.Name) == nn {
+			return e, true
+		}
+	}
+	return botregistry.EntryWithSchema{}, false
+}
+
 // entryOrigin reports how a bot name currently resolves for display:
 // "platform" when a deployment override shadows it, else "catalog". Keeps
 // the detail/PUT responses consistent with the list's origin so the studio
-// badge doesn't flicker between surfaces.
+// badge doesn't flicker between surfaces — and is what the overlay route
+// refuses on, so it has to answer about the entry the route would return.
 func (s *Server) entryOrigin(name string) string {
-	for _, e := range s.platformBotEntries() {
-		if e.Name == name {
-			return "platform"
-		}
+	if _, ok := s.platformEntryFor(name); ok {
+		return "platform"
 	}
 	return "catalog"
 }
@@ -321,10 +339,8 @@ func (s *Server) entryOrigin(name string) string {
 // bots are deliberately out of scope, matching launch resolution on the
 // tenant-context-free surfaces.
 func (s *Server) botExists(botID string) bool {
-	for _, e := range s.platformBotEntries() {
-		if e.Name == botID {
-			return true
-		}
+	if _, ok := s.platformEntryFor(botID); ok {
+		return true
 	}
 	_, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
 	return err == nil
