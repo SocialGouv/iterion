@@ -4,14 +4,26 @@ description: |
   Operating playbook for the sec-audit-deps bot. Read this first
   when authoring or modifying nodes in main.bot, when running a
   scan and inspecting findings, or when adding a new ecosystem.
-  Covers the six execution phases and the contract between them.
+  Covers the execution phases and the contract between them.
 ---
 
 # sec-audit-deps — operating playbook
 
-Six phases. The static-signals → LLM-with-schema pattern from
+The static-signals → LLM-with-schema pattern from
 SocialGouv/no-package-malware, generalised to multiple ecosystems
 and bridged to the iterion kanban board.
+
+The graph is a single linear chain — no router, no fan-out:
+
+```
+enumerate_deps → normalize_deps → run_eco_heuristics
+  → run_generic_heuristics → heuristic_join → load_cache
+  → filter_cached → llm_review → update_cache → done
+```
+
+Note the order: the heuristics run **before** the cache is consulted.
+The cache spares the expensive LLM review, not the cheap deterministic
+scanners.
 
 ## Phase 1 — `enumerate_deps` (claw, readonly)
 
@@ -33,34 +45,32 @@ audit; signals that require tarball inspection are skipped).
 or `h1:` go.sum hash). When unavailable, the bot computes it from
 the installed artifact.
 
-## Phase 2 — `load_package_cache` (compute)
+## Phase 2 — `normalize_deps` (tool)
 
-Reads the package cache at `{{vars.cache_path}}` (see
-`[[package-cache]]` for the default + the host-wide override) line by
-line and builds an in-memory index keyed by
-`ecosystem:name:version:checksum`.
+Normalises `enumerate_deps`' output into the flat `deps[]` the rest of
+the chain consumes, and emits the open `ecosystems[]` list that drives
+phase 3. Deterministic, no LLM.
 
-Outputs: `{ cache: {<key>: <cached_entry>, ...}, cache_path: "..." }`.
+## Phases 3–4 — `run_eco_heuristics` + `run_generic_heuristics` + `heuristic_join`
 
-If the file doesn't exist, the index is empty and the cache_path
-is recorded so phase 5 can create it.
+Three deterministic nodes, no LLM and no router.
 
-## Phase 3 — `filter_cached` (compute)
+`run_eco_heuristics` is **one** node that loops over the open
+`ecosystems[]` list from `normalize_deps`. For each entry it reads the
+`iterion:heuristics` data block out of
+`.claude/skills/lang-<id>.md`, runs the SCA scanner that block names
+(npm audit / pip-audit / govulncheck / …) and parses the output into
+signals. Adding an ecosystem is dropping a `lang-<id>.md` — no DSL edit,
+unless the scanner's output format is one no parser handles yet.
 
-Splits `deps[]` from phase 1 into:
-- `already_scanned[]`: cached entry exists AND `cached.scanner_version >= current` AND `now - cached.scanned_at < ttl` (default 30 days).
-- `pending[]`: everything else (cache miss, stale, or newer scanner).
+`run_generic_heuristics` is the always-on floor that runs whatever the
+ecosystems are: `trivy fs --scanners vuln` over the lockfiles, plus the
+npm install-hook and non-ASCII/locale name checks.
 
-The TTL prevents permanent staleness on packages that were "low risk"
-two years ago and have since been compromised.
+`heuristic_join` (`await: best_effort`) merges the two into the single
+`{eco, generic}` signals object the reviewer receives.
 
-## Phase 4 — `heuristic_scan` (fan_out_all → tool nodes per ecosystem)
-
-Each ecosystem-specific tool node:
-1. Takes `pending[]` filtered to its ecosystem.
-2. Runs static heuristics + scanner-specific vuln DB (npm audit /
-   pip-audit / govulncheck).
-3. Emits structured signals per package:
+Each emits structured signals per package:
 
 ```json
 {
@@ -86,7 +96,28 @@ skills (`[[lang-js]]`, `[[lang-py]]`, `[[lang-go]]`,
 `[[lang-generic]]`) document which scanners + how to interpret
 their output.
 
-## Phase 5 — `llm_review` (claude_code, readonly, board.create + board.label)
+## Phase 5 — `load_cache` (tool)
+
+Reads the package cache at `{{vars.cache_path}}` (see
+`[[package-cache]]` for the default + the host-wide override) line by
+line and builds an in-memory index keyed by
+`ecosystem:name:version:checksum`.
+
+Outputs: `{ cache: {<key>: <cached_entry>, ...}, cache_path: "..." }`.
+
+If the file doesn't exist, the index is empty and the cache_path
+is recorded so `update_cache` can create it.
+
+## Phase 6 — `filter_cached` (tool)
+
+Splits `deps[]` from phase 1 into:
+- `already_scanned[]`: cached entry exists AND `cached.scanner_version >= current` AND `now - cached.scanned_at < ttl` (default 30 days).
+- `pending[]`: everything else (cache miss, stale, or newer scanner).
+
+The TTL prevents permanent staleness on packages that were "low risk"
+two years ago and have since been compromised.
+
+## Phase 7 — `llm_review` (claude_code, readonly, board.read + board.create + board.label)
 
 Receives the structured signals. Reads `[[malware-signals]]` for the
 canonical signal catalogue and applies the LLM-reviewer prompt from
@@ -109,10 +140,21 @@ the system block. Emits one verdict per package:
 
 The LLM CAN read package files (read_file tool) to confirm or
 discount signals. It MUST NOT execute any code. Tools are
-`bash, read_file, glob, grep` only.
+`bash, read_file, write_file, glob, grep` only — `write_file` exists
+solely so the node can write its own markdown report.
 
-For each package whose `risk_level` lands MEDIUM or HIGH (after
-score merge in phase 6), the node creates a kanban issue. Label
+Scoring happens **inside this node**, not in a downstream compute node:
+start from the input's `heuristic_score`, subtract the weight of each
+signal ruled a false positive, add 10 when `install-hook` +
+`network-on-import` + `obfuscated-string` are all valid (the textbook
+supply-chain shape), clamp to `[0, 100]`, then bucket
+`<=20 LOW`, `<=50 MEDIUM`, `>50 HIGH`.
+
+The same node writes the markdown report to
+`{{workspace_dir}}/.sec-audit/deps-findings.md` after its board calls.
+
+For each package whose `risk_level` lands MEDIUM or HIGH (above
+`severity_threshold`), the node creates a kanban issue. Label
 convention:
 - `severity:<level>` — same scale as sec-audit-source
 - `type:supply-chain-<signal-id>` — primary flag (e.g.
@@ -122,21 +164,18 @@ convention:
 
 Title: `<ecosystem> · <name>@<version> — <one-line risk summary>`.
 
-## Phase 6 — `score_merge` (compute) + `update_package_cache` (tool) + `export_report`
+## Phase 8 — `update_cache` (tool)
 
-`score_merge`:
-- For each package: `risk_score = max(heuristic_score, llm.risk_score)`.
-- Bucket: `<= 20 → LOW`, `<= 50 → MEDIUM`, `> 50 → HIGH`.
-
-`update_package_cache`:
 - Appends one JSONL line per analysed package to the package cache
-  at `{{vars.cache_path}}`. Atomic via temp file
-  + rename (POSIX guarantees).
+  at `{{vars.cache_path}}`, creating the parent directory if needed.
+  Append-only, relying on POSIX write atomicity up to `PIPE_BUF`.
+- An empty `cache_path` is not an error: the node reports
+  `appended_count: 0` and skips the write.
 - Format: see `[[package-cache]]` for the exact schema.
 
-`export_report`:
-- Markdown summary at
-  `{{workspace_dir}}/.sec-audit/deps-findings.md`.
+There is no separate score-merge or report-export node — both jobs
+belong to `llm_review` (phase 7), and `update_cache` is the last node
+before `done`.
 
 ## Discipline that keeps the FP rate low
 
