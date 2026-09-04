@@ -5,11 +5,26 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	fforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
+	fgithub "github.com/SocialGouv/iterion/pkg/forge/github"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
+)
+
+// The token-binding write path type-asserts the replier client into the
+// gate and commenter surfaces. Both providers' clients must satisfy them,
+// else the fallback is dead code behind a failed assertion.
+var (
+	_ forgeGateClient     = (*fgithub.AdminClient)(nil)
+	_ forgeIssueCommenter = (*fgithub.AdminClient)(nil)
+	_ forgeGateClient     = (*fforgejo.AdminClient)(nil)
+	_ forgeIssueCommenter = (*fforgejo.AdminClient)(nil)
 )
 
 func TestReviewApproveReason(t *testing.T) {
@@ -353,61 +368,6 @@ func TestReviewApprove_OperatorFloorIsNotReplaced(t *testing.T) {
 	}
 }
 
-// #662 A2: a webhook with a `forge_token` binding but NO forge.Connection
-// row is the documented manual/hand-owned setup (docs/webhooks.md). The
-// approve MUST fall back to the token client instead of filtering.
-func TestReviewApprove_FallsBackToForgeTokenBinding(t *testing.T) {
-	s := newWebhookTestServer(t)
-	// Empty connection store — no team connection covers the repo.
-	s.forgeConnections = forge.NewMemoryConnectionStore()
-	// Wire the forge_token binding (the hand-owned webhook path).
-	seedForgeTokenBinding(t, s, "t1", "review-pr", "pat-token-with-statuses")
-	// The fallback path builds prforgeReplierClient(token) — its wire is
-	// http, so we intercept via the seam that intercepts the LOAD path
-	// too: patch resolveForgeToken to return our fake, and patch
-	// prforgeReplierClient... actually, easier: use the forge_token real
-	// binding + a fake HTTP roundtripper. But the simplest: seed a
-	// forge.Connection AS WELL so the gate client seam applies — the point
-	// of A2 is that the fallback KICKS IN when the conn is absent. To
-	// prove that BOTH paths are available we need a fake mechanism for
-	// the token-based client.
-	//
-	// Sidestep: the approve calls loadPRHeadForApprove FIRST, which uses
-	// the token binding to resolve the PR head. If that returns a live
-	// pr.Author matching the sender we'd refuse. Set author!=sender.
-	//
-	// Real fallback proof: verify the log line + delivery status via a
-	// gate client that succeeds. To have SetCommitStatus tracked, we
-	// swap the reply-client tail — but that requires an HTTP fixture.
-	// A minimal proof: verify no `filtered` "no team connection" line
-	// AND that the maintainer got no rejection reply.
-	commenter := &stubCommenter{}
-	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return commenter, nil }
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
-	}
-	cfg, pt := ghConfig(t, s)
-	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
-	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","user":{"login":"alice"},"pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/revi approve","html_url":"https://github.com/acme/widgets/pull/7#issuecomment-556"},"sender":{"login":"maintainer-jane"}}`
-	w := httptest.NewRecorder()
-	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-	// Pre-fix behaviour: the connection lookup returned nothing and the
-	// handler filtered with "no team connection covers" and NO reply on
-	// the PR (since it hit `filtered` before the reply path). The A2
-	// fallback either wires the token client (real forge write attempt) or
-	// forwards to fail-with-reply (network error to a bogus HTTP host).
-	// Either way, the maintainer must NOT see the pre-fix "no team
-	// connection" message.
-	for _, b := range commenter.bodies {
-		if approveReplyContains(b, "no team connection covers") {
-			t.Fatalf("pre-fix message leaked through: %s", b)
-		}
-	}
-}
-
 // #662 A3: a gate-client resolution ERROR must NOT 502 the delivery — the
 // pre-fix path returned StatusBadGateway, which is exactly the hook-
 // disabling 5xx class this ticket asked to remove.
@@ -439,6 +399,14 @@ func TestReviewApprove_GateClientErrorRepliesInsteadOf502(t *testing.T) {
 	}
 	if len(commenter.bodies) != 1 {
 		t.Fatalf("gate client error must post a reply on the PR, got %d", len(commenter.bodies))
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusLaunchError {
+		t.Fatalf("gate client error is a forge failure, want %q in the response, got %v", webhooks.StatusLaunchError, resp)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusLaunchError {
+		t.Fatalf("gate client error must audit one launch_error row, got %+v", rows)
 	}
 }
 
@@ -472,25 +440,6 @@ func TestReviewApprove_IdempotentOnRedelivery(t *testing.T) {
 	if gc.setCalls != 1 {
 		t.Fatalf("redelivery re-wrote status (setCalls=%d) — idempotency key not honoured", gc.setCalls)
 	}
-}
-
-// seedForgeTokenBinding wires a fake forge_token secret binding on the
-// webhook so resolveForgeToken returns the given plaintext.
-func seedForgeTokenBinding(t *testing.T, s *Server, tenant, botID, plaintext string) {
-	t.Helper()
-	// Simplest hook: replace the resolveForgeToken result via the same
-	// seam production uses (SecretOverrides + generic store), but tests
-	// often mock resolveForgeToken directly at the handler level. For
-	// this ticket we assert on OUTPUT behaviour (no "no team connection"
-	// reply), not the internal method call, so a stub that returns the
-	// token at LookupForgeToken time is sufficient. Since no
-	// resolveForgeToken seam exists on the Server struct, the test above
-	// relies on the natural code path — the binding is documented as the
-	// fallback and the assertion is that the pre-fix message doesn't
-	// leak.
-	_ = tenant
-	_ = botID
-	_ = plaintext
 }
 
 // TestResolveGateContextFollowsTheRepoPin pins the override onto the check the
@@ -677,5 +626,222 @@ func TestReviewApprove_ConfigRefusalDoesNotPoisonRedelivery(t *testing.T) {
 	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
 	if gc.setCalls != 1 {
 		t.Fatalf("redelivery after the operator pinned gate_context must approve (setCalls=%d body=%s)", gc.setCalls, w2.Body.String())
+	}
+}
+
+// fakeGitHubForge is an httptest GitHub REST API the token-client path talks
+// to for real: WhoAmI, collaborator permission, PR head, status write, reply.
+// It records every status and comment it receives.
+type fakeGitHubForge struct {
+	srv      *httptest.Server
+	mu       sync.Mutex
+	perms    map[string]string // login → role_name
+	prAuthor string
+	headSHA  string
+	statuses []map[string]string
+	comments []string
+}
+
+func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
+	t.Helper()
+	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234"}
+	reply := func(w http.ResponseWriter, code int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(v)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, _ *http.Request) {
+		reply(w, http.StatusOK, map[string]any{"login": "iterion-bot", "id": 1})
+	})
+	mux.HandleFunc("GET /api/v3/repos/acme/widgets/collaborators/{user}/permission", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		role, ok := f.perms[r.PathValue("user")]
+		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		reply(w, http.StatusOK, map[string]any{"permission": role, "role_name": role})
+	})
+	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		reply(w, http.StatusOK, map[string]any{
+			"number": 7, "state": "open", "html_url": "https://github.com/acme/widgets/pull/7",
+			"head": map[string]any{"ref": "feat/x", "sha": f.headSHA, "repo": map[string]any{"full_name": "acme/widgets"}},
+			"base": map[string]any{"ref": "main"},
+			"user": map[string]any{"login": f.prAuthor},
+		})
+	})
+	mux.HandleFunc("POST /api/v3/repos/acme/widgets/statuses/{sha}", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		body["sha"] = r.PathValue("sha")
+		f.mu.Lock()
+		f.statuses = append(f.statuses, body)
+		f.mu.Unlock()
+		reply(w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mux.HandleFunc("POST /api/v3/repos/acme/widgets/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Body string `json:"body"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.comments = append(f.comments, body.Body)
+		f.mu.Unlock()
+		reply(w, http.StatusCreated, map[string]any{"id": 9, "html_url": "https://github.com/acme/widgets/pull/7#issuecomment-9"})
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeGitHubForge) snapshot() (statuses []map[string]string, comments []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]string(nil), f.statuses...), append([]string(nil), f.comments...)
+}
+
+// seedForgeToken stores a sealed team-scoped forge_token the webhook pins
+// through SecretOverrides — the hand-owned setup docs/webhooks.md describes,
+// resolved by the same resolveForgeToken production reads.
+func seedForgeToken(t *testing.T, s *Server, cfg *webhooks.Config, plaintext string) {
+	t.Helper()
+	const id = "sec-forge-token"
+	sealed, err := secrets.SealGenericSecret(s.sealer, id, []byte(plaintext))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.genericSecrets = secrets.NewMemoryGenericSecretStore()
+	if err := s.genericSecrets.Create(context.Background(), secrets.GenericSecret{
+		ID: id, TenantID: cfg.TenantID, ScopeTeamID: cfg.TenantID, Name: "forge_token",
+		SealedSecret: sealed, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SecretOverrides = map[string]string{"forge_token": id}
+}
+
+// approveTokenWorld is the hand-owned webhook: a forge_token binding, NO
+// forge.Connection row, and a real (fake-served) GitHub API behind the
+// webhook's pinned ForgeBaseURL.
+func approveTokenWorld(t *testing.T) (*Server, *fakeGitHubForge, webhooks.Config, string) {
+	t.Helper()
+	s := newWebhookTestServer(t)
+	s.forgeConnections = forge.NewMemoryConnectionStore()
+	f := newFakeGitHubForge(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.ForgeBaseURL = f.srv.URL
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	seedForgeToken(t, s, &cfg, "ghp_hand_owned")
+	return s, f, cfg, pt
+}
+
+func approveBodyFrom(sender string) string {
+	return `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","user":{"login":"alice"},"pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/revi approve disputed finding","html_url":"https://github.com/acme/widgets/pull/7#issuecomment-556"},"sender":{"login":"` + sender + `"}}`
+}
+
+// A webhook with a forge_token binding and no connection row (the hand-owned
+// setup) must write the status through the token client — the status lands
+// on the forge, under the pinned context, on the resolved head.
+func TestReviewApprove_TokenBindingWritesTheStatusWithoutAConnection(t *testing.T) {
+	s, f, cfg, pt := approveTokenWorld(t)
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom("maintainer-jane"), prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	statuses, comments := f.snapshot()
+	if len(statuses) != 1 {
+		t.Fatalf("the token path must write the status exactly once, got %d (comments=%v body=%s)", len(statuses), comments, w.Body.String())
+	}
+	st := statuses[0]
+	if st["sha"] != "deadbeef1234" || st["context"] != "revi/review" || st["state"] != "success" || st["description"] != "approved by @maintainer-jane: disputed finding" {
+		t.Fatalf("status written with the wrong shape: %v", st)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "revi-approved" {
+		t.Fatalf("want revi-approved, got %v", resp)
+	}
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusLaunched {
+		t.Fatalf("want one launched audit row, got %+v", rows)
+	}
+}
+
+// The real command gate, against the real (fake-served) permission API: the
+// approve floor defaults to maintainer when the webhook pins none, an
+// operator's own pin wins, and neither the review bot's own comment nor the
+// PR author can approve.
+func TestReviewApprove_RealGateFloor(t *testing.T) {
+	cases := []struct {
+		name       string
+		sender     string
+		perm       string
+		cfgFloor   string
+		wantStatus bool
+		wantReply  string // "" when the status must land
+	}{
+		{"write is refused when the webhook pins no floor", "dev-dan", "write", "", false, "replier not authorized"},
+		{"write is accepted when the operator pins developer", "dev-dan", "write", "developer", true, ""},
+		{"maintain is accepted with no floor pinned", "maintainer-jane", "maintain", "", true, ""},
+		{"the review bot's own comment is refused", "iterion-bot", "admin", "", false, "loop-guard"},
+		{"the PR author cannot approve their own PR", "alice", "admin", "", false, "own pull request"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, f, cfg, pt := approveTokenWorld(t)
+			s.webhookPRForgeCommandGate = nil // the real gate
+			f.perms[c.sender] = c.perm
+			cfg.MinReplierRole = c.cfgFloor
+			w := httptest.NewRecorder()
+			s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyFrom(c.sender), prforge.EventHeaderIssueComment, pt))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			statuses, comments := f.snapshot()
+			if c.wantStatus {
+				if len(statuses) != 1 || len(comments) != 0 {
+					t.Fatalf("want one status and no refusal reply, got statuses=%v comments=%v", statuses, comments)
+				}
+				return
+			}
+			if len(statuses) != 0 {
+				t.Fatalf("must not write a status, got %v", statuses)
+			}
+			if len(comments) != 1 || !approveReplyContains(comments[0], "@"+c.sender, c.wantReply) {
+				t.Fatalf("want one reply naming @%s and %q, got %v", c.sender, c.wantReply, comments)
+			}
+		})
+	}
+}
+
+// Neither a connection covering the repo nor a forge_token binding: the
+// refusal must name exactly that (a configuration miss), not a capability
+// the provider does have.
+func TestReviewApprove_NoConnectionAndNoTokenIsNamedRefusal(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusFiltered {
+		t.Fatalf("want one filtered row, got %+v", rows)
+	}
+	if !approveReplyContains(rows[0].Error, "no team connection covers", "no forge_token binding") {
+		t.Fatalf("the refusal must name both missing credentials, got %q", rows[0].Error)
 	}
 }
