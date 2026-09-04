@@ -101,6 +101,20 @@ keyed on the checkpoint's existence rather than on the delivery being shaped
 as a resume, since a redelivery of a run still marked `running` re-clones the
 same way.
 
+What the fresh clone does NOT lose is committed work. A re-execution restores
+what the run's earlier attempt left on the forge — the storage branch its
+death bank recorded (`final_branch` / `final_commit`), else the newest attempt
+ref a pause or an interrupted delivery parked — and emits
+`run_workspace_bank_restored` naming the branch, the head and the base it was
+put back on. The restore is two-step (the chain's own base, then a
+fast-forward to its head) so the clone's reflog still reads "started from the
+run's base": a bot that derives what the run changed from the newest reflog
+entry that is not its own commit (docs-refresh's scope gate) does not mistake
+the commits the target branch gained meanwhile for the run's work. A bank
+branch that moved past the recorded head, or a chain with no common ancestor,
+is refused loudly (`restored: false` + `reason`) and the run continues on the
+fresh clone.
+
 The consequence for authoring: **do not separate a node that mutates the
 workspace from the node that persists the mutation by a resumable boundary
 unless something checks the two still agree.** Either commit inside the

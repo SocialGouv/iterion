@@ -1412,15 +1412,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// private repo) and point the engine there so ${PROJECT_DIR} is the repo
 	// under review. Otherwise use the runner's base WorkDir.
 	workDir := r.cfg.WorkDir
-	// gitBase is the clone's HEAD before the workflow runs — the baseline the
-	// per-run commit/file view is measured against. Captured here (while the
-	// clone is on-disk) so recordRunGitMeta can persist the commit/file
-	// metadata into the store before the pod's ephemeral workspace is wiped;
-	// the server pod, which has no worktree, serves the panels from that.
+	// gitBase is the clone's HEAD before the workflow runs — or, when a
+	// re-execution restored the chain an earlier attempt banked, the base that
+	// chain forked from — the baseline the per-run commit/file view and the
+	// bank are measured against. Captured here (while the clone is on-disk)
+	// so recordRunGitMeta can persist the commit/file metadata into the store
+	// before the pod's ephemeral workspace is wiped; the server pod, which
+	// has no worktree, serves the panels from that.
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()
-		repoDir, derr := r.prepareRepoWorkspace(ctx, msg)
+		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, msg)
 		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
 		// auth failure is exactly what the histogram exists to show), with
 		// the same nil guard every other Metrics site carries.
@@ -1431,7 +1433,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
 		}
 		workDir = repoDir
-		if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
+		if baseline != "" {
+			gitBase = baseline
+		} else if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
 			gitBase = head
 		} else {
 			r.cfg.Logger.Warn("runner: run %s: capture git baseline: %v", msg.RunID, herr)
