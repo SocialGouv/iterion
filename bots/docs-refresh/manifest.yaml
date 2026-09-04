@@ -1,7 +1,15 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.5
+version: 3.5.6
+## 3.5.6 — the schedule invocation carries its own vars. A scheduled run on
+## a cloud clone can only deliver through the PR tail, and a weekly is only
+## affordable as an incremental pass — yet a schedule row created (or
+## re-created by a forge re-provision) from this manifest carried NO vars,
+## so `open_mr` read false and `mode` read full: the 2026-07-27 and
+## 2026-08-31 weeklies burned a multi-hour sweep and shipped nothing.
+## `default_vars: {mode: incremental, open_mr: "true"}` makes a fresh row
+## deliver; `suggested_cron` is the weekly cadence decided on 2026-07-24.
 ## 3.5.5 — max_cost_usd 120 → 400, sized to hold max_passes comprehensive
 ## passes. The two scheduled weeklies (2026-08-03, -08-10) both died on the
 ## $120 cap mid-pass — 31 and 29 alignment commits stranded on a clone that
@@ -254,7 +262,14 @@ invocations:
     command: { name: doki, aliases: [docs-refresh], scope: pr, min_replier_role: developer }
   - kind: schedule
     mode: board
-    schedule: { suggested_cron: "0 3 * * *" }
+    ## A scheduled run clones the repo on an ephemeral pod: the PR tail is
+    ## its only delivery path, and the weekly cadence is only affordable
+    ## as an incremental pass. Declared here so a schedule row built from
+    ## this manifest carries them — a var only a human can pass is not a
+    ## schedule (the `full` reconciliation is a deliberate manual launch).
+    schedule:
+      suggested_cron: "0 4 * * 1"
+      default_vars: { mode: incremental, open_mr: "true" }
   - kind: board
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
