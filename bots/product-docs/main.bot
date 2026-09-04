@@ -2004,24 +2004,47 @@ if not u:
     raise SystemExit(1)
 if not u.endswith('/'):
     u = u + '/'
+## anchored() is the LANDING check, deliberately looser than the one
+## below: the redirect an ingress legitimately performs is an http ->
+## https upgrade, so scheme is ignored there and only the operator's
+## host+path anchors. A lookalike suffix domain still cannot satisfy it
+## -- the trailing / is required.
+def anchored(candidate):
+    c = (candidate or '').split('://', 1)[-1]
+    b = base.split('://', 1)[-1]
+    return bool(b) and (c == b + '/' or c.startswith(b + '/'))
 ## The truth gate verifies THE OPERATOR'S deployment, not whatever URL
 ## the agent narrated: any live page would answer 200 with a title.
+## The url the agent RETURNS is held to the anchor exactly, scheme
+## included -- it is a claim, not a redirect.
 if not base or not u.startswith(base + '/'):
     print(json.dumps({'verified': False, 'url': u, 'detail': 'returned url is not under publish_base_url (' + (base or '<empty>') + ')'}))
     raise SystemExit(1)
-code, body = 0, ''
+code, body, final = 0, '', ''
 for i in range(12):
     try:
         r = urllib.request.urlopen(u, timeout=10)
         code = r.getcode()
+        ## urlopen follows redirects SILENTLY, so the checked-above url
+        ## proves nothing about what answered. An ingress fronting an SSO
+        ## login, a platform error page or an unrelated host is exactly
+        ## the shape a 302 takes -- re-anchor on where we LANDED.
+        final = r.geturl() or u
         body = r.read(65536).decode('utf-8', 'replace')
     except Exception:
-        code, body = 0, ''
+        code, body, final = 0, '', ''
+    ## A served page ENDS the poll, right or wrong. The retry window is
+    ## for a rollout that has not answered yet; re-asking the same url
+    ## cannot change WHO answered it, so keeping an off-base redirect in
+    ## the loop only spends two minutes to reach the same verdict.
     if code == 200 and '<title>' in body:
         break
     time.sleep(10)
 if code != 200 or '<title>' not in body:
     print(json.dumps({'verified': False, 'url': u, 'detail': 'http ' + str(code) + ' after 12 tries'}))
+    raise SystemExit(1)
+if not anchored(final):
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'redirected to ' + final + ', outside publish_base_url (' + base + ') -- something is answering, but not the deployment'}))
     raise SystemExit(1)
 print(json.dumps({'verified': True, 'url': u, 'detail': 'http 200, title present'}))
 "`

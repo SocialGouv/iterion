@@ -1718,6 +1718,58 @@ func TestProductDocsVerifyPublish(t *testing.T) {
 	}), "not under publish_base_url")
 }
 
+// TestProductDocsVerifyPublishRedirect pins the half of "verifies THE
+// OPERATOR'S deployment" that the requested-url check alone cannot carry:
+// urllib follows redirects silently, so an in-scope URL that 302s to an SSO
+// login, a platform error page or an unrelated host used to answer 200 with a
+// <title> and pass. Under the retired S3 static target a redirect was
+// implausible; under an arbitrary operator ingress it is the common shape.
+func TestProductDocsVerifyPublishRedirect(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "verify_publish")
+
+	// Stands in for whatever the deployment redirects AT — an SSO portal, a
+	// platform 404, another tenant's app. It answers 200 with a title, which is
+	// the whole point: the content heuristic cannot tell it apart.
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html><head><title>Sign in</title></head></html>"))
+	}))
+	defer elsewhere.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/off/":
+			http.Redirect(w, r, elsewhere.URL+"/login", http.StatusFound)
+		case "/deep/", "/deep/index.html":
+			// An in-scope redirect (the trailing-slash / index shape a healthy
+			// static host performs) must still verify.
+			if r.URL.Path == "/deep/" {
+				http.Redirect(w, r, "/deep/index.html", http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte("<html><head><title>Demo</title></head></html>"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      srv.URL + "/off/",
+		"input.base_url": srv.URL,
+	}), "outside publish_base_url")
+
+	var got verifyPublishOut
+	runJSON(t, resolveCommand(t, command, map[string]string{
+		"input.url":      srv.URL + "/deep/",
+		"input.base_url": srv.URL,
+	}), &got)
+	if !got.Verified {
+		t.Fatalf("a redirect that stays under the operator's base is how a healthy "+
+			"host serves an index — it must not be refused: %+v", got)
+	}
+}
+
 type verifyPublishOut struct {
 	Verified bool   `json:"verified"`
 	URL      string `json:"url"`
