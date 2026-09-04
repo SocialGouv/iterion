@@ -28,10 +28,14 @@ type BudgetOverrides struct {
 	CapImposed bool
 }
 
-// IsZero reports whether no override was supplied.
+// IsZero reports whether no override was supplied. CapImposed alone is
+// not an override: it marks a clamp that already lowered a cap, so it
+// only ever travels next to that cap — a value carrying nothing but the
+// marker has nothing to apply, nothing to put on the wire and nothing to
+// persist (it used to persist as an empty `budget_overrides: {}`).
 func (o BudgetOverrides) IsZero() bool {
 	return o.MaxCostUSD <= 0 && o.MaxTokens <= 0 && o.MaxDuration == "" &&
-		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0 && !o.CapImposed
+		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0
 }
 
 // Validate rejects a malformed MaxDuration early with an actionable
