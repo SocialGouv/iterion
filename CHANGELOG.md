@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.101.0](https://github.com/SocialGouv/iterion/compare/v3.100.3...v3.101.0) (2026-09-04)
+
+### Features
+
+* **product-docs:** 1.1.0 — platform-agnostic publish tail (image + deploy-target skill) ([#675](https://github.com/SocialGouv/iterion/issues/675)) ([ad5d29b](https://github.com/SocialGouv/iterion/commit/ad5d29bd909f37131817227ff10543a57be0e622))
+
+    <details><summary>why</summary>
+
+    The publish tail spoke one platform: the SSP Cloud datalab (three S3 STS secrets with a 7-day life and a standing serve service), which let the demo URL die by itself and put platform literals in the DSL. It now mirrors app-dev's deploy phase: the bundle's own publish-static-site skill builds the site and packages it with crane as one layer on a non-root nginx base pushed to publish_image:<docs commit> (registry_token on stdin, never argv), and the operator-attached deploy-target skill puts…
+
+    </details>
+
 ## [3.100.3](https://github.com/SocialGouv/iterion/compare/v3.100.2...v3.100.3) (2026-09-04)
 
 ### Bug Fixes
