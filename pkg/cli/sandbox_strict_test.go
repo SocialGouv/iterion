@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -180,6 +182,87 @@ func (f fakeDriver) Prepare(context.Context, sandbox.Spec) (sandbox.PreparedSpec
 }
 func (f fakeDriver) Start(context.Context, sandbox.PreparedSpec, sandbox.RunInfo) (sandbox.Run, error) {
 	return nil, nil
+}
+
+// fakePolicyDriver is a fakeDriver that also reports a scheduling policy,
+// the way the kubernetes driver does.
+type fakePolicyDriver struct {
+	fakeDriver
+	policy string
+	err    error
+}
+
+func (f fakePolicyDriver) SchedulingPolicy() (string, error) { return f.policy, f.err }
+
+// A malformed policy fails every run at sandbox start, never the
+// constructor — the doctor must surface it as a FAIL naming the cause.
+func TestRunSchedulingPolicyStrictCheck(t *testing.T) {
+	t.Run("driver without a policy adds nothing", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSchedulingPolicyStrictCheck(r, fakeDriver{name: "fake"})
+		if len(r.Checks) != 0 {
+			t.Fatalf("expected no check, got %+v", r.Checks)
+		}
+	})
+	t.Run("malformed policy fails", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSchedulingPolicyStrictCheck(r, fakePolicyDriver{err: errors.New("kubernetes: ITERION_SANDBOX_K8S_REQUESTS_CPU=\"two\" is not a Kubernetes quantity")})
+		if !hasFailNamed(r, "sandbox scheduling policy") {
+			t.Fatalf("expected a scheduling policy failure, got %+v", r.Checks)
+		}
+		if !strings.Contains(r.Checks[0].Detail, "ITERION_SANDBOX_K8S_REQUESTS_CPU") {
+			t.Fatalf("the failure must name the variable, got %+v", r.Checks[0])
+		}
+	})
+	t.Run("valid policy passes with its summary", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSchedulingPolicyStrictCheck(r, fakePolicyDriver{policy: "requests cpu=2 memory=4Gi, spread=kubernetes.io/hostname"})
+		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Detail != "requests cpu=2 memory=4Gi, spread=kubernetes.io/hostname" {
+			t.Fatalf("expected one passing check carrying the summary, got %+v", r.Checks)
+		}
+	})
+}
+
+// kubectlNodesShim puts a fake `kubectl` first on PATH whose `get nodes -o json`
+// answers with the given node labels.
+func kubectlNodesShim(t *testing.T, nodesJSON string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in \"get nodes \"*) printf '%s' '" + nodesJSON + "'; exit 0 ;; esac\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// A spread over a label the nodes do not carry excludes them from scheduling
+// — soft or not — so the doctor must say which nodes carry it.
+func TestRunSpreadCoverageStrictCheck(t *testing.T) {
+	threeNodes := `{"items":[{"metadata":{"labels":{"topology.kubernetes.io/zone":"a"}}},{"metadata":{"labels":{}}},{"metadata":{"labels":{"topology.kubernetes.io/zone":"b"}}}]}`
+
+	t.Run("hostname needs no check", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "kubernetes.io/hostname")
+		if len(r.Checks) != 0 {
+			t.Fatalf("expected no check, got %+v", r.Checks)
+		}
+	})
+	t.Run("no node carries the key fails", func(t *testing.T) {
+		kubectlNodesShim(t, threeNodes)
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		if !hasFailNamed(r, "k8s spread key coverage") {
+			t.Fatalf("expected a coverage failure, got %+v", r.Checks)
+		}
+	})
+	t.Run("partial coverage warns", func(t *testing.T) {
+		kubectlNodesShim(t, threeNodes)
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "topology.kubernetes.io/zone")
+		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Status != CheckWarn || !strings.Contains(r.Checks[0].Detail, "2 of 3") {
+			t.Fatalf("expected a 2 of 3 warning, got %+v", r.Checks)
+		}
+	})
 }
 
 func TestRunCapabilityStrictChecks(t *testing.T) {

@@ -79,9 +79,27 @@ func TestManifestOmitsResourcesWhenNothingSet(t *testing.T) {
 
 // The spread must select the sandbox-run component label — every run pod of
 // the deployment, and only them — and stay soft so it never blocks scheduling.
+// The pod itself must carry that label: a selector matching no pod counts
+// zero in every domain, and the constraint steers nothing without a single
+// Kubernetes error.
 func TestManifestSpreadConstraintOverSandboxRunPods(t *testing.T) {
 	in := schedulingInput()
 	in.SpreadTopologyKey = "kubernetes.io/hostname"
+	raw, err := BuildPodManifest(in)
+	if err != nil {
+		t.Fatalf("BuildPodManifest: %v", err)
+	}
+	var pod struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &pod); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if pod.Metadata.Labels[LabelComponent] != ComponentSandboxRun {
+		t.Fatalf("the pod must carry the label its own spread selector matches, labels = %v", pod.Metadata.Labels)
+	}
 	spec := renderPodSpec(t, in)
 	want := []any{
 		map[string]any{

@@ -11,18 +11,20 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // selectSandboxDriver picks the driver via the global factory and
-// wraps it with the engine's logger when it's the docker driver — so
-// `docker run`, postCreate execution, and container start messages
-// land in the run.log alongside the rest of the run. Without this swap
-// the factory hands back a sandbox.Driver whose default logger
-// discards output, and silent-failure modes (postCreate skipped
-// because spec was empty, image pull stalled, etc.) become impossible
-// to debug from logs alone.
+// wraps it with the engine's logger when it's the docker or kubernetes
+// driver — so `docker run`, `kubectl apply`, postCreate execution and
+// container start messages land in the run.log alongside the rest of
+// the run. Without this swap the factory hands back a sandbox.Driver
+// whose default logger discards output, and silent-failure modes
+// (postCreate skipped because spec was empty, image pull stalled, a
+// defaulted sandbox.user, the pod scheduling policy in force) become
+// impossible to debug from logs alone.
 func selectSandboxDriver(spec *sandbox.Spec, logger *iterlog.Logger) (sandbox.Driver, error) {
 	factory := sandbox.NewFactory(sandbox.FactoryOptions{
 		AvailableDrivers: registry.Default(),
@@ -32,11 +34,26 @@ func selectSandboxDriver(spec *sandbox.Spec, logger *iterlog.Logger) (sandbox.Dr
 		return nil, fmt.Errorf("runtime: sandbox: select driver: %w", err)
 	}
 	if logger != nil {
-		if dd, ok := driver.(*docker.Driver); ok {
-			driver = dd.WithLogger(logger)
+		switch d := driver.(type) {
+		case *docker.Driver:
+			driver = d.WithLogger(logger)
+		case *kubernetes.Driver:
+			driver = d.WithLogger(logger)
 		}
 	}
 	return driver, nil
+}
+
+// schedulingSummary is the driver's scheduling policy for the
+// sandbox_started event, "" when the driver has none or it is
+// misconfigured (Start reports that error itself).
+func schedulingSummary(driver sandbox.Driver) string {
+	if r, ok := driver.(sandbox.SchedulingPolicyReporter); ok {
+		if s, err := r.SchedulingPolicy(); err == nil {
+			return s
+		}
+	}
+	return ""
 }
 
 // startNoopSandbox runs the Prepare+Start sequence for the noop driver.
@@ -125,10 +142,15 @@ func buildSandboxImageIfRequested(
 // doesn't reveal whether `auto` resolved to the project's devcontainer
 // or to the slim fallback (the silent-fallback bug that ate the
 // modjo postCreate).
+//
+// The scheduling policy the driver stamped on the sandbox is recorded for
+// the same reason: a run resumed on another runner during a rollout is
+// re-rendered under THAT runner's policy, and the event is the only place
+// the difference is visible.
 func emitSandboxStarted(
 	prepared sandbox.PreparedSpec,
 	spec *sandbox.Spec,
-	driverName, source string,
+	driverName, source, scheduling string,
 	emitEvent func(store.EventType, map[string]any) error,
 ) {
 	resolvedImage := ""
@@ -138,11 +160,15 @@ func emitSandboxStarted(
 	if resolvedImage == "" {
 		resolvedImage = spec.Image
 	}
-	_ = emitEvent(store.EventSandboxStarted, map[string]any{
+	data := map[string]any{
 		"driver":          driverName,
 		"mode":            string(spec.Mode),
 		"source":          source,
 		"image":           resolvedImage,
 		"has_post_create": spec.PostCreate != "",
-	})
+	}
+	if scheduling != "" {
+		data["scheduling"] = scheduling
+	}
+	_ = emitEvent(store.EventSandboxStarted, data)
 }
