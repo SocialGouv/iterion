@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // E2: ResumeSpec.Budget is silently dropped on the in-process resume
@@ -53,6 +54,69 @@ func TestResume_RejectsMalformedBudgetDurationSynchronously(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "max_duration") {
 		t.Fatalf("Resume error = %v, want it to name max_duration", err)
+	}
+}
+
+// The launch ask must be persisted on the LOCAL run doc — only the cloud
+// publisher wrote Run.BudgetOverrides, so on every local surface an
+// ask-less resume replayed nothing and the operator's launch cap was
+// silently replaced by the .bot's own. Probe: .bot cap $60, launch
+// --max-cost-usd 120, $100 already spent, ask-less resume (the studio's
+// answer-form path) → BUDGET_EXCEEDED "cost_usd (100/60)" while the doc
+// still advertised 120.
+func TestResume_AskLessLocalResumeKeepsTheLaunchCap(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "resume_budget_test.bot")
+	if err := os.WriteFile(botPath, []byte(resumeBudgetInProcBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	t.Setenv(envDetached, "0")
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	ctx := context.Background()
+
+	res, err := svc.Launch(ctx, LaunchSpec{FilePath: botPath, Budget: &ir.BudgetOverrides{MaxCostUSD: 120}})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case <-res.Done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("launch did not terminate")
+	}
+	r, err := svc.store.LoadRun(ctx, res.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.BudgetOverrides == nil || r.BudgetOverrides.MaxCostUSD != 120 {
+		t.Fatalf("run.BudgetOverrides after a local launch = %+v, want the $120 ask persisted — without it every local resume replays nothing", r.BudgetOverrides)
+	}
+
+	// $100 already spent, re-armed as resumable: the resume preflight
+	// restores the spend and checks it against the cap the run resumes with.
+	if err := svc.store.SaveCheckpoint(ctx, res.RunID, &store.Checkpoint{NodeID: "done", BudgetCostUSD: 100}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(ctx, res.RunID, store.RunStatusFailedResumable, "budget exceeded"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	res2, err := svc.Resume(ctx, ResumeSpec{RunID: res.RunID, FilePath: botPath}) // ask-less
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	select {
+	case <-res2.Done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("resume did not terminate")
+	}
+	got, err := svc.store.LoadRun(ctx, res.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusFinished {
+		t.Fatalf("status after the ask-less resume = %s (%s), want finished — the launch's $120 cap was replaced by the .bot's $60 on resume", got.Status, got.Error)
 	}
 }
 

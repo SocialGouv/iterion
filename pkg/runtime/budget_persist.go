@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -49,6 +50,79 @@ func BudgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
 	}
+}
+
+// RunBudgetOverridesOf is the inverse of BudgetOverridesFromRun: the ask
+// in its persisted form. Nil (or all-zero) in, nil out, so an ask-less
+// launch persists nothing and the doc stays byte-identical.
+func RunBudgetOverridesOf(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
+	if o == nil || o.IsZero() {
+		return nil
+	}
+	return &store.RunBudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+	}
+}
+
+// BudgetOverridesFromWire lifts the queue's wire mirror of a budget ask
+// back into the override shape — the one converter in that direction,
+// shared by the runner (which applies the wire to the workflow it runs)
+// and the publisher (which stamps the doc from the very figure it put on
+// the wire). Nil in, nil out.
+func BudgetOverridesFromWire(b *queue.BudgetOverrides) *ir.BudgetOverrides {
+	if b == nil {
+		return nil
+	}
+	return &ir.BudgetOverrides{
+		MaxCostUSD:          b.MaxCostUSD,
+		MaxTokens:           b.MaxTokens,
+		MaxDuration:         b.MaxDuration,
+		MaxIterations:       b.MaxIterations,
+		MaxParallelBranches: b.MaxParallelBranches,
+		CapImposed:          b.CapImposed,
+	}
+}
+
+// MergeResumeBudgetAsk MERGES a THIS-RESUME override (the CLI/API budget
+// flags on the resume request) OVER the launch ask persisted on the run
+// doc, per field — the "non-zero wins, zero inherits" rule
+// ApplyBudgetOverrides enforces on the executor side, so `--max-duration
+// 4h` alone raises the duration without erasing the launch's cost/token
+// caps. The one merge, on every resume surface (in-process, detached,
+// the CLI, the cloud publisher), so the caps a resumed run executes
+// against cannot depend on which door it came through. Nil when neither
+// side carries an ask.
+func MergeResumeBudgetAsk(fromSpec *ir.BudgetOverrides, fromDoc *store.RunBudgetOverrides) *ir.BudgetOverrides {
+	base := BudgetOverridesFromRun(fromDoc)
+	if fromSpec == nil || fromSpec.IsZero() {
+		return base
+	}
+	if base == nil {
+		base = &ir.BudgetOverrides{}
+	}
+	if fromSpec.MaxCostUSD > 0 {
+		base.MaxCostUSD = fromSpec.MaxCostUSD
+	}
+	if fromSpec.MaxTokens > 0 {
+		base.MaxTokens = fromSpec.MaxTokens
+	}
+	if fromSpec.MaxDuration != "" {
+		base.MaxDuration = fromSpec.MaxDuration
+	}
+	if fromSpec.MaxIterations > 0 {
+		base.MaxIterations = fromSpec.MaxIterations
+	}
+	if fromSpec.MaxParallelBranches > 0 {
+		base.MaxParallelBranches = fromSpec.MaxParallelBranches
+	}
+	if fromSpec.CapImposed {
+		base.CapImposed = true
+	}
+	return base
 }
 
 // EffectiveBudgetSnapshot projects what a run's caps become once ask is

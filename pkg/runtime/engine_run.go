@@ -267,7 +267,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		run = created
 	}
 	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil ||
-		e.routingPolicy != nil {
+		e.routingPolicy != nil || e.budgetAsk != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -317,6 +317,12 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// prior snapshot if a --force resume dropped the budget: block.
 		if b := SnapshotBudgetForPersist(e.workflow.Budget); b != nil {
 			run.Budget = b
+		}
+		// The raw ask next to the effective caps: what a resume replays
+		// (Run.Budget is what it displays). Only ever set here, at launch;
+		// a raise on resume is persisted by the resume surface itself.
+		if e.budgetAsk != nil {
+			run.BudgetOverrides = RunBudgetOverridesOf(e.budgetAsk)
 		}
 		if e.bundle != nil {
 			run.BundleHash = e.bundle.Hash

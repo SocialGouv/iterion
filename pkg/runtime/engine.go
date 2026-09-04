@@ -118,6 +118,7 @@ type Engine struct {
 	autoMerge                bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
 	modelOverrides           []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
 	routingPolicy            *store.RoutingPolicy     // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
+	budgetAsk                *ir.BudgetOverrides      // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
 	validateOutputs          bool                     // when true, validate node outputs against declared schemas
 	forceResume              bool                     // when true, skip workflow hash check on resume
 	workDir                  string                   // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time

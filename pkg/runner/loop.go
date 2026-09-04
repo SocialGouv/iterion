@@ -2146,14 +2146,7 @@ func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *ite
 	if wf == nil || b == nil {
 		return nil
 	}
-	o := ir.BudgetOverrides{
-		MaxCostUSD:          b.MaxCostUSD,
-		MaxTokens:           b.MaxTokens,
-		MaxDuration:         b.MaxDuration,
-		MaxIterations:       b.MaxIterations,
-		MaxParallelBranches: b.MaxParallelBranches,
-		CapImposed:          b.CapImposed,
-	}
+	o := *runtime.BudgetOverridesFromWire(b)
 	if o.IsZero() {
 		return nil
 	}
