@@ -94,10 +94,14 @@ iterion/
 ├── examples/                # focused DSL/integration demonstrations
 ├── e2e/                     # deterministic and build-tagged live E2E tests
 ├── sdks/typescript/         # @iterion/sdk CLI wrapper
+├── pi-extension/            # TypeScript extension bundled into the `pi` backend
+├── contrib/                 # out-of-engine adapters (mattermost-clarify)
 ├── charts/iterion/          # Helm chart and tests
 ├── docker/ + sandbox/       # container images/helpers and sandbox fixtures
+├── build/                   # desktop packaging assets (icons, plists, NSIS, AppImage)
+├── Formula/ + Cask/         # the repo doubles as its own Homebrew tap
 ├── docs/                    # living guides plus explicitly dated records
-├── scripts/ + tooling/      # generation, release, and verification helpers
+├── scripts/                 # generation, release, and verification helpers
 ├── internal/httpx/          # module-private HTTP utility
 ├── third_party/             # checked-in third-party source/assets
 └── vendor/                  # vendored Go modules, including claw-code-go
