@@ -825,6 +825,31 @@ TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
     plaintext-credential Secret would otherwise leak until the next rollout).
     Cadence: `ITERION_SANDBOX_REAP_INTERVAL` (default 60s; `0` = boot scan only).
 
+#### Scheduling: requests and node spread
+
+A sibling pod that requests nothing scores every node the same, so the
+scheduler packs a campaign's runs onto whichever node already holds the
+sandbox image (image locality is the tie-breaker). Measured on a three-worker
+pool: five of six run pods on one 8-core node at 89 % CPU while two workers
+idled, and an oracle's 300 s application boot budget blown at 459 s. The
+driver therefore renders a deployment-level scheduling policy on every pod it
+creates, read from the runner's environment once at startup:
+
+| Env var | Effect |
+|---|---|
+| `ITERION_SANDBOX_K8S_REQUESTS_CPU` / `…_REQUESTS_MEMORY` | `resources.requests` of the workload container (Kubernetes quantities, e.g. `2`, `4Gi`). Unset → not rendered. |
+| `ITERION_SANDBOX_K8S_LIMITS_CPU` / `…_LIMITS_MEMORY` | `resources.limits`. Unset → not rendered (a run must be able to burst on a build). |
+| `ITERION_SANDBOX_K8S_SPREAD` | Topology key of a **soft** `topologySpreadConstraints` (maxSkew 1, `ScheduleAnyway`) over all `iterion.io/component=sandbox-run` pods. `hostname` (default) → `kubernetes.io/hostname`; `none` → no constraint; any other value is used verbatim (e.g. `topology.kubernetes.io/zone`). |
+
+The request is the floor a run needs to be co-scheduled sanely — it is what
+makes `LeastAllocated` spread the pods and what a cluster autoscaler sizes the
+pool on; the spread steers what equal requests leave equal. It is a policy of
+the deployment, not of the workflow: a bot cannot lower it. A malformed value
+is refused with the variable and the value named — on every `Start`, not in
+the constructor, because the driver factory skips any constructor error and
+would otherwise fall through to the noop driver in silence. Wire the values
+through the chart's `config.extraEnv` (rendered into the shared ConfigMap).
+
 Security defaults applied to every sibling pod:
 
 | Setting                          | Value                              |

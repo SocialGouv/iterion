@@ -206,6 +206,12 @@ config:
   # ConfigMap (both the server and runner deployments envFrom it).
   # e.g. TZ: Europe/Paris — the binary embeds the IANA tz database
   # (time/tzdata), so TZ works even in tzdata-less images.
+  # Also the home of the kubernetes sandbox driver's scheduling policy for
+  # the per-run pods (docs/sandbox.md § "Scheduling: requests and node
+  # spread"): ITERION_SANDBOX_K8S_REQUESTS_CPU / _REQUESTS_MEMORY /
+  # _LIMITS_CPU / _LIMITS_MEMORY (Kubernetes quantities) and
+  # ITERION_SANDBOX_K8S_SPREAD (hostname | none | <topology key>). Without a
+  # request every run pod scores every node the same and they pile onto one.
   extraEnv: {}
   log:
     format: json

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,86 @@ const (
 	RunnerPodUIDEnvVar  = "ITERION_RUNNER_POD_UID"
 )
 
+// Scheduling knobs of the sibling pod, read from the runner's environment
+// once at construction and rendered on every pod it creates. They are a
+// deployment policy, not a workflow's: the operator sizes what one run may
+// claim, and a bot cannot lower it.
+//
+// A pod that requests nothing scores every node the same, so the scheduler
+// packs a campaign's runs onto whichever node already holds the image
+// (measured: 5 of 6 run pods on one 8-core worker at 89 % CPU while two
+// workers idled, and an oracle's 300 s boot budget blown at 459 s). The
+// request is what makes LeastAllocated spread them and what a cluster
+// autoscaler sizes the pool on; the spread constraint steers what the
+// request leaves equal. Unset → no `resources` (the manifest of a driver
+// without the knobs).
+const (
+	RequestsCPUEnvVar    = "ITERION_SANDBOX_K8S_REQUESTS_CPU"
+	RequestsMemoryEnvVar = "ITERION_SANDBOX_K8S_REQUESTS_MEMORY"
+	LimitsCPUEnvVar      = "ITERION_SANDBOX_K8S_LIMITS_CPU"
+	LimitsMemoryEnvVar   = "ITERION_SANDBOX_K8S_LIMITS_MEMORY"
+	// SpreadEnvVar selects the topology key of the soft spread constraint
+	// over sandbox-run pods: "hostname" (the default when unset) →
+	// kubernetes.io/hostname, "none" → no constraint, any other value is
+	// used verbatim as the topology key (e.g. topology.kubernetes.io/zone).
+	SpreadEnvVar = "ITERION_SANDBOX_K8S_SPREAD"
+)
+
+// defaultSpreadTopologyKey is the node-level spread every multi-node
+// cluster wants; on a single node the soft constraint is a no-op.
+const defaultSpreadTopologyKey = "kubernetes.io/hostname"
+
+// quantityRe is the grammar of a Kubernetes quantity as operators write one:
+// a decimal with an optional exponent or SI/binary suffix. The API server
+// owns the semantics (a limit below its request, an absurd size); the
+// driver only refuses what could never be a quantity, so a typo fails once
+// at startup instead of on every pod apply.
+var quantityRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`)
+
+// podScheduling is the parsed form of the scheduling env vars.
+type podScheduling struct {
+	resources PodResources
+	spreadKey string // "" = no spread constraint
+}
+
+// schedulingFromEnv parses the scheduling env vars through getenv (injected
+// so tests never touch the process environment). Every set quantity must
+// match quantityRe; the error names the variable and the value.
+func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
+	var s podScheduling
+	quantities := []struct {
+		env string
+		dst *string
+	}{
+		{RequestsCPUEnvVar, &s.resources.Requests.CPU},
+		{RequestsMemoryEnvVar, &s.resources.Requests.Memory},
+		{LimitsCPUEnvVar, &s.resources.Limits.CPU},
+		{LimitsMemoryEnvVar, &s.resources.Limits.Memory},
+	}
+	for _, q := range quantities {
+		v := strings.TrimSpace(getenv(q.env))
+		if v == "" {
+			continue
+		}
+		if !quantityRe.MatchString(v) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a Kubernetes quantity (want e.g. 500m, 2, 4Gi)", q.env, v)
+		}
+		*q.dst = v
+	}
+	switch v := strings.TrimSpace(getenv(SpreadEnvVar)); v {
+	case "", "hostname":
+		s.spreadKey = defaultSpreadTopologyKey
+	case "none", "off":
+		s.spreadKey = ""
+	default:
+		if strings.ContainsAny(v, " \t\r\n") {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a topology key (want hostname, none, or a label key such as topology.kubernetes.io/zone)", SpreadEnvVar, v)
+		}
+		s.spreadKey = v
+	}
+	return s, nil
+}
+
 // deadlineMarginSecs is added to the run's budgeted max_duration when
 // deriving spec.activeDeadlineSeconds, so a run that legitimately uses
 // its full budget (plus sandbox setup/teardown slack) is never killed by
@@ -105,10 +186,18 @@ func New() (sandbox.Driver, error) {
 	if err != nil {
 		return nil, &sandbox.ErrUnavailable{Driver: "kubernetes", Reason: err.Error()}
 	}
+	// A malformed scheduling value is kept on the driver and fails every
+	// Start, not the constructor: the factory's preference walk skips ANY
+	// constructor error and ends on the always-constructible noop driver,
+	// so returning it here would silently run cloud workloads on the runner
+	// pod itself. Failing each run with the variable named is the loud path.
+	sched, schedErr := schedulingFromEnv(os.Getenv)
 	return &Driver{
 		kubectl:   binPath,
 		namespace: namespace,
 		logger:    iterlog.New(iterlog.LevelInfo, io.Discard),
+		sched:     sched,
+		schedErr:  schedErr,
 	}, nil
 }
 
@@ -126,6 +215,12 @@ type Driver struct {
 	kubectl   string
 	namespace string
 	logger    *iterlog.Logger
+
+	// sched is the deployment's pod scheduling policy (requests, limits,
+	// spread), parsed once from the environment; schedErr is the parse
+	// failure it carries, surfaced by Start on every run.
+	sched    podScheduling
+	schedErr error
 }
 
 // WithLogger returns a copy of the driver bound to a real logger.
@@ -236,6 +331,9 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	if !ok {
 		return nil, fmt.Errorf("kubernetes: PreparedSpec from driver %q passed to kubernetes.Start", prepared.DriverName())
 	}
+	if d.schedErr != nil {
+		return nil, d.schedErr
+	}
 
 	podName := podNameFor(info.RunID)
 
@@ -308,6 +406,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		SecretFilesSecretName: secretFilesSecretName,
 		Owner:                 owner,
 		ActiveDeadlineSeconds: activeDeadline,
+		Resources:             d.sched.resources,
+		SpreadTopologyKey:     d.sched.spreadKey,
 	})
 	if err != nil {
 		if caSecretName != "" {
