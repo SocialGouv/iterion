@@ -106,7 +106,7 @@ type PullRef struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
 	// differs from the base repo (the endpoint's own path parameter) for a
-	// fork PR; empty when the provider omits it. Read by IsCrossRepo for the
+	// fork PR; empty when the provider omits it. Read by SameRepoAs for the
 	// fork guard on lanes that resolve a PR via the forge API and therefore
 	// cannot rely on the webhook payload's own head.repo field.
 	HeadRepoFullName string `json:"head_repo_full_name,omitempty"`
@@ -115,29 +115,24 @@ type PullRef struct {
 	LinkedIssues []int `json:"linked_issues,omitempty"`
 }
 
-// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
-// than baseRepo — the fork-guard signal, matching pkg/webhooks/prforge.Parsed's
-// same-named method. Returns false when HeadRepoFullName is empty (a legacy
-// payload / provider that omits it): a caller that must fail-closed on
-// unknown fork status has to combine this with an emptiness check on
-// HeadRepoFullName, or use SameRepoAs — which returns false on empty head.
-// Passing an empty baseRepo returns false — this method judges cross-repo
-// only when both sides are known.
-func (p PullRef) IsCrossRepo(baseRepo string) bool {
-	return !SameRepo(p.HeadRepoFullName, baseRepo) && p.HeadRepoFullName != "" && baseRepo != ""
-}
-
-// SameRepoAs reports whether the PR's head branch lives in the SAME repo as
-// baseRepo — the fail-CLOSED counterpart to IsCrossRepo. Every launch pair
-// combining `<base repo>.CloneURL + pr.SourceBranch` MUST clear this before
-// dispatching: an empty head repo means the provider omitted the field OR
-// the head repo was deleted/blocked, and launching on it aims the bot at
-// repoURL=<base> repoRef=<head branch> — a fixer would push LLM commits to
-// the BASE repo's branch of that name.
+// SameRepoAs reports whether the PR's head branch PROVABLY lives in the SAME
+// repo as baseRepo — the fork guard, and the ONLY cross-repo predicate on
+// this type: a fail-open twin ("is it a proven fork?") sitting next to it is
+// what a future guard author reaches for by mistake, and is exactly how the
+// payload-side guards shipped fail-open once already.
+//
+// Every launch pair combining `<base repo>.CloneURL + pr.SourceBranch` MUST
+// clear this before dispatching: an empty head repo means the provider
+// omitted the field OR the head repo was deleted/blocked — which only a FORK
+// head can be — and launching on it aims the bot at repoURL=<base>
+// repoRef=<head branch>, so a fixer would push LLM commits to the BASE repo's
+// branch of that name.
 //
 // Empty head repo → false (never proven safe). Empty base → false. Both set
 // and case-insensitively equal → true. The command lane, the autofix lane
-// and the gate-relaunch lane all consult this before launching.
+// and the gate-relaunch lane all consult this before launching; the
+// payload-side lanes consult prforge.Parsed / ParsedReviewComment
+// HeadIsSameRepo, which answers the same question the same way.
 func (p PullRef) SameRepoAs(baseRepo string) bool {
 	return SameRepo(p.HeadRepoFullName, baseRepo)
 }
@@ -149,8 +144,8 @@ func (p PullRef) SameRepoAs(baseRepo string) bool {
 // the safe answer for free.
 //
 // The one vocabulary behind every cross-repo predicate — PullRef.SameRepoAs
-// / IsCrossRepo here, prforge.Parsed / prforge.ParsedReviewComment
-// HeadIsSameRepo in pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo"
+// here, prforge.Parsed / prforge.ParsedReviewComment HeadIsSameRepo in
+// pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo"
 // never disagree between the payload side and the API side, and every
 // launch-gating predicate on both sides fails closed on an unknown head.
 func SameRepo(a, b string) bool {

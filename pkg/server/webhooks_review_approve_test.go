@@ -1329,3 +1329,57 @@ func TestReviewApprove_BindingOnlyReadFailureIsALaunchError(t *testing.T) {
 		t.Fatalf("the only credential failing its read must audit one launch_error row, got %+v", rows)
 	}
 }
+
+// A claim RE-TAKEN on a retry must read as in flight to a concurrent twin,
+// however old the attempt it reuses. The operator's "Redeliver" after fixing
+// a token scope arrives minutes or hours after the failed delivery, so a
+// reused row that inherited the failed attempt's received-at was already past
+// approveClaimStaleAfter the instant it was written: a twin evaluating the
+// replay check mid-write would read `accepted` + stale, skip the duplicate
+// short-circuit, and write the status too — no exclusion at all on the one
+// path the claim exists for.
+//
+// The twin is driven from inside SetCommitStatus, which runs after the claim
+// is written and before the outcome is recorded — exactly the window.
+func TestReviewApprove_ReusedClaimIsInFlightForATwin(t *testing.T) {
+	s, gc, _, cfg, pt := approveWorld(t)
+	p, err := prforge.ParseIssueComment([]byte(approveBodyByJane))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The failed first attempt, long enough ago to be stale on its own.
+	if err := s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+		ID: "first-attempt", TenantID: cfg.TenantID, WebhookID: cfg.ID,
+		Status: webhooks.StatusLaunchError, Error: "set commit status: forge: insufficient scope",
+		IdempotencyKey: approveIdempotencyKey(cfg, p), ReceivedAt: time.Now().UTC().Add(-90 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var twinStatus string
+	gc.onSet = func() {
+		row, err := s.webhookDeliveries.GetByIdempotencyKey(context.Background(), approveIdempotencyKey(cfg, p))
+		if err != nil {
+			t.Errorf("twin could not read the claim: %v", err)
+			return
+		}
+		if row.Status == webhooks.StatusAccepted && time.Since(row.ReceivedAt) > approveClaimStaleAfter {
+			twinStatus = "stale"
+			return
+		}
+		twinStatus = row.Status
+	}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 1 {
+		t.Fatalf("the redelivery must retry the write, got setCalls=%d body=%s", gc.setCalls, w.Body.String())
+	}
+	if twinStatus != webhooks.StatusAccepted {
+		t.Fatalf("a twin arriving mid-write must read the claim as in flight (accepted), got %q — it would have written the status too", twinStatus)
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].ID != "first-attempt" || rows[0].Status != webhooks.StatusLaunched {
+		t.Fatalf("the failed row must be reused in place and flipped to launched, got %+v", rows)
+	}
+}

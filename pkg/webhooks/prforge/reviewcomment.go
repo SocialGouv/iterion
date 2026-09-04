@@ -78,7 +78,7 @@ type ParsedReviewComment struct {
 	Action       string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in —
 	// differs from ProjectPath on a fork PR; empty when the payload omits
-	// head.repo. Read by IsCrossRepo for the fork guard.
+	// head.repo. Read by HeadIsSameRepo for the fork guard.
 	HeadRepoFullName string
 }
 

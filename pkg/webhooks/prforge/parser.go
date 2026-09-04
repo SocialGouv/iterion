@@ -37,7 +37,7 @@ type Parsed struct {
 	AuthorLogin string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
 	// differs from ProjectPath (the base repo) for a fork PR; empty when the
-	// payload omits head.repo. Read by IsCrossRepo for the fork guard.
+	// payload omits head.repo. Read by HeadIsSameRepo for the fork guard.
 	HeadRepoFullName string
 	// DequeueReason is the merge-queue eject reason on a `dequeued`
 	// action (e.g. "MERGE_CONFLICT", "CI_FAILURE"). Empty otherwise.

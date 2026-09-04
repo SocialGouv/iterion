@@ -277,18 +277,20 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// Claim the approve under its stable key BEFORE the forge write: the
 	// store's unique constraint on the key is what keeps two replicas
 	// handling the same redelivery from both writing the status. A prior
-	// failed or stale row is reused (an Insert would collide with its own
-	// key); a failed row keeps its received-at, a stale claim gets a fresh
-	// one so a twin arriving during this retry reads it as in flight.
+	// failed or stale row is reused, under its own id (an Insert would
+	// collide with its own key) — and ALWAYS with a fresh received-at,
+	// because received-at is read for exactly one decision: how long the
+	// CURRENT claim has been held. Whoever re-takes the claim is a new writer
+	// starting now. Inheriting the failed attempt's timestamp made the fresh
+	// claim read as stale to a twin the moment the operator's "Redeliver"
+	// came more than approveClaimStaleAfter after the original delivery —
+	// i.e. on every realistic retry, the one path this claim exists for.
 	claim := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	claim.IdempotencyKey = idemKey
 	claim.BotID = reviewer
 	if s.webhookDeliveries != nil {
 		if priorRow != nil {
 			claim.ID = priorRow.ID
-			if priorRow.Status == webhooks.StatusLaunchError {
-				claim.ReceivedAt = priorRow.ReceivedAt
-			}
 			if err := s.webhookDeliveries.Update(ctx, claim); err != nil {
 				s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, approveRefusal{
 					detail: "reset failed delivery: " + err.Error(), reply: approveAuditUnwritableReply,

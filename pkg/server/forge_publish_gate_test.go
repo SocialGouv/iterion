@@ -63,6 +63,10 @@ type fakeGateClient struct {
 	// correct hand-off from a status that overwrote something it should not.
 	posted   []forge.CommitStatus
 	setCalls int
+	// onSet, when set, runs at the start of SetCommitStatus — the window
+	// between the claim being written and its outcome being recorded, where
+	// a concurrent twin's replay check would land.
+	onSet func()
 	// headRepo overrides HeadRepoFullName on the returned PullRef. Empty
 	// defaults to the base repo the endpoint is called with (i.e. a
 	// same-repo PR), so pre-#642 fixtures pass the fork-guard fail-CLOSED
@@ -79,6 +83,9 @@ func (f *fakeGateClient) GetPullRequest(_ context.Context, repo string, _ int) (
 }
 
 func (f *fakeGateClient) SetCommitStatus(_ context.Context, _, sha string, st forge.CommitStatus) error {
+	if f.onSet != nil {
+		f.onSet()
+	}
 	f.setCalls++
 	f.lastSHA, f.last = sha, st
 	f.posted = append(f.posted, st)
