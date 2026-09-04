@@ -15,7 +15,7 @@ feature list. For exact productions, use
 | Prompt and shape | `prompt` with bounded relative `include`, flat `schema`, cursor declarations |
 | LLM execution | `agent`, `judge`, model/backend/provider selection, prompts, sessions, tools, permissions, skills, MCP, memory, cursors, compaction, reasoning/timeout limits |
 | Deterministic execution | `tool`, Verified Action policy/recovery, `compute`, event `emit`, bounded event `wait` |
-| Human control | `human` with `none`, `human`, `llm`, `llm_or_human`, or `review` interaction and review/merge fields |
+| Human control | `human` with `none`, `human`, `llm`, `llm_or_human`, or `review` interaction and review/merge fields; `interaction: async` on `agent` / `judge`, with `await_answers` as its deterministic sync-point declaration |
 | Routing | `router` modes `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, and `llm` |
 | Nested execution | `subbot` child runs, variable mapping, resource leases, and `isolated` workspace-safety assertion |
 | Concurrent observation | `supervisor` declarations with watched nodes, cooldown, evaluation cap, model, and system prompt |
