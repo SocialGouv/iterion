@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.99.1](https://github.com/SocialGouv/iterion/compare/v3.99.0...v3.99.1) (2026-09-04)
+
+### Bug Fixes
+
+* **oauth:** pre-fill the account name on reconnect, cap the label, and publish the team OAuth routes in the spec ([#657](https://github.com/SocialGouv/iterion/issues/657)) ([ed85bf6](https://github.com/SocialGouv/iterion/commit/ed85bf6c8379de308cc00f5a184b5f6b9b51d44d)), references [#656](https://github.com/SocialGouv/iterion/issues/656)
+
+    <details><summary>why</summary>
+
+    Follow-ups from the second review round of #653:
+
+    </details>
+
 ## [3.99.0](https://github.com/SocialGouv/iterion/compare/v3.98.0...v3.99.0) (2026-09-03)
 
 ### Features
