@@ -157,6 +157,11 @@ func (s *Server) allowedOrigins() []string {
 // is in the allowlist. Callers should always set Vary: Origin so caches don't
 // poison the response across origins.
 func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
+	// nil request = a server-internal replay (the webhook defer sweep);
+	// there is no Origin to reflect.
+	if r == nil {
+		return
+	}
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.isAllowedOriginReq(r) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)

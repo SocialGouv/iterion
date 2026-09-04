@@ -83,6 +83,23 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 	meta := gitlabMRMeta(p)
 
+	// A CLOSED or MERGED merge request ends every review it still owes —
+	// the GitLab twin of the prforge closed lane: live runs stop, the
+	// debounce's parked launch purges (a push at T then a merge at T+1m
+	// must NOT fire a full review of a dead MR at T+3m), armed
+	// usage-window retries disarm. Before every other filter for the same
+	// reason as over there: stopping is not launching.
+	if p.IsClosed() {
+		stopped := s.stopRunsForDeadPR(ctx, cfg, meta)
+		reason := "merge request closed — no runs to stop"
+		if stopped > 0 {
+			reason = fmt.Sprintf("merge request closed — stopped %d run(s) still bound to it", stopped)
+		}
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	// Filter: only review on open/reopen, allowed event + project.
 	// A filtered delivery returns 200 (a 4xx would make GitLab disable
 	// the webhook after repeated metadata-only edits).
@@ -221,6 +238,13 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
 
+	// Push debounce: a synchronize launch waits out a quiet window so a
+	// volley of pushes costs one review of the final head (a re-request
+	// click stays immediate — a human is waiting on it).
+	if s.shouldDeferSyncLaunch(gateResync && !reviewRequested) {
+		s.deferSyncLaunch(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
+		return
+	}
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 
@@ -840,12 +864,13 @@ func gitlabMRMeta(p gitlab.Parsed) webhookEventMeta {
 		subject = p.SubjectID()
 	}
 	return webhookEventMeta{
-		Kind:         "merge_request",
-		Action:       p.Action,
-		ProjectPath:  p.ProjectPath,
-		SubjectID:    subject,
-		SubjectSHA:   p.HeadSHA,
-		SenderHandle: p.SenderUsername,
+		Kind:           "merge_request",
+		Action:         p.Action,
+		ProjectPath:    p.ProjectPath,
+		SubjectID:      subject,
+		SubjectSHA:     p.HeadSHA,
+		SenderHandle:   p.SenderUsername,
+		EventUpdatedAt: p.UpdatedAt,
 	}
 }
 

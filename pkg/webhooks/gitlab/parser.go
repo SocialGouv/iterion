@@ -164,6 +164,15 @@ func (p Parsed) IsSynchronize() bool {
 	return !p.Draft && p.Action == "update" && p.OldRev != ""
 }
 
+// IsClosed reports whether this MR event ends the merge request — the
+// GitLab twin of the prforge "closed" action, split into two verbs
+// ("close" = closed without merging, "merge" = merged). Either way the
+// MR owes no further review work: live runs stop, parked (debounced)
+// launches purge, armed usage-window retries disarm.
+func (p Parsed) IsClosed() bool {
+	return p.Action == "close" || p.Action == "merge"
+}
+
 // StateOpenOrUnknown reports whether the MR can still receive review work:
 // open, or a payload that omits `state` entirely. The fail-open half serves
 // the merge-gate resync lane — a required check must keep following the head,

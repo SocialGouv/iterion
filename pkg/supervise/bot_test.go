@@ -106,3 +106,25 @@ func TestResolveModel(t *testing.T) {
 		}
 	})
 }
+
+// A DSL model pin in env form ("${VAR:-provider/model}") must be
+// expanded before reaching the registry — the R573fa9 regression: the
+// raw string split at its first "/" into a garbage provider, every eval
+// soft-failed, and the declared supervisor was silently inert.
+func TestResolveModelExpandsEnvForm(t *testing.T) {
+	got, err := resolveModel(context.Background(), "${ITERION_TEST_SUP_MODEL_UNSET:-anthropic/claude-haiku-4-5}", "")
+	if err != nil {
+		t.Fatalf("resolveModel: %v", err)
+	}
+	if got != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("model = %q, want the default expanded", got)
+	}
+	t.Setenv("ITERION_TEST_SUP_MODEL", "openai/gpt-5.5")
+	got, err = resolveModel(context.Background(), "${ITERION_TEST_SUP_MODEL:-anthropic/claude-haiku-4-5}", "")
+	if err != nil {
+		t.Fatalf("resolveModel: %v", err)
+	}
+	if got != "openai/gpt-5.5" {
+		t.Fatalf("model = %q, want the env override", got)
+	}
+}

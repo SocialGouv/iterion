@@ -105,6 +105,13 @@ type webhookEventMeta struct {
 	SubjectURL      string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
 	SubjectSHA      string // head SHA, when known
 	SenderHandle    string // username for audit (logged only, never in delivery audit row v1)
+	// EventUpdatedAt is the FORGE's own timestamp for the subject at this
+	// event (GitHub/Forgejo `pull_request.updated_at`, GitLab
+	// `object_attributes.updated_at`), verbatim. Not for display: it is
+	// the only ordering signal a webhook delivery carries, and forges do
+	// not guarantee delivery order — see webhooks.DeferredPayloadIsStale.
+	// Empty when the payload omits it.
+	EventUpdatedAt string
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
@@ -785,6 +792,16 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 		if d.RunID == "" || d.BotID != botID || d.SubjectID != meta.SubjectID {
 			continue
 		}
+		// The PROJECT half of the scope: a subject id ("pr:7") carries no
+		// repo, and one webhook config can serve many — without this a
+		// push to acme/b#7 would cancel the live review of acme/a#7 (the
+		// same cross-repo collision the debounce key and the dead-PR stop
+		// already guard against). Skipped only when THIS delivery has no
+		// project (a generic-webhook shape), where narrowing would break
+		// the historical behaviour rather than fix it.
+		if meta.ProjectPath != "" && d.ProjectPath != meta.ProjectPath {
+			continue
+		}
 		if d.Status != webhooks.StatusLaunched {
 			continue
 		}
@@ -1227,7 +1244,22 @@ const prClosedRunReason = "pull request closed or merged — nothing left to rev
 // the forge starts disabling the hook. Returns how many runs it actually
 // stopped, for the delivery audit reason.
 func (s *Server) stopRunsForDeadPR(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta) int {
-	if s.webhookDeliveries == nil || meta.SubjectID == "" || meta.ProjectPath == "" {
+	if meta.SubjectID == "" || meta.ProjectPath == "" {
+		return 0
+	}
+	// Purge any review PARKED for this PR's quiet window (the push
+	// debounce): push → merge within the window is the normal case on a
+	// repo whose gate goes green on that push, and without this the 20s
+	// sweep would fire a full review of a dead pull request three
+	// minutes after it merged. Unconditional (whatever generation or
+	// lease): a dead PR's parked review must never launch. Here rather
+	// than per closed-lane so every provider's close path inherits it.
+	if s.webhookDeferred != nil {
+		if err := s.webhookDeferred.DeleteBySubject(ctx, deferSubjectKey(cfg, meta)); err != nil && s.logger != nil {
+			s.logger.Warn("webhooks: could not purge parked launch for closed %s %s: %v", meta.ProjectPath, meta.SubjectID, err)
+		}
+	}
+	if s.webhookDeliveries == nil {
 		return 0
 	}
 	cancel := s.webhookCancelRun

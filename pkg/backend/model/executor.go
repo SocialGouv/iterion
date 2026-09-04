@@ -970,6 +970,21 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 			fn(nodeID, AssistantTextInfo{Text: text, Iteration: iteration})
 		}
 	}
+	// Mid-call usage progress (claude_code streams it per assistant API
+	// message; the store hook debounces + prices it into usage_progress
+	// events for the supervisor hub's cost_gt monitor).
+	if e.hooks.OnUsageProgress != nil {
+		fn := e.hooks.OnUsageProgress
+		h.OnUsageProgress = func(up delegate.UsageProgress) {
+			fn(nodeID, UsageProgressInfo{
+				Model:            up.Model,
+				InputTokens:      up.InputTokens,
+				OutputTokens:     up.OutputTokens,
+				CacheReadTokens:  up.CacheReadTokens,
+				CacheWriteTokens: up.CacheWriteTokens,
+			})
+		}
+	}
 	// Usage cap: the backend reports the provider's own window telemetry,
 	// the guard decides. A hard cap answers with the same usage-window
 	// error a real refusal produces, so the run parks and a durable retry

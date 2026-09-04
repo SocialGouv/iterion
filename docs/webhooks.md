@@ -151,7 +151,36 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   — **plus `synchronize` when the webhook sets `review_on_sync`**, so a push
   to the head re-reviews and the `revi/review` status re-evaluates on the new
   head SHA (this is what makes a required check track the fixed revision; see
-  [merge-gate.md](merge-gate.md))
+  [merge-gate.md](merge-gate.md)). The synchronize lane is **debounced**: the
+  launch waits out a quiet window (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default
+  `3m`, `0` disables) and a newer push on the same PR replaces the parked
+  launch and re-arms the window, so a volley of pushes costs ONE review of
+  the final head instead of N−1 runs cancelled mid-flight
+  ([pkg/server/webhooks_debounce.go](../pkg/server/webhooks_debounce.go); the
+  delivery answers `202 {"status":"deferred"}`, a 20s sweep launches due
+  entries, multi-replica-safe via a store lease, and the launch tail's
+  idempotency key keeps a lease replay from double-launching). PR open,
+  `/revi` and a re-request click stay immediate — a human is waiting on
+  those. During the window the required check is simply absent, the same
+  honest "nothing is reviewing this yet" as the seconds between push and
+  launch; the in-flight claim still lands at the real launch. What gets
+  parked is the **newest** head, not the last-arrived one: forges do not
+  guarantee delivery order, so the payloads are ordered by the forge's
+  own event timestamp and a delivery that lost the race answers
+  `200 {"status":"filtered"}` rather than overwriting a newer parked
+  push. Two further properties are worth knowing when a parked review
+  does not appear: the **config at fire time governs** — disabling the
+  webhook, clearing `review_on_sync`, or removing the bot from
+  `bot_ids` during the window drops the parked launch (with a
+  `filtered` delivery naming why), because the sweep re-enters none of
+  the admission the inbound request passed; and a parked launch the
+  admission gate refuses (org concurrency, launch rate) or that fails
+  outright is **re-armed with backoff**, not dropped — the forge was
+  answered `202 deferred` and will never redeliver, so the retry has to
+  live here. That chain is bounded (8 attempts, ~45 min); past it, or
+  on a monthly quota/cost denial that resets weeks away, the review is
+  abandoned with a `launch_error` delivery naming the loss rather than
+  disappearing.
   → PR auto-**review** (Revi / `review-pr`). This lane is **review-only**: a
   PR-open NEVER auto-launches the mutating branch-improve loop (Billy) — see
   *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
@@ -637,7 +666,7 @@ are accepted by `POST` / `PATCH`:
 | Key | Default | Meaning |
 |---|---|---|
 | `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. |
-| `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). |
+| `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). The lane is debounced (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default `3m`): a push volley costs one review of the final head — see the GitHub section above. |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
 | `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |

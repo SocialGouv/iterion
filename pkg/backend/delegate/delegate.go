@@ -1069,6 +1069,28 @@ type TaskHooks struct {
 	//
 	// Runs on the stream-handling goroutine: must not block.
 	OnUsageWindow func(usagecap.Reading) error
+
+	// OnUsageProgress fires when the backend observes token usage
+	// accumulating MID-CALL (claude_code: each streamed assistant API
+	// message, deduplicated by message id). The payload is CUMULATIVE
+	// for the current delegate call, not a delta. Observational only —
+	// the authoritative spend is still recorded once at node end; this
+	// stream exists so a supervisor's cost_gt monitor can fire while
+	// there is still a turn left to steer. Runs on the stream-handling
+	// goroutine: must not block.
+	OnUsageProgress func(UsageProgress)
+}
+
+// UsageProgress is the cumulative token usage of an in-flight delegate
+// call, by billing class. Model is the effective model serving the call
+// (from the stream's system/init), which is what prices the estimate —
+// empty when the backend has not observed it yet.
+type UsageProgress struct {
+	Model            string
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // TurnFinishedInfo is the payload of the TaskHooks.OnTurnFinished

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
@@ -227,6 +229,12 @@ type storeHooks struct {
 	inputsMu     sync.Mutex
 	recentInputs map[string]string
 
+	// usage_progress debounce state, keyed by node id. Guarded by upMu:
+	// the claude_code feed runs on the stream goroutine while the claw
+	// feed runs on the generation loop's.
+	upMu    sync.Mutex
+	upState map[string]*usageProgressState
+
 	// driftSeen dedupes model_drift events per (node, declared, effective)
 	// so a 92-pass loop does not emit 92 identical warnings.
 	driftMu   sync.Mutex
@@ -319,6 +327,10 @@ func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage
 
 // onLLMRequest implements the OnLLMRequest hook.
 func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
+	// Remember the model serving this node: the claw per-step usage feed
+	// carries no model, and an unpriced usage_progress sample cannot arm
+	// a cost_gt monitor.
+	h.noteNodeModel(nodeID, info.Model)
 	data := map[string]any{
 		"model":         info.Model,
 		"message_count": info.MessageCount,
@@ -408,6 +420,11 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 
 	h.emit(nodeID, store.EventLLMStepFinished, data)
 
+	// claw's mid-node usage feed: fold this step's usage into the node's
+	// debounced usage_progress sampling (claude_code has its own feed via
+	// the OnUsageProgress delegate hook).
+	h.usageProgressFromStep(nodeID, step)
+
 	// Mid-loop narration for the conversation views. Only tool-bearing
 	// steps qualify: in claw's agent loop the final (no-tools) step is
 	// the node's answer — often raw structured JSON — which the output
@@ -496,6 +513,152 @@ func (h *storeHooks) onAssistantText(nodeID string, info AssistantTextInfo) {
 
 // onUsageCap implements the OnUsageCap hook: it records that the
 // operator's own ceiling — not the provider's — is what governed this run.
+// ---------------------------------------------------------------------------
+// usage_progress — debounced mid-node usage sampling (observational).
+// The authoritative spend is still recorded ONCE at node end
+// (runtime.recordBranchUsage); these samples exist so a supervisor's
+// cost_gt monitor can fire while the node is still steerable.
+// ---------------------------------------------------------------------------
+
+// usageProgressState tracks one node's cumulative in-flight usage and the
+// last sample emitted, so a sample lands on significant growth, not per turn.
+type usageProgressState struct {
+	// iteration scopes the claw DELTA feed: a new loop iteration starts a
+	// fresh accumulation (the claude_code feed overwrites with call-
+	// cumulative absolutes, so it never consults this).
+	iteration                      int
+	model                          string
+	in, out, cacheRead, cacheWrite int
+	lastTokens                     int
+	lastUsed                       float64
+}
+
+// Emission thresholds: a sample must be worth waking a supervisor for
+// (floor), and each subsequent one must show real growth (ratio) — a
+// 60-turn review emits a handful of samples, not sixty.
+const (
+	usageProgressMinUSD    = 0.05
+	usageProgressGrowthPct = 1.20
+	usageProgressMinTokens = 5000
+	usageProgressTokGrowth = 1.25
+)
+
+func (h *storeHooks) upStateFor(nodeID string) *usageProgressState {
+	if h.upState == nil {
+		h.upState = make(map[string]*usageProgressState)
+	}
+	st := h.upState[nodeID]
+	if st == nil {
+		st = &usageProgressState{}
+		h.upState[nodeID] = st
+	}
+	return st
+}
+
+// noteNodeModel records the model serving a node so the claw step feed
+// (whose per-step payload carries no model) can price its samples.
+func (h *storeHooks) noteNodeModel(nodeID, model string) {
+	if model == "" {
+		return
+	}
+	h.upMu.Lock()
+	h.upStateFor(nodeID).model = model
+	h.upMu.Unlock()
+}
+
+// onUsageProgress implements the OnUsageProgress hook: the delegate
+// (claude_code) reports CALL-CUMULATIVE usage — overwrite and maybe emit.
+func (h *storeHooks) onUsageProgress(nodeID string, info UsageProgressInfo) {
+	h.upMu.Lock()
+	st := h.upStateFor(nodeID)
+	if info.Model != "" {
+		st.model = info.Model
+	}
+	// A DROP in the call-cumulative counters means a NEW delegate call
+	// started on this node (a loop iteration, a retry, a fallback
+	// route). Without clearing the debounce watermarks the PREVIOUS
+	// call's peak would suppress every sample of the new one until it
+	// out-spent it — blinding cost_gt on exactly the later passes a
+	// pacer exists for.
+	if info.InputTokens+info.OutputTokens+info.CacheReadTokens+info.CacheWriteTokens <
+		st.in+st.out+st.cacheRead+st.cacheWrite {
+		st.lastUsed, st.lastTokens = 0, 0
+	}
+	st.in, st.out = info.InputTokens, info.OutputTokens
+	st.cacheRead, st.cacheWrite = info.CacheReadTokens, info.CacheWriteTokens
+	data := h.usageSampleLocked(st)
+	h.upMu.Unlock()
+	if data != nil {
+		h.emit(nodeID, store.EventUsageProgress, data)
+	}
+}
+
+// usageProgressFromStep is the claw feed: per-step usage DELTAS,
+// accumulated per (node, loop iteration).
+func (h *storeHooks) usageProgressFromStep(nodeID string, step LLMStepInfo) {
+	if step.InputTokens == 0 && step.OutputTokens == 0 &&
+		step.CacheReadTokens == 0 && step.CacheWriteTokens == 0 {
+		return
+	}
+	h.upMu.Lock()
+	st := h.upStateFor(nodeID)
+	if step.Iteration != st.iteration {
+		model := st.model // survives: the model serving the node has not changed
+		*st = usageProgressState{iteration: step.Iteration, model: model}
+	}
+	st.in += step.InputTokens
+	st.out += step.OutputTokens
+	st.cacheRead += step.CacheReadTokens
+	st.cacheWrite += step.CacheWriteTokens
+	data := h.usageSampleLocked(st)
+	h.upMu.Unlock()
+	if data != nil {
+		h.emit(nodeID, store.EventUsageProgress, data)
+	}
+}
+
+// usageSampleLocked decides whether the state warrants a sample and, when
+// it does, advances the debounce watermark and returns the event payload.
+// Caller holds upMu. The USD figure is an ESTIMATE for pacing (cache
+// writes at 1.25× the input rate, cache reads at 0.1× — the standard
+// Anthropic multipliers), never an invoice; when the model is unpriced
+// the sample carries tokens only — zero means unknown, never free.
+func (h *storeHooks) usageSampleLocked(st *usageProgressState) map[string]any {
+	totalTokens := st.in + st.out + st.cacheRead + st.cacheWrite
+	equivIn := st.in + st.cacheWrite + st.cacheWrite/4 + st.cacheRead/10
+	var used float64
+	if st.model != "" {
+		used = cost.EstimateUSD(st.model, equivIn, st.out)
+	}
+	if used > 0 {
+		if used < usageProgressMinUSD {
+			return nil
+		}
+		if st.lastUsed > 0 && used < st.lastUsed*usageProgressGrowthPct {
+			return nil
+		}
+		st.lastUsed = used
+		st.lastTokens = totalTokens
+		return map[string]any{
+			"tokens": totalTokens,
+			"used":   math.Round(used*10000) / 10000,
+			"model":  st.model,
+		}
+	}
+	if totalTokens < usageProgressMinTokens {
+		return nil
+	}
+	if st.lastTokens > 0 && float64(totalTokens) < float64(st.lastTokens)*usageProgressTokGrowth {
+		return nil
+	}
+	st.lastTokens = totalTokens
+	data := map[string]any{"tokens": totalTokens}
+	if st.model != "" {
+		data["model"] = st.model
+	}
+	return data
+}
+
 func (h *storeHooks) onUsageCap(nodeID string, info UsageCapInfo) {
 	data := map[string]any{
 		"window":  info.Window,
@@ -1178,6 +1341,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnLLMStepFinish:     h.onLLMStepFinish,
 		OnAssistantText:     h.onAssistantText,
 		OnUsageCap:          h.onUsageCap,
+		OnUsageProgress:     h.onUsageProgress,
 		OnLLMTurnCapture:    h.onLLMTurnCapture,
 		OnLLMCompacted:      h.onLLMCompacted,
 		OnToolStarted:       h.onToolStarted,

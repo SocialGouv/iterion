@@ -184,14 +184,26 @@ vars:
   ## (feature/PROJ-123-...) are extractable for ticket conformance.
   source_branch: string = ""
 
-  ## Drop findings below this severity (order: low < medium < high <
-  ## critical). Default "low" surfaces everything.
-  severity_threshold: string [enum: "low", "medium", "high", "critical"] = "low"
+  ## Findings below this severity are not WRITTEN (order: low < medium <
+  ## high < critical). Applied at the SOURCE — the reviewers are told not
+  ## to draft detail/replacement for anything under the floor (a token
+  ## spend the merge step would throw away) — and re-applied post-hoc by
+  ## the merge step as a second net. Default "medium": low-severity
+  ## observations get at most a summary line. `--var
+  ## severity_threshold=low` restores the everything mode per run.
+  ##
+  ## This is the floor the MERGE GATE counts above, because nothing under
+  ## it reaches the gate — so keep it at or below `gate_severity` (see
+  ## there). A deployment that gates on "low" must lower this one too, or
+  ## its required check silently stops seeing what it gates on.
+  severity_threshold: string [enum: "low", "medium", "high", "critical"] = "medium"
 
   ## Cap the number of board issues / report rows (highest severity
   ## first). A capped run says so prominently in the report so it is
-  ## never mistaken for "only N issues exist".
-  max_findings: int = 40
+  ## never mistaken for "only N issues exist". 15 is generous with the
+  ## medium+ severity floor; raise it per run when reviewing with
+  ## `--var severity_threshold=low`.
+  max_findings: int = 15
 
   ## When true, emit creates one native-board issue per kept finding
   ## (label source:revi). When false, emit writes the markdown report
@@ -266,6 +278,14 @@ vars:
   ## critical). Default "high": high + critical findings block; low +
   ## medium advise only. A finding you "would block a PR on" is exactly
   ## the reviewer's own bar (see review_system), so high is the sane floor.
+  ##
+  ## KEEP IT AT OR ABOVE `severity_threshold` (default "medium"). The gate
+  ## counts the findings that SURVIVED the review floor — the reviewers do
+  ## not draft below it and converge re-drops anything under it — so a
+  ## gate_severity BELOW the threshold can never see the findings it claims
+  ## to block on, and the check goes green with nothing to say. Lowering
+  ## this one means lowering `severity_threshold` with it (e.g. `--var
+  ## gate_severity=low --var severity_threshold=low`).
   gate_severity: string [enum: "low", "medium", "high", "critical"] = "high"
 
   ## The commit-status CONTEXT the gate posts under — the name that appears
@@ -291,6 +311,49 @@ vars:
   forge_publish_url: string = ""
   forge_publish_token: string = ""
 
+## ─── Supervisor ─────────────────────────────────────────────────
+
+## COST PACER (v0.7.0): a cheap concurrent watchdog on the reviewer
+## node(s). Its one job is pace — when the review drags (sprawling
+## exploration, re-reads, long silence without finalisation) it posts a
+## single "wrap up now" steering message the reviewer picks up at its
+## next turn. It never judges code and never adds findings. Cost is
+## bounded by design: ≤4 haiku evals on a 5m cooldown (~cents/run).
+## The cost_gt monitor rides the debounced mid-node usage_progress
+## samples (plus budget_warning), so it fires WHILE the review runs —
+## the cooldown wakes cover pacing between samples.
+supervisor pacer:
+  watches: [reviewer_claude, reviewer_gpt]
+  model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-haiku-4-5}"
+  system: pacer_policy
+  cooldown: "5m"
+  max_evals: 4
+  monitors: ["cost_gt=8"]
+
+prompt pacer_policy:
+  You pace a READ-ONLY code reviewer that has a hard cost budget. Its
+  review is worthless unless it is DELIVERED — the budget can kill the
+  run before the structured output lands.
+
+  Stay SILENT (decision: watch) while the reviewer is making steady,
+  scoped progress: reading the diff, checking callers of changed code,
+  drafting findings.
+
+  Intervene with ONE short message when you see budget-burning drift:
+    - re-reading files it already read, or sweeping the repo far
+      outside the changed files' blast radius;
+    - many minutes / many tool turns without converging toward its
+      final structured output;
+    - a cost/budget warning event.
+  The message: "Budget pressure: stop exploring and emit your
+  review_output NOW with what you already have — findings at or above
+  the severity floor only. A delivered review at current depth beats a
+  dead run."
+
+  Intervene AT MOST twice per run, then stay silent (decision: done).
+  Never comment on the code itself, never suggest findings, never ask
+  the reviewer to dig deeper.
+
 ## ─── Prompts ────────────────────────────────────────────────────
 
 prompt review_system:
@@ -315,6 +378,30 @@ prompt review_system:
      report issues in the CHANGED lines/files. Pre-existing issues the
      branch did not touch are out of scope — note them in `summary`
      at most, never as findings.
+
+  TOKEN FRUGALITY (this run has a hard cost budget — an unfinished
+  review is worth NOTHING, the budget can kill it before it lands):
+    - Work from `--stat` first, then read the diff hunk by hunk in
+      risk order. Read surrounding code ONLY when it decides the
+      verdict on a changed line — never as open-ended exploration,
+      never outside the diff's blast radius.
+    - Never re-read a file you have already read. One targeted grep
+      beats re-opening three files.
+    - The moment the relevant axes are covered, STOP and emit
+      `review_output`. A review delivered at 90% depth is worth
+      infinitely more than a perfect review that never lands.
+
+  SEVERITY FLOOR (write nothing the pipeline will throw away):
+    - Only WRITE finding objects whose severity is at or above
+      `{{vars.severity_threshold}}` (low < medium < high < critical).
+      Anything below the floor gets AT MOST one line in `summary` —
+      never a finding object, never a `detail`, never a `replacement`.
+      Drafting a below-floor finding is pure token spend: the merge
+      step discards it unread.
+    - The floor changes what you WRITE, never what you judge: severity
+      is still assessed honestly first, then the floor decides whether
+      the finding is worth drafting. Never inflate a severity to clear
+      the floor.
 
   AXES (cover what's relevant to the change):
     - Correctness: logic bugs, off-by-one, wrong conditionals, missing
@@ -909,7 +996,12 @@ agent converge:
   ## a missing seed is indistinguishable from "this PR was never reviewed".
   publish: review_findings
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
+  ## REVIEWER): in mono the merge is near-mechanical — dedupe is a
+  ## no-op, then threshold, cap, report — so it defaults to a cheaper
+  ## model than the judging pass. Flip back per deployment with
+  ## ITERION_VIBE_MODEL_EMIT=claude-opus-5.
+  model: "${ITERION_VIBE_MODEL_EMIT:-claude-sonnet-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   output: emit_output
   system: emit_system
@@ -1255,7 +1347,12 @@ workflow review_pr:
     ## catch a hung run. 45m killed real reviews mid-publish (a forfait
     ## retry or a big diff walks past it while spending nothing).
     max_duration: "90m"
-    max_cost_usd: 20
+    ## Sized from production: median ~$3.6/run, p95 ~$10.5 (2026-09-03
+    ## sample). The exit grace (cap × 1.1) still walks an over-cap run
+    ## forward to publish, so a big-diff review delivers at ~$13 instead
+    ## of dying. Re-budget a deliberate deep review per run with
+    ## --max-cost-usd.
+    max_cost_usd: 12
 
   ## EFFICIENCY: an empty review diff skips both LLM reviewers + emit.
   diff_precheck -> topology when not is_empty

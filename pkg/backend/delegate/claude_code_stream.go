@@ -130,6 +130,35 @@ type sessionMeta struct {
 	peakContextLoad int
 	thinkingTokens  int // approximate extended-thinking tokens (re-encoded text)
 	thinkingMs      int // best-effort wall-clock spent thinking, milliseconds
+
+	// Mid-call usage accumulation for the OnUsageProgress hook. The CLI
+	// may stream SEVERAL assistant events for one API message (one per
+	// content block), each carrying that message's usage — summing
+	// naively would multiply the spend. And ids can INTERLEAVE (a
+	// sub-agent's messages ride the same stream as the parent's), so a
+	// single last-id slot would re-fold a message it already folded.
+	// Usage is therefore kept per message id, last value wins per id,
+	// and the cumulative is the running sum maintained incrementally
+	// (usageByMsg only stores what each id last contributed).
+	usageByMsg map[string]claudesdk.Usage
+	usageTotal claudesdk.Usage
+}
+
+// accumulateAssistantUsage records one streamed assistant message's
+// usage (last value wins per message id — later events of the same
+// message carry the completed output count) and reports the running
+// totals across all message ids seen this call.
+func (sm *sessionMeta) accumulateAssistantUsage(msgID string, u claudesdk.Usage) claudesdk.Usage {
+	if sm.usageByMsg == nil {
+		sm.usageByMsg = make(map[string]claudesdk.Usage)
+	}
+	prev := sm.usageByMsg[msgID]
+	sm.usageTotal.InputTokens += u.InputTokens - prev.InputTokens
+	sm.usageTotal.OutputTokens += u.OutputTokens - prev.OutputTokens
+	sm.usageTotal.CacheCreationInputTokens += u.CacheCreationInputTokens - prev.CacheCreationInputTokens
+	sm.usageTotal.CacheReadInputTokens += u.CacheReadInputTokens - prev.CacheReadInputTokens
+	sm.usageByMsg[msgID] = u
+	return sm.usageTotal
 }
 
 // applyClaudeCodeSessionMeta merges the streamed session metadata and
@@ -577,6 +606,19 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 	load := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 	if load > meta.peakContextLoad {
 		meta.peakContextLoad = load
+	}
+	// Mid-call usage progress: report the running cumulative so a
+	// supervisor's cost monitor can fire while the call is still
+	// steerable (the authoritative spend is recorded once, at node end).
+	if task.Hooks.OnUsageProgress != nil {
+		cum := meta.accumulateAssistantUsage(m.Message.ID, u)
+		task.Hooks.OnUsageProgress(UsageProgress{
+			Model:            meta.effectiveModel,
+			InputTokens:      cum.InputTokens,
+			OutputTokens:     cum.OutputTokens,
+			CacheReadTokens:  cum.CacheReadInputTokens,
+			CacheWriteTokens: cum.CacheCreationInputTokens,
+		})
 	}
 	// Extended-thinking metrics: the provider bills thinking inside
 	// output_tokens with no breakdown, so re-encode the thinking text for an

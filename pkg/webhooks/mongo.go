@@ -19,6 +19,7 @@ const (
 	colConfigs    = "webhook_configs"
 	colDeliveries = "webhook_deliveries"
 	colQuotas     = "webhook_quotas"
+	colDeferred   = "webhook_deferred_launches"
 )
 
 // DeliveryTTLDays caps how long delivery audit rows are retained.
@@ -32,6 +33,7 @@ type MongoStores struct {
 	Configs    *MongoConfigStore
 	Deliveries *MongoDeliveryStore
 	Counter    *MongoCounter
+	Deferred   *MongoDeferredLaunchStore
 }
 
 func NewMongoStores(db *mongo.Database) *MongoStores {
@@ -39,6 +41,7 @@ func NewMongoStores(db *mongo.Database) *MongoStores {
 		Configs:    &MongoConfigStore{kit: storekit.NewMongo[Config](db.Collection(colConfigs), ErrNotFound, "webhooks")},
 		Deliveries: &MongoDeliveryStore{kit: storekit.NewMongo[Delivery](db.Collection(colDeliveries), ErrNotFound, "webhooks")},
 		Counter:    &MongoCounter{col: db.Collection(colQuotas)},
+		Deferred:   &MongoDeferredLaunchStore{col: db.Collection(colDeferred)},
 	}
 }
 
@@ -58,6 +61,16 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 		{Keys: bson.D{{Key: "received_at", Value: 1}}, Options: options.Index().SetName("deliveries_ttl").SetExpireAfterSeconds(int32(DeliveryTTLDays * 24 * 60 * 60))},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("webhooks: ensure delivery indexes: %w", err)
+	}
+	deferred := db.Collection(colDeferred)
+	if _, err := deferred.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "fire_at", Value: 1}}, Options: options.Index().SetName("deferred_fire_at")},
+		// Backstop TTL: a row nothing can launch any more (webhook config
+		// deleted between defer and fire) must not sit forever. The sweep
+		// deletes launched rows itself; this only catches orphans.
+		{Keys: bson.D{{Key: "created_at", Value: 1}}, Options: options.Index().SetName("deferred_ttl").SetExpireAfterSeconds(int32(7 * 24 * 60 * 60))},
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("webhooks: ensure deferred-launch indexes: %w", err)
 	}
 	return nil
 }
@@ -147,6 +160,141 @@ func (s *MongoDeliveryStore) ListLaunchedBySubject(ctx context.Context, tenantID
 		},
 	}, "list launched deliveries by subject", "decode launched deliveries",
 		options.Find().SetSort(bson.M{"received_at": -1}))
+}
+
+// ---- MongoDeferredLaunchStore ----
+
+// MongoDeferredLaunchStore keeps semantics in lock-step with
+// MemoryDeferredLaunchStore: _id IS the subject key, so the debounce
+// upsert is one atomic FindOneAndUpdate and the multi-replica claim is
+// a per-row CAS on the lease.
+type MongoDeferredLaunchStore struct{ col *mongo.Collection }
+
+// upsertCASRounds bounds the update-then-insert retry below. Two
+// replicas racing to park the first payload of a subject resolve in one
+// extra round; three is slack, not a bound anyone should reach.
+const upsertCASRounds = 3
+
+func (s *MongoDeferredLaunchStore) Upsert(ctx context.Context, d DeferredLaunch) (bool, error) {
+	set := bson.M{
+		"tenant_id":     d.TenantID,
+		"webhook_id":    d.WebhookID,
+		"fire_at":       d.FireAt,
+		"event_kind":    d.EventKind,
+		"event_action":  d.EventAction,
+		"project_path":  d.ProjectPath,
+		"subject_id":    d.SubjectID,
+		"subject_url":   d.SubjectURL,
+		"subject_sha":   d.SubjectSHA,
+		"sender_handle": d.SenderHandle,
+		"payload_hash":  d.PayloadHash,
+		"source_ip":     d.SourceIP,
+		"public_base":   d.PublicBase,
+		"targets":       d.Targets,
+		"order_key":     d.OrderKey,
+		// A fresh push is a fresh payload: it re-arms even a subject
+		// mid-claim, and it gets the full retry budget back (the handler
+		// builds d with Attempts zero).
+		"attempts":      d.Attempts,
+		"claimed_until": time.Time{},
+	}
+	// Update-then-insert CAS, NOT one upsert carrying the staleness
+	// predicate in its filter: an upsert whose filter misses the existing
+	// (newer) row makes Mongo attempt an INSERT on the same _id and
+	// return a duplicate-key ERROR — indistinguishable from a store
+	// outage to the caller, whose outage path launches immediately, i.e.
+	// launches exactly the stale payload the predicate just refused.
+	// Here the duplicate key is the ANSWER, not an error: it proves a row
+	// exists, so the next round's update evaluates the predicate against
+	// it and either wins or reports the payload stale.
+	for round := 0; round < upsertCASRounds; round++ {
+		filter := bson.M{"_id": d.SubjectKey}
+		if d.OrderKey != "" {
+			// Mirrors DeferredPayloadIsStale: only a stored key that is
+			// present AND strictly greater refuses the write.
+			filter["$or"] = bson.A{
+				bson.M{"order_key": bson.M{"$exists": false}},
+				bson.M{"order_key": ""},
+				bson.M{"order_key": bson.M{"$lte": d.OrderKey}},
+			}
+		}
+		res, err := s.col.UpdateOne(ctx, filter,
+			bson.M{"$set": set, "$inc": bson.M{"generation": 1}})
+		if err != nil {
+			return false, fmt.Errorf("webhooks: upsert deferred launch: %w", err)
+		}
+		if res.MatchedCount > 0 {
+			return true, nil
+		}
+		// Nothing matched: either no row for this subject, or the parked
+		// one is strictly newer. The insert tells us which.
+		ins := d
+		ins.Generation = 1
+		ins.ClaimedUntil = time.Time{}
+		if _, err := s.col.InsertOne(ctx, ins); err == nil {
+			return true, nil
+		} else if !mongo.IsDuplicateKeyError(err) {
+			return false, fmt.Errorf("webhooks: upsert deferred launch: %w", err)
+		}
+	}
+	return false, nil // a strictly newer payload holds the row
+}
+
+func (s *MongoDeferredLaunchStore) ClaimDue(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]DeferredLaunch, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var out []DeferredLaunch
+	for len(out) < limit {
+		var d DeferredLaunch
+		err := s.col.FindOneAndUpdate(ctx,
+			bson.M{
+				"fire_at": bson.M{"$lte": now},
+				"$or": bson.A{
+					bson.M{"claimed_until": bson.M{"$exists": false}},
+					bson.M{"claimed_until": bson.M{"$lte": now}},
+				},
+			},
+			bson.M{"$set": bson.M{"claimed_until": now.Add(lease)}},
+			options.FindOneAndUpdate().SetReturnDocument(options.After).
+				SetSort(bson.M{"fire_at": 1}),
+		).Decode(&d)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			break
+		}
+		if err != nil {
+			return out, fmt.Errorf("webhooks: claim deferred launches: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (s *MongoDeferredLaunchStore) Reschedule(ctx context.Context, subjectKey string, generation int64, fireAt time.Time, attempts int) error {
+	// Generation-guarded and deliberately NOT an upsert: a row a fresh
+	// push replaced (higher generation) or a closed PR purged must stay
+	// replaced/purged — a stale re-arm must never resurrect it.
+	if _, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": subjectKey, "generation": generation},
+		bson.M{"$set": bson.M{"fire_at": fireAt, "attempts": attempts, "claimed_until": time.Time{}}},
+	); err != nil {
+		return fmt.Errorf("webhooks: reschedule deferred launch: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoDeferredLaunchStore) Delete(ctx context.Context, subjectKey string, generation int64) error {
+	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": subjectKey, "generation": generation}); err != nil {
+		return fmt.Errorf("webhooks: delete deferred launch: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoDeferredLaunchStore) DeleteBySubject(ctx context.Context, subjectKey string) error {
+	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": subjectKey}); err != nil {
+		return fmt.Errorf("webhooks: purge deferred launch: %w", err)
+	}
+	return nil
 }
 
 // ---- MongoCounter ----

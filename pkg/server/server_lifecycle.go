@@ -348,6 +348,20 @@ func (s *Server) ListenAndServe() error {
 		s.warnf("merge-gate sweeper NOT started: the store does not implement ListNotifiableRuns — " +
 			"a review whose outcome event is dropped will leave its required check absent forever")
 	}
+	// Webhook push-debounce sweeper: launches synchronize reviews parked for
+	// their quiet window (webhooks_debounce.go). Multi-replica-safe via the
+	// store lease. Absent when no deferred store is wired or the window is 0.
+	if s.webhookDeferred != nil && s.syncDebounce > 0 {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runWebhookDeferSweeper(ctx)
+		}()
+	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
 	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).
 	if s.cfg.ScheduledBots != nil {

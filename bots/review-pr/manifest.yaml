@@ -1,7 +1,24 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.6.0
+version: 0.7.0
+## 0.7.0 — COST REDUCTION pass (judging quality untouched — the
+## reviewer stays on opus/high). Four levers: (1) the severity floor
+## moves to the SOURCE — `severity_threshold` now defaults to "medium"
+## and the reviewers are told not to DRAFT below-floor findings (they
+## used to write detail+replacement the merge step then discarded);
+## below-floor observations get a summary line at most. (2) A TOKEN
+## FRUGALITY contract in the review prompt: --stat-first hunk
+## prioritisation, no re-reads, no out-of-blast-radius sweeps, emit as
+## soon as the axes are covered. (3) A cheap "pacer" supervisor
+## (haiku, ≤4 evals, 5m cooldown) that posts one "wrap up now"
+## steering message when the review drags — never judges code. (4) The
+## converge/merge step drops to sonnet via the new dedicated
+## ITERION_VIBE_MODEL_EMIT env (in mono the merge is near-mechanical);
+## budget max_cost_usd 20 → 12 (median $3.6, p95 $10.5 measured in
+## prod; the ×1.1 exit grace still delivers big-diff reviews) and
+## max_findings 40 → 15. Restore the old surface per run with
+## --var severity_threshold=low --max-cost-usd 20.
 ## 0.6.0 — TICKET CONFORMANCE (opt-in, tracker-agnostic): given a
 ## tracker API base (`tracker_api_base`, typically pinned per repo via
 ## the integration's launch_vars) and a bound read-only `tracker_token`

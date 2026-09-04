@@ -89,6 +89,19 @@ type UsageCapInfo struct {
 	ResetsAt time.Time
 }
 
+// UsageProgressInfo is a node's cumulative mid-call token usage by
+// billing class, passed to the OnUsageProgress hook. Model is the
+// effective model serving the call (prices the estimate; may be empty
+// early in a stream). Counts are CUMULATIVE for the in-flight call,
+// never deltas.
+type UsageProgressInfo struct {
+	Model            string
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+}
+
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
 type LLMToolCallInfo struct {
 	ToolName  string
