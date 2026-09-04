@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/queue"
-	"github.com/SocialGouv/iterion/pkg/store"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func TestRunnerEpochAdmissionRelation(t *testing.T) {
