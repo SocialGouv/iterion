@@ -931,8 +931,9 @@ schema surface_pr_link_input:
 ## ─── Publication schemas (opt-in) ───────────────────────────────
 
 ## publish_gate output — deterministic "can we publish?" so the
-## publish agent is only ever entered when the var opt-in, the serve
-## base URL and all three S3 secrets are actually present.
+## publish agent is only ever entered when the var opt-in, the base
+## URL, the image repository, both credentials and the operator's
+## deploy-target playbook are actually present.
 schema publish_gate_output:
   do_publish: bool
   reason: string
@@ -1987,8 +1988,11 @@ agent publish:
 ## verify_publish — DETERMINISTIC truth gate on the live URL. The
 ## agent's own verification is necessary but not sufficient: this
 ## node re-checks from outside the agent's narrative and FAILS the
-## run when the site is not actually serving. Polls ≤ 2 min for the
-## serve loop (60 s sync) to pick the push up.
+## run when the site is not actually serving. Polls ≤ 2 min: the
+## deploy-target skill already waits for its own rollout and validates
+## the URL before returning, so this is a RE-measurement from outside,
+## not the first wait — the window covers the tail of an ingress/DNS
+## propagation, not a cold deploy.
 tool verify_publish:
   input: verify_publish_input
   command: `URL={{input.url}} BASE={{input.base_url}} python3 -c "
