@@ -687,6 +687,25 @@ type fakeGitHubForge struct {
 	// answers 401 to — a binding whose token was revoked or rotated away
 	// while the webhook still pins it.
 	revokedBearer string
+	// blindBearer, when set, is an Authorization value every REPO endpoint
+	// answers 404 to, while /user still works — GitHub's answer to a
+	// credential that cannot see this repository (an App not installed on
+	// it, a PAT of an account without access). Distinct from revokedBearer
+	// on purpose: 404 is a SUCCESSFUL answer that pkg/forge/github maps to
+	// permission "none", so it gives a caller nothing to fall back on.
+	blindBearer string
+}
+
+// blind answers 404 when the request carries the blind bearer.
+func (f *fakeGitHubForge) blind(w http.ResponseWriter, r *http.Request) bool {
+	f.mu.Lock()
+	bb := f.blindBearer
+	f.mu.Unlock()
+	if bb == "" || r.Header.Get("Authorization") != bb {
+		return false
+	}
+	w.WriteHeader(http.StatusNotFound)
+	return true
 }
 
 // revoked answers 401 when the request carries the revoked bearer.
@@ -750,7 +769,7 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("GET /api/v3/repos/acme/widgets/collaborators/{user}/permission", func(w http.ResponseWriter, r *http.Request) {
 		seen("permission", r)
-		if f.revoked(w, r) {
+		if f.revoked(w, r) || f.blind(w, r) {
 			return
 		}
 		f.mu.Lock()
@@ -764,7 +783,7 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7", func(w http.ResponseWriter, r *http.Request) {
 		seen("pull", r)
-		if f.revoked(w, r) {
+		if f.revoked(w, r) || f.blind(w, r) {
 			return
 		}
 		f.mu.Lock()
@@ -778,7 +797,7 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/statuses/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		seen("status", r)
-		if f.revoked(w, r) {
+		if f.revoked(w, r) || f.blind(w, r) {
 			return
 		}
 		if r.Header.Get("Authorization") == bearerNoStatuses {
@@ -795,7 +814,7 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		seen("comment", r)
-		if f.revoked(w, r) {
+		if f.revoked(w, r) || f.blind(w, r) {
 			return
 		}
 		var body struct {
@@ -1235,6 +1254,10 @@ func approveStaleBindingWorld(t *testing.T) (*Server, *fakeGitHubForge, webhooks
 		t.Fatal(err)
 	}
 	s.forgeConnections = conns
+	// The row that PROVES this connection covers the repo — what
+	// Orchestrator.Provision writes. Without it the connection is only "some
+	// connection on this host" and ranks below the binding.
+	seedCoveringIntegration(t, s, conn.ID, "acme/widgets")
 	cfg, pt := ghConfig(t, s)
 	cfg.ForgeBaseURL = f.srv.URL
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}

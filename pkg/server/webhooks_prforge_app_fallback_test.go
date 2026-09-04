@@ -63,6 +63,10 @@ func appConnWorld(t *testing.T, mintFail, withToken bool) (*Server, *fakeGitHubF
 		t.Fatal(err)
 	}
 	s.forgeConnections = conns
+	// The integration row is what makes this connection COVER acme/widgets —
+	// the proof the webhook lanes require before ranking it above the
+	// webhook's own forge_token binding.
+	seedCoveringIntegration(t, s, "c-app", "acme/widgets")
 	cfg, pt := ghConfig(t, s)
 	cfg.ForgeBaseURL = f.srv.URL
 	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}

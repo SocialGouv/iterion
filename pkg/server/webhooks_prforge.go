@@ -159,44 +159,78 @@ func (s *Server) realWebhookPRForgePRResolver(ctx context.Context, cfg webhooks.
 
 // prforgeReplierAPIFor resolves the client a GitHub/Forgejo webhook lane
 // reads the forge through — the commenter's role, the bot's identity, the
-// PR head. The team connection covering the PR's host+repo comes first: it
-// is the resolution the publish path writes through, so a connection-only
-// integration authorizes without a forge_token binding (an App connection
-// mints its installation token). A connection whose client cannot SERVE —
-// not only one that cannot be built: an App client mints lazily, so its
-// failure is a first-call failure — is passed over for the webhook's
-// forge_token binding, with a Warn. A non-empty refusal means neither is
+// PR head. Three tiers, in descending order of how well each one is PROVEN
+// to speak for this repo:
+//
+//  1. the connection of the repo's own integration row: the resolution the
+//     publish path writes through, so a connection-only integration
+//     authorizes without a forge_token binding (an App connection mints its
+//     installation token);
+//  2. the webhook's forge_token binding — the credential an operator bound
+//     to THIS webhook, and therefore to this repo;
+//  3. any team connection on the host, covering nothing in particular: the
+//     zero-config tier for an org-wide App install nobody provisioned repo
+//     by repo, which is why it stays.
+//
+// Tier 3 must sit BELOW the binding. An unrelated App on the same host
+// answers 404 for a repo it is not installed on, and the GitHub client maps
+// 404 to permission "none" — a successful answer, not an error — so a
+// preferred tier 3 would not fall through: it would silently rank every
+// commenter at 0 and refuse authorized `/commands`, `/revi approve` and the
+// author-trust lane on a team that merely happens to hold another connection
+// on github.com.
+//
+// A connection whose client cannot SERVE — not only one that cannot be
+// built: an App client mints lazily, so its failure is a first-call failure
+// — is passed over, with a Warn. A non-empty refusal means no tier is
 // available, and names what was tried.
 func (s *Server) prforgeReplierAPIFor(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, baseURL, projectPath, botID string) (prforgeReplierAPI, string) {
 	host := hostOfURL(baseURL)
 	connRefusal := ""
-	if conn, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath); ok {
+	// serve builds the connection's replier client, recording why it could
+	// not be used rather than returning the error: every tier is optional.
+	serve := func(conn forge.Connection, covers string) prforgeReplierAPI {
 		admin, err := s.forgeAdminFor(ctx, conn)
 		if err == nil {
 			err = preflightForgeClient(ctx, admin)
 		}
 		if err == nil {
 			if api, ok := admin.(prforgeReplierAPI); ok {
-				return api, ""
+				return api
 			}
 			err = fmt.Errorf("provider %s has no replier surface", conn.Provider)
 		}
-		connRefusal = "connection " + conn.ID + " covers " + host + "/" + projectPath + " but its client cannot serve (" + err.Error() + ")"
+		connRefusal = "connection " + conn.ID + " " + covers + " " + host + "/" + projectPath + " but its client cannot serve (" + err.Error() + ")"
 		if s.logger != nil {
-			s.logger.Warn("webhooks: %s — reading through the forge_token binding instead", connRefusal)
+			s.logger.Warn("webhooks: %s — falling back to the next credential", connRefusal)
+		}
+		return nil
+	}
+
+	repoConn, repoConnOK := s.forgeRepoConnection(ctx, cfg.TenantID, host, projectPath)
+	if repoConnOK {
+		if api := serve(repoConn, "covers"); api != nil {
+			return api, ""
 		}
 	}
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil {
 		return nil, "forge token resolution failed: " + terr.Error()
 	}
-	if token == "" {
-		if connRefusal != "" {
-			return nil, connRefusal + ", and this webhook has no forge_token binding to fall back on"
-		}
-		return nil, "no forge token resolved and no team connection covers " + host + "/" + projectPath + " (bind forge_token on the webhook, or connect a forge integration for this repo)"
+	if token != "" {
+		return prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token), ""
 	}
-	return prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token), ""
+	// No binding: the host-wide connection is better than nothing, unless it
+	// IS the repo connection already tried above.
+	if conn, ok := s.forgeHostConnection(ctx, cfg.TenantID, host); ok && (!repoConnOK || conn.ID != repoConn.ID) {
+		if api := serve(conn, "is the only one on"); api != nil {
+			return api, ""
+		}
+	}
+	if connRefusal != "" {
+		return nil, connRefusal + ", and this webhook has no forge_token binding to fall back on"
+	}
+	return nil, "no forge token resolved and no team connection covers " + host + "/" + projectPath + " (bind forge_token on the webhook, or connect a forge integration for this repo)"
 }
 
 // buildPRForgeCommandVars composes the launch vars for a generic command on a

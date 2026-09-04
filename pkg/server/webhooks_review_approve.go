@@ -387,20 +387,21 @@ type approveWritePath struct {
 }
 
 // resolveApproveWritePath picks the client the approval status is written
-// through. Preferred: the team connection's admin client — the same
-// resolution publish and the gate reconciler use, so an App integration
-// mints its per-call installation token (which carries the statuses scope).
-// The webhook's own forge_token binding serves when no connection row
-// covers the repo (the hand-owned setup docs/webhooks.md describes) AND
-// when the covering connection's client cannot serve — an App client mints
-// lazily, so it is preflighted here rather than discovered by the status
-// write. A non-zero refusal is a configuration miss with nothing to write
-// through; an error is a forge-side failure with no other credential to
-// fall back on.
+// through, walking the same three tiers as prforgeReplierAPIFor in the same
+// order: the connection of the repo's own integration row, then the
+// webhook's forge_token binding (the hand-owned setup docs/webhooks.md
+// describes), then any team connection on the host — the zero-config tier
+// for an org-wide App install, which proves nothing about this repo and so
+// must not outrank a credential an operator bound to this webhook. A
+// connection's client is preflighted for the statuses permission rather than
+// discovering it at the status write: an App client mints lazily. A non-zero
+// refusal is a configuration miss with nothing to write through; an error is
+// a forge-side failure with no other credential to fall back on.
 func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, reviewer, baseURL, host, projectPath string) (approveWritePath, approveRefusal, error) {
-	conn, connOK := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath)
 	var connErr error
-	if connOK {
+	// try resolves a connection into a write path, or records why it could
+	// not serve so a lower tier can be attempted.
+	try := func(conn forge.Connection) (approveWritePath, approveRefusal, bool) {
 		gc, err := s.gateClientFor(ctx, conn)
 		if err == nil && gc != nil {
 			// The write needs the statuses permission — the one an App
@@ -411,12 +412,19 @@ func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Confi
 		case err != nil:
 			connErr = err
 			if s.logger != nil {
-				s.logger.Warn("webhooks: /revi approve on %s/%s: connection %s covers the repo but its client cannot serve the status write (%v) — writing through the webhook's forge_token binding instead", host, projectPath, conn.ID, err)
+				s.logger.Warn("webhooks: /revi approve on %s/%s: connection %s cannot serve the status write (%v) — trying the next credential", host, projectPath, conn.ID, err)
 			}
+			return approveWritePath{}, approveRefusal{}, false
 		case gc == nil:
-			return approveWritePath{conn: conn, connOK: true}, sameRefusal("provider " + string(conn.Provider) + " has no commit-status capability"), nil
+			return approveWritePath{conn: conn, connOK: true}, sameRefusal("provider " + string(conn.Provider) + " has no commit-status capability"), true
 		default:
-			return approveWritePath{gc: gc, conn: conn, connOK: true, via: "connection " + conn.ID}, approveRefusal{}, nil
+			return approveWritePath{gc: gc, conn: conn, connOK: true, via: "connection " + conn.ID}, approveRefusal{}, true
+		}
+	}
+	conn, connOK := s.forgeRepoConnection(ctx, cfg.TenantID, host, projectPath)
+	if connOK {
+		if path, refusal, done := try(conn); done {
+			return path, refusal, nil
 		}
 	}
 	token, err := s.resolveForgeToken(ctx, cfg, reviewer)
@@ -424,6 +432,14 @@ func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Confi
 		return approveWritePath{conn: conn, connOK: connOK}, approveRefusal{}, err
 	}
 	if token == "" {
+		// No binding: the host-wide connection is better than nothing, unless
+		// it IS the repo connection already tried above.
+		if hc, ok := s.forgeHostConnection(ctx, cfg.TenantID, host); ok && (!connOK || hc.ID != conn.ID) {
+			conn, connOK = hc, true
+			if path, refusal, done := try(hc); done {
+				return path, refusal, nil
+			}
+		}
 		if errors.Is(connErr, forge.ErrPermissionsNotGranted) {
 			// A withheld grant is a configuration miss, not a forge outage:
 			// the operator approves the permission on the App installation

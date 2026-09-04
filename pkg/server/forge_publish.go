@@ -760,26 +760,91 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 	return best, found
 }
 
+// forgeConnUsable reports whether a connection is a candidate for repo on
+// host: same tenant, same forge host, and not watch-only. A watch-only
+// connection sits on the same host and would be picked by the host-wide
+// fallback — then every review comment and commit status posted through it
+// would 403: its App holds no pull_requests/statuses grant, by design.
+func forgeConnUsable(c forge.Connection, teamID, host string) bool {
+	return c.TenantID == teamID && !c.IsSecurityReadOnly() &&
+		strings.EqualFold(hostOfURL(c.BaseURL()), host)
+}
+
+// forgeRepoConnection returns the team connection whose coverage of
+// host/repo is PROVEN — the connection of the repo's LATEST integration row,
+// i.e. the one an operator actually provisioned onto this repo. LATEST
+// because repoIntegrationFor makes the same choice for the policy, so a repo
+// re-provisioned onto a newer connection posts under that one and not the row
+// left behind.
+//
+// The counterpart to forgeHostConnection, which proves nothing about the
+// repo. A lane holding a SECOND credential (a webhook's forge_token binding)
+// must consult this one before falling back on that one: an unrelated App on
+// the same host answers 404 for a repo it is not installed on, GitHub's
+// client maps that to permission "none" — a successful answer, not an error —
+// and the lane would refuse an authorized commenter instead of reading
+// through the credential the operator actually bound.
+func (s *Server) forgeRepoConnection(ctx context.Context, teamID, host, repo string) (forge.Connection, bool) {
+	if s == nil || s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
+	ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo)
+	if !ok {
+		return forge.Connection{}, false
+	}
+	c, err := s.forgeConnections.Get(ctx, ri.ConnectionID)
+	if err != nil || !forgeConnUsable(c, teamID, host) {
+		return forge.Connection{}, false
+	}
+	return c, true
+}
+
+// forgeHostConnection returns the team's LATEST connection on host, with NO
+// proof it covers any particular repo — the zero-config tier that serves an
+// org-wide App install nobody provisioned repo by repo. LATEST, not first:
+// ListByTenant sorts created_at ascending on both stores, so a repo
+// re-provisioned onto a newer connection would otherwise inherit the stale
+// one. Id breaks an exact created_at tie.
+func (s *Server) forgeHostConnection(ctx context.Context, teamID, host string) (forge.Connection, bool) {
+	if s == nil || s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
+	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)
+	if err != nil {
+		return forge.Connection{}, false
+	}
+	var best forge.Connection
+	found := false
+	for _, c := range conns {
+		if !forgeConnUsable(c, teamID, host) {
+			continue
+		}
+		if !found || c.CreatedAt.After(best.CreatedAt) ||
+			(c.CreatedAt.Equal(best.CreatedAt) && c.ID < best.ID) {
+			best, found = c, true
+		}
+	}
+	return best, found
+}
+
 // forgeConnectionForPR picks the team connection to publish through:
 // the pinned connection when given, else the connection of the repo's
 // LATEST integration on the PR's forge host, else the LATEST team
 // connection on that host. A nil forgeConnections store yields (empty, false):
-// every caller (approve, publish, pending, reconcile) inherits the guard
-// here instead of repeating it.
+// every caller (publish, pending, reconcile) inherits the guard here instead
+// of repeating it.
+//
+// The last tier proves nothing about the repo, which is fine for the write
+// lanes reading this helper — they hold no other credential, so a connection
+// that might not cover the repo beats no connection at all. A lane that DOES
+// hold another credential must walk forgeRepoConnection → that credential →
+// forgeHostConnection instead; see prforgeReplierAPIFor.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
 	if s == nil || s.forgeConnections == nil {
 		return forge.Connection{}, false
 	}
-	matches := func(c forge.Connection) bool {
-		// A watch-only connection sits on the same host and would be picked by
-		// the "first connection on this host" fallback below — then every
-		// review comment and commit status posted through it would 403: its
-		// App holds no pull_requests/statuses grant, by design.
-		return c.TenantID == teamID && !c.IsSecurityReadOnly() &&
-			strings.EqualFold(hostOfURL(c.BaseURL()), host)
-	}
 	if preferredConnID != "" {
-		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && matches(c) {
+		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && forgeConnUsable(c, teamID, host) {
 			return c, true
 		} else if s.logger != nil {
 			// Falling through to another connection is the historical
@@ -789,39 +854,10 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 			s.logger.Warn("forge: pinned connection %s is not usable for %s on %s — resolving another", preferredConnID, repo, host)
 		}
 	}
-	// The repo's integration, LATEST provisioning first — the same choice
-	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
-	// a newer connection posts under that one and not the row left behind.
-	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
-		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
-			return c, true
-		}
+	if c, ok := s.forgeRepoConnection(ctx, teamID, host, repo); ok {
+		return c, true
 	}
-	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)
-	if err != nil {
-		return forge.Connection{}, false
-	}
-	// The LATEST matching connection wins, not the first: ListByTenant sorts
-	// created_at ascending on both stores, so a repo re-provisioned onto a
-	// newer connection would otherwise inherit the stale one — the rule
-	// repoIntegrationForRepo applies to the integration lookup. Id breaks an
-	// exact created_at tie. Publish, pending and reconcile all read through
-	// this helper.
-	var best forge.Connection
-	found := false
-	for _, c := range conns {
-		if !matches(c) {
-			continue
-		}
-		if !found || c.CreatedAt.After(best.CreatedAt) ||
-			(c.CreatedAt.Equal(best.CreatedAt) && c.ID < best.ID) {
-			best, found = c, true
-		}
-	}
-	if found {
-		return best, true
-	}
-	return forge.Connection{}, false
+	return s.forgeHostConnection(ctx, teamID, host)
 }
 
 // publicBaseURL is the origin runs use to call back into this server:
