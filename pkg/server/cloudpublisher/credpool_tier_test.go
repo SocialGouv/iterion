@@ -492,3 +492,53 @@ func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t
 		})
 	}
 }
+
+// A generic secret is not an LLM credential. A webhook-launched review
+// resolves a forge or tracker token into the same bundle, which is the most
+// common cloud shape — gating the definitive Warn on the whole bundle
+// silenced it exactly there, and with the pool's static reasons at Debug the
+// run went out with no trace at all that no model credential was found.
+func TestResolveAndSealCredentials_WarnsWhenOnlyAGenericSecretResolved(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	genericStore := secrets.NewMemoryGenericSecretStore()
+	secretID := secrets.NewGenericSecretID()
+	sealed, err := secrets.SealGenericSecret(sealer, secretID, []byte("ghp-forge-token"))
+	if err != nil {
+		t.Fatalf("SealGenericSecret: %v", err)
+	}
+	if err := genericStore.Create(context.Background(), secrets.GenericSecret{
+		ID: secretID, ScopeTeamID: poolTeam, Name: "forge_token",
+		SealedSecret: sealed, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var buf bytes.Buffer
+	p := &Publisher{
+		genericSecrets: genericStore,
+		runSecrets:     secrets.NewMemoryRunSecretsStore(),
+		sealer:         sealer,
+		logger:         iterlog.New(iterlog.LevelInfo, &buf),
+	}
+	wf := &ir.Workflow{
+		Nodes:   map[string]ir.Node{"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}},
+		Secrets: map[string]*ir.Secret{"forge_token": {Name: "forge_token"}},
+	}
+
+	ctx := store.WithTenant(context.Background(), poolTeam)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", wf, nil, nil, model.ModelOverrides{}, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	// The generic secret still seals — the Warn is about the LLM tiers, not
+	// about refusing the run.
+	if creds.secretsRef == "" {
+		t.Fatalf("the generic secret must still be sealed into a bundle")
+	}
+	if got := strings.Count(buf.String(), "no credential resolved for run=run-generic-only"); got != 1 {
+		t.Fatalf("want exactly one terminal Warn for a run funded by no LLM credential, got %d; log:\n%s", got, buf.String())
+	}
+}

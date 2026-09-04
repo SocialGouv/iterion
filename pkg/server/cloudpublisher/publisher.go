@@ -688,17 +688,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	}
 	sort.Strings(res.fingerprints)
 
-	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
-		// The moment "no credential" becomes definitive: every tier
-		// abstained, and the runner will either spend its pod's ambient
-		// env or fail at the first LLM call. ONE Warn here, naming the
-		// tiers consulted — the per-tier lines above say which said no
-		// and why. A workflow that cannot call a model (tool-only, a
-		// nil workflow is unknown) spends nothing and gets no Warn.
-		if wf == nil || wf.UsesLLM() {
-			p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
-				runID, tenantID)
-		}
+	// The moment "no LLM credential" becomes definitive: every tier
+	// abstained, and the runner will either spend its pod's ambient env or
+	// fail at the first LLM call. ONE Warn here, naming the tiers consulted
+	// — the per-tier lines above say which said no and why. A workflow that
+	// cannot call a model (tool-only, a nil workflow is unknown) spends
+	// nothing and gets no Warn.
+	//
+	// Generic secrets do not fund an LLM call: a webhook-launched review
+	// resolves a forge or tracker token into this same bundle, which is the
+	// most common cloud shape, so gating the Warn on the whole bundle would
+	// silence it exactly where it matters.
+	noLLMCred := len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0
+	if noLLMCred && (wf == nil || wf.UsesLLM()) {
+		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
+			runID, tenantID)
+	}
+	if noLLMCred && len(bundle.GenericSecrets) == 0 {
 		return res, nil
 	}
 
