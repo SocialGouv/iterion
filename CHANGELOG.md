@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.100.1](https://github.com/SocialGouv/iterion/compare/v3.100.0...v3.100.1) (2026-09-04)
+
+### Bug Fixes
+
+* **forge:** a re-provision keeps a schedule row's id, vars and last fire; Doki 3.5.6 declares its schedule vars ([#673](https://github.com/SocialGouv/iterion/issues/673)) ([7cbf526](https://github.com/SocialGouv/iterion/commit/7cbf5262bc346ff579ee8c4afb4078f8dd7aaadd))
+
+    <details><summary>why</summary>
+
+    syncSchedules rebuilds an integration's schedule rows from the manifests on every re-provision and carried cron, pause and guard tuning over — but not the vars the operator set, nor last_fire_at, and it minted a new id each time. The docs-refresh weekly lost its open_mr/mode twice that way (07-27, 09-03: the second time from a re-provision that enabled another bot), ran a multi-hour full sweep and shipped nothing, while runs and audit entries kept pointing at a schedule id that no longer…
+
+    </details>
+
 ## [3.100.0](https://github.com/SocialGouv/iterion/compare/v3.99.1...v3.100.0) (2026-09-04)
 
 ### Features
