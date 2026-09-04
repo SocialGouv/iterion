@@ -504,6 +504,21 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	save("run-failres", store.RunStatusFailedResumable, &store.Checkpoint{NodeID: "n1"})
 	save("run-pausedop", store.RunStatusPausedOperator, &store.Checkpoint{NodeID: "n1"})
 	save("run-finished", store.RunStatusFinished, nil)
+	// A PR-closed cancel writes the reason (wrapped by CancelRunWithReason)
+	// into run.Error. The runner admission MUST detect it and drop the
+	// redelivery even when it carries an explicit resume — see the new
+	// case rows below (#663).
+	saveErr := func(id string, status store.RunStatus, cp *store.Checkpoint, errText string) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{ID: id, WorkflowName: "wf", Status: status, Checkpoint: cp, Error: errText}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	// The exact prefix CancelRunWithReason wraps ("(was <status>: <prior>)"),
+	// so the substring detection has to survive it — that's the WHOLE point of
+	// exposing store.IsPRClosedCancel as a helper.
+	saveErr("run-cancel-pr-closed", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"},
+		store.RunEndReasonPRClosed+" (was failed_resumable: node \"campaign\": rate_limited)")
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 
@@ -524,6 +539,13 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 		// 019f8ba3, three times). Only an explicit resume proceeds.
 		{"cancel checkpoint stays cancelled", "run-cancelled-cp", nil, false, actionAck, "cancelled", false},
 		{"cancel checkpoint explicit resume proceeds", "run-cancelled-cp", &queue.ResumeSpec{}, true, 0, "", true},
+		// #663: a PR-closed cancel is terminal for EVERY redelivery,
+		// including one that carries msg.Resume set (from the retry
+		// sweeper's SubmitResume or a Nak of the previous attempt).
+		// Without this the run 01a06885 dogfood on #646 re-launched a
+		// review 2s after the PR merged, burning provider quota.
+		{"cancel PR-closed drops resume redelivery", "run-cancel-pr-closed", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"cancel PR-closed drops bare redelivery too", "run-cancel-pr-closed", nil, false, actionAck, "cancelled", false},
 		{"failed_resumable converts to resume", "run-failres", nil, true, 0, "", true},
 		{"paused_operator converts to resume", "run-pausedop", nil, true, 0, "", true},
 		{"explicit resume passes through", "run-failres", &queue.ResumeSpec{}, true, 0, "", true},

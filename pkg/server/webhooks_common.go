@@ -1212,7 +1212,11 @@ func (s *Server) launchWebhookTarget(
 // prClosedRunReason names the cancel so the run list, and the merge-gate
 // synthetic status that quotes run.Error, say WHY. "cancelled by user"
 // there once sent operators hunting for a human who did nothing.
-const prClosedRunReason = "pull request closed or merged — nothing left to review"
+// The exact text is store.RunEndReasonPRClosed so the runner admission can
+// detect it in preRun.Error (via store.IsPRClosedCancel) and drop a redelivered
+// message even when it carries an explicit resume — the runner never imports
+// the webhook layer, so the vocabulary lives in the store, not here.
+const prClosedRunReason = store.RunEndReasonPRClosed
 
 // stopRunsForDeadPR ends every run still bound to a pull request that just
 // closed or merged, and disarms any usage-window retry armed for one.

@@ -228,6 +228,30 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 		// the resume API) is the only way to continue. A shutdown-drain
 		// whose nak beat the checkpoint write lands here too and now
 		// waits for that explicit resume instead of self-restarting.
+		//
+		// PR-closed cancels are terminal EVEN with an explicit resume:
+		// the stop-on-close webhook lane cancels every live run bound to a
+		// closed/merged PR (webhooks_common.go stopRunsForDeadPR), but a
+		// redelivery in flight when that cancel landed — from the retry
+		// sweeper's SubmitResume or a plain JetStream retry of the previous
+		// attempt — carries msg.Resume set and would otherwise proceed,
+		// resurrecting a review of a dead PR seconds after it merged (run
+		// 01a06885 on #646, live 03/09/2026: `run_workspace_reset
+		// reason=resume` 2s after the cancel, forfait consumed). Detected
+		// via store.IsPRClosedCancel over preRun.Error — the cancel reason
+		// (RunEndReasonPRClosed) is the ONE piece of state the redelivered
+		// message doesn't carry itself, and it survives CancelRunWithReason's
+		// "<reason> (was <status>: <prior>)" wrapping.
+		if store.IsPRClosedCancel(preRun.Error) {
+			return preconditionOutcome{
+				finalStatus: "cancelled",
+				op:          "ack-pr-closed-cancel",
+				action:      actionAck,
+				level:       logWarn,
+				logFmt:      "runner: run %s is cancelled because its pull request closed or merged — dropping redelivery (resume=%v; nothing the review would say can matter now)",
+				logArgs:     []any{msg.RunID, msg.Resume != nil},
+			}
+		}
 		if msg.Resume == nil {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
