@@ -105,6 +105,13 @@ type Config struct {
 	// whose window is CLOSED, which is what lets the run fall through to
 	// the next credential tier instead of parking for a reset.
 	UsageCaps usagecap.Store
+	// CapPolicy, when non-nil, is the operator's usage-cap posture
+	// (pkg/usagecap PolicySource). The walk consults it over the SAME
+	// readings as the refusal skip: a credential the runner's pre-flight
+	// is certain to park (hard cap reached, reset instant known) is
+	// passed over like a refused one, so the tiers stay a fallback chain.
+	// Nil keeps the walk refusal-evidence-only.
+	CapPolicy usagecap.PolicySource
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -151,6 +158,7 @@ type Publisher struct {
 	sandboxImage   func(context.Context) string
 	credPool       *credpool.Broker
 	usageCaps      usagecap.Store
+	capPolicy      usagecap.PolicySource
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -244,6 +252,7 @@ func New(cfg Config) (*Publisher, error) {
 		sandboxImage:   cfg.SandboxImage,
 		credPool:       cfg.CredPool,
 		usageCaps:      cfg.UsageCaps,
+		capPolicy:      cfg.CapPolicy,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -928,14 +937,20 @@ const usageCapLookupTimeout = 5 * time.Second
 // forfaitWindowClosed reports when a forfait's provider window is closed
 // (and why), or the zero time when it is usable.
 //
-// The ONLY evidence that closes a window is the provider's own refusal: a
-// fresh StatusRejected reading. The operator's percentage caps are
-// deliberately not consulted — a cap is a ceiling on THIS deployment's
-// spending, not evidence the provider would refuse, and skipping on it
-// would push work onto a donor (or the platform's own meter) to keep a
-// tenant under its own budget. A provider refusal, conversely, needs no
-// operator policy to be true — so the skip also works on a deployment
-// that never configured a cap.
+// Two signals close a window, because two gates can park the run:
+//   - the provider's own refusal (a fresh StatusRejected reading) — true
+//     without any operator policy, so the skip works on a deployment
+//     that never configured a cap;
+//   - the operator's HARD usage cap over the same readings (CapPolicy,
+//     usagecap.Preflight): the runner's pre-flight enforces it before
+//     any node runs, so a credential at a hard cap with a known reset
+//     is not a usable credential — granting it parks the run for that
+//     reset while a lower tier could have served. Soft caps warn, they
+//     never close a window here. (This deliberately supersedes the
+//     earlier evidence-only doctrine: it kept the walk from spending
+//     another tier to dodge a tenant budget, but the week cap is the
+//     operator's machine-wide posture, the fallthrough tiers are the
+//     same operator's, and the pre-flight parks either way.)
 //
 // Everything uncertain means "usable", because a wrong skip spends
 // somebody else's quota for a subscription that would have worked:
@@ -1009,6 +1024,34 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 			default:
 				why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
 			}
+		}
+	}
+	if until.IsZero() && p.capPolicy != nil {
+		// No provider refusal on record — but the runner's pre-flight
+		// enforces the operator's caps over these same readings and parks
+		// BEFORE any node runs; otherwise the walk re-grants the same
+		// capped credential on every retry while a usable lower tier sits
+		// unreached, and the park writes no refusal that would ever break
+		// the loop.
+		//
+		// The gate mirrored is Decision.Blocked, NOT Stop: soft means
+		// "never interrupts work in flight", and it still lets no NEW run
+		// start (docs/usage-caps.md) — which is precisely what a launch
+		// is. Requiring Stop would leave the shipped default posture (5h
+		// soft) reproducing the very loop this closes, and would also
+		// mask a hard week decision whenever Preflight's latest-reset
+		// arbitration picks a soft five-hour one.
+		//
+		// A blocked window with no reset instant is trusted for the
+		// reading's own staleness bound, the same synthesis the refusal
+		// branch above applies: bounded, self-healing, and symmetric.
+		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, usagecap.DefaultMaxAge); d.Blocked {
+			reopen := d.ResetsAt
+			if reopen.IsZero() {
+				reopen = now.Add(usagecap.DefaultMaxAge)
+			}
+			until = reopen
+			why = fmt.Sprintf("the operator's cap on the %s window is reached (%.0f%% ≥ %.0f%%)", d.Window, d.Percent, d.Cap)
 		}
 	}
 	return until, why

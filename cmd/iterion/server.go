@@ -367,9 +367,23 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// The fleet's shared meter: a forfait the provider has refused is
 		// skipped at launch so the run falls through to the next
 		// credential tier instead of parking for a reset it could have
-		// avoided. Evidence-only — the operator's cap policy is the
-		// runner's business, not the launch's.
+		// avoided.
 		UsageCaps: usagecap.NewMongoStore(st.DB()),
+		// The operator's cap posture, consulted by the walk over the same
+		// readings: the runner's pre-flight parks on a hard cap before any
+		// node runs, so a capped credential must be passed over like a
+		// refused one or the tiers stop being a fallback chain. Own
+		// resolver instance — the admin PUT invalidates the server's, this
+		// one converges within the resolver's TTL bound.
+		CapPolicy: func() usagecap.PolicySource {
+			envPol, envErr := usagecap.FromEnv()
+			if envErr != nil {
+				logger.Warn("server: publisher cap policy disabled — env policy invalid: %v", envErr)
+				return nil
+			}
+			return usagecap.NewResolver(stores.usageCapSettings, envPol,
+				usagecap.WithWarnLogger(logger.Warn))
+		}(),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
 		SandboxImage: func(ctx context.Context) string {

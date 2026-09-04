@@ -3,6 +3,8 @@ package delegate
 import (
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 func TestClassifyRateLimit(t *testing.T) {
@@ -54,10 +56,11 @@ func TestClassifyRateLimit(t *testing.T) {
 			wantReset: time.Date(2026, 7, 18, 10, 30, 0, 0, time.UTC), // 10:30 already past 14:00 → next day
 		},
 		{
-			name:      "weekly limit with pm clock (feed-watch runner 019f7eee)",
-			text:      "You've hit your weekly limit · resets 9pm (Europe/Paris)",
-			wantKind:  RateLimitKindUsageWindow,
-			wantReset: time.Date(2026, 7, 17, 21, 0, 0, 0, time.UTC),
+			name:       "weekly limit with pm clock (feed-watch runner 019f7eee)",
+			text:       "You've hit your weekly limit · resets 9pm (Europe/Paris)",
+			wantKind:   RateLimitKindUsageWindow,
+			wantWindow: string(usagecap.WindowSevenDay),
+			wantReset:  time.Date(2026, 7, 17, 21, 0, 0, 0, time.UTC),
 		},
 		{
 			name:      "zai 5h facade",
@@ -83,11 +86,15 @@ func TestClassifyRateLimit(t *testing.T) {
 		{
 			// The shape a WEEKLY cap actually prints: a month name and day
 			// before the clock. Seven scheduled prod runs died on this on
-			// 2026-07-27 with the reset ~35h out.
-			name:      "weekly limit with dated reset",
-			text:      "You've hit your weekly limit · resets Jul 28, 9pm (UTC)",
-			wantKind:  RateLimitKindUsageWindow,
-			wantReset: time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC),
+			// 2026-07-27 with the reset ~35h out. The window is NAMED so a
+			// StatusRejected reading is recorded: nameless, the resolution
+			// walk re-granted the same weekly-walled forfait on every
+			// retry (four identical parks measured on 2026-09-04).
+			name:       "weekly limit with dated reset",
+			text:       "You've hit your weekly limit · resets Jul 28, 9pm (UTC)",
+			wantKind:   RateLimitKindUsageWindow,
+			wantWindow: string(usagecap.WindowSevenDay),
+			wantReset:  time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC),
 		},
 		{
 			// An explicit absolute instant needs no year inference, so it is
