@@ -49,6 +49,65 @@ const PodIPEnvVar = "ITERION_POD_IP"
 // multi-GB images take 30-60s).
 const DefaultPodReadyTimeoutSecs = 180
 
+// DefaultWorkspaceCopyTimeout bounds populateWorkspace (host tar |
+// kubectl exec pod tar) end-to-end. The pod-Ready wait had a cap; the
+// workspace copy did NOT, so a stuck kubectl-exec pipe would block the
+// run until the outer max_duration fired — hours later, with no
+// `sandbox_started` event to warn on. Observed live 2026-09-03 (#669
+// part 1): a resumed review sat 2h 26m in the sandbox-start phase, was
+// wiped by a runner rollout, and its message re-delivered onto a stale
+// `running` status. Overridable per host via
+// ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT (Go duration).
+const DefaultWorkspaceCopyTimeout = 5 * time.Minute
+
+// workspaceCopyTimeoutEnv is the override key. Read once per call so
+// tests can flip it between subcases.
+const workspaceCopyTimeoutEnv = "ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT"
+
+// resolveWorkspaceCopyTimeout returns the effective per-phase timeout,
+// honouring the env override with a fail-safe fallback: a garbage or
+// non-positive value falls back to the default (a copy phase left
+// unbounded is exactly the bug this exists to close).
+func resolveWorkspaceCopyTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(workspaceCopyTimeoutEnv))
+	if raw == "" {
+		return DefaultWorkspaceCopyTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return DefaultWorkspaceCopyTimeout
+	}
+	return d
+}
+
+// runWithPhaseTimeout runs fn under a bounded child context. On a
+// deadline strike it returns a wrapped error naming the phase and the
+// wall-clock elapsed time so a stall shows up as a typed, visible
+// failure in the runner logs — the "typed, visible error/event (name
+// the phase and the elapsed time)" #669 part 1 asks for.
+//
+// The returned error carries fmt.Errorf's %w wrapping AND the sentinel
+// context.DeadlineExceeded via errors.Is, so upstream classifiers can
+// detect the phase-timeout shape without prose matching.
+func runWithPhaseTimeout(ctx context.Context, phase string, timeout time.Duration, fn func(context.Context) error) error {
+	phaseCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	start := time.Now()
+	err := fn(phaseCtx)
+	if err == nil {
+		return nil
+	}
+	// Only surface the phase-timeout wrapper when THIS phase's deadline
+	// fired — an outer ctx cancel (run cancel, pod SIGTERM) keeps its
+	// own shape so callers do not misclassify a cooperative stop as an
+	// unbounded stall.
+	if phaseCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return fmt.Errorf("kubernetes: %s phase timed out after %s (deadline %s exceeded): %w",
+			phase, time.Since(start).Round(time.Millisecond), timeout, err)
+	}
+	return err
+}
+
 // Downward-API env vars the runner pod's Helm chart should inject so the
 // driver can set an ownerReference on every per-run resource (sandbox
 // pod, Secrets, NetworkPolicy) pointing back at the runner pod. When a
@@ -400,12 +459,24 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// via a tar stream. Without this the sandbox starts with an empty
 	// workspace (the V1 limitation, docs/sandbox.md) and a repo-bound bot
 	// has nothing to work on. Skipped for workspace-less runs.
+	//
+	// #669 part 1: the copy is BOUNDED. The pod-Ready wait had its own
+	// cap (DefaultPodReadyTimeoutSecs); the tar stream + git fixup did
+	// not, so a stuck kubectl-exec pipe blocked the run until the outer
+	// max_duration fired — hours later, with no `sandbox_started` event
+	// to warn on. resolveWorkspaceCopyTimeout is the phase budget
+	// (default 5m, ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT overrides).
 	if info.WorkspacePath != "" {
-		if err := r.populateWorkspace(ctx, info.WorkspacePath, p.workspace); err != nil {
+		copyTimeout := resolveWorkspaceCopyTimeout()
+		if err := runWithPhaseTimeout(ctx, "workspace copy", copyTimeout, func(ctx context.Context) error {
+			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
+		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
 		}
-		if err := r.fixupWorkspaceGit(ctx, p.workspace); err != nil {
+		if err := runWithPhaseTimeout(ctx, "workspace git fixup", copyTimeout, func(ctx context.Context) error {
+			return r.fixupWorkspaceGit(ctx, p.workspace)
+		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
 		}
