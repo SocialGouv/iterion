@@ -282,13 +282,13 @@ func TestForfaitWindowClosed_restoredWhenNoTierCanServe(t *testing.T) {
 	}
 }
 
-// A hard OPERATOR cap closes the window exactly like a provider refusal:
-// the runner's pre-flight parks on it before any node runs, so handing the
-// capped forfait over just replays the park on every retry. Measured on
-// 2026-09-04: a weekly forfait at 97% (provider still ALLOWING) was
-// re-granted on four consecutive attempts while the next tier sat idle —
+// An OPERATOR cap closes the window exactly like a provider refusal: the
+// runner's pre-flight parks on Decision.Blocked before any node runs, so
+// handing the capped forfait over just replays the park on every retry.
+// Measured on 2026-09-04: a weekly forfait at 97% (provider still ALLOWING)
+// was re-granted on four consecutive attempts while the next tier sat idle —
 // the park writes no refusal, so no signal ever broke the loop.
-func TestForfaitWindowClosed_operatorHardCapFallsThrough(t *testing.T) {
+func TestForfaitWindowClosed_operatorCapFallsThrough(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
 	meterSays(t, f, fp, usagecap.Reading{
@@ -302,15 +302,14 @@ func TestForfaitWindowClosed_operatorHardCapFallsThrough(t *testing.T) {
 		t.Fatalf("no policy: run must keep the tenant's forfait, got %q", got)
 	}
 
-	// A soft cap warns; it never closes the window.
+	// Under the cap: nothing to skip.
 	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
-		Week: usagecap.WindowPolicy{MaxPercent: 95, Mode: usagecap.ModeSoft}})
-	if got := bundleToken(t, f, "run-soft-cap"); !contains(got, "sk-ant-tenant-own") {
-		t.Fatalf("soft cap: run must keep the tenant's forfait, got %q", got)
+		Week: usagecap.WindowPolicy{MaxPercent: 99, Mode: usagecap.ModeHard}})
+	if got := bundleToken(t, f, "run-under-cap"); !contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("under cap: run must keep the tenant's forfait, got %q", got)
 	}
 
-	// Hard cap at/below the reading's utilization: the pre-flight would
-	// park this run — the walk must fall through to the pool instead.
+	// Hard cap reached: the pre-flight would park this run — fall through.
 	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
 		Week: usagecap.WindowPolicy{MaxPercent: 95, Mode: usagecap.ModeHard}})
 	got := bundleToken(t, f, "run-hard-cap")
@@ -325,10 +324,35 @@ func TestForfaitWindowClosed_operatorHardCapFallsThrough(t *testing.T) {
 	}
 }
 
-// A hard cap with NO reset instant must NOT close the window: benching a
-// credential on a utilization snapshot with no reopening date would be a
-// permanent skip on stale numbers.
-func TestForfaitWindowClosed_operatorCapWithoutResetStaysUsable(t *testing.T) {
+// SOFT counts too, and this is the shipped default posture: five-hour caps
+// default to soft, and soft means "never interrupts work in flight" — it
+// still lets no NEW run start (docs/usage-caps.md). The pre-flight parks on
+// Decision.Blocked whatever the mode, so a walk that skipped only on hard
+// would reproduce the measured starvation loop on the DEFAULT deployment,
+// bounded by the five-hour reset instead of four days.
+func TestForfaitWindowClosed_operatorSoftCapAlsoFallsThrough(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
+	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
+		FiveHour: usagecap.WindowPolicy{MaxPercent: 85, Mode: usagecap.ModeSoft}})
+	meterSays(t, f, fp, usagecap.Reading{
+		Window: usagecap.WindowFiveHour, Status: usagecap.StatusWarning, Utilization: 0.9,
+		ResetsAt: time.Now().Add(2 * time.Hour), ObservedAt: time.Now(),
+	})
+	got := bundleToken(t, f, "run-soft-cap")
+	if contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("the soft-capped forfait was handed over: the pre-flight parks on Blocked, got %q", got)
+	}
+	if !contains(got, "sk-ant-donated") {
+		t.Fatalf("expected the donor's credential from the pool, got %q", got)
+	}
+}
+
+// A capped reading with NO reset instant is trusted for its own staleness
+// bound — the same synthesis the refusal branch applies. Without it the
+// walk re-grants a credential the pre-flight parks on, once an hour, for as
+// long as the operator's cap stays reached.
+func TestForfaitWindowClosed_operatorCapWithoutResetIsBounded(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
 	f.pub.capPolicy = usagecap.StaticPolicy(usagecap.Policy{
@@ -337,7 +361,17 @@ func TestForfaitWindowClosed_operatorCapWithoutResetStaysUsable(t *testing.T) {
 		Window: usagecap.WindowSevenDay, Status: usagecap.StatusWarning, Utilization: 0.97,
 		ObservedAt: time.Now(),
 	})
-	if got := bundleToken(t, f, "run-capped-no-reset"); !contains(got, "sk-ant-tenant-own") {
-		t.Fatalf("no reset instant: run must keep the tenant's forfait, got %q", got)
+	if got := bundleToken(t, f, "run-capped-no-reset"); contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("a capped reading with no reset must still skip (bounded by staleness), got %q", got)
+	}
+
+	// Past the staleness bound the reading is ignored by Fresh, and the
+	// credential comes back on its own — the skip is self-healing.
+	meterSays(t, f, fp, usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Status: usagecap.StatusWarning, Utilization: 0.97,
+		ObservedAt: time.Now().Add(-2 * usagecap.DefaultMaxAge),
+	})
+	if got := bundleToken(t, f, "run-capped-stale"); !contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("a STALE capped reading must not bench the forfait, got %q", got)
 	}
 }

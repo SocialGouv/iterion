@@ -1029,17 +1029,29 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 	if until.IsZero() && p.capPolicy != nil {
 		// No provider refusal on record — but the runner's pre-flight
 		// enforces the operator's caps over these same readings and parks
-		// BEFORE any node runs. A hard cap with a known reset therefore
-		// closes the window here too; otherwise the walk re-grants the
-		// same capped credential on every retry while a usable lower
-		// tier sits unreached, and the park writes no refusal that would
-		// ever break the loop. Hard only: a soft cap warns, it does not
-		// park. A blocked window with NO reset instant stays usable —
-		// benching a credential with no reopening date would be a
-		// permanent skip on a utilization snapshot.
-		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, usagecap.DefaultMaxAge); d.Blocked && d.Stop && !d.ResetsAt.IsZero() {
-			until = d.ResetsAt
-			why = fmt.Sprintf("the operator's hard cap on the %s window is reached (%.0f%% ≥ %.0f%%)", d.Window, d.Percent, d.Cap)
+		// BEFORE any node runs; otherwise the walk re-grants the same
+		// capped credential on every retry while a usable lower tier sits
+		// unreached, and the park writes no refusal that would ever break
+		// the loop.
+		//
+		// The gate mirrored is Decision.Blocked, NOT Stop: soft means
+		// "never interrupts work in flight", and it still lets no NEW run
+		// start (docs/usage-caps.md) — which is precisely what a launch
+		// is. Requiring Stop would leave the shipped default posture (5h
+		// soft) reproducing the very loop this closes, and would also
+		// mask a hard week decision whenever Preflight's latest-reset
+		// arbitration picks a soft five-hour one.
+		//
+		// A blocked window with no reset instant is trusted for the
+		// reading's own staleness bound, the same synthesis the refusal
+		// branch above applies: bounded, self-healing, and symmetric.
+		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, usagecap.DefaultMaxAge); d.Blocked {
+			reopen := d.ResetsAt
+			if reopen.IsZero() {
+				reopen = now.Add(usagecap.DefaultMaxAge)
+			}
+			until = reopen
+			why = fmt.Sprintf("the operator's cap on the %s window is reached (%.0f%% ≥ %.0f%%)", d.Window, d.Percent, d.Cap)
 		}
 	}
 	return until, why
