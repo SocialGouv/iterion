@@ -96,6 +96,40 @@ func TestSchedulingFromEnvRejectsZeroQuantities(t *testing.T) {
 	}
 }
 
+// Below Kubernetes' precision (1m of CPU, 1 byte of memory) the API server
+// rounds up at admission: such a "floor" is a zero wearing a number. The
+// precision itself is accepted.
+func TestSchedulingFromEnvRejectsQuantitiesBelowPrecision(t *testing.T) {
+	for _, v := range []string{"0.0001", "5e-324", "1e-323", "0.5m"} {
+		_, err := schedulingFromEnv(envOf(map[string]string{RequestsCPUEnvVar: v}))
+		if err == nil || !strings.Contains(err.Error(), "precision") || !strings.Contains(err.Error(), v) {
+			t.Errorf("cpu=%q must be refused as below precision naming the value, got %v", v, err)
+		}
+	}
+	for _, v := range []string{"0.5", "5e-324", "0.9"} {
+		_, err := schedulingFromEnv(envOf(map[string]string{RequestsMemoryEnvVar: v}))
+		if err == nil || !strings.Contains(err.Error(), "precision") || !strings.Contains(err.Error(), v) {
+			t.Errorf("memory=%q must be refused as below precision naming the value, got %v", v, err)
+		}
+	}
+	if _, err := schedulingFromEnv(envOf(map[string]string{RequestsCPUEnvVar: "1m", RequestsMemoryEnvVar: "1"})); err != nil {
+		t.Fatalf("the precision itself must be accepted, got %v", err)
+	}
+}
+
+// A mantissa that fits float64 can still overflow once its suffix is applied;
+// out of range means out of range whichever step produced it.
+func TestSchedulingFromEnvRejectsOverflowAfterScaling(t *testing.T) {
+	v := strings.Repeat("9", 301) + "Ei"
+	_, err := schedulingFromEnv(envOf(map[string]string{RequestsMemoryEnvVar: v}))
+	if err == nil || !strings.Contains(err.Error(), "out of range") || !strings.Contains(err.Error(), RequestsMemoryEnvVar) {
+		t.Fatalf("a scaled overflow must be refused as out of range naming the variable, got %v", err)
+	}
+	if got, err := quantityValue(v); err == nil {
+		t.Fatalf("quantityValue(%q) = %v, want an out-of-range error", v[:8]+"…Ei", got)
+	}
+}
+
 // The suffix must fit the resource: `m` on memory is milli-bytes (a CPU
 // suffix on the wrong variable), a byte suffix on CPU is never a core count.
 func TestSchedulingFromEnvRejectsSuffixOnWrongResource(t *testing.T) {

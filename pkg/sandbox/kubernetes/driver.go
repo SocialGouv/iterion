@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -146,14 +147,17 @@ func quantityValue(v string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("quantity %q: %w", v, err)
 	}
-	if suffix == "" {
-		return f, nil
+	if suffix != "" {
+		scale, ok := suffixScale[suffix]
+		if !ok {
+			return 0, fmt.Errorf("quantity %q: unknown suffix %q", v, suffix)
+		}
+		f *= scale
 	}
-	scale, ok := suffixScale[suffix]
-	if !ok {
-		return 0, fmt.Errorf("quantity %q: unknown suffix %q", v, suffix)
+	if math.IsInf(f, 0) {
+		return 0, fmt.Errorf("quantity %q: out of range", v)
 	}
-	return f * scale, nil
+	return f, nil
 }
 
 // topologyKeyRe is a prefixed Kubernetes label key (DNS-subdomain prefix,
@@ -255,6 +259,12 @@ func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
 		}
 		if !q.memory && len(suffix) == 2 {
 			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q uses a byte suffix on a CPU quantity (want e.g. 500m, 2)", q.env, v)
+		}
+		// Below Kubernetes' own precision (1m of CPU, 1 byte of memory) the
+		// API server rounds up at admission: a "floor" of 5e-324 is a zero
+		// wearing a number.
+		if floor := 1.0; (!q.memory && value < 1e-3) || (q.memory && value < floor) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is below the quantity precision (1m of CPU, 1 byte of memory) — it schedules like no request at all", q.env, v)
 		}
 		*q.dst = v
 	}

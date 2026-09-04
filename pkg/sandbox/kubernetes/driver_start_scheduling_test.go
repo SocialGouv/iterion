@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -155,6 +156,24 @@ func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
 	_, _, err := NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
 	if err == nil || !strings.Contains(err.Error(), "Forbidden") || !strings.Contains(err.Error(), "cannot list resource") {
 		t.Fatalf("the error must carry kubectl's stderr, got %v", err)
+	}
+}
+
+// A cancelled context kills kubectl but not a child holding its pipes (a
+// credential plugin, here `sleep` under `sh`); the wait must still end near
+// the deadline, not when the child exits.
+func TestNodeLabelCoverageTimeoutIsBoundedWhenAChildHoldsThePipes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := NodeLabelCoverage(ctx, "topology.kubernetes.io/zone")
+	if elapsed := time.Since(start); err == nil || elapsed > 4*time.Second {
+		t.Fatalf("the wait must end within the deadline plus WaitDelay, took %s (err %v)", elapsed, err)
 	}
 }
 

@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
@@ -96,6 +97,11 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	proc.DetachProcessGroup(cmd)
+	// A cancelled context kills kubectl, not the children it spawned (the
+	// process group is detached): a credential plugin still holding the
+	// stdout/stderr pipes would keep Wait blocked for as long as it lives.
+	// WaitDelay bounds that orphan-pipe wait so a timeout is a timeout.
+	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }
 

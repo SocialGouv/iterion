@@ -371,14 +371,15 @@ func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictRepo
 	switch {
 	case err != nil:
 		// The cause is asserted only when the cluster (or the probe) said it:
-		// a Forbidden is the chart's namespaced Role, a deadline is the probe
-		// budget; anything else stays what kubectl said.
+		// a Forbidden is the chart's namespaced Role — the cluster's own word,
+		// checked first even when the probe also ran out of time — a deadline
+		// is the probe budget; anything else stays what kubectl said.
 		var cause string
 		switch {
-		case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
-			cause = "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
 		case strings.Contains(err.Error(), "Forbidden"):
 			cause = "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
+		case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
+			cause = "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
 		default:
 			cause = "could not list nodes; "
 		}
