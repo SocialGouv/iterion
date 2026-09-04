@@ -82,15 +82,14 @@ type ParsedReviewComment struct {
 	HeadRepoFullName string
 }
 
-// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
-// than its base — i.e. the PR comes from a fork. Same semantics as
-// Parsed.IsCrossRepo: on a fork, CloneURL (the BASE repo) and SourceBranch
-// (a HEAD-repo ref) do not name the same repository, so a launch would check
-// out a missing — or worse, a same-named base — branch. An empty head repo
-// (minimal/legacy payloads) is treated as same-repo to avoid falsely gating
-// a trusted internal PR.
-func (p ParsedReviewComment) IsCrossRepo() bool {
-	return !forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) && p.HeadRepoFullName != ""
+// HeadIsSameRepo reports whether the PR's head branch PROVABLY lives in the
+// same repo as its base. Same fail-CLOSED contract as Parsed.HeadIsSameRepo:
+// this lane launches CloneURL (the BASE repo) + SourceBranch (a HEAD-repo
+// ref), which only names one repository when head and base ARE the same repo,
+// and an absent head.repo is a deleted/blocked FORK head rather than a
+// trusted internal PR. Unknown → false.
+func (p ParsedReviewComment) HeadIsSameRepo() bool {
+	return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath)
 }
 
 // ParseReviewComment decodes a pull_request_review_comment webhook body

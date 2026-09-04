@@ -474,12 +474,18 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 		filtered("thread-opening comment (not a reply)")
 		return
 	}
-	// Fork guard, payload-only: on a fork PR the launch pair (base repo's
-	// CloneURL + head-repo SourceBranch) does not name one repository — the
-	// checkout would miss, or silently hit a same-named BASE branch and the
-	// bot would answer grounded in the wrong code. Same posture as the PR
-	// auto lane: filtered.
-	if p.IsCrossRepo() {
+	// Fork guard, payload-only and fail-CLOSED: on a fork PR the launch pair
+	// (base repo's CloneURL + head-repo SourceBranch) does not name one
+	// repository — the checkout would miss, or silently hit a same-named BASE
+	// branch and the bot would answer grounded in the wrong code. An absent
+	// head.repo is the same hazard, not a trusted internal PR: only a FORK
+	// head can be deleted or blocked. Same posture as the PR auto lane:
+	// filtered.
+	if !p.HeadIsSameRepo() {
+		if p.HeadRepoFullName == "" {
+			filtered("head repo not verifiable (payload omits head.repo) — review-thread replies are same-repo only")
+			return
+		}
 		filtered("fork PR — review-thread replies are same-repo only")
 		return
 	}

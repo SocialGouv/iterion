@@ -72,7 +72,7 @@ const ghOpenPR = `{
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
   "pull_request": {"number": 7, "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
-    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": "alice"}
 }`
 
@@ -118,7 +118,7 @@ func ghReviewRequested(sender, reviewer, updatedAt string) string {
 	  "requested_reviewer": {"login": "` + reviewer + `"},
 	  "pull_request": {"number": 7, "title": "Add X", "body": "desc",
 	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open", "updated_at": "` + updatedAt + `",
-	    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "` + sender + `"}
 	}`
 }

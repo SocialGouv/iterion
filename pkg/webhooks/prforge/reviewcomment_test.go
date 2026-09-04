@@ -67,17 +67,17 @@ func TestParseReviewCommentForkCarriesHeadRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.HeadRepoFullName != "mallory/widgets" || !p.IsCrossRepo() {
-		t.Fatalf("fork head repo must be decoded and flagged: %+v", p)
+	if p.HeadRepoFullName != "mallory/widgets" || p.HeadIsSameRepo() {
+		t.Fatalf("fork head repo must be decoded and refused: %+v", p)
 	}
 }
 
-func TestParseReviewCommentLegacyPayloadIsSameRepo(t *testing.T) {
+func TestParseReviewCommentLegacyPayloadIsNotProvenSameRepo(t *testing.T) {
 	p, err := ParseReviewComment([]byte(reviewCommentReplyFixture))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.IsCrossRepo() {
-		t.Fatalf("a payload without head.repo must stay same-repo (no false gating): %+v", p)
+	if p.HeadIsSameRepo() {
+		t.Fatalf("a payload without head.repo is a deleted/blocked FORK head, never proven same-repo: %+v", p)
 	}
 }

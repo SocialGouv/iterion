@@ -150,15 +150,24 @@ func labelNames(labels []Label) []string {
 	return out
 }
 
-// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
-// than its base — i.e. the PR comes from a fork. This is the fork-guard
-// signal: a fork PR is untrusted, so the inbound handler must not auto-launch a
-// MUTATING bot (which would run costly LLM work + push commits) on it without
-// operator validation — the anti budget-exhaustion boundary. An empty head
-// repo (minimal/legacy payloads) is treated as same-repo to avoid falsely
-// gating a trusted internal PR.
-func (p Parsed) IsCrossRepo() bool {
-	return !forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) && p.HeadRepoFullName != ""
+// HeadIsSameRepo reports whether the PR's head branch PROVABLY lives in the
+// same repo as its base — the payload-side twin of forge.PullRef.SameRepoAs,
+// and the fail-CLOSED predicate every launch on this payload must clear.
+//
+// Every consumer launches the pair `ProjectPath's CloneURL + SourceBranch`.
+// That pair only names one repository when the head repo IS the base repo: on
+// a fork the ref lives elsewhere, so the checkout misses — or worse, hits a
+// same-named branch on the BASE and the bot runs (and, for a fixer, pushes)
+// against the wrong code under the bot's own identity. Untrusted fork input
+// driving a bot holding the forge token is also the budget-exhaustion
+// boundary.
+//
+// An empty HeadRepoFullName is equally unsafe, and is NOT "probably internal":
+// GitHub and Forgejo both emit `head.repo: null` once the head repo is
+// deleted or blocked, which only a FORK can be — a same-repo PR always
+// carries its own repo there. So unknown → false, never proven safe.
+func (p Parsed) HeadIsSameRepo() bool {
+	return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath)
 }
 
 // IsReviewable reports whether the PR action should AUTO-trigger a

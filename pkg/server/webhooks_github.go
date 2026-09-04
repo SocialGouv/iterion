@@ -112,17 +112,27 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	// Fork guard (UNCONDITIONAL on the auto path): a fork PR (head repo != base
-	// repo) is untrusted — an adversary can open one to run code in our runner
-	// with the forge token and to exhaust the tenant's budget. So an inbound PR
-	// event NEVER auto-launches a bot on a fork, regardless of block_fork_prs.
-	// A repo-authorized collaborator can still run one DELIBERATELY by issuing a
-	// `/command` on the PR: that path (handlePRForgeComment) gates on the
-	// commenter's CollaboratorPermission, so only a trusted user, manually,
-	// triggers a run against fork code. Filtered as a clean 200 so the forge
-	// keeps the hook enabled.
-	if p.IsCrossRepo() {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)")
+	// Fork guard (UNCONDITIONAL on the auto path, fail-CLOSED): a fork PR (head
+	// repo != base repo) is untrusted — an adversary can open one to run code in
+	// our runner with the forge token and to exhaust the tenant's budget. So an
+	// inbound PR event NEVER auto-launches a bot on a fork, regardless of
+	// block_fork_prs. Same-repo must be PROVEN, not merely "not proven a fork":
+	// every launch below hands the runner p.CloneURL (the BASE repo) +
+	// p.SourceBranch (a HEAD-repo ref), and an absent head.repo — which both
+	// GitHub and Forgejo emit once a head repo is deleted or blocked, and only a
+	// FORK head can be — would aim the merge-queue auto-heal fixer at the BASE
+	// repo's branch of that name and push LLM commits to it.
+	//
+	// This precedes reviewRequested/gateResync deliberately: an unverifiable
+	// head is unverifiable for the review lanes too, and the review a bot would
+	// post is grounded in whatever that branch name resolves to on the base.
+	// Filtered as a clean 200 so the forge keeps the hook enabled.
+	if !p.HeadIsSameRepo() {
+		reason := "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)"
+		if p.HeadRepoFullName == "" {
+			reason = "head repo not verifiable (payload omits head.repo) — auto-launch blocked"
+		}
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}

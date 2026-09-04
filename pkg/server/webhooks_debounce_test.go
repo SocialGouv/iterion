@@ -22,7 +22,7 @@ func ghSyncPayload(sha string) string {
 	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
 	  "pull_request": {"number": 7, "title": "T", "body": "b",
 	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
-	    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/x", "sha": "` + sha + `", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "alice"}
 	}`
 }
@@ -100,7 +100,7 @@ func TestSyncDebounce_OpenLaunchesImmediately(t *testing.T) {
 	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
 	  "pull_request": {"number": 7, "title": "T", "body": "b",
 	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
-	    "head": {"ref": "feature/x", "sha": "sha-1"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/x", "sha": "sha-1", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "alice"}
 	}`
 	w := httptest.NewRecorder()
@@ -265,7 +265,7 @@ func TestSyncDebounce_CrossRepoSamePRNumberIsolated(t *testing.T) {
 		  "repository": {"id": 42, "full_name": "` + repo + `", "clone_url": "https://github.com/` + repo + `.git"},
 		  "pull_request": {"number": 7, "title": "T", "body": "b",
 		    "html_url": "https://github.com/` + repo + `/pull/7", "state": "open",
-		    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+		    "head": {"ref": "feature/x", "sha": "` + sha + `", "repo": {"full_name": "` + repo + `"}}, "base": {"ref": "main"}},
 		  "sender": {"login": "alice"}
 		}`
 	}
@@ -309,7 +309,7 @@ func TestSyncDebounce_ClosedPRPurgesParkedLaunch(t *testing.T) {
 	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
 	  "pull_request": {"number": 7, "title": "T", "body": "b", "merged": true,
 	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "closed",
-	    "head": {"ref": "feature/x", "sha": "sha-1"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/x", "sha": "sha-1", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "alice"}
 	}`
 	w = httptest.NewRecorder()
@@ -341,7 +341,7 @@ func TestSupersede_ScopedByProject(t *testing.T) {
 		  "repository": {"id": 42, "full_name": "` + repo + `", "clone_url": "https://github.com/` + repo + `.git"},
 		  "pull_request": {"number": 7, "title": "T", "body": "b",
 		    "html_url": "https://github.com/` + repo + `/pull/7", "state": "open",
-		    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+		    "head": {"ref": "feature/x", "sha": "` + sha + `", "repo": {"full_name": "` + repo + `"}}, "base": {"ref": "main"}},
 		  "sender": {"login": "alice"}
 		}`
 	}
@@ -622,7 +622,7 @@ func ghSyncPayloadAt(sha, updatedAt string) string {
 	  "pull_request": {"number": 7, "title": "T", "body": "b",
 	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
 	    "updated_at": "` + updatedAt + `",
-	    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/x", "sha": "` + sha + `", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "alice"}
 	}`
 }

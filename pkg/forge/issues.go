@@ -150,8 +150,9 @@ func (p PullRef) SameRepoAs(baseRepo string) bool {
 //
 // The one vocabulary behind every cross-repo predicate — PullRef.SameRepoAs
 // / IsCrossRepo here, prforge.Parsed / prforge.ParsedReviewComment
-// IsCrossRepo in pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo"
-// never disagree between the payload side and the API side.
+// HeadIsSameRepo in pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo"
+// never disagree between the payload side and the API side, and every
+// launch-gating predicate on both sides fails closed on an unknown head.
 func SameRepo(a, b string) bool {
 	if a == "" || b == "" {
 		return false

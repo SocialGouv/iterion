@@ -62,7 +62,7 @@ const fjOpenPR = `{
   "number": 7,
   "pull_request": {"number": 7, "title": "Add X", "body": "desc",
     "html_url": "https://codeberg.org/acme/widgets/pulls/7", "state": "open",
-    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://codeberg.org/acme/widgets.git"},
   "sender": {"login": "alice"}
 }`

@@ -659,8 +659,8 @@ func writeConsumerBotFixture(t *testing.T, name, varName string) string {
 // commenting `/revi` or `/billy` on a fork PR.
 //
 // The PR auto-review lane has an unconditional fork guard (webhooks_github.go
-// IsCrossRepo on the parsed payload), the review-thread reply lane got one in
-// #626 — this test locks the command lane down the same way.
+// HeadIsSameRepo on the parsed payload), the review-thread reply lane got one
+// in #626 — this test locks the command lane down the same way.
 func TestGitHubIssueComment_ForkPRFiltered(t *testing.T) {
 	s := newWebhookTestServer(t)
 	cfg, pt := ghConfig(t, s)

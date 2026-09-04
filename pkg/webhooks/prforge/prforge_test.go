@@ -113,11 +113,12 @@ func TestParsePullRequest_Forgejo(t *testing.T) {
 	}
 }
 
-// TestIsCrossRepo guards the fork-guard signal: a PR whose head branch lives
-// in a different repo than its base is a fork (untrusted), and a payload with
-// no head.repo defaults to same-repo so a trusted internal PR is never falsely
-// gated off the auto-launch path.
-func TestIsCrossRepo(t *testing.T) {
+// TestHeadIsSameRepo guards the fork-guard signal, which is fail-CLOSED: only
+// a head repo PROVABLY equal to the base clears it. A fork is refused, and so
+// is a payload with no head.repo — GitHub and Forgejo emit `head.repo: null`
+// once a head repo is deleted or blocked, which only a FORK head can be, so
+// "unknown" must never read as "trusted internal PR".
+func TestHeadIsSameRepo(t *testing.T) {
 	same, err := ParsePullRequest([]byte(sameRepoPR))
 	if err != nil {
 		t.Fatal(err)
@@ -125,8 +126,8 @@ func TestIsCrossRepo(t *testing.T) {
 	if same.HeadRepoFullName != "acme/widgets" {
 		t.Fatalf("same-repo head: %q", same.HeadRepoFullName)
 	}
-	if same.IsCrossRepo() {
-		t.Error("same-repo PR must NOT be cross-repo")
+	if !same.HeadIsSameRepo() {
+		t.Error("same-repo PR must be proven same-repo")
 	}
 
 	fork, err := ParsePullRequest([]byte(forkPR))
@@ -136,17 +137,30 @@ func TestIsCrossRepo(t *testing.T) {
 	if fork.HeadRepoFullName != "mallory/widgets" {
 		t.Fatalf("fork head: %q", fork.HeadRepoFullName)
 	}
-	if !fork.IsCrossRepo() {
-		t.Error("fork PR MUST be cross-repo (fork-guard signal)")
+	if fork.HeadIsSameRepo() {
+		t.Error("fork PR must NOT be proven same-repo (fork-guard signal)")
 	}
 
-	// Legacy/minimal payload with no head.repo → same-repo (not a fork).
+	// Legacy/minimal payload with no head.repo → NOT proven same-repo.
 	min, err := ParsePullRequest([]byte(githubOpenPR))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if min.IsCrossRepo() {
-		t.Error("PR with no head.repo must default to same-repo")
+	if min.HeadIsSameRepo() {
+		t.Error("PR with no head.repo must not be proven same-repo (fail closed)")
+	}
+
+	// Case-differing owner/repo still names one repository: forge names are
+	// uniquely case-insensitive, so a payload that echoes "ACME/Widgets" for
+	// the head must not be mistaken for a fork.
+	mixed := Parsed{ProjectPath: "acme/widgets", HeadRepoFullName: "ACME/Widgets"}
+	if !mixed.HeadIsSameRepo() {
+		t.Error("case-differing head repo must still be proven same-repo")
+	}
+
+	// An empty BASE is unknown too — nothing is proven equal to it.
+	if (Parsed{HeadRepoFullName: "acme/widgets"}).HeadIsSameRepo() {
+		t.Error("empty base repo must not be proven same-repo")
 	}
 }
 

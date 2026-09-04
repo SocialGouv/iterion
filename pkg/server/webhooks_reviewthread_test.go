@@ -24,7 +24,7 @@ func ghReviewCommentReply(author, body string) string {
     "path": "pkg/x/y.go", "user": {"login": %q}},
   "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7",
-    "head": {"sha": "abc123", "ref": "feature/x"}, "base": {"ref": "main"}},
+    "head": {"sha": "abc123", "ref": "feature/x", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": %q}
 }`, body, author, author)
 }
@@ -273,7 +273,7 @@ func TestGitHubWebhook_ReviewThreadTopLevelCommentFiltered(t *testing.T) {
     "path": "pkg/x/y.go", "user": {"login": "alice"}},
   "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7",
-    "head": {"sha": "abc123", "ref": "feature/x"}, "base": {"ref": "main"}},
+    "head": {"sha": "abc123", "ref": "feature/x", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": "alice"}
 }`
 	w := httptest.NewRecorder()
