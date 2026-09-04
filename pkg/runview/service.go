@@ -373,6 +373,14 @@ type ResumeSpec struct {
 	// Supervisors re-states the run-level supervisors kill switch
 	// ("", "on", "off"), for the same reason AutoMemory does.
 	Supervisors string
+	// Budget re-states the operator's cap ask FOR THIS RESUME. Non-nil
+	// overrides the launch-time budget persisted on the run doc (which
+	// is otherwise the replay source) — the "raise the cap + resume"
+	// recovery. Persisted to the run doc so a subsequent auto-retry
+	// keeps the raised cap instead of silently reverting to the launch
+	// ask that already killed the run. Nil = inherit the doc's replay
+	// source (today's behaviour).
+	Budget *ir.BudgetOverrides
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

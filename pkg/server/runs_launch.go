@@ -261,6 +261,14 @@ type resumeRunRequest struct {
 	// `file` field instead carries its upload inline in Answers as
 	// `{"upload_id": "..."}`. See runs_answer_uploads.go.
 	Attachments []string `json:"attachments,omitempty"`
+	// Budget is the this-resume cap ask — the wire counterpart of the
+	// CLI's --max-cost-usd / --max-duration / --max-tokens flags on
+	// `iterion resume`. Non-nil beats the run doc's persisted launch
+	// ask, honouring the "raise the cap + resume" recovery on remote
+	// runs where an operator can no longer edit a local .bot to widen
+	// the cap. Zero fields inherit. Wired through
+	// runview.ResumeSpec.Budget → cloudpublisher.SubmitResume. #652 part 2.
+	Budget *launchBudgetSpec `json:"budget,omitempty"`
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -664,6 +672,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Answers:  answers,
 		Force:    req.Force,
 		Timeout:  timeout,
+		Budget:   req.Budget.toOverrides(),
 	}
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref

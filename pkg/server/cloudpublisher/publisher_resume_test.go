@@ -88,6 +88,108 @@ func TestSubmitResume_PublishFailureRestoresOperatorPause(t *testing.T) {
 	}
 }
 
+// retryStoreSpy wraps a RunStore and adds RunRetryStore so we can observe
+// whether SubmitResume disarms the retry state on a successful publish.
+type retryStoreSpy struct {
+	store.RunStore
+	cleared []string
+	claimed []string
+	armed   []string
+	// abandoned is left unused but part of the interface contract.
+	abandoned []string
+}
+
+func (r *retryStoreSpy) ScheduleRunRetry(_ context.Context, runID string, _ time.Time, _, _ string, _ int) (bool, int, error) {
+	r.armed = append(r.armed, runID)
+	return true, 1, nil
+}
+func (r *retryStoreSpy) ClaimRunRetry(_ context.Context, runID string, _ time.Time) (bool, error) {
+	r.claimed = append(r.claimed, runID)
+	return true, nil
+}
+func (r *retryStoreSpy) ClearRunRetry(_ context.Context, runID string) error {
+	r.cleared = append(r.cleared, runID)
+	return nil
+}
+func (r *retryStoreSpy) AbandonRunRetry(_ context.Context, runID, _ string) error {
+	r.abandoned = append(r.abandoned, runID)
+	return nil
+}
+
+// #669 part 3: a manual resume never called ClearRunRetry, so a
+// usage-window retry_after armed BEFORE the operator resumed survived it
+// and re-fired days later on a run that had finished. SubmitResume is the
+// single choke point for a cloud resume — it must clear on success.
+func TestSubmitResume_ClearsArmedRetryOnSuccessfulPublish(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	spy := &retryStoreSpy{RunStore: base}
+	ctx := store.WithIdentity(context.Background(), "team", "alice")
+	const runID = "run-manual-resume-with-armed-retry"
+	at := time.Now().UTC().Add(24 * time.Hour)
+	if err := base.SaveRun(ctx, &store.Run{
+		ID: runID, TenantID: "team", OwnerID: "alice",
+		Status:     store.RunStatusFailedResumable,
+		RetryState: &store.RunRetryState{RetryAfter: &at, Reason: "usage_window", Attempts: 2},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	p := &Publisher{
+		store: spy,
+		publishRun: func(context.Context, *queue.RunMessage) error {
+			return nil
+		},
+	}
+	wf := &ir.Workflow{Name: "wf"}
+	spec := runview.ResumeSpec{
+		RunID: runID, FilePath: "wf.bot",
+		Source: "workflow wf:\n  entry: done\n",
+	}
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	if len(spy.cleared) != 1 || spy.cleared[0] != runID {
+		t.Fatalf("ClearRunRetry calls = %v, want exactly [%q] — an unarmed retry survives the manual resume otherwise (#669 part 3)", spy.cleared, runID)
+	}
+}
+
+// A publish failure must NOT clear the retry state: rollback restores the
+// resumable status, and dropping the armed retry would strand a run whose
+// only remaining wake-up was the sweeper.
+func TestSubmitResume_KeepsRetryStateOnPublishFailure(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	spy := &retryStoreSpy{RunStore: base}
+	ctx := store.WithIdentity(context.Background(), "team", "alice")
+	const runID = "run-manual-resume-publish-fails"
+	at := time.Now().UTC().Add(24 * time.Hour)
+	if err := base.SaveRun(ctx, &store.Run{
+		ID: runID, TenantID: "team", OwnerID: "alice",
+		Status:     store.RunStatusFailedResumable,
+		RetryState: &store.RunRetryState{RetryAfter: &at, Reason: "usage_window"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	p := &Publisher{
+		store: spy,
+		publishRun: func(context.Context, *queue.RunMessage) error {
+			return errors.New("nats unavailable")
+		},
+	}
+	wf := &ir.Workflow{Name: "wf"}
+	spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err == nil {
+		t.Fatal("SubmitResume returned nil, want publish failure")
+	}
+	if len(spy.cleared) != 0 {
+		t.Fatalf("publish failure cleared %v retries, want none (a rollback that also drops the armed retry strands the run)", spy.cleared)
+	}
+}
+
 func TestSubmitResume_ConcurrentRequestsPublishOnce(t *testing.T) {
 	base, err := store.New(t.TempDir())
 	if err != nil {

@@ -506,6 +506,15 @@ type RemoteRunsResumeOptions struct {
 	FilePath    string // optionally push a modified workflow
 	Force       bool
 	Timeout     string
+	// Budget overrides: non-zero fields beat the run doc's persisted
+	// launch ask on THIS resume — the "raise the cap + resume"
+	// recovery the local CLI has (`iterion resume --max-*`), extended
+	// to the remote path per #652 part 2. Zero fields inherit.
+	MaxCostUSD          float64
+	MaxTokens           int
+	MaxDuration         string
+	MaxIterations       int
+	MaxParallelBranches int
 }
 
 func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id string, opts RemoteRunsResumeOptions) error {
@@ -535,7 +544,37 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 	if opts.Timeout != "" {
 		req["timeout"] = opts.Timeout
 	}
+	if budget := resumeBudgetBody(opts); budget != nil {
+		req["budget"] = budget
+	}
 	return RemoteRunsAction(ctx, c, p, id, "resume", req)
+}
+
+// resumeBudgetBody projects the non-zero budget fields onto the wire
+// object, or returns nil when every field is zero so an ask-less resume
+// stays byte-identical to the pre-#652 payload (older servers ignore
+// the unknown "budget" field, but a nil is cleaner).
+func resumeBudgetBody(opts RemoteRunsResumeOptions) map[string]any {
+	body := map[string]any{}
+	if opts.MaxCostUSD > 0 {
+		body["max_cost_usd"] = opts.MaxCostUSD
+	}
+	if opts.MaxTokens > 0 {
+		body["max_tokens"] = opts.MaxTokens
+	}
+	if opts.MaxDuration != "" {
+		body["max_duration"] = opts.MaxDuration
+	}
+	if opts.MaxIterations > 0 {
+		body["max_iterations"] = opts.MaxIterations
+	}
+	if opts.MaxParallelBranches > 0 {
+		body["max_parallel_branches"] = opts.MaxParallelBranches
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	return body
 }
 
 func RemoteRunsDelete(ctx context.Context, c *RemoteClient, p *Printer, id string) error {

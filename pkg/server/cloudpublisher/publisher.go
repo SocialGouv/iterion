@@ -1664,7 +1664,15 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// doctrine as ModelOverrides below): cloud resumes are often
 		// unattended auto-retries, so nothing else can re-state it, and a
 		// dropped override silently reverts the run to the workflow's cap.
-		Budget:         clampBudgetToGrant(budgetOverridesFromRun(prior.BudgetOverrides), wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
+		//
+		// #652 part 2: a THIS-RESUME override (spec.Budget, set by the
+		// remote CLI's --max-* flags) BEATS the persisted replay — the
+		// documented "raise the cap + resume" recovery would be inert
+		// otherwise, and the run would die at the same wall. The override
+		// is also persisted to the run doc below so a subsequent
+		// auto-retry keeps the raised cap rather than reverting to the
+		// launch ask that already killed the run.
+		Budget:         clampBudgetToGrant(resolveResumeBudgetAsk(spec.Budget, prior.BudgetOverrides), wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// A resumed attempt must honour the SAME pins the launch declared —
@@ -1696,6 +1704,20 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	republished = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
+	}
+	// Disarm any usage-window retry the retry sweeper had armed for this
+	// run: an operator (or the auto-retry) is resuming it NOW, and a
+	// surviving retry_after re-fires the sweeper days later on a run that
+	// finished. Observed live (#669 part 3): a manual resume left the pre-park
+	// retry_state in place, and the 09-08 21:07 sweep would have claimed a
+	// completed run. Best-effort — a store blip here does not cancel the
+	// resume: the sweep's ClaimRunRetry CAS still checks the run status
+	// (which is now queued/running), so the worst case is one spurious
+	// abandon audit line.
+	if retryStore := store.AsRunRetryStore(p.store); retryStore != nil {
+		if err := retryStore.ClearRunRetry(context.WithoutCancel(ctx), spec.RunID); err != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: clear armed retry for %s after manual resume: %v", spec.RunID, err)
+		}
 	}
 	return nil
 }
@@ -2112,6 +2134,19 @@ func runBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
 	}
+}
+
+// resolveResumeBudgetAsk chooses between a THIS-RESUME override (the
+// CLI/API budget flags on the resume request) and the persisted launch
+// ask that lives on the run doc. The this-resume override wins when
+// non-nil and non-empty — that IS the "raise the cap + resume"
+// recovery — else the doc's replay is honoured (today's behaviour, and
+// the only path an unattended auto-retry can travel). #652 part 2.
+func resolveResumeBudgetAsk(fromSpec *ir.BudgetOverrides, fromDoc *store.RunBudgetOverrides) *ir.BudgetOverrides {
+	if fromSpec != nil && !fromSpec.IsZero() {
+		return fromSpec
+	}
+	return budgetOverridesFromRun(fromDoc)
 }
 
 // budgetOverridesFromRun replays a run doc's persisted budget ask onto a
