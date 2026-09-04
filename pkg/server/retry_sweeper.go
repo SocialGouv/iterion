@@ -118,6 +118,25 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
+	// A DLQ park is final for automation — only an operator's replay or
+	// resume wakes it — and the gate reconciler has already answered for
+	// it. The transition tail disarms retry_after on every final write
+	// (statusTransitionSet / applyStatusTransitionOutcome), so an armed
+	// retry on a parked doc is one that predates that rule or bypassed the
+	// tail; resuming it would run the bot a second time on the same head,
+	// sharing the reconciler's gate context. Disarm it and say so. The
+	// park's own outcome event already reached every consumer, so this
+	// path must NOT replay it (the DLQ notice has no dedup of its own).
+	// The read is a guard, not a gate: a store that cannot answer leaves
+	// the retry row as the authority, loudly.
+	if run, lerr := s.cfg.Store.LoadRun(runCtx, ref.ID); lerr != nil {
+		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
+	} else if run != nil && run.FailureCode == store.FailureDLQParked {
+		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator replay (iterion remote admin dlq) or resume wakes it")
+		return
+	}
+
 	// An automatic resume spends real money, so it passes the same
 	// admission gate as the operator-initiated one. Whether a denial ends
 	// the retry depends on the denial: a monthly quota refills on the 1st
@@ -199,19 +218,13 @@ func retryDenialIsTransient(reason string) bool {
 	}
 }
 
-// abandonRetry records a permanent stop and audits it.
+// abandonRetry records a permanent stop, audits it, and republishes the
+// run's outcome so the consumers that stood down on the armed retry get
+// the event they were promised.
 func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) {
-	if err := retryStore.AbandonRunRetry(ctx, runID, reason); err != nil {
-		// The abandon did not land: the retry stays claimable, the next sweep
-		// tick walks this path again, and republishing NOW would repeat on
-		// every tick until the write finally sticks. The single republish
-		// belongs to the tick that actually makes the stop permanent.
-		s.warnf("retry sweeper: abandon %s: %v", runID, err)
+	if !s.disarmRetry(ctx, retryStore, tenantID, runID, reason) {
 		return
 	}
-	s.countRetry("abandoned")
-	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
-	s.warnf("retry sweeper: run %s: %s", runID, reason)
 
 	// The run's terminal event fired back when it FAILED — while a retry was
 	// still armed, so every outcome consumer that defers to an armed retry
@@ -226,6 +239,22 @@ func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStor
 			s.warnf("retry sweeper: republish outcome for abandoned run %s: %v", runID, err)
 		}
 	}
+}
+
+// disarmRetry is the abandon WITHOUT the outcome replay: the store write,
+// the counter, the audit line and the log. False when the write did not
+// land — the retry then stays claimable, the next sweep tick walks the
+// same path again, and anything a caller would do on top (a republish)
+// must wait for the tick that actually makes the stop permanent.
+func (s *Server) disarmRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) bool {
+	if err := retryStore.AbandonRunRetry(ctx, runID, reason); err != nil {
+		s.warnf("retry sweeper: abandon %s: %v", runID, err)
+		return false
+	}
+	s.countRetry("abandoned")
+	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
+	s.warnf("retry sweeper: run %s: %s", runID, reason)
+	return true
 }
 
 // reArmRetry gives a failed resume another chance inside the attempt

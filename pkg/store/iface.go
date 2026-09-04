@@ -84,6 +84,30 @@ type RunStore interface {
 	SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error
 	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
 
+	// SetRunBudgetOverrides updates the persisted launch-time budget
+	// ask on the run — the resume path's replay source. Called by
+	// SubmitResume when the operator raises a cap on THIS resume, so
+	// a subsequent unattended auto-retry keeps the raised cap rather
+	// than reverting to the launch ask that already killed the run
+	// (E4, #652 review round 1). Nil clears the field. Granular:
+	// touches only budget_overrides + updated_at, no other field is
+	// disturbed — SaveRun's whole-doc replace is unsafe here because
+	// the resume has already CAS-transitioned the doc to `queued`.
+	SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error
+
+	// SetRunBudgetSnapshot updates the persisted EFFECTIVE caps
+	// (Run.Budget, the studio Overview's denominator) — the display twin
+	// of the ask above. Written by every resume surface that raises a
+	// cap, right after its own status transition: the engine stamps
+	// Run.Budget only at launch (runResolveDoc), so without this write
+	// the doc keeps showing the launch-time figure that just killed the
+	// run. Nil clears the field. Granular for the same reason as
+	// SetRunBudgetOverrides: the doc copy a resume loaded at its top is
+	// stale by the time the caps are known, and a whole-doc SaveRun from
+	// it would revert any transition (a cancel, a runner's terminal
+	// write, the sweeper's flip) that landed in between.
+	SetRunBudgetSnapshot(ctx context.Context, runID string, b *RunBudget) error
+
 	// PatchRunSteering persists the live-steering state (accumulated
 	// loop grants + absolute budget raises) on the run record so a
 	// resume re-applies them. nil map / nil raises leave the stored
@@ -261,7 +285,13 @@ type QueuedAttemptStore interface {
 	// FailQueuedRunIfAttempt moves a queued run to failed_resumable only when
 	// its current QueuedAt is not newer than the delivery's PublishedAt. The
 	// comparison and status transition are one atomic store operation.
-	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (changed bool, err error)
+	//
+	// meta is the typed WHY of the flip, persisted with it exactly like
+	// UpdateRunOutcome's: the queue's admission park is a DLQ park
+	// (FailureDLQParked, ContinuationFinal — nothing wakes the run but an
+	// operator's replay), and every reader of the code must see the same
+	// value whichever of the two DLQ writers flipped the doc.
+	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (changed bool, err error)
 }
 
 // AsQueuedAttemptStore returns the attempt-aware status capability, or nil

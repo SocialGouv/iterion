@@ -143,6 +143,26 @@ func (p admissionMismatchPlan) lostRunError(mismatchErr, parkErr error) string {
 	return fmt.Sprintf("schema version mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", mismatchErr, parkErr)
 }
 
+// admissionParkOutcome is the typed WHY stamped on the run doc when the
+// admission park flips it. A message parked on the DLQ is a DLQ park
+// whatever refused it — the same code the generic park in processOne
+// writes, so the one reader of the code (the gate notice) tells an
+// operator-replay park from a quota pause on either path. A payload the
+// DLQ could NOT take (the queue entry is lost, the doc says "relaunch")
+// keeps the refusal's own cause where the taxonomy names one — a schema
+// mismatch — and honestly stays unknown for a future-epoch fence, which
+// has no code. Both are final: nothing on the platform wakes the run.
+func admissionParkOutcome(kind admissionMismatchKind, payloadParked bool) store.RunOutcomeMeta {
+	meta := store.RunOutcomeMeta{Continuation: store.ContinuationFinal}
+	switch {
+	case payloadParked:
+		meta.Code = store.FailureDLQParked
+	case kind == admissionMismatchSchema:
+		meta.Code = store.FailureQueueSchemaMismatch
+	}
+	return meta
+}
+
 // handleAdmissionMismatch is the common recoverable disposition for schema
 // and generation fences. Both conditions are expected during a mixed-fleet
 // rollout and both become explicit, resumable failures if MaxDeliver is spent.
@@ -228,7 +248,7 @@ func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissio
 			// lookup could otherwise close that successor.
 			poolRelease = r.cfg.CredPool.CaptureRelease(flipCtx, env.RunID)
 		}
-		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt)
+		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt, admissionParkOutcome(kind, payloadParked))
 		flipCancel()
 		if serr != nil {
 			logger.Warn("runner: %s admission-rejection status flip for %s: %v", plan.reason, env.RunID, serr)

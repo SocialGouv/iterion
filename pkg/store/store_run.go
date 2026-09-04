@@ -591,7 +591,7 @@ func (s *FilesystemRunStore) UpdateRunOutcome(_ context.Context, id string, stat
 // by publishedAt. A later resume refreshes QueuedAt before publishing, so an
 // older delivery cannot clobber that new attempt during its queued→running
 // hand-off window.
-func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (bool, error) {
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store: fail queued attempt %s without published_at", id)
 	}
@@ -605,9 +605,7 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
 		return false, nil
 	}
-	// Classification of the queue-park writer is follow-up work; the
-	// empty code reads as unknown, which is honest here.
-	if err := s.applyStatusTransition(r, RunStatusFailedResumable, runErr, ""); err != nil {
+	if err := s.applyStatusTransitionOutcome(r, RunStatusFailedResumable, runErr, meta); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -649,6 +647,12 @@ func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStat
 		r.ContinuationState = meta.Continuation
 	} else if transition {
 		r.ContinuationState = ""
+	}
+	// A final continuation and an armed retry contradict each other (see
+	// the Mongo twin, statusTransitionSet): disarm at the tail every final
+	// writer goes through, keeping the rest of the retry bookkeeping.
+	if meta.Continuation == ContinuationFinal && r.RetryState != nil {
+		r.RetryState.RetryAfter = nil
 	}
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
@@ -997,6 +1001,40 @@ func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID s
 	}
 	r.CredFingerprints = fingerprints
 	return s.SaveRun(ctx, r)
+}
+
+// SetRunBudgetOverrides persists the operator's launch-time budget ask
+// (see RunStore). Load-modify-save under the store mutex, like
+// SetRunBudgetSnapshot below, so a status transition racing this write
+// is never reverted: SaveRun replaces the whole document from a copy
+// loaded before the lock, which would undo a cancel — and would apply
+// its own failure-code and pause-pointer normalisation to a field-scoped
+// write that has no business touching either.
+func (s *FilesystemRunStore) SetRunBudgetOverrides(_ context.Context, runID string, o *RunBudgetOverrides) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.BudgetOverrides = o
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetRunBudgetSnapshot persists the effective caps (see RunStore).
+// Load-modify-save under the store mutex, like the other fs-side
+// patches, so a status transition racing this write is never reverted.
+func (s *FilesystemRunStore) SetRunBudgetSnapshot(_ context.Context, runID string, b *RunBudget) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.Budget = b
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
 }
 
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped

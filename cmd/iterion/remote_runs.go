@@ -240,10 +240,15 @@ var remoteRunsPauseCmd = &cobra.Command{
 }
 
 var (
-	remoteResumeAnswers string
-	remoteResumeFile    string
-	remoteResumeForce   bool
-	remoteResumeTimeout string
+	remoteResumeAnswers             string
+	remoteResumeFile                string
+	remoteResumeForce               bool
+	remoteResumeTimeout             string
+	remoteResumeMaxCostUSD          float64
+	remoteResumeMaxTokens           int
+	remoteResumeMaxDuration         string
+	remoteResumeMaxIterations       int
+	remoteResumeMaxParallelBranches int
 )
 
 var remoteRunsResumeCmd = &cobra.Command{
@@ -253,10 +258,15 @@ var remoteRunsResumeCmd = &cobra.Command{
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		answers := strings.TrimPrefix(remoteResumeAnswers, "@")
 		return cli.RemoteRunsResume(cmd.Context(), c, p, args[0], cli.RemoteRunsResumeOptions{
-			AnswersFile: answers,
-			FilePath:    remoteResumeFile,
-			Force:       remoteResumeForce,
-			Timeout:     remoteResumeTimeout,
+			AnswersFile:         answers,
+			FilePath:            remoteResumeFile,
+			Force:               remoteResumeForce,
+			Timeout:             remoteResumeTimeout,
+			MaxCostUSD:          remoteResumeMaxCostUSD,
+			MaxTokens:           remoteResumeMaxTokens,
+			MaxDuration:         remoteResumeMaxDuration,
+			MaxIterations:       remoteResumeMaxIterations,
+			MaxParallelBranches: remoteResumeMaxParallelBranches,
 		})
 	}),
 }
@@ -475,6 +485,14 @@ func init() {
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeFile, "file", "", "Push a modified workflow file with the resume")
 	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeForce, "force", false, "Resume even if the workflow source changed")
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeTimeout, "timeout", "", "New timeout for the resumed run")
+	// #652 part 2: the local `iterion resume` accepts --max-* to raise
+	// the cap; the remote equivalent now does too. Non-zero beats the
+	// run doc's persisted launch ask on THIS resume; zero inherits.
+	remoteRunsResumeCmd.Flags().Float64Var(&remoteResumeMaxCostUSD, "max-cost-usd", 0, "Raise the cost cap on THIS resume (USD)")
+	remoteRunsResumeCmd.Flags().IntVar(&remoteResumeMaxTokens, "max-tokens", 0, "Raise the token cap on THIS resume")
+	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeMaxDuration, "max-duration", "", "Raise the duration cap on THIS resume (Go duration)")
+	remoteRunsResumeCmd.Flags().IntVar(&remoteResumeMaxIterations, "max-iterations", 0, "Raise the loop-iterations cap on THIS resume")
+	remoteRunsResumeCmd.Flags().IntVar(&remoteResumeMaxParallelBranches, "max-parallel-branches", 0, "Raise the parallel-branches cap on THIS resume")
 
 	remoteRunsForkCmd.Flags().StringVar(&remoteForkNode, "node", "", "Node id to fork at (required)")
 	remoteRunsForkCmd.Flags().IntVar(&remoteForkTurn, "turn", 0, "LLM turn index to rewind to")

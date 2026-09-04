@@ -42,6 +42,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -1504,7 +1505,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// run doc is the single source the resume path replays from. The
 		// clamped/effective figure is NOT what is stamped — the resume
 		// re-clamps against its own grant.
-		BudgetOverrides: runBudgetOverrides(spec.Budget),
+		BudgetOverrides: runtime.RunBudgetOverridesOf(spec.Budget),
 	}
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -1877,6 +1878,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if contribErr != nil {
 		return contribErr
 	}
+	// The budget the resumed attempt executes against, computed ONCE: the
+	// launch ask replayed from the run doc, this resume's ask merged over
+	// it per field (#652 part 2 — the remote CLI's --max-* flags beat the
+	// persisted replay, or the documented "raise the cap + resume"
+	// recovery is inert), then clamped to the donor's remaining allowance
+	// when a credential-pool grant serves the run. It rides the wire below
+	// AND stamps the doc's effective-caps snapshot further down — the same
+	// figure, so the studio never advertises a cap the run does not have.
+	merged := runtime.MergeResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
+	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID)
 	msg := &queue.RunMessage{
 		V:             queue.SchemaVersion,
 		Contributions: contributions,
@@ -1906,7 +1917,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// doctrine as ModelOverrides below): cloud resumes are often
 		// unattended auto-retries, so nothing else can re-state it, and a
 		// dropped override silently reverts the run to the workflow's cap.
-		Budget:         clampBudgetToGrant(budgetOverridesFromRun(prior.BudgetOverrides), wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
+		// A THIS-RESUME override is also persisted to the run doc below so
+		// a subsequent auto-retry keeps the raised cap rather than
+		// reverting to the launch ask that already killed the run.
+		Budget:         wire,
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// A resumed attempt must honour the SAME pins the launch declared —
@@ -1938,6 +1952,68 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	republished = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
+	}
+	// E4 (#652 review round 1): persist the MERGED budget ask onto the
+	// run doc, so a subsequent unattended auto-retry (usage-window
+	// sweeper) keeps the raised cap rather than reverting to the
+	// launch ask that already killed the run. Only when the operator
+	// asked for a change on THIS resume — an ask-less resume leaves the
+	// ASK untouched, and the ask is persisted UN-CLAMPED on purpose: the
+	// donor allowance is re-derived against the current grant on every
+	// resume, so a run capped at $5 today correctly replays its $120 ask
+	// once the donor recovers. Granular SetRunBudgetOverrides so the CAS
+	// status transition above (queued) stays intact. Best-effort.
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer persistCancel()
+	if spec.Budget != nil && !spec.Budget.IsZero() {
+		if err := p.store.SetRunBudgetOverrides(persistCtx, spec.RunID, runtime.RunBudgetOverridesOf(merged)); err != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: persist merged budget ask for %s after resume: %v", spec.RunID, err)
+		}
+	}
+	// The doc's effective-caps snapshot (Run.Budget, the studio
+	// Overview's denominator) is stamped on EVERY resume that puts a
+	// budget on the wire — ask or no ask — from the figure the wire
+	// carries (merged AND clamped to the donor's allowance), never from
+	// the ask: the allowance moves between resumes in both directions
+	// (an ask-less auto-retry can find a $5 donor after a $500 one, or
+	// the reverse), and the engine stamps this field only at launch
+	// (post-clamp, so the field means "enforced"). Enforcement is
+	// correct on the wire in every case; without this stamp it is the
+	// doc that lies — the studio reading $120 while the pod dies at the
+	// donor's $5 with CapImposed denying the exit grace, or $5 while the
+	// run may spend $120. A nil wire means nothing changed: the runner's
+	// post-ceiling launch stamp stands. What this stamp cannot see is the
+	// PLATFORM ceiling (ITERION_CLOUD_MAX_*): it lives in the runner's
+	// environment, not the publisher's, and a cap raised above it is
+	// clamped on the pod and logged there — the doc over-reports by that
+	// margin until the engine re-stamps on resume (ticketed).
+	if wire != nil {
+		if snap := runtime.EffectiveBudgetSnapshot(wf, runtime.BudgetOverridesFromWire(wire)); snap != nil {
+			if err := p.store.SetRunBudgetSnapshot(persistCtx, spec.RunID, snap); err != nil && p.logger != nil {
+				p.logger.Warn("cloudpublisher: refresh budget snapshot for %s after resume: %v", spec.RunID, err)
+			}
+		}
+	}
+	// Disarm any usage-window retry the retry sweeper had armed for this
+	// run: an operator (or the auto-retry) is resuming it NOW, and a
+	// surviving retry_after re-fires the sweeper days later on a run that
+	// finished. Observed live (#669 part 3): a manual resume left the pre-park
+	// retry_state in place, and the 09-08 21:07 sweep would have claimed a
+	// completed run. Best-effort — a store blip here does not cancel the
+	// resume: the sweep's ClaimRunRetry CAS still checks the run status
+	// (which is now queued/running), so the worst case is one spurious
+	// abandon audit line.
+	//
+	// E5 (#652 review round 1): bound the detached-context write like
+	// every other sibling detached store call (publisher.go:1553's
+	// rollback uses 10s, usage_retry follows the same convention) so a
+	// wedged store cannot pin the resume goroutine indefinitely.
+	if retryStore := store.AsRunRetryStore(p.store); retryStore != nil {
+		clearCtx, clearCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err := retryStore.ClearRunRetry(clearCtx, spec.RunID); err != nil && p.logger != nil {
+			p.logger.Warn("cloudpublisher: clear armed retry for %s after manual resume: %v", spec.RunID, err)
+		}
+		clearCancel()
 	}
 	return nil
 }
@@ -2335,41 +2411,6 @@ func runModelOverrides(entries []runview.ModelOverrideEntry) []store.RunModelOve
 		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
 	}
 	return out
-}
-
-// runBudgetOverrides converts the launch's raw budget ask into the
-// persisted run-doc form (the resume path's replay source, the budget
-// twin of runModelOverrides). An absent or all-zero ask persists as nil
-// so legacy docs and override-less launches stay byte-identical.
-// CapImposed is deliberately not persisted: it is a product of the grant
-// clamp, recomputed against the CURRENT grant on every publication.
-func runBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
-	if o == nil || o.IsZero() {
-		return nil
-	}
-	return &store.RunBudgetOverrides{
-		MaxCostUSD:          o.MaxCostUSD,
-		MaxTokens:           o.MaxTokens,
-		MaxDuration:         o.MaxDuration,
-		MaxIterations:       o.MaxIterations,
-		MaxParallelBranches: o.MaxParallelBranches,
-	}
-}
-
-// budgetOverridesFromRun replays a run doc's persisted budget ask onto a
-// resume publication, where clampBudgetToGrant re-clamps it against the
-// resume's own grant exactly like a fresh launch.
-func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
-	if o == nil {
-		return nil
-	}
-	return &ir.BudgetOverrides{
-		MaxCostUSD:          o.MaxCostUSD,
-		MaxTokens:           o.MaxTokens,
-		MaxDuration:         o.MaxDuration,
-		MaxIterations:       o.MaxIterations,
-		MaxParallelBranches: o.MaxParallelBranches,
-	}
 }
 
 // runFallbackOf converts the launch's run-level fallback chain into the

@@ -688,6 +688,48 @@ func (s *Store) SetRunCredFingerprints(ctx context.Context, id string, fingerpri
 	return nil
 }
 
+// SetRunBudgetOverrides persists the operator's launch-time budget ask
+// (see store.RunStore). Granular $set (with $unset for nil) so the CAS
+// status transition SubmitResume just applied stays intact.
+func (s *Store) SetRunBudgetOverrides(ctx context.Context, id string, o *store.RunBudgetOverrides) error {
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	update := bson.M{"$set": bson.M{"updated_at": time.Now().UTC()}}
+	if o == nil {
+		update["$unset"] = bson.M{"budget_overrides": ""}
+	} else {
+		update["$set"].(bson.M)["budget_overrides"] = o
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run budget overrides: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
+// SetRunBudgetSnapshot persists the effective caps (see store.RunStore).
+// Granular $set (with $unset for nil), like SetRunBudgetOverrides, so the
+// status transition a resume just applied stays intact.
+func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.RunBudget) error {
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	update := bson.M{"$set": bson.M{"updated_at": time.Now().UTC()}}
+	if b == nil {
+		update["$unset"] = bson.M{"budget": ""}
+	} else {
+		update["$set"].(bson.M)["budget"] = b
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run budget snapshot: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped
 // with fingerprint (see store.RunStore). Deliberately NO tenant filter —
 // a platform key serves every tenant on one ceiling.
@@ -869,6 +911,23 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 	} else {
 		set["continuation_state"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
 			bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}}
+	}
+	// A `final` continuation says nobody on the platform owns the run's
+	// future; an armed retry says the sweeper does. The two cannot both
+	// be true, and a doc carrying both gets BOTH automations — the gate
+	// reconciler's dead-review repair AND the sweeper's auto-resume, two
+	// runs of the bot on one PR head. Every final writer (the DLQ park,
+	// the orphan sweeper, the PR-close cancel) therefore disarms
+	// retry_after here, at the one tail they all go through; the rest
+	// of the retry bookkeeping (attempts, reason, last_error) is the
+	// run's history and stays. Same guarded $unsetField shape as the
+	// pause pointer above: a doc with no retry state must not grow one.
+	if meta.Continuation == store.ContinuationFinal {
+		set[retryStateField] = bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{bson.M{"$type": "$" + retryStateField}, "object"}},
+			bson.M{"$unsetField": bson.M{"field": "retry_after", "input": "$" + retryStateField}},
+			"$" + retryStateField,
+		}}
 	}
 	return set
 }
@@ -1077,7 +1136,7 @@ func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMe
 // status-only CAS above. queued_at and status are matched in the SAME Mongo
 // update so a concurrent resume cannot slip a newer queued attempt between a
 // read and the failure write.
-func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time, meta store.RunOutcomeMeta) (bool, error) {
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s without published_at", id)
 	}
@@ -1093,10 +1152,9 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 			bson.M{"queued_at": nil},
 		},
 	}))
-	// Queue-park classification is follow-up; the empty code reads as
-	// unknown, which is honest here. The filter pins status=queued, so
-	// the transition-gated episode increment always fires.
-	pipeline := statusTransitionPipeline(statusTransitionSet(store.RunStatusFailedResumable, runErr, store.RunOutcomeMeta{}, now))
+	// The filter pins status=queued, so the transition-gated episode
+	// increment always fires; meta rides the same write as the flip.
+	pipeline := statusTransitionPipeline(statusTransitionSet(store.RunStatusFailedResumable, runErr, meta, now))
 	res, err := s.runs.UpdateOne(ctx, filter, pipeline)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)

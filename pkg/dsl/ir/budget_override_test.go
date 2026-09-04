@@ -97,4 +97,12 @@ func TestBudgetOverridesIsZero(t *testing.T) {
 	if (BudgetOverrides{MaxCostUSD: 1}).IsZero() {
 		t.Fatal("non-empty BudgetOverrides should not be zero")
 	}
+	// The imposed-cap marker alone carries no cap: nothing to apply, put
+	// on the wire, or persist (it used to persist as an empty object).
+	if !(BudgetOverrides{CapImposed: true}).IsZero() {
+		t.Fatal("CapImposed-only BudgetOverrides should be zero — the marker never travels without the cap it marks")
+	}
+	if !(BudgetOverrides{MaxCostUSD: 5, CapImposed: true}).IsZero() == false {
+		t.Fatal("a clamped cap with its marker should not be zero")
+	}
 }

@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,6 +49,127 @@ const PodIPEnvVar = "ITERION_POD_IP"
 // practice (cluster-cached images go Ready in <2s; cold pulls of
 // multi-GB images take 30-60s).
 const DefaultPodReadyTimeoutSecs = 180
+
+// DefaultWorkspaceCopyTimeout bounds populateWorkspace (host tar |
+// kubectl exec pod tar) and the git fixup that follows, each end-to-end.
+// The pod-Ready wait has its own cap; without this one a stuck
+// kubectl-exec pipe blocks the run until the outer max_duration fires —
+// hours later, with no `sandbox_started` event to warn on (a resumed
+// review sat 2h 26m in the sandbox-start phase, was wiped by a runner
+// rollout, and its message re-delivered onto a stale `running` status —
+// #669 part 1).
+//
+// Fifteen minutes because no measured copy duration exists to size it
+// from: iterion's own checkout is 355 MB streamed through the apiserver,
+// and a cold copy on a slow apiserver must not be killed for being slow
+// but healthy. The halfway warning in runWithPhaseTimeout makes such a
+// copy visible at 7m30s, before the bound strikes. Overridable per host
+// via ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT (a Go duration).
+const DefaultWorkspaceCopyTimeout = 15 * time.Minute
+
+// workspaceCopyTimeoutEnv is the override key. Read once per call so
+// tests can flip it between subcases.
+const workspaceCopyTimeoutEnv = "ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT"
+
+// workspaceCopyTimeoutWarnOnce bounds the "unparseable override" warning
+// to one stderr line per process (the ITERION_BUDGET_EXIT_GRACE
+// convention): an operator input silently replaced by the default is an
+// override that never took, with nothing saying so.
+var workspaceCopyTimeoutWarnOnce sync.Once
+
+// resolveWorkspaceCopyTimeout returns the effective per-phase timeout,
+// honouring the env override with a fail-safe fallback: a garbage or
+// non-positive value ("banana", "0", "-5m", or "5" — which Go parses as
+// five NANOseconds, not the five minutes the operator meant) falls back
+// to the default (a copy phase left unbounded is exactly the bug this
+// exists to close) and warns once, naming the value and the default.
+func resolveWorkspaceCopyTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(workspaceCopyTimeoutEnv))
+	if raw == "" {
+		return DefaultWorkspaceCopyTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		workspaceCopyTimeoutWarnOnce.Do(func() {
+			// Stderr, not the driver logger: a leaf helper with no
+			// logger in reach.
+			fmt.Fprintf(os.Stderr,
+				"iterion: %s=%q is not a positive Go duration (use e.g. 5m, 15m, 2h) — using the default %s\n",
+				workspaceCopyTimeoutEnv, raw, DefaultWorkspaceCopyTimeout)
+		})
+		return DefaultWorkspaceCopyTimeout
+	}
+	return d
+}
+
+// phaseTimeoutWarnRatio is where the halfway-mark warning fires, as a
+// fraction of the phase budget: a slow-but-healthy copy shows up on the
+// runner log BEFORE the bound strikes, with enough runway left to tell
+// "clogged and finishing" from "wedged". A var so tests can lower it.
+var phaseTimeoutWarnRatio = 0.5
+
+// runWithPhaseTimeout runs fn under a bounded child context. When THIS
+// phase's deadline strikes it returns an error naming the phase and the
+// wall-clock elapsed time, wrapping sandbox.ErrPhaseTimeout,
+// context.DeadlineExceeded AND fn's own error through errors.Join, so
+// every consumer can classify the shape with errors.Is (the setup
+// classifier routes it to failed_resumable, the runner NAKs it) and the
+// operator still reads the actual cause. An outer ctx cancellation (run
+// cancel, pod SIGTERM) keeps its own shape: a cooperative stop is not a
+// stall.
+//
+// The bound is only as strong as fn's ctx discipline. fn is called
+// synchronously and nothing races the deadline: the child ctx expires,
+// and whatever fn does with that is the whole enforcement. For the
+// workspace copy that is exec.CommandContext killing the LOCAL tar and
+// kubectl processes; the in-pod tar behind `kubectl exec` is not reached
+// by that signal (Setpgid signals only the leader), it dies with the
+// pipe. A callee that ignores its ctx and returns nil after the deadline
+// therefore completes — and is warned about, so a phase that burned its
+// whole budget and won by a hair is visible before the next occurrence
+// trips the bound.
+//
+// The halfway warning (phaseTimeoutWarnRatio × timeout) runs on a side
+// goroutine that fn's return cancels; on an early return it emits
+// nothing.
+func runWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase string, timeout time.Duration, fn func(context.Context) error) error {
+	if logger == nil {
+		logger = iterlog.Nop()
+	}
+	phaseCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	start := time.Now()
+
+	// The warn delay is computed here, not in the goroutine, so the
+	// ratio is read before the goroutine exists (tests lower it).
+	warnAfter := time.Duration(float64(timeout) * phaseTimeoutWarnRatio)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(warnAfter):
+			logger.Warn("sandbox: %s phase still running after %s of its %s budget — a stall from here on fails the phase (ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT raises the bound)",
+				phase, time.Since(start).Round(time.Second), timeout)
+		}
+	}()
+
+	err := fn(phaseCtx)
+	close(done)
+
+	if err == nil {
+		if phaseCtx.Err() != nil {
+			logger.Warn("sandbox: %s phase completed at or past its %s budget (elapsed %s) — raise ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT or investigate the delay",
+				phase, timeout, time.Since(start).Round(time.Millisecond))
+		}
+		return nil
+	}
+	if phaseCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return fmt.Errorf("kubernetes: %s phase timed out after %s (deadline %s exceeded): %w",
+			phase, time.Since(start).Round(time.Millisecond), timeout,
+			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, err))
+	}
+	return err
+}
 
 // Downward-API env vars the runner pod's Helm chart should inject so the
 // driver can set an ownerReference on every per-run resource (sandbox
@@ -400,12 +522,24 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// via a tar stream. Without this the sandbox starts with an empty
 	// workspace (the V1 limitation, docs/sandbox.md) and a repo-bound bot
 	// has nothing to work on. Skipped for workspace-less runs.
+	//
+	// Both phases are BOUNDED (the pod-Ready wait has its own cap,
+	// DefaultPodReadyTimeoutSecs): a stuck kubectl-exec pipe must fail the
+	// phase as a typed error, not block the run until the outer
+	// max_duration fires. resolveWorkspaceCopyTimeout is the budget
+	// (DefaultWorkspaceCopyTimeout; ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT
+	// overrides).
 	if info.WorkspacePath != "" {
-		if err := r.populateWorkspace(ctx, info.WorkspacePath, p.workspace); err != nil {
+		copyTimeout := resolveWorkspaceCopyTimeout()
+		if err := runWithPhaseTimeout(ctx, d.logger, "workspace copy", copyTimeout, func(ctx context.Context) error {
+			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
+		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
 		}
-		if err := r.fixupWorkspaceGit(ctx, p.workspace); err != nil {
+		if err := runWithPhaseTimeout(ctx, d.logger, "workspace git fixup", copyTimeout, func(ctx context.Context) error {
+			return r.fixupWorkspaceGit(ctx, p.workspace)
+		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
 		}
