@@ -186,12 +186,19 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
   (the `draft` flag is honoured on every action — the trigger is
   `ready_for_review`, which clears it). A **fork PR** (head branch in a
-  different repo) is likewise never auto-launched: it is untrusted, so a repo
-  collaborator must trigger a bot manually via the `/command` path — the anti
-  budget-exhaustion boundary
+  different repo) is likewise never launched — not by this lane, and not by a
+  `/command` either, read-only `/revi` included: every lane hands the runner
+  the base repo's clone URL paired with a head-repo ref, a pair that names one
+  repository only when head and base are the same repo. The guard is
+  **fail-closed**: a payload that omits `head.repo` is refused too, a head
+  repo being missing only once it was deleted or blocked — which only a FORK
+  head can be
   ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
-  `IsCrossRepo`). A PR opened by iterion's **own forge bot** (another iterion
-  bot's PR — see below) is also skipped.
+  `HeadIsSameRepo`). It is both the untrusted-code and the anti
+  budget-exhaustion boundary; running a bot on fork code deliberately would
+  need a head-repo checkout iterion does not build yet. A PR opened by
+  iterion's **own forge bot** (another iterion bot's PR — see below) is also
+  skipped.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —
   including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
@@ -223,9 +230,8 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `author_association` ∈ OWNER/MEMBER/COLLABORATOR (decoded from the
   payload, no API call), OR live `CollaboratorPermission` ≥
   **`min_author_role`** (gitlab vocabulary, `""` → developer ≡ write;
-  read through the team connection covering the repo when its client
-  can serve, else the webhook's `forge_token` binding — the same client
-  the command gate resolves). Unknown = untrusted (**fail-closed** —
+  read through the same client the command gate resolves — see *Which
+  credential a lane reads through* below). Unknown = untrusted (**fail-closed** —
   this is the budget boundary against drive-by issues, unlike the
   fail-open org quotas). An untrusted author's delivery filters (200,
   visible reason) and the issue's board card parks with
@@ -254,11 +260,12 @@ signature header is treated as a hex digest with or without the
 
 The same draft/fork guards as GitHub apply (shared `prforge` parser):
 a draft PR (`pull_request.draft == true`) never auto-launches, and a fork
-PR never auto-launches. **Caveat:** Forgejo/Gitea has no `ready_for_review`
+PR launches nothing at all. **Caveat:** Forgejo/Gitea has no `ready_for_review`
 webhook action (marking a WIP PR ready arrives as `edited`, which does not
 auto-trigger), so on Forgejo the draft→ready re-trigger is on-demand — a
-collaborator reopens the PR or uses the `/command` path. The no-draft and
-no-fork guarantees hold regardless.
+collaborator reopens the PR or uses the `/command` path (which re-triggers a
+draft, but still not a fork). The no-draft and no-fork guarantees hold
+regardless.
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 
@@ -383,6 +390,40 @@ Pairs with the per-repo gate opt-out (`gate_enabled: "false"` pinned on the
 integration's launch vars): first review automatic on open, every re-review
 a button click or a `/revi` — see
 [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand).
+
+### Which credential a lane reads through
+
+Every GitHub/Forgejo lane that asks the forge something — the `/command`
+gate's `CollaboratorPermission` + `WhoAmI`, the PR-head resolution, the
+review-request gate, the author-trust gate, and `/revi approve`'s status
+write — resolves one client through
+[pkg/server/webhooks_prforge.go:prforgeReplierAPIFor](../pkg/server/webhooks_prforge.go),
+in descending order of how well each credential is PROVEN to speak for the
+repo:
+
+1. **the connection of the repo's own integration row** — what
+   `Orchestrator.Provision` writes when the repo is connected. A GitHub App
+   connection mints its installation token per call, so a connection-only
+   integration authorizes with no `forge_token` binding at all;
+2. **the webhook's `forge_token` binding** — the credential an operator bound
+   to THIS webhook (the hand-owned setup);
+3. **any team connection on the forge host** — the zero-config tier for an
+   org-wide App install nobody provisioned repo by repo.
+
+Tier 3 sits *below* the binding on purpose. It proves nothing about the repo,
+and a credential that cannot see a repository does not fail loudly: GitHub
+answers `404`, which iterion maps to permission `"none"` — a *successful*
+answer. Preferred, it would silently rank every commenter at 0 and refuse
+authorized `/command`s and approvals on any team that merely holds another
+connection on the same host.
+
+A connection whose client cannot serve is passed over with a `Warn` — an App
+client mints lazily, so a mint that 422s (a grant lagging the requested
+permissions) or an installation withholding `statuses:write` only shows up on
+the first call, not at construction. When no tier serves, the refusal names
+what was tried. The write lanes that hold no second credential (gate publish,
+pending, reconcile) keep reading `forgeConnectionForPR`, which folds the same
+three tiers into one lookup.
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 

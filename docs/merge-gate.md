@@ -107,11 +107,19 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 >
 > **Where fork PRs actually stand, per provider.** On **GitHub** and
 > **Forgejo** the guard is unconditional and needs no configuration: an
-> inbound PR event whose head is a fork is filtered before the sync lane
-> is even considered, so the fork re-review exposure above cannot occur
-> there. A repo collaborator can still launch a bot on fork code
-> deliberately with a `/command`, which gates on the commenter's
-> permission. On **GitLab** the inbound MR lane has no fork/cross-project
+> inbound PR event whose head is a fork — or one whose head repo the payload
+> does not name at all, which is a deleted or blocked FORK head and never a
+> same-repo PR — is filtered before the sync lane is even considered, so the
+> fork re-review exposure above cannot occur there. **A `/command` that
+> launches a bot is refused on a fork PR too**, however senior the commenter,
+> read-only `/revi` included: every lane launches the base repo's clone URL
+> paired with a head-repo ref, which names one repository only when head and
+> base are the same repo — so a bot would review, or a fixer would PUSH to, a
+> same-named branch on the base. There is no manual escape hatch for fork
+> code today; running a bot on it needs a head-repo checkout iterion does not
+> build yet. (`/revi approve` still works: it launches nothing, it writes the
+> gate status on the PR head in the BASE repo.) On **GitLab** the inbound MR
+> lane has no fork/cross-project
 > guard, so a forked-MR auto-review *is* reachable — bound that lane with
 > an `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
 > The two lanes that resolve the MR through the API instead — auto-fix and
