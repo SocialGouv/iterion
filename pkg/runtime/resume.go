@@ -727,7 +727,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		cp = &store.Checkpoint{NodeID: fallbackNode}
 	}
 	status, msg, code := setupFailureStatus(ctx, "sandbox start", sbErr)
-	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
 	defer cancelWrite()
 	if status == store.RunStatusCancelled {
 		if err := e.store.SaveCheckpoint(writeCtx, runID, cp); err != nil && e.logger != nil {
@@ -735,18 +735,38 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		}
 		changed, err := e.store.UpdateRunStatusIfCoded(writeCtx, runID, store.RunStatusCancelled, msg, code,
 			[]store.RunStatus{store.RunStatusRunning})
-		if err != nil && e.logger != nil {
+		switch {
+		case err != nil && e.logger != nil:
 			e.logger.Warn("runtime: resume: could not record the cancel during sandbox start for run %s: %v — run left non-terminal", runID, err)
-		} else if !changed && e.logger != nil {
-			e.logger.Warn("runtime: resume: cancel during sandbox start for run %s not recorded — the doc had already left `running` (a publisher or peer wrote its terminal status first; that recorded reason stands)", runID)
+		case !changed && e.logger != nil:
+			// The nominal cloud shape: the publisher CASes the doc to
+			// `cancelled` with the operator's reason BEFORE the cancel
+			// subject reaches this engine, so the decline is expected and
+			// the recorded reason stands. Anything else that moved the doc
+			// off `running` is worth a look.
+			cur, lerr := e.store.LoadRun(writeCtx, runID)
+			switch {
+			case lerr == nil && cur != nil && cur.Status == store.RunStatusCancelled:
+				e.logger.Info("runtime: resume: cancel during sandbox start for run %s already recorded (%q) — keeping that reason", runID, cur.Error)
+			case lerr == nil && cur != nil:
+				e.logger.Warn("runtime: resume: cancel during sandbox start for run %s not recorded — the doc had already left `running` for %s (a peer wrote its terminal status first; that status stands)", runID, cur.Status)
+			default:
+				e.logger.Warn("runtime: resume: cancel during sandbox start for run %s not recorded — the doc had already left `running`, and re-reading it failed (%v)", runID, lerr)
+			}
 		}
 		return fmt.Errorf("%w: sandbox start: %v", ErrRunCancelled, sbErr)
 	}
 	if err := e.store.FailRunResumable(writeCtx, runID, cp, msg, code); err != nil {
 		// Fall back to a plain terminal status so the run does not linger
-		// as `running`; if THAT fails too the run is stuck non-terminal
-		// (an orphan the operator must hand-hack), so say so.
-		if uerr := e.store.UpdateRunStatusCoded(writeCtx, runID, store.RunStatusFailed, msg, code); uerr != nil && e.logger != nil {
+		// as `running`. On its OWN short budget: the park's budget is what
+		// a wedged store has just consumed, and a fallback sharing it
+		// would be dead code on exactly the timeout it exists for. If THAT
+		// fails too the run is stuck non-terminal until the runner's
+		// redelivery adopts the `running` doc under the lock, so say so.
+		fbCtx, cancelFb := context.WithTimeout(context.WithoutCancel(ctx), resumeParkFallbackBudget)
+		uerr := e.store.UpdateRunStatusCoded(fbCtx, runID, store.RunStatusFailed, msg, code)
+		cancelFb()
+		if uerr != nil && e.logger != nil {
 			e.logger.Warn("runtime: resume: could not finalize run %s after sandbox failure (FailRunResumable: %v; UpdateRunStatus fallback: %v) — run left non-terminal", runID, err, uerr)
 		}
 	}
@@ -755,6 +775,16 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 	}
 	return fmt.Errorf("runtime: sandbox: %w", sbErr)
 }
+
+// resumeParkWriteBudget bounds the resume-arm park's writes (the same 5s
+// teardown-write convention as the node loop); resumeParkFallbackBudget
+// is the terminal fallback's own, shorter bound — separate because the
+// first is what a wedged store has just spent. Vars so a test can shrink
+// them.
+var (
+	resumeParkWriteBudget    = 5 * time.Second
+	resumeParkFallbackBudget = 2 * time.Second
+)
 
 // resumeFromFailure resumes a failed_resumable run by re-executing from
 // the failing node (with checkpoint) or by restarting from the workflow

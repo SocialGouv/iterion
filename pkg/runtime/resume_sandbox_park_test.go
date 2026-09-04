@@ -1,11 +1,13 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -119,6 +121,100 @@ func TestParkResumeSandboxFailure_DrainLandsOnACtxHonouringStore(t *testing.T) {
 	}
 	if !errors.Is(err, ErrRunInterrupted) {
 		t.Fatalf("returned error = %v, want ErrRunInterrupted — without it the drain misses the DLQ exemption", err)
+	}
+}
+
+// wedgedStore consumes the whole write budget on FailRunResumable (a store
+// that never answers) and refuses the fallback when the ctx it is handed
+// is already dead — so a fallback sharing the park's budget is dead code
+// on exactly the timeout it exists for.
+type wedgedStore struct{ store.RunStore }
+
+func (s wedgedStore) FailRunResumable(ctx context.Context, id string, _ *store.Checkpoint, _ string, _ store.FailureCode) error {
+	<-ctx.Done()
+	return fmt.Errorf("fail resumable %s: %w", id, ctx.Err())
+}
+
+func (s wedgedStore) UpdateRunStatusCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("update status %s: %w", id, err)
+	}
+	return s.RunStore.UpdateRunStatusCoded(ctx, id, status, runErr, code)
+}
+
+// When the park's own write times out, the terminal fallback must still
+// get a chance: on its own budget it lands `failed`; on the park's spent
+// budget it is dead code and the run stays `running`.
+func TestParkResumeSandboxFailure_FallbackHasItsOwnBudget(t *testing.T) {
+	prevWrite, prevFb := resumeParkWriteBudget, resumeParkFallbackBudget
+	resumeParkWriteBudget, resumeParkFallbackBudget = 100*time.Millisecond, 500*time.Millisecond
+	t.Cleanup(func() { resumeParkWriteBudget, resumeParkFallbackBudget = prevWrite, prevFb })
+
+	fs := tmpStore(t)
+	e := &Engine{store: wedgedStore{fs}, logger: iterlog.Nop()}
+	const runID = "run-resume-sandbox-wedged"
+	cp := seedRunningResume(t, fs, runID)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrRunInterrupted)
+	err := e.parkResumeSandboxFailure(ctx, runID, cp, "entry", errors.New("kubectl exec: signal: killed"))
+	if !errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("returned error = %v, want ErrRunInterrupted regardless of the store", err)
+	}
+	r, _ := fs.LoadRun(context.Background(), runID)
+	if r.Status != store.RunStatusFailed {
+		t.Fatalf("status = %s after the park's write timed out, want failed from the fallback — on the park's spent budget the fallback is dead code and the run sits running until the redelivery adopts it", r.Status)
+	}
+}
+
+// The nominal cloud cancel: the publisher CASes the doc to `cancelled`
+// with the operator's reason BEFORE the cancel subject reaches the engine,
+// so the park's own CAS from `running` is expected to decline. That is
+// Info, not a warning — the recorded reason stands.
+func TestParkResumeSandboxFailure_PublisherFirstCancelIsInfoNotWarn(t *testing.T) {
+	fs := tmpStore(t)
+	var logs bytes.Buffer
+	e := &Engine{store: fs, logger: iterlog.New(iterlog.LevelInfo, &logs)}
+	const runID = "run-resume-sandbox-cancel-first"
+	cp := seedRunningResume(t, fs, runID)
+	if err := fs.UpdateRunStatusCoded(context.Background(), runID, store.RunStatusCancelled, "cancelled by user", store.FailureCancelled); err != nil {
+		t.Fatalf("publisher-first cancel: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = e.parkResumeSandboxFailure(ctx, runID, cp, "entry", errors.New("docker start: context canceled"))
+
+	r, _ := fs.LoadRun(context.Background(), runID)
+	if r.Status != store.RunStatusCancelled || r.Error != "cancelled by user" {
+		t.Fatalf("doc = %s/%q, want the publisher's cancel and reason kept", r.Status, r.Error)
+	}
+	if strings.Contains(logs.String(), "⚠️") {
+		t.Fatalf("a warning fired on the nominal publisher-first cancel:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "already recorded") {
+		t.Fatalf("expected an Info line saying the cancel was already recorded, got:\n%s", logs.String())
+	}
+}
+
+// A doc that left `running` for anything OTHER than cancelled is worth a
+// warning: something else wrote the terminal status first.
+func TestParkResumeSandboxFailure_DocMovedElsewhereIsWarn(t *testing.T) {
+	fs := tmpStore(t)
+	var logs bytes.Buffer
+	e := &Engine{store: fs, logger: iterlog.New(iterlog.LevelInfo, &logs)}
+	const runID = "run-resume-sandbox-cancel-moved"
+	cp := seedRunningResume(t, fs, runID)
+	if err := fs.UpdateRunStatus(context.Background(), runID, store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("peer write: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = e.parkResumeSandboxFailure(ctx, runID, cp, "entry", errors.New("docker start: context canceled"))
+
+	if !strings.Contains(logs.String(), "⚠️") || !strings.Contains(logs.String(), "finished") {
+		t.Fatalf("expected a warning naming the status the doc moved to, got:\n%s", logs.String())
 	}
 }
 
