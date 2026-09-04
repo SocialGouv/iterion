@@ -57,8 +57,20 @@ Base image: `nginxinc/nginx-unprivileged:1.27-alpine` — serves
 what the deploy manifest must carry (a cluster that enforces `runAsNonRoot`
 refuses a root image, and a non-root process cannot bind 80).
 
+`crane auth login` PERSISTS: it writes the token through Docker's config
+store, which is `$HOME/.docker/config.json` unless `DOCKER_CONFIG` says
+otherwise. Under a sandbox that file dies with the container, but a host run
+(`sandbox_skipped`) would leave a reusable `write:packages` token in the
+operator's home — outside the scratch directory this bot is allowed to
+touch. So point `DOCKER_CONFIG` at scratch BEFORE the login, and delete it
+when the push is done. Every `crane` call in this block must run with that
+export in scope.
+
 ```sh
 set -e
+export DOCKER_CONFIG="$SCRATCH/.docker"           # the login must not escape scratch
+rm -rf "$DOCKER_CONFIG"; mkdir -p "$DOCKER_CONFIG"; chmod 700 "$DOCKER_CONFIG"
+trap 'rm -rf "$DOCKER_CONFIG"' EXIT               # …even if a step below fails
 STAGE="$SCRATCH/layer"; rm -rf "$STAGE"; mkdir -p "$STAGE/usr/share/nginx/html"
 cp -R "$SCRATCH/mk/site/." "$STAGE/usr/share/nginx/html/"
 tar -C "$STAGE" -cf "$SCRATCH/site-layer.tar" usr
@@ -70,11 +82,15 @@ crane --platform linux/amd64 append \
   -f "$SCRATCH/site-layer.tar" \
   -t "${IMAGE}:${TAG}"
 crane manifest "${IMAGE}:${TAG}" >/dev/null       # the push is not done until the registry serves it
+rm -rf "$DOCKER_CONFIG"                            # the token outlives nothing
 ```
 
 - ghcr.io accepts any non-empty username with a token; `iterion` is the
   default when the workflow passes none. Other registries may require the
   real account name — that is what `REGISTRY_USER` is for.
+- If you run the block in pieces, keep the `DOCKER_CONFIG` export in scope
+  for every `crane` call and remove the directory yourself at the end: an
+  unscoped login is a credential left behind, not a convenience.
 - The tag is the docs commit: the same content always yields the same
   reference, and a redeploy of an unchanged corpus is a no-op rollout.
 - Never `docker`, never `buildx`, never a curl-installed daemon: the
