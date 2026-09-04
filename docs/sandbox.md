@@ -825,6 +825,59 @@ TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
     plaintext-credential Secret would otherwise leak until the next rollout).
     Cadence: `ITERION_SANDBOX_REAP_INTERVAL` (default 60s; `0` = boot scan only).
 
+#### Scheduling: requests and node spread
+
+A sibling pod that requests nothing scores every node the same, so the
+scheduler packs a campaign's runs onto whichever node already holds the
+sandbox image (image locality is the tie-breaker). Measured on a three-worker
+pool: five of six run pods on one 8-core node at 89 % CPU while two workers
+idled, and an oracle's 300 s application boot budget blown at 459 s. The
+driver therefore stamps a deployment-level scheduling policy on every pod it
+creates, read from the runner's environment once at startup — wired through
+the chart's `runner.sandbox.scheduling` values, which render as **literal
+PodTemplate env** (never the shared ConfigMap: a pod created from an old
+ReplicaSet must keep the policy it was rolled out with, the same reason the
+epoch is literal — bump `config.rollout.runnerEpoch` with the rollout like any
+runner change):
+
+| Env var | Effect |
+|---|---|
+| `ITERION_SANDBOX_K8S_REQUESTS_CPU` / `…_REQUESTS_MEMORY` | `resources.requests` of the workload container. Unset → not rendered. |
+| `ITERION_SANDBOX_K8S_LIMITS_CPU` / `…_LIMITS_MEMORY` | `resources.limits`. Unset → not rendered (a run must be able to burst on a build). A limit needs its request (the API server would otherwise copy the limit into the request at admission) and cannot be below it. |
+| `ITERION_SANDBOX_K8S_SPREAD` | Topology key of a **soft** `topologySpreadConstraints` (maxSkew 1, `ScheduleAnyway`) over every `iterion.io/component=sandbox-run` pod of the namespace. Unset / `none` / `off` → no constraint (the default: the scheduler's own policy, as before). `hostname` → `kubernetes.io/hostname`. Any other value must be a **prefixed** label key the nodes carry (e.g. `topology.kubernetes.io/zone`) — a bare word is refused, because the API server would accept it as a label no node has; and a soft constraint does **not** waive the label: nodes without it are excluded, a key no node carries leaves every run Pending. |
+
+Quantities are the subset operators write — a decimal (`2`, `.5`, `500m`),
+an exponent, or the SI/binary byte suffixes (`4Gi`); `m` on memory
+(milli-bytes) and a byte suffix on CPU are refused, as are zero quantities
+(a block that schedules like no block). The API server owns the rest.
+
+**Nothing is shipped by default.** Measured on a three-worker cluster with the
+image on one node only: no requests → 2/3/1, requests alone → 2/2/2, requests
+plus spread → 2/2/2 — the request is the half that moves the pods (it is what
+`LeastAllocated` scores and what a cluster autoscaler sizes the pool on); the
+spread steers what equal requests leave equal. Set at least the requests on any
+multi-node cluster. It is a policy of the deployment, not of the workflow: a
+bot cannot lower it. It is also a policy of the **attempt**: a resume
+force-deletes and re-creates the pod under the policy of the runner that
+claims it, so during a rollout the two fleets may render one run differently —
+every `sandbox_started` event records the policy the pod was rendered under.
+
+A malformed value is refused with the variable and the value named at **three**
+gates: the runner refuses to start (`runner: sandbox scheduling policy: …`,
+before it claims the rollout epoch — the driver factory skips constructor
+errors, so the driver cannot refuse for it), `iterion sandbox doctor` (basic
+and `--strict`) reports the policy in force or that error — `--strict` also
+checks that the nodes carry a custom spread key, which needs `nodes/list`, a
+cluster-scoped permission the chart's namespaced runner Role does not grant on
+purpose: in-cluster the check warns with kubectl's reason and the operator runs
+`kubectl get nodes -L <key>` from a context that can — and every `Start`
+returns it. Accept a rollout on the **admitted** pod (`kubectl get pod … -o
+jsonpath='{.spec.containers[0].resources}{.spec.topologySpreadConstraints}'`),
+then on a burst of runs: placement skew, `PodScheduled` reasons, start
+latency. A pod that never becomes Ready reports its `PodScheduled` condition
+in the error, so a request no node can hold reads differently from a slow
+image pull.
+
 Security defaults applied to every sibling pod:
 
 | Setting                          | Value                              |

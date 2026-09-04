@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,6 +193,248 @@ const (
 	RunnerPodUIDEnvVar  = "ITERION_RUNNER_POD_UID"
 )
 
+// Scheduling knobs of the sibling pod, read from the runner's environment
+// once at construction and rendered on every pod it creates. They are a
+// deployment policy, not a workflow's: the operator sizes what one run may
+// claim, and a bot cannot lower it.
+//
+// A pod that requests nothing scores every node the same, so the scheduler
+// packs a campaign's runs onto whichever node already holds the image
+// (measured: 5 of 6 run pods on one 8-core worker at 89 % CPU while two
+// workers idled, and an oracle's 300 s boot budget blown at 459 s). The
+// request is what makes LeastAllocated spread them and what a cluster
+// autoscaler sizes the pool on; the spread constraint steers what the
+// request leaves equal. Unset → no `resources` (the manifest of a driver
+// without the knobs).
+const (
+	RequestsCPUEnvVar    = "ITERION_SANDBOX_K8S_REQUESTS_CPU"
+	RequestsMemoryEnvVar = "ITERION_SANDBOX_K8S_REQUESTS_MEMORY"
+	LimitsCPUEnvVar      = "ITERION_SANDBOX_K8S_LIMITS_CPU"
+	LimitsMemoryEnvVar   = "ITERION_SANDBOX_K8S_LIMITS_MEMORY"
+	// SpreadEnvVar selects the topology key of the soft spread constraint
+	// over sandbox-run pods: unset / "none" / "off" → no constraint (the
+	// scheduler's own policy decides, as it always did), "hostname" →
+	// kubernetes.io/hostname, any other value must be a prefixed label key
+	// (e.g. topology.kubernetes.io/zone) that the nodes actually carry —
+	// nodes without the label are excluded from scheduling, soft or not.
+	SpreadEnvVar = "ITERION_SANDBOX_K8S_SPREAD"
+)
+
+// hostnameTopologyKey is the node-level spread, the one key every node
+// carries by construction.
+const hostnameTopologyKey = "kubernetes.io/hostname"
+
+// quantityRe is the subset of the Kubernetes quantity grammar the driver
+// accepts: a decimal (`2`, `.5`, `1.`, `+1`), an optional exponent (`1e3`)
+// or one of the SI / binary suffixes operators actually write for CPU and
+// memory (`500m`, `4Gi`). The micro/nano suffixes (`u`, `n`) the API also
+// admits are left out on purpose — no run is sized in nanocores. The API
+// server owns the rest of the semantics; the driver refuses what could never
+// be a sane quantity, so a typo fails once at startup instead of on every
+// pod apply.
+var quantityRe = regexp.MustCompile(`^\+?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`)
+
+// suffixScale is the multiplier of each quantity suffix, for the
+// request ≤ limit comparison.
+var suffixScale = map[string]float64{
+	"m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
+	"Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40, "Pi": 1 << 50, "Ei": 1 << 60,
+}
+
+// splitQuantity separates a quantity matched by quantityRe into its numeric
+// text and its suffix ("" when none; an exponent counts as part of the
+// number).
+func splitQuantity(v string) (number, suffix string) {
+	v = strings.TrimPrefix(v, "+")
+	// Scanned from the right: the number ends at its last digit or dot, and a
+	// valid exponent ends in a digit too (`1e3`, `1e+3`), so it stays inside
+	// the number; `E` and `Ei` end in a letter and are suffixes.
+	for i := len(v) - 1; i >= 0; i-- {
+		if c := v[i]; (c >= '0' && c <= '9') || c == '.' {
+			return v[:i+1], v[i+1:]
+		}
+	}
+	return "", v
+}
+
+// quantityValue converts a quantity matched by quantityRe to a float for the
+// zero check and for comparisons (a request against its limit). Precision is
+// irrelevant here: the API server re-parses the strings themselves. A value
+// it cannot evaluate (an exponent out of float64 range, an unknown suffix)
+// is an error, never a silent zero; a value that evaluates to zero (`0`,
+// `0.0`, `0Gi`, an underflowing `1e-400`) is the caller's to refuse.
+func quantityValue(v string) (float64, error) {
+	number, suffix := splitQuantity(v)
+	f, err := strconv.ParseFloat(number, 64)
+	if err != nil {
+		return 0, fmt.Errorf("quantity %q: %w", v, err)
+	}
+	if suffix != "" {
+		scale, ok := suffixScale[suffix]
+		if !ok {
+			return 0, fmt.Errorf("quantity %q: unknown suffix %q", v, suffix)
+		}
+		f *= scale
+	}
+	if math.IsInf(f, 0) {
+		return 0, fmt.Errorf("quantity %q: out of range", v)
+	}
+	return f, nil
+}
+
+// topologyKeyRe is a prefixed Kubernetes label key (DNS-subdomain prefix,
+// "/", then the name). A bare word is refused on purpose: every topology
+// key a cluster actually carries is prefixed (kubernetes.io/hostname,
+// topology.kubernetes.io/zone, …), and a bare word is almost always a typo
+// of the keywords — which the API server would accept as a label no node
+// has, turning the spread into a silent no-op.
+var topologyKeyRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
+
+// podScheduling is the parsed form of the scheduling env vars.
+type podScheduling struct {
+	resources PodResources
+	spreadKey string // "" = no spread constraint
+}
+
+// String renders the policy for logs, events and the doctor report.
+func (s podScheduling) String() string {
+	var parts []string
+	side := func(label string, l ResourceList) {
+		var kv []string
+		if l.CPU != "" {
+			kv = append(kv, "cpu="+l.CPU)
+		}
+		if l.Memory != "" {
+			kv = append(kv, "memory="+l.Memory)
+		}
+		if len(kv) > 0 {
+			parts = append(parts, label+" "+strings.Join(kv, " "))
+		}
+	}
+	side("requests", s.resources.Requests)
+	side("limits", s.resources.Limits)
+	if len(parts) == 0 {
+		parts = append(parts, "no resources")
+	}
+	if s.spreadKey == "" {
+		parts = append(parts, "no spread")
+	} else {
+		parts = append(parts, "spread="+s.spreadKey)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ValidateSchedulingEnv parses the scheduling policy from the process
+// environment and returns the error every sandbox Start would return. The
+// runner calls it at bootstrap so a misconfigured pod never becomes ready —
+// the driver factory skips constructor errors, so this is the only place a
+// bad value can stop a rollout instead of failing runs one by one.
+func ValidateSchedulingEnv() error {
+	_, err := schedulingFromEnv(os.Getenv)
+	return err
+}
+
+// schedulingFromEnv parses the scheduling env vars through getenv (injected
+// so tests never touch the process environment). Every set quantity must
+// match quantityRe, be non-zero and use a suffix that makes sense for its
+// resource; a limit needs its request (the API server would otherwise copy
+// the limit into the request at admission) and must not be below it; the
+// spread keywords are matched case-insensitively and anything else must be
+// a prefixed label key. Each error names the variable and the value.
+func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
+	var s podScheduling
+	quantities := []struct {
+		env    string
+		dst    *string
+		memory bool
+	}{
+		{RequestsCPUEnvVar, &s.resources.Requests.CPU, false},
+		{RequestsMemoryEnvVar, &s.resources.Requests.Memory, true},
+		{LimitsCPUEnvVar, &s.resources.Limits.CPU, false},
+		{LimitsMemoryEnvVar, &s.resources.Limits.Memory, true},
+	}
+	for _, q := range quantities {
+		v := strings.TrimSpace(getenv(q.env))
+		if v == "" {
+			continue
+		}
+		if !quantityRe.MatchString(v) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a Kubernetes quantity (want e.g. 500m, 2, 4Gi)", q.env, v)
+		}
+		// Evaluated for every set variable, not only when a limit exists: a
+		// zero (`0`, `0Gi`, an underflowing `1e-400`) renders a resources block
+		// that schedules exactly like no resources block, which is the one
+		// thing the policy exists to prevent — an operator reading the pod
+		// would believe the floor is set.
+		value, err := quantityValue(v)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", q.env, err)
+		}
+		if value == 0 {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is a zero quantity — it schedules like no request at all; unset the variable instead", q.env, v)
+		}
+		_, suffix := splitQuantity(v)
+		if q.memory && suffix == "m" {
+			// `400m` of memory is 0.4 bytes — always the CPU suffix on the
+			// wrong variable, never a size anyone meant.
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is a milli-byte quantity (m is the CPU suffix; want e.g. 512Mi, 4Gi)", q.env, v)
+		}
+		if !q.memory && len(suffix) == 2 {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q uses a byte suffix on a CPU quantity (want e.g. 500m, 2)", q.env, v)
+		}
+		// Below Kubernetes' own precision (1m of CPU, 1 byte of memory) the
+		// API server rounds up at admission: a "floor" of 5e-324 is a zero
+		// wearing a number.
+		if floor := 1.0; (!q.memory && value < 1e-3) || (q.memory && value < floor) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is below the quantity precision (1m of CPU, 1 byte of memory) — it schedules like no request at all", q.env, v)
+		}
+		*q.dst = v
+	}
+	for _, pair := range []struct {
+		name, reqEnv, limEnv, req, lim string
+	}{
+		{"cpu", RequestsCPUEnvVar, LimitsCPUEnvVar, s.resources.Requests.CPU, s.resources.Limits.CPU},
+		{"memory", RequestsMemoryEnvVar, LimitsMemoryEnvVar, s.resources.Requests.Memory, s.resources.Limits.Memory},
+	} {
+		if pair.lim == "" {
+			continue
+		}
+		if pair.req == "" {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q without %s — the API server would copy the limit into the request at admission; set the request explicitly", pair.limEnv, pair.lim, pair.reqEnv)
+		}
+		lim, err := quantityValue(pair.lim)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", pair.limEnv, err)
+		}
+		req, err := quantityValue(pair.req)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", pair.reqEnv, err)
+		}
+		if lim < req {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is below %s=%q — a %s limit cannot be lower than its request", pair.limEnv, pair.lim, pair.reqEnv, pair.req, pair.name)
+		}
+	}
+	v := strings.TrimSpace(getenv(SpreadEnvVar))
+	switch strings.ToLower(v) {
+	case "", "none", "off":
+		s.spreadKey = ""
+	case "hostname":
+		s.spreadKey = hostnameTopologyKey
+	default:
+		if !topologyKeyRe.MatchString(v) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a topology key (want hostname, none, or a prefixed label key such as topology.kubernetes.io/zone)", SpreadEnvVar, v)
+		}
+		s.spreadKey = v
+	}
+	return s, nil
+}
+
+// SpreadTopologyKey is the topology key of the spread constraint the driver
+// renders, "" when it renders none. The doctor uses it to check that the
+// cluster's nodes carry the label — a node without it is excluded from
+// scheduling, which a soft constraint does not waive.
+func (d *Driver) SpreadTopologyKey() string { return d.sched.spreadKey }
+
 // deadlineMarginSecs is added to the run's budgeted max_duration when
 // deriving spec.activeDeadlineSeconds, so a run that legitimately uses
 // its full budget (plus sandbox setup/teardown slack) is never killed by
@@ -227,10 +472,20 @@ func New() (sandbox.Driver, error) {
 	if err != nil {
 		return nil, &sandbox.ErrUnavailable{Driver: "kubernetes", Reason: err.Error()}
 	}
+	// A malformed scheduling value is kept on the driver and fails every
+	// Start, not the constructor: the factory's preference walk skips ANY
+	// constructor error and ends on the always-constructible noop driver,
+	// so returning it here would degrade cloud runs to unsandboxed with a
+	// warning event as the only trace. Failing each run with the variable
+	// named is the loud path; `iterion sandbox doctor` reads the same
+	// error through SchedulingPolicy.
+	sched, schedErr := schedulingFromEnv(os.Getenv)
 	return &Driver{
 		kubectl:   binPath,
 		namespace: namespace,
 		logger:    iterlog.New(iterlog.LevelInfo, io.Discard),
+		sched:     sched,
+		schedErr:  schedErr,
 	}, nil
 }
 
@@ -248,6 +503,12 @@ type Driver struct {
 	kubectl   string
 	namespace string
 	logger    *iterlog.Logger
+
+	// sched is the deployment's pod scheduling policy (requests, limits,
+	// spread), parsed once from the environment; schedErr is the parse
+	// failure it carries, surfaced by Start on every run.
+	sched    podScheduling
+	schedErr error
 }
 
 // WithLogger returns a copy of the driver bound to a real logger.
@@ -263,6 +524,16 @@ func (d *Driver) WithLogger(l *iterlog.Logger) *Driver {
 
 // Name returns "kubernetes".
 func (d *Driver) Name() string { return "kubernetes" }
+
+// SchedulingPolicy implements [sandbox.SchedulingPolicyReporter]: the
+// deployment's pod scheduling policy as rendered on every sibling pod, or
+// the parse error every Start will return.
+func (d *Driver) SchedulingPolicy() (string, error) {
+	if d.schedErr != nil {
+		return "", d.schedErr
+	}
+	return d.sched.String(), nil
+}
 
 // ProxyConfig binds the network proxy on all interfaces (so sibling
 // sandbox pods can reach it across the cluster network) and advertises
@@ -358,6 +629,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	if !ok {
 		return nil, fmt.Errorf("kubernetes: PreparedSpec from driver %q passed to kubernetes.Start", prepared.DriverName())
 	}
+	if d.schedErr != nil {
+		return nil, d.schedErr
+	}
+	d.logger.Info("kubernetes: pod scheduling policy: %s", d.sched)
 
 	podName := podNameFor(info.RunID)
 
@@ -430,6 +705,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		SecretFilesSecretName: secretFilesSecretName,
 		Owner:                 owner,
 		ActiveDeadlineSeconds: activeDeadline,
+		Resources:             d.sched.resources,
+		SpreadTopologyKey:     d.sched.spreadKey,
 	})
 	if err != nil {
 		if caSecretName != "" {

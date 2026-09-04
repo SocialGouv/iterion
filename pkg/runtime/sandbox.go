@@ -509,7 +509,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return nil, fmt.Errorf("runtime: sandbox: start: %w", err)
 	}
-	emitSandboxStarted(prepared, spec, driver.Name(), source, emitEvent)
+	emitSandboxStarted(prepared, spec, driver.Name(), source, schedulingSummary(driver), emitEvent)
 
 	active := &activeSandbox{
 		run:             run,

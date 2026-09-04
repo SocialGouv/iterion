@@ -150,6 +150,7 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 	} else {
 		report.add("driver available", CheckPass, "selected driver: "+driverName, "")
 	}
+	runSchedulingPolicyStrictCheck(report, driver)
 
 	// 3. Spec internal validity (pure, driver-agnostic).
 	if vErr := spec.Validate(); vErr != nil {
@@ -165,7 +166,7 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 	case "docker":
 		runDockerStrictChecks(ctx, report, spec)
 	case "kubernetes":
-		runK8sStrictChecks(ctx, report, spec, driverName)
+		runK8sStrictChecks(ctx, report, spec, driverName, driver)
 	}
 
 	// 6. Network allowlist syntax (driver-agnostic).
@@ -298,7 +299,26 @@ func runDockerStrictChecks(ctx context.Context, report *SandboxStrictReport, spe
 	}
 }
 
-func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *sandbox.Spec, driverName string) {
+// runSchedulingPolicyStrictCheck reports the scheduling policy a driver
+// stamps on its sandboxes. The driver parses it from the environment at
+// construction and, when it is malformed, fails every run at sandbox start
+// — never the constructor, which the factory would skip in silence. The
+// doctor is where that error must show before the first run pays for it.
+func runSchedulingPolicyStrictCheck(report *SandboxStrictReport, driver sandbox.Driver) {
+	r, ok := driver.(sandbox.SchedulingPolicyReporter)
+	if !ok {
+		return
+	}
+	policy, err := r.SchedulingPolicy()
+	if err != nil {
+		report.add("sandbox scheduling policy", CheckFail, err.Error(),
+			"fix the ITERION_SANDBOX_K8S_* value in the runner environment (chart runner.sandbox.scheduling — not config.extraEnv: its ConfigMap value loses to the literal PodTemplate env) — every run would fail at sandbox start")
+		return
+	}
+	report.add("sandbox scheduling policy", CheckPass, policy, "")
+}
+
+func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *sandbox.Spec, driverName string, driver sandbox.Driver) {
 	if vErr := kubernetes.ValidateSpec(*spec); vErr != nil {
 		report.add("k8s spec compatible", CheckFail, vErr.Error(),
 			"for cloud: pin sandbox.image (no build:), set host_state: none, set a numeric sandbox.user")
@@ -318,12 +338,64 @@ func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *
 			remediation = "select a context (`kubectl config use-context <name>`) or verify the in-cluster service account + API reachability"
 		}
 		report.add("k8s context", status, err.Error(), remediation)
-	} else {
-		detail := "context: " + kctx
-		if ns != "" {
-			detail += " (namespace: " + ns + ")"
+		return
+	}
+	detail := "context: " + kctx
+	if ns != "" {
+		detail += " (namespace: " + ns + ")"
+	}
+	report.add("k8s context", CheckPass, detail, "")
+
+	// A spread over a topology key the nodes do not carry excludes those
+	// nodes from scheduling — a soft constraint does not waive the label —
+	// and a key no node carries leaves every run Pending. Only a reachable
+	// cluster can answer, hence after the ping.
+	if kd, ok := driver.(*kubernetes.Driver); ok {
+		runSpreadCoverageStrictCheck(ctx, report, kd.SpreadTopologyKey())
+	}
+}
+
+// runSpreadCoverageStrictCheck compares the nodes carrying the spread key to
+// the cluster's nodes. kubernetes.io/hostname needs no check: every node
+// carries it by construction. Listing nodes is cluster-scoped and the
+// chart's runner Role is namespace-scoped on purpose, so in-cluster the
+// check cannot answer: it warns with kubectl's reason and hands the
+// operator the command to run from a context that can.
+func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictReport, key string) {
+	if key == "" || key == "kubernetes.io/hostname" {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, doctorProbeTimeout())
+	defer cancel()
+	labelled, total, err := kubernetes.NodeLabelCoverage(probeCtx, key)
+	switch {
+	case err != nil:
+		// The cause is asserted only when the cluster (or the probe) said it:
+		// a Forbidden is the chart's namespaced Role — the cluster's own word,
+		// checked first even when the probe also ran out of time — a deadline
+		// is the probe budget; anything else stays what kubectl said.
+		var cause string
+		switch {
+		case strings.Contains(err.Error(), "Forbidden"):
+			cause = "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
+		case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
+			cause = "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
+		default:
+			cause = "could not list nodes; "
 		}
-		report.add("k8s context", CheckPass, detail, "")
+		report.add("k8s spread key coverage", CheckWarn, err.Error(),
+			cause+"from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
+	case total == 0:
+		report.add("k8s spread key coverage", CheckWarn, "no node visible",
+			"the list answered with no node — check the context points at the right cluster, then from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
+	case labelled == 0:
+		report.add("k8s spread key coverage", CheckFail, fmt.Sprintf("no node carries %s (%d nodes)", key, total),
+			"every run pod would stay Pending — set ITERION_SANDBOX_K8S_SPREAD to hostname or to a label the nodes carry")
+	case labelled < total:
+		report.add("k8s spread key coverage", CheckWarn, fmt.Sprintf("%d of %d nodes carry %s", labelled, total, key),
+			"nodes without the label are excluded from run pod scheduling; label them or use hostname")
+	default:
+		report.add("k8s spread key coverage", CheckPass, fmt.Sprintf("%d of %d nodes carry %s", labelled, total, key), "")
 	}
 }
 
