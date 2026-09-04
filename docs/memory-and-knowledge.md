@@ -43,13 +43,22 @@ Two levels, both enforced at write:
   enforced counter via the cloud Mongo memory store's `SetTenantQuota`
   capability
   ([pkg/server/admin_orgs_routes.go:tenantMemoryQuotaSetter](../pkg/server/admin_orgs_routes.go)),
-  so the field on `Team` alone is not enough.
+  so the field on `Team` alone is not enough. The machine-wide default is
+  `ITERION_MEMORY_QUOTA_ORG_TOTAL`.
 - **Per-visibility sub-caps**: the per-space defaults from the table
-  above. Override via env at process start
-  (`ITERION_MEMORY_QUOTA_ORG_TOTAL`, …).
+  above. Override via env at process start with
+  `ITERION_MEMORY_QUOTA_<VISIBILITY>` — the visibility upper-cased, i.e.
+  `ITERION_MEMORY_QUOTA_PRIVATE`, `_BOT`, `_PROJECT`, `_CROSS_PROJECT`,
+  `_USER`, `_ORG`, `_GLOBAL`.
+
+Every value is a byte count; an unset, unparseable or negative one falls
+back to the compiled default. A per-space `quota_bytes` recorded on the
+space itself still wins over the env ceiling when it is greater than zero
+([pkg/memory/quota_fs.go:effectiveQuota](../pkg/memory/quota_fs.go)).
 
 `DefaultMaxDocumentSize` caps any one markdown document at 2 MiB
-([pkg/knowledge/quota.go](../pkg/knowledge/quota.go)).
+([pkg/knowledge/quota.go](../pkg/knowledge/quota.go)), overridable with
+`ITERION_MEMORY_MAX_DOC`.
 
 `GET /api/orgs/{id}/usage` surfaces the org's `memory_used_bytes`
 against `effective_memory_quota_bytes` for the org member; the per-space
