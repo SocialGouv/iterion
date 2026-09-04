@@ -492,6 +492,12 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 // setupFailureStatus classifies a pre-execLoop failure, mirroring what
 // handleContextDoneWithCheckpoint decides inside a node.
 //
+//   - a sandbox driver's bounded setup phase timing out
+//     (sandbox.ErrPhaseTimeout) — a transient infrastructure stall (a
+//     stuck kubectl-exec pipe, a rescheduled apiserver): the CHILD ctx
+//     expired while the run ctx stayed live. failed_resumable, so the
+//     runner's NAK redelivers the run to a healthy pod, which routinely
+//     clears the stall;
 //   - the run ctx cancelled with ErrRunInterrupted (runner drain, lost
 //     heartbeat) — infrastructure took the run away: failed_resumable, so
 //     the ordinary retry puts it on a healthy pod;
@@ -503,6 +509,15 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 // cancelling, so what surfaces is whatever the interrupted step returned
 // (a killed `kubectl exec`, a half-written worktree), never the cause.
 func setupFailureStatus(ctx context.Context, phase string, cause error) (store.RunStatus, string, store.FailureCode) {
+	// Checked BEFORE the ctx: a phase timeout fires on a child ctx and
+	// leaves the run ctx live, so the "ctx.Err() == nil ⇒ failed" arm
+	// below would hard-fail — and the queue would drop — a run a peer pod
+	// resumes in seconds.
+	if errors.Is(cause, sandbox.ErrPhaseTimeout) {
+		return store.RunStatusFailedResumable,
+			fmt.Sprintf("%s: sandbox setup phase timed out (resumable — a fresh pod on redelivery routinely clears the stall): %v", phase, cause),
+			store.FailureSandboxSetupTimeout
+	}
 	if ctx == nil || ctx.Err() == nil {
 		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
 	}
@@ -530,6 +545,12 @@ func setupFailureCode(cause error) store.FailureCode {
 // is redelivered to a healthy pod) and ACKs on anything else. Without it
 // the status written above would say resumable while the queue had
 // already dropped the run — the two halves have to agree.
+//
+// A sandbox phase timeout is NOT dressed up as an interruption: it keeps
+// its own sentinel (sandbox.ErrPhaseTimeout, wrapped through by the
+// driver), and the runner's ack policy classifies that shape itself — a
+// NAK for redelivery, with the DLQ park still applying on the last
+// permitted delivery, which an interruption is exempt from.
 func (e *Engine) setupErr(ctx context.Context, err error) error {
 	if ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrRunInterrupted) {
 		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)

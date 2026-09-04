@@ -3,10 +3,12 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -44,6 +46,50 @@ func TestSetupFailureStatus(t *testing.T) {
 				t.Errorf("the message must keep the phase and the cause; got %q", msg)
 			}
 		})
+	}
+}
+
+// A sandbox phase timeout is a transient infrastructure stall (a stuck
+// kubectl-exec pipe, a rescheduled apiserver): the child ctx expired
+// while the run ctx stayed live. It must classify to failed_resumable +
+// SANDBOX_SETUP_TIMEOUT so the redelivery resumes on a healthy pod —
+// not the default RunStatusFailed the live-ctx arm produces, which the
+// queue then drops as a stale delivery.
+func TestSetupFailureStatus_PhaseTimeoutIsResumable(t *testing.T) {
+	// Wrap like runWithPhaseTimeout does: sandbox.ErrPhaseTimeout +
+	// context.DeadlineExceeded + inner cause via errors.Join.
+	inner := errors.New("kubectl-exec pipe stalled")
+	cause := fmt.Errorf("kubernetes: workspace copy phase timed out: %w",
+		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, inner))
+
+	got, msg, code := setupFailureStatus(context.Background(), "sandbox start", cause)
+	if got != store.RunStatusFailedResumable {
+		t.Fatalf("phase-timeout status = %q, want failed_resumable — the runner would ACK the delivery and hard-fail a run a peer pod would resume in seconds (E6)", got)
+	}
+	if code != store.FailureSandboxSetupTimeout {
+		t.Fatalf("phase-timeout code = %q, want SANDBOX_SETUP_TIMEOUT — the retry lane needs the taxonomy entry", code)
+	}
+	if !strings.Contains(msg, "sandbox setup phase timed out") {
+		t.Fatalf("message must say what happened, got %q", msg)
+	}
+}
+
+// setupErr hands the phase timeout to the runner under its OWN sentinel:
+// the runner's ack policy classifies sandbox.ErrPhaseTimeout itself. It
+// must not be dressed up as ErrRunInterrupted — an interruption is exempt
+// from the DLQ park, so a stall repeating through every permitted
+// delivery would nak into nothing instead of parking and being announced.
+func TestSetupErr_PhaseTimeoutKeepsItsOwnSentinel(t *testing.T) {
+	e := &Engine{}
+	inner := errors.New("stalled")
+	phaseTimeout := fmt.Errorf("kubernetes: workspace copy phase timed out: %w",
+		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, inner))
+	err := e.setupErr(context.Background(), phaseTimeout)
+	if !errors.Is(err, sandbox.ErrPhaseTimeout) {
+		t.Fatalf("phase-timeout identity lost after setupErr; got %v", err)
+	}
+	if errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("phase-timeout was dressed up as an interruption: %v — the runner would exempt it from the DLQ park", err)
 	}
 }
 

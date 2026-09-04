@@ -452,6 +452,24 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// A sandbox setup phase that hit its own bound (workspace copy / git
+	// fixup, sandbox.ErrPhaseTimeout): the engine wrote failed_resumable
+	// + SANDBOX_SETUP_TIMEOUT. Nak so a fresh pod retries — the stall is
+	// a transient infrastructure condition a healthy pod routinely
+	// clears. Deliberately NOT an interruption: the DLQ park on the last
+	// permitted delivery still applies, so a stall that repeats through
+	// every delivery ends parked and announced instead of naking into
+	// nothing.
+	if errors.Is(execErr, sandbox.ErrPhaseTimeout) {
+		return execOutcome{
+			finalStatus: "sandbox_setup_timeout",
+			op:          "nak-sandbox-setup-timeout",
+			action:      actionNak,
+			level:       logWarn,
+			logFmt:      "runner: run %s: sandbox setup phase timed out (resumable) — naking for a fresh pod (%v)",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).
 	if errors.Is(execErr, runtime.ErrRunCancelled) {
 		return execOutcome{

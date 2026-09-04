@@ -20,6 +20,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -429,6 +430,13 @@ func TestClassifyExecResult(t *testing.T) {
 		// the first attempt's. errors.Is short-circuits, so this is one
 		// reordering away from silently regressing.
 		{"budget beats interrupted", errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
+		// A sandbox setup phase that hit its own bound: the engine wrote
+		// failed_resumable + SANDBOX_SETUP_TIMEOUT; Nak so a fresh pod
+		// retries. Its own status label, not "interrupted": the DLQ park
+		// on the last delivery must still apply to it.
+		{"sandbox phase timeout naks for a fresh pod", fmt.Errorf("runtime: sandbox: %w",
+			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed"))),
+			"sandbox_setup_timeout", actionNak},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -466,6 +474,7 @@ func TestOutcomeSideEffectsFire(t *testing.T) {
 		{"wrapped generic failure naks — no fire", fmt.Errorf("engine: %w", errors.New("boom")), false},
 		{"interrupted naks — no fire", runtime.ErrRunInterrupted, false},
 		{"wrapped interrupted naks — no fire", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), false},
+		{"sandbox phase timeout naks — no fire", fmt.Errorf("runtime: sandbox: %w", sandbox.ErrPhaseTimeout), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
