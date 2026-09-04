@@ -1917,21 +1917,41 @@ if u:
 
 ## publish_gate — DETERMINISTIC pre-flight for the publish tail.
 ## publish is an LLM agent; entering it with no opt-in, no base URL,
-## no image repository or no credential burns a turn to rediscover in
-## shell what a 10-line probe already knows. Read-only, idempotent.
+## no image repository, no credential or no platform playbook burns a
+## turn to rediscover in shell what a 20-line probe already knows —
+## and the playbook case is worse than a wasted turn, since the agent
+## holds a registry token and a deploy credential while it improvises.
+## Read-only, idempotent.
 tool publish_gate:
   ## Secret paths come from the TEMPLATE ({{secrets.X.path}}), which the
   ## engine resolves for sandboxed AND host runs alike — a hardcoded
   ## mount path only exists under the sandbox bind-mount and silently
   ## disabled publishing everywhere else.
-  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} IMAGE={{vars.publish_image}} CRED={{secrets.deploy_credential.path}} REG={{secrets.registry_token.path}} python3 -c "
+  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} IMAGE={{vars.publish_image}} CRED={{secrets.deploy_credential.path}} REG={{secrets.registry_token.path}} WS={{vars.workspace_dir}} python3 -c "
 import os, json
 pub = (os.environ.get('PUB') or '').strip().lower() in ('1', 'true', 'yes')
 base = (os.environ.get('BASE') or '').strip()
 image = (os.environ.get('IMAGE') or '').strip()
 paths = {'deploy_credential': os.environ.get('CRED') or '', 'registry_token': os.environ.get('REG') or ''}
 missing = [n for n, p in paths.items() if not (p and os.path.isfile(p))]
-ok = pub and bool(base) and bool(image) and not missing
+## The PLATFORM playbook is a soft reference on both ends -- the compiler
+## only warns on a malformed skill NAME, and the runtime skips one it
+## cannot resolve with a log line -- so an unattached deploy-target
+## reaches the publish agent as nothing louder than a start-up warning,
+## and the agent improvises a deployment holding a registry-write token
+## and a cluster credential. Probe its ABSENCE here, which is the only
+## half that is conclusive: presence is not provenance (a file checked
+## into the docs repo shadows a rejected contribution), so this clears a
+## necessary condition and certifies nothing. publish_system carries the
+## STOP clause that covers the rest.
+## Both mirror shapes: <name>/SKILL.md (skill library) and the flat
+## <name>.md (plugin contribution). Both candidate roots too: tool nodes
+## run in the run workDir, which is also where the engine mirrors, and
+## vars.workspace_dir names the same tree -- either answering is enough.
+roots = [r for r in (os.getcwd(), (os.environ.get('WS') or '').strip()) if r]
+shapes = [('deploy-target', 'SKILL.md'), ('deploy-target.md',)]
+skill = any(os.path.isfile(os.path.join(r, '.claude', 'skills', *s)) for r in roots for s in shapes)
+ok = pub and bool(base) and bool(image) and not missing and skill
 if not pub:
     reason = 'publish disabled (vars.publish=false)'
 elif not base:
@@ -1940,6 +1960,8 @@ elif not image:
     reason = 'publish_image is empty -- name the image repository the site is pushed to, there is no default'
 elif missing:
     reason = 'missing credentials: ' + ', '.join(missing)
+elif not skill:
+    reason = 'no deploy-target skill attached -- the platform playbook must reach the workspace as a plugin or skill-library skill named deploy-target; without it the publish agent has no platform to deploy to'
 else:
     reason = 'ready'
 print(json.dumps({'do_publish': ok, 'reason': reason}))

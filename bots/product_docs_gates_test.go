@@ -1587,10 +1587,11 @@ func TestProductDocsSourceStampRecordsFullSHA(t *testing.T) {
 
 // TestProductDocsPublishGate pins the publish tail's deterministic
 // pre-flight, executing the real node body: the tail opens only on the
-// explicit opt-in + a serve base URL + a named bucket + all three S3
-// secrets present at their TEMPLATE-resolved paths (host and sandbox
+// explicit opt-in + a base URL + a named image repository + both
+// credentials present at their TEMPLATE-resolved paths (host and sandbox
 // runs resolve differently; a hardcoded mount path silently disabled
-// publishing on host runs).
+// publishing on host runs) + the operator's deploy-target playbook
+// actually mirrored into the workspace.
 func TestProductDocsPublishGate(t *testing.T) {
 	requireGitPython(t)
 	command := toolCommand(t, "product-docs/main.bot", "publish_gate")
@@ -1604,12 +1605,41 @@ func TestProductDocsPublishGate(t *testing.T) {
 		}
 		paths[n] = p
 	}
-	run := func(t *testing.T, publish, base, image, missing string) publishGateOut {
+	// A workspace with the deploy-target skill in one of the two shapes the
+	// engine mirrors: <name>/SKILL.md (skill library, pkg/runtime/library_skills.go)
+	// and the flat <name>.md (plugin contribution, pkg/runtime/contributions.go).
+	// `rel` empty seeds no skill at all.
+	workspace := func(t *testing.T, rel string) string {
+		t.Helper()
+		ws := t.TempDir()
+		if rel == "" {
+			return ws
+		}
+		p := filepath.Join(ws, ".claude", "skills", filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("seed deploy-target skill: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("# deploy-target\n"), 0o644); err != nil {
+			t.Fatalf("seed deploy-target skill: %v", err)
+		}
+		return ws
+	}
+	wsReady := workspace(t, "deploy-target/SKILL.md")
+	wsFlat := workspace(t, "deploy-target.md")
+	wsBare := workspace(t, "")
+
+	// The gate probes the RUN's cwd as well as vars.workspace_dir (a tool node
+	// executes in the run workDir, which is also where the engine mirrors). Pin
+	// the process cwd to an empty directory so only the workspace_dir half is
+	// under test and the repo's own tree cannot answer for it.
+	emptyCwd := t.TempDir()
+	run := func(t *testing.T, publish, base, image, missing, ws string) publishGateOut {
 		t.Helper()
 		refs := map[string]string{
 			"vars.publish":                   publish,
 			"vars.publish_base_url":          base,
 			"vars.publish_image":             image,
+			"vars.workspace_dir":             ws,
 			"secrets.deploy_credential.path": paths["deploy_credential"],
 			"secrets.registry_token.path":    paths["registry_token"],
 		}
@@ -1617,28 +1647,38 @@ func TestProductDocsPublishGate(t *testing.T) {
 			refs["secrets."+missing+".path"] = filepath.Join(secretsDir, "absent")
 		}
 		var got publishGateOut
-		runJSON(t, resolveCommand(t, command, refs), &got)
+		runJSON(t, "cd "+shQuote(emptyCwd)+" && "+resolveCommand(t, command, refs), &got)
 		return got
 	}
 
-	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", ""); !got.DoPublish || got.Reason != "ready" {
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", "", wsReady); !got.DoPublish || got.Reason != "ready" {
 		t.Fatalf("all preconditions met yet the gate refused: %+v", got)
 	}
-	if got := run(t, "false", "https://docs.example", "registry.example/org/prody-demo", ""); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", "", wsFlat); !got.DoPublish || got.Reason != "ready" {
+		t.Fatalf("a plugin-contributed deploy-target.md is the shape app-dev and review-env document — the gate must accept it: %+v", got)
+	}
+	if got := run(t, "false", "https://docs.example", "registry.example/org/prody-demo", "", wsReady); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
 		t.Fatalf("publish=false must route the tail out with its reason: %+v", got)
 	}
-	if got := run(t, "true", "", "registry.example/org/prody-demo", ""); got.DoPublish || !strings.Contains(got.Reason, "publish_base_url") {
+	if got := run(t, "true", "", "registry.example/org/prody-demo", "", wsReady); got.DoPublish || !strings.Contains(got.Reason, "publish_base_url") {
 		t.Fatalf("an empty base URL must refuse the tail: %+v", got)
 	}
-	if got := run(t, "true", "https://docs.example", "", ""); got.DoPublish || !strings.Contains(got.Reason, "image") {
+	if got := run(t, "true", "https://docs.example", "", "", wsReady); got.DoPublish || !strings.Contains(got.Reason, "image") {
 		t.Fatalf("an empty image repository must refuse the tail (no default names a deployment): %+v", got)
 	}
 	// The gate is platform-agnostic: it names the CREDENTIAL that is missing,
 	// never a platform, and refuses with either one absent.
 	for _, missing := range []string{"deploy_credential", "registry_token"} {
-		if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", missing); got.DoPublish || !strings.Contains(got.Reason, missing) {
+		if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", missing, wsReady); got.DoPublish || !strings.Contains(got.Reason, missing) {
 			t.Fatalf("a missing %s must be named in the refusal: %+v", missing, got)
 		}
+	}
+	// `skills:` is a SOFT reference — the runtime skips one it cannot resolve
+	// with a log line and never fails the run. Without this probe the publish
+	// agent enters with a registry-write token, a cluster credential and no
+	// platform playbook, and improvises a deployment for 60 steps.
+	if got := run(t, "true", "https://docs.example", "registry.example/org/prody-demo", "", wsBare); got.DoPublish || !strings.Contains(got.Reason, "deploy-target") {
+		t.Fatalf("an unattached deploy-target playbook must refuse the tail, naming it: %+v", got)
 	}
 }
 
