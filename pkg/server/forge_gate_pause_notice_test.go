@@ -205,13 +205,25 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		if strings.Contains(body, "a new push restarts it sooner") {
 			t.Fatal("a fixer has no \"restarts sooner\" mode — a push mid-park is the collision revi-billy-loop.md forbids")
 		}
+		// #650 C4: the fixer wording must be behaviour-neutral on HOW the
+		// resume re-anchors — a sibling branch is landing "re-anchor on the
+		// banked branch when it fast-forwards", so the notice must not
+		// promise "re-clones the branch head".
+		if strings.Contains(body, "re-clones the branch head") {
+			t.Fatalf("fixer notice must use the behaviour-neutral \"re-reads the branch from the forge\" wording; got:\n%s", body)
+		}
+		if !strings.Contains(body, "re-reads the branch from the forge") {
+			t.Fatalf("fixer notice must state the re-read behaviour so the operator knows why not to push; got:\n%s", body)
+		}
 	})
 
-	// An unknown bot (not in the catalog, or one that neither produces nor
-	// consumes reviews) stays silent even with a gate_context — a bot that
-	// gates without either shape has no established etiquette to inherit,
-	// so posting the reviewer text there would fabricate a promise.
-	t.Run("unknown role stays silent even with gate_context", func(t *testing.T) {
+	// #650 C1: an unknown role (bot not in catalog, or one that gates but
+	// exposes no reviewer/fixer shape) must NOT stay silent — the run
+	// already holds a required check via gate_context, and 32 of 35 catalog
+	// bots classify as unknown; silence there would strand a developer on
+	// a check with no signal (Vetty was the probed example). Post a
+	// role-NEUTRAL notice (no push-side claim either way).
+	t.Run("unknown role posts a neutral notice with no push-side claim", func(t *testing.T) {
 		s, c := newWorld(t)
 		at := time.Now().UTC().Add(time.Hour)
 		id, err := store.GenerateRunID()
@@ -230,8 +242,74 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 
 		s.noticeGatePausedForRetry(context.Background(), run)
 
-		if len(c.bodies) != 0 {
-			t.Fatalf("unknown role must not post the reviewer or fixer notice, got %v", c.bodies)
+		if len(c.bodies) != 1 {
+			t.Fatalf("unknown role must post the neutral notice, got %d", len(c.bodies))
+		}
+		body := c.bodies[0]
+		if !strings.Contains(body, "Run paused") {
+			t.Fatalf("unknown role must open with \"Run paused\" (neither Review nor Fix):\n%s", body)
+		}
+		if strings.Contains(body, "The verdict lands here") {
+			t.Fatal("unknown role must not promise a verdict")
+		}
+		if strings.Contains(body, "a new push restarts it sooner") || strings.Contains(body, "Don't push") {
+			t.Fatal("unknown role must not claim anything about pushes either way")
+		}
+	})
+
+	// #650 C2: the launcher accepts both underscored and dashed spellings
+	// (review-pr / review_pr — botregistry.NormalizeName folds them), but
+	// effectiveFindByName was exact-match only, so a run whose BotID
+	// persisted as "review_pr" classified as unknown. The pause notice's
+	// role derivation must survive that.
+	t.Run("normalised bot id spelling still resolves as reviewer", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(time.Hour)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "review-pr", map[string]any{
+			"pr_url": prURL, forgePublishVarToken: "run-token", "gate_context": "revi/review",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Store the launcher-normalised spelling — the catalog has "review-pr".
+		run.BotID = "review_pr"
+		run.Status = store.RunStatusFailedResumable
+		run.RetryState = &store.RunRetryState{RetryAfter: &at}
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 1 || !strings.Contains(c.bodies[0], "Review paused") {
+			t.Fatalf("normalised spelling must resolve to the reviewer notice, got %v", c.bodies)
+		}
+	})
+
+	// Same for an empty BotID (inline .bot launched on a pr_url — no
+	// catalog entry to derive a role from).
+	t.Run("empty BotID posts the neutral notice", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(time.Hour)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "inline-bot", map[string]any{
+			"pr_url": prURL, forgePublishVarToken: "run-token", "gate_context": "custom/gate",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// run.BotID intentionally empty.
+		run.Status = store.RunStatusFailedResumable
+		run.RetryState = &store.RunRetryState{RetryAfter: &at}
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if len(c.bodies) != 1 || !strings.Contains(c.bodies[0], "Run paused") {
+			t.Fatalf("empty BotID must post the neutral notice, got %v", c.bodies)
 		}
 	})
 

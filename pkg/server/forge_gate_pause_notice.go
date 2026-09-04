@@ -64,17 +64,17 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	}
 	// Derive the run's ROLE from its bot manifest, never from a bot id —
 	// the engine stays bot-agnostic (CLAUDE.md), same discipline as the
-	// hand-off machinery next door (webhooks_handoff.go). Two roles need
-	// distinct notices: a REVIEWER's park promises a verdict here (and a
-	// push restarts it sooner — safe, it re-review). A FIXER's does neither:
-	// its resume re-clones the branch head, so a push mid-park recreates
-	// exactly the collision docs/revi-billy-loop.md forbids. An unknown
-	// role stays silent — a bot that gates but produces neither shape has
-	// no established etiquette to inherit.
+	// hand-off machinery next door (webhooks_handoff.go). The role selects
+	// the notice text; unknown falls back to a role-NEUTRAL notice (the
+	// run already holds a required check via gate_context — silence would
+	// leave the developer with a stuck check and no signal, and the
+	// catalog carries several bots that gate without produces:/consumes:
+	// review — Vetty for one). Reviewer: promises a verdict + welcomes a
+	// push (it re-reviews). Fixer: warns against a push (its resume
+	// re-reads the branch, so a push in between collides with what it
+	// pushes back). Unknown: says the pause exists and when it resumes,
+	// makes no push-side claim either way.
 	role := s.pauseNoticeRoleForBot(run.BotID)
-	if role == pauseNoticeRoleUnknown {
-		return
-	}
 	debugf := func(format string, args ...any) {
 		if s.logger != nil {
 			s.logger.Debug("forge gate: pause notice for run %s on %s not posted: "+format,
@@ -182,7 +182,17 @@ func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
 		return pauseNoticeRoleUnknown
 	}
 	entry, ok, err := s.effectiveFindByName(botID)
-	if err != nil || !ok {
+	if err != nil {
+		// #650 C3: a catalog read error silently classified as unknown made
+		// an infrastructure failure indistinguishable from a manifest that
+		// declares no role. Warn on the same signal the sibling
+		// handoffConsumersFor already Warns on.
+		if s.logger != nil {
+			s.logger.Warn("forge gate: pause-notice role for %s falls back to neutral, cannot read the bot catalog: %v", botID, err)
+		}
+		return pauseNoticeRoleUnknown
+	}
+	if !ok {
 		return pauseNoticeRoleUnknown
 	}
 	for _, c := range entry.Consumes {
@@ -200,10 +210,11 @@ func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
 
 // gatePauseNoticeBody renders the comment. Written for the developer whose
 // PR it lands on, not for an operator: what happened, when it resumes, and
-// whether waiting suffices. The role selects the etiquette — a reviewer
-// promises a verdict and welcomes a push (it re-reviews); a fixer's resume
-// re-clones the branch head, so a push mid-park recreates the mid-run
-// collision docs/revi-billy-loop.md forbids.
+// whether waiting suffices. The role selects the push-side guidance —
+// reviewer welcomes a push (it re-reviews), fixer warns against one (its
+// resume re-reads the branch and a push in between collides with what it
+// pushes back), unknown says nothing about pushes (a bot that gates but
+// exposes no reviewer/fixer shape has no established etiquette to inherit).
 func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) string {
 	at := run.RetryState.RetryAfter.UTC()
 	var b strings.Builder
@@ -211,8 +222,10 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 	switch role {
 	case pauseNoticeRoleFixer:
 		b.WriteString("\n⏸️ **Fix run paused — the LLM provider's quota is exhausted.** Nothing is wrong with this pull request.\n\n")
-	default: // reviewer (and any future gating role) reads as a review pause
+	case pauseNoticeRoleReviewer:
 		b.WriteString("\n⏸️ **Review paused — the LLM provider's quota is exhausted.** Nothing is wrong with this pull request.\n\n")
+	default:
+		b.WriteString("\n⏸️ **Run paused — the LLM provider's quota is exhausted.** Nothing is wrong with this pull request.\n\n")
 	}
 	fmt.Fprintf(&b, "iterion parked the run and will resume it **automatically at %s**%s",
 		at.Format("15:04 UTC on 2006-01-02"), humanizeIn(at, now))
@@ -221,12 +234,18 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 	}
 	switch role {
 	case pauseNoticeRoleFixer:
-		// The resume re-clones the branch head: a push meanwhile recreates
-		// the mid-run collision revi-billy-loop.md forbids, and Billy has
-		// no "sooner" mode — he only starts back on his own resume tick.
-		b.WriteString(". **Don't push to this branch meanwhile** — the run re-clones the branch head when it resumes.\n")
-	default:
+		// The resumed run re-reads the branch from the forge, so a push in
+		// between can collide with what it pushes back. Behaviour-neutral
+		// on how the run re-anchors (a sibling branch is making the resume
+		// re-anchor on the banked branch when it fast-forwards, #652).
+		b.WriteString(". **Don't push to this branch meanwhile** — the resumed run re-reads the branch from the forge, so a push in between can collide with what it pushes back.\n")
+	case pauseNoticeRoleReviewer:
 		b.WriteString(". The verdict lands here when it does; a new push restarts it sooner.\n")
+	default:
+		// Unknown role: it gates something (gate_context is set) but its
+		// manifest carries no reviewer/fixer shape. Say the pause exists
+		// and when it resumes; make no push-side claim either way.
+		b.WriteString(".\n")
 	}
 	if cause := gatePauseCause(run); cause != "" {
 		fmt.Fprintf(&b, "\n> %s\n", cause)
