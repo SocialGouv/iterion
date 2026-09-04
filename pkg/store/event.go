@@ -140,6 +140,24 @@ const (
 	//     resume publish) or "redelivery" (a checkpoint with no resume spec)
 	//   - repo_url / repo_sha: what the clone was re-anchored on
 	EventRunWorkspaceReset EventType = "run_workspace_reset"
+	// EventRunWorkspaceBankRestored marks a re-executing repo-backed run being
+	// put back on the commits its earlier attempt banked (the storage branch
+	// on the run doc) or parked (a run_bank_attempt ref), instead of starting
+	// on a bare clone of the target branch. Emitted right after the
+	// run_workspace_reset marker of the same claim; absent when the run had
+	// nothing banked. The restore checks out the chain's own base first and
+	// fast-forwards to its head, so the clone's reflog still names that base
+	// as the run's starting point. Data:
+	//   - restored: whether the tree now sits on the chain (false = refused,
+	//     fresh clone kept)
+	//   - source: "bank" (FinalBranch/FinalCommit) or "parked" (attempt ref)
+	//   - ref / head: the branch restored and the sha it was recorded at
+	//   - base / from / base_moved: the chain's base, the fresh clone's HEAD,
+	//     and whether the target branch moved under the run meanwhile
+	//   - reason / error: why a restore was refused (ref_moved when the
+	//     branch advanced past the recorded head, unrelated_history,
+	//     fetch_failed, …) — the failure shape, with restored=false
+	EventRunWorkspaceBankRestored EventType = "run_workspace_bank_restored"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
 	// the storage branch — because that attempt banked a strictly richer

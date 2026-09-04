@@ -151,7 +151,12 @@ func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage
 // github_token from the sealed bundle). The default branch is cloned first so
 // the review base (typically `main`) is present, then the run's ref is fetched
 // and checked out so merge-base diffs resolve.
-func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage) (string, error) {
+//
+// A re-execution then restores what the run's earlier attempt banked or
+// parked on the forge (restoreBankedChain). The second return value is the
+// baseline the run's work is measured against: the restored chain's own base
+// when a chain was restored, "" when the clone's HEAD is the baseline.
+func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage) (string, string, error) {
 	// RepoURL/RepoSHA arrive from a webhook payload (the generic webhook
 	// body is fully attacker-controlled) and flow into git below
 	// unmodified. Validate the transport + ref shape BEFORE touching the
@@ -161,7 +166,7 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// mirroring the bot-install path.
 	pinnedIP, err := validateRepoTarget(ctx, msg.RepoURL, msg.RepoSHA)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	// SSRF connect-time hardening for the two TOCTOU vectors validateRepoTarget
 	// alone can't close (it resolves but git re-resolves at connect time):
@@ -200,14 +205,14 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	if hostErr == nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.RepoURL)), "https://") {
 		endpoint, stopProxy, perr := startCloneGuardProxy(host, !cloneAllowPrivate())
 		if perr != nil {
-			return "", fmt.Errorf("runner: %w", perr)
+			return "", "", fmt.Errorf("runner: %w", perr)
 		}
 		defer stopProxy()
 		gitEnv = cloneGuardEnv(endpoint)
 	}
 	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
 	if err := os.RemoveAll(dir); err != nil {
-		return "", fmt.Errorf("clean repo dir: %w", err)
+		return "", "", fmt.Errorf("clean repo dir: %w", err)
 	}
 	// A re-execution never inherits the previous attempt's tree: executeRun
 	// deletes this directory when the run returns, and the next claim is
@@ -215,11 +220,12 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// downstream node keeps reading "the previous node edited these files"
 	// against a tree where those edits no longer exist. That divergence used
 	// to be entirely silent — record it on the timeline.
-	if reason := r.reExecutionReason(ctx, msg); reason != "" {
+	reason := r.reExecutionReason(ctx, msg)
+	if reason != "" {
 		r.recordWorkspaceReset(ctx, msg, reason)
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir repo parent: %w", err)
+		return "", "", fmt.Errorf("mkdir repo parent: %w", err)
 	}
 
 	cloneURL, tok, appBotLogin := msg.RepoURL, "", ""
@@ -242,17 +248,24 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 			// workflow declares no forge_token secret, so the repo-targeted
 			// launch's SecretOverrides had nothing to fill (overrides only
 			// populate DECLARED secrets).
-			return "", fmt.Errorf("%w (clone ran credential-less: no forge_token/gitlab_token/github_token in the run's sealed bundle — a private repo needs the workflow to declare a forge_token secret for the launch override to fill)", err)
+			return "", "", fmt.Errorf("%w (clone ran credential-less: no forge_token/gitlab_token/github_token in the run's sealed bundle — a private repo needs the workflow to declare a forge_token secret for the launch override to fill)", err)
 		}
-		return "", err
+		return "", "", err
 	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
 		if err := r.runGitEnv(ctx, dir, tok, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := r.runGit(ctx, dir, tok, "checkout", "--quiet", "-B", ref, "FETCH_HEAD"); err != nil {
-			return "", err
+			return "", "", err
 		}
+	}
+	// A re-execution is not a fresh start: whatever the earlier attempt
+	// banked or parked on the forge is this run's own state, and the resumed
+	// nodes must find it in the tree, not only in the checkpoint's outputs.
+	baseline := ""
+	if reason != "" {
+		baseline = r.restoreBankedChain(ctx, msg, dir, tok, gitEnv)
 	}
 	// Cloud sandboxes have no ~/.gitconfig (the host bind-mount is dropped on
 	// kubernetes and the runner pod has none of its own), so seed an
@@ -279,21 +292,21 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		}
 	}
 	if err := r.runGit(ctx, dir, "", "config", "user.name", authorName); err != nil {
-		return "", fmt.Errorf("runner: seed git author name in %s: %w", dir, err)
+		return "", "", fmt.Errorf("runner: seed git author name in %s: %w", dir, err)
 	}
 	if err := r.runGit(ctx, dir, "", "config", "user.email", authorEmail); err != nil {
-		return "", fmt.Errorf("runner: seed git author email in %s: %w", dir, err)
+		return "", "", fmt.Errorf("runner: seed git author email in %s: %w", dir, err)
 	}
 	if err := r.installGitCredentialStore(ctx, dir, msg.RepoURL, tok); err != nil {
 		// Fail the clone rather than proceed: the alternative is a workspace
 		// whose only credential is the frozen one in remote.origin.url, which
 		// works now and 403s hours later at push time — the exact failure this
 		// removes, and the hardest kind to attribute.
-		return "", fmt.Errorf("runner: wire git credentials for %s: %w", msg.RunID, err)
+		return "", "", fmt.Errorf("runner: wire git credentials for %s: %w", msg.RunID, err)
 	}
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
-	return dir, nil
+	return dir, baseline, nil
 }
 
 // gitAuthorName / gitAuthorEmail are the identity seeded into a cloud clone's
