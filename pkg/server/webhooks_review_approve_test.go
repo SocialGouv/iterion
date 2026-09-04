@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -532,5 +533,149 @@ func TestResolveGateContextFollowsTheRepoPin(t *testing.T) {
 				t.Errorf("resolveGateContext = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// approveWorld wires the connection-admin happy path every idempotency test
+// starts from: one team connection, a fake gate client, a stub commenter, an
+// allow-all command gate, and a pinned gate context.
+func approveWorld(t *testing.T) (*Server, *fakeGateClient, *stubCommenter, webhooks.Config, string) {
+	t.Helper()
+	s := newWebhookTestServer(t)
+	conns := forge.NewMemoryConnectionStore()
+	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeConnections = conns
+	gc := &fakeGateClient{headSHA: "abc1234"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	commenter := &stubCommenter{}
+	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return commenter, nil }
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	return s, gc, commenter, cfg, pt
+}
+
+const approveBodyByJane = `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","user":{"login":"alice"},"pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/revi approve","html_url":"https://github.com/acme/widgets/pull/7#issuecomment-556"},"sender":{"login":"maintainer-jane"}}`
+
+func approveDeliveries(t *testing.T, s *Server, cfg webhooks.Config) []webhooks.Delivery {
+	t.Helper()
+	rows, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// A redelivery of an approve that already landed must answer `duplicate`,
+// write nothing, and leave ONE audit row for the comment — the same shape
+// the command lane keeps per event.
+func TestReviewApprove_RedeliveryOfLandedApproveIsDuplicate(t *testing.T) {
+	s, gc, _, cfg, pt := approveWorld(t)
+	w1 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w1, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 1 {
+		t.Fatalf("first delivery must write once, got %d", gc.setCalls)
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 1 {
+		t.Fatalf("redelivery re-wrote the status (setCalls=%d)", gc.setCalls)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w2.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusDuplicate {
+		t.Fatalf("redelivery must answer %q like every other lane, got %v", webhooks.StatusDuplicate, resp)
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusLaunched {
+		t.Fatalf("want exactly one launched audit row for the comment, got %+v", rows)
+	}
+}
+
+// getBlindDeliveryStore answers every replay lookup with not-found while
+// keeping the store's unique constraint on Insert: the shape two replicas
+// see when they pass the replay check together — only the Insert decides.
+type getBlindDeliveryStore struct{ webhooks.DeliveryStore }
+
+func (getBlindDeliveryStore) GetByIdempotencyKey(context.Context, string) (webhooks.Delivery, error) {
+	return webhooks.Delivery{}, webhooks.ErrNotFound
+}
+
+// Two replicas handling the same redelivery both miss the replay check; the
+// one that loses the Insert under the stable key must NOT write the status.
+// The unique constraint is the dedupe, not the read that precedes it.
+func TestReviewApprove_ConcurrentTwinLosingTheClaimDoesNotWrite(t *testing.T) {
+	s, gc, _, cfg, pt := approveWorld(t)
+	inner := s.webhookDeliveries
+	s.webhookDeliveries = getBlindDeliveryStore{inner}
+	// The twin's claim already sits under the stable key.
+	p, err := prforge.ParseIssueComment([]byte(approveBodyByJane))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.Insert(context.Background(), webhooks.Delivery{
+		ID: "twin", TenantID: cfg.TenantID, WebhookID: cfg.ID, Status: webhooks.StatusAccepted,
+		IdempotencyKey: approveIdempotencyKey(cfg, p),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("the Insert loser wrote the status anyway (setCalls=%d) — the unique constraint must gate the forge write", gc.setCalls)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusDuplicate {
+		t.Fatalf("Insert loser must answer %q, got %v", webhooks.StatusDuplicate, resp)
+	}
+}
+
+// A forge write that failed (scope refusal, outage) is NOT a terminal
+// duplicate: the forge's "Redeliver" is the operator's retry, and the
+// redelivery must write — reusing the failed row, never a second one.
+func TestReviewApprove_FailedWriteIsRetryableOnRedelivery(t *testing.T) {
+	s, gc, _, cfg, pt := approveWorld(t)
+	gc.setErr = errInsufficientScope
+	w1 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w1, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusLaunchError {
+		t.Fatalf("failed write must leave one launch_error row, got %+v", rows)
+	}
+	gc.setErr = nil // the operator fixed the token scope
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 2 || gc.last.State != forge.CommitStateSuccess {
+		t.Fatalf("redelivery after a failed write must retry the status (setCalls=%d last=%+v)", gc.setCalls, gc.last)
+	}
+	rows := approveDeliveries(t, s, cfg)
+	if len(rows) != 1 || rows[0].Status != webhooks.StatusLaunched {
+		t.Fatalf("the failed row must be reused and flipped to launched, got %+v", rows)
+	}
+}
+
+// A configuration refusal (here: no gate context pinned) must not poison the
+// comment: once the operator pins one, redelivering the same comment
+// approves. Refusals are audited under their own keys, never the dedupe key.
+func TestReviewApprove_ConfigRefusalDoesNotPoisonRedelivery(t *testing.T) {
+	s, gc, commenter, cfg, pt := approveWorld(t)
+	cfg.LaunchVars = nil // nothing pinned yet
+	w1 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w1, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 0 || len(commenter.bodies) != 1 || !approveReplyContains(commenter.bodies[0], "no merge-gate context") {
+		t.Fatalf("unpinned repo must refuse with a reply (setCalls=%d bodies=%v)", gc.setCalls, commenter.bodies)
+	}
+	cfg.LaunchVars = map[string]string{gateContextVar: "revi/review"}
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), approveBodyByJane, prforge.EventHeaderIssueComment, pt))
+	if gc.setCalls != 1 {
+		t.Fatalf("redelivery after the operator pinned gate_context must approve (setCalls=%d body=%s)", gc.setCalls, w2.Body.String())
 	}
 }

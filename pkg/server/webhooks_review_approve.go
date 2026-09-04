@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -12,12 +13,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
-// approveMinReplierRole is the DEFAULT commenter role floor for /revi
-// approve when the webhook config pins no MinReplierRole. Set to
-// maintainer because docs/merge-gate.md documents this override as a
-// "maintainer" affordance — the same role a merge-queue admin bypass
-// requires. An operator's explicit cfg.MinReplierRole always wins:
-// never silently replace an explicit choice (CLAUDE.md philosophy §1).
+// approveMinReplierRole is the commenter role floor for /revi approve when
+// the webhook pins no MinReplierRole: a force-green of a required check is a
+// maintainer affordance (docs/merge-gate.md), not one every write-permission
+// collaborator holds. An operator's explicit cfg.MinReplierRole always wins.
 const approveMinReplierRole = "maintainer"
 
 // gateContextVar is the var every gating bot exposes to name the commit-status
@@ -82,12 +81,21 @@ func reviewApproveReason(cmd, args string) (reason string, ok bool) {
 }
 
 // handlePRForgeReviewApprove handles `/revi approve [reason]` on a GitHub /
-// Forgejo PR comment: a trusted maintainer force-greens the revi/review merge
-// gate on the PR head (the human-arbitration escape hatch for a finding the
-// author disputes, backstopping the admin merge-queue bypass). It is NOT a
-// re-review — no bot launches. Every benign refusal is a 200/filtered so the
-// forge keeps the hook enabled; the status write goes through the bot's own
-// forge token (the same credential the command gate uses).
+// Forgejo PR comment: a trusted maintainer force-greens the merge gate on the
+// PR head (the human-arbitration escape hatch for a finding the author
+// disputes, backstopping the admin merge-queue bypass). It is NOT a
+// re-review — no bot launches.
+//
+// Response discipline: a configuration refusal answers 200/filtered and a
+// forge failure 200/launch_error, both with a reply on the PR naming the
+// reason — never a 5xx, which forges answer by disabling the hook and every
+// future launch, re-review and override with it.
+//
+// The status is written through the team connection's admin client — the
+// resolution publish and the gate reconciler use, so a GitHub App
+// integration mints its per-call installation token, which carries the
+// statuses scope — or, for a hand-owned webhook with no connection row,
+// through its forge_token binding.
 func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, reason, payloadHash, srcIP string) {
 	meta := prforgeNoteMeta(p)
 	filtered := func(why string) {
@@ -105,43 +113,44 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		filtered("bot " + reviewer + " not permitted by this webhook")
 		return
 	}
-	// #662 A6 idempotency: a redelivered comment (forge "Redeliver", or a
-	// retry after our own 5xx) must not run the whole approve flow again.
-	// The key is deterministic on (approve, tenant, webhook, project,
-	// subject) so both replicas of a delivery collide on the same row.
-	idemKey := knowledge.ChecksumHex([]byte("approve|" + cfg.TenantID + "|" + cfg.ID + "|" + p.ProjectPath + "|" + p.SubjectID()))
+	// Replay check, before any forge I/O. A prior delivery of this comment
+	// that already approved (launched) or is mid-write (accepted) answers
+	// `duplicate`: a second status write is pure waste. A prior launch_error
+	// is NOT terminal — the forge's "Redeliver" is the operator's retry after
+	// a transient failure — so its row is reused by the claim below.
+	// Refusals are audited under their own keys (recordTerminalWebhookDelivery)
+	// so a redelivery after the operator fixes the setup re-evaluates.
+	idemKey := approveIdempotencyKey(cfg, p)
+	var priorFailure *webhooks.Delivery
 	if s.webhookDeliveries != nil {
-		if prior, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil && prior.ID != "" {
-			// A prior delivery already ran this approve — never re-write to
-			// the forge (a duplicate approve is 100% wasted, and a duplicate
-			// PR reply is noise).
-			writeJSONStatus(w, http.StatusOK, map[string]string{"status": "revi-approved-duplicate", "delivery_id": prior.ID})
-			return
+		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
+			if existing.Status != webhooks.StatusLaunchError {
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusDuplicate, "delivery_id": existing.ID})
+				return
+			}
+			ex := existing
+			priorFailure = &ex
 		}
 	}
-	// #662 A1: author cannot approve their own PR (docs/merge-gate.md
-	// documents this as a "maintainer" affordance — a self-approve is a
-	// merge-queue bypass in another shape). Refused BEFORE the command gate
-	// so the PR reply names the reason a reader will act on.
+	// The PR author cannot approve their own PR — a self-approve is a
+	// merge-queue bypass in another shape. Checked before the command gate
+	// so the reply names the reason a reader will act on; re-checked below
+	// when the head could only be loaded through the write path's client.
 	pr, prLoaded, prErr := s.loadPRHeadForApprove(ctx, cfg, p)
 	if prErr != nil {
-		// If we cannot even resolve the PR, treat it as a forge write error:
-		// tell the maintainer, keep the hook alive.
-		s.approveFailWithReply(ctx, w, cfg, meta, provider, p, "resolve PR head: "+prErr.Error(), idemKey, payloadHash, srcIP)
+		s.approveFailWithReply(ctx, w, cfg, meta, provider, p, forge.Connection{}, false, "resolve PR head: "+prErr.Error(), payloadHash, srcIP)
 		return
 	}
-	if prLoaded && strings.TrimSpace(pr.Author) != "" && strings.EqualFold(pr.Author, p.AuthorLogin) {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" you cannot approve your own pull request — a maintainer must run /revi approve here",
-			idemKey, payloadHash, srcIP)
+	if prLoaded && isSelfApprove(pr, p) {
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)
 		return
 	}
 	// Authorize EXACTLY like every other PR-comment command (not the
-	// issue-author-trust gate): the gate checks the commenter's live repo
-	// role against a floor, AND rejects the review bot's own comment via a
-	// WhoAmI loop-guard so a status can't self-approve. Default the floor
-	// to approveMinReplierRole ("maintainer") when the webhook pins none,
-	// per A1; an operator's explicit cfg.MinReplierRole ALWAYS wins.
+	// issue-author-trust gate): the commenter's live repo role against a
+	// floor, plus the WhoAmI loop-guard that rejects the review bot's own
+	// comment. The floor defaults to approveMinReplierRole when the webhook
+	// pins none; an operator's explicit cfg.MinReplierRole always wins.
 	route := webhooks.CommandRoute{BotID: reviewer}
 	if strings.TrimSpace(cfg.MinReplierRole) == "" {
 		route.MinReplierRole = approveMinReplierRole
@@ -150,90 +159,91 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	if gate == nil {
 		gate = s.realWebhookPRForgeCommandGate
 	}
-	authorized, reason2, aerr := gate(ctx, cfg, provider, p, route)
+	authorized, gateReason, aerr := gate(ctx, cfg, provider, p, route)
 	if aerr != nil {
-		s.recordTerminalWebhookDeliveryWithKey(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error(), idemKey)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
 		httpError(w, http.StatusBadGateway, "authorization check failed")
 		return
 	}
 	if !authorized {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" I cannot approve here: "+reason2,
-			idemKey, payloadHash, srcIP)
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: "+gateReason, payloadHash, srcIP)
 		return
 	}
 
-	// Authorized: pick the write path. Preferred: the SAME resolution
-	// publish + the reconciler use — the team connection's admin client,
-	// so a `github_app` integration mints its per-call installation token
-	// (which HAS `statuses` scope). #662 A2 fallback: a webhook that has
-	// only a `forge_token` binding (docs/webhooks.md documents this manual
-	// path as supported) has no forge.Connection row. Fall back to the
-	// old resolveForgeToken + prforgeReplierClient path there so the
-	// hand-owned setup keeps working; log which path served.
 	baseURL, refusal := prforgeBaseURL(cfg, p)
 	if refusal != "" {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" I cannot approve here: "+refusal,
-			idemKey, payloadHash, srcIP)
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: "+refusal, payloadHash, srcIP)
 		return
 	}
 	host := hostOfURL(baseURL)
 	if host == "" {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" I cannot approve here: the payload URL has no usable forge host",
-			idemKey, payloadHash, srcIP)
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: the payload URL has no usable forge host", payloadHash, srcIP)
 		return
 	}
-	gc, conn, connOK, resolveErr := s.resolveApproveGateClient(ctx, cfg, provider, reviewer, baseURL, host, p.ProjectPath)
+	path, pathRefusal, resolveErr := s.resolveApproveWritePath(ctx, cfg, provider, reviewer, baseURL, host, p.ProjectPath)
 	if resolveErr != nil {
-		// #662 A3: reroute through the fail-with-reply path (was 502 before,
-		// which is precisely the hook-disabling 5xx class this ticket asked
-		// to remove). Pass the connection through when it resolved, so the
-		// reply rides the App identity that failed rather than the token
-		// binding's.
-		s.approveFailWithReplyThroughConn(ctx, w, cfg, meta, provider, p, conn, connOK, "resolve forge client: "+resolveErr.Error(), idemKey, payloadHash, srcIP)
+		// Infra (connection unreadable, token refresh failed): a forge-side
+		// failure, told to the maintainer through whichever identity did
+		// resolve — never a 5xx.
+		s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "resolve forge client: "+resolveErr.Error(), payloadHash, srcIP)
 		return
 	}
-	if gc == nil {
-		provStr := string(provider)
-		if connOK {
-			provStr = string(conn.Provider)
-		}
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" I cannot approve here: provider "+provStr+" has no commit-status capability",
-			idemKey, payloadHash, srcIP)
+	if pathRefusal != "" {
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: "+pathRefusal, payloadHash, srcIP)
 		return
 	}
-
-	// Re-resolve the PR head via the gate client if the pre-check couldn't.
+	gc := path.gc
 	if !prLoaded {
-		p2, err := gc.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
+		loaded, err := gc.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
 		if err != nil {
-			s.approveFailWithReply(ctx, w, cfg, meta, provider, p, "resolve PR head: "+err.Error(), idemKey, payloadHash, srcIP)
+			s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "resolve PR head: "+err.Error(), payloadHash, srcIP)
 			return
 		}
-		pr = p2
-		if strings.TrimSpace(pr.Author) != "" && strings.EqualFold(pr.Author, p.AuthorLogin) {
-			s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-				"@"+p.AuthorLogin+" you cannot approve your own pull request — a maintainer must run /revi approve here",
-				idemKey, payloadHash, srcIP)
+		pr = loaded
+		if isSelfApprove(pr, p) {
+			s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, selfApproveReply(p), payloadHash, srcIP)
 			return
 		}
 	}
 	if strings.TrimSpace(pr.HeadSHA) == "" {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" I cannot approve here: the forge returned no head sha for this PR",
-			idemKey, payloadHash, srcIP)
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: the forge returned no head sha for this PR", payloadHash, srcIP)
 		return
 	}
 	gateCtx := s.resolveGateContext(cfg, reviewer)
 	if gateCtx == "" {
-		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p,
-			"@"+p.AuthorLogin+" I cannot approve here: no merge-gate context is pinned on this repo (pin gate_context on the integration — see docs/merge-gate.md)",
-			idemKey, payloadHash, srcIP)
+		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, "@"+p.AuthorLogin+" I cannot approve here: no merge-gate context is pinned on this repo (pin gate_context on the integration — see docs/merge-gate.md)", payloadHash, srcIP)
 		return
 	}
+
+	// Claim the approve under its stable key BEFORE the forge write: the
+	// store's unique constraint on the key is what keeps two replicas
+	// handling the same redelivery from both writing the status. A prior
+	// failed row is reused (an Insert would collide with its own key).
+	claim := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
+	claim.IdempotencyKey = idemKey
+	claim.BotID = reviewer
+	if s.webhookDeliveries != nil {
+		if priorFailure != nil {
+			claim.ID, claim.ReceivedAt = priorFailure.ID, priorFailure.ReceivedAt
+			if err := s.webhookDeliveries.Update(ctx, claim); err != nil {
+				s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "reset failed delivery: "+err.Error(), payloadHash, srcIP)
+				return
+			}
+		} else if err := s.webhookDeliveries.Insert(ctx, claim); err != nil {
+			if errors.Is(err, webhooks.ErrDuplicate) {
+				resp := map[string]string{"status": webhooks.StatusDuplicate}
+				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
+					resp["delivery_id"] = existing.ID
+				}
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				writeJSONStatus(w, http.StatusOK, resp)
+				return
+			}
+			s.approveFailWithReply(ctx, w, cfg, meta, provider, p, path.conn, path.connOK, "record delivery: "+err.Error(), payloadHash, srcIP)
+			return
+		}
+	}
+
 	desc := "approved by @" + p.AuthorLogin
 	if reason != "" {
 		desc += ": " + reason
@@ -244,24 +254,48 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		Description: desc,
 		TargetURL:   p.CommentURL,
 	}); err != nil {
-		s.approveFailWithReplyThroughConn(ctx, w, cfg, meta, provider, p, conn, connOK, "set commit status: "+err.Error(), idemKey, payloadHash, srcIP)
+		// The claim turns launch_error under its stable key: the replay
+		// check reads that as retryable, never as a duplicate.
+		why := "set commit status: " + err.Error()
+		s.warnApproveDidNotLand(provider, p, why)
+		claim.Status, claim.Error = webhooks.StatusLaunchError, why
+		s.updateApproveDelivery(ctx, claim)
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
+		s.postApproveReply(ctx, cfg, provider, p, path.conn, path.connOK, "@"+p.AuthorLogin+" I can't approve: "+why)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
 		return
 	}
 	if s.logger != nil {
-		via := "forge_token binding"
-		if connOK {
-			via = "connection " + conn.ID
-		}
-		s.logger.Info("webhooks: %s %s#%d %s force-greened by @%s (%q) via %s", provider, p.ProjectPath, p.IssueNumber, gateCtx, p.AuthorLogin, reason, via)
+		s.logger.Info("webhooks: %s %s#%d %s force-greened by @%s (%q) via %s", provider, p.ProjectPath, p.IssueNumber, gateCtx, p.AuthorLogin, reason, path.via)
 	}
-	s.recordTerminalWebhookDeliveryWithKey(ctx, cfg, meta, webhooks.StatusLaunched, payloadHash, srcIP, gateCtx+" approved by @"+p.AuthorLogin, idemKey)
+	now := time.Now().UTC()
+	claim.Status, claim.Error, claim.LaunchedAt = webhooks.StatusLaunched, "", &now
+	s.updateApproveDelivery(ctx, claim)
+	s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunched)
 	writeJSONStatus(w, http.StatusOK, map[string]string{"status": "revi-approved"})
 }
 
-// loadPRHeadForApprove tries to resolve the PR head early so the self-approve
-// check runs BEFORE the command gate. Uses whatever path is easiest to try —
-// the forge_token binding via the replier client — and returns loaded=false
-// with no error when nothing is set up (the connection path will retry it).
+// approveIdempotencyKey is the per-comment dedupe key of an approve: the same
+// shape the command lane keys its launches on, so both replicas of one
+// forge delivery collide on one row.
+func approveIdempotencyKey(cfg webhooks.Config, p prforge.ParsedNote) string {
+	return knowledge.ChecksumHex([]byte("approve|" + cfg.TenantID + "|" + cfg.ID + "|" + p.ProjectPath + "|" + p.SubjectID()))
+}
+
+// isSelfApprove reports whether the commenter is the PR's own author. An
+// empty author (a provider that omits it) proves nothing and passes.
+func isSelfApprove(pr forge.PullRef, p prforge.ParsedNote) bool {
+	return strings.TrimSpace(pr.Author) != "" && strings.EqualFold(pr.Author, p.AuthorLogin)
+}
+
+func selfApproveReply(p prforge.ParsedNote) string {
+	return "@" + p.AuthorLogin + " you cannot approve your own pull request — a maintainer must run /revi approve here"
+}
+
+// loadPRHeadForApprove resolves the PR head through the webhook's
+// forge_token binding, when there is one, so the self-approve check can run
+// before the command gate. loaded=false with no error means no token is
+// bound; the write path's client resolves the head later in that case.
 func (s *Server) loadPRHeadForApprove(ctx context.Context, cfg webhooks.Config, p prforge.ParsedNote) (pr forge.PullRef, loaded bool, err error) {
 	baseURL, refusal := prforgeBaseURL(cfg, p)
 	if refusal != "" {
@@ -271,8 +305,7 @@ func (s *Server) loadPRHeadForApprove(ctx context.Context, cfg webhooks.Config, 
 	if terr != nil || token == "" {
 		return forge.PullRef{}, false, nil
 	}
-	client := prforgeReplierClient(cfg.Provider, s.forgeHTTPClient(), baseURL, token)
-	gc, ok := client.(forgeGateClient)
+	gc, ok := prforgeReplierClient(cfg.Provider, s.forgeHTTPClient(), baseURL, token).(forgeGateClient)
 	if !ok {
 		return forge.PullRef{}, false, nil
 	}
@@ -283,132 +316,128 @@ func (s *Server) loadPRHeadForApprove(ctx context.Context, cfg webhooks.Config, 
 	return pr, true, nil
 }
 
-// resolveApproveGateClient picks the write path for the approval status.
-// Preferred: the team connection's admin client (App integration → per-call
-// installation token). Fallback (#662 A2): a webhook with a forge_token
-// binding but no connection row (docs/webhooks.md manual setup). Returns
-// (gc, conn, connOK, err); gc==nil AND no err means "no client capability".
-func (s *Server) resolveApproveGateClient(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, reviewer, baseURL, host, projectPath string) (forgeGateClient, forge.Connection, bool, error) {
+// approveWritePath is the client the approval status is written through,
+// plus the identity a reply about it rides on.
+type approveWritePath struct {
+	gc     forgeGateClient
+	conn   forge.Connection
+	connOK bool
+	via    string
+}
+
+// resolveApproveWritePath picks the client the approval status is written
+// through. Preferred: the team connection's admin client — the same
+// resolution publish and the gate reconciler use, so an App integration
+// mints its per-call installation token (which carries the statuses scope).
+// Without a connection row, the webhook's own forge_token binding serves
+// (the hand-owned setup docs/webhooks.md describes). A non-empty refusal is
+// a configuration miss with nothing to write through; an error is a
+// forge-side failure.
+func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, reviewer, baseURL, host, projectPath string) (approveWritePath, string, error) {
 	conn, connOK := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath)
 	if connOK {
 		gc, err := s.gateClientFor(ctx, conn)
 		if err != nil {
-			return nil, conn, true, err
+			return approveWritePath{conn: conn, connOK: true}, "", err
 		}
-		return gc, conn, true, nil
+		if gc == nil {
+			return approveWritePath{conn: conn, connOK: true}, "provider " + string(conn.Provider) + " has no commit-status capability", nil
+		}
+		return approveWritePath{gc: gc, conn: conn, connOK: true, via: "connection " + conn.ID}, "", nil
 	}
-	// No connection row → try the forge_token binding path (the pre-fix
-	// working setup for hand-owned webhooks — #662 A2).
-	token, terr := s.resolveForgeToken(ctx, cfg, reviewer)
-	if terr != nil {
-		return nil, forge.Connection{}, false, terr
+	token, err := s.resolveForgeToken(ctx, cfg, reviewer)
+	if err != nil {
+		return approveWritePath{}, "", err
 	}
 	if token == "" {
-		return nil, forge.Connection{}, false, nil
+		return approveWritePath{}, "no team connection covers " + host + "/" + projectPath + " and this webhook has no forge_token binding — connect a forge integration for this repo, or bind forge_token on the webhook", nil
 	}
-	client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
-	gc, ok := client.(forgeGateClient)
+	gc, ok := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token).(forgeGateClient)
 	if !ok {
-		return nil, forge.Connection{}, false, nil
+		return approveWritePath{}, "provider " + string(provider) + " has no commit-status capability", nil
 	}
 	if s.logger != nil {
-		s.logger.Info("webhooks: /revi approve on %s/%s: no team connection covers this repo, using the webhook's forge_token binding (hand-owned setup)", host, projectPath)
+		s.logger.Info("webhooks: /revi approve on %s/%s: no team connection covers this repo, writing through the webhook's forge_token binding", host, projectPath)
 	}
-	return gc, forge.Connection{}, false, nil
+	return approveWritePath{gc: gc, via: "forge_token binding"}, "", nil
 }
 
-// approveFilteredWithReply is the config-shaped refusal path: record
-// `filtered` (not launch_error — the setup is wrong, no forge write was
-// attempted), best-effort tell the maintainer why on the PR, answer 200.
-// #662 A4: every previously-silent refusal now names its reason on the PR.
-func (s *Server) approveFilteredWithReply(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, provider webhooks.Provider, p prforge.ParsedNote, replyBody, idemKey, payloadHash, srcIP string) {
+// approveFilteredWithReply is the configuration-refusal path: audit
+// `filtered` under its own key (no forge write was attempted, and a
+// redelivery after the operator fixes the setup must re-evaluate), tell the
+// maintainer why on the PR, answer 200.
+func (s *Server) approveFilteredWithReply(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, provider webhooks.Provider, p prforge.ParsedNote, replyBody, payloadHash, srcIP string) {
 	if s.logger != nil {
 		s.logger.Warn("webhooks: %s %s#%d /revi approve filtered: %s", provider, p.ProjectPath, p.IssueNumber, replyBody)
 	}
-	s.recordTerminalWebhookDeliveryWithKey(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, replyBody, idemKey)
-	// Best-effort reply. Try connection first; fall through to the
-	// forge_token binding for the A2 hand-owned setup.
-	baseURL, _ := prforgeBaseURL(cfg, p)
-	host := hostOfURL(baseURL)
-	if conn, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, p.ProjectPath); ok {
-		s.postApproveRejection(ctx, conn, p.ProjectPath, int(p.IssueNumber), replyBody)
-	} else if token, err := s.resolveForgeToken(ctx, cfg, s.roleBots().Reviewer); err == nil && token != "" {
-		client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
-		if c, ok := client.(forgeIssueCommenter); ok {
-			if _, err := c.CommentIssue(ctx, p.ProjectPath, int(p.IssueNumber), replyBody); err != nil && s.logger != nil {
-				s.logger.Debug("webhooks: approve-filtered reply to %s#%d not posted: %v", p.ProjectPath, p.IssueNumber, err)
-			}
-		}
-	}
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, replyBody)
+	s.postApproveReply(ctx, cfg, provider, p, forge.Connection{}, false, replyBody)
 	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 }
 
-// approveFailWithReply is the forge-error path: record `launch_error`, tell
-// the maintainer, answer 200 (never 502 — forges auto-disable on 5xx). Used
-// when the forge write itself failed (scope refusal, transient outage) or
-// when the gate client couldn't be built.
-func (s *Server) approveFailWithReply(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, provider webhooks.Provider, p prforge.ParsedNote, why, idemKey, payloadHash, srcIP string) {
-	// Same as WithReplyThroughConn but we haven't picked a conn yet.
-	s.approveFailWithReplyThroughConn(ctx, w, cfg, meta, provider, p, forge.Connection{}, false, why, idemKey, payloadHash, srcIP)
-}
-
-// approveFailWithReplyThroughConn is the connection-aware variant: uses the
-// already-resolved connection for the reply when available, else falls back
-// to the forge_token binding.
-func (s *Server) approveFailWithReplyThroughConn(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, provider webhooks.Provider, p prforge.ParsedNote, conn forge.Connection, connOK bool, why, idemKey, payloadHash, srcIP string) {
-	if s.logger != nil {
-		s.logger.Warn("webhooks: %s %s#%d /revi approve by @%s did not land: %s", provider, p.ProjectPath, p.IssueNumber, p.AuthorLogin, why)
-	}
-	s.recordTerminalWebhookDeliveryWithKey(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why, idemKey)
-	body := "@" + p.AuthorLogin + " I can't approve: " + why
-	if connOK {
-		s.postApproveRejection(ctx, conn, p.ProjectPath, int(p.IssueNumber), body)
-	} else if token, err := s.resolveForgeToken(ctx, cfg, s.roleBots().Reviewer); err == nil && token != "" {
-		baseURL, _ := prforgeBaseURL(cfg, p)
-		client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
-		if c, ok := client.(forgeIssueCommenter); ok {
-			if _, err := c.CommentIssue(ctx, p.ProjectPath, int(p.IssueNumber), body); err != nil && s.logger != nil {
-				s.logger.Debug("webhooks: approve-fail reply to %s#%d not posted: %v", p.ProjectPath, p.IssueNumber, err)
-			}
-		}
-	}
+// approveFailWithReply is the forge-failure path before the claim exists
+// (PR head unresolvable, gate client unbuildable, audit store down): audit
+// `launch_error` under its own key, tell the maintainer, answer 200 — never
+// 502, which forges answer by disabling the hook.
+func (s *Server) approveFailWithReply(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, provider webhooks.Provider, p prforge.ParsedNote, conn forge.Connection, connOK bool, why, payloadHash, srcIP string) {
+	s.warnApproveDidNotLand(provider, p, why)
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
+	s.postApproveReply(ctx, cfg, provider, p, conn, connOK, "@"+p.AuthorLogin+" I can't approve: "+why)
 	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
 }
 
-// recordTerminalWebhookDeliveryWithKey stamps a stable idempotency key
-// (rather than a fresh uuid per call) so a retry lands on the SAME row.
-// The delivery-store Insert honours the unique constraint on
-// (tenant_id, idempotency_key). Behaves like the current recorder when the
-// deliveries store lacks that hook.
-func (s *Server) recordTerminalWebhookDeliveryWithKey(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, status, payloadHash, srcIP, reason, idemKey string) {
-	// The default recorder mints a uuid; we shadow it by pre-inserting the
-	// row with our stable key. If webhookDeliveries is nil, fall back to
-	// the recorder so nothing regresses.
-	if s.webhookDeliveries != nil && idemKey != "" {
-		_ = s.webhookDeliveries.Insert(ctx, webhooks.Delivery{
-			ID:             idemKey,
-			TenantID:       cfg.TenantID,
-			WebhookID:      cfg.ID,
-			IdempotencyKey: idemKey,
-			Status:         status,
-			EventKind:      meta.Kind,
-			ProjectPath:    meta.ProjectPath,
-			SubjectID:      meta.SubjectID,
-			PayloadHash:    payloadHash,
-			SourceIP:       srcIP,
-			Error:          reason,
-			ReceivedAt:     time.Now().UTC(),
-		})
+func (s *Server) warnApproveDidNotLand(provider webhooks.Provider, p prforge.ParsedNote, why string) {
+	if s.logger != nil {
+		s.logger.Warn("webhooks: %s %s#%d /revi approve by @%s did not land: %s", provider, p.ProjectPath, p.IssueNumber, p.AuthorLogin, why)
+	}
+}
+
+// updateApproveDelivery flips the claim row to its terminal status. A failed
+// write leaves the row `accepted`, which the replay check reads as a
+// duplicate — so it is logged at Warn: that comment can no longer be
+// redelivered without an operator noticing why.
+func (s *Server) updateApproveDelivery(ctx context.Context, d webhooks.Delivery) {
+	if s.webhookDeliveries == nil {
 		return
 	}
-	s.recordTerminalWebhookDelivery(ctx, cfg, meta, status, payloadHash, srcIP, reason)
+	if err := s.webhookDeliveries.Update(ctx, d); err != nil && s.logger != nil {
+		s.logger.Warn("webhooks: approve delivery %s not updated to %s (row stays accepted, redeliveries read as duplicate): %v", d.ID, d.Status, err)
+	}
+}
+
+// postApproveReply best-effort tells the maintainer on the PR why the
+// approve did not land: through the resolved connection when there is one,
+// else the team connection covering the repo, else the webhook's forge_token
+// binding — and nothing at all when the payload's host is not one the token
+// may be sent to. Silent on every miss: the refusal is already on the
+// delivery audit and in the log, and a failed comment must not compound it.
+func (s *Server) postApproveReply(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, conn forge.Connection, connOK bool, body string) {
+	if !connOK {
+		baseURL, refusal := prforgeBaseURL(cfg, p)
+		if refusal != "" {
+			return
+		}
+		if c, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", hostOfURL(baseURL), p.ProjectPath); ok {
+			conn, connOK = c, true
+		} else if token, err := s.resolveForgeToken(ctx, cfg, s.roleBots().Reviewer); err == nil && token != "" {
+			if c, ok := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token).(forgeIssueCommenter); ok {
+				if _, err := c.CommentIssue(ctx, p.ProjectPath, int(p.IssueNumber), body); err != nil && s.logger != nil {
+					s.logger.Debug("webhooks: approve reply to %s#%d not posted: %v", p.ProjectPath, p.IssueNumber, err)
+				}
+			}
+			return
+		}
+	}
+	if connOK {
+		s.postApproveRejection(ctx, conn, p.ProjectPath, int(p.IssueNumber), body)
+	}
 }
 
 // postApproveRejection best-effort posts why a /revi approve did not land on
-// the PR the command sat on. Uses the SAME connection the approve tried to
-// write through (already resolved by the caller). Silent on every miss — the
-// approve failure is already recorded on the delivery audit; a comment
-// failure on top of it must not compound the confusion.
+// the PR the command sat on, through the connection the approve wrote (or
+// tried to write) through. Silent on every miss — the failure is already on
+// the delivery audit; a comment failure on top of it must not compound the
+// confusion.
 func (s *Server) postApproveRejection(ctx context.Context, conn forge.Connection, repo string, number int, body string) {
 	commenter, err := s.issueCommenterFor(ctx, conn)
 	if err != nil || commenter == nil {
