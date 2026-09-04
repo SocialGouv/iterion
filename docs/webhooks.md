@@ -223,7 +223,9 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `author_association` ∈ OWNER/MEMBER/COLLABORATOR (decoded from the
   payload, no API call), OR live `CollaboratorPermission` ≥
   **`min_author_role`** (gitlab vocabulary, `""` → developer ≡ write;
-  needs a `forge_token` binding). Unknown = untrusted (**fail-closed** —
+  read through the team connection covering the repo when its client
+  can serve, else the webhook's `forge_token` binding — the same client
+  the command gate resolves). Unknown = untrusted (**fail-closed** —
   this is the budget boundary against drive-by issues, unlike the
   fail-open org quotas). An untrusted author's delivery filters (200,
   visible reason) and the issue's board card parks with

@@ -440,7 +440,11 @@ Three ways, in order of preference:
    trail. It does **not** launch a re-review. Works on GitHub App
    integrations (posts through the connection's installation token so the
    `statuses` scope is present) and hand-owned webhooks with a `forge_token`
-   binding (falls back to the token client). *(GitHub + Forgejo today;
+   binding (the token client serves when no connection covers the repo —
+   and when the covering connection's client cannot serve, e.g. an
+   installation whose grant lags the requested permissions fails the
+   token mint: the lane warns and reads, writes and replies through the
+   binding instead of failing). *(GitHub + Forgejo today;
    GitLab `/revi approve` on a note is a follow-on.)*
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.
