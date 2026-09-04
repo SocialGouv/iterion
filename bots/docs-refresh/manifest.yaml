@@ -1,7 +1,21 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.6
+version: 3.5.7
+## 3.5.7 — scan_hints stops manufacturing the same false positives every
+## pass. A link written `/dsl` is SITE-absolute: every static-site
+## generator routes it from the site root, but `os.path.join` drops
+## everything left of an absolute path, so the scanner asked the
+## filesystem for `/dsl` and called it dead. On the 2026-09-04 prod run
+## that was 20 of 22 hints, all false; the other 2 were explicit HTML
+## anchors the heading-only collector could not see. The agent verified
+## and ledgered them on EVERY pass, and the ledger lives in a per-run
+## scratch the cloud wipes, so the waste repeated on every run. Site-
+## absolute links now resolve against the docs root then the repo root
+## through the generator conventions, and explicit `<a name>` / `id`
+## anchors count as link targets. A site-absolute link that resolves
+## nowhere is still surfaced, with a note saying a generator rewrite may
+## serve it — precision, not silence.
 ## 3.5.6 — the schedule invocation carries its own vars. A scheduled run on
 ## a cloud clone can only deliver through the PR tail, and a weekly is only
 ## affordable as an incremental pass — yet a schedule row created (or

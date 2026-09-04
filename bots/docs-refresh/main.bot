@@ -783,6 +783,14 @@ def slugify(text):
     s = re.sub(r'[^\w\s-]', '', s)
     s = re.sub(r'\s', '-', s)
     return s.strip('-')
+QT = chr(34)
+AP = chr(39)
+## An explicit HTML anchor is a link target as much as a heading is. A doc
+## that writes a heading as an anchor + text addresses it by the anchor,
+## and a heading-only collector calls every such link dead -- measured on
+## the 2026-09-04 prod run, where both dead_anchor hints pointed at
+## anchors written exactly that way.
+ANCHOR_RE = re.compile('<a[^>]*?(?:name|id)=[' + QT + AP + ']([^' + QT + AP + ']+)')
 def headings_of(path):
     if path in _heading_cache:
         return _heading_cache[path]
@@ -793,10 +801,33 @@ def headings_of(path):
                 hm = re.match(r'\s{0,3}(#{1,6})\s+(.+)', ln)
                 if hm:
                     slugs.add(slugify(hm.group(2)))
+                for am in ANCHOR_RE.finditer(ln):
+                    slugs.add(am.group(1).strip().lower())
     except (FileNotFoundError, IsADirectoryError, PermissionError):
         pass
     _heading_cache[path] = slugs
     return slugs
+## A link starting with / is SITE-absolute, not filesystem-absolute: every
+## static-site generator (VitePress, MkDocs, Docusaurus, Jekyll) routes it
+## from the site root, and its extensionless form is that generator's clean
+## URL for a page file. os.path.join DROPS everything left of an absolute
+## path, so resolving one the ordinary way asked the filesystem for /dsl
+## and reported it dead -- 20 of the 22 hints on the 2026-09-04 prod run,
+## every one false, and re-adjudicated by the agent on EVERY pass because
+## the dismissals ledger lives in a per-run scratch the cloud wipes.
+## Resolve against the docs root then the repo root, trying the generator
+## conventions; empty means unresolved, which the caller reports as a SOFT
+## signal since a generator rewrite may still serve it.
+def resolve_site_absolute(path_part):
+    rel = path_part.lstrip('/')
+    if not rel:
+        return ''
+    for root in (docs_dir, ''):
+        base = os.path.join(root, rel) if root else rel
+        for cand in (base, base + '.md', os.path.join(base, 'index.md'), os.path.join(base, 'README.md')):
+            if os.path.exists(cand):
+                return os.path.normpath(cand)
+    return ''
 ## A cited path that is missing on disk is a DRIFT signal only if git
 ## ever TRACKED it (current index or a path deleted somewhere in
 ## history): docs constantly cite example/placeholder paths under real
@@ -844,8 +875,14 @@ for doc in files:
                 continue
             seen.add(key)
             checked_links += 1
-            tgt = doc if not path_part else os.path.normpath(os.path.join(os.path.dirname(doc), path_part))
-            if path_part and not os.path.exists(tgt):
+            site_absolute = path_part.startswith('/')
+            if site_absolute:
+                tgt = resolve_site_absolute(path_part)
+            else:
+                tgt = doc if not path_part else os.path.normpath(os.path.join(os.path.dirname(doc), path_part))
+            if site_absolute and not tgt:
+                add_hint(doc, lineno, 'dead_link', target, 'site-absolute link resolves to no page under ' + (docs_dir or '.') + ' or the repo root (a generator rewrite may still serve it)')
+            elif path_part and not site_absolute and not os.path.exists(tgt):
                 add_hint(doc, lineno, 'dead_link', target, 'link target not found: ' + tgt)
             elif frag and not re.match(r'^[Ll][0-9]', frag) and tgt.endswith('.md') and frag.lower() not in headings_of(tgt):
                 add_hint(doc, lineno, 'dead_anchor', target, 'no heading matching #' + frag + ' in ' + tgt)
