@@ -64,10 +64,18 @@ Normalized event vocabulary (mapped to the forge's native names by
 |---|---|---|---|
 | `pull_request` | `merge_request` | `pull_request` | `pull_request` |
 | `pull_request_comment` | `note` | `issue_comment` | `issue_comment` |
+| `issue_labeled` | `issues` | `issues` | `issues` |
 
-(GitLab's native names `merge_request` / `note` are translated a second
-time — to the boolean request-body fields `merge_requests_events` /
-`note_events` — inside the GitLab admin client when the hook is created.)
+(GitLab's native names `merge_request` / `note` / `issues` are translated a
+second time — to the boolean request-body fields `merge_requests_events` /
+`note_events` / `issues_events` — inside the GitLab admin client when the
+hook is created, see [pkg/forge/gitlab/events.go](../pkg/forge/gitlab/events.go).)
+
+`issue_labeled` subscribes the hook to the forge's `issues` event so that
+labelling an issue launches an implementer bot which opens a PR back-linked
+to it. The inbound half is wired for GitHub and Forgejo; on GitLab the hook
+field is set but the delivery is not yet routed
+([pkg/bundle/manifest.go](../pkg/bundle/manifest.go)).
 
 Unknown events / scope keys / levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
