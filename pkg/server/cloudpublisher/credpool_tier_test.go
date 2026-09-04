@@ -1,8 +1,10 @@
 package cloudpublisher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,4 +333,75 @@ func TestPoolTier_grantCarriesTheDonorCredentialsIdentity(t *testing.T) {
 	if got := bundle.OAuthFingerprints["claude_code"]; got != want {
 		t.Errorf("OAuthFingerprints[claude_code] = %q, want %q — the borrower's meter would follow the slot, not the lent credential", got, want)
 	}
+}
+
+
+// acquireFromPool must LOG A WARN naming the reason at the moment an
+// abstention becomes final. The mute prod incident (2026-09-03, half a
+// day of investigation) had the pool return nil to the caller and the
+// server logs carry no line — an operator could not distinguish "no
+// pool" from "audience refused" from "every donor cooling". The Warn
+// line is the fix: one line per abstention, at the level that survives
+// `ITERION_LOG_LEVEL=info` (Debug was the mute channel).
+//
+// The oracle is the LOG output the publisher emitted, not the returned
+// value — the caller (resolveAndSealCredentials) has always fallen
+// through on nil, so the ABSENCE of a log was the bug.
+func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
+	bufFor := func(t *testing.T) *bytes.Buffer {
+		t.Helper()
+		var buf bytes.Buffer
+		return &buf
+	}
+
+	t.Run("nil broker → warn(pool_disabled)", func(t *testing.T) {
+		buf := bufFor(t)
+		p := &Publisher{logger: iterlog.New(iterlog.LevelInfo, buf)}
+		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", &ir.Workflow{}); g != nil {
+			t.Fatalf("nil broker must not grant, got %+v", g)
+		}
+		log := buf.String()
+		if !strings.Contains(log, "⚠️") || !strings.Contains(log, "run-1") || !strings.Contains(log, "pool_disabled") {
+			t.Fatalf("want a Warn line naming run-1 and pool_disabled; got:\n%s", log)
+		}
+	})
+
+	t.Run("wants == 0 → warn(bot pins ...)", func(t *testing.T) {
+		buf := bufFor(t)
+		// Broker present but the wants-derivation returns empty: build a
+		// workflow with a model pin the pool never lends (a fake provider).
+		f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+		f.pub.logger = iterlog.New(iterlog.LevelInfo, buf)
+		wf := &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": &ir.AgentNode{
+				BaseNode:  ir.BaseNode{ID: "a"},
+				LLMFields: ir.LLMFields{Model: "fake-provider/some-model"},
+			},
+		}}
+		if g := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", wf); g != nil {
+			t.Fatalf("wants==0 must not grant, got %+v", g)
+		}
+		log := buf.String()
+		if !strings.Contains(log, "⚠️") || !strings.Contains(log, "run-2") || !strings.Contains(log, "pinned=fake-provider") {
+			t.Fatalf("want a Warn line naming run-2 and the pinned provider; got:\n%s", log)
+		}
+	})
+
+	t.Run("no eligible pledge → warn(no_eligible_pledge)", func(t *testing.T) {
+		buf := bufFor(t)
+		f := newPoolFixture(t, credpool.Limits{})
+		f.pub.logger = iterlog.New(iterlog.LevelInfo, buf)
+		// Disable the donor: audience opens, walk finds nothing eligible.
+		pledge, _ := f.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+		pledge.Enabled = false
+		_ = f.pledges.Upsert(context.Background(), pledge)
+
+		if g := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}); g != nil {
+			t.Fatalf("no eligible pledge must not grant, got %+v", g)
+		}
+		log := buf.String()
+		if !strings.Contains(log, "⚠️") || !strings.Contains(log, "run-3") || !strings.Contains(log, "no_eligible_pledge") {
+			t.Fatalf("want a Warn line naming run-3 and no_eligible_pledge; got:\n%s", log)
+		}
+	})
 }

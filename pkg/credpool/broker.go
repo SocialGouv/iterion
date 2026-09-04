@@ -18,7 +18,69 @@ import (
 // whatever it would have done with no pool at all (env credentials, or a
 // visible "no credentials" at the LLM call site). Callers should log it and
 // carry on, never abort the launch on it.
+//
+// Concrete abstentions arrive as *NoDonorError, which unwraps to this
+// sentinel so a caller using errors.Is(err, ErrNoDonor) keeps working;
+// use errors.As to extract the reason for a Warn log.
 var ErrNoDonor = errors.New("credpool: no eligible donor")
+
+// NoDonorReason names WHY the pool abstained on this request. The four
+// values match the four return sites in Acquire/resolvePools, so a caller
+// can distinguish "the deployment has no pool at all" from "every donor
+// declined this request" without parsing prose.
+type NoDonorReason string
+
+const (
+	// ReasonPoolDisabled: nil *Broker — the deployment never wired a pool,
+	// or a store required to serve one is missing.
+	ReasonPoolDisabled NoDonorReason = "pool_disabled"
+	// ReasonNoEnabledPool: pools.ListEnabled returned nothing — an operator
+	// created no pool, or every pool is off (kill switch).
+	ReasonNoEnabledPool NoDonorReason = "no_enabled_pool"
+	// ReasonAudienceRejected: some pool(s) exist, but none opened its
+	// audience to this requester (wrong org / no reciprocity / not on the
+	// team allowlist).
+	ReasonAudienceRejected NoDonorReason = "audience_rejected"
+	// ReasonNoEligiblePledge: pools admitted the request, candidate pledges
+	// were walked, but every one declined (parked, out of its sharing
+	// window, ceiling reached, bot allow-list, concurrency, ledger refusal,
+	// donor is the requester, credential vanished).
+	ReasonNoEligiblePledge NoDonorReason = "no_eligible_pledge"
+)
+
+// NoDonorError is a typed ErrNoDonor: it carries the reason for the
+// abstention plus the counts of pools/pledges considered, so an operator
+// investigating a run that landed on the platform tier can tell whether
+// the pool was mute because no pool exists, because the audience refused
+// them, or because every donor was cooling down.
+//
+// Unwrap returns ErrNoDonor so callers using errors.Is keep working; use
+// errors.As(&NoDonorError{}) to read Reason.
+type NoDonorError struct {
+	Reason            NoDonorReason
+	PoolsConsidered   int
+	PledgesConsidered int
+}
+
+// Error renders the sentinel prose followed by the reason and counts.
+// Kept short — the caller usually logs it inside a longer sentence.
+func (e *NoDonorError) Error() string {
+	if e == nil {
+		return ErrNoDonor.Error()
+	}
+	return fmt.Sprintf("%s (reason=%s pools_considered=%d pledges_considered=%d)",
+		ErrNoDonor.Error(), e.Reason, e.PoolsConsidered, e.PledgesConsidered)
+}
+
+// Unwrap keeps `errors.Is(err, ErrNoDonor)` true for every abstention.
+func (e *NoDonorError) Unwrap() error { return ErrNoDonor }
+
+// noDonor builds a typed abstention. Small helper so a new site doesn't
+// forget to wrap the sentinel (which would leave `errors.As` failing
+// silently at the caller — the same class of defect #654 fixes).
+func noDonor(reason NoDonorReason, pools, pledges int) error {
+	return &NoDonorError{Reason: reason, PoolsConsidered: pools, PledgesConsidered: pledges}
+}
 
 // Broker selects a donor for a run and closes the loop when it ends.
 //
@@ -135,7 +197,7 @@ type Grant struct {
 // currently eligible.
 func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	if b == nil {
-		return nil, ErrNoDonor
+		return nil, noDonor(ReasonPoolDisabled, 0, 0)
 	}
 	if req.RunID == "" {
 		return nil, fmt.Errorf("credpool: acquire without a run id")
@@ -168,6 +230,16 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// Want-major: the preference between credentials is the caller's
 	// (subscriptions before metered keys), and outranks which pool holds
 	// them. Within a want, the requester's own org pool was sorted first.
+	//
+	// pledgesConsidered is the size of the union of candidate pools the
+	// walk actually inspected — a value the abstention error carries so an
+	// operator can distinguish "the audience opened but every donor was
+	// cooling" from "the audience opened but no pledge matched a want the
+	// pool ever knew about".
+	pledgesConsidered := 0
+	for _, pc := range allowed {
+		pledgesConsidered += len(pc.candidates)
+	}
 	for _, want := range req.Wants {
 		for _, pc := range allowed {
 			grant, err := b.acquireKind(ctx, pc.pool, pc.candidates, req, want, now)
@@ -179,7 +251,7 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 			}
 		}
 	}
-	return nil, ErrNoDonor
+	return nil, noDonor(ReasonNoEligiblePledge, len(allowed), pledgesConsidered)
 }
 
 // acquireKind tries one credential kind against an already-resolved
@@ -252,7 +324,7 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) ([]poolCandidate
 		return nil, err
 	}
 	if len(pools) == 0 {
-		return nil, ErrNoDonor
+		return nil, noDonor(ReasonNoEnabledPool, 0, 0)
 	}
 	// Own-org pool first: a team drawing on its own pool must not be
 	// diverted to a community one that happens to sort earlier.
@@ -289,7 +361,7 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) ([]poolCandidate
 		}
 	}
 	if len(allowed) == 0 {
-		return nil, ErrNoDonor
+		return nil, noDonor(ReasonAudienceRejected, len(pools), 0)
 	}
 	return allowed, nil
 }

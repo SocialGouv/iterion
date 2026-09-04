@@ -717,3 +717,94 @@ func TestBroker_reciprocityAdmitsAForeignDonor(t *testing.T) {
 		t.Errorf("paused contributor = %v, want ErrNoDonor", err)
 	}
 }
+
+
+// Every abstention arrives as a *NoDonorError naming WHY the pool did
+// not serve — the fix for #654, which observed a run fall silently
+// through the pool tier onto the platform credential ("half a day of
+// investigation on a path that decides who pays"). Each of the four
+// abstention sites reports the reason it decided on, and all four
+// still unwrap to ErrNoDonor so callers using errors.Is keep working.
+func TestBroker_AbstentionCarriesTypedReason(t *testing.T) {
+	t.Run("nil broker → pool_disabled", func(t *testing.T) {
+		var b *Broker
+		_, err := b.Acquire(context.Background(), Request{RunID: "r"})
+		if !errors.Is(err, ErrNoDonor) {
+			t.Fatalf("errors.Is(err, ErrNoDonor) = false; got %v", err)
+		}
+		var nd *NoDonorError
+		if !errors.As(err, &nd) {
+			t.Fatalf("errors.As(*NoDonorError) = false; got %T %v", err, err)
+		}
+		if nd.Reason != ReasonPoolDisabled {
+			t.Errorf("reason = %q, want %q", nd.Reason, ReasonPoolDisabled)
+		}
+	})
+
+	t.Run("no enabled pool → no_enabled_pool", func(t *testing.T) {
+		h := newHarness(t)
+		_ = h.pools.Upsert(context.Background(), Pool{ID: "pool-1", OrgID: testOrg, Enabled: false})
+		req := h.request("r1")
+		req.Wants = []Credential{{Source: SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}}
+		_, err := h.broker.Acquire(context.Background(), req)
+		var nd *NoDonorError
+		if !errors.As(err, &nd) {
+			t.Fatalf("errors.As failed on %v", err)
+		}
+		if nd.Reason != ReasonNoEnabledPool {
+			t.Errorf("reason = %q, want %q", nd.Reason, ReasonNoEnabledPool)
+		}
+	})
+
+	t.Run("audience refuses → audience_rejected + pools_considered", func(t *testing.T) {
+		h := newHarness(t)
+		// A pool that opens itself only to its own org, called from a
+		// different org, is the reference case for audience rejection.
+		if err := h.pools.Upsert(context.Background(), Pool{
+			ID: "pool-closed", OrgID: "someone-else", Enabled: true,
+		}); err != nil {
+			t.Fatalf("seed second pool: %v", err)
+		}
+		_ = h.pools.Upsert(context.Background(), Pool{ID: "pool-1", OrgID: testOrg, Enabled: false}) // leave only the closed one enabled
+		req := h.request("r2")
+		req.OrgID = "requesting-org" // audience.Allows will refuse
+		_, err := h.broker.Acquire(context.Background(), req)
+		var nd *NoDonorError
+		if !errors.As(err, &nd) {
+			t.Fatalf("errors.As failed on %v", err)
+		}
+		if nd.Reason != ReasonAudienceRejected {
+			t.Errorf("reason = %q, want %q", nd.Reason, ReasonAudienceRejected)
+		}
+		if nd.PoolsConsidered != 1 {
+			t.Errorf("pools_considered = %d, want 1", nd.PoolsConsidered)
+		}
+	})
+
+	t.Run("candidates walked but none served → no_eligible_pledge + counts", func(t *testing.T) {
+		h := newHarness(t)
+		// One donor whose pledge is DISABLED — passes audience, walks the
+		// candidates, and every one declines at eligibility. This is the
+		// "every donor is currently unavailable" case, mute in prod.
+		p := h.donor(t, "alice", Limits{})
+		p.Enabled = false
+		if err := h.pledges.Upsert(context.Background(), p); err != nil {
+			t.Fatalf("disable pledge: %v", err)
+		}
+		req := h.request("r3")
+		_, err := h.broker.Acquire(context.Background(), req)
+		var nd *NoDonorError
+		if !errors.As(err, &nd) {
+			t.Fatalf("errors.As failed on %v", err)
+		}
+		if nd.Reason != ReasonNoEligiblePledge {
+			t.Errorf("reason = %q, want %q", nd.Reason, ReasonNoEligiblePledge)
+		}
+		if nd.PoolsConsidered != 1 {
+			t.Errorf("pools_considered = %d, want 1 (audience opened one pool)", nd.PoolsConsidered)
+		}
+		if nd.PledgesConsidered != 1 {
+			t.Errorf("pledges_considered = %d, want 1 (one pledge on the pool, disabled)", nd.PledgesConsidered)
+		}
+	})
+}

@@ -1166,13 +1166,28 @@ func wantsFor(wf *ir.Workflow) []credpool.Credential {
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
 // pool is wired, none serves this requester, or every donor is currently
 // unavailable — all ordinary outcomes that must let the launch proceed
-// exactly as it would have without a pool.
+// exactly as it would have without a pool. Every abstention is logged Warn
+// at the moment it becomes final: the run is about to spend someone else's
+// credential (platform tier) or fail at the LLM call, both worth a line an
+// operator can grep instead of half a day of investigation on a path that
+// decides who pays (#654).
 func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow) *credpool.Grant {
 	if p.credPool == nil {
+		// No pool at all — a static configuration fact, but log it once per
+		// run so the trace of "which tier funded this run" starts at the
+		// pool tier for every run, not only the ones that got a grant.
+		p.logger.Warn("cloudpublisher: credential pool NOT CONSULTED for run %s — no pool broker wired (reason=%s)",
+			runID, credpool.ReasonPoolDisabled)
 		return nil
 	}
 	wants := wantsFor(wf)
 	if len(wants) == 0 {
+		// The bot pins providers the pool never lends: asking would burn a
+		// walk that could not possibly succeed. Log it: today this is what
+		// "the pool was consulted and answered nothing" looks like when the
+		// judge-kind override arrived (see #668).
+		p.logger.Warn("cloudpublisher: credential pool NOT CONSULTED for run %s — bot pins provider(s) no donation matches (%s)",
+			runID, poolWantsSummary(wf))
 		return nil
 	}
 	grant, err := p.credPool.Acquire(ctx, credpool.Request{
@@ -1184,17 +1199,72 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		Wants:    wants,
 	})
 	if err != nil {
-		if !errors.Is(err, credpool.ErrNoDonor) {
-			// A store failure must not fail the launch: the pool is a
-			// best-effort extra tier, and a run with no credential still
-			// surfaces a legible error at the LLM call site.
-			p.logger.Warn("cloudpublisher: credential pool lookup for run %s: %v", runID, err)
+		// A typed abstention names the reason: distinguishing "the audience
+		// refused me" from "every donor was cooling" is exactly the class
+		// of ambiguity that turned a half-day of investigation into "the
+		// pool answered nothing".
+		var nd *credpool.NoDonorError
+		if errors.As(err, &nd) {
+			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_considered=%d pledges_considered=%d wants=%s",
+				runID, nd.Reason, nd.PoolsConsidered, nd.PledgesConsidered, wantsSummary(wants))
+			return nil
 		}
+		if errors.Is(err, credpool.ErrNoDonor) {
+			// A wrapper we did not recognise still counts as an abstention;
+			// keep it visible instead of falling silently to the next tier.
+			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
+			return nil
+		}
+		// A store failure must not fail the launch: the pool is a
+		// best-effort extra tier, and a run with no credential still
+		// surfaces a legible error at the LLM call site.
+		p.logger.Warn("cloudpublisher: credential pool lookup for run %s: %v", runID, err)
 		return nil
 	}
 	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s %s allowance=$%.2f)",
 		runID, grant.DonorID, grant.Credential, grant.RemainingUSD)
 	return grant
+}
+
+// wantsSummary renders a wants list for the abstention log — the field
+// that answers "was this decision even made against the right set?".
+func wantsSummary(wants []credpool.Credential) string {
+	if len(wants) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(wants))
+	for _, w := range wants {
+		parts = append(parts, w.String())
+	}
+	return strings.Join(parts, ",")
+}
+
+// poolWantsSummary is the wants=0 branch's diagnostic: it names the pins
+// the workflow carries, so an operator can tell WHY the pool was skipped
+// before it was asked. Kept small — the log line rides the launch path.
+func poolWantsSummary(wf *ir.Workflow) string {
+	if wf == nil {
+		return "pinned=<no-workflow>"
+	}
+	pinned := map[string]bool{}
+	for _, n := range wf.Nodes {
+		f, ok := n.(interface{ GetLLMFields() *ir.LLMFields })
+		if !ok {
+			continue
+		}
+		if prov, _, cut := strings.Cut(f.GetLLMFields().Model, "/"); cut && prov != "" {
+			pinned[prov] = true
+		}
+	}
+	if len(pinned) == 0 {
+		return "pinned=<none>"
+	}
+	provs := make([]string, 0, len(pinned))
+	for p := range pinned {
+		provs = append(provs, p)
+	}
+	sort.Strings(provs)
+	return "pinned=" + strings.Join(provs, ",")
 }
 
 // SubmitLaunch persists the run as queued in Mongo, then publishes
