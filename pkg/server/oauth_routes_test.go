@@ -734,3 +734,35 @@ func TestOAuthCredentialIngestion_RefusalLeavesATrace(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A whole terminal transcript pasted into the box is the shape #627 was
+// filed on. It fails to PARSE, which is not a ShapeError — so the refusal
+// branch let it through with no Warn and no audit entry, exactly the
+// invisible failure the ticket exists to end. The 400 alone is not enough:
+// the operator who pasted it is not the one who reads the run's 401s hours
+// later.
+func TestOAuthCredentialIngestion_TranscriptPasteLeavesATrace(t *testing.T) {
+	srv, hs, signer, oauthStore := oauthTestServer(t)
+	var buf bytes.Buffer
+	srv.logger = iterlog.New(iterlog.LevelInfo, &buf)
+	alice := oauthJWT(t, signer, "alice")
+
+	blob := "\x1b[32mWelcome to Claude Code\x1b[0m\n" +
+		`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-secret","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
+	if code != http.StatusBadRequest {
+		t.Fatalf("upload = %d body=%s, want 400 for a transcript paste", code, body)
+	}
+	if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err == nil {
+		t.Fatal("a transcript paste was stored")
+	}
+	log := buf.String()
+	if !strings.Contains(log, "REFUSED at ingestion") || !strings.Contains(log, "credentials.json") {
+		t.Fatalf("a refused paste must leave a Warn naming the file it could not read; got:\n%s", log)
+	}
+	// The trace names the shape, never the material.
+	if strings.Contains(log, "sk-ant-oat01-secret") || strings.Contains(body, "sk-ant-oat01-secret") {
+		t.Fatalf("the refusal echoed the token; log:\n%s\nbody: %s", log, body)
+	}
+}

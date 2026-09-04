@@ -353,6 +353,24 @@ const (
 	credentialServerBuilt
 )
 
+// pastedBlobParseError gives a blob that is not even JSON the same typed
+// refusal a bad FIELD gets, so the paste path's Warn + audit cover the
+// shape #627 was filed on: a terminal transcript pasted whole, which
+// ParseAnthropicView/ParseCodexView reject as a plain parse error and the
+// refusal branch therefore let through with no trace at all. A
+// server-built blob keeps the raw error — nobody pasted it, and the token
+// exchange's own failure is the interesting one.
+func pastedBlobParseError(file string, origin credentialOrigin, err error) error {
+	var se *secrets.ShapeError
+	if origin != credentialPasted || errors.As(err, &se) {
+		return err
+	}
+	return &secrets.ShapeError{
+		Field:  file,
+		Reason: fmt.Sprintf("is not a JSON object (%v) — paste the file itself, not a terminal transcript or a fragment of it", err),
+	}
+}
+
 // refuseOAuthCredential is the refusal branch both connect paths share:
 // a typed shape refusal answers 400 with the reason, and leaves a trace —
 // a Warn and an audit event naming the field and the reason, never the
@@ -388,7 +406,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	case secrets.OAuthKindClaudeCode:
 		v, err := secrets.ParseAnthropicView(blob)
 		if err != nil {
-			return secrets.OAuthRecord{}, err
+			return secrets.OAuthRecord{}, pastedBlobParseError("credentials.json", origin, err)
 		}
 		if v.ClaudeAIOauth.AccessToken == "" {
 			return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.accessToken", Reason: "is missing from credentials.json"}
@@ -436,7 +454,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	case secrets.OAuthKindCodex:
 		v, err := secrets.ParseCodexView(blob)
 		if err != nil {
-			return secrets.OAuthRecord{}, err
+			return secrets.OAuthRecord{}, pastedBlobParseError("auth.json", origin, err)
 		}
 		if v.Tokens.AccessToken == "" {
 			return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "tokens.access_token", Reason: "is missing from auth.json"}
