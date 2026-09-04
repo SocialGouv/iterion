@@ -37,19 +37,26 @@ These bots are shipped in the repository and are discoverable by the CLI and stu
 | 🗺️ Adry | [`adr-cartograph`](../bots/adr-cartograph/) | Reconcile implemented architectural decisions with `docs/adr/` and surface decision gaps. |
 | ⚖️ ReArchi | [`adr-rechallenge`](../bots/adr-rechallenge/) | Human-guided re-evaluation of an existing ADR: keep, change, or append an addendum. |
 | 🏗️ Appy | [`app-dev`](../bots/app-dev/) | Build a new application end to end, optionally beginning with a conversational specification. |
+| ⚖️ Themis | [`arbitrate`](../bots/arbitrate/) | Judge the divergences a modernisation lot is blocked on, applying the target repository's own written arbitration doctrine and nothing else; every decision is consigned to the doctrine's journal, and an uncovered case escalates to a human. |
 | 🎭 Bmady | [`bmady`](../bots/bmady/) | Human-steered analyst → PM → architect → developer → QA delivery pipeline. |
+| 🧭 Campy | [`campaign`](../bots/campaign/) | Deterministic supervisor for a whole modernisation programme: runs `modernize` as a subbot lot after lot and judges progress by git, never by what a run says of itself. Carries no LLM node of its own. |
 | 💂 Vetty | [`dep-update-guard`](../bots/dep-update-guard/) | Audit and align automated dependency-update PRs without merging them. |
 | 🧰 Devy | [`devbox-setup`](../bots/devbox-setup/) | Create and validate a pinned `devbox.json`/lock for a reproducible project toolchain. |
+| 🕸️ Endy | [`e2e-coverage`](../bots/e2e-coverage/) | Inventory an application's features from the outside, keep a committed feature×coverage matrix, and close each gap with a real e2e test in the repo's own harness. |
 | 🧬 Evoly | [`evolve`](../bots/evolve/) | Long-horizon product and architecture partner backed by persistent per-bot memory. |
 | 🧩 Fini | [`feature-gap-fill`](../bots/feature-gap-fill/) | Finish a structured partial-implementation gap while preserving what already works. |
 | 🔭 Vigie | [`feed-watch`](../bots/feed-watch/) | Collect RSS/Atom feeds at zero LLM cost, then produce and deliver grounded digests. |
+| 📡 Obsy | [`instrument`](../bots/instrument/) | Wire a repository for observability — error tracking on the Sentry DSN protocol, one standardized structured-logging seam, opt-in tracing — one verified commit at a time. |
 | 🏷️ Triagy | [`issue-triage`](../bots/issue-triage/) | Single-shot card triage: read a fresh board card, classify it, stamp the handler bot + labels, and leave a routing comment. Routes work to other bots; never dispatched to. |
+| 🧭 Prody | [`product-docs`](../bots/product-docs/) | Write and maintain a product's business-audience documentation in a dedicated docs repository, grounded in the source of the N repositories a product catalog names. |
 | 💬 Revi (converse) | [`revi-converse`](../bots/revi-converse/) | Answer a focused `/revi` follow-up in the same forge discussion; never edits code. |
+| 🌐 Envy | [`review-env`](../bots/review-env/) | Deploy the workspace's already-CI-published image to the attached platform and hand back a live https URL; the verdict is a deterministic outside probe, not the agent's word. |
 | ♿ Acci | [`rgaa-audit`](../bots/rgaa-audit/) | Read-only RGAA 4.1.2 source audit with a deterministic coverage gate. |
 | 🦮 Ally | [`ultra11y`](../bots/ultra11y/) | Read-only WCAG 2.2 AA / RGAA audit where a static ENGINE finds the non-conformities and the agent only rules on what it cannot decide; PR diff mode. |
 | ⛓️ Shieldy | [`supply-shield`](../bots/supply-shield/) | Diff-scoped dependency-malware gate for forge events. |
 | 🚨 Vulny | [`supply-shield-cve`](../bots/supply-shield-cve/) | Diff-scoped known-CVE gate for changed dependency versions. |
 | 🧪 Testy | [`test-coverage`](../bots/test-coverage/) | Add meaningful regression-catching tests and verify both the suite and the new test diff. |
+| 🛡️ Senti | [`vuln-watch`](../bots/vuln-watch/) | Inventory-scoped vulnerability sentinel with no LLM node at all: polls Dependabot alerts, advisory feeds, CISA KEV and EPSS, and alerts to chat only on an exploitation signal. |
 | 📖 Wikky | [`wiki-gen`](../bots/wiki-gen/) | Generate and incrementally maintain a validated Open Knowledge Format wiki. |
 | 🪞 Goldy | [`golden-master`](../bots/golden-master/) | Build a behavioural non-regression net (golden master) for an existing app and prove it is neither blind nor hysterical with a deterministic mutation counter-test; the safety net under a migration or refactor. |
 | 🧱 Morphy | [`modernize`](../bots/modernize/) | Carry a repo through modernisation lots (toolchain/runtime/framework/datastore) one deterministic gate-to-gate step at a time, each proven by a behavioural oracle — refuses to start without a golden-master net. |
