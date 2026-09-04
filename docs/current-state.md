@@ -223,7 +223,7 @@ Three related knowledge mechanisms stay distinct:
 
 Plugins are declarative and out of process; they do not inject Go code into the
 static binary. `rtk` ships as the enabled command-output rewriter. Graphify,
-Repo Falcon, and Firecrawl ship disabled until selected. Local and cloud plugin
+Repo Falcon, Codeindex, and Firecrawl ship disabled until selected. Local and cloud plugin
 sources, including org-private Git repositories, share the same resolver and
 marketplace model.
 
