@@ -229,13 +229,16 @@ vars:
 
   ## Base URL the deploy target serves the site at. Required when
   ## publish=true: publish_gate refuses the tail without it, and
-  ## verify_publish accepts no URL outside it — the truth gate
+  ## verify_publish accepts no URL outside it — neither the one the
+  ## agent returns nor the one a redirect lands on. The truth gate
   ## verifies THE OPERATOR'S deployment, never the URL the agent
   ## narrated.
   publish_base_url: string = ""
 
   ## Image repository the packaged site is pushed to, WITHOUT a tag
-  ## (the publish agent tags it with the docs commit). Names a
+  ## (the publish agent tags it with the docs commit, then deploys the
+  ## DIGEST that push resolved to — a tag is an alias whose content can
+  ## move, and an unchanged tag is an unchanged pod spec). Names a
   ## deployment, never a person: no default, publish_gate refuses the
   ## tail when it is empty.
   publish_image: string = ""
@@ -267,22 +270,28 @@ secrets:
     optional: true
 
   ## Deployment credential (opt-in). A single READ-ONLY file the
-  ## publish agent uses BY REFERENCE (env $DEPLOY_CREDENTIAL = its
-  ## PATH) and is instructed never to open — what it CONTAINS and how
-  ## it is consumed are decided entirely by the attached deploy-target
-  ## skill; this bot never knows. optional:true so every
-  ## non-publishing run works unchanged; publish_gate routes the tail
-  ## out cleanly when it is absent. On cloud, bind it to this bot as a
-  ## team-scoped secret named `deploy_credential`.
+  ## publish agent uses BY REFERENCE and is instructed never to open —
+  ## what it CONTAINS and how it is consumed are decided entirely by the
+  ## attached deploy-target skill; this bot never knows. optional:true
+  ## so every non-publishing run works unchanged; publish_gate routes
+  ## the tail out cleanly when it is absent. On cloud, bind it to this
+  ## bot as a team-scoped secret named `deploy_credential`.
+  ##
+  ## `env:` is a SANDBOX convenience, not the contract: the engine
+  ## writes it into the container spec, so on a host run
+  ## $DEPLOY_CREDENTIAL is unset. The reliable reference is the path
+  ## `{{secrets.deploy_credential.path}}` renders — which is what
+  ## publish_system hands the agent, and what publish_gate probes.
   deploy_credential:
     as: file
     env: DEPLOY_CREDENTIAL
     optional: true
 
   ## Registry credential (opt-in): the token the packaged site image is
-  ## pushed with, one value in a READ-ONLY file (env $REGISTRY_TOKEN =
-  ## its PATH), fed to the registry login on stdin — never on argv,
-  ## never printed.
+  ## pushed with, one value in a READ-ONLY file, fed to the registry
+  ## login on stdin — never on argv, never printed. Same env/path
+  ## contract as deploy_credential above: $REGISTRY_TOKEN is the
+  ## sandbox shortcut, `{{secrets.registry_token.path}}` is the truth.
   registry_token:
     as: file
     env: REGISTRY_TOKEN
