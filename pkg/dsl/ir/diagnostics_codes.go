@@ -27,7 +27,7 @@ const (
 	DiagForeachConflictsLoop     DiagCode = "C118" // edge combines `as foreach` with `as <loop>` (error)
 	DiagSubbotNoSource           DiagCode = "C119" // subbot node without a `source:` child .bot (error)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
-	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
+	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that is neither Opus 4.8 nor Claude 5 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
 	DiagDuplicateWithKey         DiagCode = "C028" // duplicate with-mapping key across edges to same target
 	DiagUnknownRefNode           DiagCode = "C029" // outputs ref to non-existent node
