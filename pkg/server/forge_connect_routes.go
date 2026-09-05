@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
@@ -137,7 +138,7 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 	conn := forge.Connection{
 		ID: connID, TenantID: teamID, Provider: provider, Kind: forge.KindPAT,
 		DisplayName: strutil.FirstNonBlank(req.DisplayName, ident.Login), ForgeBaseURL: baseURL,
-		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace,
+		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
 		Status: forge.StatusActive, SealedPayload: sealed,
 		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -146,6 +147,18 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 		return
 	}
 	s.auditTenant(r, teamID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": provider, "kind": "pat"})
+	if ident.Kind == forge.AccountKindBot && !s.cfg.DisableForgeBrandAvatar {
+		// A bot identity gets the iterion-bot face the moment it is wired: the
+		// account exists for iterion (a group/project token created for it),
+		// and every comment it will post is signed by that avatar. A failure
+		// is recorded on the connection (AvatarError) and never fails the
+		// connect — the studio names it and offers a retry.
+		updated, _, err := s.applyBotAvatar(r.Context(), conn, brand.VariantPlain, false)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("forge connect: iterion-bot avatar not applied on @%s (%s): %v", conn.AccountLogin, conn.Host(), err)
+		}
+		conn = updated
+	}
 	conn.SealedPayload = nil // never serialise
 	writeJSON(w, forgeConnectResp{Connection: &conn})
 }
@@ -242,7 +255,7 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: pending.Provider, Kind: forge.KindOAuthApp,
 		DisplayName: ident.Login, ForgeBaseURL: pending.ForgeBaseURL,
-		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace,
+		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
 		Status: forge.StatusActive, SealedPayload: sealed, Scopes: tok.Scopes,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -416,7 +429,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		DisplayName: cfg.AppSlug, ForgeBaseURL: base,
-		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug,
+		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug, AccountKind: forge.AccountKindInstallation,
 		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
 		InstallationAccount: installAccount,
 		GrantedPermissions:  granted,

@@ -9,6 +9,7 @@ func (s *Server) registerForgeRoutes() {
 	s.mux.Handle("POST /api/teams/{id}/forge/repos", s.requireAuth(http.HandlerFunc(s.handleCreateForgeRepo)))
 	s.mux.Handle("GET /api/teams/{id}/forge/connections/{conn_id}/health", s.requireAuth(http.HandlerFunc(s.handleForgeConnectionHealth)))
 	s.mux.Handle("POST /api/teams/{id}/forge/connections/{conn_id}/refresh", s.requireAuth(http.HandlerFunc(s.handleForgeConnectionRefresh)))
+	s.mux.Handle("POST /api/teams/{id}/forge/connections/{conn_id}/avatar", s.requireAuth(http.HandlerFunc(s.handleForgeConnectionAvatar)))
 	s.mux.Handle("GET /api/teams/{id}/forge/connections", s.requireAuth(http.HandlerFunc(s.handleListForgeConnections)))
 	s.mux.Handle("POST /api/teams/{id}/forge/connections", s.requireAuth(http.HandlerFunc(s.handleConnectForge)))
 	s.mux.Handle("PATCH /api/teams/{id}/forge/connections/{conn_id}", s.requireAuth(http.HandlerFunc(s.handlePatchForgeConnection)))

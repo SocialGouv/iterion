@@ -56,3 +56,40 @@ func RemoteForgeRefresh(ctx context.Context, c *RemoteClient, p *Printer, path s
 	}
 	return nil
 }
+
+type remoteForgeAvatarResult struct {
+	Connection struct {
+		ID              string `json:"id"`
+		Provider        string `json:"provider"`
+		AccountLogin    string `json:"account_login"`
+		AvatarAppliedAt string `json:"avatar_applied_at"`
+	} `json:"connection"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+// RemoteForgeAvatar POSTs to a connection's /avatar endpoint — upload the
+// iterion-bot avatar onto the account behind it — and prints the outcome. A
+// refusal (a person's OAuth account, a GitHub connection, an account the forge
+// does not flag as a bot without --force) comes back as the API error, whose
+// message names the alternative.
+func RemoteForgeAvatar(ctx context.Context, c *RemoteClient, p *Printer, path, variant string, force bool) error {
+	body := map[string]any{"force": force}
+	if variant != "" {
+		body["variant"] = variant
+	}
+	var res remoteForgeAvatarResult
+	if _, err := c.Call(ctx, "POST", path, body, &res); err != nil {
+		return err
+	}
+	if p.Format == OutputJSON {
+		p.JSON(res)
+		return nil
+	}
+	p.Header("iterion-bot avatar applied")
+	p.KV("connection", res.Connection.ID)
+	p.KV("account", "@"+res.Connection.AccountLogin+" ("+res.Connection.Provider+")")
+	if res.AvatarURL != "" {
+		p.KV("avatar_url", res.AvatarURL)
+	}
+	return nil
+}

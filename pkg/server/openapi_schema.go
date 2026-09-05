@@ -185,6 +185,7 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/teams/{id}/forge/connections/{conn_id}/health": {
 			response: forgeConnectionHealth{},
 		},
+		"POST /api/teams/{id}/forge/connections/{conn_id}/avatar": {request: forgeAvatarReq{}, response: forgeAvatarResp{}},
 	}
 }
 

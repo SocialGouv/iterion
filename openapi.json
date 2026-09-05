@@ -510,10 +510,20 @@
           "account_id": {
             "type": "string"
           },
+          "account_kind": {
+            "type": "string"
+          },
           "account_login": {
             "type": "string"
           },
           "app_slug": {
+            "type": "string"
+          },
+          "avatar_applied_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "avatar_error": {
             "type": "string"
           },
           "created_at": {
@@ -906,6 +916,9 @@
           },
           "installable": {
             "type": "boolean"
+          },
+          "logo_upload_url": {
+            "type": "string"
           },
           "owner_login": {
             "type": "string"
@@ -2629,6 +2642,28 @@
         "required": [
           "name"
         ],
+        "type": "object"
+      },
+      "forgeAvatarReq": {
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "variant": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "forgeAvatarResp": {
+        "properties": {
+          "avatar_url": {
+            "type": "string"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/Connection"
+          }
+        },
         "type": "object"
       },
       "forgeConnectReq": {
@@ -8783,6 +8818,55 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/forge/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/connections/{conn_id}/avatar": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeConnectionsByConnIdAvatar",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeAvatarReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/forgeAvatarResp"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/connections/{conn_id}/avatar",
         "tags": [
           "teams"
         ]
