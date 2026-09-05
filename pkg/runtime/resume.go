@@ -749,7 +749,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		rs.parallel = newParallelExecutionState(cp.Parallel)
 	}
 	restoreLoopSnapshots(rs, cp)
-	restoreBudgetAccounting(rs, cp)
+	e.restoreCheckpointBudget(rs, cp)
 	restoreSelectedIncoming(rs, cp)
 	restoreRunEvents(rs, cp)
 	// Do not EvictRun here: pause-resume must keep in-process claw
@@ -1057,7 +1057,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	}
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
-	restoreBudgetAccounting(rs, cp)
+	e.restoreCheckpointBudget(rs, cp)
 	restoreSelectedIncoming(rs, cp)
 	restoreRunEvents(rs, cp)
 	pinBackendRehydration(rs, cp)

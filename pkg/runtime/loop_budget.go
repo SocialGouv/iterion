@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"os"
 	"strings"
 	"time"
@@ -171,20 +172,39 @@ func markLoopBudget(rs *runState, loopName string) {
 // Loops entered later are re-marked at their entry edge, and a loop
 // whose price survived on the checkpoint keeps it.
 func (e *Engine) baselineUnpricedLoops(rs *runState) {
-	for loopName, loop := range e.workflow.Loops {
-		mark, priced := rs.loopBudgetMarks[loopName]
-		// A restored mark still at the run-start baseline on a loop whose
-		// body does not hold the workflow entry was never measured: the
-		// run entered that body off its head, on an engine that only
-		// priced entries at the head, and carried the zero into the
-		// checkpoint. Kept, it would price the loop's first crossing at
-		// everything the run has spent and decline it. Re-based here, it
-		// prices from the resume point like a loop measured for the first
-		// time. A fresh run re-bases a zero with a zero — no change.
-		if priced && (!isRunStartBaseline(mark) || loopHoldsEntry(loop, e.workflow.Entry)) {
+	for loopName := range e.workflow.Loops {
+		if _, priced := rs.loopBudgetMarks[loopName]; priced {
 			continue
 		}
 		markLoopBudget(rs, loopName)
+	}
+}
+
+// loopBudgetMarksVersion is the format stamped on checkpoints: version 2
+// marks are measured (a loop's entry or its back-edge). Checkpoints below
+// it were written by an engine that also kept the run-start baseline on
+// loops never entered at their head — see restoreCheckpointBudget.
+const loopBudgetMarksVersion = 2
+
+// restoreCheckpointBudget restores consumption and loop prices from a
+// checkpoint, then drops what a legacy checkpoint could only have guessed:
+// a mark still at the run-start baseline on a loop whose body does not hold
+// the workflow entry. Such a loop was entered off its head, on an engine
+// that priced entries at the head only, and never measured; restored, the
+// zero would price its first crossing after the resume at everything the
+// run has spent and decline it. Dropped, the loop reports no shortfall
+// until measured and the session baseline prices it from the resume point.
+// Provenance decides, never the mark's shape: a version-2 checkpoint keeps
+// a zero that a loop legitimately entered at zero consumption.
+func (e *Engine) restoreCheckpointBudget(rs *runState, cp *store.Checkpoint) {
+	restoreBudgetAccounting(rs, cp)
+	if cp == nil || cp.LoopBudgetMarksV >= loopBudgetMarksVersion {
+		return
+	}
+	for loopName, mark := range rs.loopBudgetMarks {
+		if isRunStartBaseline(mark) && !loopHoldsEntry(e.workflow.Loops[loopName], e.workflow.Entry) {
+			delete(rs.loopBudgetMarks, loopName)
+		}
 	}
 }
 

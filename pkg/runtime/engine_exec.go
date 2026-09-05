@@ -883,6 +883,14 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 			// left at run start would price its first crossing at the
 			// whole run and decline it. A FIRST entry needs the baseline
 			// just as much as a re-entry, and leaves the counter at 0.
+			// Never while the loop is iterating, unless at one of its entries:
+			// a body computed over non-loop edges can leave a node of the
+			// cycle outside it, and the edge from that node back into the
+			// body fires every iteration — re-basing there would price the
+			// iteration at its tail alone and never decline the back-edge.
+			if rs.loopCounters[loopName] > 0 && !loop.Entries[selected.To] {
+				continue
+			}
 			markLoopBudget(rs, loopName)
 			if !loop.Entries[selected.To] {
 				continue

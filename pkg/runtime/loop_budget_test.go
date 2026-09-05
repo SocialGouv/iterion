@@ -541,37 +541,113 @@ func TestLoopBudgetGuard_BodyEnteredOffItsHeadIsPricedFromThatEntry(t *testing.T
 	}
 }
 
-// TestBaselineUnpricedLoops_ReBasesAStaleRunStartMarkOfALateLoop: a
-// checkpoint written by an engine that priced entries only at a loop's
-// head carries a run-start zero for a loop entered off its head. Restored
-// as is, that zero prices the loop's first crossing at everything the run
-// spent. The session baseline re-bases it at the resume point; a loop
-// that holds the workflow entry keeps its zero, which is its true price;
-// a measured mark is never touched.
-func TestBaselineUnpricedLoops_ReBasesAStaleRunStartMarkOfALateLoop(t *testing.T) {
+// narrowBodyLoopWorkflow: the loop's body, computed over non-loop edges,
+// holds only its head and tail; the expensive node on its cycle sits
+// outside, and the edge from it back into the body fires every iteration.
+func narrowBodyLoopWorkflow(maxTokens int) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "narrow_body_loop",
+		Entry: "head",
+		Nodes: map[string]ir.Node{
+			"head": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "head"}},
+			"fix":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"tail": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "head", To: "fix"},
+			{From: "fix", To: "tail"},
+			{From: "tail", To: "head", LoopName: "narrow"},
+			{From: "tail", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"narrow": {
+				Name:          "narrow",
+				MaxIterations: 10,
+				Entries:       map[string]bool{"head": true},
+				Body:          map[string]bool{"head": true, "tail": true},
+			},
+		},
+		Budget: &ir.Budget{MaxTokens: maxTokens},
+	}
+}
+
+// TestLoopBudgetGuard_MidIterationCrossingDoesNotReBase: once a loop is
+// iterating, the edge from a node outside its computed body back into it
+// must not re-base the price — it fires every iteration, right before the
+// back-edge, and re-basing there prices the iteration at its tail alone:
+// the guard never declines, and the run walks into the hard limit with
+// its work stranded. Priced by the last back-edge, the third crossing is
+// declined and the run leaves through its exit path.
+func TestLoopBudgetGuard_MidIterationCrossingDoesNotReBase(t *testing.T) {
+	wf := narrowBodyLoopWorkflow(10_000)
+	exec := newStubExecutor()
+	fixes := 0
+	exec.on("head", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
+		fixes++
+		return map[string]any{"ok": true, "_tokens": 3_000}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	eng := New(wf, tmpStore(t), exec)
+	if err := eng.Run(context.Background(), "narrow", nil); err != nil {
+		t.Fatalf("Run must leave through the exit path, got: %v", err)
+	}
+	if fixes != 2 {
+		t.Fatalf("fix ran %d times, want 2: the third crossing must be declined at 6k spent + 3k priced ≥ 90%% of 10k", fixes)
+	}
+}
+
+// TestRestoreCheckpointBudget_LegacyMarksOfALateLoopAreDropped: provenance,
+// not shape, decides. A checkpoint below the marks version carries the
+// run-start baseline for loops an older engine never priced at their
+// off-head entry: those marks are dropped (unmarked reports no shortfall,
+// the session baseline then prices from the resume point); a loop holding
+// the workflow entry keeps its zero, a measured mark is kept. A version-2
+// checkpoint keeps a zero that a loop legitimately entered at zero.
+func TestRestoreCheckpointBudget_LegacyMarksOfALateLoopAreDropped(t *testing.T) {
 	wf := lateLoopWorkflow(12_000)
 	wf.Loops["outer"] = &ir.Loop{Name: "outer", MaxIterations: 3, Entries: map[string]bool{"pre": true}, Body: map[string]bool{"pre": true, "verify": true, "gate": true}}
 	wf.Loops["measured"] = &ir.Loop{Name: "measured", MaxIterations: 3, Entries: map[string]bool{"act": true}, Body: map[string]bool{"act": true, "verify": true}}
 	eng := New(wf, tmpStore(t), newStubExecutor())
-	rs := eng.newRunState("r", nil)
-	rs.budget = newSharedBudget(wf.Budget, eng.logger)
-	rs.budget.RecordUsage(8_000, 0)
-	restoreLoopBudgetMarks(rs, map[string]map[string]float64{
+	marks := map[string]map[string]float64{
 		"act_loop": {"tokens": 0, "cost_usd": 0, "duration": 500_000},
 		"outer":    {"tokens": 0, "cost_usd": 0, "duration": 500_000},
 		"measured": {"tokens": 5_000, "cost_usd": 0, "duration": 3e12},
-	})
-	eng.baselineUnpricedLoops(rs)
-	if got := rs.loopBudgetMarks["act_loop"]["tokens"]; got != 8_000 {
-		t.Fatalf("act_loop mark = %v tokens, want 8000: the stale run-start mark must be re-based at the resume point", got)
 	}
-	if got := rs.loopBudgetMarks["outer"]["tokens"]; got != 0 {
-		t.Fatalf("outer mark = %v tokens, want 0: a loop holding the entry keeps its run-start price", got)
-	}
-	if got := rs.loopBudgetMarks["measured"]["tokens"]; got != 5_000 {
-		t.Fatalf("measured mark = %v tokens, want 5000: a measured mark is never touched", got)
-	}
-	if v := eng.loopBudgetShortfall("act_loop", rs); v != nil {
-		t.Fatalf("act_loop reports a shortfall right after re-basing: %+v", v)
+	for _, tc := range []struct {
+		name     string
+		version  int
+		wantLate bool
+	}{
+		{"legacy checkpoint: the late loop's run-start mark is dropped", 0, false},
+		{"version-2 checkpoint: a zero is a price", loopBudgetMarksVersion, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := eng.newRunState("r", nil)
+			rs.budget = newSharedBudget(wf.Budget, eng.logger)
+			cp := &store.Checkpoint{NodeID: "verify", BudgetTokensUsed: 8_000, LoopBudgetMarks: marks, LoopBudgetMarksV: tc.version}
+			eng.restoreCheckpointBudget(rs, cp)
+			if _, ok := rs.loopBudgetMarks["act_loop"]; ok != tc.wantLate {
+				t.Fatalf("act_loop marked = %v, want %v", ok, tc.wantLate)
+			}
+			if got := rs.loopBudgetMarks["outer"]["tokens"]; got != 0 {
+				t.Fatalf("outer mark = %v, want 0 kept: it holds the entry", got)
+			}
+			if got := rs.loopBudgetMarks["measured"]["tokens"]; got != 5_000 {
+				t.Fatalf("measured mark = %v, want 5000 kept", got)
+			}
+			eng.baselineUnpricedLoops(rs)
+			v := eng.loopBudgetShortfall("act_loop", rs)
+			if !tc.wantLate && v != nil {
+				t.Fatalf("a dropped mark is re-based by the session baseline; act_loop reports a shortfall right after the resume: %+v", v)
+			}
+			if tc.wantLate && v == nil {
+				t.Fatal("a kept zero is a price: act_loop's first crossing after the resume costs the whole spend and must be declined at 8000 + 8000 ≥ 90%% of 12000")
+			}
+		})
 	}
 }
