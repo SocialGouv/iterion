@@ -320,7 +320,7 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	}
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--remove-label", a.opts.ClaimedLabel}
 	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
-		if a.ghReleaseGone(err) {
+		if a.ghReleaseGone(err, num) {
 			return ErrNotFound
 		}
 		return fmt.Errorf("gh issue edit (release): %w", err)
@@ -330,21 +330,53 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 
 // ghReleaseGone recognises the gh CLI error texts that mean the release
 // target is PERMANENTLY absent: the issue itself (GraphQL resolve
-// failure, REST 404), or the claim LABEL deleted from the repo — the
-// second member of the same class: either way the claim cannot exist
-// any more, and a non-benign error would keep the journal entry retried
-// and warned at every boot, for ever. The label form is anchored on the
-// exact configured label name (gh 2.x prints `'<label>' not found`), so
-// an unrelated not-found in the message cannot match. Text matching is
+// failure, or a REST 404 whose URL names THIS issue), or the claim LABEL
+// deleted from the repo — the second member of the same class: either
+// way the claim cannot exist any more, and a non-benign error would keep
+// the journal entry retried and warned at every boot, for ever.
+//
+// Both absence arms are scoped to the issue on purpose. GitHub answers
+// 404 (not 403) for a repository a token can no longer see, so a bare
+// "404" would read a permission regression as a gone issue and drop the
+// journal entry — this adapter's only recovery path — while the claim
+// label stayed on the issue. The label form is anchored on the exact
+// configured label name (gh 2.x prints `'<label>' not found`), so an
+// unrelated not-found in the message cannot match. Text matching is
 // brittle but the CLI offers no typed channel.
-func (a *GitHubAdapter) ghReleaseGone(err error) bool {
+func (a *GitHubAdapter) ghReleaseGone(err error, num int) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "could not resolve to an issue") ||
-		strings.Contains(msg, "not found (http 404)") ||
+		ghIssueScoped404(msg, num) ||
 		strings.Contains(msg, strings.ToLower("'"+a.opts.ClaimedLabel+"' not found"))
+}
+
+// ghIssueScoped404 matches gh's REST failure form (`HTTP 404: Not Found
+// (<url>)`) only when the URL's path names issue `num` — `/issues/638`
+// followed by a path or query separator, or the closing parenthesis, so
+// issue 6380 never matches 638.
+func ghIssueScoped404(lowerMsg string, num int) bool {
+	if !strings.Contains(lowerMsg, "http 404") {
+		return false
+	}
+	needle := fmt.Sprintf("/issues/%d", num)
+	for start := 0; ; {
+		i := strings.Index(lowerMsg[start:], needle)
+		if i < 0 {
+			return false
+		}
+		end := start + i + len(needle)
+		if end == len(lowerMsg) {
+			return true
+		}
+		switch lowerMsg[end] {
+		case '/', ')', '?', ' ', '\n':
+			return true
+		}
+		start = end
+	}
 }
 
 // HasLinkedPR reports whether an OPEN pull request already references this

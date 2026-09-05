@@ -343,6 +343,31 @@ func TestGitHubReleaseMapsMissingIssueToNotFound(t *testing.T) {
 	}
 }
 
+// TestGitHubReleaseNarrowsRest404ToTheIssue: GitHub answers 404 (not 403)
+// for a repository a token can no longer see, so a REST 404 that names
+// only the REPO is a permission regression, not a gone issue — mapping it
+// to ErrNotFound drops the claim-journal entry (this adapter's only
+// recovery path) while the claim label stays on the issue. Only a 404
+// whose URL names THIS issue is the permanent shape.
+func TestGitHubReleaseNarrowsRest404ToTheIssue(t *testing.T) {
+	fake := &fakeGH{}
+	a := newGHAdapter(t, fake, nil)
+	fake.editErr = errors.New("HTTP 404: Not Found (https://api.github.com/repos/owner/repo/issues/638/labels/iterion-claimed)")
+	if err := a.Release(context.Background(), "github:owner/repo#638", "m"); !errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("an issue-scoped REST 404 = %v, want ErrNotFound (the issue is gone; the entry would be retried at every boot)", err)
+	}
+	for _, msg := range []string{
+		"HTTP 404: Not Found (https://api.github.com/repos/owner/repo)",
+		"HTTP 404: Not Found (https://api.github.com/repos/owner/repo/issues/6380)",
+		"GraphQL: Could not resolve to a Repository with the name 'owner/repo'. (repository)",
+	} {
+		fake.editErr = errors.New(msg)
+		if err := a.Release(context.Background(), "github:owner/repo#638", "m"); err == nil || errors.Is(err, tracker.ErrNotFound) {
+			t.Fatalf("%q must stay a real error (the journal entry is the only recovery path), got %v", msg, err)
+		}
+	}
+}
+
 // The claim LABEL deleted from the repo is the same permanent shape the
 // missing-ISSUE mapping closed: gh refuses the remove, and a non-benign
 // error kept the journal entry retried + warned at every boot for ever.
