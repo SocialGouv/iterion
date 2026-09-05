@@ -1,5 +1,98 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — the plan-budget guard reads the run, and both refusals are typed (no run; bot 1.5.0)
+
+- Status: **validated** by the engine, not by a live run — this is a bot
+  change made against two engine features that landed the same day
+  (PR #764: the `run.*` expr namespace, #738; the typed `fail <name>:`
+  node, #739), issue #752/#762. The next dogfood should confirm the
+  refusal reads right in the studio and that a real `iterion remote runs
+  resume --max-cost-usd …` walks past the guard.
+- Versions: bot `branch-improve-loop` 1.4.0 → **1.5.0** · iterion at
+  `c2898c08f` (v3.108.1, the first build carrying `run.*` and typed fails).
+- Method: no LLM run. The guard is exercised through the ENGINE with the
+  scenario stub against the bot's own shipped `budget:` block
+  (`e2e/branch_improve_loop_test.go`, five cases): the stubbed plan nodes
+  bill a chosen amount, and the readout is which tail the run took.
+- Result — what changed in the bot:
+  - `plan_budget_gate` is now **one `compute`** reading
+    `run.elapsed_seconds` / `run.cost_usd` against
+    `run.max_duration_seconds` / `run.max_cost_usd`. It replaces the tool
+    node that shelled out to python for `time.time()` arithmetic.
+  - **The two mirror vars are gone** (`budget_max_duration_minutes` /
+    `budget_max_cost_usd`). They existed only because no primitive exposed
+    the run's caps, and they were kept in sync **by hand**: `iterion run
+    --max-cost-usd 200` re-budgeted the run and never reached them, so the
+    guard went on refusing against a literal `75` nobody had updated. The
+    `run.max_*` members are the caps IN FORCE — after the CLI flags, the
+    recipe, the platform ceiling and any live `raise_budget` — so the
+    drift is structurally impossible now, not merely documented.
+    (`TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce` is that
+    property: the same $37.50 spend refuses under the shipped $75 cap and
+    passes under a re-budgeted $200 one.)
+  - `plan_scope_probe`'s `started_epoch` is gone with it; the run's clock
+    is monotonic and survives a resume, which a `time.time()` stamp did
+    not.
+  - `plan_cost_probe` is gone: it existed to hand the tool node a nil-safe
+    per-node cost SUM. Nothing but the plan phase has spent when the guard
+    runs, so `run.cost_usd` IS the phase's spend — and it also counts
+    anything a hand-written sum would have forgotten. Its relay role moved
+    onto the guard, which now receives the hand-off from all three
+    upstream routes directly.
+  - Both refusals are **named fail nodes**, so the code reaches the RUN
+    (`failure_code` / `error`) instead of only the guard's output:
+    `plan_exhausted` (PLAN_BUDGET_EXHAUSTED, **resumable**) and
+    `workspace_not_a_repo` (WORKSPACE_NOT_A_REPO, terminal). The 09-05
+    dogfood below recorded both as debt: two production runs ended
+    `failed` reading `workflow reached fail node`, and the operator had to
+    open the artifacts to learn which refusal fired.
+- **How to resume a `PLAN_BUDGET_EXHAUSTED` run.** The refusal is
+  `failed_resumable` and the checkpoint anchors on `plan_budget_gate`, not
+  on the fail node — so the resume **re-evaluates the guard** against the
+  caps then in force:
+
+  ```sh
+  iterion resume --run-id <id> --file bots/branch-improve-loop/main.bot \
+    --max-duration 5h --max-cost-usd 150
+  # or, same effect from the other side:
+  iterion resume --run-id <id> --file … --var plan_budget_ratio=0.6
+  ```
+
+  The plan phase this run already paid for is NOT re-run (the checkpoint
+  keeps `plan`/`plan_review`/`plan_revise`'s outputs); the campaign starts
+  on the plan already in hand. Nothing picks the refusal up by itself —
+  not `--auto-resume`, not the cloud runner's retry: a deliberate refusal
+  only changes verdict when an operator changes an input. Widening the cap
+  is the only thing that flips it, which is exactly why re-paying the plan
+  phase would be the wrong cure.
+- Value: the two workarounds the 09-05 bilan filed as debt (#738, #739)
+  are both retired, and the guard's arithmetic can no longer disagree with
+  the budget the run is actually under.
+- Findings / misses (engine, filed as observations for #762's PR):
+  - `{{run.*}}` renders EMPTY inside a `fail` node's `message:` — the fail
+    message resolves through `resolveMapping(scope)`, which carries
+    `outputs`/`vars` but not the run snapshot the expr evaluator and the
+    prompt/tool templates read. Measured on a probe bot: `run.elapsed=
+    cap=`. The bot works around it by putting the four figures on the
+    guard's own output and referencing `{{outputs.plan_budget_gate.…}}`,
+    which is arguably better anyway (the numbers are then also in the
+    artifact) — but the authoring instinct is to write `{{run.cost_usd}}`
+    there and get silence.
+  - A **tiny `max_duration` cannot be the lever** for a deterministic test
+    of the duration axis: the engine refuses a new node at 90% of a cap,
+    so with a small enough cap `BUDGET_EXCEEDED` fires before the guard
+    ever runs. The e2e drives the COST axis instead (a figure the stub
+    sets exactly); the duration axis is covered by the `> 0` unbounded
+    case and by the guard's own expression.
+  - A compute's output schema does **not** coerce a float into an `int`
+    field (probed: `used_pct: int` kept `0.0952…`), and float refs render
+    at full precision in a template. The gate therefore reports seconds
+    and USD rather than a rounded percentage.
+- Lessons for next run: launch with `--var plan_budget_ratio` small to
+  force the guard as before, then check `iterion remote runs list` shows
+  PLAN_BUDGET_EXHAUSTED (not FAIL_NODE) and that the resume with a widened
+  cap starts `campaign` without re-running `plan`.
+
 ## 2026-09-05 — lock-delivery follow-up on PR #770: an "open question" was a two-part defect, and one comment cited a function that never existed
 
 - Status: **delivered**. Run
