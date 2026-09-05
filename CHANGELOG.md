@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.1](https://github.com/SocialGouv/iterion/compare/v3.102.0...v3.102.1) (2026-09-05)
+
+### Bug Fixes
+
+* **webhooks:** a merge-queue heal stands down when the queue takes the PR back ([#693](https://github.com/SocialGouv/iterion/issues/693)) ([1b1009f](https://github.com/SocialGouv/iterion/commit/1b1009f0a6319ffd8ab491e6fd6b7ee10f3f5653)), references [iterion#682](https://github.com/iterion/issues/682) [#692](https://github.com/SocialGouv/iterion/issues/692)
+
+    <details><summary>why</summary>
+
+    The auto-heal lane launches the brancher bot when the queue ejects a PR, to rebase and push so the PR re-enters the queue. Nothing closed that loop: once the PR WAS back in the queue, the heal kept running, and its delivery tail force-pushes the branch — which cancels the queue build in flight and ejects the PR a second time. The repair becomes the next breakage.
+
+    </details>
+
 ## [3.102.0](https://github.com/SocialGouv/iterion/compare/v3.101.3...v3.102.0) (2026-09-04)
 
 ### Features
