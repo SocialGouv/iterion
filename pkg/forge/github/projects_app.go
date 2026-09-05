@@ -52,6 +52,14 @@ func (a *AppClient) ListProjectItems(ctx context.Context, ref forge.ProjectRef, 
 	return c.ListProjectItems(ctx, ref, opts)
 }
 
+func (a *AppClient) ItemForIssue(ctx context.Context, ref forge.ProjectRef, repo string, number int) (forge.ProjectItem, bool, error) {
+	c, err := a.projectsREST(ctx)
+	if err != nil {
+		return forge.ProjectItem{}, false, err
+	}
+	return c.ItemForIssue(ctx, ref, repo, number)
+}
+
 func (a *AppClient) IssueContentID(ctx context.Context, repo string, number int) (string, error) {
 	c, err := a.projectsREST(ctx)
 	if err != nil {

@@ -323,6 +323,9 @@ func (f *bindRouteFake) GetProject(context.Context, forge.ProjectRef) (forge.Pro
 func (f *bindRouteFake) ListProjectItems(context.Context, forge.ProjectRef, forge.ProjectItemListOptions) (forge.ProjectItemPage, error) {
 	return forge.ProjectItemPage{}, nil
 }
+func (f *bindRouteFake) ItemForIssue(context.Context, forge.ProjectRef, string, int) (forge.ProjectItem, bool, error) {
+	return forge.ProjectItem{}, false, nil
+}
 func (f *bindRouteFake) IssueContentID(context.Context, string, int) (string, error) { return "", nil }
 func (f *bindRouteFake) AddItem(context.Context, string, string) (forge.ProjectItem, error) {
 	return forge.ProjectItem{}, nil

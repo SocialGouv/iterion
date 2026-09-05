@@ -30,6 +30,9 @@ func (f *bindFake) GetProject(context.Context, forge.ProjectRef) (forge.Project,
 func (f *bindFake) ListProjectItems(context.Context, forge.ProjectRef, forge.ProjectItemListOptions) (forge.ProjectItemPage, error) {
 	return forge.ProjectItemPage{}, nil
 }
+func (f *bindFake) ItemForIssue(context.Context, forge.ProjectRef, string, int) (forge.ProjectItem, bool, error) {
+	return forge.ProjectItem{}, false, errors.New("not used")
+}
 func (f *bindFake) IssueContentID(context.Context, string, int) (string, error) {
 	return "", errors.New("not used")
 }

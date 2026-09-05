@@ -28,9 +28,15 @@ type fakeProjectBoard struct {
 	getErr  error
 	setErr  error
 	nodeIDs map[string]string // "repo#number" → content node id
+
+	// Call counters — a state write must not re-read the whole board.
+	getProjectCalls int
+	listItemsCalls  int
+	itemForIssue    int
 }
 
 func (f *fakeProjectBoard) GetProject(context.Context, forge.ProjectRef) (forge.Project, error) {
+	f.getProjectCalls++
 	if f.getErr != nil {
 		return forge.Project{}, f.getErr
 	}
@@ -38,10 +44,24 @@ func (f *fakeProjectBoard) GetProject(context.Context, forge.ProjectRef) (forge.
 }
 
 func (f *fakeProjectBoard) ListProjectItems(context.Context, forge.ProjectRef, forge.ProjectItemListOptions) (forge.ProjectItemPage, error) {
+	f.listItemsCalls++
 	if f.getErr != nil {
 		return forge.ProjectItemPage{}, f.getErr
 	}
 	return forge.ProjectItemPage{Items: f.items}, nil
+}
+
+func (f *fakeProjectBoard) ItemForIssue(_ context.Context, _ forge.ProjectRef, repo string, number int) (forge.ProjectItem, bool, error) {
+	f.itemForIssue++
+	if f.getErr != nil {
+		return forge.ProjectItem{}, false, f.getErr
+	}
+	for _, it := range f.items {
+		if strings.EqualFold(it.Content.Repo, repo) && it.Content.Number == number {
+			return it, true, nil
+		}
+	}
+	return forge.ProjectItem{}, false, nil
 }
 
 func (f *fakeProjectBoard) IssueContentID(_ context.Context, repo string, number int) (string, error) {
@@ -250,6 +270,37 @@ func TestGitHubProjectUpdateStateWritesTheField(t *testing.T) {
 		if len(c) >= 2 && c[0] == "issue" && c[1] == "edit" {
 			t.Errorf("board mode must not fall back to label edits: %v", c)
 		}
+	}
+}
+
+// TestGitHubProjectUpdateStateDoesNotRescanTheBoard is the cost guard. A state
+// write needs the status field, its option, the project id and ONE item id —
+// none of which requires paginating the whole board. Re-reading it per write
+// meant a poll cycle transitioning K issues paid K × (two project reads + a
+// full multi-page item scan), and on a GitHub-App connection every one of
+// those calls also mints a fresh installation token.
+func TestGitHubProjectUpdateStateDoesNotRescanTheBoard(t *testing.T) {
+	gh := &fakeGH{listOut: []byte(twoOpenIssues)}
+	board := &fakeProjectBoard{
+		fields: []forge.ProjectField{projectStatusField()},
+		items:  []forge.ProjectItem{projectItem("PVTI_1", "owner/repo", 1, "Planned")},
+	}
+	a := boardModeAdapter(t, gh, board)
+
+	if err := a.UpdateState(context.Background(), "github:owner/repo#1", "in_progress"); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+	if len(board.writes) != 1 || board.writes[0] != "PVTI_1/PVTSSF_status/opt_progress" {
+		t.Fatalf("writes = %v", board.writes)
+	}
+	if board.listItemsCalls != 0 {
+		t.Errorf("ListProjectItems called %d times — a state write must not paginate the board", board.listItemsCalls)
+	}
+	if board.getProjectCalls != 1 {
+		t.Errorf("GetProject called %d times, want 1 — the schema and the project id come from the same read", board.getProjectCalls)
+	}
+	if board.itemForIssue != 1 {
+		t.Errorf("ItemForIssue called %d times, want 1", board.itemForIssue)
 	}
 }
 

@@ -243,6 +243,17 @@ type BoardClient interface {
 	// caller decides, because "archived" means different things per workflow.
 	ListProjectItems(ctx context.Context, ref ProjectRef, opts ProjectItemListOptions) (ProjectItemPage, error)
 
+	// ItemForIssue resolves ONE issue's item on this board, without reading
+	// the board's other items. ok=false means the issue is not on the board —
+	// a fact, not an error.
+	//
+	// It exists because the alternative is paginating every item to find one:
+	// a poll cycle transitioning K issues would pay K full board scans, and on
+	// a GitHub-App connection each of those calls also mints an installation
+	// token. Providers whose API cannot answer it may implement it as a scan;
+	// the point is that the caller no longer has to.
+	ItemForIssue(ctx context.Context, ref ProjectRef, repo string, number int) (ProjectItem, bool, error)
+
 	// IssueContentID resolves a forge issue ("owner/repo", number) to the
 	// opaque handle AddItem takes. Separate from AddItem because the provider
 	// may need a different call (or none) to obtain it.

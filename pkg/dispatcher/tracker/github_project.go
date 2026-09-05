@@ -89,20 +89,23 @@ func (p *GitHubProjectOptions) candidateStatuses() []string {
 // boardMode reports whether this adapter reads its states from a project.
 func (a *GitHubAdapter) boardMode() bool { return a.opts.Project != nil }
 
-// projectSnapshot is one read of the board: the Status field definition plus
-// the items of THIS repo, keyed by issue number.
+// projectSnapshot is one read of the board: its id, the Status field
+// definition, and the items of THIS repo keyed by issue number.
+//
+// projectID is carried rather than re-fetched: it comes from the same
+// GetProject that yields the schema, and a second call for it alone was a
+// whole extra round trip — plus, on a GitHub-App connection, a whole extra
+// installation-token mint.
 type projectSnapshot struct {
+	projectID   string
 	statusField forge.ProjectField
 	byNumber    map[int]forge.ProjectItem
 }
 
-// readProject fetches the board's Status schema and this repo's items.
-//
-// It is read fresh per call rather than cached: the dispatcher polls on the
-// order of 30s, a board is a handful of GraphQL pages, and a cache would buy
-// little at the cost of a staleness class in the one place a stale state means
-// a wrong dispatch.
-func (a *GitHubAdapter) readProject(ctx context.Context) (projectSnapshot, error) {
+// readProjectSchema reads the board's identity and Status field WITHOUT
+// paginating its items. It is exactly what a state write needs — the project
+// id, the field id and the option ids — and nothing more.
+func (a *GitHubAdapter) readProjectSchema(ctx context.Context) (projectSnapshot, error) {
 	p := a.opts.Project
 	ref := p.ref()
 	project, err := p.Board.GetProject(ctx, ref)
@@ -114,7 +117,26 @@ func (a *GitHubAdapter) readProject(ctx context.Context) (projectSnapshot, error
 		return projectSnapshot{}, fmt.Errorf("github tracker: project %s has no %q field — board mode has nothing to read a state from",
 			ref, forge.ProjectStatusFieldName)
 	}
-	snap := projectSnapshot{statusField: status, byNumber: map[int]forge.ProjectItem{}}
+	return projectSnapshot{
+		projectID:   project.ID,
+		statusField: status,
+		byNumber:    map[int]forge.ProjectItem{},
+	}, nil
+}
+
+// readProject fetches the board's Status schema and this repo's items.
+//
+// It is read fresh per call rather than cached: the dispatcher polls on the
+// order of 30s, a board is a handful of GraphQL pages, and a cache would buy
+// little at the cost of a staleness class in the one place a stale state means
+// a wrong dispatch.
+func (a *GitHubAdapter) readProject(ctx context.Context) (projectSnapshot, error) {
+	p := a.opts.Project
+	ref := p.ref()
+	snap, err := a.readProjectSchema(ctx)
+	if err != nil {
+		return projectSnapshot{}, err
+	}
 	cursor := ""
 	for {
 		page, err := p.Board.ListProjectItems(ctx, ref, forge.ProjectItemListOptions{Cursor: cursor})
@@ -254,7 +276,10 @@ func (a *GitHubAdapter) updateStateOnBoard(ctx context.Context, id, newState str
 	if !ok {
 		return ErrNotFound
 	}
-	snap, err := a.readProject(ctx)
+	// A state write needs the schema, the project id and ONE item — never the
+	// whole board. Scanning it here made a poll cycle pay a full multi-page
+	// read (plus, on a GitHub App, an installation-token mint) per transition.
+	snap, err := a.readProjectSchema(ctx)
 	if err != nil {
 		return err
 	}
@@ -263,25 +288,23 @@ func (a *GitHubAdapter) updateStateOnBoard(ctx context.Context, id, newState str
 		return fmt.Errorf("%w: project %s has no %q option in its %s field",
 			ErrTransitionRejected, p.ref(), status, forge.ProjectStatusFieldName)
 	}
-	project, err := p.Board.GetProject(ctx, p.ref())
+	item, found, err := p.Board.ItemForIssue(ctx, p.ref(), a.opts.Repo, num)
 	if err != nil {
-		return fmt.Errorf("github tracker: read project %s: %w", p.ref(), err)
+		return fmt.Errorf("github tracker: find %s#%d on project %s: %w", a.opts.Repo, num, p.ref(), err)
 	}
-	itemID := ""
-	if it, ok := snap.byNumber[num]; ok {
-		itemID = it.ID
-	} else {
+	itemID := item.ID
+	if !found {
 		contentID, err := p.Board.IssueContentID(ctx, a.opts.Repo, num)
 		if err != nil {
 			return fmt.Errorf("github tracker: resolve %s#%d for the board: %w", a.opts.Repo, num, err)
 		}
-		added, err := p.Board.AddItem(ctx, project.ID, contentID)
+		added, err := p.Board.AddItem(ctx, snap.projectID, contentID)
 		if err != nil {
 			return fmt.Errorf("github tracker: add %s#%d to project %s: %w", a.opts.Repo, num, p.ref(), err)
 		}
 		itemID = added.ID
 	}
-	if err := p.Board.SetSingleSelect(ctx, project.ID, itemID, snap.statusField.ID, option.ID); err != nil {
+	if err := p.Board.SetSingleSelect(ctx, snap.projectID, itemID, snap.statusField.ID, option.ID); err != nil {
 		return fmt.Errorf("github tracker: set %s=%q on %s#%d: %w",
 			forge.ProjectStatusFieldName, status, a.opts.Repo, num, err)
 	}

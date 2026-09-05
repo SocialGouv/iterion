@@ -92,6 +92,22 @@ func parseCursor(c string) (int, error) {
 	return int(c[len("page-")] - '0'), nil
 }
 
+// ItemForIssue answers from the same pages the board serves, so the fake
+// cannot claim an item the board does not carry.
+func (f *fakeBoardClient) ItemForIssue(_ context.Context, _ forge.ProjectRef, repo string, number int) (forge.ProjectItem, bool, error) {
+	if f.err != nil {
+		return forge.ProjectItem{}, false, f.err
+	}
+	for _, page := range f.pages {
+		for _, it := range page {
+			if strings.EqualFold(it.Content.Repo, repo) && it.Content.Number == number {
+				return it, true, nil
+			}
+		}
+	}
+	return forge.ProjectItem{}, false, nil
+}
+
 func (f *fakeBoardClient) IssueContentID(context.Context, string, int) (string, error) {
 	return "", errors.New("not used")
 }

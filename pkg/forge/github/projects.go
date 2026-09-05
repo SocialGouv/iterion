@@ -74,6 +74,34 @@ const issueNodeIDQuery = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){ issue(number:$number){ id } }
 }`
 
+// issueProjectItemsQuery asks the ISSUE which project items back it, instead of
+// asking the project for all of its items and searching. An issue sits on a
+// handful of boards, so one bounded call replaces a multi-page scan.
+const issueProjectItemsQuery = `query($owner:String!,$name:String!,$number:Int!,$first:Int!,$values:Int!){
+  repository(owner:$owner,name:$name){
+    issue(number:$number){
+      number title url state
+      projectItems(first:$first){
+        nodes{
+          id updatedAt isArchived type
+          project{ id number }
+          fieldValues(first:$values){
+            nodes{
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue { name optionId updatedAt field { ... on ProjectV2FieldCommon { id name } } }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// issueProjectItemsPageSize bounds the per-issue project lookup. An issue on
+// more than this many boards is pathological; the lookup reports a miss rather
+// than paging, and the caller's add-to-board path then handles it.
+const issueProjectItemsPageSize = 20
+
 const addProjectItemMutation = `mutation($projectId:ID!,$contentId:ID!){
   addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){
     item{
@@ -350,6 +378,73 @@ func (c *AdminClient) ListProjectItems(ctx context.Context, ref forge.ProjectRef
 		page.Items = append(page.Items, normalizeItem(n))
 	}
 	return page, nil
+}
+
+// ItemForIssue resolves one issue's item on ONE board, asking the issue rather
+// than scanning the project.
+//
+// The project is matched on its NUMBER, which is what the caller addressed the
+// board by; the item's own `project.id` is not compared against a cached
+// project id, so a stale cache cannot turn a present item into a miss.
+func (c *AdminClient) ItemForIssue(ctx context.Context, ref forge.ProjectRef, repo string, number int) (forge.ProjectItem, bool, error) {
+	if err := ref.Validate(); err != nil {
+		return forge.ProjectItem{}, false, err
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return forge.ProjectItem{}, false, fmt.Errorf("github: item for issue: repo must be owner/name, got %q", repo)
+	}
+	if number <= 0 {
+		return forge.ProjectItem{}, false, fmt.Errorf("github: item for issue: issue number must be positive, got %d", number)
+	}
+	var out struct {
+		Repository *struct {
+			Issue *struct {
+				Number       int    `json:"number"`
+				Title        string `json:"title"`
+				URL          string `json:"url"`
+				State        string `json:"state"`
+				ProjectItems struct {
+					Nodes []struct {
+						wireItem
+						Project struct {
+							ID     string `json:"id"`
+							Number int    `json:"number"`
+						} `json:"project"`
+					} `json:"nodes"`
+				} `json:"projectItems"`
+			} `json:"issue"`
+		} `json:"repository"`
+	}
+	vars := map[string]any{
+		"owner": owner, "name": name, "number": number,
+		"first": issueProjectItemsPageSize, "values": projectItemValuesPerItem,
+	}
+	if err := c.graphQLOp(ctx, "item for issue", issueProjectItemsQuery, vars, &out); err != nil {
+		return forge.ProjectItem{}, false, err
+	}
+	if out.Repository == nil || out.Repository.Issue == nil {
+		return forge.ProjectItem{}, false, fmt.Errorf("github: item for issue: %s#%d not found", repo, number)
+	}
+	iss := out.Repository.Issue
+	for _, n := range iss.ProjectItems.Nodes {
+		if n.Project.Number != ref.Number {
+			continue
+		}
+		// The per-issue query cannot select the item's own content (it IS the
+		// issue), so fill it from the issue the caller asked about — otherwise
+		// the normalized item would carry an empty repo/number and read as a
+		// draft to every consumer.
+		w := n.wireItem
+		w.Content.TypeName = "Issue"
+		w.Content.Number = iss.Number
+		w.Content.Title = iss.Title
+		w.Content.URL = iss.URL
+		w.Content.State = iss.State
+		w.Content.Repository.NameWithOwner = repo
+		return normalizeItem(w), true, nil
+	}
+	return forge.ProjectItem{}, false, nil
 }
 
 // IssueContentID resolves "owner/repo"#number to the issue's node id, the

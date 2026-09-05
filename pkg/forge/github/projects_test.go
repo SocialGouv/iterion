@@ -107,6 +107,50 @@ const fixtureItemsPage2 = `{
   }
 }`
 
+// fixtureIssueProjectItems is the RECORDED shape of the per-issue project
+// lookup, captured against SocialGouv/iterion#613 on board 203. Two properties
+// of it matter and neither is obvious from the docs: the item carries NO
+// content block (it is the issue), and the field-value list mixes kinds the
+// query selected nothing for (`ProjectV2ItemFieldRepositoryValue`,
+// `ProjectV2ItemFieldTextValue` with no `field`).
+const fixtureIssueProjectItems = `{
+  "data": {
+    "repository": {
+      "issue": {
+        "number": 613,
+        "title": "epic: plug the prod cloud instance and a team onto the GitHub project board",
+        "url": "https://github.com/SocialGouv/iterion/issues/613",
+        "state": "OPEN",
+        "projectItems": {
+          "nodes": [
+            {
+              "id": "PVTI_lADOAh0HH84BiOg8zg5FIis",
+              "updatedAt": "2026-09-02T12:35:20Z",
+              "isArchived": false,
+              "type": "ISSUE",
+              "project": {"id": "PVT_kwDOAh0HH84BiOg8", "number": 203},
+              "fieldValues": {"nodes": [
+                {"__typename":"ProjectV2ItemFieldRepositoryValue"},
+                {"__typename":"ProjectV2ItemFieldTextValue"},
+                {"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Planned","optionId":"6b7641c9","updatedAt":"2026-09-02T12:21:32Z","field":{"id":"PVTSSF_status","name":"Status"}},
+                {"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"engine","optionId":"8377b935","updatedAt":"2026-09-02T12:21:33Z","field":{"id":"PVTSSF_area","name":"Area"}}
+              ]}
+            },
+            {
+              "id": "PVTI_on_another_board",
+              "updatedAt": "2026-09-02T12:35:20Z",
+              "isArchived": false,
+              "type": "ISSUE",
+              "project": {"id": "PVT_other", "number": 99},
+              "fieldValues": {"nodes": []}
+            }
+          ]
+        }
+      }
+    }
+  }
+}`
+
 // fixtureNotFound is the real envelope GitHub returns for a missing project:
 // HTTP 200, a populated `data` with a null leaf, AND an errors[] entry. Reading
 // only `data` here yields a zero-value Project and no error at all.
@@ -162,6 +206,8 @@ func (f *gqlFake) route(q string, vars map[string]any) (int, string) {
 		return f.respond(q, vars)
 	}
 	switch {
+	case strings.Contains(q, "projectItems("):
+		return 200, fixtureIssueProjectItems
 	case strings.Contains(q, "addProjectV2ItemById"):
 		return 200, `{"data":{"addProjectV2ItemById":{"item":{"id":"PVTI_added","updatedAt":"2026-09-05T10:00:00Z","isArchived":false,"type":"ISSUE","content":{"__typename":"Issue","number":613,"title":"epic","url":"https://github.com/SocialGouv/iterion/issues/613","state":"OPEN","repository":{"nameWithOwner":"SocialGouv/iterion"}},"fieldValues":{"nodes":[]}}}}}`
 	case strings.Contains(q, "updateProjectV2ItemFieldValue"):
@@ -462,6 +508,72 @@ func TestAddItemReturnsTheItem(t *testing.T) {
 	req := f.lastRequest()
 	if got, _ := req.Variables["contentId"].(string); got != "I_kwDOissue613" {
 		t.Errorf("contentId = %q", got)
+	}
+}
+
+// TestItemForIssueFindsTheBoundBoardsItem pins the targeted lookup that
+// replaced a full board scan per state write.
+func TestItemForIssueFindsTheBoundBoardsItem(t *testing.T) {
+	f := newGQLFake(t)
+	it, found, err := f.client().ItemForIssue(context.Background(),
+		mustProjectRef(t, "SocialGouv/203"), "SocialGouv/iterion", 613)
+	if err != nil {
+		t.Fatalf("ItemForIssue: %v", err)
+	}
+	if !found {
+		t.Fatal("the issue IS on board 203")
+	}
+	// It must pick THIS board's item, not the first one the issue carries.
+	if it.ID != "PVTI_lADOAh0HH84BiOg8zg5FIis" {
+		t.Errorf("item id = %q — the wrong board's item would write the wrong project", it.ID)
+	}
+	// The per-issue query cannot select the item's content (it IS the issue),
+	// so it is filled from the issue — otherwise the item reads as a draft to
+	// every consumer and gets skipped.
+	if it.Content.Kind != forge.ProjectContentIssue || it.Content.Repo != "SocialGouv/iterion" || it.Content.Number != 613 {
+		t.Errorf("content not backfilled from the issue: %+v", it.Content)
+	}
+	if it.Content.State != "open" {
+		t.Errorf("issue state = %q, want it normalized to lowercase", it.Content.State)
+	}
+	st, ok := it.Field("Status")
+	if !ok || st.Value != "Planned" || st.OptionID != "6b7641c9" {
+		t.Errorf("Status value = %+v,%v", st, ok)
+	}
+	want := time.Date(2026, 9, 2, 12, 21, 32, 0, time.UTC)
+	if !st.UpdatedAt.Equal(want) {
+		t.Errorf("Status UpdatedAt = %v, want the field's own timestamp %v", st.UpdatedAt, want)
+	}
+}
+
+func TestItemForIssueReportsAMissWithoutError(t *testing.T) {
+	f := newGQLFake(t)
+	// Board 42 is not among the issue's project items.
+	_, found, err := f.client().ItemForIssue(context.Background(),
+		mustProjectRef(t, "SocialGouv/42"), "SocialGouv/iterion", 613)
+	if err != nil {
+		t.Fatalf("a miss is a fact, not an error: %v", err)
+	}
+	if found {
+		t.Error("the issue is not on board 42")
+	}
+}
+
+func TestItemForIssueValidatesItsInputs(t *testing.T) {
+	f := newGQLFake(t)
+	f.respond = func(string, map[string]any) (int, string) {
+		t.Error("a malformed input must fail before any API call")
+		return 500, "{}"
+	}
+	ref := mustProjectRef(t, "SocialGouv/203")
+	if _, _, err := f.client().ItemForIssue(context.Background(), ref, "iterion", 1); err == nil {
+		t.Error("want an error for a repo without an owner")
+	}
+	if _, _, err := f.client().ItemForIssue(context.Background(), ref, "o/r", 0); err == nil {
+		t.Error("want an error for a non-positive issue number")
+	}
+	if _, _, err := f.client().ItemForIssue(context.Background(), forge.ProjectRef{}, "o/r", 1); err == nil {
+		t.Error("want an error for an invalid project ref")
 	}
 }
 
