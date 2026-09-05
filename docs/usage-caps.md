@@ -50,7 +50,8 @@ path wholesale rather than inventing a recovery of its own.
 | `ITERION_USAGE_CAP_WEEK_PCT` | `0`–`100` (`0`/unset = no cap) | unset |
 | `ITERION_USAGE_CAP_WEEK_MODE` | `off` \| `soft` \| `hard` | `hard` |
 | `ITERION_USAGE_CAP` | `off` disarms both caps | unset |
-| `ITERION_USAGE_CAP_TRUST_WINDOW` | a Go duration (`3h`, `90m`) — how long a stored reading is believed, see [A reading is trusted for a bounded time](#a-reading-is-trusted-for-a-bounded-time) | `3h` |
+| `ITERION_USAGE_CAP_TRUST_WINDOW` | a Go duration (`3h`, `90m`) — how long a stored *dated* reading is believed, see [A reading is trusted for a bounded time](#a-reading-is-trusted-for-a-bounded-time) | `3h` |
+| `ITERION_USAGE_CAP_REFUSAL_REST_MAX` | a Go duration, or `off` — the ceiling of the escalating rest an account-level refusal earns, see [A repeatedly-refused credential rests longer](#a-repeatedly-refused-credential-rests-longer) | `6h` |
 
 A malformed value **refuses to start** rather than falling back to no cap:
 every wrong answer here fails open, and a guard silently disabled by a typo
@@ -171,6 +172,13 @@ Consequences worth knowing:
   stale reading stops blocking by itself — no sweeper.
 - A reading is also **trusted for a bounded time** after it was observed —
   the next section.
+- **Recording is not enforcing.** Readings are collected whether or not a
+  cap is configured. They are the only input the credential-tier skips have
+  (a fair-usage refusal, a rejected credential — `frequency` / `auth` /
+  `spend`, which no operator cap governs), so a deployment that never asked
+  for a ceiling would otherwise send every run into the same wall. A run
+  carries the observing guard as soon as there is a ledger to publish to;
+  with no cap configured it blocks nothing.
 
 ### A reading is trusted for a bounded time
 
@@ -193,8 +201,11 @@ the pre-flight admits the run, and the run's own session re-measures the
 window within one call. If the wall is really still there, that costs one
 call and one park — the ordinary wait, with the retry armed for the reset —
 which is the price of never locking a credential out through a reset the
-ledger cannot see. Readings with no reset instant (a relayed refusal, a dead
-credential) keep their shorter 1h bound.
+ledger cannot see. Readings with **no** reset instant (a relayed refusal, a
+dead credential) are not bounded by the trust window at all — it exists
+because a *dated* window can roll over early, which an account-level refusal
+cannot do — and keep their own 1h staleness bound instead, escalating with
+the streak (next section).
 
 The same bound governs **both** consumers of the ledger — the cap
 pre-flights and the credential-skip evidence — because both read the same
@@ -213,6 +224,32 @@ window reset early, with no pod spent either way. Best effort and bounded
 each cost one Info line and fall back to trusting the credential — the
 trust-window behaviour. Fresh readings and low stale readings never trigger
 a round trip.
+
+### A repeatedly-refused credential rests longer
+
+Three refusals carry no reset instant, because the provider relays them as
+text rather than as window telemetry: `auth` (the credential itself was
+rejected), `frequency` (a fair-usage limit on the request rate) and `spend`
+(the account's own money ceiling). Nothing but the 1h staleness bound ever
+expires them — so a credential the provider has frozen for *days* was asked
+again every hour, forever: one pod and one parked run each time, on a
+condition only a human can end.
+
+The rest now **escalates with the streak**. The ledger counts how many times
+in a row a credential was refused on a window (the store does it, not the
+caller: one pod sees one refusal, and several pods write the same ledger),
+and the bound doubles per refusal — 1h, 2h, 4h — capped at
+`ITERION_USAGE_CAP_REFUSAL_REST_MAX` (default `6h`, so a frozen account is
+probed four times a day instead of twenty-four). Set it to `off` for the old
+flat 1h re-probe.
+
+It stays a **rest, not a lock**, on three counts: the ceiling is bounded, so
+a re-probe always happens; the streak resets to zero the moment the
+credential serves a call; and rotating the credential opens a fresh meter
+key anyway (see [Rotating a credential resets its
+meter](#rotating-a-credential-resets-its-meter--on-purpose)). To cut the
+wait short after fixing an account *in place* — same token, same
+fingerprint — clear its readings by hand, below.
 
 ### Forgetting a credential's readings by hand
 

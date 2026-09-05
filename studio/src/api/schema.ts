@@ -116,6 +116,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/credentials/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/credentials/usage */
+        get: operations["getAdminCredentialsUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/llm/api-keys": {
         parameters: {
             query?: never;
@@ -3651,6 +3668,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/credentials/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/credentials/usage */
+        get: operations["getTeamsByIdCredentialsUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/forge/connections": {
         parameters: {
             query?: never;
@@ -6010,6 +6046,8 @@ export interface components {
             max_concurrent_runs?: number;
             name: string;
             provider: string;
+            refused_reason?: string;
+            refused_until?: string;
             scope_user_id?: string;
         };
         botSourceForkReq: {
@@ -6459,6 +6497,24 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["botSourceView"];
                 };
+            };
+        };
+    };
+    getAdminCredentialsUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -11148,6 +11204,26 @@ export interface operations {
             path: {
                 id: string;
                 sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdCredentialsUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };

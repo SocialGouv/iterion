@@ -296,7 +296,20 @@ confident lie.
 
 Renaming is a metadata write at the store (`SetAccountLabel`), never a
 read-modify-write of the record: the sealed payload a concurrent refresh
-just rotated is not carried back over.
+just rotated is not carried back over. The refresh paths are symmetric —
+the background worker, the manual `POST …/refresh`, and the
+`not_refreshable` self-heal all persist through `UpdateTokens`, a `$set`
+of the token keys only — so a rename committed *during* a provider round
+trip is not reverted either. `Upsert` remains the connect path's, which
+legitimately replaces the whole record.
+
+**And what each named credential COST** is a separate ledger:
+`iterion remote usage --by-credential` (per team) and `GET
+/api/admin/credentials/usage` (the platform tier, or one fingerprint across
+every tenant it served). Each amount is typed `metered` or `estimate` — a
+forfait's dollar figure is what its calls would have cost metered, not money
+— and the two totals come back apart for that reason. See
+[quotas-and-limits.md](quotas-and-limits.md#per-credential-usage--what-did-this-key-cost).
 
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 

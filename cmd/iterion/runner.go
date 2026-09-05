@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -214,8 +215,14 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// cost/tokens to the org's monthly bucket (the same collection the
 	// server's launch gate + usage views read).
 	orgUsageCounter := orgusage.NewMongoCounter(st.DB())
+	// Per-credential metering: the same attempt, read by credential rather
+	// than by org. Schema ensured beside orgusage's below.
+	credUsageCounter := credusage.NewMongoCounter(st.DB())
 	if err := orgusage.EnsureSchema(rootCtx, st.DB()); err != nil {
 		return fmt.Errorf("runner: ensure org_usage schema: %w", err)
+	}
+	if err := credusage.EnsureSchema(rootCtx, st.DB()); err != nil {
+		return fmt.Errorf("runner: ensure credential_usage schema: %w", err)
 	}
 
 	// Credential pool: a run served by a contributor's lent subscription
@@ -334,6 +341,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		ApiKeys:        secrets.NewMongoApiKeyStore(st.DB()),
 		MemoryStore:    memStore,
 		OrgUsage:       orgUsageCounter,
+		CredUsage:      credUsageCounter,
 		CredPool:       credBroker,
 		UsageCapSource: usageCapSource,
 		UsageCaps:      usageCapStore,

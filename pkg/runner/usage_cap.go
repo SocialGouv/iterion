@@ -49,9 +49,14 @@ type runCredKeys struct {
 
 // usageCapCredKeys reads the run's resolved credentials once. Scope: a
 // bundle carrying any credential the TENANT resolved is the tenant's own;
-// anything else — including a slot the publisher filled from the DB-backed
-// platform tier, which rides the bundle exactly like a tenant credential
-// but is the deployment's single meter — is the platform's.
+// anything else shares the cross-tenant meter — a slot the publisher
+// filled from the DB-backed platform tier (the deployment's single
+// subscription) and a slot the credential POOL filled with a contributor's
+// lent one (the donor's single subscription, borrowed by several tenants
+// in turn). Both ride the bundle exactly like a tenant credential and
+// neither is one; metering a lent credential per borrower would open one
+// ledger per borrower of the SAME account, so what one of them measured —
+// a refusal, a window at 95% — would reach none of the others.
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k := runCredKeys{scope: usagecap.ScopePlatform}
 	creds, ok := secrets.CredentialsFromContext(ctx)
@@ -59,11 +64,11 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 		return k
 	}
 	tenantOwnZai := creds.APIKey(secrets.ProviderZAI) != "" &&
-		!creds.IsPlatformSourced(string(secrets.ProviderZAI))
+		creds.IsTenantOwned(string(secrets.ProviderZAI))
 	tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
-		!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
+		creds.IsTenantOwned(string(secrets.ProviderAnthropic))
 	tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
-		!creds.IsPlatformSourced(delegate.BackendClaudeCode)
+		creds.IsTenantOwned(delegate.BackendClaudeCode)
 	if tenantOwnZai || tenantOwnKey || tenantOwnOAuth {
 		k.scope = usagecap.TenantScope(msg.TenantID)
 	}
@@ -115,19 +120,35 @@ func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 // tightened at runtime (the DB-backed settings record) bites a run already
 // in flight — which is also why a LIVE source that answers "nothing capped
 // right now" still gets a guard: the answer can change before the run
-// ends. Only when no cap could ever apply — no source at all, or a STATIC
-// policy with no cap — is the guard skipped, keeping the feature out of
-// the way of a deployment that never asked for it.
+// ends.
+//
+// RECORDING IS NOT ENFORCING, and the guard is the only path either
+// travels. A deployment that configured no cap still needs the provider's
+// refusals on the shared ledger: the credential-tier skips (a frequency
+// refusal, a rejected credential) read nothing else, and route the next
+// run around a credential the provider will not serve. Gating the guard on
+// the cap policy made every one of them inert on exactly the deployments
+// that never asked for a ceiling. So a ledger alone is reason enough; only
+// with neither a policy source nor a store — nothing to enforce, nobody to
+// tell — is there no guard.
 func (r *Runner) usageGuardFor(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) *usagecap.Guard {
-	if r.cfg.UsageCapSource == nil {
+	src := r.cfg.UsageCapSource
+	store := r.cfg.UsageCaps
+	// A static policy with no cap can never block; a live source can start
+	// blocking mid-run, so it always counts as enforceable.
+	enforceable := src != nil
+	if pol, static := src.(usagecap.StaticPolicy); static && !usagecap.Policy(pol).Enabled() {
+		enforceable = false
+	}
+	if !enforceable && store == nil {
 		return nil
 	}
-	if pol, static := r.cfg.UsageCapSource.(usagecap.StaticPolicy); static && !usagecap.Policy(pol).Enabled() {
-		return nil
+	if src == nil {
+		// Inert policy: the guard observes and publishes, and blocks nothing.
+		src = usagecap.StaticPolicy(usagecap.Policy{})
 	}
 	keys := usageCapCredKeys(ctx, msg)
-	store := r.cfg.UsageCaps
-	return usagecap.NewGuardWithSource(r.cfg.UsageCapSource, func(reading usagecap.Reading) {
+	return usagecap.NewGuardWithSource(src, func(reading usagecap.Reading) {
 		if store == nil {
 			return
 		}

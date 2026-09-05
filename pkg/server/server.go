@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -160,13 +161,16 @@ type Server struct {
 	webhookDeliveries webhooks.DeliveryStore
 	webhookCounter    webhooks.Counter
 	orgUsage          orgusage.Counter
-	orgDefaults       OrgLimitDefaults
-	credPool          *credpool.Broker
-	credPoolPools     credpool.PoolStore
-	credPoolPledges   credpool.PledgeStore
-	credPoolLeases    credpool.LeaseStore
-	credPoolLedger    credpool.Ledger
-	auditStore        audit.Store
+	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
+	// leaves the /credentials/usage views unregistered.
+	credUsage       credusage.Counter
+	orgDefaults     OrgLimitDefaults
+	credPool        *credpool.Broker
+	credPoolPools   credpool.PoolStore
+	credPoolPledges credpool.PledgeStore
+	credPoolLeases  credpool.LeaseStore
+	credPoolLedger  credpool.Ledger
+	auditStore      audit.Store
 	// usageCapSettings + usageCapSource are the platform runtime-settings
 	// store and its TTL-cached resolver (nil in env-only deployments):
 	// the admin settings routes mutate the former, /healthz and the
@@ -174,11 +178,14 @@ type Server struct {
 	usageCapSettings usagecap.SettingsStore
 	usageCapSource   *usagecap.Resolver
 	// usageCaps is the readings ledger the admin escape hatch clears (nil
-	// outside cloud mode).
-	usageCaps   usagecap.Store
-	pats        pat.Store
-	queue       QueueBackend
-	botBindings secrets.BotSecretBindingStore
+	// outside cloud mode). usageCapTrust bounds how long its readings are
+	// believed — the machine-wide value, so the credential state a key
+	// view reports is the one the launch walk acts on.
+	usageCaps     usagecap.Store
+	usageCapTrust usagecap.Trust
+	pats          pat.Store
+	queue         QueueBackend
+	botBindings   secrets.BotSecretBindingStore
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
 	// restart re-derives instead of silently dropping the plugin from runs.
@@ -557,6 +564,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		marketplace:         cfg.Marketplace,
 		redis:               cfg.Redis,
 		usageCaps:           cfg.UsageCaps,
+		usageCapTrust:       usagecap.DefaultTrust(),
+		credUsage:           cfg.CredUsage,
 	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
@@ -594,6 +603,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		} else {
 			logger.Warn("server: usage-cap runtime settings disabled — env policy invalid: %v", err)
 		}
+	}
+	// The reading-trust bound the key views read a credential's refusal
+	// state through. A malformed value keeps the package defaults — the
+	// enforcement paths already refuse to start on it, and a view is not
+	// worth a second refusal.
+	if trust, err := usagecap.TrustFromEnv(); err == nil {
+		s.usageCapTrust = trust
+	} else {
+		logger.Warn("server: usage-reading trust bound falls back to defaults — %v", err)
 	}
 	// Local mode wires a *LayeredGenericSecretStore; keep the concrete type so
 	// the /api/local/secrets handlers use its scope-aware ops directly. Cloud

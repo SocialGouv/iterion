@@ -521,9 +521,9 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 			// attempting it; surface an actionable message instead of
 			// the raw exchange error.
 			if !rec.NotRefreshable {
-				rec.NotRefreshable = true
-				rec.UpdatedAt = time.Now().UTC()
-				if uerr := s.oauthStore.Upsert(r.Context(), rec); uerr != nil {
+				// Partial write: the flag is all this path learned, and a
+				// rename may have landed since the Get above.
+				if uerr := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
 					s.logger.Warn("oauth: mark not-refreshable %s/%s: %v", ownerKey, kind, uerr)
 				}
 			}
@@ -533,11 +533,21 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusBadGateway, "refresh: %v", err)
 		return
 	}
-	if err := s.oauthStore.Upsert(r.Context(), rec); err != nil {
+	// Only the refresh-owned keys: the record read above is a round trip
+	// old, so writing it whole would revert a rename committed since.
+	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec)); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	writeJSON(w, toOAuthView(rec))
+	// Re-read rather than render the in-hand copy, for the same reason:
+	// the stored record is the truth about the fields this write did not
+	// touch.
+	fresh, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	writeJSON(w, toOAuthView(fresh))
 }
 
 // renameOAuthForOwner sets (or clears) the account label on an existing

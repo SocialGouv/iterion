@@ -2217,6 +2217,12 @@
           "provider": {
             "type": "string"
           },
+          "refused_reason": {
+            "type": "string"
+          },
+          "refused_until": {
+            "type": "string"
+          },
           "scope_user_id": {
             "type": "string"
           }
@@ -3285,6 +3291,20 @@
           }
         },
         "summary": "POST /api/admin/bots/{slug}/fork",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/credentials/usage": {
+      "get": {
+        "operationId": "getAdminCredentialsUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/credentials/usage",
         "tags": [
           "admin"
         ]
@@ -8352,6 +8372,30 @@
           "teams"
         ]
       }
+    },
+    "/api/teams/{id}/credentials/usage": {
+      "get": {
+        "operationId": "getTeamsByIdCredentialsUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/credentials/usage",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/teams/{id}/forge/connections": {
       "get": {

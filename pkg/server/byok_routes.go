@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // registerBYOKRoutes wires every /api/teams/:id/api-keys and
@@ -45,6 +47,16 @@ type apiKeyView struct {
 	// the count is unavailable (no fingerprint on a legacy row, no run
 	// store, a store error — logged), never a silent zero.
 	AliveRuns *int `json:"alive_runs,omitempty"`
+	// RefusedUntil / RefusedReason report that the PROVIDER is currently
+	// turning this credential away — a dead token, a fair-usage limit, a
+	// spent org ceiling, an exhausted window. The launch walk acts on the
+	// same evidence (it skips the key, or honours a webhook pin over it);
+	// without these the human reading this view had no way to see it, and
+	// a pinned refused key was visible only as the absence of a log line.
+	// Absent when nothing is refusing the key, and on a row with no
+	// fingerprint (which names a slot, not a credential).
+	RefusedUntil  *string `json:"refused_until,omitempty"`
+	RefusedReason string  `json:"refused_reason,omitempty"`
 }
 
 type createApiKeyReq struct {
@@ -66,7 +78,7 @@ type updateApiKeyReq struct {
 }
 
 func (s *Server) toApiKeyView(ctx context.Context, k secrets.ApiKey) apiKeyView {
-	return apiKeyView{
+	v := apiKeyView{
 		ID:          k.ID,
 		Provider:    string(k.Provider),
 		Name:        k.Name,
@@ -80,6 +92,56 @@ func (s *Server) toApiKeyView(ctx context.Context, k secrets.ApiKey) apiKeyView 
 		MaxConcurrentRuns: k.MaxConcurrentRuns,
 		AliveRuns:         s.aliveRunsFor(ctx, k),
 	}
+	if ref := s.refusalFor(ctx, k); ref.Refused() {
+		until := ref.Until.UTC().Format(time.RFC3339)
+		v.RefusedUntil = &until
+		v.RefusedReason = ref.Reason
+	}
+	return v
+}
+
+// refusalFor reads what the shared ledger says about this key: is the
+// provider refusing it right now, until when, and why.
+//
+// Keyed exactly as the launch walk keys it — the meter backend for the
+// key's provider, the key's own tenant scope, the key's fingerprint — and
+// folded by the same usagecap.RefusedUntil, so the view can only ever
+// report a state the walk would act on. Zero value on every uncertainty (no
+// ledger, no fingerprint, a provider with no metered evidence, a store
+// error): a view is not worth failing a request for.
+func (s *Server) refusalFor(ctx context.Context, k secrets.ApiKey) usagecap.Refusal {
+	if s.usageCaps == nil || k.Fingerprint == "" {
+		return usagecap.Refusal{}
+	}
+	backend := usageMeterBackendForProvider(k.Provider)
+	if backend == "" {
+		return usagecap.Refusal{}
+	}
+	scope := usagecap.TenantScope(k.ScopeTeamID)
+	if k.ScopeTeamID == secrets.PlatformTenantID {
+		scope = usagecap.ScopePlatform
+	}
+	readings, err := s.usageCaps.Latest(ctx, usagecap.Key(backend, scope, k.Fingerprint))
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("byok: usage-reading lookup for key %s: %v", k.ID, err)
+		}
+		return usagecap.Refusal{}
+	}
+	return usagecap.RefusedUntil(readings, time.Now(), s.usageCapTrust)
+}
+
+// usageMeterBackendForProvider names the meter backend a provider's
+// refusals are recorded under, "" for one that carries no metered
+// evidence. Anthropic-shaped keys (the real one and the z.ai facade) are
+// spent by claude_code sessions, so that is where the runner meters them —
+// the same mapping the launch walk applies, kept identical on purpose.
+func usageMeterBackendForProvider(prov secrets.Provider) string {
+	switch prov {
+	case secrets.ProviderAnthropic, secrets.ProviderZAI:
+		return delegate.BackendClaudeCode
+	}
+	return ""
 }
 
 // aliveRunsFor counts the runs holding k's concurrency slot right now —

@@ -49,12 +49,26 @@ var remoteAuditCmd = &cobra.Command{
 	}),
 }
 
+// remoteUsageByCredential switches `remote usage` from the org bucket to
+// the per-CREDENTIAL ledger — "what did this key cost", which the org
+// counter cannot answer because it charges every tier to one org key.
+var remoteUsageByCredential bool
+
 var remoteUsageCmd = &cobra.Command{
 	Use:   "usage",
-	Short: "Org monthly usage (alias of `orgs usage`)",
+	Short: "Org monthly usage (alias of `orgs usage`); --by-credential for the per-credential ledger",
 	Args:  cobra.NoArgs,
-	// True alias: same body as `orgs usage`.
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if remoteUsageByCredential {
+			return remoteRunE(func(cmd *cobra.Command, _ []string, c *cli.RemoteClient, p *cli.Printer) error {
+				team, err := resolveRemoteTeam(cmd, c)
+				if err != nil {
+					return err
+				}
+				return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/teams/"+team+"/credentials/usage")
+			})(cmd, args)
+		}
+		// True alias: same body as `orgs usage`.
 		return remoteOrgsUsageCmd.RunE(cmd, args)
 	},
 }
@@ -198,6 +212,9 @@ func init() {
 	remoteAuditCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (team scope)")
 	remoteAuditCmd.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id (org scope)")
 	remoteUsageCmd.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id (default: switched/active org)")
+	remoteUsageCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (with --by-credential; default: switched/active team)")
+	remoteUsageCmd.Flags().BoolVar(&remoteUsageByCredential, "by-credential", false,
+		"Per-credential ledger for the team instead of the org bucket (each amount typed metered|estimate)")
 	remoteLimitsCmd.Flags().StringVar(&remoteLimitsData, "data", "", "Override JSON (literal or @file)")
 
 	for _, c := range []*cobra.Command{remoteMemoryDocsCmd, remoteMemoryDocCmd, remoteMemoryExportCmd, remoteMemoryImportCmd} {

@@ -39,6 +39,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -949,6 +950,12 @@ type Config struct {
 	// execution attempt (the billing source of truth — Prometheus
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
+
+	// CredUsage, when non-nil, receives the same spend split per
+	// CREDENTIAL — the question the org bucket cannot answer ("what did
+	// this key cost"), since it charges every tier to one org key. nil →
+	// no per-credential metering. See pkg/credusage.
+	CredUsage credusage.Counter
 
 	// CredPool, when non-nil, receives the spend of a run served by a
 	// lending contributor's pooled subscription, closing its lease and

@@ -57,6 +57,7 @@ type readingDoc struct {
 	Status      string    `bson:"status"`
 	ResetsAt    time.Time `bson:"resets_at,omitempty"`
 	ObservedAt  time.Time `bson:"observed_at"`
+	Refusals    int       `bson:"refusals,omitempty"`
 }
 
 func docID(key string, w Window) string { return key + "#" + string(w) }
@@ -80,14 +81,21 @@ func (s *MongoStore) Record(ctx context.Context, key string, r Reading) error {
 			{"observed_at": bson.M{"$lte": r.ObservedAt.UTC()}},
 		},
 	}
-	update := bson.M{"$set": bson.M{
-		"key":         key,
-		"window":      string(r.Window),
-		"utilization": r.Utilization,
-		"status":      r.Status,
-		"resets_at":   r.ResetsAt.UTC(),
-		"observed_at": r.ObservedAt.UTC(),
-	}}
+	// An aggregation-pipeline update, not a plain $set: the refusal streak
+	// is a function of the document being replaced, and several pods write
+	// the same one. Computing it server-side keeps it a single atomic
+	// operation instead of a read-then-write two of them could interleave.
+	// Every literal is wrapped in $literal — inside a pipeline a bare
+	// string is a field path, and the key carries operator-supplied text.
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		"key":         bson.M{"$literal": key},
+		"window":      bson.M{"$literal": string(r.Window)},
+		"utilization": bson.M{"$literal": r.Utilization},
+		"status":      bson.M{"$literal": r.Status},
+		"resets_at":   bson.M{"$literal": r.ResetsAt.UTC()},
+		"observed_at": bson.M{"$literal": r.ObservedAt.UTC()},
+		"refusals":    refusalStreakExpr(r),
+	}}}}
 	_, err := s.col.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
 	if err != nil {
 		// A concurrent upsert that lost the race raises a duplicate key on
@@ -99,6 +107,28 @@ func (s *MongoStore) Record(ctx context.Context, key string, r Reading) error {
 		return fmt.Errorf("usagecap: record %s: %w", docID(key, r.Window), err)
 	}
 	return nil
+}
+
+// refusalStreakExpr is nextRefusalCount as an aggregation expression: the
+// incoming reading decides whether a streak can exist at all (a refusal
+// with no reset instant), and the PRE-UPDATE document decides whether this
+// one continues an existing streak or starts it at 1.
+func refusalStreakExpr(r Reading) any {
+	if r.Status != StatusRejected || !r.ResetsAt.IsZero() {
+		return bson.M{"$literal": 0}
+	}
+	return bson.M{"$cond": bson.A{
+		bson.M{"$and": bson.A{
+			bson.M{"$eq": bson.A{"$status", StatusRejected}},
+			// A missing resets_at and the zero time both mean "no reset
+			// instant": the field is written unconditionally, so stored
+			// docs carry the zero time, while a doc being inserted has
+			// no field at all.
+			bson.M{"$in": bson.A{bson.M{"$ifNull": bson.A{"$resets_at", time.Time{}.UTC()}}, bson.A{time.Time{}.UTC()}}},
+		}},
+		bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$refusals", 0}}, 1}},
+		1,
+	}}
 }
 
 // Latest returns the newest reading per window for a credential key.
@@ -123,6 +153,7 @@ func (s *MongoStore) Latest(ctx context.Context, key string) ([]Reading, error) 
 			Status:      d.Status,
 			ResetsAt:    d.ResetsAt,
 			ObservedAt:  d.ObservedAt,
+			Refusals:    d.Refusals,
 		})
 	}
 	return out, nil

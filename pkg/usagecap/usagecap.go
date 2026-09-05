@@ -245,6 +245,15 @@ type Reading struct {
 	// readings from older binaries; consumers fall back to the bundle's
 	// default precedence then. Never carries a secret.
 	Source string
+	// Refusals is how many times IN A ROW this credential was refused on
+	// this window, counted by the STORE — a caller is one pod that saw one
+	// refusal; only the ledger can tell a blip from an account frozen for
+	// days. Counted only for a refusal with NO reset instant (the
+	// account-level ones: auth, frequency, spend), because those are the
+	// readings nothing but the staleness bound ever expires. A served call
+	// resets it to zero, which is what keeps the escalating rest
+	// self-healing rather than a one-way lock. Zero on legacy readings.
+	Refusals int
 }
 
 // Provider status values.
@@ -275,9 +284,18 @@ type Trust struct {
 	// relayed as text, a dead credential): with no window end to expire
 	// at, this is the only thing that stops it from being immortal.
 	MaxAge time.Duration
-	// Window bounds EVERY reading, dated or not — the trust window. Past
-	// it the number is a memory of the window, not a measurement of it.
+	// Window bounds a DATED reading — the trust window. Past it the number
+	// is a memory of the window, not a measurement of it. It does not
+	// apply to a reading with no reset instant: the window exists because
+	// a dated window can roll over early, which an account-level refusal
+	// cannot do.
 	Window time.Duration
+	// MaxRefusalRest bounds how far MaxAge may be stretched for a
+	// credential refused several times in a row (see Reading.RestBound).
+	// Zero means DefaultMaxRefusalRest; NEGATIVE turns the escalation off
+	// (ITERION_USAGE_CAP_REFUSAL_REST_MAX=off), which is why Normalized
+	// only fills the zero value.
+	MaxRefusalRest time.Duration
 }
 
 // DefaultMaxAge bounds how long a reading with no reset instant is trusted.
@@ -292,14 +310,23 @@ const DefaultMaxAge = time.Hour
 // of idle subscription, not days.
 const DefaultTrustWindow = 3 * time.Hour
 
+// DefaultMaxRefusalRest bounds the escalating rest a repeatedly-refused
+// credential earns. Chosen so an account frozen for days is probed four
+// times a day instead of twenty-four, while an operator who rotates a dead
+// token IN PLACE (same fingerprint, so the meter does not reset) still sees
+// it picked up within a working part of a day. `iterion remote admin
+// usage-readings clear <fingerprint>` cuts the wait short on demand.
+const DefaultMaxRefusalRest = 6 * time.Hour
+
 // DefaultTrust is the bound every enforcement point applies when the
 // operator set nothing.
 func DefaultTrust() Trust {
-	return Trust{MaxAge: DefaultMaxAge, Window: DefaultTrustWindow}
+	return Trust{MaxAge: DefaultMaxAge, Window: DefaultTrustWindow, MaxRefusalRest: DefaultMaxRefusalRest}
 }
 
 // Normalized fills the zero value with the defaults, so a caller holding
-// no operator value (a test, an unset config) still applies a bound.
+// no operator value (a test, an unset config) still applies a bound. A
+// NEGATIVE MaxRefusalRest is preserved: it is how "escalation off" travels.
 func (t Trust) Normalized() Trust {
 	if t.MaxAge <= 0 {
 		t.MaxAge = DefaultMaxAge
@@ -307,7 +334,36 @@ func (t Trust) Normalized() Trust {
 	if t.Window <= 0 {
 		t.Window = DefaultTrustWindow
 	}
+	if t.MaxRefusalRest == 0 {
+		t.MaxRefusalRest = DefaultMaxRefusalRest
+	}
 	return t
+}
+
+// RestBound is how long THIS reading is believed when it carries no reset
+// instant: the staleness bound, doubled once per consecutive refusal and
+// capped at Trust.MaxRefusalRest.
+//
+// Without it a credential the provider has frozen — a dead token, an
+// account whose fair-usage limiter is shut, an org past its spend ceiling —
+// is re-probed every MaxAge forever: one wasted pod and one parked run per
+// hour, for days, on a condition only a human can end. Escalating trades
+// that for a slower re-probe, and the ceiling is what keeps it a REST and
+// not a lock: the streak ends the moment the credential serves a call.
+func (r Reading) RestBound(t Trust) time.Duration {
+	t = t.Normalized()
+	base := t.MaxAge
+	if r.Status != StatusRejected || r.Refusals <= 1 || t.MaxRefusalRest <= base {
+		return base
+	}
+	rest := base
+	for i := 1; i < r.Refusals && rest < t.MaxRefusalRest; i++ {
+		rest *= 2
+	}
+	if rest > t.MaxRefusalRest {
+		rest = t.MaxRefusalRest
+	}
+	return rest
 }
 
 // Fresh reports whether a reading still describes the current window AND
@@ -320,21 +376,98 @@ func (t Trust) Normalized() Trust {
 // through a reset the provider made early.
 //
 // A reading with no reset instant cannot expire at a rollover, so it falls
-// back to MaxAge. Without that fallback an undated reading would be
-// immortal.
+// back to RestBound (MaxAge, stretched by the refusal streak). Without that
+// fallback an undated reading would be immortal — and the trust window does
+// NOT bound it, because that window exists for readings whose provider
+// window can reset early, which an account-level refusal cannot do; capping
+// the rest at the trust window would make the escalation inert.
 func (r Reading) Fresh(now time.Time, t Trust) bool {
 	if r.ObservedAt.IsZero() {
 		return false
 	}
 	t = t.Normalized()
 	age := now.Sub(r.ObservedAt)
+	if r.ResetsAt.IsZero() {
+		return age < r.RestBound(t)
+	}
 	if age >= t.Window {
 		return false
 	}
-	if !r.ResetsAt.IsZero() {
-		return now.Before(r.ResetsAt)
+	return now.Before(r.ResetsAt)
+}
+
+// Refusal is a credential the provider is currently turning away, folded
+// out of everything the ledger holds about it.
+type Refusal struct {
+	// Until is when the LAST-lapsing refusal stops being believed — the
+	// credential is unusable up to it. Zero means "nothing is refusing it".
+	Until time.Time
+	// Window names the refusal that lasts longest.
+	Window Window
+	// Reason is a one-line human explanation, safe for a log line and an
+	// API field.
+	Reason string
+}
+
+// Refused reports whether anything is refusing the credential.
+func (r Refusal) Refused() bool { return !r.Until.IsZero() }
+
+// RefusedUntil folds a credential's readings into the refusal that keeps it
+// unusable longest, or the zero value when none does.
+//
+// It is the ONE reading of "the provider is turning this credential away",
+// shared by every consumer — the launch walk's credential-tier skips, the
+// pinned-key warning, and the operator's key view — because a view that
+// computed it differently from the gate would report a state the gate does
+// not act on.
+//
+// Everything uncertain means "not refused": a stale reading (Fresh already
+// encodes both the reset instant and the escalating rest), an allowed or
+// warning status at any utilization, and a window no cap family governs —
+// a rejected OVERAGE reading is about the pay-as-you-go money channel, and
+// an unknown window must not be folded into a rule never meant to govern
+// it (FamilyOf's own contract). The store is populated unfiltered, so the
+// filter has to live here.
+func RefusedUntil(readings []Reading, now time.Time, trust Trust) Refusal {
+	trust = trust.Normalized()
+	var out Refusal
+	for _, r := range readings {
+		if r.Status != StatusRejected || !r.Fresh(now, trust) {
+			continue
+		}
+		if FamilyOf(r.Window) == FamilyNone {
+			continue
+		}
+		reopen := r.ResetsAt
+		if reopen.IsZero() {
+			// A refusal with no reset instant is trusted only for the
+			// reading's own staleness bound, stretched by its streak.
+			reopen = r.ObservedAt.Add(r.RestBound(trust))
+		}
+		if !reopen.After(out.Until) {
+			continue
+		}
+		out.Until = reopen
+		out.Window = r.Window
+		out.Reason = refusalReason(r)
 	}
-	return age < t.MaxAge
+	return out
+}
+
+// refusalReason words one refusal for a human.
+func refusalReason(r Reading) string {
+	// Frequency, spend and auth are refusals, not windows with a fill
+	// level — "(0% used)" on them would read as a contradiction.
+	switch r.Window {
+	case WindowAuth:
+		return "provider rejected the credential itself (auth failure)"
+	case WindowFrequency:
+		return "provider refused the account's request rate (fair-usage)"
+	case WindowSpend:
+		return "the account's spend ceiling is reached — an admin must raise it (claude.ai/settings/usage)"
+	default:
+		return fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
+	}
 }
 
 // Decision is what a policy says about a reading (or a set of them).

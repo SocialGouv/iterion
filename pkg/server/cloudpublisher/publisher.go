@@ -422,6 +422,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			apiKeyFPs[prov] = r.Fingerprint
 			usedIDs = append(usedIDs, r.KeyID)
 		}
+		p.warnRefusedPins(ctx, runID, tenantID, overrides, resolved)
 		// A provider whose EVERY key was refused resolves to nothing under
 		// the predicate. Remember what an unfiltered walk would have chosen:
 		// if the end of the resolution finds that wire still empty — no
@@ -611,12 +612,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			case credpool.SourceAPIKey:
 				prov := secrets.Provider(grant.Ref)
 				bundle.APIKeys[prov] = string(grant.Payload)
-				// The lent key's own audit identity — the same hash the
-				// BYOK record carries and the runner derives, so the
-				// GRANTED line, the run-document stamp and the metering-time
-				// last_used_at bump all name the donor's key, not an
-				// unstamped slot.
-				apiKeyFPs[prov] = secrets.FingerprintSHA256(string(grant.Payload))
+				// The lent key's own audit identity — the donor record's
+				// stamp, falling back to the hash the runner derives for a
+				// record stored before stamping — so the GRANTED line, the
+				// run-document stamp and the metering-time last_used_at
+				// bump all name the donor's key, not an unstamped slot.
+				fp := grant.Fingerprint
+				if fp == "" {
+					fp = secrets.FingerprintSHA256(string(grant.Payload))
+				}
+				apiKeyFPs[prov] = fp
 				// The lent key's row lives in the DONOR's tenant: the
 				// runner's metering bump must reach it without the run's
 				// tenant filter.
@@ -1153,7 +1158,7 @@ func (p *Publisher) staleSuggestsClosed(ctx context.Context, key string) bool {
 	// Trusted "forever": only the reset instant can end a reading, which
 	// is exactly the pre-trust-window notion of fresh.
 	const forever = 100 * 365 * 24 * time.Hour
-	unbounded := usagecap.Trust{MaxAge: forever, Window: forever}
+	unbounded := usagecap.Trust{MaxAge: forever, Window: forever, MaxRefusalRest: forever}
 	var stale []usagecap.Reading
 	for _, r := range readings {
 		if r.Fresh(now, trust) || !r.Fresh(now, unbounded) {
@@ -1195,44 +1200,11 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 	now := time.Now()
 	trust := p.trust.Normalized()
 	// When several windows are refused, the one that reopens LAST rules:
-	// the credential stays unusable until every refusal has lapsed.
-	var until time.Time
-	var why string
-	for _, r := range readings {
-		if r.Status != usagecap.StatusRejected || !r.Fresh(now, trust) {
-			continue
-		}
-		// Windows usagecap itself never blocks on are no evidence here
-		// either: a rejected OVERAGE reading is about the pay-as-you-go
-		// money channel, and an unknown window must not be folded into
-		// a rule that was never meant to govern it (usagecap.FamilyOf's
-		// own contract). The store is populated unfiltered, so the
-		// filter has to live at the consumer.
-		if usagecap.FamilyOf(r.Window) == usagecap.FamilyNone {
-			continue
-		}
-		reopen := r.ResetsAt
-		if reopen.IsZero() {
-			// A refusal with no reset instant is trusted only for the
-			// reading's own staleness bound.
-			reopen = r.ObservedAt.Add(trust.MaxAge)
-		}
-		if reopen.After(until) {
-			until = reopen
-			// Frequency and auth are refusals, not windows with a fill
-			// level — "(0% used)" on them would read as a contradiction.
-			switch r.Window {
-			case usagecap.WindowAuth:
-				why = "provider rejected the credential itself (auth failure)"
-			case usagecap.WindowFrequency:
-				why = "provider refused the account's request rate (fair-usage)"
-			case usagecap.WindowSpend:
-				why = "the account's spend ceiling is reached — an admin must raise it (claude.ai/settings/usage)"
-			default:
-				why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
-			}
-		}
-	}
+	// the credential stays unusable until every refusal has lapsed. Folded
+	// by usagecap so the key view an operator reads and this gate cannot
+	// disagree about what "refused" means.
+	ref := usagecap.RefusedUntil(readings, now, trust)
+	until, why := ref.Until, ref.Reason
 	if until.IsZero() && p.capPolicy != nil {
 		// No provider refusal on record — but the runner's pre-flight
 		// enforces the operator's caps over these same readings and parks
@@ -1262,6 +1234,43 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		}
 	}
 	return until, why
+}
+
+// warnRefusedPins says out loud that a PINNED key is one the provider is
+// currently refusing.
+//
+// The pin bypasses the evidence predicate by design — the operator named
+// that key, and honouring the pin over the optimisation is what keeps the
+// predicate an optimisation. But the bypass is silent: the only trace of a
+// pinned dead key was the ABSENCE of a skip log, so a webhook fed the same
+// wall on every delivery and nothing said why. Warning is the whole change;
+// the pin still wins.
+//
+// Nothing is logged for a healthy pin, so the line means something when it
+// appears.
+func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution) {
+	if len(overrides) == 0 || p.usageCaps == nil {
+		return
+	}
+	for prov, keyID := range overrides {
+		r, ok := resolved[prov]
+		// Only the key the pin actually selected: a pin that matched
+		// nothing left the walk to choose, and that choice already passed
+		// the predicate.
+		if !ok || keyID == "" || r.KeyID != keyID || r.Fingerprint == "" {
+			continue
+		}
+		backend := usageBackendForProvider(prov)
+		if backend == "" {
+			continue
+		}
+		until, why := p.refusedUntil(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov))
+		if until.IsZero() {
+			continue
+		}
+		p.logger.Warn("cloudpublisher: run=%s uses the pinned api key %s (%s fp=%s) although %s — the pin is honoured, so this run will meet that wall; expect a park until %s, or repin the webhook to another key",
+			runID, keyID, prov, r.Fingerprint, why, until.UTC().Format(time.RFC3339))
+	}
 }
 
 // usageBackendForKind maps a forfait kind to the meter backend the runner

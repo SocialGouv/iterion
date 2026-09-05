@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // BackendPi is the registration name for the pi coding-agent backend
@@ -141,8 +143,76 @@ type PiBackend struct {
 	Logger *iterlog.Logger
 }
 
-// Execute runs the task through the selected pi transport.
+// Execute runs the task through the selected pi transport, recording a
+// rejected credential as meter evidence on the way out (see
+// piRecordAuthRefusal): both transports produce the typed error here, so
+// this is the one place that sees every one of them.
 func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	res, err := b.execute(ctx, task)
+	return res, b.recordAuthRefusal(task, err)
+}
+
+// recordAuthRefusal turns a credential the provider REJECTED into the same
+// meter evidence claude_code records (authFailureFast): without it, the next
+// resolution re-picks the dead credential and gates the healthy tiers off
+// behind one that can never serve — the dead-on-arrival behaviour #624
+// closed for claude_code and left standing for pi.
+//
+// The error passes through untouched; this only observes. It fires on the
+// TYPED ErrAuthFailed alone — pi mints it from the upstream 401/403 status,
+// a far higher-confidence signal than claude_code's text render — so a
+// workflow failure, a throttle or a blip never bench a credential.
+//
+// A refusal iterion cannot ATTRIBUTE is recorded nowhere: pi routes ~36
+// providers behind one process, and the runner's meter keys an unlabelled
+// reading by its own default precedence, which would charge an openai
+// rejection to a healthy Anthropic key. No evidence beats wrong evidence.
+func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
+	if err == nil || task.Hooks.OnUsageWindow == nil {
+		return err
+	}
+	var auth *ErrAuthFailed
+	if !errors.As(err, &auth) {
+		return err
+	}
+	provider, _ := piResolveModel(task.Model, task.ProviderHint)
+	source := piUsageSource(provider)
+	if source == "" {
+		if b.Logger != nil {
+			b.Logger.Debug("[%s#%d/%s] credential rejected on provider %q — not recorded as meter evidence: iterion cannot say which credential it was",
+				task.NodeID, task.Iteration, BackendPi, provider)
+		}
+		return err
+	}
+	_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+		Window:     usagecap.WindowAuth,
+		Status:     usagecap.StatusRejected,
+		ObservedAt: time.Now().UTC(),
+		Source:     source,
+	})
+	return err
+}
+
+// piUsageSource maps pi's provider slug onto the source vocabulary the
+// runner's meter keys on (runCredKeys.forSource), or "" when the refusal
+// cannot be attributed to a credential the meter tracks.
+//
+// Only the anthropic wire is mapped, and that is not an omission: the
+// credential-skip evidence is claude_code-metered end to end
+// (usageBackendForProvider), so a reading on any other provider could not
+// be acted upon even if it were recorded — while a mislabelled one WOULD
+// be acted upon, against the wrong credential.
+func piUsageSource(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return "anthropic-direct"
+	case "zai":
+		return "facade:pi-zai"
+	}
+	return ""
+}
+
+func (b *PiBackend) execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}

@@ -129,6 +129,57 @@ type OAuthStore interface {
 	// to a token the provider may already have rotated out. Missing record
 	// → ErrOAuthNotFound.
 	SetAccountLabel(ctx context.Context, userID string, kind OAuthKind, label string) error
+	// UpdateTokens writes ONLY the keys a token refresh owns — the mirror
+	// of SetAccountLabel on the other side of the same race. A refresh
+	// reads a record, spends a round trip at the provider, then persists;
+	// through Upsert that persist carries the WHOLE record it read back,
+	// reverting a rename committed in the meantime to the label it happened
+	// to hold. Missing record → ErrOAuthNotFound. Upsert is left to the
+	// connect paths, which legitimately replace the record.
+	UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error
+}
+
+// OAuthTokenUpdate is the set of fields a refresh (or its self-heal) may
+// rewrite. Everything absent from it belongs to another writer — the
+// account label to the rename endpoint, created_at to the connect path —
+// and is left exactly as stored.
+//
+// A nil/empty field means "leave it alone", never "clear it": a refresh
+// only ever learns MORE about a record. The two shapes that rely on it are
+// the self-heal (flips NotRefreshable on a record it never re-sealed) and
+// a provider response that carries no expiry or no scopes, which
+// RefreshRecord already treats as "keep what we had".
+type OAuthTokenUpdate struct {
+	// SealedPayload replaces the sealed blob; nil leaves it in place.
+	SealedPayload []byte
+	// AccessTokenExpiresAt / LastRefreshedAt replace their fields; nil
+	// leaves them in place.
+	AccessTokenExpiresAt *time.Time
+	LastRefreshedAt      *time.Time
+	// Scopes replaces the scope list; empty leaves it in place.
+	Scopes []string
+	// Fingerprint stamps the subscription identity on a legacy record;
+	// "" leaves whatever is stored (a refresh is the same subscription,
+	// so it never re-stamps a record that already carries one).
+	Fingerprint string
+	// NotRefreshable is always written: a successful refresh proves the
+	// record IS refreshable, and the self-heal path exists to set it.
+	NotRefreshable bool
+}
+
+// OAuthTokenUpdateFrom projects the refresh-owned fields out of a record
+// RefreshRecord has just mutated in place. One projection shared by every
+// refresh site, so a field added to RefreshRecord's output cannot reach
+// only some of them.
+func OAuthTokenUpdateFrom(rec OAuthRecord) OAuthTokenUpdate {
+	return OAuthTokenUpdate{
+		SealedPayload:        rec.SealedPayload,
+		AccessTokenExpiresAt: rec.AccessTokenExpiresAt,
+		LastRefreshedAt:      rec.LastRefreshedAt,
+		Scopes:               rec.Scopes,
+		Fingerprint:          rec.Fingerprint,
+		NotRefreshable:       rec.NotRefreshable,
+	}
 }
 
 // ErrOAuthNotFound is the sentinel for missing records.
@@ -504,6 +555,35 @@ func (s *MemoryOAuthStore) SetAccountLabel(_ context.Context, userID string, kin
 	return nil
 }
 
+func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := mkOAuthKey(userID, kind)
+	r, ok := s.m[key]
+	if !ok {
+		return ErrOAuthNotFound
+	}
+	if upd.SealedPayload != nil {
+		r.SealedPayload = upd.SealedPayload
+	}
+	if upd.AccessTokenExpiresAt != nil {
+		r.AccessTokenExpiresAt = upd.AccessTokenExpiresAt
+	}
+	if upd.LastRefreshedAt != nil {
+		r.LastRefreshedAt = upd.LastRefreshedAt
+	}
+	if len(upd.Scopes) > 0 {
+		r.Scopes = upd.Scopes
+	}
+	if upd.Fingerprint != "" {
+		r.Fingerprint = upd.Fingerprint
+	}
+	r.NotRefreshable = upd.NotRefreshable
+	r.UpdatedAt = time.Now().UTC()
+	s.m[key] = r
+	return nil
+}
+
 // MongoOAuthStore — production impl.
 type MongoOAuthStore struct {
 	coll *mongo.Collection
@@ -578,6 +658,42 @@ func (s *MongoOAuthStore) SetAccountLabel(ctx context.Context, userID string, ki
 	)
 	if err != nil {
 		return fmt.Errorf("secrets: set oauth account label: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrOAuthNotFound
+	}
+	return nil
+}
+
+func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
+	// A literal $set of the refresh-owned keys, never the struct: the
+	// account label — and anything else a future writer owns — stays
+	// whatever its own endpoint last wrote.
+	set := bson.M{
+		"not_refreshable": upd.NotRefreshable,
+		"updated_at":      time.Now().UTC(),
+	}
+	if upd.SealedPayload != nil {
+		set["sealed_payload"] = upd.SealedPayload
+	}
+	if upd.AccessTokenExpiresAt != nil {
+		set["access_token_expires_at"] = *upd.AccessTokenExpiresAt
+	}
+	if upd.LastRefreshedAt != nil {
+		set["last_refreshed_at"] = *upd.LastRefreshedAt
+	}
+	if len(upd.Scopes) > 0 {
+		set["scopes"] = upd.Scopes
+	}
+	if upd.Fingerprint != "" {
+		set["fingerprint"] = upd.Fingerprint
+	}
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"user_id": userID, "kind": kind},
+		bson.M{"$set": set},
+	)
+	if err != nil {
+		return fmt.Errorf("secrets: update oauth tokens: %w", err)
 	}
 	if res.MatchedCount == 0 {
 		return ErrOAuthNotFound

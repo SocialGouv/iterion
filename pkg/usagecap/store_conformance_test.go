@@ -101,8 +101,91 @@ func runStoreConformance(t *testing.T, st Store) {
 	}
 }
 
+// runRefusalStreakConformance is the second half of the Store contract
+// (#629 pt 2): the store, not the caller, counts how many times IN A ROW a
+// credential was refused on a window with no reset instant. A caller is one
+// pod that saw one refusal; only the ledger can tell a blip from an account
+// frozen for days, and the escalating rest reads nothing else.
+func runRefusalStreakConformance(t *testing.T, st Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	key := Key("claude_code", TenantScope("team-streak"), "fp-streak")
+
+	refuse := func(w Window, at time.Time) {
+		t.Helper()
+		if err := st.Record(ctx, key, Reading{Window: w, Status: StatusRejected, ObservedAt: at}); err != nil {
+			t.Fatalf("Record(refusal): %v", err)
+		}
+	}
+	countOf := func(w Window) int {
+		t.Helper()
+		got, err := st.Latest(ctx, key)
+		if err != nil {
+			t.Fatalf("Latest: %v", err)
+		}
+		for _, r := range got {
+			if r.Window == w {
+				return r.Refusals
+			}
+		}
+		t.Fatalf("no reading for %s", w)
+		return 0
+	}
+
+	refuse(WindowAuth, now)
+	if got := countOf(WindowAuth); got != 1 {
+		t.Fatalf("first refusal counted %d, want 1", got)
+	}
+	refuse(WindowAuth, now.Add(time.Hour))
+	refuse(WindowAuth, now.Add(2*time.Hour))
+	if got := countOf(WindowAuth); got != 3 {
+		t.Fatalf("three refusals in a row counted %d, want 3", got)
+	}
+	// Streaks are per window: a frequency refusal starts its own.
+	refuse(WindowFrequency, now.Add(2*time.Hour))
+	if got := countOf(WindowFrequency); got != 1 {
+		t.Fatalf("a different window's first refusal counted %d, want 1", got)
+	}
+	if got := countOf(WindowAuth); got != 3 {
+		t.Fatalf("the auth streak moved to %d when another window was refused", got)
+	}
+	// The credential answering ends the streak — that is what makes the
+	// rest self-healing rather than a one-way lock.
+	if err := st.Record(ctx, key, Reading{
+		Window: WindowAuth, Status: StatusAllowed, ObservedAt: now.Add(3 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Record(allowed): %v", err)
+	}
+	if got := countOf(WindowAuth); got != 0 {
+		t.Fatalf("a served call left the streak at %d, want 0", got)
+	}
+	refuse(WindowAuth, now.Add(4*time.Hour))
+	if got := countOf(WindowAuth); got != 1 {
+		t.Fatalf("the streak restarted at %d, want 1", got)
+	}
+	// A reading that LOSES the newest-wins race must not bump the count:
+	// the streak counts refusals the ledger accepted, not deliveries.
+	refuse(WindowAuth, now.Add(time.Hour))
+	if got := countOf(WindowAuth); got != 1 {
+		t.Fatalf("an out-of-order refusal bumped the streak to %d, want 1", got)
+	}
+	// A DATED refusal expires at its own reset instant, so it needs no
+	// escalation and carries no streak.
+	if err := st.Record(ctx, key, Reading{
+		Window: WindowSevenDay, Status: StatusRejected,
+		ResetsAt: now.Add(72 * time.Hour), ObservedAt: now.Add(5 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Record(dated refusal): %v", err)
+	}
+	if got := countOf(WindowSevenDay); got != 0 {
+		t.Fatalf("a dated refusal counted %d, want 0 — it expires at its own reset", got)
+	}
+}
+
 func TestMemStore_Conformance(t *testing.T) {
 	runStoreConformance(t, NewMemStore())
+	runRefusalStreakConformance(t, NewMemStore())
 }
 
 // TestMongoStore_Conformance runs the same contract against the real Mongo
@@ -131,4 +214,5 @@ func TestMongoStore_Conformance(t *testing.T) {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
 	runStoreConformance(t, NewMongoStore(db))
+	runRefusalStreakConformance(t, NewMongoStore(db))
 }
