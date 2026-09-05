@@ -9,8 +9,9 @@ Code's "Ultracode" level:
 
 It is delivered through prompt engineering (a standing-consent system
 instruction) rather than a new wire parameter, and it is **reliable only on
-`claude-opus-4-8`** — the orchestration half is backed by Anthropic's
-mid-conversation system messages, which ship on Opus 4.8 only. On any other
+`claude-opus-4-8` and the Claude 5 family (`claude-opus-5`,
+`claude-fable-5-1`)** — the orchestration half is backed by Anthropic's
+mid-conversation system messages, which ship on those models. On any other
 model ultracode degrades gracefully to plain `xhigh`.
 
 See Anthropic's reference: [Effort](https://platform.claude.com/docs/en/build-with-claude/effort)
@@ -82,6 +83,6 @@ and via env substitution, which is resolved (and re-validated) at runtime:
 ## Studio
 
 The effort selector offers **ultracode** only when the node's model is
-`claude-opus-4-8` (the `/api/effort-capabilities` endpoint gates it server-side,
+`claude-opus-4-8` or a Claude 5 model (the `/api/effort-capabilities` endpoint gates it server-side,
 complementing the C089 compile warning). The `EffortBar` renders it full-bar in
 a distinct accent tone, reading as "beyond max".
