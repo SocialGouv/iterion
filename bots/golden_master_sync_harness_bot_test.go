@@ -435,6 +435,44 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		}
 	})
 
+	// A red gate ends the run at `fail` whether or not the drop succeeded, so
+	// a decline that says nothing reads as "nothing landed" while the sync
+	// commit is still in the branch's history for whoever owns landings.
+	t.Run("a red gate that could not drop the sync commit says so", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		res, _ := syncHarness(t, ws)
+		c := syncCommitNode(t, ws, res)
+		// Another hand commits while the gate runs. `reset --hard HEAD~1`
+		// would now drop THAT commit, so declining is right — announcing it
+		// is what was missing.
+		if err := os.WriteFile(filepath.Join(ws, "README.md"), []byte("moved on\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("commit", "-qam", "another hand")
+		later := git("rev-parse", "HEAD")
+
+		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": "sh -c 'echo divergence; exit 3'", "harness_sha256": res.HarnessSHA256, "sync_commit": c.Commit})
+		var gate syncGateOut
+		if err := json.Unmarshal(out, &gate); err != nil || exit != 0 {
+			t.Fatalf("gate_replay: exit %d, %v, out %q", exit, err, out)
+		}
+		if gate.Passed {
+			t.Fatalf("gate = %+v, want red", gate)
+		}
+		if head := git("rev-parse", "HEAD"); head != later {
+			t.Fatalf("HEAD=%s, want %s: the drop must never reach a commit that is not the sync's", head, later)
+		}
+		if !strings.Contains(gate.LogTail, "NOT dropped") || !strings.Contains(gate.LogTail, c.Commit[:12]) {
+			t.Fatalf("log_tail must name the sync commit it left behind:\n%s", gate.LogTail)
+		}
+		if !strings.Contains(gate.LogTail, "divergence") {
+			t.Fatalf("the gate's own words must survive the notice:\n%s", gate.LogTail)
+		}
+		if !strings.Contains(git("log", "--format=%H"), c.Commit) {
+			t.Fatal("the sync commit is gone from history — then the notice is the lie")
+		}
+	})
+
 	t.Run("a gate run before the commit is what the real harness refuses — the graph never does it", func(t *testing.T) {
 		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
 		res, _ := syncHarness(t, ws)

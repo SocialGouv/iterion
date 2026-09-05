@@ -3876,9 +3876,19 @@ tool gate_replay:
 
     def drop_sync_commit():
         # Only the commit this run made, verified by sha — never anything else.
+        # Returns what the caller must SAY when it declined: the run ends at
+        # `fail` either way, and a red verdict over a surviving sync commit
+        # reads as "nothing landed" unless the report contradicts it.
         git("checkout", "-q", "--", ".")
-        if git("rev-parse", "HEAD").stdout.strip() == sync_commit:
-            git("reset", "-q", "--hard", "HEAD~1")
+        if git("rev-parse", "HEAD").stdout.strip() != sync_commit:
+            return ("the sync commit %s is no longer HEAD — dropping it would drop someone else's work, so it "
+                    "was NOT dropped and is still in this branch's history; remove it by hand before anything "
+                    "lands" % sync_commit[:12])
+        r = git("reset", "-q", "--hard", "HEAD~1")
+        if r.returncode != 0:
+            return ("the sync commit %s could not be dropped (%s) — it is still at HEAD; remove it by hand "
+                    "before anything lands" % (sync_commit[:12], (r.stderr or r.stdout).strip()[-200:]))
+        return ""
 
     started = time.monotonic()
     try:
@@ -3897,11 +3907,12 @@ tool gate_replay:
         moved = [l for l in st.stdout.splitlines() if l.strip()]
         if moved:
             out["log_tail"] = "the gate left the tree changed (%s) — that is the gate's bug, not the sync's; the sync commit is dropped" % ", ".join(moved)
-            drop_sync_commit()
         else:
             out["passed"] = True
-    else:
-        drop_sync_commit()
+    if not out["passed"]:
+        undropped = drop_sync_commit()
+        if undropped:
+            out["log_tail"] = (out["log_tail"] + "\n\n" + undropped)[-4000:]
     print(json.dumps(out))
 
 ## One commit, the harness alone, with the selftest — the gate's verdict is
