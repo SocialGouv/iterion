@@ -108,26 +108,10 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				// hands the run to its exit path with the work it banked,
 				// where dying mid-iteration on the hard cap would strand it.
 				if v := e.loopBudgetShortfall(edge.LoopName, rs); v != nil {
-					spent, remaining, used, limit, unit := v.display()
+					spent, remaining, _, _, unit := v.display()
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q cannot fund another iteration (%s: %.2f%s left, last one took %.2f%s), falling through to the exit path",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, v.dimension, remaining, unitSuffix(unit), spent, unitSuffix(unit))
-					data := map[string]any{
-						"loop": edge.LoopName, "reason": "loop_budget_guard",
-						"dimension": v.dimension, "remaining": remaining, "needed": spent,
-						// used/limit are what every other budget_warning
-						// carries — the run report and the alert manager
-						// render the axis from them.
-						"used": used, "limit": limit,
-						// The rule itself, so a reader with more remaining than
-						// needed is not left guessing why the edge was declined:
-						// the next iteration would land at or past the threshold
-						// where the engine refuses to start any node.
-						"threshold": v.threshold(), "would_reach": used + spent,
-					}
-					if unit != "" {
-						data["unit"] = unit
-					}
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, data); err != nil {
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, v.eventData(edge.LoopName)); err != nil {
 						e.logger.Warn("failed to emit loop_budget_guard warning: %v", err)
 					}
 					continue
