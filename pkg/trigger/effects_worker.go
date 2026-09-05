@@ -96,6 +96,14 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 // persists "the one-shot is OURS" between the atomic consume and the launch
 // (the pre-outbox shape lost the trigger exactly there).
 func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) error {
+	if row.IsProjection() {
+		// No subscription to load, re-verify or tenant-check: a projection row
+		// is owed to the tenant's board BINDING. That is also why it can never
+		// be listed or deleted through /api/v1/triggers — it names no
+		// subscription at all. The row's own tenant is on the event, which the
+		// reflect resolves the binding from.
+		return w.Evaluator.applyEffect(ctx, Subscription{}, row.Event, effectOpts{kind: EffectKindProjection})
+	}
 	sub, err := w.Subs.Get(ctx, row.SubID)
 	switch {
 	case errors.Is(err, ErrSubscriptionNotFound):

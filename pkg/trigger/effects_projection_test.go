@@ -169,3 +169,127 @@ func TestMaterializeEffects_ProjectionIsNotASubscription(t *testing.T) {
 	}
 }
 
+// stubProjection records the reflects the worker asked for.
+type stubProjection struct {
+	cards []string
+	errs  []error // popped per call; empty → nil
+}
+
+func (s *stubProjection) ReflectCard(_ context.Context, ev Event) error {
+	s.cards = append(s.cards, ev.Subject.ID)
+	if len(s.errs) > 0 {
+		err := s.errs[0]
+		s.errs = s.errs[1:]
+		return err
+	}
+	return nil
+}
+
+// noSubsStore fails any subscription read. A projection row is owed to the
+// tenant's BINDING; consulting the subscription registry for one would be the
+// pseudo-subscription shape coming back in through the worker.
+type noSubsStore struct{ SubscriptionStore }
+
+func (noSubsStore) Get(context.Context, string) (Subscription, error) {
+	return Subscription{}, errors.New("the projection arm must not read the subscription store")
+}
+
+// projectionWorld drives one projection row end to end through the real
+// outbox + worker + evaluator.
+func projectionWorld(t *testing.T, ev Event, proj ProjectionEffect) (*EffectWorker, *MemoryEffectOutbox) {
+	t.Helper()
+	ctx := context.Background()
+	subs := NewMemorySubscriptionStore()
+	eval := NewEvaluator(subs, WithProjectionEffect(proj))
+	out := NewMemoryEffectOutbox()
+	rows, err := MaterializeEffects(ctx, subs, &stubBindings{bound: map[string]bool{"t1": true}}, ev, time.Now().UTC())
+	if err != nil || len(rows) != 1 || !rows[0].IsProjection() {
+		t.Fatalf("materialize: rows=%+v err=%v", rows, err)
+	}
+	if err := out.UpsertPending(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	return &EffectWorker{Outbox: out, Subs: noSubsStore{subs}, Evaluator: eval}, out
+}
+
+// TestEffectWorker_ProjectionReflectsAndCompletes: the row executes through
+// the projection arm, reaches the reflect with its event, and retires — with
+// the subscription store never consulted.
+func TestEffectWorker_ProjectionReflectsAndCompletes(t *testing.T) {
+	ev := movedEvent()
+	proj := &stubProjection{}
+	w, out := projectionWorld(t, ev, proj)
+	if n := w.Tick(context.Background(), 10); n != 1 {
+		t.Fatalf("tick acted on %d rows, want 1", n)
+	}
+	if len(proj.cards) != 1 || proj.cards[0] != "card1" {
+		t.Fatalf("reflected %v, want [card1]", proj.cards)
+	}
+	row, _ := out.Row(ProjectionEffectID(ev.ID))
+	if row.State != EffectDone {
+		t.Fatalf("projection row state = %q, want %q", row.State, EffectDone)
+	}
+}
+
+// TestEffectWorker_ProjectionIsExemptFromTheMachineDecline is the exemption
+// at its own line: `applyEffect` declines a machine-caused event for every
+// LAUNCH arm, and must not for a projection. A watchdog move that never
+// reaches the external board is the one divergence the reflect exists to
+// prevent.
+func TestEffectWorker_ProjectionIsExemptFromTheMachineDecline(t *testing.T) {
+	ev := movedEvent()
+	ev.Payload = map[string]any{"reason": tracker.ReasonWatchdog}
+	proj := &stubProjection{}
+	w, out := projectionWorld(t, ev, proj)
+	w.Tick(context.Background(), 10)
+	if len(proj.cards) != 1 {
+		t.Fatalf("a machine-caused move reflected %d times, want 1 — the decline leaked into the projection arm", len(proj.cards))
+	}
+	if row, _ := out.Row(ProjectionEffectID(ev.ID)); row.State != EffectDone {
+		t.Fatalf("projection row state = %q, want %q", row.State, EffectDone)
+	}
+}
+
+// TestEffectWorker_ProjectionRetriesThenDeadLetters: the reflect inherits the
+// outbox's bounded retry and visible dead-letter for free — a forge 403 must
+// not vanish, and must not retry forever either.
+func TestEffectWorker_ProjectionRetriesThenDeadLetters(t *testing.T) {
+	ev := movedEvent()
+	boom := errors.New("forge refused the status write")
+	errs := make([]error, MaxEffectAttempts)
+	for i := range errs {
+		errs[i] = boom
+	}
+	proj := &stubProjection{errs: errs}
+	w, out := projectionWorld(t, ev, proj)
+	now := time.Now().UTC()
+	w.Now = func() time.Time { return now }
+	for i := 0; i < MaxEffectAttempts; i++ {
+		w.Tick(context.Background(), 10)
+		now = now.Add(EffectBackoff(MaxEffectAttempts) + time.Second)
+	}
+	row, _ := out.Row(ProjectionEffectID(ev.ID))
+	if row.State != EffectFailed {
+		t.Fatalf("after %d failing attempts the row is %q, want %q (a visible dead-letter)", MaxEffectAttempts, row.State, EffectFailed)
+	}
+	if row.LastError == "" {
+		t.Fatal("dead-lettered projection row carries no last_error — the operator has nothing to read")
+	}
+}
+
+// TestEffectWorker_ProjectionWithNoEffectWiredIsExplicit: a projection row can
+// only exist where a binding does, so an unwired effect is a WIRING bug. It
+// must say so, not retire quietly leaving the board silently unreflected.
+func TestEffectWorker_ProjectionWithNoEffectWiredIsExplicit(t *testing.T) {
+	ev := movedEvent()
+	w, out := projectionWorld(t, ev, nil)
+	w.Tick(context.Background(), 10)
+	row, _ := out.Row(ProjectionEffectID(ev.ID))
+	if row.State == EffectDone {
+		t.Fatal("a projection row with no projection effect wired was retired as done — the reflect is silently lost")
+	}
+	if row.LastError == "" {
+		t.Fatal("no last_error recorded for an unwired projection effect")
+	}
+}
+
