@@ -67,6 +67,14 @@ var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
 // blocked, the flag no reconciler lifts.
 var errCardContinuable = errors.New("board dispatcher: run continuable")
 
+// errCardRetryable marks a failure that happened BEFORE anything was launched
+// and that says nothing about the card — the forge could not be asked whether
+// the PR's head lives in the base repo. Wrapped at the ONE site that knows no
+// run exists yet (processBoardCard's pre-launch guard), never inferred
+// downstream: processCard's arm returns the card to the eligible pool, and a
+// card returned there after a run HAD started would be launched twice.
+var errCardRetryable = errors.New("board dispatcher: nothing launched, retry the card")
+
 // cardRetryLimit / cardRetryBackoff bound the PRE-LAUNCH retry of a card whose
 // forge lookup could not be answered. The bound is mandatory, not decorative:
 // the poll interval is 5s, so an unbounded return-to-ready hammers the forge
@@ -237,6 +245,11 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 		// backoff HERE rather than being re-claimed on the next 5s tick — which
 		// would re-ask the forge twelve times a minute during the outage the
 		// backoff exists for, and churn the card's state each time.
+		//
+		// Backed-off cards still occupy this listing page (they are unclaimed
+		// and eligible), so a forge outage can crowd out healthy cards for up
+		// to one backoff window. Bounded and self-clearing, which is why it is
+		// noted rather than paged around.
 		if !d.cardRetryDue(c.Tenant, c.Issue.ID) {
 			continue
 		}
@@ -294,6 +307,7 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	}
 	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState
+	returnedToPool := false
 	switch {
 	case runErr != nil && errors.Is(runErr, errCardPaused):
 		// A pause is not a failure: route the card to the awaiting-input
@@ -318,7 +332,7 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// path is unaffected: it cancels cardCtx, not this parent ctx.
 		final = ""
 		d.warn("card %s/%s: replica draining mid-run — leaving the card in place, releasing the claim", c.Tenant, c.Issue.ID)
-	case runErr != nil && prLaunchUnavailable(runErr):
+	case runErr != nil && errors.Is(runErr, errCardRetryable):
 		// NOTHING launched: the forge could not be ASKED whether the PR's head
 		// lives in the base repo, which says nothing about the card. Filing it
 		// blocked would write an operator-facing terminal flag — one
@@ -331,14 +345,14 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// return immediately on the empty LastRunID a card that never launched
 		// still carries. The write below goes out under the claim token, so a
 		// superseded replica cannot resurrect it.
-		final = d.retryStateFor(c, runErr)
+		final, returnedToPool = d.retryStateFor(c, runErr)
 	case runErr != nil:
 		final = d.blockedState
 		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
 	}
-	if final != d.eligible0() {
-		// Past the pre-launch gate (launched, filed, parked or draining): this
-		// card's attempt budget belongs to a finished incident.
+	if !returnedToPool {
+		// Past the pre-launch gate (launched, filed, parked, draining — or
+		// escalated): this card's attempt budget belongs to a closed incident.
 		d.clearCardRetry(c.Tenant, c.Issue.ID)
 	}
 	// Final writes on a DETACHED ctx: a superseded claim cancelled
@@ -657,17 +671,17 @@ func (d *boardDispatcher) eligible0() string {
 // has become an operator's problem and a card nobody can see is worse than one
 // filed wrongly. Mirrors the watchdog's refusal to strand: with no eligible
 // state to return to, file rather than leave the card mid-flight.
-func (d *boardDispatcher) retryStateFor(c boardmongo.Candidate, runErr error) string {
+func (d *boardDispatcher) retryStateFor(c boardmongo.Candidate, runErr error) (string, bool) {
 	pool := d.eligible0()
 	attempts, mayRetry := d.noteCardRetry(c.Tenant, c.Issue.ID)
 	if pool == "" || !mayRetry {
 		d.warn("card %s/%s: the forge could not verify the pull request's head after %d attempts — filing %s: %v",
 			c.Tenant, c.Issue.ID, attempts, d.blockedState, runErr)
-		return d.blockedState
+		return d.blockedState, false
 	}
 	d.warn("card %s/%s: the forge could not verify the pull request's head (attempt %d/%d) — returning it to %s, retrying in %s: %v",
 		c.Tenant, c.Issue.ID, attempts, d.retryLimit, pool, d.retryBackoff, runErr)
-	return pool
+	return pool, true
 }
 
 // noteCardRetry records one failed pre-launch attempt, arms the backoff window
@@ -1615,6 +1629,13 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// and a publish grant, neither of which can ride the card itself.
 	lc.Vars, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
 	if err != nil {
+		// Nothing is launched yet, so a forge that could not be ASKED is
+		// retryable — unlike a refusal, which is a decision about this card.
+		// The marker is applied HERE because this is the only place that knows
+		// no run exists (see errCardRetryable).
+		if prLaunchUnavailable(err) {
+			return fmt.Errorf("card %s: %w: %w", iss.ID, err, errCardRetryable)
+		}
 		return fmt.Errorf("card %s: %w", iss.ID, err)
 	}
 	spec := runview.LaunchSpec{

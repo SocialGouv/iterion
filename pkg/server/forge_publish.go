@@ -706,8 +706,12 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
 		fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
 	}
-	preferredConnID = conn.ID
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r), nil
+	// Pin the grant to the connection the head was VERIFIED through, so the
+	// verdict is posted under the identity that answered for the PR.
+	// forgeConnectionForPR already honoured (and warned about) an operator's
+	// pin, and injectForgePublishVars re-resolves through the same helper — so
+	// this names the choice rather than changing it.
+	return s.injectForgePublishVars(ctx, teamID, conn.ID, botID, vars, r), nil
 }
 
 // repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the

@@ -2747,8 +2747,7 @@ func TestBoardDispatcher_ForgeOutageReturnsTheCardAndRetries(t *testing.T) {
 	outage := true
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
 		if outage {
-			return fmt.Errorf("card native:1: %w",
-				classifyPRLookupError("resolve head repository", errors.New("github: GET pull: HTTP 503")))
+			return prePreLaunchOutage("github: GET pull: HTTP 503")
 		}
 		return nil
 	}, "replica-A", 4, nil)
@@ -2778,7 +2777,7 @@ func TestBoardDispatcher_ForgeOutageReturnsTheCardAndRetries(t *testing.T) {
 func TestBoardDispatcher_ForgeOutageEscalatesAfterTheBudget(t *testing.T) {
 	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
-		return classifyPRLookupError("resolve head repository", errors.New("github: GET pull: HTTP 502"))
+		return prePreLaunchOutage("github: GET pull: HTTP 502")
 	}, "replica-A", 4, nil)
 	d.retryBackoff = 0
 	d.retryLimit = 3
@@ -2817,7 +2816,7 @@ func TestBoardDispatcher_ReturnedCardWaitsOutItsBackoff(t *testing.T) {
 	passes := 0
 	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
 		passes++
-		return classifyPRLookupError("resolve head repository", errors.New("dial tcp: i/o timeout"))
+		return prePreLaunchOutage("dial tcp: i/o timeout")
 	}, "replica-A", 4, nil)
 	d.retryBackoff = time.Hour
 	d.tick(context.Background())
@@ -2850,5 +2849,69 @@ func TestClassifyPRLookupError_PermanentAllowlist(t *testing.T) {
 	// A refusal is never retryable, whatever it wraps.
 	if prLaunchUnavailable(prLaunchRefusal("PR launch: fork PR")) {
 		t.Error("a refusal must never be retried")
+	}
+}
+
+// prePreLaunchOutage reproduces EXACTLY what processBoardCard returns when the
+// forge could not answer the PR-head lookup — the classified error plus the
+// errCardRetryable marker it applies at the one site that knows no run exists.
+// TestProcessBoardCardMarksAnUnanswerableLookupRetryable pins that shape to the
+// real code path, so these dispatcher-level tests cannot drift from it.
+func prePreLaunchOutage(msg string) error {
+	return fmt.Errorf("card native:1: %w: %w",
+		classifyPRLookupError("resolve head repository", errors.New(msg)), errCardRetryable)
+}
+
+// The linkage the dispatcher-level retry tests assume: the REAL processBoardCard
+// marks an unanswerable lookup retryable, and a refusal not. Without this the
+// retry arm could be unreachable in production while its own tests stayed green.
+func TestProcessBoardCardMarksAnUnanswerableLookupRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		lookupErr     error
+		head          string
+		wantRetryable bool
+	}{
+		{name: "forge-5xx", lookupErr: errors.New("github: GET pull: HTTP 503"), wantRetryable: true},
+		{name: "credential-rejected", lookupErr: forge.ErrUnauthorized},
+		{name: "fork", head: "contributor/r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			s.cfg.PublicURL = "https://iterion.example"
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+				return launchPullClient{
+					pr:  forge.PullRef{State: "open", HeadRepoFullName: tc.head, SourceBranch: "topic"},
+					err: tc.lookupErr,
+				}, nil
+			}
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc, err := runview.NewService("", runview.WithStore(rs))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.runs = svc
+			botsDir := t.TempDir()
+			if werr := os.WriteFile(filepath.Join(botsDir, "fixer.bot"), []byte(
+				"schema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"yes\"}'`\n  output: probe_out\n\nworkflow board_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n",
+			), 0o600); werr != nil {
+				t.Fatal(werr)
+			}
+			s.cfg.Bots.Paths = []string{botsDir}
+
+			err = s.processBoardCard(context.Background(), "team1", native.Issue{
+				ID: "native:1", Bot: "fixer",
+				BotArgs: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
+			})
+			if err == nil {
+				t.Fatal("an unproven head was admitted onto the board lane")
+			}
+			if got := errors.Is(err, errCardRetryable); got != tc.wantRetryable {
+				t.Fatalf("errCardRetryable = %v, want %v (err: %v)", got, tc.wantRetryable, err)
+			}
+		})
 	}
 }
