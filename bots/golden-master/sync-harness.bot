@@ -3862,7 +3862,7 @@ tool gate_replay:
   output: gate_report
   language: py
   script: |
-    import json, os, subprocess, time
+    import json, os, signal, subprocess, time
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     ws = {{vars.workspace_dir}}
     gm_rel = {{vars.oracle_dir}}
@@ -3891,14 +3891,27 @@ tool gate_replay:
         return ""
 
     started = time.monotonic()
+    # Its own session, so the wall can reach the whole gate. `shell=True` makes
+    # the direct child a shell, and subprocess's own timeout kills only that:
+    # the gate's descendants would keep running — mutant reverts and all —
+    # while the lines below hard-reset the tree under them.
+    p = subprocess.Popen(cmd, shell=True, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, start_new_session=True)
     try:
-        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True, text=True, timeout=wall)
-        code, log = p.returncode, (p.stdout + p.stderr)[-4000:]
-    except subprocess.TimeoutExpired as e:
-        def text_of(v):
-            return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
+        o, e = p.communicate(timeout=wall)
+        code, log = p.returncode, (o + e)[-4000:]
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except OSError:
+            p.kill()
+        try:
+            o, e = p.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            # A pipe still held: something outlived SIGKILL on its group.
+            o, e = "", "(gate output unavailable: a descendant still holds the pipe)"
         code = None
-        log = "gate exceeded gate_timeout_s=%d; last output:\n%s" % (wall, (text_of(e.stdout) + text_of(e.stderr))[-3000:])
+        log = "gate exceeded gate_timeout_s=%d; last output:\n%s" % (wall, (o + e)[-3000:])
     out["minutes"] = int((time.monotonic() - started) // 60)
     out["log_tail"] = log
     if code == 0:
