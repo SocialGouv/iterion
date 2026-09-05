@@ -27,6 +27,10 @@ const (
 	// cap pre-flights AND the credential-skip evidence: both read the same
 	// ledger, and both must forget a pre-reset reading at the same moment.
 	EnvTrustWindow = "ITERION_USAGE_CAP_TRUST_WINDOW"
+	// EnvRefusalRestMax caps the escalating rest an account-level refusal
+	// earns (a Go duration, default DefaultMaxRefusalRest). "off" / "0"
+	// disables the escalation, restoring the flat one-hour re-probe.
+	EnvRefusalRestMax = "ITERION_USAGE_CAP_REFUSAL_REST_MAX"
 )
 
 // Default enforcement postures, applied when only a percentage is set.
@@ -74,18 +78,33 @@ func FromEnv() (Policy, error) {
 // rule as the percentages, for the same reason.
 func TrustFromEnv() (Trust, error) {
 	t := DefaultTrust()
-	raw := strings.TrimSpace(os.Getenv(EnvTrustWindow))
-	if raw == "" {
-		return t, nil
+	if raw := strings.TrimSpace(os.Getenv(EnvTrustWindow)); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Trust{}, fmt.Errorf("%s: %q is not a duration (want e.g. 3h, 90m)", EnvTrustWindow, raw)
+		}
+		if d <= 0 {
+			return Trust{}, fmt.Errorf("%s: %s must be positive (a reading must be trusted for SOME time)", EnvTrustWindow, d)
+		}
+		t.Window = d
 	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		return Trust{}, fmt.Errorf("%s: %q is not a duration (want e.g. 3h, 90m)", EnvTrustWindow, raw)
+	raw := strings.TrimSpace(os.Getenv(EnvRefusalRestMax))
+	switch {
+	case raw == "":
+	case strings.EqualFold(raw, "off"), raw == "0":
+		// Negative, not zero: zero is "unset" and Normalized would refill
+		// it with the default, silently re-enabling what was turned off.
+		t.MaxRefusalRest = -1
+	default:
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Trust{}, fmt.Errorf("%s: %q is not a duration (want e.g. 6h, 90m, or off)", EnvRefusalRestMax, raw)
+		}
+		if d <= 0 {
+			return Trust{}, fmt.Errorf("%s: %s must be positive (use \"off\" to disable the escalation)", EnvRefusalRestMax, d)
+		}
+		t.MaxRefusalRest = d
 	}
-	if d <= 0 {
-		return Trust{}, fmt.Errorf("%s: %s must be positive (a reading must be trusted for SOME time)", EnvTrustWindow, d)
-	}
-	t.Window = d
 	return t, nil
 }
 

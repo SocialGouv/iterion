@@ -19,7 +19,11 @@ import (
 // order.
 type Store interface {
 	// Record stores a reading for a credential key, keeping the newest
-	// per window.
+	// per window, and maintains Reading.Refusals: a refusal with no reset
+	// instant continues the window's streak, anything else ends it. The
+	// count belongs to the store because a caller only ever sees its own
+	// observation — the escalating rest needs the history, and several
+	// pods write it.
 	Record(ctx context.Context, key string, r Reading) error
 	// Latest returns the newest reading per window for a credential key.
 	// An unknown key is not an error: it means "nothing learned yet",
@@ -107,7 +111,8 @@ func NewMemStore() *MemStore {
 	return &MemStore{data: map[string]map[Window]Reading{}}
 }
 
-// Record keeps the newest reading per window.
+// Record keeps the newest reading per window and continues (or ends) the
+// window's refusal streak.
 func (s *MemStore) Record(_ context.Context, key string, r Reading) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -116,11 +121,29 @@ func (s *MemStore) Record(_ context.Context, key string, r Reading) error {
 		byWindow = map[Window]Reading{}
 		s.data[key] = byWindow
 	}
-	if prev, ok := byWindow[r.Window]; ok && prev.ObservedAt.After(r.ObservedAt) {
+	prev, had := byWindow[r.Window]
+	if had && prev.ObservedAt.After(r.ObservedAt) {
+		// The loser of a newest-wins race changes nothing, streak included.
 		return nil
 	}
+	r.Refusals = nextRefusalCount(prev, had, r)
 	byWindow[r.Window] = r
 	return nil
+}
+
+// nextRefusalCount is the streak arithmetic both twins implement (the
+// Mongo one as the equivalent aggregation expression): a refusal with no
+// reset instant continues the window's streak, anything else ends it.
+// Dated refusals are excluded because they expire at their own reset and
+// need no escalation.
+func nextRefusalCount(prev Reading, had bool, next Reading) int {
+	if next.Status != StatusRejected || !next.ResetsAt.IsZero() {
+		return 0
+	}
+	if had && prev.Status == StatusRejected && prev.ResetsAt.IsZero() {
+		return prev.Refusals + 1
+	}
+	return 1
 }
 
 // Latest returns the newest reading per window.

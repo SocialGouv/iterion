@@ -1153,7 +1153,7 @@ func (p *Publisher) staleSuggestsClosed(ctx context.Context, key string) bool {
 	// Trusted "forever": only the reset instant can end a reading, which
 	// is exactly the pre-trust-window notion of fresh.
 	const forever = 100 * 365 * 24 * time.Hour
-	unbounded := usagecap.Trust{MaxAge: forever, Window: forever}
+	unbounded := usagecap.Trust{MaxAge: forever, Window: forever, MaxRefusalRest: forever}
 	var stale []usagecap.Reading
 	for _, r := range readings {
 		if r.Fresh(now, trust) || !r.Fresh(now, unbounded) {
@@ -1214,8 +1214,11 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		reopen := r.ResetsAt
 		if reopen.IsZero() {
 			// A refusal with no reset instant is trusted only for the
-			// reading's own staleness bound.
-			reopen = r.ObservedAt.Add(trust.MaxAge)
+			// reading's own staleness bound — stretched by how many times
+			// in a row the credential has been refused, the same bound
+			// Fresh applied one line up. Reading them apart would report a
+			// reopening the gate does not honour.
+			reopen = r.ObservedAt.Add(r.RestBound(trust))
 		}
 		if reopen.After(until) {
 			until = reopen
