@@ -20,7 +20,19 @@ type Evaluator struct {
 	subs     SubscriptionStore
 	launcher Launcher    // direct mode; nil = direct subs skipped (warn)
 	board    BoardEffect // board mode; nil = board subs skipped (warn)
-	logger   *iterlog.Logger
+	// projection executes EffectKindProjection rows. It has no bus-path
+	// counterpart: a projection is materialized by the outbox writer, never
+	// matched from a subscription.
+	projection ProjectionEffect
+	logger     *iterlog.Logger
+}
+
+// ProjectionEffect pushes a native card's CURRENT state onto the external
+// board its tenant is bound to. Implemented by the server (the reflect lives
+// with the board client and the binding store); nil here means a projection
+// row cannot execute, which is a wiring bug and says so.
+type ProjectionEffect interface {
+	ReflectCard(ctx context.Context, ev Event) error
 }
 
 // EvaluatorOption configures an Evaluator.
@@ -31,6 +43,11 @@ func WithLauncher(l Launcher) EvaluatorOption { return func(e *Evaluator) { e.la
 
 // WithBoardEffect sets the board-mode promote effect.
 func WithBoardEffect(b BoardEffect) EvaluatorOption { return func(e *Evaluator) { e.board = b } }
+
+// WithProjectionEffect sets the reflect executed by EffectKindProjection rows.
+func WithProjectionEffect(p ProjectionEffect) EvaluatorOption {
+	return func(e *Evaluator) { e.projection = p }
+}
 
 // WithLogger sets the leveled logger (nil-safe).
 func WithLogger(l *iterlog.Logger) EvaluatorOption { return func(e *Evaluator) { e.logger = l } }
@@ -103,6 +120,10 @@ func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event
 // the zero value; the outbox worker threads its persisted consume state
 // through so a retry never re-spends a one-shot.
 type effectOpts struct {
+	// kind selects the arm. The zero value is EffectKindLaunch, matching the
+	// row discriminator's own zero value, so the bus path (which only ever
+	// carries launches) needs no change.
+	kind string
 	// alreadyConsumed skips the one-shot label consume — an outbox retry
 	// whose earlier attempt consumed and persisted the marker.
 	alreadyConsumed bool
@@ -138,6 +159,23 @@ func machineCaused(ev Event) bool {
 // (the bus path warns and moves on, the outbox path retries).
 
 func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
+	// The PROJECTION arm, deliberately ahead of the machine-caused decline
+	// below — this is the exemption ADR-097 §10 named, stated at the one line
+	// that grants it rather than left to fall out of the wiring.
+	//
+	// That decline protects LAUNCH admission: a schema migration emits one
+	// event per card, and one run per card is the fan-out it refuses. A
+	// projection starts no run, spends no budget and consumes no one-shot —
+	// it copies a column the native board already holds onto the external
+	// board bound to it. Declining it there would make iterion's OWN moves (a
+	// watchdog filing a card in `blocked`) the only ones the roadmap never
+	// hears about, which is the divergence the reflect exists to close.
+	//
+	// `sub` is the zero value here: a projection is owed to the tenant's board
+	// binding, never to a subscription.
+	if opts.kind == EffectKindProjection {
+		return e.applyProjection(ctx, ev)
+	}
 	// BEFORE the mode switch: a machine-caused event fires NOTHING. A
 	// subscription is written for an operator's (or a bot's) gesture, and
 	// a schema migration emits one event per card in the touched column —
@@ -178,6 +216,25 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 		_, err := e.launcher.Launch(ctx, e.buildPlan(sub, ev))
 		return err
 	}
+}
+
+// applyProjection reflects one card's current state onto the tenant's bound
+// external board, through the SAME reflect the periodic reconciliation pass
+// uses — one implementation, two callers, so the fast path and the net cannot
+// disagree about what "already there" means.
+//
+// Both refusals are errors, not silent successes: a projection row only exists
+// where a binding did at materialization time, so an unwired effect or a
+// card-less event is a defect in the wiring above, and retiring the row would
+// leave the external board diverged with nothing said.
+func (e *Evaluator) applyProjection(ctx context.Context, ev Event) error {
+	if e.projection == nil {
+		return fmt.Errorf("trigger: projection effect for card %q (tenant %q) but no projection effect wired", ev.Subject.ID, ev.TenantID)
+	}
+	if ev.Subject.ID == "" {
+		return fmt.Errorf("trigger: projection effect for event %s carries no card id", ev.ID)
+	}
+	return e.projection.ReflectCard(ctx, ev)
 }
 
 // buildPlan resolves a (subscription, event) pair into a LaunchPlan: the

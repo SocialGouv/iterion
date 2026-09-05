@@ -39,6 +39,13 @@ matched `(board event, subscription)` pair, in the per-tenant Mongo
 collection `trigger_effects` (`pkg/dispatcher/boardmongo`, implementing
 `trigger.EffectOutbox`; `trigger.MemoryEffectOutbox` is the test twin).
 
+> **Since issue #746** a row carries a `kind`, so the outbox also delivers
+> effects owed to something other than a subscription. `launch` is the row
+> above and the ZERO value — every row written before the field, and by every
+> replica mid-rollout, reads as one — while `projection` is ADR-097 §10's
+> board reflect: no `sub_id`, no bot, a row key no `(event, subscription)` pair
+> can address. Everything below applies to both kinds unchanged.
+
 **Materialization order** (`cloudBoardSource.drainTenant`):
 normalize + match **every** event of the batch first — a transient store
 error aborts the batch with the cursor untouched (retry next tick); only a

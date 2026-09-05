@@ -301,6 +301,35 @@ func (s *Server) boardClientForBoundBinding(ctx context.Context, b forge.BoardBi
 	return bc, err
 }
 
+// boardProjection builds the reflect's fast path (the trigger spine's
+// projection effect), or nil when this instance has nothing to reflect onto.
+//
+// It shares the sync worker's resolvers on purpose: the two paths must run the
+// same reflect, through the same credential and the same card store, or "the
+// fast path wrote it" and "the pass would have written it" stop meaning the
+// same thing.
+func (s *Server) boardProjection() *boardProjectionEffect {
+	if s == nil || s.boardBindings == nil || s.cfg.CloudBoardFor == nil {
+		return nil
+	}
+	return &boardProjectionEffect{
+		Bindings:       s.boardBindings,
+		BoardClientFor: s.boardClientForBoundBinding,
+		CardsFor:       s.cloudCardsFor,
+		Logger:         s.logger,
+	}
+}
+
+// cloudCardsFor resolves a tenant's cloud card store — the one resolver the
+// sync worker and the projection effect share.
+func (s *Server) cloudCardsFor(_ context.Context, tenantID string) (native.BoardStore, error) {
+	b := s.cfg.CloudBoardFor(tenantID)
+	if b == nil {
+		return nil, errors.New("no card store for this team")
+	}
+	return b, nil
+}
+
 // startBoardSync launches the periodic reconciliation worker (ADR-097 §10).
 // It needs a binding store AND a per-tenant card store; without either there
 // is nothing to reconcile, and saying so once at boot beats a worker that
@@ -312,14 +341,8 @@ func (s *Server) startBoardSync() {
 	w := &BoardSyncWorker{
 		Bindings:       s.boardBindings,
 		BoardClientFor: s.boardClientForBoundBinding,
-		CardsFor: func(_ context.Context, tenantID string) (native.BoardStore, error) {
-			b := s.cfg.CloudBoardFor(tenantID)
-			if b == nil {
-				return nil, errors.New("no card store for this team")
-			}
-			return b, nil
-		},
-		Logger: s.logger,
+		CardsFor:       s.cloudCardsFor,
+		Logger:         s.logger,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.boardSyncCancel = cancel

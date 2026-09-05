@@ -150,7 +150,7 @@ func (s *Server) ListenAndServe() error {
 		s.cloudTriggerCoord = StartCloudTriggerCoordinator(
 			s.cfg.CloudBoardCoordinator, s.cfg.TriggerStore,
 			newServiceLauncher(s.runs, s.logger, s.resolveRunRetryPolicy, s.resolveBotSource),
-			s.cfg.EventsBus, s.logger)
+			s.boardProjection(), s.cfg.EventsBus, s.logger)
 	}
 	// Wire the run-completion source onto the process's single event spine
 	// (the injected EventsBus, which the trigger coordinator also rides

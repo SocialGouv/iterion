@@ -64,7 +64,7 @@ func effectWorld(t *testing.T, sub Subscription, board BoardEffect, l Launcher) 
 		TenantID: "t1", Subject: Subject{Type: "card", ID: "card1"},
 		Labels: []string{"triage:auto"},
 	}
-	rows, err := MaterializeEffects(context.Background(), subs, ev, time.Now().UTC())
+	rows, err := MaterializeEffects(context.Background(), subs, nil, ev, time.Now().UTC())
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("materialize: rows=%d err=%v", len(rows), err)
 	}
@@ -217,13 +217,13 @@ func TestMaterializeEffects_ObservationalAndDisabled(t *testing.T) {
 	sub.Enabled = false
 	_ = subs.Create(context.Background(), sub)
 	ev := Event{ID: "e1", Source: SourceBoard, Kind: KindCardMoved, TenantID: "t1", Labels: []string{"triage:auto"}}
-	if rows, _ := MaterializeEffects(context.Background(), subs, ev, time.Now()); len(rows) != 0 {
+	if rows, _ := MaterializeEffects(context.Background(), subs, nil, ev, time.Now()); len(rows) != 0 {
 		t.Fatal("disabled subscription materialized an effect")
 	}
 	sub.Enabled = true
 	_ = subs.Update(context.Background(), sub)
 	ev.Payload = map[string]any{PayloadLaunchedRunID: "r1"}
-	if rows, _ := MaterializeEffects(context.Background(), subs, ev, time.Now()); len(rows) != 0 {
+	if rows, _ := MaterializeEffects(context.Background(), subs, nil, ev, time.Now()); len(rows) != 0 {
 		t.Fatal("observational (already-launched) event materialized an effect")
 	}
 }

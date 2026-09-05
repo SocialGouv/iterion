@@ -29,6 +29,12 @@ func (m *MemoryEffectOutbox) UpsertPending(_ context.Context, rows []EffectRow) 
 		if cp.State == "" {
 			cp.State = EffectPending
 		}
+		// Normalized like State: what this twin stores is always explicit, so
+		// a blank kind in the store can only come from a binary that predates
+		// the field (mirrors boardmongo).
+		if cp.Kind == "" {
+			cp.Kind = EffectKindLaunch
+		}
 		m.rows[cp.ID] = &cp
 	}
 	return nil

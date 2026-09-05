@@ -131,7 +131,11 @@ type cloudBoardSource struct {
 	subs    trigger.SubscriptionStore
 	eval    *trigger.Evaluator
 	logger  *iterlog.Logger
-	tick    time.Duration
+	// bindings decides whether a tenant's card move owes its bound external
+	// board a projection row. nil = no board binding store on this instance,
+	// so no projection is ever materialized.
+	bindings trigger.ProjectionBindings
+	tick     time.Duration
 	// ticks counts tickOnce passes (single goroutine) for the slow-cadence
 	// outbox drain.
 	ticks int
@@ -291,7 +295,7 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		if !ok {
 			continue // card deleted between the transition and the read — definitive
 		}
-		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, te, now)
+		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, s.bindings, te, now)
 		if merr != nil {
 			if s.poisoned(tenant, evt.Seq) {
 				continue
@@ -428,7 +432,7 @@ type CloudTriggerCoordinator struct {
 // poll-tail. Returns nil (a no-op, logged) when a prerequisite is missing.
 // The schedule/keepalive kinds stay with cloudsched; forge events stay
 // observational (webhooks remain the launch authority).
-func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.SubscriptionStore, launcher trigger.Launcher, bus eventbus.Bus, logger *iterlog.Logger) *CloudTriggerCoordinator {
+func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.SubscriptionStore, launcher trigger.Launcher, projection *boardProjectionEffect, bus eventbus.Bus, logger *iterlog.Logger) *CloudTriggerCoordinator {
 	if coord == nil || subs == nil || bus == nil {
 		return nil
 	}
@@ -440,11 +444,21 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 		return nil
 	}
 	effect := &cloudBoardEffect{coord: coord, logger: logger}
-	eval := trigger.NewEvaluator(subs,
+	evalOpts := []trigger.EvaluatorOption{
 		trigger.WithBoardEffect(effect),
 		trigger.WithLauncher(launcher),
 		trigger.WithLogger(logger),
-	)
+	}
+	// The two halves of the projection travel together — the same value
+	// decides whether a row is owed and executes it — so a deployment can
+	// never materialize projection rows it cannot run. A typed nil would
+	// satisfy both interfaces and defeat that, hence the explicit guard.
+	var bindings trigger.ProjectionBindings
+	if projection != nil {
+		bindings = projection
+		evalOpts = append(evalOpts, trigger.WithProjectionEffect(projection))
+	}
+	eval := trigger.NewEvaluator(subs, evalOpts...)
 	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, eval.Handle)
 	if err != nil {
 		if logger != nil {
@@ -454,19 +468,21 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	src := &cloudBoardSource{
-		coord:   coord,
-		tenants: lister,
-		subs:    subs,
-		eval:    eval,
-		logger:  logger,
-		tick:    cloudBoardTickInterval(),
-		ctx:     ctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		coord:    coord,
+		tenants:  lister,
+		subs:     subs,
+		eval:     eval,
+		logger:   logger,
+		bindings: bindings,
+		tick:     cloudBoardTickInterval(),
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
 	}
 	go src.run()
 	if logger != nil {
-		logger.Info("server: cloud trigger spine active (board_events poll every %s, durable effect outbox)", src.tick)
+		logger.Info("server: cloud trigger spine active (board_events poll every %s, durable effect outbox, board projection=%v)",
+			src.tick, bindings != nil)
 	}
 	return &CloudTriggerCoordinator{source: src, cancelSub: cancelSub}
 }

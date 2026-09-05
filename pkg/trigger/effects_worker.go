@@ -44,7 +44,7 @@ func (w *EffectWorker) Tick(ctx context.Context, limit int) int {
 		// killed pod) never reaches MarkRetry, so without this check the
 		// MaxEffectAttempts guard would be unreachable for it.
 		if row.Attempts >= MaxEffectAttempts {
-			w.warn("trigger: effect %s (sub %s) reclaimed %d times without completing — parked as dead-letter", row.ID, row.SubID, row.Attempts)
+			w.warn("trigger: effect %s (%s) reclaimed %d times without completing — parked as dead-letter", row.ID, row.Owner(), row.Attempts)
 			if merr := w.Outbox.MarkFailed(ctx, row.ID, row.ClaimID, "reclaimed past the attempt budget without completing"); merr != nil {
 				w.warn("trigger: effect %s failed-write: %v", row.ID, merr)
 			}
@@ -73,16 +73,16 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 	default:
 		attempts := row.Attempts + 1
 		if attempts >= MaxEffectAttempts {
-			w.warn("trigger: effect %s (sub %s, event %s) FAILED after %d attempts — parked as dead-letter: %v",
-				row.ID, row.SubID, row.Event.ID, attempts, err)
+			w.warn("trigger: effect %s (%s, event %s) FAILED after %d attempts — parked as dead-letter: %v",
+				row.ID, row.Owner(), row.Event.ID, attempts, err)
 			if merr := w.Outbox.MarkFailed(ctx, row.ID, row.ClaimID, err.Error()); merr != nil {
 				w.warn("trigger: effect %s failed-write: %v", row.ID, merr)
 			}
 			return
 		}
 		backoff := EffectBackoff(attempts)
-		w.warn("trigger: effect %s (sub %s) attempt %d/%d failed, retrying in %s: %v",
-			row.ID, row.SubID, attempts, MaxEffectAttempts, backoff, err)
+		w.warn("trigger: effect %s (%s) attempt %d/%d failed, retrying in %s: %v",
+			row.ID, row.Owner(), attempts, MaxEffectAttempts, backoff, err)
 		if merr := w.Outbox.MarkRetry(ctx, row.ID, row.ClaimID, attempts, w.now().Add(backoff), err.Error()); merr != nil {
 			w.warn("trigger: effect %s retry-write: %v", row.ID, merr)
 		}
@@ -96,6 +96,14 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 // persists "the one-shot is OURS" between the atomic consume and the launch
 // (the pre-outbox shape lost the trigger exactly there).
 func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) error {
+	if row.IsProjection() {
+		// No subscription to load, re-verify or tenant-check: a projection row
+		// is owed to the tenant's board BINDING. That is also why it can never
+		// be listed or deleted through /api/v1/triggers — it names no
+		// subscription at all. The row's own tenant is on the event, which the
+		// reflect resolves the binding from.
+		return w.Evaluator.applyEffect(ctx, Subscription{}, row.Event, effectOpts{kind: EffectKindProjection})
+	}
 	sub, err := w.Subs.Get(ctx, row.SubID)
 	switch {
 	case errors.Is(err, ErrSubscriptionNotFound):
@@ -152,20 +160,54 @@ func (w *EffectWorker) warn(format string, args ...any) {
 	}
 }
 
+// ProjectionBindings answers the ONE question the projection arm asks: does
+// this tenant have an external board bound? Narrow on purpose — pkg/trigger
+// must not learn the forge binding's shape to know that a projection is owed,
+// and the same implementation supplies the ProjectionEffect that executes it,
+// so the pair cannot be half-wired.
+type ProjectionBindings interface {
+	HasBoardBinding(ctx context.Context, tenantID string) (bool, error)
+}
+
 // MaterializeEffects computes the outbox rows one normalized event owes: one
-// row per enabled, matching, non-observational subscription. Shared by the
-// cloud board source (the writer) and tests. now stamps CreatedAt.
-func MaterializeEffects(ctx context.Context, subs SubscriptionStore, ev Event, now time.Time) ([]EffectRow, error) {
+// row per enabled, matching, non-observational subscription, plus — for a card
+// MOVE on a tenant with a bound external board — one projection row. Shared by
+// the cloud board source (the writer) and tests. now stamps CreatedAt.
+//
+// bindings may be nil (a deployment with no board binding at all), in which
+// case no projection row is ever owed.
+func MaterializeEffects(ctx context.Context, subs SubscriptionStore, bindings ProjectionBindings, ev Event, now time.Time) ([]EffectRow, error) {
+	var rows []EffectRow
+	// The projection is computed BEFORE — and outside of —
+	// matchingSubscriptions, deliberately: that prelude declines
+	// machine-caused events to protect the fleet from mass LAUNCHES, and a
+	// watchdog filing a card in `blocked` is exactly what the external
+	// roadmap must show. A projection spends no budget and starts no run.
+	owed, err := projectionOwed(ctx, bindings, ev)
+	if err != nil {
+		return nil, err
+	}
+	if owed {
+		rows = append(rows, EffectRow{
+			ID:        ProjectionEffectID(ev.ID),
+			TenantID:  ev.TenantID,
+			Event:     ev,
+			Kind:      EffectKindProjection,
+			State:     EffectPending,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
 	matched, err := matchingSubscriptions(ctx, subs, ev)
 	if err != nil {
 		return nil, err
 	}
-	var rows []EffectRow
 	for _, sub := range matched {
 		rows = append(rows, EffectRow{
 			ID:        EffectID(ev.ID, sub.ID),
 			TenantID:  ev.TenantID,
 			Event:     ev,
+			Kind:      EffectKindLaunch,
 			SubID:     sub.ID,
 			State:     EffectPending,
 			CreatedAt: now,
@@ -173,4 +215,22 @@ func MaterializeEffects(ctx context.Context, subs SubscriptionStore, ev Event, n
 		})
 	}
 	return rows, nil
+}
+
+// projectionOwed reports whether this event owes the tenant's bound board a
+// state push. A binding lookup failure is RETURNED, never swallowed: the cloud
+// tail materializes before advancing its cursor, so a skipped projection here
+// is a reflect that only the periodic pass would ever make good.
+func projectionOwed(ctx context.Context, bindings ProjectionBindings, ev Event) (bool, error) {
+	// Only a state transition moves a column, and only a card the reflect can
+	// name, for a tenant a binding can be resolved for.
+	if bindings == nil || ev.Source != SourceBoard || ev.Kind != KindCardMoved ||
+		ev.Subject.ID == "" || ev.TenantID == "" {
+		return false, nil
+	}
+	bound, err := bindings.HasBoardBinding(ctx, ev.TenantID)
+	if err != nil {
+		return false, fmt.Errorf("board binding for tenant %q: %w", ev.TenantID, err)
+	}
+	return bound, nil
 }
