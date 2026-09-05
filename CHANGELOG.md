@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.2](https://github.com/SocialGouv/iterion/compare/v3.102.1...v3.102.2) (2026-09-05)
+
+### Bug Fixes
+
+* **launch:** the launch path survives one team's broken plugin, strands no row, retries with a budget, commits any message ([#709](https://github.com/SocialGouv/iterion/issues/709)) ([ad5405e](https://github.com/SocialGouv/iterion/commit/ad5405ee5f9025a04e1fb9214b8cb06560df0077)), references [#631](https://github.com/SocialGouv/iterion/issues/631) [#537](https://github.com/SocialGouv/iterion/issues/537) [#536](https://github.com/SocialGouv/iterion/issues/536) [#538](https://github.com/SocialGouv/iterion/issues/538)
+
+    <details><summary>why</summary>
+
+    A converged run's squash merge failed with "fork/exec /usr/bin/git: argument list too long": the assembled message was passed as one `-m` argument, and Linux caps a single argv element at 128 KiB (MAX_ARG_STRLEN), so exactly the runs that produced the most could not be merged (#631).
+
+    </details>
+
 ## [3.102.1](https://github.com/SocialGouv/iterion/compare/v3.102.0...v3.102.1) (2026-09-05)
 
 ### Bug Fixes
