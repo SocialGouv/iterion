@@ -287,8 +287,17 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 // parent iss.LastRunID still names (the board mutates its own copy of
 // the issue on SetLastRun).
 func (s *Server) fileFinishedTicket(board native.BoardStore, iss *native.Issue, runID string) {
-	if _, _, err := board.SetStateFrom(iss.ID, iss.State, native.StateDone); err != nil {
+	_, changed, err := board.SetStateFrom(iss.ID, iss.State, native.StateDone)
+	if err != nil {
 		s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, runID, err)
+		return
+	}
+	if !changed {
+		// The CAS found the card already moved out of the state the sweep
+		// saw — an operator's (or the bot's) decision that predates this
+		// filing. Say THAT: an operator debugging a ticket that never
+		// reached done must not read a filing that did not happen.
+		s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) but already left %s — leaving it where it was moved", iss.ID, runID, iss.State)
 		return
 	}
 	s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, runID)
