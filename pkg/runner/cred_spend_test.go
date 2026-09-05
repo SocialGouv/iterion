@@ -27,10 +27,10 @@ func TestRecordCredentialSpend_SplitsOneRunAcrossItsCredentials(t *testing.T) {
 		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/oauth"},
 		PlatformSourced:      map[string]bool{string(secrets.ProviderOpenAI): true},
 		Fingerprints: map[string]string{
-			delegate.BackendClaudeCode:      "fp-forfait",
-			string(secrets.ProviderOpenAI):  "fp-openai",
-			string(secrets.OAuthKindCodex):  "",
-			string(secrets.ProviderZAI):     "",
+			delegate.BackendClaudeCode:        "fp-forfait",
+			string(secrets.ProviderOpenAI):    "fp-openai",
+			string(secrets.OAuthKindCodex):    "",
+			string(secrets.ProviderZAI):       "",
 			string(secrets.ProviderAnthropic): "",
 		},
 	})

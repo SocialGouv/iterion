@@ -202,5 +202,5 @@ func (s Spend) empty() bool {
 
 // recordable reports whether a spend can be counted at all.
 func (s Spend) recordable() bool {
-	return s.Key.Valid() && s.Nature.Valid() && !s.empty()
+	return s.Valid() && s.Nature.Valid() && !s.empty()
 }

@@ -145,9 +145,9 @@ func runCounterConformance(t *testing.T, c Counter) {
 	// Un-meterable spends are dropped quietly: metering must never turn a
 	// finished run into a failed one.
 	for _, bad := range []Spend{
-		{Key: Key{Provider: "anthropic", Tier: TierTeam}, Nature: NatureMetered, CostUSD: 9}, // no fingerprint: a slot, not an account
-		{Key: Key{Fingerprint: "fp-x", Tier: TierTeam}, Nature: NatureMetered, CostUSD: 9},   // no provider
-		{Key: Key{Fingerprint: "fp-x", Provider: "anthropic", Tier: TierTeam}, CostUSD: 9},   // no nature
+		{Key: Key{Provider: "anthropic", Tier: TierTeam}, Nature: NatureMetered, CostUSD: 9},                                 // no fingerprint: a slot, not an account
+		{Key: Key{Fingerprint: "fp-x", Tier: TierTeam}, Nature: NatureMetered, CostUSD: 9},                                   // no provider
+		{Key: Key{Fingerprint: "fp-x", Provider: "anthropic", Tier: TierTeam}, CostUSD: 9},                                   // no nature
 		{Key: Key{Fingerprint: "fp-team", Provider: "anthropic", Tier: TierTeam, TenantID: "team-a"}, Nature: NatureMetered}, // nothing spent
 	} {
 		if err := c.AddSpend(ctx, sept, bad); err != nil {
