@@ -222,12 +222,17 @@ func cloneRunStateForBranch(parent *runState) *runState {
 		stopCaptured:                cloneMap(parent.stopCaptured),
 		resumed:                     parent.resumed,
 		budget:                      parent.budget,
-		resourceSemaphores:          parent.resourceSemaphores,
-		costUSDTotal:                parent.costUSDTotal,
-		nodeAttempts:                cloneNodeAttempts(parent.nodeAttempts),
-		attachments:                 parent.attachments,
-		resumeBackend:               parent.resumeBackend,
-		isWorktree:                  parent.isWorktree,
+		// The branch is part of the SAME run: it inherits the run's clock,
+		// not a fresh one. A zero startedAt here would make
+		// `{{run.elapsed_seconds}}` inside a branch report the age of the
+		// Unix epoch.
+		startedAt:          parent.startedAt,
+		resourceSemaphores: parent.resourceSemaphores,
+		costUSDTotal:       parent.costUSDTotal,
+		nodeAttempts:       cloneNodeAttempts(parent.nodeAttempts),
+		attachments:        parent.attachments,
+		resumeBackend:      parent.resumeBackend,
+		isWorktree:         parent.isWorktree,
 	}
 	return local
 }

@@ -1155,7 +1155,9 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	// Build input and execute LLM.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
 	execCtx := model.WithLoopIteration(ctx, iter)
+	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The llm half of llm_or_human is an OPTIMIZATION — it auto-answers
 		// the routine case so a human is only pulled in for a real decision.
@@ -1806,7 +1808,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
 	execCtx = model.WithRunID(execCtx, rs.runID)
 	execCtx = model.WithNodeID(execCtx, nodeID)
+	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if err != nil {
 		// Check for another interaction request (recursive). depth+1
 		// so the maxInteractionDepth guard in handleNeedsInteraction

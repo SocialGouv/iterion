@@ -426,7 +426,9 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		defer cancel()
 	}
 
+	execStart := time.Now()
 	output, execErr := e.executor.Execute(spanCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if execErr != nil {
 		span.RecordError(execErr)
 		span.SetStatus(codes.Error, execErr.Error())

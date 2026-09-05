@@ -403,6 +403,13 @@ type runState struct {
 	resumed bool
 	budget  *SharedBudget // shared across branches, nil if no budget
 
+	// startedAt is when this run state was built — the fallback clock for
+	// `{{run.elapsed_seconds}}` on a workflow that declares no `budget:`
+	// block and therefore has no SharedBudget to measure against. When a
+	// budget IS declared, its own monotonic startedAt is authoritative
+	// (it is shifted back on resume, so elapsed spans the whole run).
+	startedAt time.Time
+
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all
 	// branches so contention is global. A node that declares `needs: <resource>`
@@ -608,6 +615,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
+		startedAt:          time.Now(),
 	}
 	// Publish the run's budget so the active-duration stamping callback
 	// (runview Service / runner) can read its monotonic elapsed. nil when

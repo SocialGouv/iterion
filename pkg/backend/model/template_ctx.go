@@ -35,6 +35,23 @@ type TemplateData struct {
 	// `{{run.id}}`.
 	RunID string
 
+	// Run is the full `run.*` namespace snapshot the engine took when this
+	// node was dispatched: identity plus the run's consumption and the
+	// EFFECTIVE budget caps (`elapsed_seconds`, `cost_usd`, `tokens`,
+	// `iterations`, `max_duration_seconds`, `max_cost_usd`, `max_tokens`,
+	// `max_iterations`). Members are documented in docs/dsl.md; the
+	// authority is pkg/runtime's RunNamespaceMembers.
+	//
+	// A SNAPSHOT, deliberately: a prompt or a tool command is rendered
+	// once, before the node runs, so these read the run as it was at
+	// dispatch. An expression that must see live figures belongs in a
+	// `compute` node, whose expr context resolves per evaluation.
+	//
+	// nil for callers that do not wire the runtime context; `{{run.id}}`
+	// still resolves from RunID so the historical member never depends on
+	// this map being populated.
+	Run map[string]any
+
 	// Attachments maps the workflow's attachment names to their
 	// resolved per-run metadata. Populated from Run.Attachments at
 	// the start of every node execution. Resolvers expose:

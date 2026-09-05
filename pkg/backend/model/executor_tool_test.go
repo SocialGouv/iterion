@@ -204,20 +204,20 @@ func TestResolveRunRefs_CommandAndScript(t *testing.T) {
 	// shared resolver leaves it literal; resolveRunRefs must substitute it
 	// (otherwise sec-audit-source's apply-mode branch ends up literally
 	// named iterion/sec-fix/run.id after its sanitiser strips the braces).
-	cmd := resolveRunRefs("git checkout -b iterion/sec-fix/{{run.id}}", runID, runRef, shellEscapeValue)
+	cmd := resolveRunRefs("git checkout -b iterion/sec-fix/{{run.id}}", runID, nil, runRef, shellEscapeValue)
 	if strings.Contains(cmd, "{{run.id}}") || !strings.Contains(cmd, runID) {
 		t.Errorf("command run.id not substituted: %q", cmd)
 	}
 
 	// Script context: rendered as a JSON string literal so it parses.
-	scr := resolveRunRefs("RUN_ID = {{run.id}}", runID, runRef, jsonLiteralValue)
+	scr := resolveRunRefs("RUN_ID = {{run.id}}", runID, nil, runRef, jsonLiteralValue)
 	if !strings.Contains(scr, `"`+runID+`"`) {
 		t.Errorf("script run.id should be a JSON string literal: %q", scr)
 	}
 
 	// Empty run id degrades to an empty rendering (the caller's sha
 	// fallback then takes over) — never the literal placeholder.
-	empty := resolveRunRefs("b/{{run.id}}", "", runRef, shellEscapeValue)
+	empty := resolveRunRefs("b/{{run.id}}", "", nil, runRef, shellEscapeValue)
 	if strings.Contains(empty, "{{run.id}}") {
 		t.Errorf("empty run id should not leave the literal placeholder: %q", empty)
 	}

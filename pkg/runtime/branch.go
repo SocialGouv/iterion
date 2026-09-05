@@ -664,7 +664,9 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	}
 
 	execCtx := model.WithLoopIteration(ctx, iter)
+	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
 		if emitErr := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, map[string]any{

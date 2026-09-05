@@ -336,7 +336,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// Resolve {{run.id}} first — resolveCommandTemplate only knows the
 			// input/vars/secrets namespaces, so a direct run ref would survive
 			// into the command verbatim.
-			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), node.CommandRefs, shellEscapeValue)
+			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), TemplateDataFromContext(ctx), node.CommandRefs, shellEscapeValue)
 			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
@@ -473,7 +473,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// apostrophes. No compression: a script body is not a shell command line.
 			expanded := expandBracedEnv(node.Script)
 			// {{run.id}} first — resolveScriptTemplate only knows input/vars/secrets.
-			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), node.ScriptRefs, jsonLiteralValue)
+			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), TemplateDataFromContext(ctx), node.ScriptRefs, jsonLiteralValue)
 			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, e.secretGuard)
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
@@ -728,17 +728,28 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // after its sanitiser stripped the braces. `render` formats the value for
 // the target context (shellEscapeValue for command bodies, jsonLiteralValue
 // for script bodies), matching the main resolver; the bang form keeps the
-// raw passthrough. Only run.id is defined today. A run id is a stable
-// UUID-shaped token (no `{{` of its own), so the literal ReplaceAll
-// cannot re-trigger on a substituted value.
-func resolveRunRefs(template, runID string, refs []*ir.Ref, render func(any) string) string {
+// raw passthrough.
+//
+// The members are the engine's `run.*` namespace — identity plus the run's
+// consumption and effective budget caps — read through the same
+// lookupRunTemplateRef the prompt path uses, so a shell guard on
+// `{{run.elapsed_seconds}}` cannot resolve in a prompt and stay literal in
+// a command. td may be nil (hosts that wire only WithRunID): `run.id` still
+// resolves, every other member renders empty rather than as its placeholder.
+// A run id and the budget figures are plain tokens with no `{{` of their
+// own, so the literal ReplaceAll cannot re-trigger on a substituted value.
+func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, render func(any) string) string {
 	for _, r := range refs {
-		if r == nil || r.Kind != ir.RefRun {
+		if r == nil || r.Kind != ir.RefRun || len(r.Path) == 0 {
 			continue
 		}
 		var val any
-		if len(r.Path) > 0 && r.Path[0] == "id" {
+		if r.Path[0] == "id" {
 			val = runID
+		} else if td != nil {
+			if v, ok := td.Run[r.Path[0]]; ok {
+				val = v
+			}
 		}
 		rendered := render(val)
 		if r.Unquoted {

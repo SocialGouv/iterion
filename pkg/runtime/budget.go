@@ -359,6 +359,47 @@ func (b *SharedBudget) DurationStatus() (used, limit float64, bounded bool) {
 	return float64(time.Since(b.startedAt)), float64(b.maxDuration), true
 }
 
+// BudgetStatus is a consistent snapshot of what a run has consumed and of
+// the caps in force at that instant — the EFFECTIVE ones, after CLI/recipe
+// overrides and any live raise_budget, not the literals in the `budget:`
+// block. A zero cap means UNBOUNDED on that axis (the same convention
+// SharedBudget itself uses internally), never "no allowance left".
+type BudgetStatus struct {
+	Elapsed    time.Duration
+	CostUSD    float64
+	Tokens     int
+	Iterations int
+
+	MaxDuration   time.Duration
+	MaxCostUSD    float64
+	MaxTokens     int
+	MaxIterations int
+}
+
+// Status snapshots consumption and caps together under ONE lock, so a
+// reader can never pair a used value with a cap from a different instant
+// (a raise landing between two accessors would otherwise make a guard
+// compute a ratio against a ceiling that was never in force with that
+// spend). Nil-safe: a workflow with no `budget:` block has no tracker, and
+// the zero value reads as "nothing metered, nothing capped".
+func (b *SharedBudget) Status() BudgetStatus {
+	if b == nil {
+		return BudgetStatus{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return BudgetStatus{
+		Elapsed:       time.Since(b.startedAt),
+		CostUSD:       b.costUsed,
+		Tokens:        b.tokensUsed,
+		Iterations:    b.iterationsUsed,
+		MaxDuration:   b.maxDuration,
+		MaxCostUSD:    b.maxCostUSD,
+		MaxTokens:     b.maxTokens,
+		MaxIterations: b.maxIterations,
+	}
+}
+
 // budgetAxis is one enforced budget dimension's standing: what the run
 // has consumed on it, and what it has left before the cap.
 type budgetAxis struct {
