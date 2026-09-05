@@ -122,9 +122,13 @@ type StateReasoner interface {
 // atomically claim a Ready ticket for launch — a CAS StateReady →
 // StateInProgress that reports whether THIS caller won (PR #193 M2). It
 // closes the check-then-act window where a live dispatcher and the studio
-// admission loop both pick the same Ready ticket. The filesystem store
-// implements it; a backend that does not cleanly degrades to the caller's
-// best-effort SetState (the documented V1 window).
+// admission loop both pick the same Ready ticket, and it reads the CLAIM
+// family too: the dispatcher wins a card with the claim and moves it to
+// in_progress afterwards, so a claimed card can legally sit in Ready while
+// its run is already launching. Both twins implement it (the filesystem
+// store here, boardmongo for the cloud — pinned by the shared conformance
+// suite); a backend without it degrades the caller to a best-effort
+// SetState, which under the claim lease is a second launch authority.
 type LaunchClaimer interface {
 	ClaimForLaunch(id string) (*Issue, bool, error)
 }
