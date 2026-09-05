@@ -913,7 +913,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv := forwardableProviderEnv(ctx)
+	runnerEnv, err := forwardableProviderEnv(ctx, task.Model)
+	if err != nil {
+		return delegate.Result{}, err
+	}
 	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
@@ -1118,7 +1121,7 @@ var byokEnvVar = map[secrets.Provider]string{
 // entirely while its donor's lease has already been taken. The failure is
 // invisible whenever the ambient key happens to work, which is the worst
 // possible shape for a billing boundary.
-func forwardableProviderEnv(ctx context.Context) map[string]string {
+func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, error) {
 	env := map[string]string{}
 	for _, name := range providerCredentialEnvVars {
 		if v := os.Getenv(name); v != "" {
@@ -1139,7 +1142,7 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
-		return env
+		return env, nil
 	}
 	for provider, key := range creds.APIKeys {
 		if key == "" {
@@ -1171,7 +1174,33 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
-	// The Anthropic twin (#736). A resolved Claude Code forfait is mounted by
+	// The Anthropic twin (#736), and only for a node the forfait can actually
+	// serve. A z.ai/GLM model rides claw's ANTHROPIC provider too — it arrives
+	// as "anthropic/glm-X" and registry.go SYNTHESISES z.ai's base URL from a
+	// bare ZAI_API_KEY — so the wire check below cannot see it: there is no
+	// ANTHROPIC_BASE_URL to inspect. Clearing ZAI_API_KEY for such a node would
+	// remove its only credential channel and leave the forfait bearer asking
+	// api.anthropic.com for a GLM model it cannot serve, breaking exactly the
+	// forfait-carrying tenants this change is for.
+	if !modelServedByZAI(model) {
+		if err := applyForfaitAcrossSandbox(env, creds); err != nil {
+			return nil, err
+		}
+	}
+	return env, nil
+}
+
+// modelServedByZAI reports whether a model pinned on claw's anthropic provider
+// is actually served by z.ai's Anthropic-compatible endpoint. Same predicate
+// anthropicCapabilities uses to split the two families apart.
+func modelServedByZAI(model string) bool {
+	return strings.Contains(strings.ToLower(model), "glm")
+}
+
+// applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
+// the model gate above reads as one line.
+func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials) error {
+	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
 	// populated for a claw node too. Pointing CLAUDE_CONFIG_DIR at it is what
@@ -1196,12 +1225,23 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 		creds.APIKeys[secrets.ProviderAnthropic] == "" &&
 		creds.APIKeys[secrets.ProviderZAI] == "" &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
+		// Validate BEFORE clearing. Once the shadows are gone the forfait is
+		// the node's ONLY credential in the container, and the in-container
+		// resolver is the env factory, which swallows expiry — it returns ""
+		// and builds a client with no credential at all, i.e. #687's opaque
+		// 401 loop with nothing naming the forfait. The in-process twin
+		// (anthropicFromCtxForfait) already refuses rather than degrade there;
+		// this seam must decide the same way, or the two disagree again.
+		if _, terr := secrets.AnthropicForfaitToken(dir); terr != nil {
+			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
+		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
 		for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
 			delete(env, shadow)
 		}
 	}
-	return env
+	return nil
 }
 
 // canonicalMCPToolName maps an MCP tool name the model emitted in the
