@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  The docs' OpenGraph card (docs/public/og.png, 1200×630). Rendered by
+  `task brand:og` with the Playwright chromium at exactly that viewport;
+  the mascot is the generated docs logo, so `task brand:gen` first.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      body {
+        width: 1200px; height: 630px; overflow: hidden;
+        background: #0d1117; color: #f0f3f8;
+        font-family: "Noto Sans", "DejaVu Sans", ui-sans-serif, system-ui, sans-serif;
+        position: relative;
+      }
+      .bar { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; background: #3fb950; }
+      .brand { position: absolute; left: 80px; top: 74px; display: flex; align-items: center; gap: 30px; }
+      .brand img { width: 104px; height: 104px; display: block; }
+      .brand span { font-size: 52px; font-weight: 700; letter-spacing: -0.5px; }
+      h1 { position: absolute; left: 78px; top: 214px; margin: 0; font-size: 78px; line-height: 1.05; font-weight: 700; letter-spacing: -1px; }
+      .tagline { position: absolute; left: 80px; top: 420px; margin: 0; font-size: 28px; line-height: 1.45; color: #b5bdc9; }
+      .footer { position: absolute; left: 80px; top: 560px; font-size: 21px; color: #6e7787; }
+    </style>
+  </head>
+  <body>
+    <div class="bar"></div>
+    <div class="brand">
+      <img src="../public/iterion-logo.png" alt="" />
+      <span>iterion</span>
+    </div>
+    <h1>The control plane<br />for AI agents.</h1>
+    <p class="tagline">Apps have Linux. The cloud has Kubernetes.<br />AI agents have Iterion.</p>
+    <div class="footer">MIT · self-hostable · declarative .bot workflows · socialgouv.github.io/iterion</div>
+  </body>
+</html>

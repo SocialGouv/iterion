@@ -112,19 +112,33 @@ var remoteWebhooksDeliveriesCmd = &cobra.Command{
 
 var remoteForgeData string
 
+var (
+	remoteForgeAvatarForce   bool
+	remoteForgeAvatarVariant string
+)
+
 var remoteForgeCmd = &cobra.Command{
 	Use:   "forge",
 	Short: "Forge connections and provisioning (team scope)",
 }
 
 var remoteForgeConnectionsCmd = &cobra.Command{
-	Use:   "connections [create|delete <conn-id>|repos <conn-id>]",
+	Use:   "connections [create|delete <conn-id>|repos <conn-id>|avatar <conn-id>]",
 	Short: "Forge connections",
-	Args:  cobra.MaximumNArgs(2),
+	Long: "List, create or delete the team's forge connections. `avatar <conn-id>` " +
+		"uploads the iterion-bot avatar onto the account behind a PAT connection " +
+		"(a GitLab group/project token's bot user, a Forgejo bot account); an " +
+		"account the forge does not flag as a bot needs --force. Refused on an " +
+		"OAuth connection (a person's account) and on GitHub, which has no avatar " +
+		"or App-logo API — the error names where to upload it by hand.",
+	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := teamBase(cmd, c, "/forge/connections")
 		if err != nil {
 			return err
+		}
+		if (cmd.Flags().Changed("force") || cmd.Flags().Changed("variant")) && (len(args) == 0 || args[0] != "avatar") {
+			return fmt.Errorf("--force and --variant only apply to `connections avatar <conn-id>`")
 		}
 		switch {
 		case len(args) == 0:
@@ -135,8 +149,10 @@ var remoteForgeConnectionsCmd = &cobra.Command{
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
 		case args[0] == "repos" && len(args) == 2:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base+"/"+args[1]+"/repos")
+		case args[0] == "avatar" && len(args) == 2:
+			return cli.RemoteForgeAvatar(cmd.Context(), c, p, base+"/"+args[1]+"/avatar", remoteForgeAvatarVariant, remoteForgeAvatarForce)
 		default:
-			return fmt.Errorf("usage: connections [create --data @f|delete <id>|repos <id>]")
+			return fmt.Errorf("usage: connections [create --data @f|delete <id>|repos <id>|avatar <id> [--force] [--variant plain|circle]]")
 		}
 	}),
 }
@@ -240,6 +256,10 @@ func init() {
 	}
 	for _, c := range []*cobra.Command{remoteForgeConnectionsCmd, remoteForgeRepoBotsCmd, remoteForgeOAuthAppsCmd, remoteForgeIntegrationsCmd} {
 		c.Flags().StringVar(&remoteForgeData, "data", "", "Request body JSON (literal or @file)")
+		if c == remoteForgeConnectionsCmd {
+			c.Flags().BoolVar(&remoteForgeAvatarForce, "force", false, "avatar: apply even when the forge does not flag the account as a bot (a dedicated account, never a person's)")
+			c.Flags().StringVar(&remoteForgeAvatarVariant, "variant", "", "avatar: mascot rendering to upload, plain (default) or circle")
+		}
 	}
 	remoteWebhooksCmd.AddCommand(
 		remoteWebhooksListCmd, remoteWebhooksGetCmd, remoteWebhooksCreateCmd,

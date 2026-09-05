@@ -503,6 +503,44 @@ tasks:
       - task: test:goldens
       - task: studio:check
       - task: pi-ext:check
+      - task: brand:check
+
+  brand:gen:
+    desc: Regenerate every committed copy of the brand assets (favicons, app icon, docs logo, pkg/brand, studio mark) from assets/brand/
+    cmds:
+      - ./scripts/brand/generate.sh
+
+  brand:check:
+    desc: Verify the committed brand assets match what assets/brand/ generates
+    cmds:
+      # Same pattern as pi-ext:check: regenerate into a TEMP root and compare,
+      # so a legitimately uncommitted master edit does not trip the guard.
+      - |
+        set -e
+        tmp="$(mktemp -d -t iterion-brand-XXXXXX)"
+        trap 'rm -rf "$tmp"' EXIT
+        ./scripts/brand/generate.sh "$tmp" >/dev/null
+        stale=0
+        while IFS= read -r f; do
+          rel="${f#"$tmp"/}"
+          if ! cmp -s "$f" "$rel"; then
+            echo "::error::brand asset drift: $rel — run 'task brand:gen' and commit the result"
+            stale=1
+          fi
+        done < <(find "$tmp" -type f)
+        # The reverse direction: a committed copy the script no longer produces
+        # would otherwise stay in the tree, unchecked and hand-editable.
+        while IFS= read -r rel; do
+          [ -f "$tmp/$rel" ] || { echo "::error::brand asset $rel is committed but no longer generated — delete it or restore its generator"; stale=1; }
+        done < <(git ls-files 'pkg/brand/*.png' 'studio/src/assets/*.png' 'studio/public/*.png' studio/public/favicon.ico \
+                   docs/public/favicon.ico docs/public/iterion-logo.png docs/images/iterion-logo.png build/appicon.png cmd/iterion-desktop/appicon.png)
+        exit $stale
+
+  brand:og:
+    desc: Re-render the docs OpenGraph card (docs/public/og.png) from docs/scripts/og-card.html — needs the Playwright chromium (task test:e2e:ui:install)
+    dir: studio
+    cmds:
+      - ./node_modules/.bin/playwright screenshot --viewport-size=1200,630 "file://{{.ROOT_DIR}}/docs/scripts/og-card.html" ../docs/public/og.png
 
   pi-ext:typecheck:
     desc: Typecheck the iterion pi extension

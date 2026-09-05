@@ -1,34 +1,24 @@
+import iterionMark from "@/assets/iterion-mark.png";
+
 export interface BrandMarkProps {
   className?: string;
 }
 
 /**
- * Iterion brand mark — the hexagon + fast-forward (≫) glyph that ships as
- * the favicon, redrawn as an inline SVG so it stays crisp at any size and
- * theme-stable. The hexagon is the brand indigo (`--color-accent`, identical
- * in light + dark) with white chevrons, so the mark reads the same on either
- * surface without a `dark:invert` crutch. Pair it with <BrandWordmark/>.
+ * Iterion brand mark — the mascot of the official iterion-bot account in its
+ * badge form (dark disc + ring), rendered at 256 px from the brand master by
+ * `task brand:gen` so it stays crisp at 4× DPR in the 28–64 px slots it fills.
+ * A raster on purpose: the mascot is an illustration, not a glyph. The disc
+ * carries its own background, so it reads the same on either theme. Pair it
+ * with <BrandWordmark/>.
  */
 export function BrandMark({ className = "" }: BrandMarkProps) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      role="img"
-      aria-label="Iterion"
-      fill="none"
-    >
-      <polygon
-        points="7,2.5 17,2.5 22.5,12 17,21.5 7,21.5 1.5,12"
-        fill="var(--color-accent)"
-      />
-      <path
-        d="M8.5 8 L13 12 L8.5 16 M12.5 8 L17 12 L12.5 16"
-        stroke="var(--color-accent-fg)"
-        strokeWidth="2.1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <img
+      src={iterionMark}
+      alt="Iterion"
+      draggable={false}
+      className={`select-none ${className}`.trim()}
+    />
   );
 }

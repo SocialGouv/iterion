@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
@@ -31,6 +33,10 @@ type forgeConnectReq struct {
 	// team's single app for that host.
 	OAuthAppID string `json:"oauth_app_id,omitempty"`
 }
+
+// connectAvatarTimeout bounds the connect-time avatar upload onto a bot
+// identity: the connect must answer even when the forge crawls.
+const connectAvatarTimeout = 20 * time.Second
 
 type forgeConnectResp struct {
 	Connection   *forge.Connection `json:"connection,omitempty"`
@@ -137,7 +143,7 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 	conn := forge.Connection{
 		ID: connID, TenantID: teamID, Provider: provider, Kind: forge.KindPAT,
 		DisplayName: strutil.FirstNonBlank(req.DisplayName, ident.Login), ForgeBaseURL: baseURL,
-		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace,
+		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
 		Status: forge.StatusActive, SealedPayload: sealed,
 		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -146,6 +152,29 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 		return
 	}
 	s.auditTenant(r, teamID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": provider, "kind": "pat"})
+	if ident.Kind == forge.AccountKindBot && !s.cfg.DisableForgeBrandAvatar {
+		// A bot identity gets the iterion-bot face the moment it is wired: the
+		// account exists for iterion (a group/project token created for it),
+		// and every comment it will post is signed by that avatar. A failure
+		// is recorded on the connection (AvatarError) and never fails the
+		// connect — the studio names it and offers a retry. The upload rides
+		// its own bounded context: the connection already exists, so a client
+		// that gives up must not leave its avatar state half-written, and a
+		// hanging forge must not hold the connect for the HTTP client's full
+		// timeout.
+		actx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), connectAvatarTimeout)
+		updated, _, err := s.applyBotAvatar(actx, conn, brand.VariantPlain, false)
+		cancel()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("forge connect: iterion-bot avatar not applied on @%s (%s): %v", conn.AccountLogin, conn.Host(), err)
+		}
+		if err == nil {
+			// The rebrand nobody asked for is the one that must leave a trace.
+			s.auditTenant(r, teamID, "forge.connection.avatar_applied", "forge_connection", connID,
+				map[string]any{"provider": provider, "variant": string(brand.VariantPlain), "automatic": true})
+		}
+		conn = updated
+	}
 	conn.SealedPayload = nil // never serialise
 	writeJSON(w, forgeConnectResp{Connection: &conn})
 }
@@ -242,7 +271,7 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: pending.Provider, Kind: forge.KindOAuthApp,
 		DisplayName: ident.Login, ForgeBaseURL: pending.ForgeBaseURL,
-		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace,
+		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
 		Status: forge.StatusActive, SealedPayload: sealed, Scopes: tok.Scopes,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -416,7 +445,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		DisplayName: cfg.AppSlug, ForgeBaseURL: base,
-		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug,
+		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug, AccountKind: forge.AccountKindInstallation,
 		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
 		InstallationAccount: installAccount,
 		GrantedPermissions:  granted,

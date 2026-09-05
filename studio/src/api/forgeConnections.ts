@@ -90,6 +90,29 @@ export async function getForgeConnectionHealth(
   })) as ForgeConnectionHealth;
 }
 
+// ForgeAvatarResult is what the apply-avatar action returns: the refreshed
+// connection (avatar_applied_at / avatar_error) and, when the forge reports
+// one, the new avatar's URL.
+export type ForgeAvatarResult = Omit<components["schemas"]["forgeAvatarResp"], "connection"> & {
+  connection?: ForgeConnection;
+};
+
+// applyForgeConnectionAvatar uploads the iterion-bot avatar onto the account
+// behind a PAT connection. The server refuses an OAuth connection (a person's
+// account) and GitHub (no API — its error names where to upload by hand); an
+// account the forge does not flag as a bot needs `force`, which the card asks
+// the operator to confirm first.
+export async function applyForgeConnectionAvatar(
+  teamID: string,
+  connID: string,
+  input: { variant?: "plain" | "circle"; force?: boolean } = {},
+): Promise<ForgeAvatarResult> {
+  return (await apiPost("/api/teams/{id}/forge/connections/{conn_id}/avatar", {
+    params: { id: teamID, conn_id: connID },
+    body: input,
+  })) as ForgeAvatarResult;
+}
+
 // createForgeRepo creates a NEW repository on a connected forge (the
 // "new app → new repo" journey). Creation only — iterion never updates
 // or deletes forge repositories.

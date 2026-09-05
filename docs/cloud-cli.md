@@ -144,6 +144,21 @@ the server runs elected per tenant. Full runbook, incl. the permissions the
 credential needs and what the sync deliberately refuses to do:
 [github-board-sync.md](github-board-sync.md).
 
+### Give a bot account the iterion-bot avatar
+
+A GitLab group/project access token's bot user gets the mascot avatar at
+connect time. For a connection created before that, or a dedicated account the
+forge does not flag as a bot (Forgejo, a hand-made GitLab user), apply it once:
+
+```sh
+iterion remote forge connections avatar <connection-id>            # a flagged bot account
+iterion remote forge connections avatar <connection-id> --force    # a dedicated, unflagged account
+```
+
+Refused on an OAuth connection (a person's account) and on GitHub, which has no
+avatar or App-logo API — the error names where to upload it by hand. Full
+policy + the manual GitHub App upload: [brand.md](brand.md).
+
 ### Refresh GitHub App grants
 
 After changing a GitHub App installation's permissions on GitHub, refresh the

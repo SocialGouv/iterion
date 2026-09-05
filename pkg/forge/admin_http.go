@@ -42,6 +42,18 @@ func (h AdminHTTP) Do(ctx context.Context, method, path string, body, out any) (
 	return DoJSON(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, body, out)
 }
 
+// DoErrBody is Do that also returns a non-2xx response body (capped), for
+// the calls whose refusal reason must reach the operator verbatim.
+func (h AdminHTTP) DoErrBody(ctx context.Context, method, path string, body, out any) (int, []byte, error) {
+	return DoJSONErrBody(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, body, out)
+}
+
+// DoMultipartFile uploads one file part by delegating to DoMultipartFile,
+// with this client's base URL, header strategy and error prefix.
+func (h AdminHTTP) DoMultipartFile(ctx context.Context, method, path, field, filename, contentType string, data []byte, out any) (int, []byte, error) {
+	return DoMultipartFile(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, field, filename, contentType, data, out)
+}
+
 // StatusErr maps a non-2xx status to the right forge sentinel /
 // generic wrapped error, using this client's provider prefix.
 func (h AdminHTTP) StatusErr(op string, code int) error {
@@ -76,7 +88,7 @@ func (h AdminHTTP) FetchWhoAmI(ctx context.Context, path string) (Identity, erro
 		Login:     u.Login,
 		ID:        strconv.FormatInt(u.ID, 10),
 		Email:     u.Email,
-		Kind:      "user",
+		Kind:      AccountKindUser,
 		Namespace: u.Login,
 	}, nil
 }

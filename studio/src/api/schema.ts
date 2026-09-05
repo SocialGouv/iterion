@@ -3749,6 +3749,26 @@ export interface paths {
         patch: operations["patchTeamsByIdForgeConnectionsByConnId"];
         trace?: never;
     };
+    "/api/teams/{id}/forge/connections/{conn_id}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/forge/connections/{conn_id}/avatar */
+        post: operations["postTeamsByIdForgeConnectionsByConnIdAvatar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
         parameters: {
             query?: never;
@@ -5551,8 +5571,12 @@ export interface components {
             /** Format: date-time */
             access_token_expires_at?: string;
             account_id?: string;
+            account_kind?: string;
             account_login?: string;
             app_slug?: string;
+            /** Format: date-time */
+            avatar_applied_at?: string;
+            avatar_error?: string;
             /** Format: date-time */
             created_at: string;
             created_by: string;
@@ -5671,6 +5695,7 @@ export interface components {
             forge_base_url?: string;
             id: string;
             installable?: boolean;
+            logo_upload_url?: string;
             owner_login?: string;
             provider: string;
             provider_app_id?: string;
@@ -6195,6 +6220,14 @@ export interface components {
             expires_in_days?: number;
             name: string;
             team_id?: string;
+        };
+        forgeAvatarReq: {
+            force?: boolean;
+            variant?: string;
+        };
+        forgeAvatarResp: {
+            avatar_url?: string;
+            connection?: components["schemas"]["Connection"];
         };
         forgeConnectReq: {
             display_name?: string;
@@ -11482,6 +11515,33 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    postTeamsByIdForgeConnectionsByConnIdAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["forgeAvatarReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["forgeAvatarResp"];
+                };
             };
         };
     };

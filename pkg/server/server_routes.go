@@ -358,6 +358,9 @@ func (s *Server) routes() {
 	// above is captured before the spec is first served.
 	s.registerOpenAPIRoutes()
 
+	// The iterion-bot mascot, for the studio's download links and the docs.
+	s.registerBrandRoutes()
+
 	// Serve static frontend files with SPA fallback so client-side routes
 	// (e.g. /runs/abc) render index.html instead of 404.
 	staticSub, err := fs.Sub(StaticFS, "static")

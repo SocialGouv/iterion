@@ -62,13 +62,16 @@ func statusErr(op string, code int) error {
 // WhoAmI returns the account the token authenticates as. GitLab's
 // /user returns `username` instead of `login` and a free-form `name`,
 // so the response decode happens inline (the shared FetchWhoAmI on
-// AdminHTTP targets the github/forgejo shape).
+// AdminHTTP targets the github/forgejo shape). Its `bot` flag marks the
+// bot user behind a group/project access token and service accounts —
+// the machine identities iterion may rebrand with the iterion-bot avatar.
 func (c *AdminClient) WhoAmI(ctx context.Context) (forge.Identity, error) {
 	var u struct {
 		ID       int64  `json:"id"`
 		Username string `json:"username"`
 		Email    string `json:"email"`
 		Name     string `json:"name"`
+		Bot      bool   `json:"bot"`
 	}
 	code, err := c.do(ctx, http.MethodGet, "/user", nil, &u)
 	if err != nil {
@@ -77,14 +80,52 @@ func (c *AdminClient) WhoAmI(ctx context.Context) (forge.Identity, error) {
 	if code != http.StatusOK {
 		return forge.Identity{}, statusErr("GET /user", code)
 	}
+	kind := forge.AccountKindUser
+	if u.Bot {
+		kind = forge.AccountKindBot
+	}
 	return forge.Identity{
 		Login:     u.Username,
 		ID:        strconv.FormatInt(u.ID, 10),
 		Email:     u.Email,
-		Kind:      "user",
+		Kind:      kind,
 		Namespace: u.Username,
 	}, nil
 }
+
+// SetAvatar replaces the avatar of the account the token authenticates as via
+// PUT /api/v4/user/avatar (GitLab ≥ 17.0; multipart field `avatar`, at most
+// 200 KiB). For a group/project access token that account is the token's bot
+// user — the identity every review comment and commit status is posted under.
+func (c *AdminClient) SetAvatar(ctx context.Context, png []byte) (string, error) {
+	var out struct {
+		AvatarURL string `json:"avatar_url"`
+	}
+	code, body, err := c.http().DoMultipartFile(ctx, http.MethodPut, "/user/avatar", "avatar", "iterion-bot.png", "image/png", png, &out)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case code/100 == 2:
+		return out.AvatarURL, nil
+	case code == http.StatusNotFound:
+		// The route itself is absent before 17.0 — a 404 here is the instance,
+		// not a missing user (statusErr would read it as a missing hook). It is
+		// also what a 301/302 on the base URL produces: the client follows it
+		// as a GET without the body, and GitLab has no GET /user/avatar.
+		return "", fmt.Errorf("%w: PUT /user/avatar answered 404 — GitLab older than 17.0, or a base URL that redirects (a 301/302 turns the PUT into a body-less GET): %s",
+			forge.ErrAvatarUnsupported, forge.TrimBody(body))
+	case code == http.StatusBadRequest:
+		return "", fmt.Errorf("gitlab: avatar rejected (HTTP 400 — the file must be an image of at most 200 KiB): %s", forge.TrimBody(body))
+	case code == http.StatusUnauthorized:
+		return "", forge.ErrUnauthorized
+	case code == http.StatusForbidden:
+		return "", forge.ErrForbidden
+	}
+	return "", fmt.Errorf("gitlab: set avatar: HTTP %d: %s", code, forge.TrimBody(body))
+}
+
+var _ forge.AvatarSetter = (*AdminClient)(nil)
 
 // ListRepos returns projects on which the token has at least Maintainer
 // access (level 40 — the floor for managing project hooks), so the picker

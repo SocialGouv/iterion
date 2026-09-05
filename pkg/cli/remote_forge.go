@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 )
 
@@ -55,4 +56,76 @@ func RemoteForgeRefresh(ctx context.Context, c *RemoteClient, p *Printer, path s
 		p.Line("live probe error: %s", res.LiveError)
 	}
 	return nil
+}
+
+type remoteForgeAvatarResult struct {
+	Connection struct {
+		ID              string `json:"id"`
+		Provider        string `json:"provider"`
+		AccountLogin    string `json:"account_login"`
+		AvatarAppliedAt string `json:"avatar_applied_at"`
+	} `json:"connection"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+// RemoteForgeAvatar POSTs to a connection's /avatar endpoint — upload the
+// iterion-bot avatar onto the account behind it — and prints the outcome. A
+// refusal (a person's OAuth account, a GitHub connection, an account the forge
+// does not flag as a bot without --force) comes back as the API error, whose
+// message names the alternative.
+func RemoteForgeAvatar(ctx context.Context, c *RemoteClient, p *Printer, path, variant string, force bool) error {
+	body := map[string]any{"force": force}
+	if variant != "" {
+		body["variant"] = variant
+	}
+	var res remoteForgeAvatarResult
+	raw, err := c.Call(ctx, "POST", path, body, &res)
+	if err != nil {
+		// The generic error line truncates the JSON body, and the field that
+		// matters on a refusal — where to upload by hand — sits last in it.
+		printAvatarRefusal(p, raw)
+		return err
+	}
+	if p.Format == OutputJSON {
+		p.JSON(res)
+		return nil
+	}
+	p.Header("iterion-bot avatar applied")
+	p.KV("connection", res.Connection.ID)
+	p.KV("account", "@"+res.Connection.AccountLogin+" ("+res.Connection.Provider+")")
+	if res.AvatarURL != "" {
+		p.KV("avatar_url", res.AvatarURL)
+	}
+	return nil
+}
+
+// printAvatarRefusal renders the refusal fields of the avatar endpoint (422 on
+// GitHub with the App's settings page, 409 when the account is not flagged
+// as a bot) so the operator reads the alternative, not a cut JSON blob.
+func printAvatarRefusal(p *Printer, raw []byte) {
+	var refusal struct {
+		Error        string `json:"error"`
+		ManageURL    string `json:"manage_url"`
+		LogoURL      string `json:"logo_url"`
+		NeedsForce   bool   `json:"needs_force"`
+		AccountLogin string `json:"account_login"`
+	}
+	if json.Unmarshal(raw, &refusal) != nil || refusal.Error == "" {
+		return
+	}
+	if p.Format == OutputJSON {
+		p.JSON(json.RawMessage(raw))
+		return
+	}
+	p.Header("iterion-bot avatar not applied")
+	p.KV("reason", refusal.Error)
+	if refusal.ManageURL != "" {
+		p.KV("upload it here", refusal.ManageURL)
+	}
+	if refusal.LogoURL != "" {
+		p.KV("logo", refusal.LogoURL)
+	}
+	if refusal.NeedsForce {
+		p.KV("retry with", "--force (only for a dedicated account, never a person's)")
+	}
 }

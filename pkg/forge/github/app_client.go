@@ -678,7 +678,7 @@ func (a *AppClient) WhoAmI(context.Context) (forge.Identity, error) {
 	if slug == "" {
 		slug = "github-app"
 	}
-	return forge.Identity{Login: slug + "[bot]", ID: strconv.FormatInt(a.Cfg.AppID, 10), Kind: "bot", Namespace: slug}, nil
+	return forge.Identity{Login: slug + "[bot]", ID: strconv.FormatInt(a.Cfg.AppID, 10), Kind: forge.AccountKindInstallation, Namespace: slug}, nil
 }
 
 // ListRepos lists the installation's repositories (GET

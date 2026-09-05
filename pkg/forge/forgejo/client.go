@@ -5,6 +5,7 @@ package forgejo
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -207,6 +208,37 @@ func (c *AdminClient) DeleteHook(ctx context.Context, repo, hookID string) error
 	}
 	return nil
 }
+
+// SetAvatar replaces the avatar of the token's account via
+// POST /api/v1/user/avatar (Gitea ≥ 1.20, inherited by Forgejo): a JSON body
+// carrying the raw image bytes base64-encoded, 204 on success. Forgejo reports
+// no URL back, so the returned one is empty. Forgejo has no bot flag on users,
+// so this is only ever reached through the operator's explicit apply action.
+func (c *AdminClient) SetAvatar(ctx context.Context, png []byte) (string, error) {
+	body := map[string]any{"image": base64.StdEncoding.EncodeToString(png)}
+	code, errBody, err := c.http().DoErrBody(ctx, http.MethodPost, "/user/avatar", body, nil)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case code/100 == 2:
+		return "", nil
+	case code == http.StatusNotFound:
+		// The route itself is absent on older releases (statusErr would read a
+		// 404 as a missing hook).
+		return "", fmt.Errorf("%w: POST /user/avatar answered 404 — Gitea/Forgejo older than 1.20, or a base URL that redirects: %s",
+			forge.ErrAvatarUnsupported, forge.TrimBody(errBody))
+	case code == http.StatusUnauthorized:
+		return "", forge.ErrUnauthorized
+	case code == http.StatusForbidden:
+		return "", forge.ErrForbidden
+	}
+	// The refusal keeps its reason (a lowered AVATAR_MAX_FILE_SIZE answers
+	// 413 with the limit in the body) — it lands on the connection record.
+	return "", fmt.Errorf("forgejo: set avatar: HTTP %d: %s", code, forge.TrimBody(errBody))
+}
+
+var _ forge.AvatarSetter = (*AdminClient)(nil)
 
 // CreateOAuthApp registers a user-owned OAuth2 application via
 // POST /api/v1/user/applications/oauth2 — a normal authenticated user can do

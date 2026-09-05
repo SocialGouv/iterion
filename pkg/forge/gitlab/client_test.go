@@ -1,9 +1,11 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -387,3 +389,142 @@ func TestGitLabMergePull_SquashAndRemoveSource(t *testing.T) {
 
 // compile-time assertion that AdminClient satisfies forge.Admin.
 var _ forge.Admin = (*AdminClient)(nil)
+
+// GitLab flags the bot user behind a group/project access token (and service
+// accounts) with `bot: true`; that flag is what lets iterion rebrand the
+// account unasked, so its reading is pinned.
+func TestWhoAmI_BotFlagMarksAccountKind(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 575, "username": "group_1026_bot_a7c08cc4", "bot": true})
+	}))
+	defer srv.Close()
+
+	id, err := New(srv.Client(), srv.URL, "tok").WhoAmI(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Kind != forge.AccountKindBot || id.Login != "group_1026_bot_a7c08cc4" {
+		t.Errorf("identity = %+v, want a bot", id)
+	}
+}
+
+// TestSetAvatar_MultipartShape pins the exact request GitLab's PUT /user/avatar
+// takes: a multipart form with ONE file part named `avatar`, typed image/png,
+// carrying the bytes verbatim — under the token's Bearer header.
+func TestSetAvatar_MultipartShape(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\nnot-really-a-png")
+	var (
+		gotMethod, gotPath, gotAuth, gotField, gotFilename, gotType string
+		gotBytes                                                    []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		mr, err := r.MultipartReader()
+		if err != nil {
+			t.Errorf("not a multipart request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		part, err := mr.NextPart()
+		if err != nil {
+			t.Errorf("no part: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotField, gotFilename, gotType = part.FormName(), part.FileName(), part.Header.Get("Content-Type")
+		gotBytes, _ = io.ReadAll(part)
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/uploads/-/system/user/avatar/575/avatar.png"})
+	}))
+	defer srv.Close()
+
+	url, err := New(srv.Client(), srv.URL, "tok-123").SetAvatar(context.Background(), png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "https://gl/uploads/-/system/user/avatar/575/avatar.png" {
+		t.Errorf("avatar url = %q", url)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/api/v4/user/avatar" {
+		t.Errorf("request = %s %s", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer tok-123" {
+		t.Errorf("auth header = %q", gotAuth)
+	}
+	if gotField != "avatar" || gotFilename != "iterion-bot.png" || gotType != "image/png" {
+		t.Errorf("part = field %q file %q type %q", gotField, gotFilename, gotType)
+	}
+	if !bytes.Equal(gotBytes, png) {
+		t.Errorf("uploaded bytes differ: %d vs %d", len(gotBytes), len(png))
+	}
+}
+
+// Each refusal keeps its meaning: a 404 is the instance lacking the route (not
+// a missing hook), a 400 quotes GitLab's reason, 401/403 map to the sentinels.
+func TestSetAvatar_Errors(t *testing.T) {
+	cases := []struct {
+		name     string
+		code     int
+		body     string
+		wantIs   error
+		wantText string
+	}{
+		{"too big", http.StatusBadRequest, `{"message":{"avatar":["is too big (should be at most 200 KB)"]}}`, nil, "is too big"},
+		{"pre-17.0 instance", http.StatusNotFound, `{"error":"404 Not Found"}`, forge.ErrAvatarUnsupported, "17.0"},
+		{"revoked token", http.StatusUnauthorized, "", forge.ErrUnauthorized, ""},
+		{"forbidden", http.StatusForbidden, "", forge.ErrForbidden, ""},
+		{"server error", http.StatusInternalServerError, "<html>boom</html>", nil, "HTTP 500"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			_, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), []byte("png"))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Errorf("err = %v, want errors.Is %v", err, tc.wantIs)
+			}
+			if tc.wantIs == nil && errors.Is(err, forge.ErrHookNotFound) {
+				t.Errorf("err = %v leaked the hook sentinel", err)
+			}
+			if tc.wantText != "" && !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("err = %q, want it to mention %q", err, tc.wantText)
+			}
+		})
+	}
+}
+
+// A 404 is either the missing route (GitLab < 17.0) or a base URL that
+// redirects — the client follows a 301/302 as a body-less GET, which GitLab
+// answers 404. The error must keep ErrAvatarUnsupported AND quote the
+// instance so the operator can tell the two apart; and any 2xx is a success.
+func TestSetAvatar_RedirectAndOther2xx(t *testing.T) {
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if r.Method == http.MethodPut {
+			http.Redirect(w, r, "/api/v4/user/avatar", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"404 Not Found"}`))
+	}))
+	defer srv.Close()
+	_, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), []byte("png"))
+	if !errors.Is(err, forge.ErrAvatarUnsupported) || !strings.Contains(err.Error(), "redirect") || !strings.Contains(err.Error(), "404 Not Found") {
+		t.Errorf("err = %v; methods seen %v", err, methods)
+	}
+
+	created := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/u.png"})
+	}))
+	defer created.Close()
+	if url, err := New(created.Client(), created.URL, "tok").SetAvatar(context.Background(), []byte("png")); err != nil || url != "https://gl/u.png" {
+		t.Errorf("a 201 is a success: url=%q err=%v", url, err)
+	}
+}

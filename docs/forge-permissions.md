@@ -117,6 +117,19 @@ least-privilege with a **scoped service-account / project token** connected as a
 `pat`. Clients: [pkg/forge/gitlab/client.go](../pkg/forge/gitlab/client.go),
 [pkg/forge/forgejo/client.go](../pkg/forge/forgejo/client.go).
 
+## The face on the connection — the iterion-bot avatar
+
+Whatever the kind, the operator sees the connection's account on every comment
+it posts. iterion gives that account the mascot of the official `iterion-bot`
+GitHub account wherever the forge lets it: **automatically** for a GitLab
+account the forge flags as a bot (a group/project access token's bot user, a
+service account — `PUT /user/avatar`, GitLab ≥ 17.0), **on request** for a
+dedicated account it cannot flag (Forgejo; a hand-made `iterion-bot` user),
+**never** for an OAuth connection (it authenticates as the person who
+authorized it), and **by hand** for a GitHub App (no logo API — the studio
+hands over the file and the settings page). Runbook, endpoint and escape
+hatch: [brand.md](brand.md).
+
 ## Audit — correlating a forge action back to a person
 
 The forge action is authored by the connection identity, but **who triggered

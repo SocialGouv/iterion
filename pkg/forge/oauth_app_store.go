@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,10 +80,26 @@ type ForgeOAuthApp struct {
 	// Installable is a computed view flag (never persisted): true when the App
 	// holds a private key, so the UI can offer the "Install" (github_app) action.
 	Installable bool `bson:"-" json:"installable,omitempty"`
+	// LogoUploadURL is a computed view field (never persisted): the GitHub
+	// App's General settings page, where "Display information → Upload a logo"
+	// lives. GitHub has no API for an App's logo and the manifest flow cannot
+	// set one, so the iterion-bot logo is a manual upload the studio links to
+	// from here (docs/brand.md). Empty for other providers and for apps
+	// iterion did not create (no manage URL recorded).
+	LogoUploadURL string `bson:"-" json:"logo_upload_url,omitempty"`
 
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// DeriveLogoUploadURL computes LogoUploadURL from the recorded manage URL
+// (the Advanced tab): the General tab is the same page without that suffix.
+func (a ForgeOAuthApp) DeriveLogoUploadURL() string {
+	if a.Provider != ProviderGitHub || a.AppManageURL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(a.AppManageURL, "/advanced")
 }
 
 // OAuthAppStore persists per-tenant, per-instance forge OAuth-app credentials.

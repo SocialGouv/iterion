@@ -22,6 +22,9 @@ import (
 type routeOp struct {
 	request  any
 	response any
+	// requestOptional marks a body the handler accepts EMPTY (every field has
+	// a default); the spec must not declare it required.
+	requestOptional bool
 }
 
 // routeSchemas maps "METHOD /pattern" (matching the recorded route key) to the
@@ -185,6 +188,7 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/teams/{id}/forge/connections/{conn_id}/health": {
 			response: forgeConnectionHealth{},
 		},
+		"POST /api/teams/{id}/forge/connections/{conn_id}/avatar": {request: forgeAvatarReq{}, response: forgeAvatarResp{}, requestOptional: true},
 	}
 }
 

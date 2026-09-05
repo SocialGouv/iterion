@@ -81,7 +81,7 @@ install -m 644 build/linux/iterion.desktop \
 # matches their target pixel density; shipping ONLY the 256x256
 # variant left systems whose taskbar wants a 22x22 / 24x24 / 48x48
 # rendition falling back to the generic "missing application" icon.
-# We resize from build/appicon.png (the canonical 694x694 source)
+# We resize from build/appicon.png (the canonical 1024x1024 source)
 # via ImageMagick `convert`; if `convert` is not on PATH, fall back
 # to the legacy single-size install so the .deb still builds.
 if [ -f build/appicon.png ]; then

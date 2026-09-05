@@ -324,6 +324,15 @@ the hours this one spent.
   is set, one transaction per API request and per in-process LLM call), the
   scrubbing, and the smoke tests. Read it when a deployment needs to answer
   "what crashed, how often, since which release" or "where did the time go".
+- [docs/brand.md](docs/brand.md) — the iterion-bot mascot as iterion's face:
+  the asset pipeline (`assets/brand/` masters → `task brand:gen|check|og`
+  regenerate favicons, the desktop icon, the docs logo, `pkg/brand`), and
+  which forge identity gets the avatar how — automatic on a GitLab account
+  flagged `bot` (`PUT /user/avatar` at connect time), on request for a
+  dedicated Forgejo/GitLab account (`iterion remote forge connections
+  avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
+  App (no logo API; the studio hands over the file + the settings page).
+  Read it when a bot posts with a default avatar, or before touching a logo.
 - [docs/cloud-deployment.md](docs/cloud-deployment.md#verifying-that-an-infra-apps-push-landed-argocd-sync-liveness) —
   how a build reaches a deployment: the server follows the moving `:edge`
   tag (a `rollout restart` picks it up), the runner is pinned BY DIGEST in

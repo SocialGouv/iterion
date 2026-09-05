@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 
+import { BrandMark } from "@/components/ui/BrandMark";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -276,6 +277,12 @@ describe("a11y / primitives", () => {
       </main>,
     );
     await expectNoViolations(root, "FieldLabel");
+  });
+
+  it("BrandMark — the mascot image carries the brand name", async () => {
+    const root = mount(<BrandMark className="h-7 w-7" />);
+    expect(root.querySelector("img")?.getAttribute("alt")).toBe("Iterion");
+    await expectNoViolations(root, "BrandMark");
   });
 
   it("BrandWordmark — full + compact have an accessible name", async () => {

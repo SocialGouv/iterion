@@ -240,6 +240,10 @@ type Config struct {
 	// ForgeGitHubApp is the global GitHub-App identity for the
 	// installation-token connect mode. Empty → that mode is unavailable.
 	ForgeGitHubApp ForgeGitHubAppConfig
+	// DisableForgeBrandAvatar turns off the connect-time upload of the
+	// iterion-bot avatar onto a bot identity (ITERION_FORGE_BRAND_AVATAR=off).
+	// The explicit apply action on a connection stays available.
+	DisableForgeBrandAvatar bool
 
 	// PluginSources holds team-scoped, git-hosted org-private plugins
 	// (pkg/pluginsource). Non-nil registers /api/teams/:id/plugin-sources;
