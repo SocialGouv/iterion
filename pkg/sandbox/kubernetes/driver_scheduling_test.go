@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -25,8 +26,29 @@ func TestSchedulingFromEnvDefaultsToNothing(t *testing.T) {
 	if s.spreadKey != "" {
 		t.Fatalf("spread must be off by default, got %q", s.spreadKey)
 	}
-	if got := s.String(); got != "no resources, no spread" {
+	if got := s.String(); got != "no resources, no spread, ready-timeout=10m0s" {
 		t.Fatalf("summary = %q", got)
+	}
+	if s.readyTimeout != DefaultPodReadyTimeout {
+		t.Fatalf("ready timeout must default to %s, got %s", DefaultPodReadyTimeout, s.readyTimeout)
+	}
+}
+
+// The pod-ready wait absorbs scheduling, a fresh node's CNI and the image
+// pull; it is a Go duration, refused when it is not one or is shorter than a
+// second (a bare number is nanoseconds — never what an operator meant).
+func TestSchedulingFromEnvPodReadyTimeout(t *testing.T) {
+	for v, want := range map[string]time.Duration{"5m": 5 * time.Minute, "300s": 5 * time.Minute, " 1h ": time.Hour, "90s": 90 * time.Second} {
+		s, err := schedulingFromEnv(envOf(map[string]string{PodReadyTimeoutEnvVar: v}))
+		if err != nil || s.readyTimeout != want {
+			t.Errorf("%q: ready timeout = %s, %v; want %s", v, s.readyTimeout, err, want)
+		}
+	}
+	for _, v := range []string{"0", "-1m", "banana", "5", "500ms", "10 minutes"} {
+		_, err := schedulingFromEnv(envOf(map[string]string{PodReadyTimeoutEnvVar: v}))
+		if err == nil || !strings.Contains(err.Error(), PodReadyTimeoutEnvVar) || !strings.Contains(err.Error(), strings.TrimSpace(v)) {
+			t.Errorf("%q must be refused naming the variable and the value, got %v", v, err)
+		}
 	}
 }
 
@@ -48,7 +70,7 @@ func TestSchedulingFromEnvParsesQuantities(t *testing.T) {
 	if s.resources != want {
 		t.Fatalf("resources = %+v, want %+v", s.resources, want)
 	}
-	if got := s.String(); got != "requests cpu=2 memory=4Gi, limits cpu=2.5 memory=8Gi, spread=kubernetes.io/hostname" {
+	if got := s.String(); got != "requests cpu=2 memory=4Gi, limits cpu=2.5 memory=8Gi, spread=kubernetes.io/hostname, ready-timeout=10m0s" {
 		t.Fatalf("summary = %q", got)
 	}
 	// The accepted quantity subset: <digits>, <digits>.<digits>, <digits>., .<digits>,
@@ -248,7 +270,7 @@ func TestSchedulingFromEnvSpreadSelector(t *testing.T) {
 func TestSchedulingPolicyReportsSummaryOrError(t *testing.T) {
 	sched, _ := schedulingFromEnv(envOf(map[string]string{RequestsCPUEnvVar: "2", SpreadEnvVar: "hostname"}))
 	d := &Driver{namespace: "test", sched: sched}
-	if got, err := d.SchedulingPolicy(); err != nil || got != "requests cpu=2, spread=kubernetes.io/hostname" {
+	if got, err := d.SchedulingPolicy(); err != nil || got != "requests cpu=2, spread=kubernetes.io/hostname, ready-timeout=10m0s" {
 		t.Fatalf("SchedulingPolicy = %q, %v", got, err)
 	}
 	if d.SpreadTopologyKey() != hostnameTopologyKey {
