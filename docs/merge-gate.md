@@ -567,21 +567,18 @@ re-derives it from three scattered sections. This is that place
   Adding a second reviewer or a second fixer is a bundle, never an engine
   PR.
 
+- **The pause notice names the parked run's role.** A run that parks on a
+  provider quota gets [a comment naming when it resumes](#a-paused-review-says-so-on-the-pr),
+  worded for the role the run's own manifest declares through its
+  `consumes:`/`produces:` kinds — the reviewer's ("the verdict lands here …
+  a new push restarts it sooner"), the fixer's ("don't push to this branch
+  meanwhile — the run re-clones the head when it resumes"), and a neutral
+  one for any other role — never a bot-id branch in the engine
+  ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683); before it, a
+  parked Billy read as a parked Revi, observed live on PR #646).
+
 **What is NOT wired (yet):**
 
-- **The pause notice does not know the parked run's ROLE.** A run that
-  parks on a provider quota gets [a comment naming when it resumes](#a-paused-review-says-so-on-the-pr)
-  — but that comment's wording is the REVIEWER's ("the verdict lands here
-  … a new push restarts it sooner"), unconditionally, even when the parked
-  run is a FIXER (observed live on PR #646, 2026-09-03, 16:48:44Z: a
-  parked Billy read as a parked Revi while `revi/review` sat green and
-  untouched). For a fixer, "a new push restarts it sooner" is exactly the
-  wrong advice — a push mid-run is the collision the session discipline
-  below exists to prevent. Deriving the role from the run's own
-  `consumes:`/`produces:` kinds (reviewer vs fixer vs other), the same way
-  the hand-off itself is resolved, is the fix in flight
-  ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683)) — never a
-  bot-id branch in the engine.
 - **No "fixer in flight" signal exists BEFORE its first push.** From the
   moment `/billy` (or the zero-touch lane) launches to its first commit,
   `revi/review` stays green on the OLD head and nothing on the PR says a
