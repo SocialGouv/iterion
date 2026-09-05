@@ -125,6 +125,19 @@ tool sync_harness:
     if not os.path.isfile(target):
         refuse("no materialised harness at %s/harness.py — a net the golden-master bot built carries one; "
                "run the net's owner bot first" % gm_rel)
+    # The write below is in place and its only undo is git's. A path git cannot
+    # put back must be refused BEFORE it is clobbered, not restored after: an
+    # untracked harness is invisible to `--untracked-files=no` and survives no
+    # `checkout -- .`, and a symlink would carry the write to a referent outside
+    # the tree while git reports the tree clean throughout.
+    ls = git("ls-files", "--stage", "--full-name", "-z", "--", "%s/harness.py" % gm_rel)
+    if ls.returncode != 0:
+        refuse("git ls-files failed in %s: %s" % (ws, ls.stderr[-300:]))
+    entry = [e for e in ls.stdout.split("\0") if e.strip()]
+    if len(entry) != 1 or not entry[0].startswith("100"):
+        refuse("%s/harness.py is not a tracked regular file (%s) — the sync overwrites it in place and undoes with "
+               "git; an untracked file or a symlink has no undo"
+               % (gm_rel, entry[0].split("\t")[0] if entry else "untracked"))
     with open(target, encoding="utf-8") as f:
         old = f.read()
     if not old.startswith(HEADER):
