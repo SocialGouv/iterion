@@ -17,8 +17,21 @@ export interface IterDocument {
   tools: ToolNodeDecl[];
   computes: ComputeDecl[];
   subbots?: SubbotDecl[];
+  /** Named `fail <name>:` terminals (typed code/message, optional resumable). */
+  fails?: FailDecl[];
   workflows: WorkflowDecl[];
   comments: Comment[];
+}
+
+/** A declared terminal failure: `fail <name>:` with a typed code the run's
+ *  `failure_code` carries, a templated message, and whether the run stays
+ *  resumable. The bare `fail` target has no declaration. */
+export interface FailDecl {
+  name: string;
+  description?: string;
+  code?: string;
+  message?: string;
+  resumable?: boolean;
 }
 
 export interface Comment {
