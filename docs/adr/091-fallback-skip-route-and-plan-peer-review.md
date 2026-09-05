@@ -280,7 +280,14 @@ is the class guard):
   `workspace_probe`, the entry of the six repo-requiring bots, refuses
   with the typed code `WORKSPACE_NOT_A_REPO` when `workspace_dir` is
   absent / not a git repository — and, for branch-improve-loop, when
-  `base_ref` is not reachable from HEAD. The verdict rides the node's
+  `base_ref` resolves nowhere or shares no history with HEAD. The base
+  is resolved, never fetched: the bare name, then
+  `refs/remotes/origin/<base_ref>`, because a cloud PR run's checkout
+  (`git clone --no-tags` + a fetch of the head, `pkg/runner/loop_gitws.go`)
+  carries only the default branch and the PR head locally, so a PR
+  targeting any other branch has its base only as a remote-tracking ref;
+  `plan_scope_probe` measures the diff against the same resolved base.
+  The verdict rides the node's
   output (`-> fail when not ok`) and stderr; the process exits 0 on
   purpose, since a non-zero exit would replace it with the engine's
   generic tool failure. app-dev keeps no precondition: it starts from an

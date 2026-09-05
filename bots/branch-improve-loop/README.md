@@ -218,10 +218,15 @@ phase (native:695).
 
 The run's entry is a deterministic tool node (~100ms, no LLM): a launch
 whose `workspace_dir` is absent or not a git repository, OR whose
-`base_ref` is not reachable from HEAD (`git merge-base` fails — every
+`base_ref` resolves nowhere or shares no history with HEAD (every
 diff-anchored instruction would then range over nothing), fails typed
 (`WORKSPACE_NOT_A_REPO` on the node's output and in the tool log) before
-any LLM node spends.
+any LLM node spends. `base_ref` is resolved, never fetched: the bare
+name first, then `refs/remotes/origin/<base_ref>` — a cloud PR run's
+checkout carries only the default branch and the PR head as local
+branches, so a PR targeting any other branch has its base only as a
+remote-tracking ref. `plan_scope_probe` measures the diff footprint
+against the same resolved base.
 
 ## Persy (perseverance coach)
 

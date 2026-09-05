@@ -198,7 +198,7 @@ func TestCampaignPrecondition_UnreachableBaseFailsTyped(t *testing.T) {
 		if tc.name != "branch-improve-loop" {
 			continue
 		}
-		runProbeRefusal(t, tc, "base_ref 'develop' is not reachable from HEAD")
+		runProbeRefusal(t, tc, "base_ref 'develop' does not resolve in /tmp/ws (tried develop, refs/remotes/origin/develop)")
 	}
 }
 

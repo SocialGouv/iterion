@@ -461,6 +461,10 @@ prompt campaign_user:
 
   BRANCH BASE (review the diff THIS branch introduces on top of it):
   {{vars.base_ref}}
+  (On a cloud checkout a base that is not the repository's default
+  branch exists only as `origin/{{vars.base_ref}}` — wherever this
+  prompt says `{{vars.base_ref}}`, use whichever of the two refs
+  `git rev-parse --verify` accepts; do not fetch to find out.)
 
   Read the diff first: `git add -N .` then
   `git diff $(git merge-base {{vars.base_ref}} HEAD)` (merge-base vs WORKING
@@ -908,6 +912,9 @@ prompt plan_user:
 
   BRANCH BASE (triage the diff THIS branch introduces on top of it):
   {{vars.base_ref}}
+  (On a cloud checkout a base that is not the repository's default
+  branch exists only as `origin/{{vars.base_ref}}` — use whichever of
+  the two refs `git rev-parse --verify` accepts; do not fetch.)
 
   Diff footprint (git diff --stat, capped):
   {{input.diff_stat}}
@@ -950,7 +957,9 @@ prompt plan_review_system:
 prompt plan_review_user:
   Repository: {{vars.workspace_dir}}
 
-  BRANCH BASE: {{vars.base_ref}}
+  BRANCH BASE: {{vars.base_ref}} (on a cloud checkout a non-default
+  base exists only as `origin/{{vars.base_ref}}` — use whichever of the
+  two refs `git rev-parse --verify` accepts; do not fetch)
   Read the diff yourself: `git add -N .` then
   `git diff $(git merge-base {{vars.base_ref}} HEAD)` — or, on a large
   diff (see below), the stat + targeted per-file hunks instead.
@@ -1116,16 +1125,20 @@ schema plan_budget_gate_state:
 ## plan node would otherwise triage a diff against nothing). Refuses
 ## with the typed code WORKSPACE_NOT_A_REPO in two shapes: workspace_dir
 ## is absent or is not a git repository (`git rev-parse --git-dir`
-## fails); or the repository exists but base_ref is not reachable from
-## HEAD (`git merge-base <base_ref> HEAD` fails) — every diff-anchored
-## instruction of the campaign would then range over nothing. The
-## verdict is the node's OUTPUT (ok/code/reason, routed to `fail` by the
-## workflow) and is echoed on stderr for the tool log; the process exits
-## 0 on purpose — a non-zero exit would replace the typed verdict with
-## the engine's generic tool failure. python3 for safe JSON (mirrors
-## verify_run); read-only, ~100ms.
+## fails); or the repository exists but base_ref resolves nowhere, or
+## shares no history with HEAD — every diff-anchored instruction of the
+## campaign would then range over nothing. base_ref is RESOLVED, never
+## fetched: the bare name first, then refs/remotes/origin/<base_ref> —
+## a cloud PR run's checkout (`git clone --no-tags` + a fetch of the PR
+## head) carries only the default branch and the head as local branches,
+## so a PR targeting any other branch has its base ONLY as a
+## remote-tracking ref. The verdict is the node's OUTPUT (ok/code/
+## reason, routed to `fail` by the workflow) and is echoed on stderr for
+## the tool log; the process exits 0 on purpose — a non-zero exit would
+## replace the typed verdict with the engine's generic tool failure.
+## python3 for safe JSON (mirrors verify_run); read-only, ~100ms.
 tool workspace_probe:
-  description: "Precondition: workspace_dir is a git repository with base_ref reachable"
+  description: "Precondition: workspace_dir is a git repository with base_ref resolvable and reachable"
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
 import os, subprocess, json, sys
 ws = (os.environ.get('WS') or '').strip()
@@ -1134,16 +1147,28 @@ def refuse(reason):
     sys.stderr.write('WORKSPACE_NOT_A_REPO: ' + reason + chr(10))
     print(json.dumps({'ok': False, 'code': 'WORKSPACE_NOT_A_REPO', 'reason': reason}))
     raise SystemExit(0)
+def git(*a):
+    return subprocess.run(['git', '-C', ws] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+def resolve_base(name):
+    tried = [name, 'refs/remotes/origin/' + name]
+    for ref in tried:
+        if git('rev-parse', '--verify', '-q', ref + '^{commit}').returncode == 0:
+            return ref, tried
+    return '', tried
 if not ws or not os.path.isdir(ws):
     refuse('workspace_dir ' + repr(ws) + ' does not exist')
-p = subprocess.run(['git', '-C', ws, 'rev-parse', '--git-dir'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+p = git('rev-parse', '--git-dir')
 if p.returncode != 0:
     refuse('workspace_dir ' + repr(ws) + ' is not a git repository (git rev-parse --git-dir: ' + (p.stderr or '').strip()[-300:] + ')')
+resolved = ''
 if base:
-    m = subprocess.run(['git', '-C', ws, 'merge-base', base, 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+    resolved, tried = resolve_base(base)
+    if not resolved:
+        refuse('base_ref ' + repr(base) + ' does not resolve in ' + ws + ' (tried ' + ', '.join(tried) + '; a cloud checkout carries a non-default base only as refs/remotes/origin/<base>, and the probe never fetches)')
+    m = git('merge-base', resolved, 'HEAD')
     if m.returncode != 0:
-        refuse('base_ref ' + repr(base) + ' is not reachable from HEAD in ' + ws + ' (git merge-base: ' + (m.stderr or '').strip()[-300:] + ')')
-print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (base or '(none)') + ' reachable'}))
+        refuse('base_ref ' + repr(base) + ' (resolved as ' + resolved + ') shares no history with HEAD in ' + ws + ' (git merge-base: ' + (m.stderr or '').strip()[-300:] + ')')
+print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (repr(base) + ' resolved as ' + resolved + ' and' if base else '(none)') + ' reachable'}))
 "`
   output: workspace_probe_state
 
@@ -1176,8 +1201,17 @@ except ValueError:
     threshold = 1500
 def run(*a):
     return subprocess.run(list(a), cwd=ws, capture_output=True, text=True, timeout=60)
-mb = run('git', 'merge-base', base, 'HEAD')
-base_sha = (mb.stdout or '').strip() or base
+# The base resolves exactly as in workspace_probe, which has already
+# refused a base that resolves nowhere: the bare name first, then the
+# remote-tracking ref a cloud clone carries for a non-default branch.
+# Never a fetch.
+ref = base
+for cand in (base, 'refs/remotes/origin/' + base):
+    if run('git', 'rev-parse', '--verify', '-q', cand + '^{commit}').returncode == 0:
+        ref = cand
+        break
+mb = run('git', 'merge-base', ref, 'HEAD')
+base_sha = (mb.stdout or '').strip() or ref
 stat = run('git', 'diff', '--stat', base_sha)
 shortstat = run('git', 'diff', '--shortstat', base_sha)
 added = 0

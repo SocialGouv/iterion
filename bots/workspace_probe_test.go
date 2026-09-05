@@ -31,6 +31,19 @@ func hermeticGitEnv(t *testing.T) []string {
 	)
 }
 
+// gitHermetic runs one git command in dir under the hermetic env, failing
+// the test on a non-zero exit.
+func gitHermetic(t *testing.T, env []string, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v (%s)", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // initRepo creates a git repository with one commit on branch `main`.
 func initRepo(t *testing.T, env []string) string {
 	t.Helper()
@@ -40,13 +53,50 @@ func initRepo(t *testing.T, env []string) string {
 		{"symbolic-ref", "HEAD", "refs/heads/main"},
 		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = env
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
+		gitHermetic(t, env, dir, args...)
 	}
 	return dir
+}
+
+// commitFile adds one file to dir and commits it.
+func commitFile(t *testing.T, env []string, dir, name, msg string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitHermetic(t, env, dir, "add", "--", name)
+	gitHermetic(t, env, dir, "commit", "-q", "-m", msg)
+}
+
+// runnerStyleClone reproduces the workspace a cloud PR run gets from
+// pkg/runner/loop_gitws.go: `git clone --no-tags` of the repository (only
+// its default branch `main` becomes a local branch), then `git fetch origin
+// <head>` + `git checkout -B <head> FETCH_HEAD` for the PR head. The PR's
+// base `develop` — the branch base_ref is stamped from — exists in that
+// checkout ONLY as refs/remotes/origin/develop. Returns the workspace.
+func runnerStyleClone(t *testing.T, env []string) string {
+	t.Helper()
+	upstream := initRepo(t, env)
+	gitHermetic(t, env, upstream, "checkout", "-q", "-b", "develop")
+	commitFile(t, env, upstream, "base.txt", "base work")
+	gitHermetic(t, env, upstream, "checkout", "-q", "-b", "feature")
+	commitFile(t, env, upstream, "feature.txt", "feature work")
+	gitHermetic(t, env, upstream, "checkout", "-q", "main")
+
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	gitHermetic(t, env, ".", "clone", "-q", "--bare", upstream, bare)
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	gitHermetic(t, env, ".", "clone", "-q", "--no-tags", bare, ws)
+	gitHermetic(t, env, ws, "fetch", "--no-tags", "-q", "origin", "feature")
+	gitHermetic(t, env, ws, "checkout", "-q", "-B", "feature", "FETCH_HEAD")
+
+	// The fixture must have the runner's shape, or the case proves nothing.
+	if out, err := exec.Command("git", "-C", ws, "rev-parse", "--verify", "-q", "develop^{commit}").CombinedOutput(); err == nil {
+		t.Fatalf("fixture drift: `develop` resolves as a LOCAL ref in the runner-style clone (%s)", out)
+	}
+	gitHermetic(t, env, ws, "rev-parse", "--verify", "-q", "refs/remotes/origin/develop^{commit}")
+	return ws
 }
 
 // TestWorkspaceProbeRefusesTypedBeforeAnyLLM executes each repo-requiring
@@ -133,10 +183,77 @@ func TestWorkspaceProbeRefusesTypedBeforeAnyLLM(t *testing.T) {
 				}
 			})
 			if hasBase {
-				t.Run("repository whose base_ref is unreachable", func(t *testing.T) {
-					refused(t, run(t, initRepo(t, env), "no-such-base"), "no-such-base")
+				t.Run("repository whose base_ref exists nowhere names both refs tried", func(t *testing.T) {
+					v := run(t, initRepo(t, env), "no-such-base")
+					refused(t, v, "no-such-base")
+					if !strings.Contains(v.Reason, "refs/remotes/origin/no-such-base") {
+						t.Errorf("reason %q does not name the remote-tracking ref the probe also tried", v.Reason)
+					}
+				})
+				// A cloud PR run: the runner's clone carries the PR's base
+				// only as a remote-tracking ref (see runnerStyleClone). The
+				// probe must resolve it there — never refuse a valid run, and
+				// never fetch to find out.
+				t.Run("base that exists only as origin/<base> in the runner's clone passes", func(t *testing.T) {
+					v := run(t, runnerStyleClone(t, env), "develop")
+					if !v.OK {
+						t.Fatalf("a valid cloud PR workspace was refused: %+v", v)
+					}
+					if !strings.Contains(v.Reason, "refs/remotes/origin/develop") {
+						t.Errorf("reason %q does not name the ref the base resolved to", v.Reason)
+					}
 				})
 			}
 		})
+	}
+}
+
+// TestPlanScopeProbeResolvesARemoteOnlyBase executes branch-improve-loop's
+// REAL plan_scope_probe command — the deterministic diff-footprint pre-flight
+// of the plan phase — on the runner-style clone: the branch diff must be
+// measured against the base even when that base exists only as
+// refs/remotes/origin/<base>, the same resolution the entry probe applies. A
+// bare `git merge-base develop HEAD` fails there, and a probe that quietly
+// diffs against the bare name reports an EMPTY footprint (large=false) for a
+// diff it never saw.
+func TestPlanScopeProbeResolvesARemoteOnlyBase(t *testing.T) {
+	for _, bin := range []string{"python3", "git", "sh"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not on PATH", bin)
+		}
+	}
+	env := hermeticGitEnv(t)
+	body := toolCommand(t, "branch-improve-loop/main.bot", "plan_scope_probe")
+	for ref, val := range map[string]string{
+		"{{vars.workspace_dir}}":         runnerStyleClone(t, env),
+		"{{vars.base_ref}}":              "develop",
+		"{{vars.plan_large_diff_lines}}": "1500",
+	} {
+		if !strings.Contains(body, ref) {
+			t.Fatalf("%s is no longer referenced by plan_scope_probe — the test wires nothing", ref)
+		}
+		body = strings.ReplaceAll(body, ref, shellQuote(val))
+	}
+	c := exec.Command("sh", "-c", body)
+	c.Env = env
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("plan_scope_probe failed: %v (out %q)", err, out)
+	}
+	var res struct {
+		DiffStat string `json:"diff_stat"`
+		Large    bool   `json:"large"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("output is not plan_scope_state JSON: %v (%q)", err, out)
+	}
+	if !strings.Contains(res.DiffStat, "feature.txt") {
+		t.Errorf("diff_stat = %q, want the branch's own change (feature.txt) measured against the remote-only base", res.DiffStat)
+	}
+	if strings.Contains(res.DiffStat, "base.txt") {
+		t.Errorf("diff_stat = %q, includes base.txt — the footprint was measured against the wrong base", res.DiffStat)
+	}
+	if res.Large {
+		t.Errorf("large = true for a one-file branch")
 	}
 }
