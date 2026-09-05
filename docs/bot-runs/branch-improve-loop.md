@@ -1,5 +1,52 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — lock-delivery follow-up on PR #770: an "open question" was a two-part defect, and one comment cited a function that never existed
+
+- Status: **delivered**. Run
+  [01a07283-16f2-7b55-bf66-db10c5453fdf](https://iterion.fabrique.social.gouv.fr/runs/01a07283-16f2-7b55-bf66-db10c5453fdf),
+  a focused follow-up to `01a07243` on the same
+  [PR #770](https://github.com/SocialGouv/iterion/pull/770) /
+  [issue #703](https://github.com/SocialGouv/iterion/issues/703).
+- Method: seeded with Revi's single new finding `R1dca02` plus five open
+  questions, and with a plan a cross-model peer had already critiqued. The
+  peer's catch changed the shipped result — see below.
+- Result: six commits, `38f2d98e2` … `cf39e2f72`. `R1dca02` fixed (the
+  non-contention lock class logs at Error again, so a broken lock store
+  raises a tracker event instead of a breadcrumb nobody ships); one open
+  question promoted to a defect and closed; one phantom cross-reference
+  corrected; two ratchets landed. `task lint` and the full `task test` are
+  green.
+- Value — the open question was the bigger finding. Registering LockTTL in
+  `RedeliveryWindow` is the obvious half, and on its own it is **inert**:
+  `cmd/iterion/server.go`'s `natsq.Connect` literal never passed LockTTL, so
+  `applyDefaults` pinned the sweeper's own connection to 60s and the widened
+  formula would have read a value no deployment configured. Passing it also
+  closes a second, pre-existing hazard this branch made load-bearing —
+  `EnsureSchema` writes the KV bucket TTL from `cfg.LockTTL`, so server and
+  runner disagreeing meant the effective lease lifetime flapped by restart
+  order. Neither edit protects an `ITERION_LOCK_TTL=15m` deployment alone.
+- Findings the review missed: `archiveLockFailure`'s audit-deadline comment
+  justified itself as "same hazard, same remedy as parkAdmissionMismatch's
+  status flip" — a function that exists nowhere in the tree, and whose real
+  sibling (`parkOnDLQOnFinalDelivery`) does the OPPOSITE, handing its spent
+  publish context straight to the status flip. A citation asserting a settled
+  pattern for a remedy no other site applies.
+- Ratchets: the log-level regression asserts the hook LEVEL, not the message
+  (verified failing against the unfixed tree first); and a wrapped-`ErrLockHeld`
+  test pins the classification against the shape production actually delivers
+  — every other double returns the sentinel bare, so swapping `errors.Is` for
+  `==` kept the whole suite green while the fleet would page on every sibling
+  collision (verified: that one token turns the new test red and nothing else).
+- Lessons for next run: an "open question" in a review is not automatically
+  out of scope — this one was a real defect whose fix needed a second edit in
+  a file the reviewer never named. And a comment citing a precedent deserves
+  the same grep a code reference gets; a phantom name reads as authority.
+- Left deliberately: `MaxAckPending` headroom during a lock outage, whether
+  a foreign `run_delivery_exhausted` disturbs any timeline consumer, and
+  sweeper-vs-operator DLQ-replay ownership — genuine open questions, not
+  findings. `parkOnDLQOnFinalDelivery`'s inherited publish context is a real
+  smell but pre-existing and outside this branch.
+
 ## 2026-09-05 — lock-delivery hardening on PR #770: seven commits delivered; the publisher still says nothing was pushed
 
 - Status: **first pass delivered and verified; review follow-up pending**.
