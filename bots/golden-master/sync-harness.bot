@@ -3919,7 +3919,7 @@ tool commit_harness:
   output: commit_state
   language: py
   script: |
-    import json, os, shutil, subprocess, sys
+    import json, shutil, subprocess, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     ws = {{vars.workspace_dir}}
     gm_rel = {{vars.oracle_dir}}
@@ -3934,8 +3934,6 @@ tool commit_harness:
     def git(*args):
         return subprocess.run(["git", "-C", ws] + list(args), capture_output=True, text=True, timeout=120)
 
-    prefix = git("rev-parse", "--show-prefix").stdout.strip()
-    harness_status_line = " M %s%s/harness.py" % (prefix, os.path.normpath(gm_rel))
     version = ""
     if shutil.which("iterion"):
         v = subprocess.run(["iterion", "version"], capture_output=True, text=True, timeout=30)
@@ -3948,9 +3946,20 @@ tool commit_harness:
             "the net's decision procedure, not a re-baseline.\n\n"
             "Harness sha256: %s\nSelftest in this tree: %s\nFull gate: pending"
             % ({{input.harness_sha256}}, {{input.selftest}}))
-    st = git("status", "--porcelain", "--untracked-files=no")
-    moved = [l for l in st.stdout.splitlines() if l.strip()]
-    if moved != [harness_status_line]:
+    # Repo-root-relative and unquoted at both ends — the same derivation as
+    # sync_harness, and for the same reason: a net below the repository root
+    # would otherwise refuse here, naming the one file that was to move.
+    ls = git("ls-files", "--stage", "--full-name", "-z", "--", "%s/harness.py" % gm_rel)
+    if ls.returncode != 0:
+        refuse("git ls-files failed in %s: %s" % (ws, ls.stderr[-300:]))
+    entry = [e for e in ls.stdout.split("\0") if e.strip()]
+    if len(entry) != 1 or not entry[0].startswith("100"):
+        refuse("%s/harness.py is not a tracked regular file (%s) — nothing committed"
+               % (gm_rel, entry[0].split("\t")[0] if entry else "untracked"))
+    rel = entry[0].split("\t", 1)[1]
+    st = git("status", "--porcelain", "-z", "--untracked-files=no")
+    moved = [e for e in st.stdout.split("\0") if e.strip()]
+    if moved != [" M " + rel]:
         refuse("the tree does not carry the synced harness alone (%s) — nothing committed" % ", ".join(moved))
     if git("add", "--", "%s/harness.py" % gm_rel).returncode != 0:
         refuse("git add failed")
