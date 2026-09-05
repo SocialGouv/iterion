@@ -1,5 +1,50 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — lock-delivery hardening on PR #770: seven commits delivered; the publisher still says nothing was pushed
+
+- Status: **first pass delivered and verified; review follow-up pending**.
+  Run [01a07243-13f3-7229-8aea-801a2fc3569e](https://iterion.fabrique.social.gouv.fr/runs/01a07243-13f3-7229-8aea-801a2fc3569e)
+  finished on 05/09 at 16:46Z, with 54m42s of recorded active duration.
+  Target: [PR #770](https://github.com/SocialGouv/iterion/pull/770),
+  [issue #703](https://github.com/SocialGouv/iterion/issues/703).
+- Method: a maintainer `/billy` comment named Revi findings `Rd41f5d` and
+  `R1cae68`; auto-merge stayed off. Plan, peer review and revision preceded
+  the campaign. No interactive session edited the branch while Billy ran.
+- Result: seven commits reached the PR, from `b8166f730` to
+  `eb58773074357201f544d11525090a262be732a3`. The run's final commit equals
+  that PR head; its storage branch is
+  `iterion/run-01a07243-13f3-7229-8aea-801a2fc3569e`.
+  `fca63105e` gives the audit an independent deadline after the DLQ publish;
+  `9a2b771af` distinguishes confirmed contention from unconfirmed ownership.
+  Further commits correct the lost-PubAck wording, document both unknowns,
+  add the event to the studio union and update the coverage matrix.
+- Proof: `TestExhaustedPublishDeadlineStillRecordsTheAuditRow` waits until
+  the publication context expires and uses a store that honours cancellation;
+  the old implementation loses the audit row. The reason-classification
+  regression rejects both an asserted owner and asserted absence when the
+  lock service did not answer. Billy's verification gate returned exit 0
+  (format/build/vet, touched Go suites, race checks and lint); the new head's
+  NATS conformance CI also passed. The full PR test check was still running
+  when this record was written.
+- Value of the peer review: a failed lock acquisition does **not** prove
+  absence of an owner, and a missing PubAck does **not** prove the DLQ copy
+  is absent. The final code reports both as unknown instead of inviting an
+  unsafe replay or discard. No lock-failure branch mutates the run outcome
+  or checkpoint.
+- Friction: despite the campaign having pushed all seven commits,
+  `publish_verdict` opened its review with “No commits pushed. nothing to
+  push: HEAD not ahead of origin/codex/fix-703-lock-delivery-dlq” and reported
+  a failure status. The same review then correctly listed the delivered
+  commits and fixed findings. This is additional evidence for
+  [#773](https://github.com/SocialGouv/iterion/issues/773), not missing work
+  in this run: the PR head and final commit were equal. Revi's independent
+  review subsequently replaced that status with success.
+- Remaining work: the independent review found `R1dca02` — infrastructure
+  lock failures had lost their error-level log, suppressing the tracker
+  event. Keep auto-merge off for the follow-up correction. Also check that
+  a configured lock delay larger than AckWait is represented in the
+  redelivery window used by the queued-run sweeper.
+
 ## 2026-09-05 — plan-budget guard dogfooded on prod: the gate fires typed, before `campaign`, for $0.67–$1.80 (runs 01a0714a, 01a07156)
 
 - Status: **validated** (the guard itself; the entry below, written before
