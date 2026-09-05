@@ -150,9 +150,9 @@ type boardDispatcher struct {
 	// driven into the release window and the announce/release order
 	// proven, rather than waited five minutes for.
 	sessionInterval time.Duration
-	sem       chan struct{}
-	logger    *iterlog.Logger
-	wg        sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
+	sem             chan struct{}
+	logger          *iterlog.Logger
+	wg              sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
 	// clockFallbackReason latches WHICH degradation was last reported, so
 	// the notice stays edge-triggered (a per-pass warn is a log storm at
 	// the watchdog's cadence) without a change of cause going unsaid —
@@ -1189,6 +1189,15 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "")
 		case len(d.eligible) > 0:
 			filed = d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
+		default:
+			// No eligible column: there is nowhere to WRITE the return to
+			// the pool, and a bare release would strand the card exactly
+			// as the arm's contract forbids. Keep the recovery claim
+			// (retried, loudly, at the next lease) rather than free it
+			// unfiled.
+			d.warn("claim watchdog cannot return %s/%s to the pool: no eligible column is configured — keeping the recovery claim",
+				cand.Tenant, cand.Claim.IssueID)
+			filed = false
 		}
 	}
 	if !filed {

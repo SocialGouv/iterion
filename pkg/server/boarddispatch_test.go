@@ -1464,6 +1464,45 @@ func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
 	}
 }
 
+// TestCloudReaper_ReparkFailsClosedWithoutAnEligibleColumn: the repark
+// arm's own comment says the return to the pool must be WRITTEN before
+// the release — a card released in in_progress is reachable by no cloud
+// net. With no eligible column configured there is nowhere to write it,
+// and the arm must keep the recovery claim (retried, loudly, next lease)
+// rather than fall through to a bare release with `filed` still true.
+func TestCloudReaper_ReparkFailsClosedWithoutAnEligibleColumn(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-noeligible"] = "dead-owner"
+	f.epochs["c-noeligible"] = 1
+	f.states["c-noeligible"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-noeligible", LastRunID: "run-resumable",
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.eligible = nil
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+
+	if _, still := f.claimed["c-noeligible"]; !still {
+		t.Fatalf("REPRODUCED: with no eligible column the repark released the card UNFILED in %q — unclaimed, "+
+			"listed by nothing, reachable by no cloud sweep", f.states["c-noeligible"])
+	}
+	if got := f.states["c-noeligible"]; got != native.StateInProgress {
+		t.Fatalf("state = %q, want untouched in_progress", got)
+	}
+	if !strings.Contains(buf.String(), "no eligible column") {
+		t.Fatalf("the refusal must be said out loud, log:\n%s", buf.String())
+	}
+}
+
 // TestCloudReaper_PrunedRunIsAGiveUp: the cloud twin of the local
 // give-up. A card whose RECORDED run is gone is not release-only: the
 // repark arm wrote it back into the pool, and the pool launched a fresh
