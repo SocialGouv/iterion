@@ -664,6 +664,26 @@ runner pod). A tool the node names EXPLICITLY on a dead server still
 fails loud at resolution — a declared dependency is never silently
 dropped.
 
+**Orchestration-stall guard.** A session blocked on `TaskOutput` / `Monitor`
+with no background work to wait on — no `Agent`/`Task` spawned, no
+`run_in_background` command — can never return; observed on a facade-served
+model that waited on a task id it had never created. iterion classifies
+that silence on a short budget (`ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT`),
+then recovers **in place**: the CLI's interrupt aborts the pending call, the
+model is told which wait could not return, and the session continues —
+instead of the node restart a killed session costs. A recovery that does not
+close the turn (`ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT`), or a second
+stall on the same session, aborts for the executor's retry as before. Each
+classification is a `delegate_stall` event (`outcome: recovered|aborted`)
+and increments `iterion_delegate_idle_deadlock_total{backend,model,outcome}`
+on the runner, so a provider's admission can rest on a number. A blocking
+call that follows real background work keeps the full hot budget. For a
+deployment that would rather not expose the surface at all,
+`ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS=1` withholds `Agent`,
+`Task`, `TaskOutput` and `Monitor` from non-`ultracode` nodes (opt-in; the
+default keeps the full native toolset — see
+[environment-variables.md](environment-variables.md)).
+
 ### `codex`
 
 The Codex backend delegates to the installed Codex CLI through the pinned Agent

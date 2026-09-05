@@ -425,6 +425,7 @@ export type PassthroughEventType =
   | "delegate_finished"
   | "delegate_error"
   | "delegate_retry"
+  | "delegate_stall"
   | "model_fallback"
   | "model_drift"
   | "session_degraded"

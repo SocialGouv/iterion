@@ -342,6 +342,14 @@ const (
 	EventDelegateFinished EventType = "delegate_finished"
 	EventDelegateError    EventType = "delegate_error"
 	EventDelegateRetry    EventType = "delegate_retry"
+	// EventDelegateStall records a session the backend classified as
+	// deadlocked — blocked on an orchestration tool (TaskOutput / Monitor)
+	// with no background work to wait on — and how the stall ended.
+	// Data: backend, tool, idle_ms, outcome (recovered|aborted), recovered,
+	// model (omitted when unknown). `recovered` means the session was
+	// interrupted and nudged in place and went on; `aborted` means it was
+	// killed for the executor's retry (a delegate_error follows).
+	EventDelegateStall EventType = "delegate_stall"
 
 	// EventModelFallback is emitted once each time a node's fallback
 	// chain falls through from a failed element to the next one — a
