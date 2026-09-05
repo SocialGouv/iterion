@@ -2,7 +2,9 @@
 ## on every dispatch path (#763).
 ##
 ## One prompt body, `probe_prompt`, runs on EVERY site that calls
-## executor.Execute, so the test's claim is a single equality:
+## executor.Execute, so the test's claim is one equality per site — modulo
+## the live elapsed reading, and by containment for the re-dispatch, whose
+## prompt legitimately gains a prior-interaction block:
 ##
 ##   - the TRUNK main loop (`trunk_probe` / `trunk_agent`) — the reference;
 ##   - a `fan_out_each` body (`each_probe` / `each_agent`), once per item;
@@ -40,9 +42,9 @@ schema tally:
 schema probe_in:
   seed: string
 
-## ONE prompt for the trunk agent and the fan_out_all branch agent: the
-## test's claim is that the same body renders the same on both paths, so
-## sharing it here is the claim's structure, not a shortcut.
+## ONE prompt body shared by every probe above: the test's claim is that
+## the same body renders the same whichever site dispatched it, so sharing
+## it here is the claim's structure, not a shortcut.
 prompt probe_prompt:
   run={{run.id}} elapsed={{run.elapsed_seconds}} seed={{outputs.seed.value}}
 

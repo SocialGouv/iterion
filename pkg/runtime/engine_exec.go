@@ -374,7 +374,8 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 
 	// Run/node identity (a Compactor locates per-node session state by it)
 	// + the template snapshot prompts and tool commands render from. The
-	// trunk's share of execContext, which every dispatch path uses.
+	// trunk form of the shared choke point; a fan-out branch takes
+	// execContextBranch, which is this minus the run ID.
 	execCtx := e.execContext(ctx, rs, currentNodeID)
 	// Per-node span: inherits the runner-side or server-side root
 	// span via ctx (W3C trace propagated through NATS in cloud mode).
