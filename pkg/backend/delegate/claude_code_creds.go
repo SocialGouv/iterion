@@ -2,10 +2,8 @@ package delegate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -330,11 +328,19 @@ func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
 	// env can shadow it, so the CLI reports "Not logged in" despite a valid
 	// materialised forfait. Reading it here from the materialised file (kept
 	// fresh by the runner's refresh worker; re-read per spawn) makes the env
-	// token deterministically win. Best-effort: on any read/parse failure we
-	// fall back to the file path alone (prior behaviour).
-	if tok := readForfaitAccessToken(dir); tok != "" {
-		env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
-	}
+	// token deterministically win.
+	//
+	// ALWAYS write the key, empty when there is no usable token. Leaving it
+	// ABSENT is not neutral: this variable outranks the credentials file, the
+	// host spawn inherits os.Environ(), and a prod runner pod carries an
+	// ambient CLAUDE_CODE_OAUTH_TOKEN of its own — the PLATFORM forfait. An
+	// absent key therefore lets that platform token serve in place of the
+	// per-run CLAUDE_CONFIG_DIR just pointed at, so a tenant whose blob is
+	// missing or stale (the refresh worker lagged) authenticates and bills
+	// against someone else's Claude account instead of failing. The three
+	// ANTHROPIC_* siblings above are cleared for exactly this reason; this one
+	// is the same class.
+	env["CLAUDE_CODE_OAUTH_TOKEN"] = readForfaitAccessToken(dir)
 	return env
 }
 
@@ -342,19 +348,7 @@ func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
 // materialised Claude Code credentials.json in dir. Returns "" (never an error)
 // when the file is absent or malformed — the caller degrades to the file path.
 func readForfaitAccessToken(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
-	if err != nil {
-		return ""
-	}
-	var v struct {
-		ClaudeAIOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &v); err != nil {
-		return ""
-	}
-	return v.ClaudeAIOauth.AccessToken
+	return secrets.AnthropicForfaitAccessToken(dir)
 }
 
 // sandboxed reports that the CLI subprocess will execute inside a REAL
