@@ -18,6 +18,8 @@ type modernizeLotVerifyOut struct {
 	LotBlocked      bool     `json:"lot_blocked"`
 	DoneSelfWritten bool     `json:"done_self_written"`
 	ContractRewrite []string `json:"contract_rewritten"`
+	GateTimedOut    bool     `json:"gate_timed_out"`
+	BlockReason     string   `json:"block_reason"`
 	LogTail         string   `json:"log_tail"`
 }
 
@@ -490,4 +492,129 @@ lots:
 			t.Fatalf("a mute certifier must refuse: %+v", res)
 		}
 	})
+}
+
+// TestModernizeLotVerifyGateTimeoutIsAVerdict pins the wall each gate command
+// gets. Measured on a live campaign: a target whose full oracle gate replays
+// ~150 mutants in ~58 min hit the fixed 3600 s subprocess timeout at 3646 s —
+// a Python exception, which the engine read as a tool error, retried ONCE (the
+// same hour, replayed) and then left `failed_resumable` with no verdict line
+// to read. The wall is now the contract's (`gate_timeout_s`, lot over top
+// level, read at the BASE), and an expiry is a verdict: `gate_timed_out`,
+// `lot_blocked`, a GATE_TIMEOUT block_reason — the run stops with its work
+// banked instead of paying four passes against the same wall.
+func TestModernizeLotVerifyGateTimeoutIsAVerdict(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	const plan = `version: 1
+gate_timeout_s: 1
+oracle:
+  refs_dir: .golden-master/refs
+lots:
+  - id: L1
+    title: "raise the build tool"
+    status: todo
+    exit_gate:
+      - "true"
+`
+	netAndBase := func(t *testing.T, planYAML, oracle string) (string, string, func(args ...string) string) {
+		t.Helper()
+		ws, _, git := modernizeRepo(t, planYAML)
+		modernizeNet(t, ws)
+		if oracle != "" {
+			if err := os.WriteFile(filepath.Join(ws, ".golden-master", "verify-oracle.sh"), []byte(oracle), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		git("add", ".golden-master")
+		git("commit", "-qm", "net")
+		return ws, git("rev-parse", "HEAD"), git
+	}
+
+	t.Run("the oracle outlives the wall: a GATE_TIMEOUT verdict, not an exception", func(t *testing.T) {
+		ws, base, _ := netAndBase(t, plan, "#!/bin/sh\nsleep 3\nexit 0\n")
+		res := modernizeLotVerify(t, script, ws, "L1", base, "true")
+		if !res.GateTimedOut || !res.LotBlocked || !strings.HasPrefix(res.BlockReason, "GATE_TIMEOUT:") {
+			t.Fatalf("expiry not read as the GATE_TIMEOUT stop: %+v", res)
+		}
+		if !res.GatePassed || res.OraclePassed {
+			t.Fatalf("the exit gate ran green and the oracle never answered — want gate_passed=true oracle_passed=false, got %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "gate_timeout_s=1") {
+			t.Fatalf("the verdict must name the wall it hit: %s", res.LogTail)
+		}
+	})
+	t.Run("the lot's own wall beats the top level, and an exit_gate command is stopped by it", func(t *testing.T) {
+		lotPlan := strings.Replace(plan, "gate_timeout_s: 1\n", "gate_timeout_s: 3600\n", 1)
+		lotPlan = strings.Replace(lotPlan, "    status: todo\n", "    status: todo\n    gate_timeout_s: 1\n", 1)
+		ws, base, _ := netAndBase(t, lotPlan, "")
+		res := modernizeLotVerify(t, script, ws, "L1", base, "sleep 3")
+		if !res.GateTimedOut || res.GatePassed || !res.LotBlocked {
+			t.Fatalf("the lot's 1 s wall did not stop a 3 s exit_gate: %+v", res)
+		}
+	})
+	t.Run("the wall is read at the BASE: raising it in the tree changes nothing", func(t *testing.T) {
+		ws, base, git := netAndBase(t, plan, "")
+		raised := strings.Replace(plan, "gate_timeout_s: 1\n", "gate_timeout_s: 7200\n", 1)
+		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(raised), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("commit", "-qam", "raise the wall")
+		res := modernizeLotVerify(t, script, ws, "L1", base, "sleep 3")
+		if !res.GateTimedOut {
+			t.Fatalf("the base's wall (1 s) must bind, not the tree's (7200): %+v", res)
+		}
+	})
+	t.Run("a lot-level wall the worker added is a contract rewrite", func(t *testing.T) {
+		ws, base, git := netAndBase(t, plan, "")
+		moved := strings.Replace(plan, "    status: todo\n", "    status: todo\n    gate_timeout_s: 7200\n", 1)
+		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(moved), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("commit", "-qam", "move the wall")
+		res := modernizeLotVerify(t, script, ws, "L1", base, "true")
+		if !strings.Contains(strings.Join(res.ContractRewrite, "\n"), "gate_timeout_s") {
+			t.Fatalf("a worker-added gate_timeout_s on the lot must read as a rewrite: %+v", res)
+		}
+	})
+	for _, bad := range []string{"soon", "0", "86401", "true", `"7200"`} {
+		t.Run("unreadable wall "+bad+" is refused before any command", func(t *testing.T) {
+			badPlan := strings.Replace(plan, "gate_timeout_s: 1\n", "gate_timeout_s: "+bad+"\n", 1)
+			ws, base, _ := netAndBase(t, badPlan, "")
+			res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, "sh -c 'echo ran > gate.marker'", nil)
+			if exit != 1 || !strings.Contains(res.LogTail, "CONTRACT_UNREADABLE") || !strings.Contains(res.LogTail, "gate_timeout_s") {
+				t.Fatalf("exit %d, log %q — want the typed refusal naming gate_timeout_s", exit, res.LogTail)
+			}
+			if _, err := os.Stat(filepath.Join(ws, "gate.marker")); err == nil {
+				t.Fatal("the gate ran under a wall the node could not read")
+			}
+		})
+	}
+}
+
+// TestModernizeLotVerifyRefsNeedANetAtBase: `refs_untouched` over a net that
+// does not exist at the run's base would be true by absence — nothing was
+// there to touch — which is not a term. The absent oracle already reads red;
+// this keeps the second conjunct honest on its own.
+func TestModernizeLotVerifyRefsNeedANetAtBase(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	const plan = `version: 1
+oracle:
+  refs_dir: .golden-master/refs
+lots:
+  - id: L1
+    title: "raise the build tool"
+    status: todo
+    exit_gate:
+      - "true"
+`
+	ws, base, _ := modernizeRepo(t, plan) // the base carries NO net
+	res := modernizeLotVerify(t, script, ws, "L1", base, "true")
+	if res.RefsUntouched {
+		t.Fatalf("refs_untouched=true over an absent net — true by absence: %+v", res)
+	}
+	if !strings.Contains(res.LogTail, "no net at the run's base") {
+		t.Fatalf("the verdict must say the net is absent at the base: %s", res.LogTail)
+	}
 }

@@ -170,6 +170,13 @@ schema lot_report:
   ## worker seconds, never the hour a full gate would spend confirming a
   ## completion it had already written for itself.
   done_self_written: bool
+  ## A gate command outlived `gate_timeout_s`. A VERDICT, not an execution
+  ## failure: an expiry that surfaced as a tool error was retried once by the
+  ## engine — the same hour replayed for nothing — then left the run
+  ## `failed_resumable` with no line to read. Read as a STOP (`lot_blocked`,
+  ## `block_reason` GATE_TIMEOUT): a wall the next pass would hit again is a
+  ## finding about the wall, not a reason to pay four passes for it.
+  gate_timed_out: bool
   ## The contract was rewritten during the lot: an existing lot's normative
   ## fields changed, a lot disappeared, or another lot's status moved. One
   ## entry per rewrite. Refused before any gate command runs, like `done`.
@@ -571,6 +578,7 @@ tool lot_verify:
     import os
     import shlex
     import subprocess
+    import time
     import sys
 
     ws = {{vars.workspace_dir}}
@@ -579,6 +587,7 @@ tool lot_verify:
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
+              "gate_timed_out": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
               "oracle_invalid": [], "extension_pending": [], "done_self_written": False,
               "contract_rewritten": []}
@@ -616,7 +625,8 @@ tool lot_verify:
         print(json.dumps(report))
         raise SystemExit(1)
 
-    def plan_lots(text, what):
+    def plan_doc(text, what):
+        """The whole contract as JSON — `lots` and the top-level keys."""
         import tempfile
         yq = find_yq()
         if not yq:
@@ -635,9 +645,13 @@ tool lot_verify:
         if raw.returncode != 0:
             unreadable("the contract does not parse (%s): %s" % (what, raw.stderr[-400:]))
         try:
-            return json.loads(raw.stdout).get("lots") or []
+            doc = json.loads(raw.stdout)
         except ValueError as e:
             unreadable("yq produced no JSON for the contract (%s): %s" % (what, e))
+        return doc if isinstance(doc, dict) else {}
+
+    def plan_lots(text, what):
+        return plan_doc(text, what).get("lots") or []
 
     def lot_of(lots, lot_id):
         for lot in lots or []:
@@ -649,17 +663,37 @@ tool lot_verify:
     try:
         head_text = open(os.path.join(ws, plan_rel), encoding="utf-8").read()
     except OSError as e:
-        unreadable("the contract is missing from the tree at HEAD (%s): %s" % (plan_rel, e))
+        unreadable("the contract is missing from the working tree (%s): %s" % (plan_rel, e))
     base_show = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (base, plan_rel)],
                                capture_output=True, text=True, timeout=60)
     if base_show.returncode != 0:
         unreadable("the contract is not committed at the run's base %s — a programme "
                    "that lives only in the working tree cannot be judged: %s"
                    % (base[:12], base_show.stderr[-300:]))
-    head_lots = plan_lots(head_text, "HEAD")
-    base_lots = plan_lots(base_show.stdout, "base %s" % base[:12])
+    head_lots = plan_lots(head_text, "the working tree")
+    base_doc = plan_doc(base_show.stdout, "base %s" % base[:12])
+    base_lots = base_doc.get("lots") or []
     head_lot = lot_of(head_lots, {{input.lot_id}})
     base_lot = lot_of(base_lots, {{input.lot_id}})
+
+    # The wall each gate command gets, from the contract the owner committed at
+    # the base: `gate_timeout_s` on the lot, else at the top level, else 3600.
+    # Bounded to a day, and an unreadable value is a refusal — a wall this
+    # node guessed would be a verdict nobody wrote.
+    def gate_timeout_from(doc, lot):
+        src, raw = None, None
+        if isinstance(lot, dict) and "gate_timeout_s" in lot:
+            src, raw = "lot %s" % {{input.lot_id}}, lot.get("gate_timeout_s")
+        elif isinstance(doc, dict) and "gate_timeout_s" in doc:
+            src, raw = "the top level", doc.get("gate_timeout_s")
+        if src is None:
+            return 3600
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 86400:
+            unreadable("gate_timeout_s at %s is %r — an integer number of seconds "
+                       "between 1 and 86400 is the only shape this node reads"
+                       % (src, raw))
+        return raw
+    gate_timeout = gate_timeout_from(base_doc, base_lot)
     head_status = (head_lot or {}).get("status")
     if head_status == "blocked":
         report["lot_blocked"] = True
@@ -671,7 +705,7 @@ tool lot_verify:
         report["lot_blocked"] = False
         report["block_reason"] = ""
         problems.append(
-            "the contract marks lot %s `done` at HEAD while it was `%s` at base "
+            "the contract marks lot %s `done` in the working tree while it was `%s` at base "
             "%s: the worker wrote the verdict. `done` is the gate's word — a "
             "tool node writes it after the gate has proven the lot. Revert that "
             "status line (nothing else) and let the gate decide; this verdict "
@@ -699,14 +733,14 @@ tool lot_verify:
     if True:
         head_ids = [l.get("id") for l in head_lots]
         head_by = {l.get("id"): l for l in head_lots}
-        rewritten = ["duplicate lot id %s at HEAD" % i
+        rewritten = ["duplicate lot id %s in the working tree" % i
                      for i in sorted({i for i in head_ids if head_ids.count(i) > 1})]
         for bl in base_lots:
             hl = head_by.get(bl.get("id"))
             if hl is None:
                 rewritten.append("lot %s was REMOVED" % bl.get("id"))
                 continue
-            for k in ("title", "intent", "depends_on", "rebaseline_allowed", "crosses_major"):
+            for k in ("title", "intent", "depends_on", "rebaseline_allowed", "crosses_major", "gate_timeout_s"):
                 if bl.get(k) != hl.get(k):
                     rewritten.append("%s.%s changed" % (bl.get("id"), k))
             if gate_list(bl.get("exit_gate")) != gate_list(hl.get("exit_gate")):
@@ -734,15 +768,39 @@ tool lot_verify:
             print(json.dumps(report))
             raise SystemExit(0)
 
-    def run(cmd, timeout=3600):
-        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
-                           text=True, timeout=timeout)
+    def run(cmd, timeout=None):
+        """(exit code, tail). An expiry returns (None, tail) — the caller records
+        it as the GATE_TIMEOUT verdict; raised, it was a tool error the engine
+        retried once (the same hour replayed) before failed_resumable."""
+        started = time.monotonic()
+        try:
+            p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
+                               text=True, timeout=timeout or gate_timeout)
+        except subprocess.TimeoutExpired as e:
+            def text_of(v):
+                return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
+            tail = (text_of(e.stdout) + text_of(e.stderr))[-4000:]
+            return None, "exceeded gate_timeout_s=%d after %ds; last output:\n%s" % (
+                timeout or gate_timeout, int(time.monotonic() - started), tail)
         return p.returncode, (p.stdout + p.stderr)[-4000:]
+
+    def timed_out(what, cmd, log):
+        report["gate_timed_out"] = True
+        report["lot_blocked"] = True
+        report["block_reason"] = "GATE_TIMEOUT: %s `%s` %s" % (what, cmd, log.splitlines()[0] if log else "")
+        problems.append("GATE_TIMEOUT: %s `%s` %s — a verdict, not a retry: raise "
+                        "gate_timeout_s in the contract (lot or top level) if the "
+                        "gate legitimately needs longer, or shorten the gate."
+                        % (what, cmd, log))
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True
     for cmd in gate_cmds:
         code, log = run(cmd)
+        if code is None:
+            report["gate_passed"] = False
+            timed_out("exit_gate command", cmd, log)
+            break
         if code != 0:
             report["gate_passed"] = False
             problems.append("exit_gate command failed (exit %d): %s\n%s" % (code, cmd, log))
@@ -759,7 +817,9 @@ tool lot_verify:
     else:
         code, log = run(verify)
         report["oracle_passed"] = code == 0
-        if code != 0:
+        if code is None:
+            timed_out("the behavioural oracle", verify, log)
+        elif code != 0:
             problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
         # WHICH mutants the oracle could no longer apply, read rather than
         # guessed. A mutant goes invalid for two very different reasons: it
@@ -919,6 +979,19 @@ tool lot_verify:
             # finding, executed).
             report["refs_untouched"] = False
 
+        # The net must EXIST at the base to be judged: `refs_untouched` over
+        # an absent net would be true by absence, which is not a term (an
+        # absent oracle already reads red above; this keeps the second term
+        # honest on its own). The judged directory itself is probed — an
+        # older net has no harness, every net has the directory.
+        probe = subprocess.run(["git", "-C", ws, "cat-file", "-e", "%s:%s" % (base, gm_dir)],
+                               capture_output=True, text=True, timeout=60)
+        net_at_base = probe.returncode == 0
+        if not net_at_base:
+            problems.append("no net at the run's base %s (%s is not committed there): "
+                            "nothing to judge the references against — build and commit "
+                            "the net before modernising against it." % (base[:12], gm_dir))
+
         code, log = run("git -c core.quotePath=false diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
@@ -932,7 +1005,7 @@ tool lot_verify:
                 exempt = set()
             changed = [p for p in raw if p not in exempt]
             report["refs_changed"] = changed
-            report["refs_untouched"] = not changed
+            report["refs_untouched"] = not changed and net_at_base
             if changed:
                 problems.append("%d oracle artefact(s) were MODIFIED during this "
                                 "lot: %s. Either the lot changed behaviour it was "
