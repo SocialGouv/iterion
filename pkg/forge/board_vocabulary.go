@@ -90,14 +90,16 @@ type StatusVocabularyRepair struct {
 	// id re-resolved by name.
 	FieldRebound bool
 	// Lost are the mapped columns the board answers to under neither their
-	// cached option id nor their name, and that the BIND did not accept as
-	// absent. Nothing here can repair that, so it is what marks the binding
+	// cached option id nor their name, and that never resolved for this
+	// binding. Nothing here can repair that, so it is what marks the binding
 	// degraded — and it is re-derived on EVERY pass, for as long as it stays
 	// true.
 	//
 	// A column the bind accepted as absent (`UnresolvedAtBind`, the ordinary
-	// partial-coverage bind) is NOT lost: nothing broke, the map simply names
-	// more than the board carries.
+	// partial-coverage bind) is NOT lost WHILE it has never resolved: nothing
+	// broke, the map simply names more than the board carries. Once a
+	// reconciliation adopts it, it has resolved, and its later disappearance is
+	// a break like any other — the bind-time exemption discharges.
 	Lost []LostColumn
 
 	// changed records whether the reconciliation rewrote the vocabulary, which
@@ -168,24 +170,30 @@ func (r StatusVocabularyRepair) Reason() string {
 //     board's current NAME for it (this is the rename repair);
 //  2. else the mapped NAME still on the field ⇒ the column was re-created, or
 //     added since the bind; adopt its id;
-//  3. else, and only if the BIND did not accept it as absent ⇒ LOST.
+//  3. else, and only if the column never resolved for this binding ⇒ LOST.
 //
 // Rule 3 is a property of the binding's CURRENT shape, not an event: it is
 // re-derived identically on every pass, which is what lets a caller treat
-// "degraded" as a level rather than an edge. The oracle is `UnresolvedAtBind`
-// — what the operator accepted when they bound the board — and NOT the cached
-// option id, deliberately: an earlier release deleted that id on the pass that
-// observed the loss, so a rule reading "the binding HAS an id" finds nothing
-// lost on a binding that release degraded, and a readout that clears when it
-// finds nothing lost would clear a still-true degradation permanently. The
-// same two shapes meet during a rolling deploy, in either order.
+// "degraded" as a level rather than an edge. "Never resolved" is a CONJUNCTION
+// of two oracles, and neither one alone is sound:
+//
+//   - `UnresolvedAtBind` — what the operator accepted when they bound the
+//     board. Alone it never discharges: a column absent at bind and ADOPTED
+//     later earns a real id, so its next disappearance is a genuine break the
+//     bind-time name would go on exempting forever;
+//   - an EMPTY cached option id. Alone it misreads the upgrade: an earlier
+//     release deleted that id on the pass that observed the loss, so a rule
+//     reading "the binding HAS an id" finds nothing lost on a binding that
+//     release degraded — and a readout that clears when it finds nothing lost
+//     would clear a still-true degradation permanently. The same two shapes
+//     meet during a rolling deploy, in either order.
+//
+// Together they say the thing that is actually meant: this column has never
+// worked, so it cannot have broken. Only something that worked can break.
 //
 // The cached id is nevertheless KEPT on a loss: it is what `LostStates` gates
-// the reflect with, and a second, independent way to re-derive the loss.
-//
-// A column the bind accepted as absent is NOT lost — it is the partial
-// coverage BindBoard admits on purpose ("the covered half works"). Only
-// something that worked can break.
+// the reflect with, and the half of the conjunction that keeps the loss
+// re-derivable once the bind-time exemption has discharged.
 //
 // The Status FIELD's own id is refreshed the same way — it is resolved by
 // name, so a field deleted and re-created is repaired rather than fatal.
@@ -256,10 +264,17 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 	}
 
 	// 3. LOST: a mapped column the board serves under NEITHER its cached id
-	// nor its name, that the bind did not accept as absent. Deliberately not a
-	// question about the cached id — see the doc comment.
+	// nor its name, that the bind did not accept as absent AND that has never
+	// resolved since. Both halves of that second clause are load-bearing — see
+	// the doc comment.
+	//
+	// The id is read off `b.StatusOptions`, the binding as it stands, not off
+	// the `options` working copy step 1 mutates: the question is what this
+	// state had resolved to BEFORE this pass. Identical today (step 1 only
+	// writes ids for states that then short-circuit as resolved), but it says
+	// what it means and cannot be broken by a later edit to the resolve loop.
 	for _, m := range mapping {
-		if resolved[m.State] || accepted[foldName(m.Status)] {
+		if resolved[m.State] || (accepted[foldName(m.Status)] && b.StatusOptions[m.State] == "") {
 			continue
 		}
 		rep.Lost = append(rep.Lost, LostColumn{State: m.State, Status: m.Status})

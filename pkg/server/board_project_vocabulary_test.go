@@ -536,6 +536,77 @@ func TestSyncProjectBoardDoesNotDegradeOnPartialCoverage(t *testing.T) {
 	}
 }
 
+// TestSyncProjectBoardDegradesOnAColumnItAdoptedAfterTheBind is the end-to-end
+// half of the bind-time exemption's DISCHARGE.
+//
+// A column the bind accepted as absent is exempt from the lost rule — while it
+// has never resolved. Adoption ends that: the column earned a real option id
+// and cards were written onto it, so its deletion is a break like any other. An
+// exemption keyed on the bind-time NAME alone never discharges, and the
+// operator would read a healthy binding while every card of that column is
+// refused — the exact failure the level-triggered readout exists to kill.
+func TestSyncProjectBoardDegradesOnAColumnItAdoptedAfterTheBind(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	// The card sits in `blocked` natively and the board agrees with what we
+	// last recorded, so the reflect is the only direction in play.
+	seedSynced(t, board, 613, native.StateBlocked, "Planned", at)
+
+	noBlocked := deletedColumn(t, "Blocked")
+	bindings := forge.NewMemoryBoardBindingStore()
+	binding := boundBinding(t, noBlocked) // bound against a board with no "Blocked"
+	if !slices.Contains(binding.UnresolvedAtBind, "Blocked") {
+		t.Fatalf("the bind must record what it accepted as absent: %v", binding.UnresolvedAtBind)
+	}
+	if err := bindings.Upsert(context.Background(), *binding); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	opts := &ProjectImportOptions{Binding: binding, Bindings: bindings}
+
+	// Pass 1: the accepted partial coverage, with no card in play. Nothing broke.
+	bc := &fakeBoardClient{project: noBlocked, pages: [][]forge.ProjectItem{{}}}
+	if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if stored, _ := bindings.GetByTenant(context.Background(), "team-a"); stored.Degraded() {
+		t.Fatalf("a column the bind accepted as absent is not a degradation: %q", stored.DegradedReason)
+	}
+
+	// Pass 2: the operator creates it. Adopted — from here it HAS resolved.
+	bc.project = testProject()
+	if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	stored, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if stored.StatusOptions[native.StateBlocked] == "" {
+		t.Fatalf("the adopted column must earn its option id: %v", stored.StatusOptions)
+	}
+
+	// Pass 3: and deletes it again, with a card that needs it.
+	bc.project = noBlocked
+	bc.pages = [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusOption("Planned", optionID(t, testProject(), "Planned"), at)),
+	}}
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 3: %v", err)
+	}
+	after, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if !after.Degraded() || !strings.Contains(after.DegradedReason, "Blocked") {
+		t.Fatalf("the adopted column is gone; the binding must say so, got %q", after.DegradedReason)
+	}
+	if res.ReflectNoColumn != 1 || len(bc.writes) != 0 {
+		t.Errorf("ReflectNoColumn = %d writes = %+v — the card must be refused, not written onto a dead id",
+			res.ReflectNoColumn, bc.writes)
+	}
+}
+
 // TestSyncProjectBoardNeverRewritesTheOptionItAlreadyCarries pins the guard
 // under the repair: the reflect must compare the OPTION ID it is about to
 // write against the one the item carries, not only the names.

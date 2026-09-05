@@ -179,6 +179,100 @@ func TestReconcileStatusOptionsDoesNotLoseAnUnresolvedColumn(t *testing.T) {
 	}
 }
 
+// TestReconcileStatusOptionsLosesAColumnItAdoptedAfterTheBind: the bind-time
+// exemption is a statement about the past, not a permanent licence.
+//
+// A column the bind accepted as absent cannot break — until the operator
+// creates it and a reconciliation ADOPTS it. From that pass on it has resolved,
+// so its later deletion is a break like any other. An exemption keyed on the
+// bind-time NAME alone never discharges, so the binding would read healthy
+// while every card of that column is refused.
+func TestReconcileStatusOptionsLosesAColumnItAdoptedAfterTheBind(t *testing.T) {
+	b := vocabBinding()
+	delete(b.StatusOptions, "in_progress")
+	b.MissingStatuses = []string{"In progress"}
+	b.UnresolvedAtBind = []string{"In progress"} // accepted as absent at bind
+
+	// The operator creates the column: adopted, and it earns a real id.
+	if rep := b.ReconcileStatusOptions(vocabProject(
+		forge.ProjectFieldOption{ID: "o_planned", Name: "Planned"},
+		forge.ProjectFieldOption{ID: "o_prog", Name: "In progress"},
+	)); len(rep.Adopted) != 1 {
+		t.Fatalf("Adopted = %+v, want the column the operator added", rep.Adopted)
+	}
+
+	// ...and deletes it again. It worked; now it is broken.
+	rep := b.ReconcileStatusOptions(vocabProject(
+		forge.ProjectFieldOption{ID: "o_planned", Name: "Planned"},
+	))
+	if len(rep.Lost) != 1 || rep.Lost[0].State != "in_progress" {
+		t.Fatalf("Lost = %+v, want the adopted-then-deleted column", rep.Lost)
+	}
+	if rep.Reason() == "" {
+		t.Error("...and the binding must read degraded, not healthy")
+	}
+	if !rep.LostStates()["in_progress"] {
+		t.Error("LostStates must refuse the state, or the reflect writes a dead id")
+	}
+}
+
+// TestReconcileStatusOptionsLosesALegacyColumnDeletedBeforeTheFirstPass is the
+// upgrade window, which the reconstruction structurally cannot see.
+//
+// A binding written before `UnresolvedAtBind` existed reads healthy, and its
+// column is deleted between the last old-release pass and the first new one.
+// The reconstruction runs exactly once, from THIS pass's board read, so it
+// would write the freshly-broken column into the accepted set and exempt it
+// forever. The cached id says otherwise: that column resolved once.
+func TestReconcileStatusOptionsLosesALegacyColumnDeletedBeforeTheFirstPass(t *testing.T) {
+	b := vocabBinding()
+	b.UnresolvedAtBind = nil // written before the field existed, and healthy
+
+	rep := b.ReconcileStatusOptions(vocabProject(
+		forge.ProjectFieldOption{ID: "o_planned", Name: "Planned"},
+	))
+	if len(rep.Lost) != 1 || rep.Lost[0].State != "in_progress" {
+		t.Fatalf("Lost = %+v, want the column that had an id and stopped resolving", rep.Lost)
+	}
+}
+
+// The same legacy binding, whose Status FIELD is gone: every column it had
+// resolved is lost. A set reconstructed from this pass's board read says the
+// board carries none of them — true, and irrelevant: what the operator
+// accepted at bind was never "everything".
+func TestReconcileStatusOptionsLosesALegacyBindingsColumnsWhenTheFieldIsGone(t *testing.T) {
+	b := vocabBinding()
+	b.UnresolvedAtBind = nil
+
+	rep := b.ReconcileStatusOptions(forge.Project{ID: "PVT_p", Number: 203})
+	if len(rep.Lost) != 2 {
+		t.Fatalf("Lost = %+v, want every state the binding had resolved", rep.Lost)
+	}
+}
+
+// The accepted set is keyed by the bind-time column NAME, while the rename
+// repair rewrites `mapping[i].Status` in place. Only the resolution ORDER keeps
+// the two apart — a renamed column short-circuits as resolved before the set is
+// ever consulted — so the invariant is pinned rather than assumed.
+func TestReconcileStatusOptionsDoesNotConsultTheAcceptedSetForARenamedColumn(t *testing.T) {
+	b := vocabBinding()
+	// The board renames "In progress" to a name that IS in the bind-time
+	// accepted set. Reading the set with the REWRITTEN name would exempt a
+	// column that resolves perfectly well by its cached id.
+	b.UnresolvedAtBind = []string{"Blocked"}
+
+	rep := b.ReconcileStatusOptions(vocabProject(
+		forge.ProjectFieldOption{ID: "o_planned", Name: "Planned"},
+		forge.ProjectFieldOption{ID: "o_prog", Name: "Blocked"},
+	))
+	if len(rep.Lost) != 0 {
+		t.Fatalf("a renamed column resolves by its cached id, it is never lost: %+v", rep.Lost)
+	}
+	if len(rep.Renamed) != 1 || rep.Renamed[0].To != "Blocked" {
+		t.Fatalf("Renamed = %+v, want the ordinary rename repair", rep.Renamed)
+	}
+}
+
 // A state the binding has no mapping for at all cannot be lost, whatever the
 // board carries: it is inert by design (§2), not broken.
 func TestReconcileStatusOptionsIgnoresAnUnmappedState(t *testing.T) {
