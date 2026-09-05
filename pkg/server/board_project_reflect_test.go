@@ -138,6 +138,69 @@ func TestSyncProjectBoardDefersToAMovedBoard(t *testing.T) {
 	}
 }
 
+// TestSyncProjectBoardReflectsWhenNativeWinsTheConflict is the case the
+// conflict rule EXISTS to serve, and the one that was silently dead: both
+// sides moved, iterion's move is newer, so iterion's state must reach the
+// board. Skipping the push there left the two boards divergent AND re-derived
+// the identical conflict on every pass forever — the recorded status is
+// deliberately not advanced on that branch, so the inputs never change.
+func TestSyncProjectBoardReflectsWhenNativeWinsTheConflict(t *testing.T) {
+	board := newTestBoard(t)
+	older := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)
+
+	// Recorded "Planned"; the board has since moved to "In progress" (at
+	// `older`), and iterion moved the card to blocked later (at `newer`).
+	id := seedSynced(t, board, 613, native.StateBlocked, "Planned", older)
+	if _, err := board.Update(id, native.Patch{External: &native.ExternalRef{
+		Provider: "github", Repo: "SocialGouv/iterion", Number: 613,
+		Project: &native.ExternalProject{
+			Owner: "SocialGouv", Number: 203, ItemID: "PVTI_1",
+			Status: "Planned", StatusAt: older, StateAt: newer,
+		},
+	}}); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("In progress", older)),
+	}}}
+	opts := &ProjectImportOptions{Binding: testBinding()}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Conflicts != 1 {
+		t.Errorf("Conflicts = %d, want 1", res.Conflicts)
+	}
+	if res.Moved != 0 {
+		t.Errorf("Moved = %d: the native side won, so the card must not follow the board", res.Moved)
+	}
+	if res.Reflected != 1 {
+		t.Fatalf("Reflected = %d, want 1 — the winner's state must reach the board (%+v)", res.Reflected, res)
+	}
+	if len(bc.writes) != 1 || bc.writes[0].OptionID != "o_blocked" {
+		t.Fatalf("writes = %+v, want the Blocked option", bc.writes)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateBlocked {
+		t.Errorf("state = %q, want it untouched", got)
+	}
+
+	// And it CONVERGES: the board now answers what was pushed, so the next
+	// pass is a no-op instead of re-deriving the same conflict.
+	bc.pages = [][]forge.ProjectItem{{item("PVTI_1", 613, statusValue("Blocked", newer.Add(time.Minute)))}}
+	res2, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if res2.Conflicts != 0 || res2.Reflected != 0 || res2.Moved != 0 {
+		t.Fatalf("pass 2 must be a no-op, got %+v", res2)
+	}
+	if len(bc.writes) != 1 {
+		t.Errorf("writes = %d, want still 1", len(bc.writes))
+	}
+}
+
 func TestSyncProjectBoardDoesNotReflectAnUnmappedState(t *testing.T) {
 	board := newTestBoard(t)
 	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)

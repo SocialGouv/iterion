@@ -244,7 +244,11 @@ what iterion last recorded?** — and that single comparison is simultaneously
 the who-moved oracle and the echo suppressor:
 
 - **the board's status differs from the recorded one** ⇒ the board moved ⇒ the
-  import arm applies §9's conflict rule;
+  import arm applies §9's conflict rule. When the board wins, the card follows
+  it and nothing is pushed. When **iterion wins** (its state change is newer),
+  the pass pushes instead — that is the case the conflict rule exists for, and
+  the recorded status is deliberately left stale until the push overwrites it
+  with what was actually written;
 - **the board matches the record, but the card's column maps to a different
   status** ⇒ nobody but iterion put that status there, so the divergence can
   only be a native move ⇒ write the `Status` field;

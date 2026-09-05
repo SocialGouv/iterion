@@ -261,9 +261,12 @@ func applyProjectItem(
 	}
 
 	// The sync state records what the board said, and — when we acted on it —
-	// when the native state changed. A native-wins conflict deliberately does
-	// NOT record the board's status: leaving it stale is what keeps the
-	// reflect's work visible.
+	// when the native state changed.
+	//
+	// A native-wins conflict is the exception: recording the board's status
+	// here would tell the reflect below "the board already agrees", and it
+	// would push nothing. The reflect overwrites these two fields itself with
+	// what it actually wrote, which is what makes the next pass a no-op.
 	if decision != projectStatusConflictNative {
 		sync.Status = statusName
 		sync.StatusAt = statusAt
@@ -273,10 +276,20 @@ func applyProjectItem(
 	}
 
 	// The OTHER direction, on the same pass and the same board read. It runs
-	// only when the import above did nothing: a board that moved is the
-	// import's business, and pushing over it would overwrite the very decision
-	// we just read.
-	if decision == projectStatusNoop && !applied {
+	// in exactly the two cases where the native side holds the truth:
+	//
+	//   - projectStatusNoop — the board still says what we recorded, so any
+	//     divergence from the card's column is a native move;
+	//   - projectStatusConflictNative — both moved and iterion's move is
+	//     NEWER, which is precisely what the reflect exists for. Skipping it
+	//     here left the two boards divergent forever: the branch also declines
+	//     to advance the recorded status, so the next pass recomputed the same
+	//     inputs and re-derived the same conflict, warning on every tick and
+	//     changing nothing on either side.
+	//
+	// It does NOT run when the board won (`applied`, or a GitHub-wins
+	// conflict): pushing there would overwrite the decision we just read.
+	if !applied && (decision == projectStatusNoop || decision == projectStatusConflictNative) {
 		reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res)
 	}
 	ext := card.External.Clone()
