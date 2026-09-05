@@ -2,6 +2,9 @@ package model
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -22,7 +25,7 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "platform-anthropic")
 
 	t.Run("no credentials in ctx leaves the ambient env alone", func(t *testing.T) {
-		env := forwardableProviderEnv(context.Background())
+		env := envFor(t, context.Background())
 		if env["OPENAI_API_KEY"] != "platform-key" {
 			t.Errorf("OPENAI_API_KEY = %q, want the ambient value passed through", env["OPENAI_API_KEY"])
 		}
@@ -35,7 +38,7 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			APIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: "tenant-key"},
 		})
-		env := forwardableProviderEnv(ctx)
+		env := envFor(t, ctx)
 		if env["OPENAI_API_KEY"] != "tenant-key" {
 			t.Errorf("OPENAI_API_KEY = %q, want the tenant's own key — a sandboxed node billed the platform instead", env["OPENAI_API_KEY"])
 		}
@@ -50,7 +53,7 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindCodex): "/host/tmp/whatever"},
 		})
-		env := forwardableProviderEnv(ctx)
+		env := envFor(t, ctx)
 		if env["CODEX_HOME"] != secrets.CodexSandboxConfigDir {
 			t.Errorf("CODEX_HOME = %q, want the in-sandbox seeded dir (the HOST path does not exist in the container)", env["CODEX_HOME"])
 		}
@@ -64,7 +67,7 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			APIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: ""},
 		})
-		if got := forwardableProviderEnv(ctx)["OPENAI_API_KEY"]; got != "platform-key" {
+		if got := envFor(t, ctx)["OPENAI_API_KEY"]; got != "platform-key" {
 			t.Errorf("OPENAI_API_KEY = %q — an absent resolution must not read as 'authenticate with nothing'", got)
 		}
 	})
@@ -76,7 +79,7 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 // or newer models 400 only when sandboxed.
 func TestForwardableProviderEnv_forwardsCodexVersionOverride(t *testing.T) {
 	t.Setenv("ITERION_CODEX_VERSION", "0.144.6")
-	env := forwardableProviderEnv(context.Background())
+	env := envFor(t, context.Background())
 	if env["ITERION_CODEX_VERSION"] != "0.144.6" {
 		t.Errorf("ITERION_CODEX_VERSION = %q, want the ambient override forwarded", env["ITERION_CODEX_VERSION"])
 	}
@@ -93,15 +96,150 @@ func TestForwardableProviderEnv_forwardsHostProbedCodexVersion(t *testing.T) {
 	t.Cleanup(func() { hostCodexVersion = orig })
 
 	hostCodexVersion = func() string { return "0.144.6" }
-	env := forwardableProviderEnv(context.Background())
+	env := envFor(t, context.Background())
 	if env["ITERION_CODEX_VERSION"] != "0.144.6" {
 		t.Errorf("ITERION_CODEX_VERSION = %q, want the host-probed version forwarded when no override is set", env["ITERION_CODEX_VERSION"])
 	}
 
 	// No codex on the host either: forward nothing, never an empty pair.
 	hostCodexVersion = func() string { return "" }
-	env = forwardableProviderEnv(context.Background())
+	env = envFor(t, context.Background())
 	if v, ok := env["ITERION_CODEX_VERSION"]; ok {
 		t.Errorf("ITERION_CODEX_VERSION = %q set with nothing to forward — an empty value must not cross", v)
+	}
+}
+
+// #736: a sandboxed claw anthropic node for a forfait-only tenant must not
+// authenticate as the pod. The in-container runner rebuilds its registry from
+// env alone, so the run's forfait reaches it only as CLAUDE_CONFIG_DIR (the
+// dir runtime.seedClaudeConfigDir populates) — and only if the ambient
+// anthropic-wire vars, which are the PLATFORM's, stop shadowing it. Leaving
+// them in place is invisible precisely because the platform key works.
+func TestForwardableProviderEnv_ForfaitOnlyTenantDoesNotInheritPlatformKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	env := envFor(t, ctx)
+
+	if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q", got, secrets.ClaudeCodeSandboxConfigDir)
+	}
+	for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+		if v, present := env[shadow]; present {
+			t.Errorf("%s=%q still forwarded — the platform credential would win over the run's forfait", shadow, v)
+		}
+	}
+}
+
+// The tenant's OWN key is an explicit choice and keeps precedence: holding a
+// forfait as well must not silently switch the run onto the subscription.
+func TestForwardableProviderEnv_TenantKeyBeatsItsOwnForfait(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-TENANT"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	env := envFor(t, ctx)
+
+	if env["ANTHROPIC_API_KEY"] != "sk-ant-TENANT" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want the tenant's own key", env["ANTHROPIC_API_KEY"])
+	}
+	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("CLAUDE_CONFIG_DIR set even though the tenant's own key serves — the run would switch instrument when sandboxed")
+	}
+}
+
+// A gateway base URL is a destination the operator chose; a subscription bearer
+// carries the whole Claude account and must not travel there implicitly.
+func TestForwardableProviderEnv_ForfaitNotPointedAtRedirectedWire(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gateway.corp.example")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	if _, present := envFor(t, ctx)["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("forfait pointed into the container while the wire is redirected at a gateway")
+	}
+}
+
+// forfaitDirForTest writes a valid, unexpired forfait blob and returns its dir.
+func forfaitDirForTest(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-run","expiresAt":4102444800000}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// envFor calls the sandbox env builder for a first-party Anthropic model and
+// fails the test on error.
+func envFor(t *testing.T, ctx context.Context) map[string]string {
+	t.Helper()
+	env, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	return env
+}
+
+// R97bef9 [high]: a z.ai/GLM model rides the SAME anthropic provider — it
+// arrives as "anthropic/glm-X" and the registry synthesises z.ai's base URL
+// from a bare ZAI_API_KEY, so no ANTHROPIC_BASE_URL exists for a wire check to
+// see. Clearing ZAI_API_KEY there removes the node's only credential channel
+// and points a forfait bearer at api.anthropic.com for a model it cannot
+// serve — breaking exactly the forfait-carrying tenants #736 is for.
+func TestForwardableProviderEnv_GLMNodeKeepsItsZAIKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ZAI_API_KEY", "zai-platform-key")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	env, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["ZAI_API_KEY"] != "zai-platform-key" {
+		t.Errorf("ZAI_API_KEY = %q — a GLM node loses its only credential channel", env["ZAI_API_KEY"])
+	}
+	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("forfait pointed at a GLM node the forfait cannot serve")
+	}
+}
+
+// R71d7c3 [medium]: once the shadows are cleared the forfait is the node's ONLY
+// credential in the container, and the in-container env factory swallows expiry
+// — it would build a client with no credential and 401-loop with nothing naming
+// the cause. The in-process twin already refuses rather than degrade; this seam
+// must decide the same way, or the two disagree again.
+func TestForwardableProviderEnv_ExpiredForfaitRefusesInsteadOfBlinding(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-stale","expiresAt":1000000000000}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
+	})
+	_, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	if !errors.Is(err, secrets.ErrAnthropicForfaitExpired) {
+		t.Fatalf("expected a named expiry refusal, got %v", err)
 	}
 }
