@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.104.0](https://github.com/SocialGouv/iterion/compare/v3.103.0...v3.104.0) (2026-09-05)
+
+### Features
+
+* **credentials:** a refresh writes only the tokens, refusals earn a rest and stay visible, and every credential's spend is metered by nature ([#748](https://github.com/SocialGouv/iterion/issues/748)) ([1906ab1](https://github.com/SocialGouv/iterion/commit/1906ab101b2076be8ef66ab03eac5c4a8d72c7fa)), references [#656](https://github.com/SocialGouv/iterion/issues/656) [#629](https://github.com/SocialGouv/iterion/issues/629) [#610](https://github.com/SocialGouv/iterion/issues/610) [#624](https://github.com/SocialGouv/iterion/issues/624) [#629](https://github.com/SocialGouv/iterion/issues/629) [#690](https://github.com/SocialGouv/iterion/issues/690) [#629](https://github.com/SocialGouv/iterion/issues/629) [#629](https://github.com/SocialGouv/iterion/issues/629) [#624](https://github.com/SocialGouv/iterion/issues/624) [#629](https://github.com/SocialGouv/iterion/issues/629) [#641](https://github.com/SocialGouv/iterion/issues/641)
+
+    <details><summary>why</summary>
+
+    The three refresh paths did Get -> RefreshRecord -> whole-record Upsert, so a rename committed between the read and the persist was reverted to the label the refresh had read a provider round trip earlier. The rename side was already a store-level $set (SetAccountLabel); this is its mirror.
+
+    </details>
+
+### Bug Fixes
+
+* **modernize:** the contract is not the worker's to rewrite — typed only_lot refusal, done written by the gate, rewrites refused before the gate ([#734](https://github.com/SocialGouv/iterion/issues/734)) ([a430ddc](https://github.com/SocialGouv/iterion/commit/a430ddcb3c8f948e11149ecd1fdc098d0a3b843c)), references [#737](https://github.com/SocialGouv/iterion/issues/737)
+
+    <details><summary>why</summary>
+
+    Three defects of one class, measured on a live campaign: a run's terminal state lied about what had been proven, and an operator relaunched on the lie.
+
+    </details>
+
 ## [3.103.0](https://github.com/SocialGouv/iterion/compare/v3.102.6...v3.103.0) (2026-09-05)
 
 ### Features
