@@ -755,7 +755,7 @@ func TestGitHubWebhook_BotNotAllowed(t *testing.T) {
 
 // R6a15fe: the GitHub/Forgejo re-request lane rides the same replier gate as
 // its GitLab twin — with no stub the production gate fail-closes on the
-// missing forge token, an explicit refusal filters, and an authz ERROR 502s
+// missing forge token, an explicit refusal filters, and an authz ERROR is acknowledged
 // only when the click was the delivery's sole reason (R34eb8c).
 func TestGitHubWebhook_ReviewRequestedUnauthorizedFiltered(t *testing.T) {
 	s := newWebhookTestServer(t)
@@ -776,14 +776,14 @@ func TestGitHubWebhook_ReviewRequestedUnauthorizedFiltered(t *testing.T) {
 		t.Fatalf("unauthorized: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
 	}
 
-	// Authz error on a re-request-only delivery → 502 (forge redelivers).
+	// Authz error on a re-request-only delivery is acknowledged and audited.
 	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
 		return false, "", context.DeadlineExceeded
 	}
 	w2 := httptest.NewRecorder()
 	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), ghReviewRequested("mallory", "iterion-bot", "2026-09-01T10:01:00Z"), prforge.EventHeaderPullRequest, pt))
-	if w2.Code != http.StatusBadGateway || calls != 0 {
-		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("authz error must acknowledge without launching: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
 	}
 }
 

@@ -733,3 +733,12 @@ The starter PrometheusRule pack ships an alert on
 noisy forge integration or an abusive caller. See
 [charts/iterion/README.md](../charts/iterion/README.md) for the full
 alert pack.
+
+### Authorization service failures
+
+If the forge fails while checking a command, thread reply, review request or
+approval, the webhook acknowledges the delivery with HTTP 200 and records
+`launch_error` with its cause. It neither launches work nor replies to an
+unverified actor. Check the delivery audit and restore the forge connection
+before triggering the action again. An independent automatic review on the
+same event may still proceed under its own admission rules.

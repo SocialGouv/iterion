@@ -80,8 +80,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	}
 	outcome, reason, aerr := gate(ctx, cfg, provider, p, route)
 	if aerr != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
-		httpError(w, http.StatusBadGateway, "authorization check failed")
+		s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "authz check", aerr)
 		return
 	}
 	if outcome != gateAuthorized {
@@ -504,8 +503,7 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	}
 	authorized, threadContext, reason, aerr := gate(ctx, cfg, provider, p, converseBot)
 	if aerr != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
-		httpError(w, http.StatusBadGateway, "authorization check failed")
+		s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "authz check", aerr)
 		return
 	}
 	if !authorized {

@@ -410,15 +410,14 @@ func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
 		t.Fatalf("refused re-request must filter: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
 	}
 
-	// An authz ERROR on a re-request-only delivery is a 502 so the forge
-	// redelivers (mirror of the note gate).
+	// An authz error is acknowledged and audited, as on the note gate.
 	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
 		return false, "", context.DeadlineExceeded
 	}
 	w3 := httptest.NewRecorder()
 	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:02:00 UTC", true), gitlab.EventHeaderMergeRequest))
-	if w3.Code != http.StatusBadGateway || calls != 0 {
-		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
+	if w3.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("authz error must acknowledge without launching: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
 	}
 
 	// R34eb8c: when an automatic lane co-rides the event (push + reviewers
