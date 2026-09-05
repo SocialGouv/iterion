@@ -189,8 +189,16 @@ tool sync_harness:
     st = git("status", "--porcelain", "-z", "--untracked-files=no")
     moved = [e for e in st.stdout.split("\0") if e.strip()]
     if moved != [" M " + rel]:
-        git("checkout", "-q", "--", ".")
-        refuse("more than the harness moved after the sync: %s" % ", ".join(moved))
+        # Only the harness goes back, the same surgical restore as every other
+        # failure path here. A blanket `checkout -- .` discarded whatever ELSE
+        # moved — and what else moved is unknowable: the window is the whole
+        # selftest (900 s) and the bot declares no `worktree:`, so this is the
+        # operator's live checkout. The node names what it will not sync; it
+        # does not decide the fate of work it never touched.
+        others = [m for m in moved if m != " M " + rel]
+        restore()
+        refuse("more than the harness moved after the sync (%s) — the harness is back as it was, and what else "
+               "moved is left untouched for you to look at" % ", ".join(others or moved))
     out["changed"] = True
     out["notice"] = "SYNCED: %s/harness.py <- this bundle's harness (%s); selftest: %s" % (gm_rel, out["harness_sha256"][:12], out["selftest"])
     print(json.dumps(out))
