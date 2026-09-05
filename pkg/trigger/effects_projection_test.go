@@ -17,11 +17,9 @@ import (
 type stubBindings struct {
 	bound map[string]bool
 	err   error
-	calls int
 }
 
 func (s *stubBindings) HasBoardBinding(_ context.Context, tenantID string) (bool, error) {
-	s.calls++
 	if s.err != nil {
 		return false, s.err
 	}
@@ -345,4 +343,3 @@ func TestEffectWorker_ProjectionWithNoEffectWiredIsExplicit(t *testing.T) {
 		t.Fatal("no last_error recorded for an unwired projection effect")
 	}
 }
-
