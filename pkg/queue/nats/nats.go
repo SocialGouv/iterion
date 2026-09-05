@@ -129,9 +129,15 @@ type Config struct {
 	// MaxAckPending caps fleet-wide in-flight (delivered-unacked) runs on the
 	// shared consumer; 0 → DefaultMaxAckPending. Keep ≥ max runner pods.
 	MaxAckPending int
-	LockTTL       time.Duration // default 60s
-	MaxPayload    int           // default 0 → use server's negotiated MaxPayload
-	Logger        *iterlog.Logger
+	// LockTTL is the run-lease lifetime, and has three consumers: the KV
+	// bucket's TTL (EnsureSchema), the delayed-Nak interval a runner spaces
+	// a lock-blocked delivery by, and — like SchemaMismatchDelay — a
+	// RedeliveryWindow input. Every process that connects must pass the SAME
+	// configured value: the bucket TTL is whatever the last connector wrote,
+	// and the sweeper's cutoff is read off the SERVER's connection.
+	LockTTL    time.Duration // default 60s
+	MaxPayload int           // default 0 → use server's negotiated MaxPayload
+	Logger     *iterlog.Logger
 }
 
 // Conn is the wired NATS layer. The publisher + consumer both consume
