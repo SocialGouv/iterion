@@ -561,3 +561,58 @@ func TestImportProjectBoardStillReportsAMissingCard(t *testing.T) {
 		t.Errorf("res = %+v, want one skipped item naming its repo", res)
 	}
 }
+
+// projectDriftingBoard moves a card once, just before the write that was decided on
+// the state it read — the shape native.Store.SetStateFrom's CAS exists for.
+// Its SetStateFrom then loses the CAS through the REAL store and answers
+// (issue, changed=false, nil): a CAS loss is not an error.
+type projectDriftingBoard struct {
+	native.BoardStore
+	driftTo string
+	once    bool
+}
+
+func (d *projectDriftingBoard) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
+	if !d.once {
+		d.once = true
+		if _, err := d.BoardStore.SetState(id, d.driftTo); err != nil {
+			return nil, false, err
+		}
+	}
+	return d.BoardStore.SetStateFrom(id, from, to)
+}
+
+// TestImportProjectBoardDoesNotCountACASLossAsAMove pins that a move the store
+// REFUSED on its CAS is not recorded as applied.
+//
+// SetStateFrom answers a drifted card with (issue, false, nil) — the operator
+// got there first — and the import discarded that flag, taking the nil error
+// as success. It then counted a transition the store never made, and recorded
+// the board's status as synchronized, which makes every later pass a no-op:
+// on the one-shot `iterion issue import --project` path nothing ever repairs
+// that, so the card stays where the operator put it while the record claims
+// the board was applied.
+func TestImportProjectBoardDoesNotCountACASLossAsAMove(t *testing.T) {
+	board := newTestBoard(t)
+	id := seedCard(t, board, 613, native.StateInbox)
+	drifting := &projectDriftingBoard{BoardStore: board, driftTo: native.StateInProgress}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", time.Now().UTC())),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, drifting, nil)
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Moved != 0 {
+		t.Errorf("Moved = %d, want 0 — the store refused the write (%+v)", res.Moved, res)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateInProgress {
+		t.Errorf("state = %q, want the operator's %q", got, native.StateInProgress)
+	}
+	// And nothing may claim the board's status was applied, or every later
+	// pass reads "already equal" and the divergence becomes permanent.
+	if ext := mustGet(t, board, id).External; ext != nil && ext.Project != nil && ext.Project.Status != "" {
+		t.Errorf("recorded status = %q, want none — the write did not land", ext.Project.Status)
+	}
+}
