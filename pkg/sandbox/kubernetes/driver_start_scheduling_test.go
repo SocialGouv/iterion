@@ -25,6 +25,7 @@ func kubectlCaptureShim(t *testing.T) (capture string) {
 	script := "#!/bin/sh\n" +
 		"case \"$*\" in\n" +
 		"  *\" apply \"*) cat >> \"$ITERION_TEST_KUBECTL_CAPTURE\"; printf '\\n---\\n' >> \"$ITERION_TEST_KUBECTL_CAPTURE\"; exit 0 ;;\n" +
+		"  *\" wait \"*) echo \"$*\" >> \"$ITERION_TEST_KUBECTL_CAPTURE.wait\"; exit 0 ;;\n" +
 		"esac\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
@@ -97,6 +98,38 @@ func TestStartAppliesTheSchedulingPolicy(t *testing.T) {
 		// a Start that still fails after the apply is a change in what Start
 		// needs from the cluster and must be looked at, not ignored.
 		t.Fatalf("Start failed after applying the pod: %v", startErr)
+	}
+	if wait := waitArgv(t, capture); !strings.Contains(wait, "--timeout=600s") {
+		t.Fatalf("the pod-ready wait must use the default 10 min cap, got %q", wait)
+	}
+}
+
+// waitArgv returns the argv of the `kubectl wait` Start issued.
+func waitArgv(t *testing.T, capture string) string {
+	t.Helper()
+	raw, err := os.ReadFile(capture + ".wait")
+	if err != nil {
+		t.Fatalf("Start issued no kubectl wait: %v", err)
+	}
+	return string(raw)
+}
+
+// The configured cap must reach the wait Start actually issues — the cap is
+// the one knob that decides whether a pod scheduled onto a node the
+// autoscaler just added lives or dies.
+func TestStartWaitsForThePodUpToTheConfiguredTimeout(t *testing.T) {
+	capture := kubectlCaptureShim(t)
+	sched, err := schedulingFromEnv(envOf(map[string]string{PodReadyTimeoutEnvVar: "4m"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Driver{namespace: "ns", kubectl: "kubectl", logger: iterlog.New(iterlog.LevelInfo, io.Discard), sched: sched}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "img", User: "1000:1000"}, workspace: "/workspace"}
+	if _, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "01a0-run"}); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if wait := waitArgv(t, capture); !strings.Contains(wait, "--timeout=240s") {
+		t.Fatalf("the configured cap must reach kubectl wait, got %q", wait)
 	}
 }
 

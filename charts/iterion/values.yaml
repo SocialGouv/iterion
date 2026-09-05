@@ -170,6 +170,12 @@ runner:
       # "" or "none" = no spread constraint; "hostname" = soft spread across
       # nodes; or a prefixed label key every node carries.
       spread: ""
+      # How long a run waits for its pod to be Ready, a Go duration ("" =
+      # the driver's default, 10m). The wait absorbs scheduling — a cluster
+      # autoscaler adding a node takes minutes — a fresh node's CNI setup
+      # and the image pull; a cap shorter than their sum kills runs whose
+      # container was about to start.
+      podReadyTimeout: ""
   # --- Persistent build cache (warm runner pods) --------------------
   # A bot's verify gate re-clones the target repo per run into an
   # ephemeral workdir, so a fresh/scaled-up runner pod otherwise
