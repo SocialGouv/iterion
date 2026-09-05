@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,34 +83,41 @@ func ClaimReaperEnabled() bool {
 }
 
 // ClaimReaperMisspelling returns a diagnostic when the gate is set to a
-// value that is neither "on" nor "off", and "" otherwise. The var takes
-// exactly those two spellings, while this repo's other toggles accept
-// 1/true/0 — so an operator who reaches for a familiar one gets a
-// watchdog that is OFF, at the release N+1 cutover, with no feedback but
-// cards that stay stuck. That is precisely the failure mode this file's
-// own comment names ("a declared watchdog that silently isn't running").
-// Both surfaces log it once at startup.
+// value it does not understand, and "" otherwise. An unrecognised value
+// leaves the watchdog OFF — at the release N+1 cutover, where the
+// operator's only other feedback is cards that stay stuck — which is
+// precisely the failure mode this file's own comment names ("a declared
+// watchdog that silently isn't running"). Both surfaces log it once at
+// startup.
 func ClaimReaperMisspelling() string {
 	_, raw := claimReaperSetting()
 	if raw == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s=%q is not a value this gate understands — it takes %q or %q, so the claim watchdog stays OFF",
-		claimReaperEnv, raw, "on", "off")
+	return fmt.Sprintf("%s=%q is not a value this gate understands — it takes on/off, 1/0, true/false or yes/no, so the claim watchdog stays OFF",
+		claimReaperEnv, raw)
 }
 
 // claimReaperSetting resolves the gate, returning whether it is on and
-// the raw value when that value is unrecognised (empty otherwise).
+// the raw value when that value is unrecognised (empty otherwise). It
+// takes the spellings this repo's other toggles take (strconv.ParseBool's
+// 1/0/t/f/true/false) plus on/off and yes/no, case-insensitively.
 func claimReaperSetting() (on bool, unrecognised string) {
 	raw := strings.TrimSpace(os.Getenv(claimReaperEnv))
-	switch {
-	case strings.EqualFold(raw, "on"):
-		return true, ""
-	case raw == "" || strings.EqualFold(raw, "off"):
+	if raw == "" {
 		return false, ""
-	default:
+	}
+	switch strings.ToLower(raw) {
+	case "on", "yes":
+		return true, ""
+	case "off", "no":
+		return false, ""
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
 		return false, raw
 	}
+	return b, ""
 }
 
 // startClaimReaper launches the periodic reaper when the gate is on and
