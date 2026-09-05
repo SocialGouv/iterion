@@ -160,14 +160,12 @@ func TestSyncProjectBoardDefersToAMovedBoard(t *testing.T) {
 // deliberately not advanced on that branch, so the inputs never change.
 func TestSyncProjectBoardReflectsWhenNativeWinsTheConflict(t *testing.T) {
 	board := newTestBoard(t)
-	older := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
-	newer := time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)
-
 	// Recorded "Planned"; the board has since moved to "In progress" (at
-	// `older`), and iterion moved the card to blocked later (at `newer`).
-	id := seedSynced(t, board, 613, native.StateBlocked, "Planned", older)
-	moved := cardStateAt(t, board, id)
-	older, newer = moved.Add(-2*time.Hour), moved
+	// `older`), and iterion moved the card to blocked later (at `newer` — the
+	// card's REAL transition, which is what the conflict rule compares).
+	id := seedSynced(t, board, 613, native.StateBlocked, "Planned", time.Time{})
+	newer := cardStateAt(t, board, id)
+	older := newer.Add(-2 * time.Hour)
 	if _, err := board.Update(id, native.Patch{External: &native.ExternalRef{
 		Provider: "github", Repo: "SocialGouv/iterion", Number: 613,
 		Project: &native.ExternalProject{
