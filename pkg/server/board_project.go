@@ -122,6 +122,13 @@ type ProjectImportResult struct {
 	// own audit trail and dependents check — and automation never reopens. The
 	// two boards stay legitimately divergent until someone reopens the card.
 	RefusedTerminal int `json:"refused_terminal,omitempty"`
+	// SkippedArchived is the items the operator archived. The forge removes
+	// them from every board view but PRESERVES their field values, so one
+	// archived mid-column keeps reading as that column forever — driving a
+	// card from a value nobody can see, and reflecting onto a row nobody can
+	// read. Counted rather than silent: a card that stops following has to be
+	// explainable from the pass's own numbers.
+	SkippedArchived int `json:"skipped_archived,omitempty"`
 	// Skipped is items with nothing to join on — drafts and pull requests.
 	Skipped int `json:"skipped"`
 }
@@ -221,6 +228,14 @@ func applyProjectItem(
 	missing map[string]int,
 ) error {
 	res.Items++
+	if it.Archived {
+		// The operator took this item off the board. Its field values survive
+		// archiving, so both directions would keep working on a row nobody can
+		// see: the import would drive the card from a frozen column, and the
+		// reflect would push into a view that renders nothing.
+		res.SkippedArchived++
+		return nil
+	}
 	if it.Content.Kind != forge.ProjectContentIssue || it.Content.Repo == "" || it.Content.Number <= 0 {
 		// A draft has no issue; a pull request surfaces through the card's PR
 		// panel, not as a card of its own.

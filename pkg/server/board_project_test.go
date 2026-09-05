@@ -307,6 +307,41 @@ func TestImportProjectBoardSkipsDraftsAndPulls(t *testing.T) {
 	}
 }
 
+// TestImportProjectBoardSkipsArchivedItems pins the import half of the archive
+// rule.
+//
+// GitHub PRESERVES an archived item's field values while removing it from
+// every board view, so an item archived in "Planned" keeps reading as Planned
+// forever. Driving a card's column from a value nobody can see or change is
+// not a sync, and reflecting ONTO it writes into an invisible row. Both
+// directions skip it, counted — silence would make an operator hunt for a card
+// that stopped following for no stated reason.
+func TestImportProjectBoardSkipsArchivedItems(t *testing.T) {
+	board := newTestBoard(t)
+	// The card moved natively AND the board says something else, so both
+	// directions would have work to do were the item live.
+	id := seedSynced(t, board, 613, native.StateInProgress, "Planned",
+		time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC))
+	archived := item("PVTI_1", 613, statusValue("Blocked", time.Now().UTC()))
+	archived.Archived = true
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{archived}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: testBinding()})
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.SkippedArchived != 1 || res.Moved != 0 || res.Reflected != 0 || res.Conflicts != 0 {
+		t.Errorf("result = %+v, want the item skipped as archived and nothing else touched", res)
+	}
+	if len(bc.writes) != 0 {
+		t.Errorf("board writes = %+v, want none — an archived row is invisible to the operator", bc.writes)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateInProgress {
+		t.Errorf("state = %q, want it untouched by an archived item", got)
+	}
+}
+
 // TestImportProjectBoardEchoSuppression is the loop guard: when the board's
 // status is the one iterion itself last recorded, the import changes nothing —
 // even though the card has since moved on. Without this the reflect's own

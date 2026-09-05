@@ -418,6 +418,64 @@ func TestGitHubProjectRefreshStatesReadsTheStatusField(t *testing.T) {
 	}
 }
 
+// TestGitHubProjectArchivedItemIsNotACandidate pins the eligibility half of
+// the archive rule.
+//
+// Archiving is the ordinary way to clear a project board, and GitHub PRESERVES
+// an archived item's field values — so an item archived while sitting in
+// "Planned" keeps reading as Planned. Dispatching it launches a bot, and spends
+// LLM budget, on work the operator has visibly taken off the board.
+func TestGitHubProjectArchivedItemIsNotACandidate(t *testing.T) {
+	gh := &fakeGH{listOut: []byte(twoOpenIssues)}
+	archived := projectItem("PVTI_1", "owner/repo", 1, "Planned")
+	archived.Archived = true
+	board := &fakeProjectBoard{
+		fields: []forge.ProjectField{projectStatusField()},
+		items: []forge.ProjectItem{
+			archived,
+			projectItem("PVTI_2", "owner/repo", 2, "Planned"),
+		},
+	}
+	a := boardModeAdapter(t, gh, board)
+
+	got, err := a.ListCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "github:owner/repo#2" {
+		t.Fatalf("candidates = %+v, want only the live Planned item — an archived one is off the board", got)
+	}
+}
+
+// TestGitHubProjectRefreshStatesStillAnswersForAnArchivedItem pins the OTHER
+// half of the archive rule, and it is deliberate rather than an oversight.
+//
+// Omitting an id from RefreshStates is how the dispatcher learns an issue
+// "disappeared", and it answers by CANCELLING the run and reaping its slot
+// (loop.go refreshRunningStates). Archiving a card is a tidy-up gesture, not a
+// documented kill switch, so eligibility excludes archived items while
+// liveness keeps reporting them: a run in flight is never killed by someone
+// clearing the board behind it.
+func TestGitHubProjectRefreshStatesStillAnswersForAnArchivedItem(t *testing.T) {
+	gh := &fakeGH{listOut: []byte(twoOpenIssues)}
+	archived := projectItem("PVTI_1", "owner/repo", 1, "In progress")
+	archived.Archived = true
+	board := &fakeProjectBoard{
+		fields: []forge.ProjectField{projectStatusField()},
+		items:  []forge.ProjectItem{archived},
+	}
+	a := boardModeAdapter(t, gh, board)
+
+	got, err := a.RefreshStates(context.Background(), []string{"github:owner/repo#1"})
+	if err != nil {
+		t.Fatalf("RefreshStates: %v", err)
+	}
+	if got["github:owner/repo#1"] != "in_progress" {
+		t.Errorf("state = %q, want in_progress — archiving must not read as 'disappeared' and cancel a live run",
+			got["github:owner/repo#1"])
+	}
+}
+
 // TestGitHubProjectBoardErrorsAreLoud pins the explicit-errors rule: a board
 // the adapter cannot read must fail the poll, never quietly degrade back to
 // label-derived states — which would dispatch on a state nobody configured.

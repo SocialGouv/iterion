@@ -265,6 +265,23 @@ The native write is a **CAS** (`SetStateFrom(id, seen, want)`), so an operator
 who moved the card between our read and our write wins over the stale fact we
 were carrying, exactly as the issue import already behaves.
 
+**Archived items are off the board, and the two readings differ on purpose.**
+The forge removes an archived item from every view while PRESERVING its field
+values, so one archived in a candidate column keeps reading as that column
+forever. `BoardClient.ListProjectItems` flags rather than filters them, and
+each caller decides:
+
+- the sync pass **skips** them, counted as `skipped_archived` — importing
+  would drive a card from a column nobody can see, reflecting would write into
+  a row nobody can read;
+- the dispatcher's **candidate filter** skips them too: dispatching one
+  launches a bot, and spends LLM budget, on work the operator visibly removed;
+- the dispatcher's **liveness read** (`RefreshStates`) still reports them.
+  Omitting an id there is how the dispatcher learns an issue disappeared, and
+  it answers by cancelling the run and reaping its slot. Archiving is a
+  tidy-up gesture, not a documented kill switch, so a run in flight survives
+  someone clearing the board behind it.
+
 ### 10. The reflect is the second direction of ONE reconciliation pass
 
 Both directions run in the same pass, on the same board read, elected per

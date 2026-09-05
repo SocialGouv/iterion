@@ -206,9 +206,9 @@ func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding, own
 		w.warn("board sync: team=%s board=%s failed after %s: %v", b.TenantID, b.Ref(), took.Round(time.Millisecond), err)
 		return false
 	}
-	w.info("board sync: team=%s board=%s items=%d moved=%d reflected=%d labelled=%d conflicts=%d refused_terminal=%d reflect_failed=%d skipped_no_card=%d skipped=%d took=%s",
+	w.info("board sync: team=%s board=%s items=%d moved=%d reflected=%d labelled=%d conflicts=%d refused_terminal=%d reflect_failed=%d skipped_no_card=%d skipped_archived=%d skipped=%d took=%s",
 		b.TenantID, b.Ref(), res.Items, res.Moved, res.Reflected, res.Labelled,
-		res.Conflicts, res.RefusedTerminal, res.ReflectFailed, res.SkippedNoCard, res.Skipped,
+		res.Conflicts, res.RefusedTerminal, res.ReflectFailed, res.SkippedNoCard, res.SkippedArchived, res.Skipped,
 		took.Round(time.Millisecond))
 	return true
 }

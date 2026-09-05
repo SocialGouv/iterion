@@ -241,6 +241,12 @@ type BoardClient interface {
 	// ListProjectItems returns one page of the board's items with their field
 	// values. Archived items are included and flagged, not filtered — the
 	// caller decides, because "archived" means different things per workflow.
+	//
+	// Every caller in-tree does decide, and the two answers differ on purpose:
+	// the sync pass and the dispatcher's candidate filter SKIP an archived item
+	// (its field values survive archiving, so it would keep reading as
+	// eligible), while the dispatcher's liveness read still reports its state —
+	// there, absence means "the issue disappeared" and cancels the run.
 	ListProjectItems(ctx context.Context, ref ProjectRef, opts ProjectItemListOptions) (ProjectItemPage, error)
 
 	// ItemForIssue resolves ONE issue's item on this board, without reading

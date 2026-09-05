@@ -181,7 +181,23 @@ func (s projectSnapshot) state(number int, mapping []forge.StatusMapping) (strin
 
 // isCandidateStatus reports whether an item's column is one the operator
 // dispatches from.
+//
+// An ARCHIVED item never is. Archiving removes it from every board view while
+// PRESERVING its field values, so one archived in a candidate column keeps
+// reading as eligible — and dispatching it launches a bot, and spends LLM
+// budget, on work the operator has visibly taken off the board. Archiving is
+// the ordinary way to clear a board, so this is reachable on the first real
+// one.
+//
+// The counterpart deliberately NOT filtered is `state` (below), which
+// RefreshStates reads: omitting an id there is how the dispatcher learns an
+// issue disappeared, and it answers by cancelling the run. Eligibility
+// excludes archived items; liveness keeps reporting them, so tidying a board
+// never kills a run in flight.
 func (s projectSnapshot) isCandidateStatus(it forge.ProjectItem, want []string) bool {
+	if it.Archived {
+		return false
+	}
 	fv, ok := it.Field(forge.ProjectStatusFieldName)
 	if !ok {
 		return false

@@ -168,6 +168,28 @@ revoked token skips that team, not the sweep.
 
 ---
 
+## Archived items
+
+Archiving is how a board gets cleared. GitHub removes the item from every view
+but **keeps its field values**, so an item archived in "Planned" reads as
+Planned forever.
+
+- The **sync pass skips it entirely**, counted as `skipped_archived`. Neither
+  direction runs: importing would drive a card from a column nobody can see,
+  reflecting would write into a row nobody can read.
+- The **dispatcher never dispatches it**. An archived item in a candidate
+  column would otherwise launch a bot, and spend LLM budget, on work the
+  operator visibly removed.
+- A run **already in flight is not cancelled** by archiving its card. The
+  dispatcher's liveness read still reports an archived item's state, because
+  omitting it means "the issue disappeared" and reaps the run — and tidying a
+  board is not a kill switch. Move the card out of its column, or cancel the
+  run, to stop it.
+
+Un-archive the item to put it back under sync.
+
+---
+
 ## Conflicts
 
 When both sides moved since the last pass:
