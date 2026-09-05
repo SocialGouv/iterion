@@ -308,20 +308,27 @@ tool extend_verify:
             problems.append("%d touched path(s) no certified act covers: %s "
                             "— acting more than was asked is smuggling"
                             % (len(uncertified), ", ".join(uncertified[:12])))
+        # An act already present at the base is CERTIFIED by the verdict,
+        # not extended by this run: it must not make `additions_ok` true or
+        # count as an extension when this run acted nothing (measured: a
+        # refused request beside a base act came back extended=1,
+        # converged=true — a green by absence).
+        acted_here = [r for r in (verdict.get("acted") or [])
+                      if not r.get("acted_at_base")]
         report["additions_ok"] = (not bad and not verdict.get("problems")
                                   and not uncertified
-                                  and bool(verdict.get("acted")))
-        report["extended"] = len([r for r in (verdict.get("acted") or [])
-                                  if r.get("ok")])
+                                  and bool(acted_here))
+        report["extended"] = len([r for r in acted_here if r.get("ok")])
         for r in bad:
             problems.append("extension %s refused: %s"
                             % (r.get("id"), "; ".join(r.get("problems") or [])))
         for p_ in (verdict.get("problems") or []):
             problems.append(p_)
-        if not verdict.get("acted"):
-            problems.append("no act block was appended — a run that acted "
-                            "nothing extended nothing (refusals are reported, "
-                            "not silently skipped)")
+        if not acted_here:
+            problems.append("no act block was appended by this run — a run that "
+                            "acted nothing extended nothing (refusals are reported, "
+                            "not silently skipped; an act already at the base is "
+                            "certified, not extended)")
 
     # 4. No new requests. This bot ACTS requests; writing one would let it
     #    hand itself work the lot never asked for.
@@ -353,10 +360,15 @@ schema verify_input:
 ## A pure CONJUNCTION, never an aggregate. An extension that is additions-ok
 ## but out of scope is not "mostly fine" — it is a lot writing in the judge's
 ## territory through the net's own bot.
+## A pure conjunction, and a request still PENDING is a term of it: this bot
+## acts every request it was handed, so one it refused (with its reason
+## written) leaves the run not converged — the parent's gate keeps refusing
+## on the pending term either way, and this verdict must not read greener
+## than that gate will.
 compute extend_gate:
   output: gate_state
   expr:
-    converged: "outputs.extend_verify.committed && outputs.extend_verify.scope_clean && outputs.extend_verify.additions_ok && outputs.extend_verify.no_new_requests"
+    converged: "outputs.extend_verify.committed && outputs.extend_verify.scope_clean && outputs.extend_verify.additions_ok && outputs.extend_verify.no_new_requests && length(outputs.extend_verify.still_pending) == 0"
     fail_log: "outputs.extend_verify.log_tail"
 
 ## What the parent reads back. `extended` is the harness's count, never the
