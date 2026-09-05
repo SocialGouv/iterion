@@ -3872,8 +3872,9 @@ tool sync_harness:
         main()
 
 ## The half that compares: the target's full gate, replayed on the COMMITTED
-## sync. A red gate drops that commit — ours, just made — and ends the run at
-## `fail`: a judge that decides well and compares wrongly must not land.
+## sync. A red gate drops that commit — ours, just made, and only ever that one
+## — and ends the run at `fail`: a judge that decides well and compares wrongly
+## must not land. When the drop is declined the reason rides in `log_tail`.
 tool gate_replay:
   input: gate_input
   output: gate_report
@@ -3933,7 +3934,13 @@ tool gate_replay:
         # escaped the group kill keeps its write end open — an unbounded wait,
         # immediately after the node enforced its own wall, and past the run's
         # max_duration. The reap is bounded for the same reason.
+        # ...and it carries the RAW chunks: subprocess decodes on the normal
+        # return path only, so text=True does not reach the exception. Rendered
+        # as-is, the gate's last words — the operator's only window into an
+        # expiry — would be a bytes repr with the newlines escaped.
         log_all = expired.output or ""
+        if isinstance(log_all, bytes):
+            log_all = log_all.decode("utf-8", "replace")
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
