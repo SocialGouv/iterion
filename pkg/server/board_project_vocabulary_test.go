@@ -57,6 +57,25 @@ func deletedColumn(t *testing.T, name string) forge.Project {
 	return withoutColumn(t, testProject(), name)
 }
 
+// withoutStatusField removes the Status field itself — the shape where the
+// binding still holds a field id and an option id per state, and the board has
+// nowhere to put either.
+func withoutStatusField(t *testing.T, p forge.Project) forge.Project {
+	t.Helper()
+	fields := make([]forge.ProjectField, 0, len(p.Fields))
+	for _, f := range p.Fields {
+		if strings.EqualFold(f.Name, forge.ProjectStatusFieldName) {
+			continue
+		}
+		fields = append(fields, f)
+	}
+	if len(fields) == len(p.Fields) {
+		t.Fatalf("fixture has no %s field", forge.ProjectStatusFieldName)
+	}
+	p.Fields = fields
+	return p
+}
+
 // withoutColumn removes one Status option from an arbitrary project, so a
 // fixture can drop two independently.
 func withoutColumn(t *testing.T, p forge.Project, name string) forge.Project {
@@ -604,6 +623,77 @@ func TestSyncProjectBoardDegradesOnAColumnItAdoptedAfterTheBind(t *testing.T) {
 	if res.ReflectNoColumn != 1 || len(bc.writes) != 0 {
 		t.Errorf("ReflectNoColumn = %d writes = %+v — the card must be refused, not written onto a dead id",
 			res.ReflectNoColumn, bc.writes)
+	}
+}
+
+// TestSyncProjectBoardRefusesEveryCardWhenTheStatusFieldIsGone is the shape
+// where keeping the cached ids is riskiest, and the one the old code sidestepped
+// by emptying `StatusOptions` and returning.
+//
+// The binding still holds a Status FIELD id and an option id per state; the
+// board has neither. Nothing in the write path notices that on its own — the
+// reflect's own guard is "does the binding have an option for this state", and
+// the answer is yes. Only the pass's LOST set refuses it. Without that, every
+// card of every column is written to a field the board no longer has: a 422 per
+// card, per pass, forever.
+func TestSyncProjectBoardRefusesEveryCardWhenTheStatusFieldIsGone(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
+
+	bindings := forge.NewMemoryBoardBindingStore()
+	binding := boundBinding(t, testProject())
+	if err := bindings.Upsert(context.Background(), *binding); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	opts := &ProjectImportOptions{Binding: binding, Bindings: bindings}
+	// The schema and the items are two separate reads, so a field deleted
+	// between them gives exactly this: no Status field on the project, a stale
+	// Status value still on the item. It is also the only interleaving that
+	// reaches the reflect at all — an item reporting NO status leaves the
+	// recorded one empty, and the reflect declines on that first.
+	bc := &fakeBoardClient{project: withoutStatusField(t, testProject()),
+		pages: [][]forge.ProjectItem{{
+			item("PVTI_1", 613, statusOption("Planned", optionID(t, testProject(), "Planned"), at)),
+		}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if len(bc.writes) != 0 {
+		t.Errorf("writes = %+v — there is no field left to write into", bc.writes)
+	}
+	if res.ReflectNoColumn != 1 {
+		t.Errorf("ReflectNoColumn = %d, want the card counted as unreflectable", res.ReflectNoColumn)
+	}
+	stored, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if !stored.Degraded() {
+		t.Fatalf("the Status field is gone; the binding must say so: %+v", stored)
+	}
+	if len(stored.MissingStatuses) != len(stored.Mapping()) {
+		t.Errorf("MissingStatuses = %v, want every mapped column", stored.MissingStatuses)
+	}
+	// The cached ids are KEPT — that is what lets the next pass re-derive the
+	// same answer instead of reading a healthy binding.
+	if stored.StatusOptions[native.StateInProgress] == "" {
+		t.Errorf("the cached ids must survive as the evidence of the loss: %v", stored.StatusOptions)
+	}
+
+	// Second pass: the same answer, and still not one write.
+	res2, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if res2.ReflectNoColumn != 1 || len(bc.writes) != 0 {
+		t.Errorf("pass 2: ReflectNoColumn = %d writes = %+v — the refusal must be re-derived, not observed once",
+			res2.ReflectNoColumn, bc.writes)
+	}
+	if after, _ := bindings.GetByTenant(context.Background(), "team-a"); !after.Degraded() {
+		t.Errorf("pass 2 cleared the degradation while the field is still gone: %+v", after)
 	}
 }
 
