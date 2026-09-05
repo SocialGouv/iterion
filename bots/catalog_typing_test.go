@@ -31,7 +31,7 @@ var typingAllowlist = map[string]map[ir.DiagCode]bool{}
 // only schemas, edges and compute expressions, so an unresolved bundle prompt
 // is irrelevant here.
 func TestCatalogBotsNoTypingRegressions(t *testing.T) {
-	teamBots, _ := filepath.Glob("*/main.bot")
+	teamBots, _ := teamBotFiles()
 	demoMain, _ := filepath.Glob("../examples/*/main.bot")
 	demoLoose, _ := filepath.Glob("../examples/*.bot")
 	targets := append(append(teamBots, demoMain...), demoLoose...)
