@@ -59,3 +59,38 @@ func TestRewindDoesNotOverwriteConcurrentResume(t *testing.T) {
 		})
 	}
 }
+
+type resumeAfterRewindSave struct {
+	store.RunStore
+	saves int
+}
+
+func (s *resumeAfterRewindSave) SaveRun(ctx context.Context, run *store.Run) error {
+	if err := s.RunStore.SaveRun(ctx, run); err != nil {
+		return err
+	}
+	s.saves++
+	if s.saves == 2 {
+		if err := s.UpdateRunStatus(ctx, run.ID, store.RunStatusRunning, ""); err != nil {
+			return err
+		}
+		return s.SaveCheckpoint(ctx, run.ID, &store.Checkpoint{NodeID: "plan"})
+	}
+	return nil
+}
+
+func TestRewindDoesNotOverwriteCheckpointAfterFinalSave(t *testing.T) {
+	cp := &store.Checkpoint{NodeID: "plan", Outputs: map[string]map[string]any{"survey": {"value": "old"}}, ArtifactVersions: map[string]int{}}
+	svc, st, id := seedRun(t, linearBot, cp, store.RunStatusCancelled)
+	svc.store = &resumeAfterRewindSave{RunStore: st}
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: id, NodeID: "survey", KeepFiles: true}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.LoadRun(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunStatusRunning || run.Checkpoint.NodeID != "plan" {
+		t.Fatalf("resumed checkpoint overwritten after rewind save: %+v", run)
+	}
+}

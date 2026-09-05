@@ -456,9 +456,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("save rewound run: %w", err)
 	}
-	if err := s.store.SaveCheckpoint(ctx, run.ID, cp); err != nil {
-		return nil, fmt.Errorf("save rewound checkpoint: %w", err)
-	}
+	// SaveRun includes the checkpoint in its version-checked replacement.
+	// A second, unconditional SaveCheckpoint would overwrite an engine
+	// checkpoint written by a resume that starts after this save.
 	if bss := store.AsBackendSessionStore(s.store); bss != nil {
 		for _, ref := range dropSessionRefs {
 			_ = bss.DeleteBackendSession(ctx, run.ID, ref)
