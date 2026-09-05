@@ -379,6 +379,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// avoided.
 		UsageCaps:     usageCapStore,
 		UsageCapTrust: usageCapTrust,
+		// A forfait whose stored readings are stale but say "closed" is
+		// re-measured at the provider before the walk decides on it.
+		UsageProbe: cloudpublisher.AnthropicForfaitProbe(8 * time.Second),
 		// The operator's cap posture, consulted by the walk over the same
 		// readings: the runner's pre-flight parks on a hard cap before any
 		// node runs, so a capped credential must be passed over like a

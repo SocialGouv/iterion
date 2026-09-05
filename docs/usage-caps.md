@@ -200,6 +200,20 @@ The same bound governs **both** consumers of the ledger — the cap
 pre-flights and the credential-skip evidence — because both read the same
 readings and must forget a pre-reset one at the same moment.
 
+**The launch walk asks the provider instead of guessing.** When a forfait's
+stored readings are stale-but-suggestive — past the trust window, window not
+rolled over, and saying "closed" when they were taken — the cloud publisher
+re-measures the credential at Anthropic's OAuth usage endpoint with the
+forfait's own token (`pkg/backend/forfait.FetchWindows`), records every
+window it reports under the same key the runner meters, and decides on
+that: the forfait is skipped when the wall is real and granted when the
+window reset early, with no pod spent either way. Best effort and bounded
+(5s): a credential the endpoint refuses (a `claude setup-token` lacks the
+`user:profile` scope and gets `403`), a network error or a malformed body
+each cost one Info line and fall back to trusting the credential — the
+trust-window behaviour. Fresh readings and low stale readings never trigger
+a round trip.
+
 ### Forgetting a credential's readings by hand
 
 An operator who *knows* a reset happened does not have to wait out the

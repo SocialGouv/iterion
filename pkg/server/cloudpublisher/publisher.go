@@ -119,6 +119,11 @@ type Config struct {
 	// (usagecap.TrustFromEnv). The zero value applies the package
 	// defaults.
 	UsageCapTrust usagecap.Trust
+	// UsageProbe, when non-nil, refreshes a forfait's readings from the
+	// provider before the walk decides on stale-but-suggestive ones (see
+	// UsageProbe). Nil keeps the walk on the ledger alone: past the trust
+	// window a stale reading is simply not believed.
+	UsageProbe UsageProbe
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -167,6 +172,7 @@ type Publisher struct {
 	usageCaps      usagecap.Store
 	capPolicy      usagecap.PolicySource
 	trust          usagecap.Trust
+	usageProbe     UsageProbe
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -262,6 +268,7 @@ func New(cfg Config) (*Publisher, error) {
 		usageCaps:      cfg.UsageCaps,
 		capPolicy:      cfg.CapPolicy,
 		trust:          cfg.UsageCapTrust.Normalized(),
+		usageProbe:     cfg.UsageProbe,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -561,7 +568,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// tier (a second forfait, the pool) could have served it
 				// immediately. Skipping it here is what makes the tiers a
 				// FALLBACK CHAIN rather than a fixed first choice.
-				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec); !until.IsZero() {
+				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec, payload); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 					skips.note(until)
@@ -1092,13 +1099,80 @@ const usageCapLookupTimeout = 5 * time.Second
 //   - a STALE reading ⇒ usable (Fresh already encodes "past its own
 //     reset", so a window that reopened stops blocking by itself);
 //   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
-func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord) (time.Time, string) {
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
 	backend := usageBackendForKind(rec.Kind)
 	scope := usagecap.ScopePlatform
 	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
 		scope = usagecap.TenantScope(tenantID)
 	}
+	until, why := p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+	if !until.IsZero() || p.usageProbe == nil || backend == "" || rec.Fingerprint == "" || len(payload) == 0 {
+		return until, why
+	}
+	// Nothing fresh closes the window — but a STALE reading may say it
+	// was closed when it was taken. Past the trust window that reading is
+	// suggestive, not binding; rather than either believing it (the lock
+	// through an early reset) or ignoring it (one wasted pod when the
+	// wall is real), ask the provider, record the answer where the
+	// session telemetry lands, and decide on that.
+	key := usagecap.Key(backend, scope, rec.Fingerprint)
+	if !p.staleSuggestsClosed(ctx, key) {
+		return time.Time{}, ""
+	}
+	pctx, cancel := context.WithTimeout(ctx, usageProbeTimeout)
+	defer cancel()
+	readings, err := p.usageProbe(pctx, payload)
+	if err != nil {
+		p.logger.Info("cloudpublisher: oauth-forfait fp=%s: a stale reading suggests a closed window, and the provider could not be asked (%v) — trusting the credential", rec.Fingerprint, err)
+		return time.Time{}, ""
+	}
+	for _, r := range readings {
+		if rerr := p.usageCaps.Record(ctx, key, r); rerr != nil {
+			p.logger.Warn("cloudpublisher: oauth-forfait fp=%s: record refreshed %s reading: %v", rec.Fingerprint, r.Window, rerr)
+		}
+	}
+	p.logger.Info("cloudpublisher: oauth-forfait fp=%s: %d window reading(s) refreshed from the provider on a stale ledger", rec.Fingerprint, len(readings))
 	return p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+}
+
+// staleSuggestsClosed reports whether the credential's ledger holds a
+// reading the trust window no longer believes, whose window has NOT rolled
+// over, and which would have closed the window had it been fresh — a
+// provider refusal, or the operator's cap reached. A rolled-over reading is
+// dead, not stale, and a low reading suggests nothing: neither is worth a
+// round trip.
+func (p *Publisher) staleSuggestsClosed(ctx context.Context, key string) bool {
+	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
+	defer cancel()
+	readings, err := p.usageCaps.Latest(lctx, key)
+	if err != nil || len(readings) == 0 {
+		return false
+	}
+	now := time.Now()
+	trust := p.trust.Normalized()
+	// Trusted "forever": only the reset instant can end a reading, which
+	// is exactly the pre-trust-window notion of fresh.
+	const forever = 100 * 365 * 24 * time.Hour
+	unbounded := usagecap.Trust{MaxAge: forever, Window: forever}
+	var stale []usagecap.Reading
+	for _, r := range readings {
+		if r.Fresh(now, trust) || !r.Fresh(now, unbounded) {
+			continue
+		}
+		stale = append(stale, r)
+	}
+	if len(stale) == 0 {
+		return false
+	}
+	for _, r := range stale {
+		if r.Status == usagecap.StatusRejected && usagecap.FamilyOf(r.Window) != usagecap.FamilyNone {
+			return true
+		}
+	}
+	if p.capPolicy != nil && usagecap.Preflight(stale, p.capPolicy.Effective(ctx), now, unbounded).Blocked {
+		return true
+	}
+	return false
 }
 
 // refusedUntil is the ONE evidence reading shared by every credential-skip
