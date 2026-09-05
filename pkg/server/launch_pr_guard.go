@@ -119,15 +119,17 @@ func (s *Server) verifyLocalPRHead(ctx context.Context, prURL string) error {
 			"iterion refuses rather than assume the head branch lives in %s (a fork's branch can silently resolve to a same-named branch there). "+
 			"Launch from a checkout of the PR branch with `iterion run` instead", prURL, repo)
 	}
-	token, err := s.localForgeToken(ctx, host)
+	token, err := s.localForgeToken(ctx, base, host)
 	if err != nil {
 		return prLaunchRefusal("PR launch: reading the local %s secret to verify %s: %v", localForgeTokenSecret, prURL, err)
 	}
 	if token == "" {
 		return prLaunchRefusal("PR launch: no credential can verify that %s's head branch lives in %s — this server holds no forge connection for %s "+
 			"and no local `%s` secret usable there. iterion refuses rather than assume same-repo: a fork's head branch can silently resolve to a "+
-			"same-named branch in the base repo and a code-pushing bot would commit onto it. Add one with `iterion secret set %s`, or launch from a "+
-			"checkout of the PR branch with `iterion run`", prURL, repo, host, localForgeTokenSecret, localForgeTokenSecret)
+			"same-named branch in the base repo and a code-pushing bot would commit onto it. Add one with `iterion secret set %s --hosts %s` "+
+			"(the host pin is what authorises a credential for a forge iterion cannot recognise on its own, so one is never offered to a host a "+
+			"launch merely named), or launch from a checkout of the PR branch with `iterion run`",
+			prURL, repo, host, localForgeTokenSecret, localForgeTokenSecret, host)
 	}
 	gc, err := s.localGateClientFor(ctx, provider, base, token)
 	if err != nil {
@@ -159,19 +161,12 @@ func (s *Server) localGateClientFor(ctx context.Context, provider forge.Provider
 }
 
 // localForgeToken opens the operator's local `forge_token` secret for one
-// forge host. An empty return is "none usable here", not an error — the caller
-// turns that into the explanatory refusal above.
-//
-// The secret's own AllowedHosts lock is enforced: a token pinned to one forge
-// must not be sent to another just because a launch named a PR there. That is
-// the same egress rule secretguard applies when materialising a placeholder.
-// An UNPINNED forge_token has no such lock, so it is offered to whatever host
-// the launch's pr_url names — pin it with `iterion secret set forge_token
-// --hosts <forge>` if that matters on your machine.
+// forge ORIGIN. An empty return is "none usable here", not an error — the
+// caller turns that into the explanatory refusal above.
 //
 // Reads the store through localSecretStore(), not the field: it is hot-swapped
 // on a project switch under stateMu.
-func (s *Server) localForgeToken(ctx context.Context, host string) (string, error) {
+func (s *Server) localForgeToken(ctx context.Context, origin, host string) (string, error) {
 	store := s.localSecretStore()
 	if store == nil || s.sealer == nil {
 		return "", nil
@@ -184,24 +179,81 @@ func (s *Server) localForgeToken(ctx context.Context, host string) (string, erro
 	if token == "" {
 		return "", nil
 	}
-	if allowed := creds.GenericHosts[localForgeTokenSecret]; !hostPermittedBy(allowed, host) {
-		if s.logger != nil {
+	allowed := creds.GenericHosts[localForgeTokenSecret]
+	if !localTokenPermittedAt(allowed, origin, host) {
+		if s.logger != nil && len(allowed) > 0 {
 			s.logger.Warn("PR launch: the local %s secret is pinned to %v and cannot be used against %s — not sending it there",
 				localForgeTokenSecret, allowed, host)
+		} else if s.logger != nil {
+			s.logger.Warn("PR launch: the local %s secret carries no host pin, and %s is not an origin iterion recognises on its own — "+
+				"not sending it there; authorise it with `iterion secret set %s --hosts %s`",
+				localForgeTokenSecret, origin, localForgeTokenSecret, host)
 		}
 		return "", nil
 	}
 	return token, nil
 }
 
-// hostPermittedBy reports whether host is covered by a secret's AllowedHosts.
-// Empty = unpinned (any host); a pattern matches exactly or as a parent domain
-// ("github.com" permits "api.github.com"). Same rule as
-// secretguard.hostAllowed, which is unexported.
-func hostPermittedBy(allowed []string, host string) bool {
+// localTokenPermittedAt is the ONE answer to "may the operator's local
+// forge_token be sent to this origin". The destination is named by the
+// REQUEST's own pr_url, so two independent grounds admit it and nothing else
+// does:
+//
+//   - PINNED — the secret's own AllowedHosts bounds it, the same egress rule
+//     secretguard applies when materialising a placeholder. A token pinned to
+//     one forge is not sent to another just because a launch named a PR there.
+//   - UNPINNED — the secret supplied no bound, so iterion's own trust is all
+//     that is left. `iterion secret set` leaves --hosts unset by default, so
+//     this is the COMMON shape; before this rule it meant a stored forge
+//     write credential went to whatever origin a launch's pr_url named, on the
+//     one surface (DisableAuth, no team) that holds such a credential.
+//     providerForPullURL is no help there: it resolves a provider from the PR
+//     PATH SHAPE for any host at all.
+func localTokenPermittedAt(allowed []string, origin, host string) bool {
 	if len(allowed) == 0 {
-		return true
+		return trustedUnpinnedForgeOrigin(origin)
 	}
+	return hostMatchesPin(allowed, host)
+}
+
+// trustedUnpinnedForgeOrigins are the only destinations an UNPINNED
+// forge_token is offered to: origins iterion recognises independently of the
+// caller's URL. EXACT canonical origins — never a suffix test, which admits
+// github.com.evil.io, and never the PR path shape.
+//
+// The scheme is part of the origin because the GitLab and Forgejo
+// constructors keep whatever base they are handed (`strings.TrimRight`, no
+// canonicalisation), so http://gitlab.com/... would put the token on the wire
+// in plaintext. GitHub's own constructor maps both schemes to
+// https://api.github.com, so the rule is stricter than that one path needs —
+// one rule is worth more than three exceptions.
+//
+// A `www.` alias or a port fails closed to "needs a pin", which is a refusal
+// naming the exact command that fixes it.
+var trustedUnpinnedForgeOrigins = map[string]struct{}{
+	"https://github.com":   {},
+	"https://gitlab.com":   {},
+	"https://codeberg.org": {},
+}
+
+func trustedUnpinnedForgeOrigin(origin string) bool {
+	_, ok := trustedUnpinnedForgeOrigins[strings.ToLower(strings.TrimRight(strings.TrimSpace(origin), "/"))]
+	return ok
+}
+
+// hostMatchesPin reports whether host matches at least one of a secret's
+// AllowedHosts patterns — exactly, or as a parent domain ("github.com" permits
+// "api.github.com"). Same rule as secretguard.hostAllowed, which is
+// unexported, MINUS its empty-list case: on this lane "no pin" no longer means
+// "any host", and localTokenPermittedAt owns that decision.
+//
+// Known divergence from secretguard.hostAllowed, fail-closed and deliberately
+// left alone here: it does not strip a port or IPv6 brackets, while
+// forge.ParsePullURL returns u.Host WITH the port. So a token pinned to
+// `forge.example.com` does not cover a pr_url on `forge.example.com:8443` —
+// the operator pins the host:port form. Exporting one shared helper is the
+// right closure and is bigger than this guard.
+func hostMatchesPin(allowed []string, host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	for _, a := range allowed {
 		a = strings.ToLower(strings.TrimSpace(a))
