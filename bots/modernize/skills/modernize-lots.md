@@ -237,6 +237,12 @@ diligence against exactly this, and its record belongs in the tree.
 Commit as you go. An interrupted run should leave landed work, not a worktree
 full of uncommitted changes that the next pass cannot tell apart from its own.
 
+Never write `status: done`. That word is the gate's — a tool node writes it
+after the verdict went green, in a commit of its own. Write `status: blocked`
+with the reason committed when you must stop. A run interrupted after a
+self-written `done` relaunches as a green no-op, and the verifier refuses the
+word before it runs a single gate command.
+
 Write the reasoning where a human will find it — in the commit message and, for
 anything longer, in a file you commit. A status field in a control-plane
 message is read by a machine that does not care, and by no one else.
