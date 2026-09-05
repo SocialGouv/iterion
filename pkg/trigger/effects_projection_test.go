@@ -1,12 +1,15 @@
 package trigger
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // stubBindings answers the ONE question the projection arm asks of the forge
@@ -274,6 +277,56 @@ func TestEffectWorker_ProjectionRetriesThenDeadLetters(t *testing.T) {
 	}
 	if row.LastError == "" {
 		t.Fatal("dead-lettered projection row carries no last_error — the operator has nothing to read")
+	}
+}
+
+// TestEffectWorker_DeadLetteredProjectionNamesItself: the worker's warnings
+// are the ONLY readout of a parked row — nothing lists the outbox. A line
+// naming a blank subscription is what an operator would get for every
+// projection, so the row describes itself by kind instead.
+func TestEffectWorker_DeadLetteredProjectionNamesItself(t *testing.T) {
+	ev := movedEvent()
+	errs := make([]error, MaxEffectAttempts)
+	for i := range errs {
+		errs[i] = errors.New("forge refused the status write")
+	}
+	var logs bytes.Buffer
+	w, _ := projectionWorld(t, ev, &stubProjection{errs: errs})
+	w.Logger = iterlog.New(iterlog.LevelWarn, &logs)
+	now := time.Now().UTC()
+	w.Now = func() time.Time { return now }
+	for i := 0; i < MaxEffectAttempts; i++ {
+		w.Tick(context.Background(), 10)
+		now = now.Add(EffectBackoff(MaxEffectAttempts) + time.Second)
+	}
+	out := logs.String()
+	if !strings.Contains(out, EffectKindProjection) {
+		t.Fatalf("the dead-letter warning never names the projection:\n%s", out)
+	}
+	if strings.Contains(out, "sub )") || strings.Contains(out, "sub , ") {
+		t.Fatalf("the warning names a blank subscription for a row that has none:\n%s", out)
+	}
+}
+
+// TestEffectWorker_LaunchWarningStillNamesItsSubscription: the same lines must
+// keep naming the subscription for a launch row — that id is how an operator
+// finds the trigger behind a parked effect.
+func TestEffectWorker_LaunchWarningStillNamesItsSubscription(t *testing.T) {
+	var logs bytes.Buffer
+	l := &stubEffectLauncher{errs: make([]error, MaxEffectAttempts)}
+	for i := range l.errs {
+		l.errs[i] = errors.New("launch refused")
+	}
+	w, _, _ := effectWorld(t, directConsumeSub(), &stubConsumingBoard{consumeLeft: MaxEffectAttempts}, l)
+	w.Logger = iterlog.New(iterlog.LevelWarn, &logs)
+	now := time.Now().UTC()
+	w.Now = func() time.Time { return now }
+	for i := 0; i < MaxEffectAttempts; i++ {
+		w.Tick(context.Background(), 10)
+		now = now.Add(EffectBackoff(MaxEffectAttempts) + time.Second)
+	}
+	if out := logs.String(); !strings.Contains(out, "sub s1") {
+		t.Fatalf("a launch row's warning no longer names its subscription:\n%s", out)
 	}
 }
 

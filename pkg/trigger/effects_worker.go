@@ -44,7 +44,7 @@ func (w *EffectWorker) Tick(ctx context.Context, limit int) int {
 		// killed pod) never reaches MarkRetry, so without this check the
 		// MaxEffectAttempts guard would be unreachable for it.
 		if row.Attempts >= MaxEffectAttempts {
-			w.warn("trigger: effect %s (sub %s) reclaimed %d times without completing — parked as dead-letter", row.ID, row.SubID, row.Attempts)
+			w.warn("trigger: effect %s (%s) reclaimed %d times without completing — parked as dead-letter", row.ID, row.Owner(), row.Attempts)
 			if merr := w.Outbox.MarkFailed(ctx, row.ID, row.ClaimID, "reclaimed past the attempt budget without completing"); merr != nil {
 				w.warn("trigger: effect %s failed-write: %v", row.ID, merr)
 			}
@@ -73,16 +73,16 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 	default:
 		attempts := row.Attempts + 1
 		if attempts >= MaxEffectAttempts {
-			w.warn("trigger: effect %s (sub %s, event %s) FAILED after %d attempts — parked as dead-letter: %v",
-				row.ID, row.SubID, row.Event.ID, attempts, err)
+			w.warn("trigger: effect %s (%s, event %s) FAILED after %d attempts — parked as dead-letter: %v",
+				row.ID, row.Owner(), row.Event.ID, attempts, err)
 			if merr := w.Outbox.MarkFailed(ctx, row.ID, row.ClaimID, err.Error()); merr != nil {
 				w.warn("trigger: effect %s failed-write: %v", row.ID, merr)
 			}
 			return
 		}
 		backoff := EffectBackoff(attempts)
-		w.warn("trigger: effect %s (sub %s) attempt %d/%d failed, retrying in %s: %v",
-			row.ID, row.SubID, attempts, MaxEffectAttempts, backoff, err)
+		w.warn("trigger: effect %s (%s) attempt %d/%d failed, retrying in %s: %v",
+			row.ID, row.Owner(), attempts, MaxEffectAttempts, backoff, err)
 		if merr := w.Outbox.MarkRetry(ctx, row.ID, row.ClaimID, attempts, w.now().Add(backoff), err.Error()); merr != nil {
 			w.warn("trigger: effect %s retry-write: %v", row.ID, merr)
 		}

@@ -141,6 +141,17 @@ func (r EffectRow) EffectKind() string {
 // rather than to a subscription.
 func (r EffectRow) IsProjection() bool { return r.EffectKind() == EffectKindProjection }
 
+// Owner renders what a row is owed TO, for the worker's warnings — which are
+// the only readout a parked row has (nothing lists the outbox). A projection
+// names its kind; anything else names the subscription an operator has to go
+// and look at.
+func (r EffectRow) Owner() string {
+	if r.IsProjection() {
+		return EffectKindProjection
+	}
+	return "sub " + r.SubID
+}
+
 // EffectOutbox is the durable store the source writes and the worker drains.
 // Implemented by boardmongo (cloud) and MemoryEffectOutbox (tests/local).
 type EffectOutbox interface {
