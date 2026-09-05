@@ -645,12 +645,26 @@ published report, a PR opened by a tail node). Without it a loop starts an
 iteration it cannot pay for, dies mid-iteration on `BUDGET_EXCEEDED`, and
 the tail that would have delivered the work never runs.
 
-A loop is priced from the moment it is **entered**, and re-priced on each
-re-entry — so a loop reached late in a run (a second phase) is charged for
-its own iterations, never for the work that preceded it, and a nested loop
-re-entered per outer iteration starts fresh. A loop that has not been
-measured yet reports nothing rather than guessing. The prices ride the
-checkpoint, so a resumed run keeps measuring across the pause.
+A loop is priced from the moment it is **entered** — so a loop reached late
+in a run (a second phase) is charged for its own iterations, never for the
+work that preceded it. Entering counts at any node of the loop's body, not
+only at its head: sibling loops that share a verify/gate spine are entered
+on each other's legs, and waiting for the head would charge the first
+crossing for the whole run.
+
+Re-entry **at the loop's head** re-prices it, and resets its counter with
+it — a nested loop re-entered per outer iteration starts fresh on both.
+A later crossing into the body *off* the head does neither: a loop's body
+is computed by walking non-loop edges, so a node genuinely on the cycle can
+fall outside it and the edge back in then fires every iteration. Re-pricing
+there would discard what the iteration had already spent and leave the
+guard measuring ~0 on the loop paying for the expensive work.
+
+A loop that has not been measured yet reports nothing rather than guessing,
+and that is the normal state of every loop the run has not reached: only
+the loop whose body holds the workflow's entry node is priced at run start,
+because execution begins inside it and no edge ever enters it. The prices
+ride the checkpoint, so a resumed run keeps measuring across the pause.
 
 The decline is visible, never silent: a `budget_warning` event carrying
 `reason: loop_budget_guard` with the loop, the blocking dimension, the
