@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // maxWebhookBodyBytes caps the inbound payload every provider handler
@@ -1213,6 +1214,77 @@ func (s *Server) launchWebhookTarget(
 // synthetic status that quotes run.Error, say WHY. "cancelled by user"
 // there once sent operators hunting for a human who did nothing.
 const prClosedRunReason = "pull request closed or merged — nothing left to review"
+
+// prRequeuedRunReason names the auto-heal cancel for the same reason: a
+// reader finding a stopped fixer run has to learn that the queue took the
+// pull request back, not that someone gave up on it.
+const prRequeuedRunReason = "pull request re-entered the merge queue — the heal has nothing left to carry"
+
+// healIdempotencyKey is the identity of ONE auto-heal attempt: this
+// webhook, this pull request, this head. Both halves of the loop derive
+// the key here rather than formatting it themselves — the launch that
+// writes the delivery row and the requeue stop that looks it up must
+// agree byte for byte, and two copies of a format string drift.
+func healIdempotencyKey(cfg webhooks.Config, p prforge.Parsed) string {
+	return knowledge.ChecksumHex([]byte(fmt.Sprintf("heal|%s|%s|%s|%d|%s",
+		cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+}
+
+// stopHealRunForRequeuedPR cancels the auto-heal run launched for this
+// pull request's CURRENT head, once the merge queue has taken the PR back.
+//
+// The heal's whole job is to return an ejected PR to the queue. When the
+// PR is queued again the job is done — and a heal still running is now
+// actively harmful, because its delivery tail force-pushes the branch:
+// that push cancels the queue build in flight and ejects the PR a second
+// time, so the repair becomes the next breakage. Observed in production
+// (2026-09-04, iterion#682): a flaky test ejected a green PR, the heal
+// launched, the PR was re-enqueued, and only a manual cancel kept the
+// fixer's push from killing the queue run that went on to merge it.
+//
+// Scoped by the heal's own idempotency key, NOT by (project, subject):
+// a fixer the developer asked for with `/billy` rides a different key on
+// the same PR and must survive — this stop may only reach the run the
+// queue ejection itself started. Keyed on the head means a heal that has
+// ALREADY pushed (advancing the head, which is what re-enqueues the PR)
+// is not matched by the enqueue its own push caused: that run is finishing
+// the work this stop exists to let it finish.
+func (s *Server) stopHealRunForRequeuedPR(ctx context.Context, cfg webhooks.Config, p prforge.Parsed) int {
+	if s.webhookDeliveries == nil || p.PRNumber == 0 || p.HeadSHA == "" {
+		return 0
+	}
+	d, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, healIdempotencyKey(cfg, p))
+	if err != nil || d.RunID == "" {
+		return 0 // no heal was launched for this head — the ordinary case
+	}
+	if !s.runIsStoppable(ctx, d.RunID) {
+		return 0
+	}
+	// Disarm before cancelling, like the closed-PR stop: a retry left armed
+	// would resume the very run we just stopped.
+	if retries := store.AsRunRetryStore(s.cfg.Store); retries != nil {
+		if aerr := retries.AbandonRunRetry(ctx, d.RunID, prRequeuedRunReason); aerr != nil && s.logger != nil {
+			s.logger.Debug("webhooks: could not disarm the retry of heal run %s on a re-queued PR: %v", d.RunID, aerr)
+		}
+	}
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = func(runID string) error { return s.runs.CancelWithReason(runID, prRequeuedRunReason) }
+	}
+	if cancel == nil {
+		return 0
+	}
+	if cerr := cancel(d.RunID); cerr != nil {
+		if s.logger != nil {
+			s.logger.Debug("webhooks: re-queue stop could not cancel heal run %s (it may have just settled): %v", d.RunID, cerr)
+		}
+		return 0
+	}
+	if s.logger != nil {
+		s.logger.Info("webhooks: stopped auto-heal run %s (%s on %s #%d) — its pull request is back in the merge queue", d.RunID, d.BotID, p.ProjectPath, p.PRNumber)
+	}
+	return 1
+}
 
 // stopRunsForDeadPR ends every run still bound to a pull request that just
 // closed or merged, and disarms any usage-window retry armed for one.

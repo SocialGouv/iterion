@@ -76,6 +76,13 @@ func (p Parsed) NeedsAutoHeal() bool {
 	return p.Action == "dequeued" && healableDequeueReasons[p.DequeueReason]
 }
 
+// IsRequeued reports whether the pull request just (re-)entered the merge
+// queue. It is the closing half of NeedsAutoHeal: a heal exists only to
+// carry an ejected PR back into the queue, so a PR that is back in it has
+// nothing left to heal — and a heal still running would force-push over
+// the head the queue is building.
+func (p Parsed) IsRequeued() bool { return p.Action == "enqueued" }
+
 // ParsePullRequest decodes a pull_request webhook body from GitHub or
 // Forgejo/Gitea (one shared wire shape). We reject empty bodies / wrong
 // shapes early so the handler can return a clean 400 instead of crashing
