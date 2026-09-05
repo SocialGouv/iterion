@@ -165,11 +165,18 @@ func (s *Server) localGateClientFor(ctx context.Context, provider forge.Provider
 // The secret's own AllowedHosts lock is enforced: a token pinned to one forge
 // must not be sent to another just because a launch named a PR there. That is
 // the same egress rule secretguard applies when materialising a placeholder.
+// An UNPINNED forge_token has no such lock, so it is offered to whatever host
+// the launch's pr_url names — pin it with `iterion secret set forge_token
+// --hosts <forge>` if that matters on your machine.
+//
+// Reads the store through localSecretStore(), not the field: it is hot-swapped
+// on a project switch under stateMu.
 func (s *Server) localForgeToken(ctx context.Context, host string) (string, error) {
-	if s.localSecrets == nil || s.sealer == nil {
+	store := s.localSecretStore()
+	if store == nil || s.sealer == nil {
 		return "", nil
 	}
-	creds, err := secrets.ResolveLocalCredentials(ctx, s.localSecrets, s.sealer, []string{localForgeTokenSecret}, s.logger)
+	creds, err := secrets.ResolveLocalCredentials(ctx, store, s.sealer, []string{localForgeTokenSecret}, s.logger)
 	if err != nil {
 		return "", err
 	}
