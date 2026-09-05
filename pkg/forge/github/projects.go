@@ -99,7 +99,9 @@ const issueProjectItemsQuery = `query($owner:String!,$name:String!,$number:Int!,
 
 // issueProjectItemsPageSize bounds the per-issue project lookup. An issue on
 // more than this many boards is pathological; the lookup reports a miss rather
-// than paging, and the caller's add-to-board path then handles it.
+// than paging, and the caller's add-to-board path then handles it — safely,
+// because addProjectV2ItemById returns the EXISTING item for content already
+// on the project (see AddItem).
 const issueProjectItemsPageSize = 20
 
 const addProjectItemMutation = `mutation($projectId:ID!,$contentId:ID!){
@@ -474,8 +476,15 @@ func (c *AdminClient) IssueContentID(ctx context.Context, repo string, number in
 	return out.Repository.Issue.ID, nil
 }
 
-// AddItem puts a piece of content on the board. GitHub's mutation is
-// idempotent: adding content already on the board returns the existing item.
+// AddItem puts a piece of content on the board.
+//
+// GitHub's mutation is idempotent — "if you try to add an item that already
+// exists, the existing item ID is returned instead"
+// (docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects).
+// That is what makes the per-issue lookup's bound safe: an issue on more than
+// issueProjectItemsPageSize boards reports a MISS, and the caller falls
+// through to here, which lands on the item already present rather than
+// duplicating it or failing.
 func (c *AdminClient) AddItem(ctx context.Context, projectID, contentID string) (forge.ProjectItem, error) {
 	if projectID == "" || contentID == "" {
 		return forge.ProjectItem{}, errors.New("github: add project item: projectId and contentId are required")

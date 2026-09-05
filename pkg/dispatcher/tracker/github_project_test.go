@@ -28,6 +28,9 @@ type fakeProjectBoard struct {
 	getErr  error
 	setErr  error
 	nodeIDs map[string]string // "repo#number" → content node id
+	// addReturns overrides what AddItem answers, so a test can reproduce
+	// GitHub's documented idempotence (the EXISTING item comes back).
+	addReturns *forge.ProjectItem
 
 	// Call counters — a state write must not re-read the whole board.
 	getProjectCalls int
@@ -74,6 +77,9 @@ func (f *fakeProjectBoard) IssueContentID(_ context.Context, repo string, number
 
 func (f *fakeProjectBoard) AddItem(_ context.Context, _, contentID string) (forge.ProjectItem, error) {
 	f.added = append(f.added, contentID)
+	if f.addReturns != nil {
+		return *f.addReturns, nil
+	}
 	it := forge.ProjectItem{ID: "PVTI_new", Content: forge.ProjectItemContent{
 		Kind: forge.ProjectContentIssue, Repo: "owner/repo", Number: 42,
 	}}
@@ -338,6 +344,43 @@ func TestGitHubProjectUpdateStateAddsAnAbsentIssueToTheBoard(t *testing.T) {
 	}
 	if len(board.writes) != 1 || !strings.HasSuffix(board.writes[0], "/opt_done") {
 		t.Fatalf("writes = %v", board.writes)
+	}
+}
+
+// TestGitHubProjectUpdateStateWritesTheExistingItemBeyondTheLookupBound pins
+// the fall-through the per-issue lookup's bound relies on.
+//
+// ItemForIssue asks the ISSUE which projects carry it, bounded at
+// issueProjectItemsPageSize (20); an issue on more boards than that reports a
+// MISS even though the item exists, and the caller then goes through
+// IssueContentID + AddItem. GitHub's own documentation for
+// addProjectV2ItemById is what makes that safe — "if you try to add an item
+// that already exists, the existing item ID is returned instead" — so the
+// state write lands on the item that is already there, at the cost of two
+// extra API calls, instead of failing every transition for a heavily-boarded
+// issue.
+//
+// The fake answers exactly that way. Note this is a HAND-AUTHORED fake, not a
+// recording of the live API: it pins iterion's handling of the documented
+// answer, not the answer itself.
+func TestGitHubProjectUpdateStateWritesTheExistingItemBeyondTheLookupBound(t *testing.T) {
+	gh := &fakeGH{listOut: []byte(twoOpenIssues)}
+	board := &fakeProjectBoard{
+		fields:  []forge.ProjectField{projectStatusField()},
+		nodeIDs: map[string]string{"owner/repo#42": "I_node42"},
+		// The item IS on the board; the lookup just cannot see it (past the
+		// 20-project bound), and the add returns it rather than a new one.
+		addReturns: &forge.ProjectItem{ID: "PVTI_already_there", Content: forge.ProjectItemContent{
+			Kind: forge.ProjectContentIssue, Repo: "owner/repo", Number: 42,
+		}},
+	}
+	a := boardModeAdapter(t, gh, board)
+
+	if err := a.UpdateState(context.Background(), "github:owner/repo#42", "done"); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+	if len(board.writes) != 1 || !strings.HasPrefix(board.writes[0], "PVTI_already_there/") {
+		t.Fatalf("writes = %v, want the status written on the EXISTING item", board.writes)
 	}
 }
 

@@ -35,6 +35,14 @@ type BindRequest struct {
 	// LabelFields overrides which single-select fields land as labels. Empty
 	// uses the default (Area / Mode / Priority); only the fields the board
 	// actually carries are bound.
+	//
+	// NO surface sets it today — the PUT payload carries no field for it and
+	// no caller fills it — so every stored binding's prefixes are the default
+	// ones. That matters before wiring one: the plain issue import protects
+	// project-owned labels through `boardLocalLabelPrefixes`, which is built
+	// from DefaultLabelFields(); a binding carrying a prefix outside that list
+	// would have those labels stripped by the next issue import. Make the two
+	// read the same list before making this reachable.
 	LabelFields []LabelField
 
 	// SyncEvery is the reconciliation interval. nil = the default; an explicit

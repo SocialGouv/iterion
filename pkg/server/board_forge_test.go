@@ -221,3 +221,24 @@ func TestUpsertForgeCard_PropagatesAStoreFailure(t *testing.T) {
 		t.Errorf("error = %v, want the store's own cause named", err)
 	}
 }
+
+// TestBoardLocalLabelsCoverEveryProjectFieldPrefix pins the coupling between
+// the two halves of the board's label ownership: the project import WRITES a
+// label per bound single-select field, and the plain issue import must not
+// strip it on its next pass (it mirrors the forge's labels verbatim and keeps
+// only what it recognises as board-local).
+//
+// Both sides read forge.DefaultLabelFields today; this fails the moment one of
+// them stops, which is the shape the area:/mode:/prio: defect had.
+func TestBoardLocalLabelsCoverEveryProjectFieldPrefix(t *testing.T) {
+	for _, lf := range forge.DefaultLabelFields() {
+		label := forge.FieldLabel(lf.Prefix, "some-value")
+		if label == "" {
+			t.Fatalf("field %q produced no label for prefix %q", lf.Field, lf.Prefix)
+		}
+		if !isBoardLocalLabel(label) {
+			t.Errorf("the issue import would strip %q (field %q): every prefix the project import writes must be board-local",
+				label, lf.Field)
+		}
+	}
+}

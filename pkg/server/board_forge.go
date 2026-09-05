@@ -359,6 +359,11 @@ var boardLocalLabelPrefixes = append(
 // projectFieldLabelPrefixes lists the namespaces the project import owns, read
 // from the same declaration the import writes through — so adding a bound
 // field cannot leave its labels unprotected against the next issue import.
+//
+// It reads the DEFAULTS, which is exactly what every stored binding carries:
+// forge.BindRequest.LabelFields is reachable from no surface (see its own
+// doc). Wiring one means feeding the binding's prefixes here too, or the next
+// issue import strips the labels the project import just wrote.
 func projectFieldLabelPrefixes() []string {
 	fields := forge.DefaultLabelFields()
 	out := make([]string, 0, len(fields))
