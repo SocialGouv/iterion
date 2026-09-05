@@ -215,8 +215,34 @@ provider dispatch; the orchestrator + studio are provider-agnostic.
 ### Launching a bot on a pull request
 
 Studio/API launches and dispatched board cards carrying `pr_url` verify the
-head repository through the team's forge connection before granting publish
-access or launching the bot. Forks and an unknown head repository are refused,
-as on the webhook entry points. An unavailable connection also refuses the
-launch with an explicit error. Bring the fork's changes onto a branch in the
-base repository before launching through these surfaces.
+PR's **head repository** before launching the bot. A head branch that does not
+live in the base repository is refused — as on the webhook entry points, and
+through the same predicate: the launch pair is `<base>.CloneURL` + the head
+branch name, so a fork's branch either misses or silently resolves to a
+same-named branch **in the base repo**, which a code-pushing bot would then
+commit onto. Same-repo is proven, never assumed. Bring the fork's changes onto
+a branch in the base repository before launching through these surfaces.
+
+The guard applies to every launch carrying `pr_url`; only the credential the
+lookup runs under differs:
+
+| Surface | Credential | When it cannot ask |
+|---|---|---|
+| Cloud studio / API (team identity) | the team's forge connection | refused (`422`) |
+| Board card (dispatcher) | the tenant's forge connection | card filed `blocked` |
+| Local studio / API (no team) | the operator's local `forge_token` secret | refused (`422`), with what to add |
+
+A local `iterion studio` has no team and no forge connections, so it reads the
+`forge_token` secret instead (`iterion secret set forge_token`, the same name
+the catalog bots bind). The secret's own `allowed_hosts` pin is honoured: a
+token scoped to one forge is never sent to another because a launch named a PR
+there. With no usable credential the launch is **refused**, not admitted — the
+message names the secret and the alternative. `iterion run` does not go through
+this surface: it executes the checkout you already have, so a local CLI run of
+a PR bot is unaffected.
+
+Two limitations worth knowing. The guard proves a fact about the PR *on the
+forge*; it does not prove that a local studio's own checkout corresponds to
+`pr_url` — that needs remote/HEAD-SHA validation and is not implemented. And a
+`pr_url` outside the connection's App installation resolves as not-found, which
+refuses the launch.

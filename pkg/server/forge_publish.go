@@ -679,27 +679,29 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 	if prURL == "" {
 		return vars, nil
 	}
+	// Every refusal returns the caller's vars UNCHANGED beside the error, not
+	// nil: a caller that ever logs-and-continues must not silently lose the
+	// launch's own vars, and a nil map makes "no grant was minted" untestable
+	// (indexing nil yields "" whether or not the guard ran).
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
-		return nil, fmt.Errorf("PR launch: %w", err)
+		return vars, fmt.Errorf("PR launch: %w", err)
 	}
 	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
 	if !ok {
-		return nil, fmt.Errorf("PR launch: no forge connection can verify the head repository for %s", prURL)
+		return vars, fmt.Errorf("PR launch: no forge connection can verify the head repository for %s", prURL)
 	}
 	client, err := s.gateClientFor(ctx, conn)
 	if err != nil {
-		return nil, fmt.Errorf("PR launch: resolve forge client: %w", err)
+		return vars, fmt.Errorf("PR launch: resolve forge client: %w", err)
 	}
 	if client == nil {
-		return nil, fmt.Errorf("PR launch: provider %s cannot resolve pull requests", conn.Provider)
+		return vars, fmt.Errorf("PR launch: provider %s cannot resolve pull requests", conn.Provider)
 	}
-	pr, err := client.GetPullRequest(ctx, repo, number)
-	if err != nil {
-		return nil, fmt.Errorf("PR launch: resolve head repository: %w", err)
-	}
-	if refusal := forkGuardRefusal(pr.SameRepoAs(repo), false, pr.HeadRepoFullName); refusal != "" {
-		return nil, fmt.Errorf("PR launch: %s", refusal)
+	// The guard itself is verifyPRHeadInBaseRepo — shared with the no-team
+	// lane so both surfaces refuse the same three states (launch_pr_guard.go).
+	if err := verifyPRHeadInBaseRepo(ctx, client, repo, number); err != nil {
+		return vars, err
 	}
 	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
 		fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
