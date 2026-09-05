@@ -2040,6 +2040,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
+	// Credential-slot occupancy: release the run's per-key concurrency
+	// slot while no model-calling node executes (cred_slot.go).
+	if slots := r.credSlotObserver(ctx, msg, wf, runLogger); slots != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(slots.observe))
+	}
 	if superviseHub != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},

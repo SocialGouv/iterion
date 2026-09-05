@@ -2595,6 +2595,48 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.SkippedCredReopensAt != nil {
 		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v (%v)", got.SkippedCredReopensAt, err)
 	}
+
+	// The model-idle marker: a running run executing no model-calling node
+	// holds its key's slot for nobody. Only fp_run1 (running) carries
+	// fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) before idle = %d/%v, want 1", n, err)
+	}
+	idle := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
+	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
+		t.Fatalf("SetRunLLMIdle: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince == nil || !got.LLMIdleSince.Equal(idle) {
+		t.Fatalf("LLMIdleSince = %v (%v), want %v", got.LLMIdleSince, err, idle)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 0 {
+		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 0 — an idle run must not hold a slot", n, err)
+	}
+	// The next model node clears it: the run counts again.
+	if err := s.SetRunLLMIdle(ctx, "fp_run1", nil); err != nil {
+		t.Fatalf("SetRunLLMIdle(nil): %v", err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) after the marker cleared = %d/%v, want 1", n, err)
+	}
+	// A re-stamp (a resumed attempt's re-resolution) starts over: an idle
+	// marker left by the previous attempt must not exempt the new one.
+	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
+		t.Fatalf("SetRunLLMIdle: %v", err)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince != nil {
+		t.Fatalf("a re-stamp must clear LLMIdleSince, got %v (%v)", got.LLMIdleSince, err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) after re-stamp = %d/%v, want 1", n, err)
+	}
+	// Unknown run: the error is the store's, not a silent no-op.
+	if err := s.SetRunLLMIdle(ctx, "fp_nope", &idle); err == nil {
+		t.Fatal("SetRunLLMIdle on an unknown run must error")
+	}
 }
 
 // testSetRunBudgetOverrides exercises the granular budget-ask setter

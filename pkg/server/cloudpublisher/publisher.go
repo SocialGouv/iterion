@@ -683,18 +683,27 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		oauthKinds = append(oauthKinds, kind)
 	}
 	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
-	// Harvest every sealed credential's audit identity for the run-doc
-	// stamp: API keys from the slot records above, OAuth from the bundle's
-	// own fingerprint map (each fill site stamps it there).
+	// Harvest the audit identity of every sealed credential the run can
+	// actually SPEND, for the run-doc stamp: API keys from the slot records
+	// above, OAuth from the bundle's own fingerprint map (each fill site
+	// stamps it there). The bundle keeps every credential; the stamp — what
+	// the per-key concurrency ceiling counts — keeps only those some
+	// resolved route of the run targets. A rite whose every node pins the
+	// OAuth-backed model held one of the facade key's two slots for its
+	// whole life without ever spending it, and the next launch pinned to
+	// the facade was refused the only credential its model could use.
+	// Unpinned or unresolvable routes keep everything (fail open toward
+	// protection: that run takes whatever the process holds).
+	spend := spendableProviders(wf, modelOverrides, runFallbacks)
 	seen := map[string]bool{}
-	for _, fp := range apiKeyFPs {
-		if fp != "" && !seen[fp] {
+	for prov, fp := range apiKeyFPs {
+		if fp != "" && !seen[fp] && spend.allows(strings.ToLower(string(prov))) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
 		}
 	}
-	for _, fp := range bundle.OAuthFingerprints {
-		if fp != "" && !seen[fp] {
+	for kind, fp := range bundle.OAuthFingerprints {
+		if fp != "" && !seen[fp] && spend.allows(providerOfOAuthKind(kind)) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
 		}
@@ -785,6 +794,47 @@ func (c credResolution) stamp() store.RunCredStamp {
 		s.SkippedReopensAt = &at
 	}
 	return s
+}
+
+// spendable answers "may a run with these routes spend a credential of
+// this provider?" — the narrowing the run-doc stamp applies. A nil set
+// means every provider: the run has a route the walk could not resolve
+// (no pin, an explicit auto, a hint nobody knows, a model-answering node
+// with no LLMFields), and such a route takes whatever the process holds.
+type spendable struct{ pinned map[string]bool }
+
+func (s spendable) allows(provider string) bool {
+	if s.pinned == nil || provider == "" {
+		return true
+	}
+	return s.pinned[provider]
+}
+
+// spendableProviders reads the run's resolved routes through the same
+// walk and vocabulary the pool's wants derivation uses (wantsFor), so the
+// two surfaces can never disagree on what a run may spend.
+func spendableProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) spendable {
+	res := model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders)
+	if !res.NarrowSafe || len(res.Providers) == 0 {
+		return spendable{}
+	}
+	pinned := make(map[string]bool, len(res.Providers))
+	for _, p := range res.Providers {
+		pinned[p] = true
+	}
+	return spendable{pinned: pinned}
+}
+
+// providerOfOAuthKind maps an OAuth slot to the provider its credential
+// authenticates against; "" for a kind the stamp does not know (kept).
+func providerOfOAuthKind(kind string) string {
+	switch secrets.OAuthKind(kind) {
+	case secrets.OAuthKindClaudeCode:
+		return string(secrets.ProviderAnthropic)
+	case secrets.OAuthKindCodex:
+		return string(secrets.ProviderOpenAI)
+	}
+	return ""
 }
 
 // skipTracker remembers the earliest reopening among the credentials one
