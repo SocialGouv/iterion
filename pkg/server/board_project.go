@@ -39,6 +39,12 @@ type ProjectImportOptions struct {
 	// It is also where the option ids come from, so nothing is discovered
 	// per-card. Its StatusMapping/LabelFields win over the fields below.
 	Binding *forge.BoardBinding
+	// Bindings persists a Binding the pass had to REPAIR against the live
+	// board — a renamed or re-created column — and its degraded readout. Nil
+	// keeps the repair in memory for this pass only, which is what the local
+	// one-shot `iterion issue import --project` wants: it converges, it just
+	// does not remember.
+	Bindings forge.BoardBindingStore
 	// StatusMapping overrides the (board status ⇄ native state) pairs.
 	StatusMapping []forge.StatusMapping
 	// LabelFields overrides which single-select fields land as labels.
@@ -84,6 +90,14 @@ func (o *ProjectImportOptions) binding() *forge.BoardBinding {
 	return o.Binding
 }
 
+// bindingStore returns where a repaired binding is persisted, or nil.
+func (o *ProjectImportOptions) bindingStore() forge.BoardBindingStore {
+	if o == nil {
+		return nil
+	}
+	return o.Bindings
+}
+
 func (o *ProjectImportOptions) now() time.Time {
 	if o != nil && o.Now != nil {
 		return o.Now().UTC()
@@ -101,6 +115,13 @@ type ProjectImportResult struct {
 	// Reflected is the board items whose Status a native move updated — the
 	// other direction of the same pass.
 	Reflected int `json:"reflected"`
+	// ReflectNoColumn is the cards whose native state the bound board has no
+	// column for — a mapped column the board never carried (reported as
+	// `missing_statuses` at bind time), or one deleted since (which degrades
+	// the binding, once). Counted rather than warned per card: the same cards
+	// are unreflectable on every pass until the binding is repaired, and a
+	// per-card Warn on a 300-item board buries everything else.
+	ReflectNoColumn int `json:"reflect_no_column,omitempty"`
 	// ReflectFailed is the reflects the forge refused. Counted rather than
 	// fatal: one card's failed write must not abandon the rest of the board.
 	ReflectFailed int `json:"reflect_failed,omitempty"`
@@ -122,6 +143,13 @@ type ProjectImportResult struct {
 	// own audit trail and dependents check — and automation never reopens. The
 	// two boards stay legitimately divergent until someone reopens the card.
 	RefusedTerminal int `json:"refused_terminal,omitempty"`
+	// SkippedArchived is the items the operator archived. The forge removes
+	// them from every board view but PRESERVES their field values, so one
+	// archived mid-column keeps reading as that column forever — driving a
+	// card from a value nobody can see, and reflecting onto a row nobody can
+	// read. Counted rather than silent: a card that stops following has to be
+	// explainable from the pass's own numbers.
+	SkippedArchived int `json:"skipped_archived,omitempty"`
 	// Skipped is items with nothing to join on — drafts and pull requests.
 	Skipped int `json:"skipped"`
 }
@@ -158,6 +186,7 @@ func ImportProjectBoard(
 	if err != nil {
 		return res, fmt.Errorf("project import: get project %s: %w", ref, err)
 	}
+	renamed := repairBinding(ctx, project, opts)
 
 	missing := map[string]int{}
 	cursor := ""
@@ -167,7 +196,7 @@ func ImportProjectBoard(
 			return res, fmt.Errorf("project import: list items of %s: %w", ref, err)
 		}
 		for _, it := range page.Items {
-			if err := applyProjectItem(ctx, bc, project, ref, provider, board, it, opts, &res, missing); err != nil {
+			if err := applyProjectItem(ctx, bc, project, ref, provider, board, it, opts, &res, missing, renamed); err != nil {
 				res.MissingRepos = rankMissingRepos(missing)
 				return res, err
 			}
@@ -179,6 +208,67 @@ func ImportProjectBoard(
 	}
 	res.MissingRepos = rankMissingRepos(missing)
 	return res, nil
+}
+
+// repairBinding re-resolves the binding's cached status vocabulary — the
+// (state → option id) map and the column NAMES those ids carried — against the
+// board schema this pass has already read, and returns the renames it found.
+//
+// It costs NO extra API call: the pass reads the project for its label fields
+// anyway. That is what makes it the right place. The alternative — discovering
+// the drift on a failed write — discovers it once per card per pass and never
+// repairs it, which is how a renamed column produced one redundant mutation per
+// bound card, on every pass, indefinitely.
+//
+// Persisting is best-effort: a store outage must not abandon the reconciliation
+// the operator is watching. The repair still applies in memory for this pass.
+func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImportOptions) map[string]string {
+	binding := opts.binding()
+	if binding == nil {
+		return nil // read-only pass: nothing is cached, so nothing is stale
+	}
+	was := binding.DegradedReason
+	rep := binding.ReconcileStatusOptions(project)
+	if !rep.Changed() {
+		return nil
+	}
+	store := opts.bindingStore()
+	if store != nil {
+		if err := store.SaveStatusVocabulary(ctx, binding.TenantID, binding.Vocabulary()); err != nil {
+			logProjectWarn(opts, "project board: the repaired status vocabulary could not be persisted",
+				"team", binding.TenantID, "error", err.Error())
+		}
+	}
+
+	switch reason := rep.Reason(); {
+	case reason != "":
+		if was != reason {
+			// ONCE, on the transition. The state itself lives on the binding
+			// (GET /api/teams/{id}/board-binding), which is where an operator
+			// can act on it — a Warn repeated every two minutes is not a
+			// signal, it is noise that buries the pass's real lines.
+			logProjectWarn(opts, "project board: a bound status column no longer exists on the board",
+				"team", binding.TenantID, "board", binding.Ref().String(), "reason", reason)
+		}
+		binding.DegradedReason = reason
+		if store != nil {
+			if err := store.MarkDegraded(ctx, binding.TenantID, reason); err != nil {
+				logProjectWarn(opts, "project board: the binding could not be flagged degraded",
+					"team", binding.TenantID, "error", err.Error())
+			}
+		}
+	case was != "" && len(rep.Adopted)+len(rep.Rebound) > 0:
+		// A column the last pass could not resolve resolves again — the flag
+		// is a readout of the LAST resolution, so it clears without a re-bind.
+		binding.DegradedReason, binding.DegradedAt = "", nil
+		if store != nil {
+			if err := store.ClearDegraded(ctx, binding.TenantID); err != nil {
+				logProjectWarn(opts, "project board: the binding's degraded flag could not be cleared",
+					"team", binding.TenantID, "error", err.Error())
+			}
+		}
+	}
+	return rep.Renames()
 }
 
 // rankMissingRepos orders the skipped repositories most-missing first, ties
@@ -219,8 +309,17 @@ func applyProjectItem(
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
 	missing map[string]int,
+	renamed map[string]string,
 ) error {
 	res.Items++
+	if it.Archived {
+		// The operator took this item off the board. Its field values survive
+		// archiving, so both directions would keep working on a row nobody can
+		// see: the import would drive the card from a frozen column, and the
+		// reflect would push into a view that renders nothing.
+		res.SkippedArchived++
+		return nil
+	}
 	if it.Content.Kind != forge.ProjectContentIssue || it.Content.Repo == "" || it.Content.Number <= 0 {
 		// A draft has no issue; a pull request surfaces through the card's PR
 		// panel, not as a card of its own.
@@ -242,6 +341,14 @@ func applyProjectItem(
 	}
 
 	sync := projectSyncState(card, ref, it)
+	// A card's recorded status is a column NAME, so a rename repaired above
+	// leaves every card of that column naming something the vocabulary no
+	// longer knows. Reading the record through the rename keeps ONE operator
+	// edit from reading as "the board moved to an unknown column" on every
+	// card of that column at once.
+	if to, ok := renamed[strings.ToLower(strings.TrimSpace(sync.Status))]; ok {
+		sync.Status = to
+	}
 	statusName, statusAt := projectStatusValue(it)
 
 	patch := native.Patch{}
@@ -251,7 +358,7 @@ func applyProjectItem(
 	}
 
 	nativeAt := nativeStateAt(card, sync)
-	targetState, decision := decideProjectStatus(statusName, statusAt, nativeAt, sync, opts)
+	targetState, decision := decideProjectStatus(statusName, statusAt, nativeAt, card.State, sync, opts)
 	switch decision {
 	case projectStatusConflictGitHub, projectStatusConflictNative:
 		res.Conflicts++
@@ -263,14 +370,27 @@ func applyProjectItem(
 		// CAS on the snapshot: an operator who moved the card between our read
 		// and this write wins — the board must not clobber a fresh decision
 		// with a fact it read a moment ago.
-		if _, _, err := board.SetStateFrom(cardID, card.State, targetState); err != nil {
+		//
+		// Losing that CAS is NOT an error: SetStateFrom answers a drifted card
+		// with (issue, changed=false, nil). Reading only the error counted a
+		// transition the store never made and recorded the board's status as
+		// synchronized, which turns every later pass into a no-op — and on the
+		// one-shot `iterion issue import --project` path nothing ever repairs
+		// it. A refused write and a lost CAS are the same fact here: nothing
+		// landed.
+		switch _, changed, err := board.SetStateFrom(cardID, card.State, targetState); {
+		case err != nil:
 			refused = true
 			if errors.Is(err, tracker.ErrTerminalStateExit) {
 				res.RefusedTerminal++
 			}
 			logProjectWarn(opts, "project import: state write refused", "card", cardID,
 				"from", card.State, "to", targetState, "error", err.Error())
-		} else {
+		case !changed:
+			refused = true
+			logProjectWarn(opts, "project import: state write skipped, the card moved first",
+				"card", cardID, "from", card.State, "to", targetState)
+		default:
 			applied = true
 			res.Moved++
 		}
@@ -281,8 +401,10 @@ func applyProjectItem(
 	//
 	// A native-wins conflict is the exception: recording the board's status
 	// here would tell the reflect below "the board already agrees", and it
-	// would push nothing. The reflect overwrites these two fields itself with
-	// what it actually wrote, which is what makes the next pass a no-op.
+	// would push nothing. The reflect writes these two fields itself with what
+	// it actually wrote — and when it writes NOTHING the caller closes them
+	// with what it observed, so the divergence is derived once rather than on
+	// every tick (see the reflect call below).
 	//
 	// A REFUSED write is the other exception, and the sharper one: recording a
 	// status iterion could not apply makes the NEXT pass read "the board
@@ -314,7 +436,22 @@ func applyProjectItem(
 	// It does NOT run when the board won (`applied`, or a GitHub-wins
 	// conflict): pushing there would overwrite the decision we just read.
 	if !applied && (decision == projectStatusNoop || decision == projectStatusConflictNative) {
-		reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res)
+		// A native-wins conflict declined to record the board's status above,
+		// on the promise that the reflect overwrites it with what it WROTE.
+		// The reflect has exits that write nothing — the two sides already
+		// agree, the native state is unmapped, the bound board has no column
+		// for it, the pass is read-only — and there the promise is unkept: the
+		// record stays stale, the next pass recomputes identical inputs and
+		// re-derives the same conflict, warning and counting on every tick for
+		// a divergence nothing is going to resolve. Recording what was
+		// OBSERVED closes it, and is not a false claim: the board says this
+		// value now, and it is exactly what "the status last synchronized"
+		// means. A FAILED write is the exception — the next pass must retry it.
+		if out := reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res); out == reflectNothingToWrite &&
+			decision == projectStatusConflictNative {
+			sync.Status = statusName
+			sync.StatusAt = statusAt
+		}
 	}
 	// Write ONLY what changed. This pass runs over every card on its interval,
 	// and native.Store.Update treats a non-nil Patch.External as a change with
@@ -354,6 +491,10 @@ func applyProjectItem(
 //
 // A failed write is counted and logged, never fatal: one card's 403 must not
 // abandon the rest of the board.
+//
+// The outcome is the caller's business: it is what tells a native-wins
+// conflict whether the record it declined to write was overwritten here, or
+// has to be closed by the caller instead.
 func reflectNativeState(
 	ctx context.Context,
 	bc forge.BoardClient,
@@ -363,42 +504,56 @@ func reflectNativeState(
 	boardStatus string,
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
-) {
+) reflectOutcome {
 	binding := opts.binding()
 	if binding == nil {
-		return // read-only pass: no write authority
+		return reflectNothingToWrite // read-only pass: no write authority
 	}
 	if sync.Status == "" {
 		// First sight of this card on this board: the board is the authority
 		// on the join, and the import already applied it. Pushing here would
-		// overwrite a column nobody has reconciled yet.
-		return
+		// overwrite a column nobody has reconciled yet. Only reachable from
+		// the no-op arm, which recorded the status already.
+		return reflectNothingToWrite
 	}
 	want, ok := forge.StatusForState(opts.statusMapping(), card.State)
 	if !ok {
 		// An unmapped native state (`review`, `waiting_deps`, …) is INERT: the
 		// board keeps showing the last true thing it was told.
-		return
+		return reflectNothingToWrite
 	}
 	if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(boardStatus)) {
-		return // already there — the idempotence that keeps a pass free
+		return reflectNothingToWrite // already there — the idempotence that keeps a pass free
 	}
 	option, ok := binding.OptionForState(card.State)
 	if !ok {
-		logProjectWarn(opts, "project reflect: the bound board has no column for this state",
-			"card", card.ID, "state", card.State, "status", want)
-		return
+		// No column for this state: one the map named and the board never had
+		// (reported as `missing_statuses` at bind time), or one deleted since —
+		// which the pass's reconciliation already flagged on the binding, once.
+		// Counted, not warned: this card is unreflectable on EVERY pass until
+		// the binding is repaired, and a per-card Warn buries the rest.
+		res.ReflectNoColumn++
+		return reflectNothingToWrite
 	}
 	if binding.ProjectID == "" || binding.StatusFieldID == "" {
 		logProjectWarn(opts, "project reflect: the binding carries no project/status id",
 			"card", card.ID, "state", card.State)
-		return
+		return reflectNothingToWrite
+	}
+	if fv, ok := it.Field(forge.ProjectStatusFieldName); ok && fv.OptionID != "" && fv.OptionID == option {
+		// The board already carries the very OPTION we would write; only its
+		// NAME differs from what the binding cached. Ids are the write
+		// vocabulary, so this is the authoritative "already there" — the name
+		// comparison above is the fallback for a provider that reports no
+		// option id, and on its own it re-writes the same value forever after
+		// a column is renamed.
+		return reflectNothingToWrite
 	}
 	if err := bc.SetSingleSelect(ctx, binding.ProjectID, it.ID, binding.StatusFieldID, option); err != nil {
 		res.ReflectFailed++
 		logProjectWarn(opts, "project reflect: status write refused",
 			"card", card.ID, "item", it.ID, "state", card.State, "status", want, "error", err.Error())
-		return
+		return reflectFailed
 	}
 	res.Reflected++
 	// Record what we just wrote, so the next pass reads "already equal" and
@@ -408,6 +563,7 @@ func reflectNativeState(
 	sync.Status = want
 	sync.StatusAt = opts.now()
 	sync.StateAt = opts.now()
+	return reflectWrote
 }
 
 // projectSyncState reads the card's recorded sync state, resetting it when the
@@ -435,6 +591,23 @@ func projectStatusValue(it forge.ProjectItem) (string, time.Time) {
 	}
 	return fv.Value, fv.UpdatedAt
 }
+
+// reflectOutcome says what one reflect did to the board, which is what decides
+// whether the caller still owes the sync record an update.
+type reflectOutcome int
+
+const (
+	// reflectNothingToWrite: there was nothing to push, or nothing that COULD
+	// be pushed. Either way the board's status will not change on this pass,
+	// so a divergence left open here would be re-derived forever.
+	reflectNothingToWrite reflectOutcome = iota
+	// reflectWrote: the board's Status now says what the card's column means,
+	// and the reflect recorded it itself.
+	reflectWrote
+	// reflectFailed: the forge refused the write. The record stays stale ON
+	// PURPOSE — that is what makes the next pass retry.
+	reflectFailed
+)
 
 type projectStatusDecision int
 
@@ -470,8 +643,8 @@ func nativeStateAt(card *native.Issue, sync native.ExternalProject) time.Time {
 
 // decideProjectStatus resolves ADR-097's conflict rule. It returns the native
 // state to write ("" = write nothing) and why. nativeAt is the card's own
-// transition time (nativeStateAt).
-func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, sync native.ExternalProject, opts *ProjectImportOptions) (string, projectStatusDecision) {
+// transition time (nativeStateAt); cardState is the column it sits in now.
+func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, cardState string, sync native.ExternalProject, opts *ProjectImportOptions) (string, projectStatusDecision) {
 	if strings.TrimSpace(statusName) == "" {
 		return "", projectStatusNoop
 	}
@@ -492,12 +665,40 @@ func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, sync n
 		// First sight: the board is the authority on the join.
 		return state, projectStatusApply
 	}
-	// 2/3. Both sides moved. Newer wins; a tie goes to the board, which is
+	// 2. Only the BOARD moved — the ordinary gesture on a forge board. It is a
+	// plain apply, never a conflict: the counter means "both sides moved"
+	// (ADR-097 §9.2), and a conflict resolved in the native side's favour
+	// makes the reflect push the card's old column back over the drag.
+	if !nativeMovedSince(sync, cardState, opts) {
+		return state, projectStatusApply
+	}
+	// 3/4. Both sides moved. Newer wins; a tie goes to the board, which is
 	// what a human is looking at.
 	if nativeAt.After(statusAt) {
 		return "", projectStatusConflictNative
 	}
 	return state, projectStatusConflictGitHub
+}
+
+// nativeMovedSince reports whether the card's column changed since the last
+// synchronization with this board.
+//
+// The oracle is a FACT, not a timestamp comparison: sync.Status is the board
+// status iterion last synchronized, so the native state it maps to IS
+// iterion's own last write. A card still sitting there has not moved, and a
+// timestamp-only rule cannot tell that from a card that moved and came back.
+//
+// A recorded status the mapping does not cover leaves the question
+// undecidable — iterion never derived a state from it — and the answer is
+// "assume it moved". A conflict that turns out one-sided costs one Warn; the
+// reverse silently overwrites somebody's decision, which is the one outcome
+// ADR-097 §9.4 forbids.
+func nativeMovedSince(sync native.ExternalProject, cardState string, opts *ProjectImportOptions) bool {
+	recorded, ok := forge.StateForStatus(opts.statusMapping(), sync.Status)
+	if !ok {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(recorded), strings.TrimSpace(cardState))
 }
 
 // applyProjectLabels folds the item's label-bound field values into the card's

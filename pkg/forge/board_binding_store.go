@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,11 +24,23 @@ import (
 // other store already keys on.
 //
 // The discovered ids (project, status field, per-state option) are a CACHE of
-// what BindBoard read from the board by NAME — never an authority. Any sync
-// may re-run discovery, and a write that fails on a stale id re-discovers.
+// what BindBoard read from the board by NAME — never an authority. Every sync
+// pass re-resolves them, and the column names beside them, against the board's
+// live schema (BoardBinding.ReconcileStatusOptions in board_vocabulary.go) and
+// persists the repair through SaveStatusVocabulary. What no re-resolution can
+// repair — a column deleted outright — becomes DegradedReason.
 
 // ErrBoardBindingNotFound reports a team with no project board bound.
 var ErrBoardBindingNotFound = errors.New("forge: board binding not found")
+
+// ErrBoardSyncLeaseLost reports a release by a pass that no longer holds the
+// lease — it overran the TTL and another replica has since claimed the board.
+//
+// It is an ERROR rather than a quiet no-op because it is the only moment the
+// overrun is knowable: the release is refused (clearing a successor's lease is
+// precisely the damage), and the caller has just learned that its pass may
+// have run alongside another one.
+var ErrBoardSyncLeaseLost = errors.New("forge: board sync lease no longer held")
 
 // DefaultBoardSyncEvery is the reconciliation interval a binding gets when the
 // operator does not choose one. It is the net under the reflect, so it is on
@@ -123,6 +136,23 @@ type BoardBinding struct {
 	// Stamped by ClaimSync, cleared by ReleaseSync at pass end; a value in the
 	// future refuses a second replica's claim. Zero = no pass running.
 	SyncLeaseUntil time.Time `bson:"sync_lease_until,omitempty" json:"sync_lease_until,omitempty"`
+	// SyncLeaseOwner identifies the pass holding the lease, and is what makes
+	// the release CONDITIONAL. Without it a pass that overran the TTL would,
+	// on finishing, clear the lease of the successor that legitimately took
+	// the board — re-admitting the concurrent pass the lease exists to refuse.
+	SyncLeaseOwner string `bson:"sync_lease_owner,omitempty" json:"sync_lease_owner,omitempty"`
+
+	// DegradedReason is set when a sync pass found a bound status column the
+	// board no longer carries under either its cached id or its mapped name.
+	// Those cards stop being reflected — an explicit state on the record beats
+	// a failed write per card on every pass — and the reason names the columns
+	// so the remedy is readable from the binding itself.
+	//
+	// It is a HEALTH readout, written only through MarkDegraded/ClearDegraded
+	// and cleared by a re-bind (which re-discovers everything by name). The
+	// pluginsource quarantine precedent: degraded is skipped, never fatal.
+	DegradedReason string     `bson:"degraded_reason,omitempty" json:"degraded_reason,omitempty"`
+	DegradedAt     *time.Time `bson:"degraded_at,omitempty" json:"degraded_at,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -159,6 +189,11 @@ func (b BoardBinding) OptionForState(state string) (string, bool) {
 	id, ok := b.StatusOptions[state]
 	return id, ok && id != ""
 }
+
+// Degraded reports whether the last reconciliation found a bound column the
+// board no longer carries. A degraded binding still syncs every state it CAN
+// resolve — it is a partial outage, not a stop.
+func (b BoardBinding) Degraded() bool { return b.DegradedReason != "" }
 
 // DueAt reports when this binding's next periodic pass is due. The zero time
 // means "not scheduled" (SyncEvery == 0).
@@ -240,12 +275,30 @@ type BoardBindingStore interface {
 	// replica presenting a stale watermark loses, and so does one whose tick
 	// finds a pass still running (the watermark alone cannot tell them apart —
 	// an overrunning pass leaves a watermark that matches).
-	ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error)
+	// owner identifies the claiming pass, and is what ReleaseSync CASes on.
+	ClaimSync(ctx context.Context, tenantID string, seen, at time.Time, owner string) (bool, error)
 	// ReleaseSync clears the lease at pass end, whatever the pass's outcome,
 	// so the next tick may claim immediately. Without it a board would sit out
 	// the whole TTL after every pass; with it the TTL only ever fires for a
 	// replica that died mid-pass.
-	ReleaseSync(ctx context.Context, tenantID string) error
+	//
+	// It is a CAS on `owner`: a pass that overran the TTL and lost the board
+	// to a successor must not clear the successor's lease, and is told so with
+	// ErrBoardSyncLeaseLost rather than left believing it released cleanly.
+	ReleaseSync(ctx context.Context, tenantID, owner string) error
+
+	// SaveStatusVocabulary persists ONLY the cached name⇄id half of a binding,
+	// the way a sync pass repaired it against the live board. Narrow on
+	// purpose: a reconciliation may correct what the forge changed under it,
+	// never the address, credential or policy the operator chose.
+	SaveStatusVocabulary(ctx context.Context, tenantID string, v StatusVocabulary) error
+
+	// MarkDegraded / ClearDegraded write the health readout — a bound column
+	// the board no longer carries, and its repair. Separate from Upsert and
+	// SaveStatusVocabulary so neither can silently clear a degradation, and so
+	// the readout has exactly two writers (the pluginsource precedent).
+	MarkDegraded(ctx context.Context, tenantID, reason string) error
+	ClearDegraded(ctx context.Context, tenantID string) error
 }
 
 // ---- in-memory store (tests / local) ----
@@ -277,9 +330,57 @@ func (m *MemoryBoardBindingStore) Upsert(_ context.Context, b BoardBinding) erro
 		// A re-bind must not release a pass that is running: the Mongo twin
 		// never names the field in its $set, so dropping it here would make
 		// the two twins disagree on whether the board is held.
-		b.SyncLeaseUntil = prev.SyncLeaseUntil
+		b.SyncLeaseUntil, b.SyncLeaseOwner = prev.SyncLeaseUntil, prev.SyncLeaseOwner
 	}
+	// A re-bind CLEARS the degradation: it re-read the board and re-resolved
+	// every column by name, which is the documented remedy. Written explicitly
+	// rather than left to the zero value — the Mongo twin has to $unset it, so
+	// stating it here is what keeps the two answering the same thing.
+	b.DegradedReason, b.DegradedAt = "", nil
 	m.items[b.TenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) SaveStatusVocabulary(_ context.Context, tenantID string, v StatusVocabulary) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	b.SetVocabulary(v)
+	b.UpdatedAt = time.Now().UTC()
+	m.items[tenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) MarkDegraded(_ context.Context, tenantID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("forge: board binding: a degradation needs a reason")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	now := time.Now().UTC()
+	b.DegradedReason, b.DegradedAt = reason, &now
+	b.UpdatedAt = now
+	m.items[tenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) ClearDegraded(_ context.Context, tenantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	b.DegradedReason, b.DegradedAt = "", nil
+	b.UpdatedAt = time.Now().UTC()
+	m.items[tenantID] = b
 	return nil
 }
 
@@ -333,7 +434,7 @@ func (m *MemoryBoardBindingStore) snapshot(keep func(BoardBinding) bool) []Board
 	return out
 }
 
-func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, seen, at time.Time) (bool, error) {
+func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, seen, at time.Time, owner string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	b, ok := m.items[tenantID]
@@ -351,19 +452,24 @@ func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, 
 	}
 	b.LastSyncedAt = at
 	b.SyncLeaseUntil = at.Add(BoardSyncLeaseTTL)
+	b.SyncLeaseOwner = owner
 	b.UpdatedAt = time.Now().UTC()
 	m.items[tenantID] = b
 	return true, nil
 }
 
-func (m *MemoryBoardBindingStore) ReleaseSync(_ context.Context, tenantID string) error {
+func (m *MemoryBoardBindingStore) ReleaseSync(_ context.Context, tenantID, owner string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	b, ok := m.items[tenantID]
 	if !ok {
 		return ErrBoardBindingNotFound
 	}
+	if b.SyncLeaseOwner != owner {
+		return ErrBoardSyncLeaseLost
+	}
 	b.SyncLeaseUntil = time.Time{}
+	b.SyncLeaseOwner = ""
 	b.UpdatedAt = time.Now().UTC()
 	m.items[tenantID] = b
 	return nil
@@ -421,10 +527,78 @@ func (s *MongoBoardBindingStore) Upsert(ctx context.Context, b BoardBinding) err
 	}
 	_, err := s.coll.UpdateOne(ctx,
 		bson.M{"_id": b.TenantID},
-		bson.M{"$set": set, "$setOnInsert": bson.M{"created_at": b.CreatedAt}},
+		bson.M{
+			"$set": set,
+			// A re-bind re-read the board and re-resolved every column by
+			// name — the documented remedy for a degraded binding, so it
+			// clears the readout. Named explicitly: not writing the field
+			// would leave the stored degradation standing while the memory
+			// twin drops it.
+			"$unset":       bson.M{"degraded_reason": "", "degraded_at": ""},
+			"$setOnInsert": bson.M{"created_at": b.CreatedAt},
+		},
 		options.UpdateOne().SetUpsert(true))
 	if err != nil {
 		return fmt.Errorf("forge: upsert board binding: %w", err)
+	}
+	return nil
+}
+
+// SaveStatusVocabulary writes ONLY the cached name⇄id half — the fields a
+// reconciliation against the live board may correct. `missing_statuses` is set
+// unconditionally (including to nil) because a repair that resolves the last
+// missing column must be able to empty it.
+func (s *MongoBoardBindingStore) SaveStatusVocabulary(ctx context.Context, tenantID string, v StatusVocabulary) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{"$set": bson.M{
+			"status_mapping":   v.Mapping,
+			"status_options":   v.Options,
+			"status_field_id":  v.StatusFieldID,
+			"missing_statuses": v.MissingStatuses,
+			"updated_at":       time.Now().UTC(),
+		}})
+	if err != nil {
+		return fmt.Errorf("forge: save board status vocabulary: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
+}
+
+// MarkDegraded records that a bound status column no longer exists on the
+// board, and why.
+func (s *MongoBoardBindingStore) MarkDegraded(ctx context.Context, tenantID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("forge: board binding: a degradation needs a reason")
+	}
+	now := time.Now().UTC()
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{"$set": bson.M{"degraded_reason": reason, "degraded_at": now, "updated_at": now}})
+	if err != nil {
+		return fmt.Errorf("forge: mark board binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
+}
+
+// ClearDegraded records a reconciliation that resolved every column again.
+func (s *MongoBoardBindingStore) ClearDegraded(ctx context.Context, tenantID string) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{
+			"$unset": bson.M{"degraded_reason": "", "degraded_at": ""},
+			"$set":   bson.M{"updated_at": time.Now().UTC()},
+		})
+	if err != nil {
+		return fmt.Errorf("forge: clear board binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
 	}
 	return nil
 }
@@ -478,7 +652,7 @@ func (s *MongoBoardBindingStore) DueBindings(ctx context.Context, now time.Time)
 // match after the first pass, which would stop the reconciliation dead. ModifiedCount == 1 means this replica owns the
 // pass; 0 means another replica already claimed it (or the binding is gone,
 // which the follow-up read distinguishes).
-func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error) {
+func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string, seen, at time.Time, owner string) (bool, error) {
 	filter := bson.M{"_id": tenantID}
 	// The lease half of the claim: no pass may be running. An absent field is
 	// a binding that never ran (or was released), so the predicate has to
@@ -503,6 +677,7 @@ func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string,
 		bson.M{"$set": bson.M{
 			"last_synced_at":   at,
 			"sync_lease_until": at.Add(BoardSyncLeaseTTL),
+			"sync_lease_owner": owner,
 			"updated_at":       time.Now().UTC(),
 		}})
 	if err != nil {
@@ -520,20 +695,28 @@ func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string,
 	return false, nil
 }
 
-// ReleaseSync clears the lease. It is deliberately NOT conditional on who
-// holds it: the only caller is the pass that just claimed, and a release that
-// could fail on a lease already expired-and-retaken would leave the board held
-// by a pass that ended.
-func (s *MongoBoardBindingStore) ReleaseSync(ctx context.Context, tenantID string) error {
-	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": tenantID},
-		bson.M{"$unset": bson.M{"sync_lease_until": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}})
+// ReleaseSync clears the lease, CAS'd on the owner that took it: a pass that
+// overran the TTL and lost the board must not clear its SUCCESSOR's lease.
+//
+// Not matching is not the same as not existing, so the two are distinguished:
+// a missing binding is ErrBoardBindingNotFound, a lease that moved on is
+// ErrBoardSyncLeaseLost — the only moment an overrun is knowable, and worth a
+// line in the log rather than a silent success.
+func (s *MongoBoardBindingStore) ReleaseSync(ctx context.Context, tenantID, owner string) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID, "sync_lease_owner": owner},
+		bson.M{"$unset": bson.M{"sync_lease_until": "", "sync_lease_owner": ""},
+			"$set": bson.M{"updated_at": time.Now().UTC()}})
 	if err != nil {
 		return fmt.Errorf("forge: release board sync: %w", err)
 	}
-	if res.MatchedCount == 0 {
-		return ErrBoardBindingNotFound
+	if res.MatchedCount == 1 {
+		return nil
 	}
-	return nil
+	if _, err := s.GetByTenant(ctx, tenantID); err != nil {
+		return err
+	}
+	return ErrBoardSyncLeaseLost
 }
 
 func (s *MongoBoardBindingStore) find(ctx context.Context, filter bson.M) ([]BoardBinding, error) {

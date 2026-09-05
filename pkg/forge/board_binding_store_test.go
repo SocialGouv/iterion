@@ -140,7 +140,7 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 			t.Fatalf("GetByTenant: %v", err)
 		}
 		at := base.Add(2 * time.Hour)
-		won, err := store.ClaimSync(ctx, "team-cas", seen.LastSyncedAt, at)
+		won, err := store.ClaimSync(ctx, "team-cas", seen.LastSyncedAt, at, "owner-cas")
 		if err != nil {
 			t.Fatalf("ClaimSync: %v", err)
 		}
@@ -148,7 +148,7 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 			t.Fatal("the first claimant must win")
 		}
 		// A second replica presenting the SAME stale watermark must lose.
-		won2, err := store.ClaimSync(ctx, "team-cas", seen.LastSyncedAt, at)
+		won2, err := store.ClaimSync(ctx, "team-cas", seen.LastSyncedAt, at, "owner-cas")
 		if err != nil {
 			t.Fatalf("ClaimSync (second): %v", err)
 		}
@@ -192,11 +192,11 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 		// (a) the value the CALLER holds — never round-tripped through the store.
 		at := nsWatermark.Add(time.Hour)
-		won, err := store.ClaimSync(ctx, "team-precision", nsWatermark, at)
+		won, err := store.ClaimSync(ctx, "team-precision", nsWatermark, at, "owner-p")
 		if err != nil || !won {
 			t.Fatalf("claim with the caller's own watermark: won=%v err=%v", won, err)
 		}
-		if err := store.ReleaseSync(ctx, "team-precision"); err != nil {
+		if err := store.ReleaseSync(ctx, "team-precision", "owner-p"); err != nil {
 			t.Fatalf("ReleaseSync: %v", err)
 		}
 		// (b) the value READ BACK — the shape the sync worker actually uses,
@@ -205,16 +205,16 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		if err != nil {
 			t.Fatalf("GetByTenant: %v", err)
 		}
-		won2, err := store.ClaimSync(ctx, "team-precision", seen.LastSyncedAt, at.Add(time.Hour))
+		won2, err := store.ClaimSync(ctx, "team-precision", seen.LastSyncedAt, at.Add(time.Hour), "owner-p")
 		if err != nil || !won2 {
 			t.Fatalf("claim with the stored watermark: won=%v err=%v — the periodic pass would stop after its first run", won2, err)
 		}
-		if err := store.ReleaseSync(ctx, "team-precision"); err != nil {
+		if err := store.ReleaseSync(ctx, "team-precision", "owner-p"); err != nil {
 			t.Fatalf("ReleaseSync (second): %v", err)
 		}
 		// And a watermark that is genuinely different still loses, so the
 		// truncation has not turned the CAS into "always match".
-		if won3, err := store.ClaimSync(ctx, "team-precision", nsWatermark, at.Add(2*time.Hour)); err != nil || won3 {
+		if won3, err := store.ClaimSync(ctx, "team-precision", nsWatermark, at.Add(2*time.Hour), "owner-p"); err != nil || won3 {
 			t.Fatalf("a stale watermark must still lose: won=%v err=%v", won3, err)
 		}
 	})
@@ -231,14 +231,14 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 			t.Fatalf("Upsert: %v", err)
 		}
 		at := base.Add(time.Hour)
-		won, err := store.ClaimSync(ctx, "team-lease", time.Time{}, at)
+		won, err := store.ClaimSync(ctx, "team-lease", time.Time{}, at, "owner-l")
 		if err != nil || !won {
 			t.Fatalf("ClaimSync: won=%v err=%v", won, err)
 		}
 		// One interval later the binding is due again and the pass is still
 		// running. The presented watermark MATCHES — only the lease refuses.
 		overrun := at.Add(90 * time.Second)
-		won2, err := store.ClaimSync(ctx, "team-lease", at, overrun)
+		won2, err := store.ClaimSync(ctx, "team-lease", at, overrun, "owner-l")
 		if err != nil {
 			t.Fatalf("ClaimSync (overlapping): %v", err)
 		}
@@ -259,38 +259,79 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		if err := store.Upsert(ctx, binding("team-lease", time.Minute)); err != nil {
 			t.Fatalf("Upsert during a pass: %v", err)
 		}
-		if wonRebind, err := store.ClaimSync(ctx, "team-lease", at, overrun); err != nil || wonRebind {
+		if wonRebind, err := store.ClaimSync(ctx, "team-lease", at, overrun, "owner-l"); err != nil || wonRebind {
 			t.Fatalf("a re-bind released a running pass's lease: won=%v err=%v", wonRebind, err)
 		}
 		// Releasing at pass end hands the board back immediately — the TTL is
 		// only ever reached by a replica that died mid-pass.
-		if err := store.ReleaseSync(ctx, "team-lease"); err != nil {
+		if err := store.ReleaseSync(ctx, "team-lease", "owner-l"); err != nil {
 			t.Fatalf("ReleaseSync: %v", err)
 		}
-		won3, err := store.ClaimSync(ctx, "team-lease", at, overrun)
+		won3, err := store.ClaimSync(ctx, "team-lease", at, overrun, "owner-l")
 		if err != nil || !won3 {
 			t.Fatalf("after ReleaseSync the next pass must claim: won=%v err=%v", won3, err)
 		}
 		// And a lease nobody released expires, so a dead replica costs one
 		// TTL of staleness rather than the board forever.
 		expired := overrun.Add(forge.BoardSyncLeaseTTL).Add(time.Second)
-		won4, err := store.ClaimSync(ctx, "team-lease", overrun, expired)
+		won4, err := store.ClaimSync(ctx, "team-lease", overrun, expired, "owner-l")
 		if err != nil || !won4 {
 			t.Fatalf("an expired lease must be reclaimable: won=%v err=%v", won4, err)
 		}
-		if err := store.ReleaseSync(ctx, "team-lease"); err != nil {
+		if err := store.ReleaseSync(ctx, "team-lease", "owner-l"); err != nil {
+			t.Fatalf("ReleaseSync (cleanup): %v", err)
+		}
+	})
+
+	t.Run("a late release does not clear its successor's lease", func(t *testing.T) {
+		// A pass that OVERRUNS the TTL loses its lease to the next tick, which
+		// is the point. What must not follow is its deferred release clearing
+		// the lease of the pass that legitimately took over: the board would
+		// be unprotected while that successor is still inside its pass, and
+		// the tick after it would claim — two concurrent passes, which is the
+		// exact overlap the lease exists to refuse.
+		if err := store.Upsert(ctx, binding("team-late", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		t0 := base.Add(5 * time.Hour)
+		wonA, err := store.ClaimSync(ctx, "team-late", time.Time{}, t0, "replica-A")
+		if err != nil || !wonA {
+			t.Fatalf("A claims: won=%v err=%v", wonA, err)
+		}
+		// A overruns; at T0+TTL its lease has lapsed and B legitimately wins.
+		t1 := t0.Add(forge.BoardSyncLeaseTTL).Add(time.Second)
+		wonB, err := store.ClaimSync(ctx, "team-late", t0, t1, "replica-B")
+		if err != nil || !wonB {
+			t.Fatalf("B reclaims the expired lease: won=%v err=%v", wonB, err)
+		}
+		// A now finishes and releases. It owns nothing any more, and it must
+		// be TOLD so rather than silently clearing B's hold.
+		if err := store.ReleaseSync(ctx, "team-late", "replica-A"); !errors.Is(err, forge.ErrBoardSyncLeaseLost) {
+			t.Fatalf("a late release must report the lost lease, got %v", err)
+		}
+		if wonC, err := store.ClaimSync(ctx, "team-late", t1, t1.Add(90*time.Second), "replica-C"); err != nil || wonC {
+			t.Fatalf("C claimed a board B is still inside: won=%v err=%v", wonC, err)
+		}
+		// B's own release is the one that frees it.
+		if err := store.ReleaseSync(ctx, "team-late", "replica-B"); err != nil {
+			t.Fatalf("B releases its own lease: %v", err)
+		}
+		if wonD, err := store.ClaimSync(ctx, "team-late", t1, t1.Add(90*time.Second), "replica-D"); err != nil || !wonD {
+			t.Fatalf("after B released, the next pass must claim: won=%v err=%v", wonD, err)
+		}
+		if err := store.ReleaseSync(ctx, "team-late", "replica-D"); err != nil {
 			t.Fatalf("ReleaseSync (cleanup): %v", err)
 		}
 	})
 
 	t.Run("ReleaseSync on a missing binding is a typed error", func(t *testing.T) {
-		if err := store.ReleaseSync(ctx, "nobody"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+		if err := store.ReleaseSync(ctx, "nobody", "anyone"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
 			t.Fatalf("want ErrBoardBindingNotFound, got %v", err)
 		}
 	})
 
 	t.Run("ClaimSync on a missing binding is a typed error", func(t *testing.T) {
-		_, err := store.ClaimSync(ctx, "nobody", time.Time{}, base)
+		_, err := store.ClaimSync(ctx, "nobody", time.Time{}, base, "owner-x")
 		if !errors.Is(err, forge.ErrBoardBindingNotFound) {
 			t.Fatalf("want ErrBoardBindingNotFound, got %v", err)
 		}
@@ -305,6 +346,93 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 		if _, err := store.GetByTenant(ctx, "team-del"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
 			t.Fatalf("want ErrBoardBindingNotFound after delete, got %v", err)
+		}
+	})
+
+	t.Run("the status vocabulary is repairable on its own", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-voc", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := store.SaveStatusVocabulary(ctx, "team-voc", forge.StatusVocabulary{
+			Mapping:       []forge.StatusMapping{{Status: "Ready to work", State: "ready"}, {Status: "Done", State: "done"}},
+			Options:       map[string]string{"ready": "opt_planned", "done": "opt_fresh"},
+			StatusFieldID: "PVTSSF_status2",
+		}); err != nil {
+			t.Fatalf("SaveStatusVocabulary: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-voc")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if s, ok := forge.StatusForState(got.Mapping(), "ready"); !ok || s != "Ready to work" {
+			t.Errorf("repaired column name = %q (ok=%v)", s, ok)
+		}
+		if got.StatusOptions["done"] != "opt_fresh" || got.StatusFieldID != "PVTSSF_status2" {
+			t.Errorf("repaired ids not stored: %+v / %q", got.StatusOptions, got.StatusFieldID)
+		}
+		// And ONLY the vocabulary: a sync pass may correct what the forge
+		// changed under it, never the address, credential or policy.
+		if got.ConnectionID != "conn-1" || got.Number != 203 || got.SyncEvery != time.Minute {
+			t.Errorf("a vocabulary repair must not touch the rest of the binding: %+v", got)
+		}
+		if err := store.SaveStatusVocabulary(ctx, "nobody", forge.StatusVocabulary{}); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Errorf("SaveStatusVocabulary on a missing binding: want ErrBoardBindingNotFound, got %v", err)
+		}
+	})
+
+	t.Run("the degraded readout has exactly two writers", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-deg", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := store.MarkDegraded(ctx, "team-deg", ""); err == nil {
+			t.Error("a degradation with no reason must be refused — the reason IS the remedy")
+		}
+		if err := store.MarkDegraded(ctx, "team-deg", "the Status field no longer carries \"Blocked\""); err != nil {
+			t.Fatalf("MarkDegraded: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-deg")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if !got.Degraded() || got.DegradedAt == nil {
+			t.Fatalf("binding must read degraded with a timestamp: %+v", got)
+		}
+
+		// A vocabulary repair must NOT clear it: only a resolution that
+		// succeeded, or a re-bind, says the board is serviceable again.
+		if err := store.SaveStatusVocabulary(ctx, "team-deg", got.Vocabulary()); err != nil {
+			t.Fatalf("SaveStatusVocabulary: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-deg"); !got.Degraded() {
+			t.Error("a vocabulary write must not silently clear a degradation")
+		}
+
+		if err := store.ClearDegraded(ctx, "team-deg"); err != nil {
+			t.Fatalf("ClearDegraded: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-deg"); got.Degraded() || got.DegradedAt != nil {
+			t.Errorf("ClearDegraded left %+v", got)
+		}
+
+		// A RE-BIND clears it too — it re-read the board and re-resolved every
+		// column by name, which is the documented remedy.
+		if err := store.MarkDegraded(ctx, "team-deg", "gone again"); err != nil {
+			t.Fatalf("MarkDegraded: %v", err)
+		}
+		if err := store.Upsert(ctx, binding("team-deg", time.Minute)); err != nil {
+			t.Fatalf("re-bind: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-deg"); got.Degraded() {
+			t.Errorf("a re-bind must clear the degradation, got %q", got.DegradedReason)
+		}
+
+		for _, err := range []error{
+			store.MarkDegraded(ctx, "nobody", "why"),
+			store.ClearDegraded(ctx, "nobody"),
+		} {
+			if !errors.Is(err, forge.ErrBoardBindingNotFound) {
+				t.Errorf("health write on a missing binding: want ErrBoardBindingNotFound, got %v", err)
+			}
 		}
 	})
 

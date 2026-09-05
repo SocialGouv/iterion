@@ -153,10 +153,51 @@ board — exactly the coupling the ENGINE-stays-bot-agnostic rule forbids. So
 `Status` / `Area` / `Mode` / `Priority` **by name**, and stores the ids it
 found on the binding.
 
-The cache is a cache, never an authority: any sync may re-run discovery, and a
-`Status` write that fails because an option id is gone re-discovers once and
-retries. A field renamed or deleted on GitHub surfaces as an explicit error
-naming the field, never as a silent skip.
+The cache is a cache, never an authority — and it is TWO caches that go stale
+independently:
+
+- the **option ids** are what every write uses. They survive a rename and die
+  with a delete;
+- the **column names** (the stored `StatusMapping`) are what both directions
+  COMPARE — the import maps a board status onto a state, the reflect checks the
+  state's status against the board's. They survive a delete-and-re-add and die
+  with a rename.
+
+So each edit an operator makes to a column breaks exactly one half. A rename
+leaves a perfectly valid id under a name nothing matches: the import goes inert
+and the reflect resolves the same still-valid option, writes it — a no-op on
+the forge's side — and records the old name, on every card, on every pass,
+indefinitely.
+
+**Every pass therefore re-resolves both halves** against the project schema it
+has already read for the label fields, so the repair costs no API call
+(`BoardBinding.ReconcileStatusOptions`). Per mapped state, in order: the cached
+**id** still on the field ⇒ adopt the board's current name (rename repaired);
+else the mapped **name** still on the field ⇒ adopt its id (re-created column,
+or one added since the bind); else **lost**. The `Status` field's own id is
+re-resolved the same way, by name.
+
+A LOST column is the only unrepairable case, and it becomes an explicit state
+rather than a retry loop (the `pluginsource` quarantine precedent): the dead id
+is dropped so nothing writes it, those cards are counted `reflect_no_column`,
+and the binding carries a `degraded_reason` NAMING the column — surfaced on
+`GET /api/teams/{id}/board-binding` and logged once, on the transition, not on
+every pass. It is a partial outage: every column that still resolves keeps
+syncing. It clears itself when the column reappears, and a re-bind clears it
+too — which is what makes "re-bind the board" a real remedy rather than the
+only one.
+
+The repaired vocabulary is persisted through a store method narrow enough to
+touch nothing else (`SaveStatusVocabulary`): a reconciliation may correct what
+the forge changed under it, never the address, credential or policy the
+operator chose. A pass with no binding store (the local one-shot `iterion issue
+import --project`) still repairs in memory — it converges, it just does not
+remember.
+
+Because the reflect ultimately WRITES an option id, it also compares one: when
+the item already carries the option about to be written, nothing is written,
+whatever the names say. The name comparison remains as the fallback for a
+provider that reports no option id.
 
 ### 6. The project import HYDRATES cards; it never creates them
 
@@ -236,16 +277,51 @@ this board), which is what the rule read before.
    it is checked first, in both directions: a Status the reflect just wrote
    reads back as "already equal" at the next import, so a write can never
    ping-pong.
-2. Both sides moved since the last sync ⇒ the **newer** timestamp wins.
-3. Timestamps equal ⇒ **GitHub wins**, because it is the roadmap authority a
+2. **Only one side moved ⇒ no conflict**, and no timestamp is consulted. The
+   native side is unmoved while the card still sits in the state the RECORDED
+   status maps to — that mapped state is iterion's own last write, so a card
+   still there has not moved. The oracle is that fact, not a timestamp
+   comparison: `Issue.StateAt` is bumped by any move, including a move away
+   and back, so "the card's transition is newer than the board's" does not
+   mean the card is anywhere other than where iterion last put it. A one-sided
+   board move is therefore a plain apply and a one-sided native move a plain
+   reflect. A recorded status the mapping does not cover leaves the question
+   undecidable (iterion never derived a state from it) and is treated as
+   moved — a phantom conflict costs one `Warn`, the reverse silently overwrites
+   somebody's decision.
+3. Both sides moved since the last sync ⇒ the **newer** timestamp wins.
+4. Timestamps equal ⇒ **GitHub wins**, because it is the roadmap authority a
    human is looking at.
-4. Every applied conflict resolution is logged at `Warn` with both timestamps,
+5. Every applied conflict resolution is logged at `Warn` with both timestamps,
    both values and the winner — a silent overwrite of somebody's decision is
    the one outcome that must never be invisible.
+
+Rule 2 is what keeps `Conflicts` meaning what §9.2 says it means. Without it a
+human's drag — the ordinary gesture on a project board — counted as "both sides
+moved", and whenever the card's transition happened to be the newer of the two,
+the phantom conflict resolved in the native side's favour and the reflect pushed
+the card's OLD column back over the drag.
 
 The native write is a **CAS** (`SetStateFrom(id, seen, want)`), so an operator
 who moved the card between our read and our write wins over the stale fact we
 were carrying, exactly as the issue import already behaves.
+
+**Archived items are off the board, and the two readings differ on purpose.**
+The forge removes an archived item from every view while PRESERVING its field
+values, so one archived in a candidate column keeps reading as that column
+forever. `BoardClient.ListProjectItems` flags rather than filters them, and
+each caller decides:
+
+- the sync pass **skips** them, counted as `skipped_archived` — importing
+  would drive a card from a column nobody can see, reflecting would write into
+  a row nobody can read;
+- the dispatcher's **candidate filter** skips them too: dispatching one
+  launches a bot, and spends LLM budget, on work the operator visibly removed;
+- the dispatcher's **liveness read** (`RefreshStates`) still reports them.
+  Omitting an id there is how the dispatcher learns an issue disappeared, and
+  it answers by cancelling the run and reaping its slot. Archiving is a
+  tidy-up gesture, not a documented kill switch, so a run in flight survives
+  someone clearing the board behind it.
 
 ### 10. The reflect is the second direction of ONE reconciliation pass
 
@@ -267,6 +343,15 @@ the who-moved oracle and the echo suppressor:
   on the join, and pushing would overwrite a column nobody has reconciled yet;
 - **unmapped native state** ⇒ inert (§2).
 
+A native-wins conflict is the one case that does not advance the recorded
+status inline: the reflect writes it with what it actually pushed. When the
+reflect pushes NOTHING — the two sides already landed on the same column, the
+native state is unmapped, the bound board has no column for it, the pass is
+read-only — the import records what it OBSERVED instead, so a divergence
+nothing can resolve is derived once rather than warned and counted on every
+tick. A *failed* write is deliberately excluded: the stale record is what makes
+the next pass retry it.
+
 Because the recorded status advances on every write, a pass with nothing moving
 writes nothing — the property that keeps the loop from re-pushing forever and
 stamping a fresh `updatedAt` that would then win every conflict against the
@@ -284,6 +369,13 @@ running*, and the next tick presents exactly the watermark that pass wrote — s
 the CAS matches, and two replicas reconcile the same board at once, issuing
 duplicate `SetSingleSelect` calls and duplicate `External` writes on the same
 cards. With the lease, the second one loses without advancing the watermark.
+
+The release is a **CAS on the pass's own owner token** (`sync_lease_owner`,
+fresh per pass). Without it, a pass that overran the TTL would clear the lease
+of the successor that legitimately took the board, re-admitting exactly the
+concurrent pass the lease refuses; with it, the late release is declined and
+reported (`ErrBoardSyncLeaseLost` → one Warn naming the overrun), which is the
+only moment an overrun is knowable at all.
 
 The TTL is a backstop, not the normal release: `runPass` hands the board back
 when it ends, whatever the outcome, so the TTL only ever fires for a replica

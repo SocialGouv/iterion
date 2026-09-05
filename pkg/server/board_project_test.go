@@ -307,6 +307,41 @@ func TestImportProjectBoardSkipsDraftsAndPulls(t *testing.T) {
 	}
 }
 
+// TestImportProjectBoardSkipsArchivedItems pins the import half of the archive
+// rule.
+//
+// GitHub PRESERVES an archived item's field values while removing it from
+// every board view, so an item archived in "Planned" keeps reading as Planned
+// forever. Driving a card's column from a value nobody can see or change is
+// not a sync, and reflecting ONTO it writes into an invisible row. Both
+// directions skip it, counted — silence would make an operator hunt for a card
+// that stopped following for no stated reason.
+func TestImportProjectBoardSkipsArchivedItems(t *testing.T) {
+	board := newTestBoard(t)
+	// The card moved natively AND the board says something else, so both
+	// directions would have work to do were the item live.
+	id := seedSynced(t, board, 613, native.StateInProgress, "Planned",
+		time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC))
+	archived := item("PVTI_1", 613, statusValue("Blocked", time.Now().UTC()))
+	archived.Archived = true
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{archived}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: testBinding()})
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.SkippedArchived != 1 || res.Moved != 0 || res.Reflected != 0 || res.Conflicts != 0 {
+		t.Errorf("result = %+v, want the item skipped as archived and nothing else touched", res)
+	}
+	if len(bc.writes) != 0 {
+		t.Errorf("board writes = %+v, want none — an archived row is invisible to the operator", bc.writes)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateInProgress {
+		t.Errorf("state = %q, want it untouched by an archived item", got)
+	}
+}
+
 // TestImportProjectBoardEchoSuppression is the loop guard: when the board's
 // status is the one iterion itself last recorded, the import changes nothing —
 // even though the card has since moved on. Without this the reflect's own
@@ -559,5 +594,132 @@ func TestImportProjectBoardStillReportsAMissingCard(t *testing.T) {
 	}
 	if res.SkippedNoCard != 1 || len(res.MissingRepos) != 1 || res.MissingRepos[0].Repo != "SocialGouv/iterion" {
 		t.Errorf("res = %+v, want one skipped item naming its repo", res)
+	}
+}
+
+// projectDriftingBoard moves a card once, just before the write that was decided on
+// the state it read — the shape native.Store.SetStateFrom's CAS exists for.
+// Its SetStateFrom then loses the CAS through the REAL store and answers
+// (issue, changed=false, nil): a CAS loss is not an error.
+type projectDriftingBoard struct {
+	native.BoardStore
+	driftTo string
+	once    bool
+}
+
+func (d *projectDriftingBoard) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
+	if !d.once {
+		d.once = true
+		if _, err := d.SetState(id, d.driftTo); err != nil {
+			return nil, false, err
+		}
+	}
+	return d.BoardStore.SetStateFrom(id, from, to)
+}
+
+// TestImportProjectBoardDoesNotCountACASLossAsAMove pins that a move the store
+// REFUSED on its CAS is not recorded as applied.
+//
+// SetStateFrom answers a drifted card with (issue, false, nil) — the operator
+// got there first — and the import discarded that flag, taking the nil error
+// as success. It then counted a transition the store never made, and recorded
+// the board's status as synchronized, which makes every later pass a no-op:
+// on the one-shot `iterion issue import --project` path nothing ever repairs
+// that, so the card stays where the operator put it while the record claims
+// the board was applied.
+func TestImportProjectBoardDoesNotCountACASLossAsAMove(t *testing.T) {
+	board := newTestBoard(t)
+	id := seedCard(t, board, 613, native.StateInbox)
+	drifting := &projectDriftingBoard{BoardStore: board, driftTo: native.StateInProgress}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", time.Now().UTC())),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, drifting, nil)
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Moved != 0 {
+		t.Errorf("Moved = %d, want 0 — the store refused the write (%+v)", res.Moved, res)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateInProgress {
+		t.Errorf("state = %q, want the operator's %q", got, native.StateInProgress)
+	}
+	// And nothing may claim the board's status was applied, or every later
+	// pass reads "already equal" and the divergence becomes permanent.
+	if ext := mustGet(t, board, id).External; ext != nil && ext.Project != nil && ext.Project.Status != "" {
+		t.Errorf("recorded status = %q, want none — the write did not land", ext.Project.Status)
+	}
+}
+
+// TestImportProjectBoardOneSidedMoveIsNotAConflict pins ADR-097 §9.2's own
+// definition of the counter: items where BOTH sides had moved.
+//
+// Dragging a card is the ordinary gesture on a forge board, and the native
+// side has NOT moved when the card still sits in the column iterion's own last
+// recorded status put it in. Counting that as a conflict saturates the one
+// number that answers "how often are people and bots fighting over this
+// board". Worse, when the card's transition time happens to be the newer of
+// the two, the phantom conflict resolves in the native side's favour and the
+// reflect pushes the card's OLD column back over the human's drag.
+func TestImportProjectBoardOneSidedMoveIsNotAConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// cardState is where the card sits; recorded is the board status
+		// iterion last synchronized — its mapped state IS iterion's own last
+		// write, so cardState == map(recorded) means "the native side has not
+		// moved".
+		cardState, recorded, boardStatus string
+		// boardOffset positions the board's status timestamp relative to the
+		// card's real transition.
+		boardOffset                            time.Duration
+		wantState                              string
+		wantMoved, wantReflected, wantConflict int
+		wantWrites                             int
+	}{
+		{
+			name: "only the board moved", cardState: native.StateReady,
+			recorded: "Planned", boardStatus: "In progress", boardOffset: -time.Hour,
+			wantState: native.StateInProgress, wantMoved: 1,
+		},
+		{
+			name: "only the native board moved", cardState: native.StateInProgress,
+			recorded: "Planned", boardStatus: "Planned", boardOffset: -time.Hour,
+			wantState: native.StateInProgress, wantReflected: 1, wantWrites: 1,
+		},
+		{
+			name: "both moved", cardState: native.StateInProgress,
+			recorded: "Planned", boardStatus: "Blocked", boardOffset: time.Hour,
+			wantState: native.StateBlocked, wantMoved: 1, wantConflict: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			board := newTestBoard(t)
+			id := seedSynced(t, board, 613, tc.cardState, tc.recorded, time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC))
+			ghAt := cardStateAt(t, board, id).Add(tc.boardOffset)
+			bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+				item("PVTI_1", 613, statusValue(tc.boardStatus, ghAt)),
+			}}}
+
+			res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+				&ProjectImportOptions{Binding: testBinding()})
+			if err != nil {
+				t.Fatalf("ImportProjectBoard: %v", err)
+			}
+			if got := mustGet(t, board, id).State; got != tc.wantState {
+				t.Errorf("state = %q, want %q", got, tc.wantState)
+			}
+			if res.Moved != tc.wantMoved || res.Reflected != tc.wantReflected {
+				t.Errorf("Moved/Reflected = %d/%d, want %d/%d (%+v)",
+					res.Moved, res.Reflected, tc.wantMoved, tc.wantReflected, res)
+			}
+			if res.Conflicts != tc.wantConflict {
+				t.Errorf("Conflicts = %d, want %d — the counter means BOTH sides moved", res.Conflicts, tc.wantConflict)
+			}
+			if len(bc.writes) != tc.wantWrites {
+				t.Errorf("board writes = %+v, want %d — a one-sided board move must never be pushed back",
+					bc.writes, tc.wantWrites)
+			}
+		})
 	}
 }

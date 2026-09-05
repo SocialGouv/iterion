@@ -5387,6 +5387,9 @@ export interface components {
             connection_id: string;
             /** Format: date-time */
             created_at: string;
+            /** Format: date-time */
+            degraded_at?: string;
+            degraded_reason?: string;
             label_fields?: components["schemas"]["BoundLabelField"][];
             /** Format: date-time */
             last_synced_at?: string;
@@ -5405,6 +5408,7 @@ export interface components {
             };
             sync_every: number;
             sync_every_seconds: number;
+            sync_lease_owner?: string;
             /** Format: date-time */
             sync_lease_until?: string;
             tenant_id: string;

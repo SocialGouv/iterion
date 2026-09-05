@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // The REFLECT half: a native card that moved must move its card on the forge
@@ -16,16 +18,31 @@ import (
 // is also the echo suppressor. That double duty is why neither direction needs
 // to maintain a separate "who moved last" flag on every write.
 
+// testBinding is the binding a bind against testProject() produces. Its option
+// ids are READ from that fixture rather than invented: the reflect writes by
+// id and compares by id, so a binding whose ids match no column on the board it
+// is bound to cannot exercise either.
 func testBinding() *forge.BoardBinding {
+	project := testProject()
+	field, ok := project.Field(forge.ProjectStatusFieldName)
+	if !ok {
+		panic("the project fixture must carry a " + forge.ProjectStatusFieldName + " field")
+	}
+	mapping := forge.DefaultStatusMapping()
+	opts := make(map[string]string, len(mapping))
+	for _, m := range mapping {
+		opt, ok := field.Option(m.Status)
+		if !ok {
+			panic("the project fixture must carry the " + m.Status + " column")
+		}
+		opts[m.State] = opt.ID
+	}
 	return &forge.BoardBinding{
 		TenantID: "team-a", Provider: forge.ProviderGitHub,
 		Owner: "SocialGouv", OwnerKind: forge.ProjectOwnerOrg, Number: 203,
-		ConnectionID: "conn-1", ProjectID: "PVT_p", StatusFieldID: "PVTSSF_status",
-		StatusOptions: map[string]string{
-			"inbox": "o_inbox", "ready": "o_planned", "in_progress": "o_prog",
-			"blocked": "o_blocked", "done": "o_done",
-		},
-		StatusMapping: forge.DefaultStatusMapping(),
+		ConnectionID: "conn-1", ProjectID: project.ID, StatusFieldID: field.ID,
+		StatusOptions: opts,
+		StatusMapping: mapping,
 	}
 }
 
@@ -81,7 +98,7 @@ func TestSyncProjectBoardReflectsANativeMove(t *testing.T) {
 		t.Fatalf("writes = %+v, want one Status write", bc.writes)
 	}
 	w := bc.writes[0]
-	if w.ProjectID != "PVT_p" || w.ItemID != "PVTI_1" || w.FieldID != "PVTSSF_status" || w.OptionID != "o_prog" {
+	if w.ProjectID != "PVT_p" || w.ItemID != "PVTI_1" || w.FieldID != "PVTSSF_status" || w.OptionID != optionID(t, testProject(), "In progress") {
 		t.Errorf("write = %+v, want the In progress option on PVTI_1", w)
 	}
 	// The card's state must NOT change — the reflect pushes, it does not pull.
@@ -193,7 +210,7 @@ func TestSyncProjectBoardReflectsWhenNativeWinsTheConflict(t *testing.T) {
 	if res.Reflected != 1 {
 		t.Fatalf("Reflected = %d, want 1 — the winner's state must reach the board (%+v)", res.Reflected, res)
 	}
-	if len(bc.writes) != 1 || bc.writes[0].OptionID != "o_blocked" {
+	if len(bc.writes) != 1 || bc.writes[0].OptionID != optionID(t, testProject(), "Blocked") {
 		t.Fatalf("writes = %+v, want the Blocked option", bc.writes)
 	}
 	if got := mustGet(t, board, id).State; got != native.StateBlocked {
@@ -533,7 +550,7 @@ func TestSyncProjectBoardConflictReadsTheNativeTransitionTime(t *testing.T) {
 	if res.Reflected != 1 || len(bc.writes) != 1 {
 		t.Fatalf("Reflected = %d writes = %+v, want the native move pushed to the board", res.Reflected, bc.writes)
 	}
-	if w := bc.writes[0]; w.OptionID != "o_planned" {
+	if w := bc.writes[0]; w.OptionID != optionID(t, testProject(), "Planned") {
 		t.Errorf("wrote option %q, want the Planned option for `ready`", w.OptionID)
 	}
 }
@@ -565,5 +582,117 @@ func TestSyncProjectBoardConflictStillLetsANewerBoardWin(t *testing.T) {
 	}
 	if len(bc.writes) != 0 {
 		t.Errorf("writes = %+v, want none — the board already shows what it decided", bc.writes)
+	}
+}
+
+// TestSyncProjectBoardConvergesWhenBothSidesAgree pins that a native-wins
+// conflict CONVERGES even when the reflect has nothing to write.
+//
+// A native-wins conflict deliberately declines to record the board's status,
+// on the promise that the reflect will overwrite it with what it wrote. The
+// reflect has exits that write nothing — sharpest here: both sides moved
+// independently and landed on the SAME column, so there is nothing to push.
+// The promise is then unkept, the record stays stale, and the next pass feeds
+// decideProjectStatus identical inputs and re-derives the same conflict: a
+// Warn and a Conflicts++ per card, on every tick, for two boards that already
+// agree.
+func TestSyncProjectBoardConvergesWhenBothSidesAgree(t *testing.T) {
+	board := newTestBoard(t)
+	old := time.Now().UTC().Add(-time.Hour)
+	// Recorded "Planned". The card moved natively to blocked, and somebody
+	// moved the board to Blocked too — independently, and EARLIER, so the
+	// native side wins the conflict and the reflect finds nothing to do.
+	id := seedSynced(t, board, 613, native.StateInbox, "Planned", old)
+	if _, _, err := board.SetStateFrom(id, native.StateInbox, native.StateBlocked); err != nil {
+		t.Fatalf("native move: %v", err)
+	}
+	boardAt := cardStateAt(t, board, id).Add(-time.Minute)
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Blocked", boardAt)),
+	}}}
+	var logs bytes.Buffer
+	opts := &ProjectImportOptions{Binding: testBinding(), Logger: iterlog.New(iterlog.LevelWarn, &logs)}
+
+	res1, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if res1.Conflicts != 1 {
+		t.Fatalf("pass 1: Conflicts = %d, want 1 (%+v)", res1.Conflicts, res1)
+	}
+	if len(bc.writes) != 0 {
+		t.Fatalf("pass 1: writes = %+v, want none — the board already shows the card's column", bc.writes)
+	}
+
+	logs.Reset()
+	res2, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if res2.Conflicts != 0 {
+		t.Errorf("pass 2: Conflicts = %d, want 0 — two agreeing boards must stop being a conflict (%+v)", res2.Conflicts, res2)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("pass 2 logged %q, want silence — a resolved divergence must not warn on every tick", logs.String())
+	}
+	if len(bc.writes) != 0 {
+		t.Errorf("writes = %+v, want none across both passes", bc.writes)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateBlocked {
+		t.Errorf("state = %q, want it untouched", got)
+	}
+}
+
+// The same non-convergence through the reflect's other silent exits: an
+// unmapped native state, and a bound board with no column for the state.
+func TestSyncProjectBoardConvergesWhenTheReflectCannotWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		state   string
+		bind    func(*forge.BoardBinding)
+		project func(*testing.T) forge.Project
+	}{
+		{name: "an unmapped native state is inert, not a standing conflict", state: native.StateReview},
+		{
+			name: "a board with no column for the state is reported once, not every tick", state: native.StateBlocked,
+			// Both halves, or the fixture contradicts itself: dropping the id
+			// alone describes a binding the pass's reconciliation would
+			// repair from the board's still-present column.
+			bind:    func(b *forge.BoardBinding) { delete(b.StatusOptions, native.StateBlocked) },
+			project: func(t *testing.T) forge.Project { return deletedColumn(t, "Blocked") },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			board := newTestBoard(t)
+			old := time.Now().UTC().Add(-time.Hour)
+			id := seedSynced(t, board, 613, native.StateInbox, "Planned", old)
+			if _, _, err := board.SetStateFrom(id, native.StateInbox, tc.state); err != nil {
+				t.Fatalf("native move: %v", err)
+			}
+			bind := testBinding()
+			if tc.bind != nil {
+				tc.bind(bind)
+			}
+			project := testProject()
+			if tc.project != nil {
+				project = tc.project(t)
+			}
+			bc := &fakeBoardClient{project: project, pages: [][]forge.ProjectItem{{
+				item("PVTI_1", 613, statusValue("Done", cardStateAt(t, board, id).Add(-time.Minute))),
+			}}}
+			opts := &ProjectImportOptions{Binding: bind}
+
+			if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts); err != nil {
+				t.Fatalf("pass 1: %v", err)
+			}
+			res2, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+			if err != nil {
+				t.Fatalf("pass 2: %v", err)
+			}
+			if res2.Conflicts != 0 {
+				t.Errorf("pass 2: Conflicts = %d, want 0 — a divergence nothing can resolve must be derived once, not every tick (%+v)",
+					res2.Conflicts, res2)
+			}
+		})
 	}
 }

@@ -114,6 +114,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "degraded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
           "label_fields": {
             "items": {
               "$ref": "#/components/schemas/BoundLabelField"
@@ -171,6 +178,9 @@
           },
           "sync_every_seconds": {
             "type": "integer"
+          },
+          "sync_lease_owner": {
+            "type": "string"
           },
           "sync_lease_until": {
             "format": "date-time",

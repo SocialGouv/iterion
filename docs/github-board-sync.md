@@ -54,7 +54,7 @@ bug until you know it is a decision:
 
 | credential | what it needs |
 |---|---|
-| **GitHub App** | organization permission **Projects: Read and write** (`organization_projects`). It is **org-level**, so an existing installation does not acquire it silently — an org owner must approve the new grant. Request it at App creation: tick *"Allow iterion to sync this org's project boards"* in the connect wizard (`allow_project_board` on `POST /api/teams/{id}/forge/oauth-apps/github-manifest`). At run time iterion mints a dedicated token per board call, so the cached runtime token stays minimal. |
+| **GitHub App** | organization permission **Projects: Read and write** (`organization_projects`). It is **org-level**, so an existing installation does not acquire it silently — an org owner must approve the new grant. Request it at App creation: tick *"Allow iterion to sync this org's project boards"* in the connect wizard (`allow_project_board` on `POST /api/teams/{id}/forge/oauth-apps/github-manifest`). At run time board calls ride a dedicated token, cached separately from and never served to the runtime one, so the token bots push with stays minimal. |
 | **Fine-grained PAT** | organization permission **Projects: Read and write**. |
 | **Classic PAT** | the `project` scope (`read:project` alone gives a read-only binding). |
 
@@ -138,6 +138,35 @@ The same override exists for the dispatcher
 
 ---
 
+## Editing a bound board's columns
+
+Binding caches two things per column: the **option id** (what every write uses)
+and the **name** (what both directions compare). Editing a column on GitHub
+invalidates one or the other, so every reconciliation pass re-resolves both
+against the board's live schema — at no extra API cost, since the pass already
+reads it. What that repairs, and what it cannot:
+
+| you did on GitHub | what survives | what the pass does |
+|---|---|---|
+| **renamed** a column | its id | adopts the new name; both directions keep working, nothing is rewritten |
+| **deleted and re-added** a column under the same name | its name | adopts the new id |
+| **added** a column the map named and the board lacked | — | adopts it and drops it from `missing_statuses` |
+| **deleted** a column for good | nothing | marks the binding **degraded**, naming the column |
+
+A degraded binding is a **partial** outage, not a stop: every column it can
+still resolve keeps syncing, and only the cards whose state has no column are
+left alone (counted as `reflect_no_column` in the pass line). The reason is on
+the binding — `iterion remote board show`, or
+`GET /api/teams/{id}/board-binding` — and is logged **once**, when it starts,
+not on every pass.
+
+It clears by itself the moment the column exists again. Re-binding the board
+(`iterion remote board bind …`) also clears it, and is the way out when the
+column is gone for good: bind with a `--status-map` matching what the board
+actually carries.
+
+---
+
 ## Reconciliation
 
 The board pass IS the convergence: it recomputes the truth from the board and
@@ -150,19 +179,43 @@ permanent divergence.
   5-minute lease on it*; only the winner runs the pass, so N replicas cost one
   pass, not N — including when a pass outlives the interval, where the
   watermark alone would let a second replica join it. The lease is handed back
-  at pass end, so it only ever expires for a replica that died mid-pass.
+  at pass end — by the pass that took it, never by an older one that overran
+  (that release is declined and logged) — so it only ever expires for a
+  replica that died mid-pass.
 - **Cost**: one project read per bound team per interval. GitHub prices a
   Projects v2 page at a handful of points against a 5000/hour budget.
 - **Logs**: one line per pass.
 
 ```
 board sync: team=t_123 board=SocialGouv/203 items=214 moved=2 reflected=1 \
-  labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 \
-  skipped_no_card=4 skipped=11 took=812ms
+  labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 reflect_no_column=0 \
+  skipped_no_card=4 skipped_archived=3 skipped=11 took=812ms
 ```
 
 A failed pass logs `Warn` and **does not block the next tick**; one team's
 revoked token skips that team, not the sweep.
+
+---
+
+## Archived items
+
+Archiving is how a board gets cleared. GitHub removes the item from every view
+but **keeps its field values**, so an item archived in "Planned" reads as
+Planned forever.
+
+- The **sync pass skips it entirely**, counted as `skipped_archived`. Neither
+  direction runs: importing would drive a card from a column nobody can see,
+  reflecting would write into a row nobody can read.
+- The **dispatcher never dispatches it**. An archived item in a candidate
+  column would otherwise launch a bot, and spend LLM budget, on work the
+  operator visibly removed.
+- A run **already in flight is not cancelled** by archiving its card. The
+  dispatcher's liveness read still reports an archived item's state, because
+  omitting it means "the issue disappeared" and reaps the run — and tidying a
+  board is not a kill switch. Move the card out of its column, or cancel the
+  run, to stop it.
+
+Un-archive the item to put it back under sync.
 
 ---
 
@@ -172,12 +225,19 @@ When both sides moved since the last pass:
 
 1. **Value already equal ⇒ nothing happens.** This is checked first and is what
    makes the loop terminate: a status iterion itself wrote reads back as equal.
-2. Otherwise the **newer** state change wins — the card's own transition time
+2. **Only one side moved ⇒ no conflict.** The native side is unmoved while the
+   card still sits in the column the recorded status maps to — iterion's own
+   last write. A one-sided board move is a plain apply, a one-sided native move
+   a plain reflect, and neither touches the counter.
+3. Otherwise the **newer** state change wins — the card's own transition time
    (stamped by the board store at every move, wherever the move came from)
    against the board column's `updatedAt`.
-3. A tie goes to **GitHub** — it is the roadmap a human is looking at.
-4. Every resolution is logged at `Warn` with both timestamps, both values and
+4. A tie goes to **GitHub** — it is the roadmap a human is looking at.
+5. Every resolution is logged at `Warn` with both timestamps, both values and
    the winner.
+
+So `conflicts=N` counts people and bots actually fighting over the board. A
+board whose humans and bots take turns reads `conflicts=0`.
 
 The native write is a CAS, so an operator who moved the card between our read
 and our write wins over the stale fact we were carrying.
@@ -206,11 +266,19 @@ mapped column the board lacks). Then check it is not a terminal card:
 which is by design — reopen it in iterion.
 
 **A card moved in iterion but not on GitHub.**
-Three causes, in order of likelihood: the state is unmapped (`review`,
+Four causes, in order of likelihood: the state is unmapped (`review`,
 `waiting_deps`, `awaiting_input`, `backlog` are inert); the binding has
-`sync_every: 0`; or the credential lacks the write grant —
-`reflect_failed > 0` with a `403 Resource not accessible by integration` in the
-log means the App's *Projects: Read and write* is not approved.
+`sync_every: 0`; the board has no column for that state — `reflect_no_column >
+0`, and `iterion remote board show` says which (a `!` on a mapped column, or a
+`degraded` reason when a column was deleted after the bind, see [Editing a
+bound board's columns](#editing-a-bound-boards-columns)); or the credential
+lacks the write grant — `reflect_failed > 0` with a `403 Resource not
+accessible by integration` in the log means the App's *Projects: Read and
+write* is not approved.
+
+**A card stopped following, and the item is not on the board any more.**
+It is archived. `skipped_archived > 0` in the pass line; un-archive it to put
+it back under sync (see [Archived items](#archived-items)).
 
 **Bind fails with "none of the mapped columns exist".**
 The board's real column names are listed in the error. Either rename them on
