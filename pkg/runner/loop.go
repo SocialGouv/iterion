@@ -1101,6 +1101,8 @@ type Runner struct {
 	// maxDeliverOverride pins the redelivery budget in unit tests without
 	// a queue. 0 in production; the runner reads r.cfg.NATS then.
 	maxDeliverOverride int
+	// Test seam for the final delivery archive; production uses NATS.PublishDLQ.
+	lockFailureDLQ func(context.Context, jsDelivery, string) error
 }
 
 type inFlight struct {

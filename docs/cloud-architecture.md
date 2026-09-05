@@ -172,6 +172,14 @@ The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
 `IterionDLQNotEmpty` alert in the starter pack fires on.
 
+A delivery refused because another runner holds the run lock is retried after
+one lease interval (60 seconds). On its last allowed attempt, the original
+message is archived on the DLQ and `run_delivery_exhausted` records whether
+that archive succeeded. This is a delivery failure: the live owner's run
+status and continuation stay unchanged. Inspect the owner and the run's
+outcome before replaying; discard the duplicate if the owner completed it.
+If the archive failed, the event names the error and no queue copy remains.
+
 ## Multitenancy enforcement layers
 
 Four boundaries, each fail-closed:

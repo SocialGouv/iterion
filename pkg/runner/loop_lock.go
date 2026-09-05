@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -14,8 +15,8 @@ import (
 
 // acquireRunLock claims the distributed run lock guarding against two
 // runners executing the same run. ErrLockHeld means a sibling already
-// has it — Nak so the sibling retains exclusive ownership; any other
-// lock error is a transient-store shape and also Nak'd. Returns
+// has it. Retry with a delay while attempts remain; archive the delivery on
+// exhaustion without changing the run owned by that sibling. Returns
 // (lock, true, "") on success; (nil, false, finalStatus) when the caller
 // must abandon the delivery (finalStatus is the metric label).
 func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger) (store.RunLock, bool, string) {
@@ -23,14 +24,21 @@ func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, d
 	// same run is the contention this guards against.
 	lock, err := r.cfg.Store.LockRun(runCtx, msg.RunID)
 	if err != nil {
+		status := "failed"
 		if errors.Is(err, natsq.ErrLockHeld) {
-			logger.Warn("runner: lock held for %s — naking for sibling", msg.RunID)
-			nakTerminal(logger, delivery, "nak-lock-held", msg.RunID)
-			return nil, false, "lock_held"
+			status = "lock_held"
 		}
-		logger.Error("runner: lock %s: %v", msg.RunID, err)
-		nakTerminal(logger, delivery, "nak-lock-error", msg.RunID)
-		return nil, false, "failed"
+		logger.Warn("runner: lock %s: %v", msg.RunID, err)
+		if max := r.maxDeliver(); max > 0 && delivery.NumDelivered() >= max {
+			r.archiveLockFailure(msg, delivery, logger, err)
+		} else {
+			delay := natsq.DefaultLockTTL
+			if r.cfg.NATS != nil {
+				delay = r.cfg.NATS.LockTTL()
+			}
+			logDeliveryErr(logger, "nak-lock-deferred", msg.RunID, delivery.NakWithDelay(delay))
+		}
+		return nil, false, status
 	}
 	return lock, true, ""
 }
@@ -81,4 +89,32 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelCauseFun
 			}
 		}
 	}
+}
+
+// archiveLockFailure retains an exhausted delivery, not a failed execution.
+// Without the lock no writer may change the run's outcome or continuation.
+func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger, lockErr error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reason := fmt.Sprintf("run lock unavailable after %d deliveries: %v; run state unchanged — inspect the owner before replaying this delivery", delivery.NumDelivered(), lockErr)
+	var err error
+	if r.lockFailureDLQ != nil {
+		err = r.lockFailureDLQ(ctx, delivery, reason)
+	} else if d, ok := delivery.(*natsq.Delivery); ok && r.cfg.NATS != nil {
+		err = r.cfg.NATS.PublishDLQ(ctx, d, reason)
+	} else {
+		err = errors.New("DLQ publisher unavailable")
+	}
+	data := map[string]any{"reason": reason, "delivered": delivery.NumDelivered(), "parked": err == nil}
+	if err != nil {
+		data["error"] = err.Error()
+		logger.Error("runner: exhausted lock delivery for %s could not be archived: %v — no queue copy remains", msg.RunID, err)
+	} else {
+		logger.Warn("runner: exhausted lock delivery for %s archived on DLQ; the owner's run is unchanged", msg.RunID)
+	}
+	if _, auditErr := r.cfg.Store.AppendEvent(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.RunID,
+		store.Event{Type: store.EventRunDeliveryExhausted, Data: data}); auditErr != nil {
+		logger.Error("runner: record exhausted lock delivery for %s: %v", msg.RunID, auditErr)
+	}
+	termTerminal(logger, delivery, "term-lock-exhausted", msg.RunID)
 }

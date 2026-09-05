@@ -157,3 +157,7 @@ func (p *LockProvider) AcquireLock(ctx context.Context, runID, runnerID string) 
 
 // RunnerID returns the identity stamped into each lease.
 func (p *LockProvider) RunnerID() string { return p.runnerID }
+
+// LockTTL is the configured ownership lease interval, also used to space
+// deliveries refused by a current owner.
+func (c *Conn) LockTTL() time.Duration { return c.cfg.LockTTL }

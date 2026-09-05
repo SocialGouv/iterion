@@ -170,6 +170,9 @@ const (
 	//     budget (the DLQ park follows the last one)
 	//   - error: the engine's error text
 	EventRunRedeliveryDeferred EventType = "run_redelivery_deferred"
+	// EventRunDeliveryExhausted records a queue delivery that could not acquire
+	// ownership before exhausting its attempts. It does not end the run.
+	EventRunDeliveryExhausted EventType = "run_delivery_exhausted"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
 	// the storage branch — because that attempt banked a strictly richer
