@@ -360,9 +360,11 @@ func (c *cancelAwareStore) Update(ctx context.Context, conn forge.Connection) er
 	return c.ConnectionStore.Update(ctx, conn)
 }
 
-// The failure worth recording is a slow forge — exactly when the caller has
-// already gone away. The record must not ride the request context.
-func TestForgeConnectionAvatar_RecordsOnACancelledRequest(t *testing.T) {
+// The apply owns its own context: an operator who closes the tab mid-click
+// gets a finished, recorded apply — never a half state written on a dead
+// request context (Mongo refuses a write on one; the memory store does not,
+// hence the cancel-aware wrapper).
+func TestForgeConnectionAvatar_CompletesOnACancelledRequest(t *testing.T) {
 	s := newForgeTestServer(t)
 	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
 	s.forgeConnections = cs
@@ -377,12 +379,50 @@ func TestForgeConnectionAvatar_RecordsOnACancelledRequest(t *testing.T) {
 	r.SetPathValue("conn_id", "c-cancel")
 	w := httptest.NewRecorder()
 	s.handleForgeConnectionAvatar(w, r)
-	if w.Code != http.StatusBadGateway {
+	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
 	stored, _ := s.forgeConnections.Get(context.Background(), "c-cancel")
-	if !strings.Contains(stored.AvatarError, "context canceled") || cs.updates != 1 {
-		t.Fatalf("the failure was not recorded: avatar_error=%q updates=%d", stored.AvatarError, cs.updates)
+	if stored.AvatarAppliedAt == nil || stored.AvatarError != "" || cs.updates != 1 || gl.count() != 1 {
+		t.Fatalf("not completed and recorded: applied_at=%v error=%q updates=%d uploads=%d", stored.AvatarAppliedAt, stored.AvatarError, cs.updates, gl.count())
+	}
+}
+
+// A connection older than AccountKind (the PIC group-token connections)
+// learns it from the forge on its first apply: a bot user needs no force, a
+// person still does — and what was learned is recorded either way.
+func TestForgeConnectionAvatar_LegacyConnectionLearnsItsKind(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		bot      bool
+		wantCode int
+		wantKind string
+	}{
+		{"group-token bot user", true, http.StatusOK, forge.AccountKindBot},
+		{"a person's PAT", false, http.StatusConflict, forge.AccountKindUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newForgeTestServer(t)
+			gl := &mockGitLabAvatar{bot: tc.bot}
+			srv := gl.server()
+			defer srv.Close()
+			seedAvatarConn(t, s, forge.Connection{ID: "c-legacy", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1026_bot_a7c08cc4", ForgeBaseURL: srv.URL}) // AccountKind empty
+
+			w := avatarReq(s, "c-legacy", "")
+			if w.Code != tc.wantCode {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			}
+			stored, _ := s.forgeConnections.Get(context.Background(), "c-legacy")
+			if stored.AccountKind != tc.wantKind {
+				t.Errorf("account_kind = %q, want %q recorded from WhoAmI", stored.AccountKind, tc.wantKind)
+			}
+			if tc.bot && (stored.AvatarAppliedAt == nil || gl.count() != 1) {
+				t.Errorf("bot user not applied: applied_at=%v uploads=%d", stored.AvatarAppliedAt, gl.count())
+			}
+			if !tc.bot && gl.count() != 0 {
+				t.Error("a person's account was uploaded onto")
+			}
+		})
 	}
 }
 

@@ -93,9 +93,10 @@ func StatusErr(errPrefix, op string, code int) error {
 // DoMultipartFile performs one multipart/form-data upload carrying a single
 // file part — the shape GitLab's avatar endpoint takes — with DoJSON's header
 // strategy (the token never rides the URL). Unlike DoJSON it hands the response
-// body back on every status (capped at 8 KiB): an upload refusal names its
-// reason there ("is too big", "content type is invalid"), and the operator
-// needs that verbatim. out (when non-nil, on a 2xx with a body) is JSON-decoded.
+// body back on every status — a refusal's body is capped at 8 KiB and names
+// its reason ("is too big", "content type is invalid"), which the operator
+// needs verbatim; a success is read whole. out (when non-nil, on a 2xx with a
+// body) is JSON-decoded.
 func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), field, filename, contentType string, data []byte, out any) (int, []byte, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -131,8 +132,19 @@ func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errP
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-	if out != nil && resp.StatusCode/100 == 2 && len(bytes.TrimSpace(body)) > 0 {
+	if resp.StatusCode/100 != 2 {
+		// A refusal names its reason in the body; the cap keeps a proxy's
+		// error page from becoming the message.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return resp.StatusCode, body, nil
+	}
+	// A success is decoded whole: capping it would turn an upload that landed
+	// into a decode error on an instance whose answer outgrows the cap.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("%s: read response: %w", errPrefix, err)
+	}
+	if out != nil && len(bytes.TrimSpace(body)) > 0 {
 		if err := json.Unmarshal(body, out); err != nil {
 			return resp.StatusCode, body, fmt.Errorf("%s: decode response: %w", errPrefix, err)
 		}
