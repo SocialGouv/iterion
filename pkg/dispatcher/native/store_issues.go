@@ -185,10 +185,7 @@ func (s *Store) List(filter ListFilter) ([]*Issue, error) {
 // own mutable instance and cannot mutate the in-memory cache.
 func cloneIssue(in *Issue) *Issue {
 	c := *in
-	if in.External != nil {
-		ext := *in.External
-		c.External = &ext
-	}
+	c.External = in.External.Clone()
 	if in.GaveUp != nil {
 		g := *in.GaveUp
 		c.GaveUp = &g
@@ -339,8 +336,7 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 		changed = append(changed, "fields")
 	}
 	if p.External != nil {
-		ext := *p.External
-		iss.External = &ext
+		iss.External = p.External.Clone()
 		changed = append(changed, "external")
 	}
 	if p.Bot != nil && *p.Bot != iss.Bot {

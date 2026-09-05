@@ -89,6 +89,37 @@ func SecurityReadInstallationPermissions() map[string]string {
 	}
 }
 
+// ProjectsInstallationPermissions is the grant set minted ONLY for project-board
+// calls (GitHub Projects v2, ADR-097): the ORGANIZATION-level projects
+// permission plus the mandatory metadata baseline.
+//
+// It is a separate opt-in profile, never folded into the runtime baseline, for
+// the same reason `administration` and `vulnerability_alerts` are: a token that
+// can rewrite an org's roadmap is a broader privilege than one that can push a
+// branch, and it is org-scoped — an existing installation cannot acquire it
+// silently, an org owner has to approve the new grant.
+func ProjectsInstallationPermissions() map[string]string {
+	return map[string]string{
+		"organization_projects": "write",
+		"metadata":              "read",
+	}
+}
+
+// MissingProjectPermissions lists the project-board grants an installation does
+// NOT have, so a board binding fails at BIND time naming the missing permission
+// rather than hours later on the first status write. Empty when nothing is
+// missing, or when the grant set is unknown (absence of data is not evidence of
+// a gap).
+func MissingProjectPermissions(granted map[string]string) []string {
+	if len(granted) == 0 {
+		return nil
+	}
+	if _, ok := granted["organization_projects"]; !ok {
+		return []string{"organization_projects"}
+	}
+	return nil
+}
+
 // MissingSecurityPermissions lists the security-read grants an installation
 // does NOT have, so the connection health view can name them before an
 // hourly vuln-watch run discovers the 422 in production. Empty when nothing

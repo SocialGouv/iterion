@@ -5517,10 +5517,21 @@ export interface components {
             started_at?: string;
             status: string;
         };
+        ExternalProject: {
+            item_id?: string;
+            number?: number;
+            owner?: string;
+            /** Format: date-time */
+            state_at?: string;
+            status?: string;
+            /** Format: date-time */
+            status_at?: string;
+        };
         ExternalRef: {
             author?: string;
             connection_id: string;
             number: number;
+            project?: components["schemas"]["ExternalProject"];
             provider: string;
             repo: string;
             state?: string;

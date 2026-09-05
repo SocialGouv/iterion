@@ -331,9 +331,26 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 
 // boardLocalLabelPrefixes are the label namespaces owned by the BOARD, not
 // the forge: the ingest trust labels (triage:, needs:), command idempotency
-// markers (cmd:) and provenance (source:). The forge sync's label refresh
-// preserves them; everything else mirrors the forge verbatim.
-var boardLocalLabelPrefixes = []string{"triage:", "needs:", "cmd:", "source:"}
+// markers (cmd:), provenance (source:) and the project-board field labels
+// (area:, mode:, prio: — written by the PROJECT import, present on no forge
+// repo). The forge sync's label refresh preserves them; everything else
+// mirrors the forge verbatim.
+var boardLocalLabelPrefixes = append(
+	[]string{"triage:", "needs:", "cmd:", "source:"},
+	projectFieldLabelPrefixes()...,
+)
+
+// projectFieldLabelPrefixes lists the namespaces the project import owns, read
+// from the same declaration the import writes through — so adding a bound
+// field cannot leave its labels unprotected against the next issue import.
+func projectFieldLabelPrefixes() []string {
+	fields := forge.DefaultLabelFields()
+	out := make([]string, 0, len(fields))
+	for _, lf := range fields {
+		out = append(out, lf.Prefix)
+	}
+	return out
+}
 
 func isBoardLocalLabel(l string) bool {
 	ll := strings.ToLower(l)

@@ -183,6 +183,51 @@ type ExternalRef struct {
 	// the author-trust gate classified at ingest, kept so operators can see
 	// WHO requested a parked card before approving its triage.
 	Author string `json:"author,omitempty"`
+	// Project is the card's sync state with the forge's PROJECT board (GitHub
+	// Projects v2), when the team is bound to one. Nil until a project import
+	// has seen this card on the board.
+	Project *ExternalProject `json:"project,omitempty"`
+}
+
+// Clone returns a deep copy. ExternalRef is passed by value at several store
+// boundaries; since it now carries a pointer, a plain `*ref` copy would alias
+// the project sync state between the caller's value and the stored record.
+func (e *ExternalRef) Clone() *ExternalRef {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	if e.Project != nil {
+		p := *e.Project
+		out.Project = &p
+	}
+	return &out
+}
+
+// ExternalProject is a card's sync state with ONE forge project board. It is
+// the per-card half of the two-way status sync (ADR-097); the board itself is
+// identified by the team's binding.
+//
+// The two timestamps are what make "both sides moved" decidable. They record
+// STATE CHANGES, not record touches: Issue.UpdatedAt bumps on any edit, so
+// comparing it against the board would let an unrelated title edit win a
+// status conflict.
+type ExternalProject struct {
+	// Owner + Number identify the board (its "owner/number" URL form).
+	Owner  string `json:"owner,omitempty"`
+	Number int    `json:"number,omitempty"`
+	// ItemID is the provider's project-item handle, so a status write skips a
+	// lookup. Re-resolved when the board no longer knows it.
+	ItemID string `json:"item_id,omitempty"`
+	// Status is the board status option NAME last synchronized, in the
+	// board's own vocabulary ("In progress"). Comparing against it is the
+	// ECHO SUPPRESSOR: a status iterion itself wrote reads back as equal and
+	// changes nothing.
+	Status string `json:"status,omitempty"`
+	// StatusAt is the provider's own timestamp for that status value.
+	StatusAt time.Time `json:"status_at,omitempty"`
+	// StateAt is when the native state last changed, per iterion.
+	StateAt time.Time `json:"state_at,omitempty"`
 }
 
 // Comment is a single append-only note on a native issue. Author is a

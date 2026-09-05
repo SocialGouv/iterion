@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -428,6 +430,16 @@ type IssueImportOptions struct {
 	// developer) above which an issue author's fresh card is stamped
 	// triage:auto instead of parked needs:approval.
 	MinAuthorRole string
+	// Project is a forge PROJECT board as "<owner>/<number>". When set, the
+	// issue sync is followed by a project pass that mirrors the board's Status
+	// onto the cards' columns and its Area/Mode/Priority onto their labels
+	// (ADR-097). It hydrates cards, never creates them: a project item carries
+	// no author, so creating from one would bypass the ingest trust gate.
+	Project string
+	// ProjectOwnerKind is "org" (default) or "user" — the namespace the
+	// project lives under. Explicit rather than probed: the provider's lookup
+	// differs, and guessing would resolve the wrong owner on a typo.
+	ProjectOwnerKind string
 }
 
 // RunIssueImport imports a forge repo's issues into the native board, reusing
@@ -458,6 +470,12 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 		}
 		since = t
 	}
+	// Resolve --project BEFORE any network call: a typo in the ref, or a
+	// provider with no project board, must cost nothing.
+	projectRef, wantProject, err := resolveImportProjectRef(provider, opts)
+	if err != nil {
+		return err
+	}
 	board, _, err := openNativeStore(opts.IssueCommonOptions)
 	if err != nil {
 		return err
@@ -468,17 +486,97 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 	if err != nil {
 		return fmt.Errorf("issue import: %w", err)
 	}
+	var projectRes server.ProjectImportResult
+	if wantProject {
+		bc, err := boardClientFor(provider, strings.TrimSpace(opts.BaseURL), token)
+		if err != nil {
+			return err
+		}
+		projectRes, err = server.ImportProjectBoard(context.Background(), bc, projectRef, provider, board, nil)
+		if err != nil {
+			return fmt.Errorf("issue import: %w", err)
+		}
+	}
 	if p.Format == OutputJSON {
 		p.JSON(struct {
-			Created int `json:"created"`
-			Updated int `json:"updated"`
-		}{Created: created, Updated: updated})
+			Created int                         `json:"created"`
+			Updated int                         `json:"updated"`
+			Project *server.ProjectImportResult `json:"project,omitempty"`
+		}{Created: created, Updated: updated, Project: projectResultPtr(wantProject, projectRes)})
 		return nil
 	}
 	p.Line("Imported %s from %s", opts.Repo, provider)
 	p.KV("Created", strconv.Itoa(created))
 	p.KV("Updated", strconv.Itoa(updated))
+	if wantProject {
+		p.Blank()
+		p.Line("Project board %s", projectRef)
+		p.KV("Items", strconv.Itoa(projectRes.Items))
+		p.KV("Moved", strconv.Itoa(projectRes.Moved))
+		p.KV("Labelled", strconv.Itoa(projectRes.Labelled))
+		if projectRes.Conflicts > 0 {
+			p.KV("Conflicts", strconv.Itoa(projectRes.Conflicts))
+		}
+		if projectRes.RefusedTerminal > 0 {
+			p.KV("Refused (terminal)", strconv.Itoa(projectRes.RefusedTerminal))
+		}
+		if projectRes.SkippedNoCard > 0 {
+			p.KV("Skipped (no card yet)", strconv.Itoa(projectRes.SkippedNoCard))
+		}
+	}
 	return nil
+}
+
+func projectResultPtr(want bool, res server.ProjectImportResult) *server.ProjectImportResult {
+	if !want {
+		return nil
+	}
+	return &res
+}
+
+// resolveImportProjectRef validates --project/--project-owner-kind. It returns
+// ok=false when no project was asked for.
+func resolveImportProjectRef(provider forge.Provider, opts IssueImportOptions) (forge.ProjectRef, bool, error) {
+	raw := strings.TrimSpace(opts.Project)
+	if raw == "" {
+		return forge.ProjectRef{}, false, nil
+	}
+	ref, err := forge.ParseProjectRef(raw)
+	if err != nil {
+		return forge.ProjectRef{}, false, fmt.Errorf("issue import: --project must be <owner>/<number> (e.g. SocialGouv/203): %w", err)
+	}
+	switch kind := strings.TrimSpace(opts.ProjectOwnerKind); kind {
+	case "":
+		ref.OwnerKind = forge.ProjectOwnerOrg
+	case string(forge.ProjectOwnerOrg), string(forge.ProjectOwnerUser):
+		ref.OwnerKind = forge.ProjectOwnerKind(kind)
+	default:
+		return forge.ProjectRef{}, false, fmt.Errorf("issue import: --project-owner-kind must be org or user, got %q", kind)
+	}
+	if provider != forge.ProviderGitHub {
+		return forge.ProjectRef{}, false, fmt.Errorf("issue import: provider %q exposes no project board (only github has one today)", provider)
+	}
+	return ref, true, nil
+}
+
+// boardClientFor builds the provider's project-board client from a raw token,
+// refusing providers that do not implement the capability.
+func boardClientFor(provider forge.Provider, baseURL, token string) (forge.BoardClient, error) {
+	if baseURL == "" {
+		baseURL = forge.DefaultBaseURL(provider)
+	}
+	var admin forge.Admin
+	switch provider {
+	case forge.ProviderGitHub:
+		admin = forgegithub.New(http.DefaultClient, baseURL, token)
+	default:
+		return nil, fmt.Errorf("issue import: provider %q exposes no project board", provider)
+	}
+	bc, ok := forge.AsBoardClient(admin)
+	if !ok {
+		return nil, fmt.Errorf("issue import: provider %q exposes no project board", provider)
+	}
+	return bc, nil
 }
 
 // RunIssueBoardShow prints the current board.json.

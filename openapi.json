@@ -665,6 +665,31 @@
         ],
         "type": "object"
       },
+      "ExternalProject": {
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ExternalRef": {
         "properties": {
           "author": {
@@ -675,6 +700,9 @@
           },
           "number": {
             "type": "integer"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ExternalProject"
           },
           "provider": {
             "type": "string"

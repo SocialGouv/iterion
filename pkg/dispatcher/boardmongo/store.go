@@ -1160,8 +1160,7 @@ func applyPatch(iss *native.Issue, p native.Patch, board *native.Board) patchRes
 		changed = append(changed, "bot_args")
 	}
 	if p.External != nil {
-		ext := *p.External
-		iss.External = &ext
+		iss.External = p.External.Clone()
 		changed = append(changed, "external")
 	}
 	return patchResult{fields: changed}

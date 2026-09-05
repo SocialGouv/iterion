@@ -138,7 +138,34 @@ The cache is a cache, never an authority: any sync may re-run discovery, and a
 retries. A field renamed or deleted on GitHub surfaces as an explicit error
 naming the field, never as a silent skip.
 
-### 6. Idempotency: the card id IS the key
+### 6. The project import HYDRATES cards; it never creates them
+
+A project item carries a title, a URL and its field values — no body, no
+labels, no assignees, and **no author**. A card built from one would be
+degraded, and worse, would enter the board without passing the author-trust
+gate that runs at issue ingest and decides whether a card may spend LLM budget
+at all. So the project pass joins onto cards the *issue* import created, and
+counts the items it could not join (`skipped_no_card`) instead of inventing
+them.
+
+Consequence for the operator: run the issue import for each repo the board
+spans, then the project pass. `iterion issue import --project` does both in one
+command for one repo.
+
+### 7. A terminal card is never reopened by the import
+
+Leaving a `Terminal: true` native column is a **reopen** — an operator surface
+op with a dependents check and an audit trail, and the native board's guard
+(`ValidateStateExit`) refuses it to every automated writer, deliberately: the
+silent resurrection of a closed card was the failure that guard exists for.
+
+The import does not carve an exception. A board Status that would drag a card
+out of `done`/`blocked` is **refused, counted (`refused_terminal`) and
+logged**; the two boards stay legitimately divergent until a human reopens the
+card. Making automation the one writer allowed to resurrect work would trade
+that invariant for a convenience.
+
+### 8. Idempotency: the card id IS the key
 
 The existing deterministic card id stays the only key:
 `forgeCardID(provider, repo, number)` = `native:` + UUIDv5 over
@@ -162,7 +189,7 @@ card deletion that leaks a row. `ExternalRef` is already the card's external
 identity, already round-trips through both the FS store and the Mongo twin, and
 already survives the import's patch path.
 
-### 7. Conflict rule: newer wins, GitHub wins ties, always logged
+### 9. Conflict rule: newer wins, GitHub wins ties, always logged
 
 Both directions carry a timestamp of the **state change** (not of the record):
 GitHub's `ProjectV2ItemFieldSingleSelectValue.updatedAt`, and iterion's
@@ -183,7 +210,7 @@ The native write is a **CAS** (`SetStateFrom(id, seen, want)`), so an operator
 who moved the card between our read and our write wins over the stale fact we
 were carrying, exactly as the issue import already behaves.
 
-### 8. The reflect is an EFFECT, not a new worker
+### 10. The reflect is an EFFECT, not a new worker
 
 A card transition reaches GitHub through the seam both delivery paths already
 share: `trigger.Evaluator.applyEffect`. The binding materializes an ordinary
@@ -214,7 +241,7 @@ Everything else follows the shipped doctrine:
 
 - Every native write is a CAS; every GitHub write is idempotent by construction
   (setting a single-select to the value it already has is a no-op we skip
-  anyway, per rule 7.1).
+  anyway, per rule 9.1).
 - The periodic import is the **reconciliation net** for the reflect path. Local
   delivery is best-effort by design (`BoardSource` drops on a full buffer) and
   the cloud tail can step over a gap loudly, so convergence may not be assumed
@@ -226,7 +253,7 @@ Everything else follows the shipped doctrine:
   `blocked` is precisely the movement the roadmap must show, so the projection
   arm is exempted from that gate, explicitly and in one place.
 
-### 9. Permissions, stated up front
+### 11. Permissions, stated up front
 
 - **GitHub App**: `organization_projects: write` — an **organization**-level
   permission, so an existing installation does *not* acquire it silently; the
