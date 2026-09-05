@@ -1,5 +1,87 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — plan-phase budget guard shipped (native:695); three production deaths never reached campaign (runs 01a06d80, 01a06e72, #705)
+
+- Status: **failed** (the three cited production runs, pre-fix) — the fix
+  itself is unvalidated by a live dogfood as of this entry; see "What the
+  session should dogfood" below.
+- Versions: bot `branch-improve-loop` 1.3.0 (this change) · the three cited
+  runs were on 1.2.1.
+- Method (the failures being fixed): `/billy` on SocialGouv/iterion#683
+  (+3870/-273 across 55 files, 30 commits), `review_mode` auto, budget
+  `max_duration 2h30m` / `max_cost_usd 75` (the shipped default).
+- Result (the three cited runs, unchanged bot):
+
+  | run | started | duration | cost | nodes executed | stopped at | commits |
+  |---|---|---|---|---|---|---|
+  | `01a06d80` | 2026-09-04 17:38Z | 9004.7s/9000 (+4.7s) | $3.77 | plan_topology, plan, plan_review, plan_gate, plan_revise | `campaign` (never entered) | 0 |
+  | `01a06e72` | 2026-09-05 22:03Z | 9001.9s/9000 (+1.9s) | $4.82 | *(identical set)* | `campaign` (never entered) | 0 |
+
+  Same target, same node set, same stopping point, same failure, twice.
+  ~5 h of runner pod + $8.59 of LLM spend produced two triage plans and zero
+  code (#695). #705 catalogs a third death on the SAME cap (`01a0517a`,
+  2026-08-30, +1s) and argues the complementary half: a run that dies with
+  nothing banked has no recovery path, whereas the 2026-09-03 entry above
+  survived three deaths only because it had banked 17 commits in stride.
+  Neither ticket's underlying wall existed until the plan phase itself
+  starved `campaign` of the time to make its own first commit.
+- Value: N/A for the three historical runs (zero commits, two duplicated
+  triage plans neither of which reached code).
+- Findings / misses: the failure was invisible in the run's own status —
+  both runs closed `failed_resumable` with an ordinary "budget exceeded:
+  duration" message, indistinguishable from a run that did real work and
+  ran long. Only the executed-node list showed `campaign` was never
+  entered. A resume restarts from a fresh clone (the planning cost is paid
+  again), so retrying was not a fix.
+- Engine hardening (this change, native:695): the planning chain
+  (`plan` → `plan_review` → `plan_gate` → `plan_revise`) had no ceiling of
+  its own — it could (and did) spend the ENTIRE run budget before
+  `campaign`, the node that writes code, ever started. Added:
+  - `plan_scope_probe` (deterministic tool, before `plan`): captures a
+    capped `git diff --stat` footprint, a `large` classification (over
+    `plan_large_diff_lines`, default 1500 added lines), and the chain's
+    wall-clock start (`started_epoch`) — the ONLY way to measure the
+    phase's own elapsed time, since no DSL primitive exposes a run's
+    elapsed duration to a node (see below).
+  - `plan_gate` now also bypasses `plan_revise` on a large diff, not only
+    on a skipped peer (`skip_revise = skipped || large`) — the peer's
+    critique reaches `campaign` unrevised rather than paying a second
+    full-diff read.
+  - `plan_cost_probe` (compute): a NIL-SAFE sum of `plan`/`plan_review`/
+    `plan_revise`'s own `_cost_usd` — a skipped/never-run node's cost key
+    is absent, not zero, and a naive sum errors on that; `if(x, x, 0)` is
+    the nil-safe idiom (`truthy(nil) == false`).
+  - `plan_budget_gate` (deterministic tool, the SOLE choke point before
+    `campaign`): compares the real elapsed minutes and the nil-safe cost
+    sum against `plan_budget_ratio` (default 0.3) of two new mirror vars
+    (`budget_max_duration_minutes` / `budget_max_cost_usd`), and routes to
+    a typed early failure instead of letting `campaign` start on whatever
+    the plan phase left behind — guaranteeing `campaign` at least
+    (1-ratio) of the budget whenever it does start.
+  - `plan`/`plan_review` read the diff-stat footprint and skip the full
+    unified diff above `plan_large_diff_lines`.
+  - **DSL gap found and NOT worked around**: no primitive exposes a run's
+    actual elapsed duration/cost or its resolved budget caps to a
+    compute/tool node (`pkg/dsl/expr`'s `run` namespace resolves only
+    `run.id` — `pkg/runtime/expr_eval.go`); `plan_scope_probe` /
+    `plan_budget_gate` self-measure wall-clock via `time.time()` instead.
+    Also: the DSL's `-> fail` terminal has no way to carry a custom
+    `RuntimeError` code/message (`pkg/runtime/engine_exec.go` hardcodes
+    "workflow reached fail node" + a fixed `FailureFailNode` code) — the
+    typed `PLAN_BUDGET_EXHAUSTED` code + comparison detail live on
+    `plan_budget_gate`'s own persisted output (readable via `iterion
+    report` / the run's events), not on the run's top-level failure
+    message. Both are flagged as follow-up engine work, not hacked around
+    (out of this change's bot-only scope).
+- Lessons for next run: dogfood the fix on a large diff BEFORE trusting it
+  in production — a stub-driven e2e proves the graph routes correctly on a
+  controlled cost sum, not that `plan_budget_ratio`'s default (0.3) is the
+  right split on a real 4000-line diff, nor that `plan_large_diff_lines`
+  (1500) is the right threshold for the diff-stat adaptation to actually
+  keep `plan`/`plan_review` inside their share. If the guard still trips
+  too early/late on iterion#683 itself, tune the ratio/threshold vars
+  before touching the mechanism.
+
 ## 2026-09-03 — `/billy` on the watchdog PR: three deaths, the banked chain delivered by hand (run 01a06728)
 
 - Status: **partial.** The fixer's work landed (17 commits on
