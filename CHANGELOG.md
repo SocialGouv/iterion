@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.103.0](https://github.com/SocialGouv/iterion/compare/v3.102.6...v3.103.0) (2026-09-05)
+
+### Features
+
+* **review-pr:** per-repo review tiers — glance / guard / audit; the pure re-request click is pinned; Revi/Billy/Vetty's shared gate documented ([#742](https://github.com/SocialGouv/iterion/issues/742)) ([b2a31a1](https://github.com/SocialGouv/iterion/commit/b2a31a15657d0f6c426fd02a0eefe530b58499cf)), references [#685](https://github.com/SocialGouv/iterion/issues/685) [pre-#685](https://github.com/pre-/issues/685) [#621](https://github.com/SocialGouv/iterion/issues/621) [#650](https://github.com/SocialGouv/iterion/issues/650) [#650](https://github.com/SocialGouv/iterion/issues/650) [#646](https://github.com/SocialGouv/iterion/issues/646) [#683](https://github.com/SocialGouv/iterion/issues/683) [#683](https://github.com/SocialGouv/iterion/issues/683)
+
+    <details><summary>why</summary>
+
+    Lets a repo's criticality or budget policy pick ONE preset instead of tuning severity_threshold/max_findings/post_to_board/review_mode separately. guard (the default) reproduces the bot's pre-#685 posture byte-for-byte; glance trades depth for a lower floor (cheaper same-family reviewer model via two new topology-routed judge nodes, since model:/ reasoning_effort: only ever resolve ${ENV_VAR}, never a runtime var, on any backend); audit forces the cross-family dual fan-out regardless of…
+
+    </details>
+* **runner:** wire a SubbotRunner into the cloud runner — subbot nodes ran locally only ([#743](https://github.com/SocialGouv/iterion/issues/743)) ([1716b9e](https://github.com/SocialGouv/iterion/commit/1716b9e266328332bdc5757012da92f544fb61d1))
+
+    <details><summary>why</summary>
+
+    The pod's engine was built without WithSubbotRunner (pkg/runner/loop.go), while the CLI and the studio paths carried one. Every `subbot` node on a cloud run therefore died at dispatch with `subbot "x": no SubbotRunner is wired` — a net's extension subbot, its re-anchor subbot, and a programme supervisor's per-lot child all existed locally only. "No feature ships local-only", violated by the one surface that runs unattended.
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** carry the run's forfait across the sandbox boundary (it currently cannot authenticate there at all) ([#744](https://github.com/SocialGouv/iterion/issues/744)) ([edd5b9d](https://github.com/SocialGouv/iterion/commit/edd5b9dcfee2a2ad3a14501a95831d99a9f51520)), closes [#736](https://github.com/SocialGouv/iterion/issues/736) [#698](https://github.com/SocialGouv/iterion/issues/698), references [#698](https://github.com/SocialGouv/iterion/issues/698) [#687](https://github.com/SocialGouv/iterion/issues/687) [#698](https://github.com/SocialGouv/iterion/issues/698) [#736](https://github.com/SocialGouv/iterion/issues/736) [#687](https://github.com/SocialGouv/iterion/issues/687)
+
+    <details><summary>why</summary>
+
+    in-process generation — supervisor evals, GenerateObjectDirect — which is what fixed #687's pacer. It did not hold for `backend: claw` AGENT nodes on a cloud pod, which are the DEFAULT shape: production runs ITERION_SANDBOX_DEFAULT=auto with an empty override, so those execute sandboxed and the in-container __claw-runner rebuilds its registry from env alone.
+
+    </details>
+
 ## [3.102.6](https://github.com/SocialGouv/iterion/compare/v3.102.5...v3.102.6) (2026-09-05)
 
 ### Bug Fixes
