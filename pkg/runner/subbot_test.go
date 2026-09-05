@@ -2,10 +2,12 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -98,6 +100,28 @@ func TestResolveSubbotSource(t *testing.T) {
 		_, err := resolveSubbotSource("../absent-bot/x.bot", alone, []string{catalogue})
 		if err == nil || !strings.Contains(err.Error(), "beside the parent") || !strings.Contains(err.Error(), "baked catalogue") {
 			t.Fatalf("err = %v, want both places named", err)
+		}
+	})
+	// A subbot names a bundle, not a file on the pod: the two ways to reach
+	// past the parent's collection and the catalogue are refused even when
+	// the file exists — existence is exactly what a traversal probes for.
+	outside := writeSubbotFixture(t, filepath.Join(root, "outside"), "x.bot", subbotTestChild)
+	t.Run("an absolute path is refused", func(t *testing.T) {
+		_, err := resolveSubbotSource(outside, beside, []string{catalogue})
+		if err == nil || !strings.Contains(err.Error(), "absolute path") {
+			t.Fatalf("err = %v, want the absolute-path refusal", err)
+		}
+	})
+	t.Run("a `..` chain out of the collection and the catalogue is refused", func(t *testing.T) {
+		_, err := resolveSubbotSource("../../outside/x.bot", beside, []string{catalogue})
+		if err == nil || !strings.Contains(err.Error(), "outside the parent's bundle collection") {
+			t.Fatalf("err = %v, want the containment refusal (the file exists)", err)
+		}
+	})
+	t.Run("a catalogue <file> that climbs back out is refused", func(t *testing.T) {
+		_, err := resolveSubbotSource("../golden-master/../../outside/x.bot", alone, []string{catalogue})
+		if err == nil {
+			t.Fatal("err = nil, want a refusal: the catalogue fallback must not serve a path outside its root")
 		}
 	})
 }
@@ -195,6 +219,148 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 		err := newEngine(t, "run-parent-unwired", false).Run(ctx, "run-parent-unwired", nil)
 		if err == nil || !strings.Contains(err.Error(), "no SubbotRunner is wired") {
 			t.Fatalf("err = %v, want the unwired death", err)
+		}
+	})
+}
+
+const subbotTestHumanChild = `schema answer:
+  confirmed: bool
+
+prompt ask_text:
+  Confirm the ticket.
+
+human gate:
+  instructions: ask_text
+  output: answer
+  interaction: human
+
+workflow child:
+  entry: gate
+  gate -> done
+`
+
+// TestSubbotRunnerParksOnHumanGate: a human gate inside the child pauses the
+// CHILD, which is not a parent failure — the node parks until the operator
+// answers. The park must ride the PARENT's ctx: the child's is cancelled the
+// moment its engine returns (that cancel is the heartbeat's stop signal), and
+// a park on it returned at once with `context canceled` — the gate failed the
+// parent node 20 ms in instead of waiting for a human.
+func TestSubbotRunnerParksOnHumanGate(t *testing.T) {
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", subbotTestHumanChild)
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+
+	const parentDeadline = 1500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), parentDeadline)
+	defer cancel()
+	start := time.Now()
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	_, err := run(ctx, runtime.SubbotRequest{
+		Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	})
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v after %s, want the PARENT's deadline: a `context canceled` here is the child's own cancel leaking into the park", err, elapsed)
+	}
+	if elapsed < parentDeadline-100*time.Millisecond {
+		t.Fatalf("park returned after %s, want it held until the parent's deadline (%s)", elapsed, parentDeadline)
+	}
+	// The child is parked on its gate, not dead.
+	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+	ids, lerr := st.ListRuns(idCtx)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	var children int
+	for _, id := range ids {
+		child, cerr := st.LoadRun(idCtx, id)
+		if cerr != nil || child.ParentRunID != msg.RunID {
+			continue
+		}
+		children++
+		if child.Status != store.RunStatusPausedWaitingHuman {
+			t.Fatalf("child %s status = %q, want paused_waiting_human", id, child.Status)
+		}
+	}
+	if children != 1 {
+		t.Fatalf("children of the parent = %d, want exactly one", children)
+	}
+}
+
+const subbotTestTwoNodeChild = `schema out:
+  validated: bool
+  echoed: string
+
+tool first:
+  command: ` + "`" + `printf '{"validated":true,"echoed":"one"}'` + "`" + `
+  output: out
+
+tool second:
+  command: ` + "`" + `printf '{"validated":true,"echoed":"two"}'` + "`" + `
+  output: out
+
+workflow child:
+  entry: first
+  first -> second
+  second -> done
+`
+
+// TestSubbotRunnerAppliesCloudBudgetCeiling: the deployment's multitenant
+// ceiling (ITERION_CLOUD_MAX_*) binds a child as it binds the parent
+// executeRun clamps — a tenant bot could otherwise declare its spend in a
+// subbot and leave the cap behind. Proven two ways: the child's persisted
+// budget carries the ceiling, and a two-node child under a one-iteration
+// ceiling does not reach its second node.
+func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
+	runChild := func(t *testing.T) (map[string]any, error, *store.Run) {
+		t.Helper()
+		r, st := subbotTestRunner(t)
+		dir := t.TempDir()
+		parentDir := filepath.Join(dir, "parent")
+		writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+		writeSubbotFixture(t, parentDir, "child.bot", subbotTestTwoNodeChild)
+		msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+		run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+		out, err := run(context.Background(), runtime.SubbotRequest{
+			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+		})
+		idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+		ids, lerr := st.ListRuns(idCtx)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		var child *store.Run
+		for _, id := range ids {
+			if c, cerr := st.LoadRun(idCtx, id); cerr == nil && c.ParentRunID == msg.RunID {
+				child = c
+			}
+		}
+		if child == nil {
+			t.Fatal("no child run persisted")
+		}
+		return out, err, child
+	}
+
+	t.Run("no ceiling: the child runs both nodes", func(t *testing.T) {
+		out, err, _ := runChild(t)
+		if err != nil {
+			t.Fatalf("child: %v", err)
+		}
+		if e, _ := out["echoed"].(string); e != "two" {
+			t.Fatalf("child output = %v, want the second node's", out)
+		}
+	})
+	t.Run("ceiling of one iteration: the child is clamped and stops after its first node", func(t *testing.T) {
+		t.Setenv("ITERION_CLOUD_MAX_ITERATIONS", "1")
+		_, err, child := runChild(t)
+		if !errors.Is(err, runtime.ErrBudgetExceeded) {
+			t.Fatalf("err = %v, want the budget refusal — the ceiling did not reach the child", err)
+		}
+		if child.Budget == nil || child.Budget.MaxIterations != 1 {
+			t.Fatalf("child persisted budget = %+v, want max_iterations=1 from the platform ceiling", child.Budget)
 		}
 	})
 }

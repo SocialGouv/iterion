@@ -41,17 +41,42 @@ type subbotDepthKey struct{}
 // sibling — the sibling is the deployment's, not the tenant's. A child found
 // in neither is a typed error naming both places: a bot declaring a subbot
 // it cannot reach must fail at the node, in words, not at the pod.
+//
+// The name is a RELATIVE path into one of those two places and nothing else:
+// an absolute path, or a `..` chain that climbs out of the parent's bundle
+// collection and out of every catalogue root, is refused — a subbot names a
+// bundle, not a file on the pod.
 func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, error) {
 	if filepath.IsAbs(source) {
-		if _, err := os.Stat(source); err == nil {
-			return source, nil
+		return "", fmt.Errorf("subbot source %q: an absolute path is not served on a pod — name the child relative to its parent bundle", source)
+	}
+	roots := make([]string, 0, 1+len(botsPaths))
+	if parentDir != "" {
+		// The parent's bundle COLLECTION, not the bundle itself: a sibling
+		// bundle (`../golden-master/…`) is the designed shape of a child.
+		roots = append(roots, filepath.Dir(filepath.Clean(parentDir)))
+	}
+	for _, bp := range botsPaths {
+		if bp != "" {
+			roots = append(roots, filepath.Clean(bp))
 		}
-		return "", fmt.Errorf("subbot source %q: not found", source)
+	}
+	contained := func(p string) bool {
+		for _, root := range roots {
+			rel, err := filepath.Rel(root, p)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
 	}
 	beside := "(no parent bundle directory)"
 	if parentDir != "" {
-		beside = filepath.Join(parentDir, source)
+		beside = filepath.Clean(filepath.Join(parentDir, source))
 		if _, err := os.Stat(beside); err == nil {
+			if !contained(beside) {
+				return "", fmt.Errorf("subbot source %q: resolves to %s, outside the parent's bundle collection and every catalogue root %v — a child is named relative to its parent bundle, not by a path across the pod", source, beside, botsPaths)
+			}
 			return beside, nil
 		}
 	}
@@ -65,16 +90,17 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 		slug, file := parts[i], filepath.Join(parts[i+1:]...)
 		// The catalogue's layout first (<bots>/<slug>/<file>), then the
 		// registry's tolerant name match (kebab/snake/case) for a slug spelled
-		// differently from its directory.
+		// differently from its directory. A <file> that climbs back out of
+		// the bundle is refused by the same containment.
 		for _, bp := range botsPaths {
-			cand := filepath.Join(bp, slug, file)
-			if _, err := os.Stat(cand); err == nil {
+			cand := filepath.Clean(filepath.Join(bp, slug, file))
+			if _, err := os.Stat(cand); err == nil && contained(cand) {
 				return cand, nil
 			}
 		}
 		if mainFile, err := botregistry.ResolveBotPath(slug, botsPaths); err == nil {
-			cand := filepath.Join(filepath.Dir(mainFile), file)
-			if _, err := os.Stat(cand); err == nil {
+			cand := filepath.Clean(filepath.Join(filepath.Dir(mainFile), file))
+			if _, err := os.Stat(cand); err == nil && contained(cand) {
 				return cand, nil
 			}
 		}
@@ -108,6 +134,12 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		// panics deep inside SaveRun.
 		ctx = store.WithIdentity(ctx, msg.TenantID, msg.OwnerID)
 
+		// Re-attach across a pod restart through the records runview keeps
+		// (ADR-084). A child left `running` by a pod that died mid-child is
+		// parked on until the orphan sweeper flips it — no pod resumes a
+		// child by itself, it rides its parent's delivery — after which the
+		// next parent resume spawns a FRESH child; the child's own
+		// checkpoint is not resumed. Same contract as in-process.
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, r.cfg.Store, req, runLogger); handled {
 			return out, aerr
 		}
@@ -120,6 +152,12 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
+		// The deployment's multitenant ceiling (ITERION_CLOUD_MAX_*) clamps
+		// the child exactly as executeRun clamps the parent: a tenant bot
+		// could otherwise declare its spend in a child and leave the cap
+		// behind. The parent's own launch overrides are NOT replayed — a
+		// child budgets itself from its .bot, as it does in-process.
+		applyCloudBudgetCeiling(childWf, runLogger)
 		childRunID, err := store.GenerateRunID()
 		if err != nil {
 			return nil, err
@@ -251,7 +289,12 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// a parent failure. Park until the operator answers and the child
 			// reaches a terminal state, then pick up its output.
 			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
-				out, aerr := runview.AwaitSubbotTerminal(childCtx, r.cfg.Store, childRunID, runLogger)
+				// Parked on the PARENT's ctx: the child's was cancelled the
+				// moment its engine returned (that cancel is the heartbeat's
+				// stop signal), and a park on it returns at once with
+				// `context canceled` — a gate meant to wait for a human read
+				// as a parent failure 20 ms in.
+				out, aerr := runview.AwaitSubbotTerminal(ctx, r.cfg.Store, childRunID, runLogger)
 				if aerr == nil {
 					runview.ClearSubbotChild(ctx, r.cfg.Store, req)
 				}
