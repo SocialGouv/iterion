@@ -193,6 +193,48 @@ func TestLockFailureLogLevelSeparatesOutageFromContention(t *testing.T) {
 	}
 }
 
+// wrappedHeldStore returns ErrLockHeld in the shape PRODUCTION delivers it:
+// store/mongo's LockRun wraps the provider's error with %w
+// (pkg/store/mongo/artifacts.go), so the runner never sees the sentinel bare
+// — while every other double here does. That asymmetry is a live trap: swap
+// acquireRunLock's errors.Is for an == and the whole suite still passes, but
+// the fleet reclassifies ordinary contention as an infrastructure failure
+// and starts raising a tracker event per sibling collision.
+type wrappedHeldStore struct{ store.RunStore }
+
+func (wrappedHeldStore) LockRun(_ context.Context, runID string) (store.RunLock, error) {
+	return nil, fmt.Errorf("store/mongo: acquire lock %s: %w", runID, natsq.ErrLockHeld)
+}
+
+func TestWrappedLockHeldIsStillClassifiedAsContention(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "wrapped-held"
+	seedRunningRun(t, base, id)
+	rec := &hookRecorder{}
+	logger := iterlog.New(iterlog.LevelInfo, io.Discard)
+	logger.SetHook(rec.hook)
+
+	r := &Runner{cfg: Config{Store: wrappedHeldStore{base}, Logger: iterlog.Nop()}, maxDeliverOverride: 3}
+	_, ok, status := r.acquireRunLock(context.Background(),
+		&queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"},
+		&fakeDelivery{delivered: 1}, logger)
+
+	if ok {
+		t.Fatal("the lock must not be granted when a sibling holds it")
+	}
+	// One classification drives both: the metric label and the log level.
+	if status != "lock_held" {
+		t.Fatalf("status = %q, want lock_held", status)
+	}
+	got := rec.all()
+	if len(got) != 1 || got[0].level != iterlog.LevelWarn {
+		t.Fatalf("wrapped contention must stay a breadcrumb, got %+v", got)
+	}
+}
+
 func TestHeldLockArchiveFailureLeavesDurableEvidence(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
