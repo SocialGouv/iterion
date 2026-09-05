@@ -24,7 +24,7 @@ oracle:
 lots:
   - id: L1
     title: "one line, in the imperative"
-    status: todo                 # todo | blocked | done
+    status: todo                 # todo | blocked (worker) | done (the gate only)
     rebaseline_allowed: false
     crosses_major: false         # true -> the upgrade-archetypes sweep is due
     depends_on: []
@@ -61,6 +61,20 @@ This is not distrust of any particular agent. It is that a self-reported status
 and a verified one are different kinds of claim, and a programme that conflates
 them will, sooner or later, report a milestone that never happened. The field
 is a bookmark, not evidence.
+
+And the two words it can carry are not the worker's to write alike. `blocked`
+is yours: it had to be committed to be said, and a claim of failure cannot
+cheat its way to green. `done` is the gate's: the `mark_done` node writes it
+after the verdict went green, one line, in a commit of its own — so a landing
+has exactly one commit to check for "what did the programme accept", and a
+bank taken before the verdict can never carry a completion nobody proved. A
+`done` you wrote is refused by the verifier before it runs a single gate
+command; revert the line and let the gate decide.
+
+An explicit launch (`only_lot`) on a lot that cannot be carried out — already
+`done` or `blocked`, undeclared, or waiting on a dependency — is refused,
+typed (`LOT_NOT_ACTIONABLE`), never answered with a green no-op: a `finished`
+run that crossed no gate reads as convergence to whoever relaunched it.
 
 ## `exit_gate`
 

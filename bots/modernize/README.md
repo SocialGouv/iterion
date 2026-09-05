@@ -62,11 +62,30 @@ A self-reported status and a verified one are different kinds of claim, and a
 programme that conflates them eventually reports a milestone that never
 happened.
 
+Who may write which word is part of the contract, and it is enforced in git:
+
+| word | written by | believed as |
+|---|---|---|
+| `blocked` | the worker, with the reason committed | a STOP — a claim of failure cannot cheat toward green |
+| `done` | the **gate** (`mark_done`, after `gate ∧ oracle ∧ refs` went green), one line in a commit of its own | the programme's "accepted" — a landing has exactly one commit to check for it |
+
+A `done` the worker wrote is refused by `lot_verify` **before any gate
+command runs** (the revert costs seconds, the gate an hour), because a run
+interrupted after such a write relaunches as a green no-op. Measured: four
+`finished` runs in 24 h that crossed no gate, every one a relaunch from a
+banked branch carrying a completion nobody had proven.
+
 ## Running
 
 ```sh
 iterion run bots/modernize/main.bot --var only_lot=L1
 ```
+
+An explicit `only_lot` is answered explicitly: a lot the contract carries as
+`done` or `blocked`, does not declare, or holds behind an unmet dependency is
+**refused, typed** (`LOT_NOT_ACTIONABLE`, run failed), never reported as a
+green no-op. The unfiltered mode keeps its legitimate no-op on an exhausted
+programme.
 
 Prerequisite: a behavioural net in the target repo. Build it with the
 `golden-master` bot first.

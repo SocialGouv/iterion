@@ -56,7 +56,7 @@ prompt campaign_system:
   Read the bundled skills before acting: `modernize-lots` for what a lot is and
   how one goes wrong, `plan-contract` for the contract you are working from.
 
-  Three rules override any instinct to make the gate pass:
+  Four rules override any instinct to make the gate pass:
 
   1. Stay inside the lot. The lot's intent says what may change. A change that
      reaches beyond it is not initiative, it is an unreviewable diff — and the
@@ -70,6 +70,11 @@ prompt campaign_system:
   3. Never weaken the gate. Skipping a check, loosening a version constraint to
      dodge a conflict, or excluding a failing module are all ways of passing
      without having done the work.
+  4. Never write `status: done`. That word is the gate's: a tool node writes it
+     after the gate has proven the lot, in a commit of its own. Write
+     `status: blocked` — with the reason committed — when you must stop. A
+     claim of failure cannot cheat toward green; a claim of completion can,
+     and a run interrupted after one relaunches as a green no-op.
 
   Commit as you go, so an interrupted run leaves landed work.
 
@@ -160,6 +165,15 @@ schema lot_report:
   ## harness's own code, and routed to the net's extension subbot. A lot may
   ## ASK for a new observation point; it may never write one.
   extension_pending: json
+  ## The worker wrote `done` into the contract. `done` is the gate's word: this
+  ## verdict is refused BEFORE any gate command runs, so the revert costs the
+  ## worker seconds, never the hour a full gate would spend confirming a
+  ## completion it had already written for itself.
+  done_self_written: bool
+  ## The contract was rewritten during the lot: an existing lot's normative
+  ## fields changed, a lot disappeared, or another lot's status moved. One
+  ## entry per rewrite. Refused before any gate command runs, like `done`.
+  contract_rewritten: string[]
   log_tail: string
 
 schema gate_state:
@@ -176,6 +190,18 @@ schema verify_input:
   base_sha: string
   refs_dir: string
   exit_gate: string
+
+schema mark_input:
+  lot_id: string
+  plan_path: string
+  base_sha: string
+
+## What the gate wrote, and where. `marked` is false on the idempotent path
+## (the contract already read `done`) — nothing was written, nothing committed.
+schema mark_state:
+  marked: bool
+  commit: string
+  notice: string
 
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
@@ -367,6 +393,31 @@ tool plan_read:
         chosen = lot
         break
 
+    if chosen is None and only:
+        # An EXPLICIT request is answered explicitly. The unfiltered mode may
+        # legitimately find nothing to do; a launch that NAMES a lot which
+        # cannot be carried out is refused, typed, rather than reported as a
+        # green no-op — a `finished` run that crossed no gate reads as
+        # convergence. Measured on a live campaign: four such greens in 24 h,
+        # every one a relaunch from a banked branch whose contract carried a
+        # `done` no gate had proven.
+        target = next((l for l in lots if l.get("id") == only), None)
+        if target is None:
+            refuse("LOT_NOT_ACTIONABLE: no lot %r in the contract — the request "
+                   "names a lot the programme does not declare." % only)
+        st = target.get("status")
+        if st in ("done", "blocked"):
+            refuse("LOT_NOT_ACTIONABLE: lot %s is `%s` at HEAD — an explicit "
+                   "request on a lot the contract carries as landed is refused "
+                   "rather than reported as a green no-op. If the work is real "
+                   "but its gate never ran, flip the lot back to `todo` on the "
+                   "branch you relaunch from and let the gate decide."
+                   % (only, st))
+        missing = [d for d in (target.get("depends_on") or []) if d not in done_ids]
+        refuse("LOT_NOT_ACTIONABLE: lot %s waits on %s — an explicit request "
+               "cannot skip the contract's order."
+               % (only, ", ".join(missing) or "an unmet dependency"))
+
     if chosen is None:
         if waiting:
             emit("no lot is ready: %s. Finish an upstream lot first." % "; ".join(waiting))
@@ -471,22 +522,118 @@ tool lot_verify:
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
-              "oracle_invalid": [], "extension_pending": []}
+              "oracle_invalid": [], "extension_pending": [], "done_self_written": False,
+              "contract_rewritten": []}
     problems = []
 
-    # Did the campaign declare this lot blocked? Read from the contract, which
-    # it had to commit to say so — a claim in a control-plane message would be
-    # cheaper to make and impossible to review.
+    # 0. Who wrote the status? The contract is read at HEAD and at the run's
+    #    base, and the two claims it can carry are believed asymmetrically.
+    #    `blocked` is believed as a STOP: it had to be committed to be said, and
+    #    a claim of failure cannot cheat its way to green. `done` is the GATE's
+    #    word — a tool node writes it after this verdict, in a commit of its
+    #    own — so a `done` the worker wrote is refused HERE, before a single
+    #    gate command runs: the revert costs seconds, the gate costs an hour,
+    #    and a run interrupted after such a write relaunches as a green no-op.
+    def plan_lots(text):
+        if text is None:
+            return None
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tf:
+            tf.write(text)
+            tmp = tf.name
+        try:
+            raw = subprocess.run(["yq", "-o=json", tmp], capture_output=True,
+                                 text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        finally:
+            os.unlink(tmp)
+        if raw.returncode != 0:
+            return None
+        try:
+            return json.loads(raw.stdout).get("lots") or []
+        except ValueError:
+            return None
+
+    def lot_of(lots, lot_id):
+        for lot in lots or []:
+            if lot.get("id") == lot_id:
+                return lot
+        return None
+
+    plan_rel = {{input.plan_path}}
     try:
-        raw = subprocess.run(["yq", "-o=json", os.path.join(ws, {{input.plan_path}})],
-                             capture_output=True, text=True, timeout=60)
-        if raw.returncode == 0:
-            for lot in (json.loads(raw.stdout).get("lots") or []):
-                if lot.get("id") == {{input.lot_id}} and lot.get("status") == "blocked":
-                    report["lot_blocked"] = True
-                    report["block_reason"] = (lot.get("title") or "") + " -- see the committed report"
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+        head_text = open(os.path.join(ws, plan_rel), encoding="utf-8").read()
+    except OSError:
+        head_text = None
+    base_show = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (base, plan_rel)],
+                               capture_output=True, text=True, timeout=60)
+    head_lot = lot_of(plan_lots(head_text), {{input.lot_id}})
+    base_lot = lot_of(plan_lots(base_show.stdout if base_show.returncode == 0 else None),
+                      {{input.lot_id}})
+    head_status = (head_lot or {}).get("status")
+    if head_status == "blocked":
+        report["lot_blocked"] = True
+        report["block_reason"] = ((head_lot or {}).get("title") or "") + " -- see the committed report"
+    if head_status == "done" and (base_lot or {}).get("status") != "done":
+        report["done_self_written"] = True
+        problems.append(
+            "the contract marks lot %s `done` at HEAD while it was `%s` at base "
+            "%s: the worker wrote the verdict. `done` is the gate's word — a "
+            "tool node writes it after the gate has proven the lot. Revert that "
+            "status line (nothing else) and let the gate decide; this verdict "
+            "ran no command."
+            % ({{input.lot_id}}, (base_lot or {}).get("status") or "absent", base[:12]))
+        report["log_tail"] = "\n".join(problems)[-6000:]
+        print(json.dumps(report))
+        raise SystemExit(0)
+
+    # 0b. The contract is read-only inside a lot — and that is checked in git,
+    #     not asked nicely. Existing lots keep their normative fields (title,
+    #     intent, exit_gate, depends_on, rebaseline_allowed, crosses_major),
+    #     no lot disappears, and no OTHER lot's status moves; the worker may
+    #     flip its own status to `blocked` and may ADD lots — an addition is a
+    #     proposal the programme's owner re-takes at the handoff. A gate
+    #     loosened, an intent rewritten or a lot dropped mid-run is the
+    #     contract rewritten by the party it binds: refused here, before any
+    #     gate command runs, with the rewrites named.
+    def gate_list(v):
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list):
+            return v
+        return [c.strip() for c in v if isinstance(c, str) and c.strip()]
+    base_lots = plan_lots(base_show.stdout if base_show.returncode == 0 else None)
+    head_lots = plan_lots(head_text)
+    if base_lots is not None and head_lots is not None:
+        head_by = {l.get("id"): l for l in head_lots}
+        rewritten = []
+        for bl in base_lots:
+            hl = head_by.get(bl.get("id"))
+            if hl is None:
+                rewritten.append("lot %s was REMOVED" % bl.get("id"))
+                continue
+            for k in ("title", "intent", "depends_on", "rebaseline_allowed", "crosses_major"):
+                if bl.get(k) != hl.get(k):
+                    rewritten.append("%s.%s changed" % (bl.get("id"), k))
+            if gate_list(bl.get("exit_gate")) != gate_list(hl.get("exit_gate")):
+                rewritten.append("%s.exit_gate changed" % bl.get("id"))
+            if bl.get("id") != {{input.lot_id}} and bl.get("status") != hl.get("status"):
+                rewritten.append("%s.status moved from %r to %r"
+                                 % (bl.get("id"), bl.get("status"), hl.get("status")))
+        if rewritten:
+            report["contract_rewritten"] = rewritten
+            problems.append(
+                "the contract was rewritten during lot %s (%s). The plan is "
+                "read-only inside a lot: existing lots keep their gates, intents "
+                "and dependencies, no lot disappears, no other lot's status "
+                "moves. Revert those lines (nothing else); ADD a lot if the "
+                "programme needs one, never reshape or drop the ones it has. "
+                "This verdict ran no command."
+                % ({{input.lot_id}}, "; ".join(rewritten)[:1500]))
+            report["log_tail"] = "\n".join(problems)[-6000:]
+            print(json.dumps(report))
+            raise SystemExit(0)
 
     def run(cmd, timeout=3600):
         p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
@@ -788,6 +935,128 @@ schema extend_result:
   extended: int
   notice: string
 
+## mark_done — `done` is the GATE's word, and this is where it is written.
+##
+## The worker reads `status` to know what to skip and may declare `blocked`;
+## it never writes `done`. A converged verdict lands here, and this node flips
+## the ONE line, verifies it changed nothing else, and commits it alone — so a
+## landing has exactly one commit to check for "what did the programme accept",
+## and a bank taken before the verdict can never carry a completion nobody
+## proved. Idempotent: a contract that already reads `done` is left as it is,
+## with nothing committed.
+tool mark_done:
+  input: mark_input
+  output: mark_state
+  language: py
+  script: |
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{input.plan_path}}
+    lot_id = {{input.lot_id}}
+    base = {{input.base_sha}}
+
+    out = {"marked": False, "commit": "", "notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("modernize: %s\n" % notice)
+        raise SystemExit(1)
+
+    def finish(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    # Same lookup as plan_read: yq is sought on PATH, then in the target's
+    # devbox profile — declared is not realised.
+    def find_yq():
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    def lots_json(path):
+        yq = find_yq()
+        if not yq:
+            refuse("yq is not on PATH and was not found in the target's devbox "
+                   "profile, so the contract cannot be re-read after the write.")
+        raw = subprocess.run([yq, "-o=json", path], capture_output=True, text=True, timeout=60)
+        if raw.returncode != 0:
+            refuse("the contract at %s does not parse: %s" % (path, raw.stderr[-400:]))
+        return json.loads(raw.stdout).get("lots") or []
+
+    plan_path = os.path.join(ws, plan_rel)
+    try:
+        text = open(plan_path, encoding="utf-8").read()
+    except OSError as e:
+        refuse("cannot read the contract at %s: %s" % (plan_path, e))
+
+    before = lots_json(plan_path)
+    idx = next((i for i, l in enumerate(before) if l.get("id") == lot_id), None)
+    if idx is None:
+        refuse("lot %s is not in the contract at HEAD — nothing to mark." % lot_id)
+    if before[idx].get("status") == "done":
+        finish("lot %s already reads `done` at HEAD — nothing written, nothing committed." % lot_id)
+
+    # The one line, edited in place: locate the lot's block by its `- id:` line
+    # and the first `status:` line inside it. A structural rewrite of the file
+    # (yq -i) would reflow a contract humans read and diff; a line edit keeps
+    # the diff to the word that changed.
+    lines = text.splitlines(keepends=True)
+    id_re = re.compile(r"^\s*-\s+id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+    any_id_re = re.compile(r"^\s*-\s+id:")
+    start = next((i for i, l in enumerate(lines) if id_re.match(l)), None)
+    if start is None:
+        refuse("lot %s: its `- id:` line was not found in %s — the contract's "
+               "shape is not one this node knows how to edit." % (lot_id, plan_rel))
+    end = next((i for i in range(start + 1, len(lines)) if any_id_re.match(lines[i])), len(lines))
+    status_re = re.compile(r"^(\s*)status:\s*\S+(\s*#.*)?(\r?\n?)$")
+    hit = next((i for i in range(start, end) if status_re.match(lines[i])), None)
+    if hit is None:
+        refuse("lot %s: no `status:` line inside its block — the contract's "
+               "shape is not one this node knows how to edit." % lot_id)
+    m = status_re.match(lines[hit])
+    lines[hit] = "%sstatus: done%s%s" % (m.group(1), m.group(2) or "", m.group(3) or "")
+    with open(plan_path, "w", encoding="utf-8") as f:
+        f.write("".join(lines))
+
+    # Verified, not trusted: the only difference between the two parses is this
+    # lot's status. Anything else is a rewrite, and the write is undone.
+    after = lots_json(plan_path)
+    expect = [dict(l) for l in before]
+    expect[idx]["status"] = "done"
+    if after != expect:
+        with open(plan_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        refuse("the status edit changed more than lot %s's status — reverted, "
+               "the contract is not one this node knows how to edit." % lot_id)
+
+    def git(*args):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, timeout=120)
+
+    subject = "%s: done — gate, oracle and references green at %s" % (lot_id, base[:12])
+    if git("add", "--", plan_rel).returncode != 0:
+        refuse("git add %s failed" % plan_rel)
+    c = git("-c", "user.name=iterion-modernize", "-c", "user.email=modernize@iterion.local",
+            "commit", "-q", "--only", "-m", subject, "--", plan_rel)
+    if c.returncode != 0:
+        refuse("committing the status failed: %s" % (c.stdout + c.stderr)[-600:])
+    sha = git("rev-parse", "HEAD").stdout.strip()
+    out["marked"] = True
+    out["commit"] = sha
+    finish("lot %s marked `done` by the gate in %s" % (lot_id, sha[:12]))
+
 workflow modernize:
   entry: plan_read
 
@@ -876,9 +1145,16 @@ workflow modernize:
     exit_gate: "{{outputs.work_gate.exit_gate}}"
   }
 
-  ## Converged, or declared blocked with a committed reason. Both end the run;
-  ## looping against a wall the agent has already described and proven costs
-  ## money and produces nothing.
+  ## Converged: the gate writes `done` — one line, one commit — then the run
+  ## ends. Declared blocked with a committed reason: the run ends as it is.
+  ## Both end the run; looping against a wall the agent has already described
+  ## and proven costs money and produces nothing.
+  lot_gate -> mark_done when converged with {
+    lot_id:    "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha:  "{{outputs.work_gate.base_sha}}"
+  }
+  mark_done -> done
   lot_gate -> done when stop
 
   ## Not converged → another pass on the SAME lot, carrying the deterministic
