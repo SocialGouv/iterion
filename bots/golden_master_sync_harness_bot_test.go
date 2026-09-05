@@ -253,6 +253,47 @@ func TestGoldenMasterSyncHarnessBotRefusals(t *testing.T) {
 			t.Fatalf("exit %d notice=%q, want the no-net refusal", exit, res.Notice)
 		}
 	})
+
+	// The write is in place and its only undo is git's, so a target git cannot
+	// put back has to be refused before it is clobbered. Both shapes read clean
+	// under `--untracked-files=no`, so nothing downstream would catch them.
+	t.Run("an untracked harness is refused, not overwritten", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# untracked\n")
+		hp := filepath.Join(ws, ".golden-master", "harness.py")
+		git("rm", "-q", "--cached", "--", ".golden-master/harness.py")
+		git("commit", "-qm", "harness untracked")
+		res, exit := syncHarness(t, ws)
+		if exit != 1 || !strings.Contains(res.Notice, "not a tracked regular file") {
+			t.Fatalf("exit %d notice=%q, want the untracked refusal", exit, res.Notice)
+		}
+		if got, _ := os.ReadFile(hp); !strings.Contains(string(got), "# untracked") {
+			t.Fatalf("the untracked harness was overwritten — git checkout could never put it back: %q", got)
+		}
+	})
+
+	t.Run("a symlinked harness is refused, its referent untouched", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "")
+		outside := filepath.Join(t.TempDir(), "real.py")
+		if err := os.WriteFile(outside, []byte(syncHarnessHeader+"\nimport hashlib\n# outside the tree\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		hp := filepath.Join(ws, ".golden-master", "harness.py")
+		if err := os.Remove(hp); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, hp); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		git("add", "--", ".golden-master/harness.py")
+		git("commit", "-qm", "harness is a link")
+		res, exit := syncHarness(t, ws)
+		if exit != 1 || !strings.Contains(res.Notice, "not a tracked regular file") {
+			t.Fatalf("exit %d notice=%q, want the symlink refusal", exit, res.Notice)
+		}
+		if got, _ := os.ReadFile(outside); !strings.Contains(string(got), "# outside the tree") {
+			t.Fatalf("the write followed the link out of the tree: %q", got)
+		}
+	})
 }
 
 type syncSealOut struct {
