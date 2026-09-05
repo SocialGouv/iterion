@@ -19,8 +19,21 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 )
 
+// glConfig is a minimal provisioned GitLab webhook: review-pr only, with the
+// CommandMap entry a REAL orchestrator provisioning review-pr alone would
+// carry (bots/review-pr/manifest.yaml's own `command: {name: revi, scope:
+// pr, disambiguator: when_args_empty}` invocation) — `/revi` now resolves
+// through the SAME generic registry as any other command, so a config that
+// never provisioned a route for it would find none, exactly as it
+// wouldn't for `/billy`. Tests that also enable revi-converse extend
+// CommandMap with its when_args_present sibling explicitly.
 func glConfig() webhooks.Config {
-	return webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true, BotIDs: []string{"review-pr"}}
+	return webhooks.Config{
+		ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true, BotIDs: []string{"review-pr"},
+		CommandMap: map[string][]webhooks.CommandRoute{
+			"revi": {{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"}},
+		},
+	}
 }
 
 // gitlabCtx simulates what webhookAuth stamps before the handler runs.
@@ -563,12 +576,15 @@ func botsDirAbs(t *testing.T) string {
 	return abs
 }
 
-// TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot pins the A5
-// conversational route: when an authorized user asks `/revi <question>`
-// AND the webhook scope includes revi-converse AND the bot is
-// resolvable on disk, the handler launches revi-converse (NOT
-// review-pr) with the question threaded as `converse_question`. The
-// re_review flag is dropped (it's a question, not a re-review).
+// TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot pins the
+// conversational route through the GENERIC command registry — the
+// manifests' complementary disambiguators (review-pr when_args_empty /
+// revi-converse when_args_present), no bot-specific branch in the handler:
+// when an authorized user asks `/revi <question>` on a webhook whose
+// CommandMap was provisioned with both bots, the handler launches
+// revi-converse (NOT review-pr) with the question threaded as
+// `converse_question`. The re_review flag is never set on this route (only
+// the when_args_empty sibling gets it).
 func TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
@@ -582,6 +598,12 @@ func TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot(t *testing.T) {
 	}
 	cfg := glConfig()
 	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"revi": {
+			{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"},
+			{BotID: "revi-converse", Scope: "pr", Disambiguator: "when_args_present", ArgsVar: "converse_question"},
+		},
+	}
 	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
 	w := httptest.NewRecorder()
 	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
@@ -608,17 +630,18 @@ func TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot(t *testing.T) {
 	}
 }
 
-// TestGitLabNoteHook_ConverseFallsBackWhenBotMissing pins that even
-// when the webhook scope ALLOWS revi-converse, if the bot bundle is
-// NOT resolvable on disk (older deploy without the bundle) the handler
-// gracefully falls back to the review-pr re-review path with the args
-// ignored — same outcome as a webhook that doesn't scope the converse
-// bot. The fallback keeps a /revi <question> note useful instead of
-// erroring out the inbound webhook.
-func TestGitLabNoteHook_ConverseFallsBackWhenBotMissing(t *testing.T) {
+// TestGitLabNoteHook_ConverseNotProvisionedFallsBackToReview pins the
+// generic disambiguation fallback (Config.ResolveCommand: "all routes
+// disambiguated but none matched the args state — fall back to the first"):
+// a webhook whose CommandMap was never provisioned with revi-converse's
+// when_args_present route — because the operator's config predates the
+// bot, or never enabled it — still handles `/revi <question>` by falling
+// back to review-pr's when_args_empty route, question ignored. Same
+// mechanism as TestGitLabNoteHook_FocusArgTolerated; pinned separately
+// because it is the shape a production PIC-style webhook takes today (one
+// bot enabled, revi-converse not yet provisioned).
+func TestGitLabNoteHook_ConverseNotProvisionedFallsBackToReview(t *testing.T) {
 	s := newWebhookTestServer(t)
-	// Point at an empty bot dir so revi-converse does not resolve.
-	s.cfg.Bots.Paths = []string{t.TempDir()}
 	var calls int
 	var gotBot string
 	var gotVars map[string]string
@@ -627,8 +650,7 @@ func TestGitLabNoteHook_ConverseFallsBackWhenBotMissing(t *testing.T) {
 		gotBot, gotVars = botID, vars
 		return "run-fallback-1", nil
 	}
-	cfg := glConfig()
-	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg := glConfig() // CommandMap carries ONLY review-pr's when_args_empty route
 	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
 	w := httptest.NewRecorder()
 	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
@@ -643,6 +665,48 @@ func TestGitLabNoteHook_ConverseFallsBackWhenBotMissing(t *testing.T) {
 	}
 	if _, present := gotVars["converse_question"]; present {
 		t.Fatalf("converse_question must NOT be set on the fallback path: %v", gotVars)
+	}
+}
+
+// TestGitLabNoteHook_ConverseRouteWithUnresolvableBotFailsExplicitly pins
+// the doctrine change from the old bespoke routing: generic command
+// resolution trusts a PROVISIONED CommandMap entry — it does not re-probe
+// bot existence on disk the way the old reply-in-thread-style fallback did.
+// So when a webhook's CommandMap DOES declare revi-converse's
+// when_args_present route (a real provisioning drift: the row outlived the
+// bundle) the launch is now attempted and fails EXPLICITLY (a visible
+// launch_error) instead of silently dropping the question and re-reviewing
+// instead — erreurs-explicites, never a masked fallback.
+func TestGitLabNoteHook_ConverseRouteWithUnresolvableBotFailsExplicitly(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		if botID == "revi-converse" {
+			return "", fmt.Errorf("resolve bot source: bundle not found")
+		}
+		return "run-x", nil
+	}
+	cfg := glConfig()
+	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"revi": {
+			{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"},
+			{BotID: "revi-converse", Scope: "pr", Disambiguator: "when_args_present", ArgsVar: "converse_question"},
+		},
+	}
+	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
+	if w.Code != http.StatusBadGateway || calls != 1 {
+		t.Fatalf("an unresolvable routed bot must fail explicitly, never silently: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp["error"], "bundle not found") {
+		t.Fatalf("expected the launch failure surfaced explicitly, got %v", resp)
 	}
 }
 
@@ -688,6 +752,165 @@ func TestGitLabNoteHook_ReplyInThreadRoutesToConverse(t *testing.T) {
 	if _, present := gotVars["re_review"]; present {
 		t.Fatalf("re_review must be dropped on the converse path: %v", gotVars)
 	}
+}
+
+// fakeGitlabNoteAPI drives gitlabNoteGateWithAPI / gitlabCommandGateWithAPI
+// without a live GitLab — the token-free split the GitHub twin
+// (reviewReplyGateWithAPI) already had. realWebhookNoteGate had NO test that
+// executed it before this: every handler test stubbed the s.webhookNoteGate
+// seam directly, so the gate's own loop-guard / classification / authz
+// ordering was never exercised.
+type fakeGitlabNoteAPI struct {
+	who       gitlab.User
+	whoErr    error
+	notes     []gitlab.DiscussionNote
+	discErr   error
+	discCalls int
+	level     int
+	member    bool
+	permErr   error
+	permCalls int
+}
+
+func (f *fakeGitlabNoteAPI) CurrentUser(context.Context) (gitlab.User, error) { return f.who, f.whoErr }
+func (f *fakeGitlabNoteAPI) Discussion(context.Context, int64, int64, string) ([]gitlab.DiscussionNote, error) {
+	f.discCalls++
+	return f.notes, f.discErr
+}
+func (f *fakeGitlabNoteAPI) MemberAccessLevel(context.Context, int64, int64) (int, bool, error) {
+	f.permCalls++
+	return f.level, f.member, f.permErr
+}
+
+// TestGitlabNoteGateWithAPI is the REAL gate core (not the handler stub):
+// self-note loop-guard, bot-in-thread classification, allowlist vs role
+// authorization, and error propagation, on a fake GitLab API.
+func TestGitlabNoteGateWithAPI(t *testing.T) {
+	s := &Server{}
+	p := gitlab.ParsedNote{ProjectID: 42, MRIID: 7, DiscussionID: "d-1", AuthorID: 2, AuthorUsername: "alice", NoteBody: "why?"}
+	botThread := []gitlab.DiscussionNote{
+		{AuthorID: 1, AuthorUsername: "revi-bot", Body: "the SSRF is reachable"},
+		{AuthorID: 2, AuthorUsername: "alice", Body: "why?"},
+	}
+	bot := gitlab.User{ID: 1, Username: "revi-bot"}
+
+	t.Run("allowlist authorizes without a role probe", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, notes: botThread}
+		authorized, replyInThread, transcript, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || !authorized || !replyInThread || reason != "allowlist" {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("allowlist path must not probe the role: %d calls", api.permCalls)
+		}
+		if !strings.Contains(transcript, "@revi-bot (you, the bot)") || !strings.Contains(transcript, "the SSRF is reachable") {
+			t.Fatalf("transcript must label the bot's anchor: %q", transcript)
+		}
+	})
+
+	t.Run("role gate", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, notes: botThread, level: gitlab.AccessDeveloper, member: true}
+		authorized, _, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api)
+		if err != nil || !authorized || reason != "role" {
+			t.Fatalf("developer>=developer must pass: authorized=%v reason=%q err=%v", authorized, reason, err)
+		}
+		api2 := &fakeGitlabNoteAPI{who: bot, notes: botThread, level: gitlab.AccessGuest, member: true}
+		authorized, _, _, reason, err = s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api2)
+		if err != nil || authorized || !strings.HasPrefix(reason, "replier not authorized") {
+			t.Fatalf("guest<developer must refuse: authorized=%v reason=%q err=%v", authorized, reason, err)
+		}
+	})
+
+	t.Run("human-only thread never triggers", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, notes: []gitlab.DiscussionNote{
+			{AuthorID: 3, AuthorUsername: "bob", Body: "top-level human note"},
+			{AuthorID: 2, AuthorUsername: "alice", Body: "why?"},
+		}}
+		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || authorized || replyInThread || !strings.Contains(reason, "not a /revi command or a reply in a Revi thread") {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("thread gate must refuse before any authz probe: %d calls", api.permCalls)
+		}
+	})
+
+	t.Run("self note loop-guard refuses before any thread fetch", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: gitlab.User{ID: 2, Username: "alice"}, notes: botThread}
+		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
+		if err != nil || authorized || replyInThread || reason != "self note (loop-guard)" {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.discCalls != 0 {
+			t.Fatalf("a self note must be refused before the discussion fetch: %d calls", api.discCalls)
+		}
+	})
+
+	t.Run("bot identity unresolved fails closed before any thread fetch", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{whoErr: fmt.Errorf("401 unauthorized"), notes: botThread}
+		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
+		if err != nil || authorized || replyInThread || reason != "bot identity unresolved; cannot classify reply" {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.discCalls != 0 {
+			t.Fatalf("an unclassifiable delivery must not pay the discussion fetch: %d calls", api.discCalls)
+		}
+	})
+
+	t.Run("infra errors propagate", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, discErr: fmt.Errorf("boom")}
+		if _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api); err == nil {
+			t.Fatal("discussion fetch error must propagate, not filter")
+		}
+		api2 := &fakeGitlabNoteAPI{who: bot, notes: botThread, permErr: fmt.Errorf("boom")}
+		if _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api2); err == nil {
+			t.Fatal("member-access-level error must propagate, not filter")
+		}
+	})
+}
+
+// TestGitlabCommandGateWithAPI is the REAL core of the generic command gate
+// (self-note loop-guard + allowlist/role authz), on a fake GitLab API —
+// same split, same reason the note gate needed one.
+func TestGitlabCommandGateWithAPI(t *testing.T) {
+	s := &Server{}
+	p := gitlab.ParsedNote{ProjectID: 42, AuthorID: 2, AuthorUsername: "alice"}
+	route := webhooks.CommandRoute{BotID: "feature-dev"}
+
+	t.Run("self note refuses before any authz probe", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: gitlab.User{ID: 2, Username: "alice"}}
+		outcome, reason, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{}, p, route, api)
+		if err != nil || outcome != gateRefused || reason != "self note (loop-guard)" {
+			t.Fatalf("outcome=%v reason=%q err=%v", outcome, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("self note must refuse before the role probe: %d calls", api.permCalls)
+		}
+	})
+
+	t.Run("allowlist authorizes", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{}
+		outcome, reason, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, route, api)
+		if err != nil || outcome != gateAuthorized || reason != "allowlist" {
+			t.Fatalf("outcome=%v reason=%q err=%v", outcome, reason, err)
+		}
+	})
+
+	t.Run("role below the route's MinReplierRole refuses", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{level: gitlab.AccessGuest, member: true}
+		outcome, reason, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{}, p, webhooks.CommandRoute{BotID: "feature-dev", MinReplierRole: "developer"}, api)
+		if err != nil || outcome != gateRefused || !strings.HasPrefix(reason, "replier not authorized") {
+			t.Fatalf("outcome=%v reason=%q err=%v", outcome, reason, err)
+		}
+	})
+
+	t.Run("authz infra error is gateUnevaluable", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{permErr: fmt.Errorf("boom")}
+		outcome, _, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{}, p, route, api)
+		if err == nil || outcome != gateUnevaluable {
+			t.Fatalf("outcome=%v err=%v — an infra failure must be gateUnevaluable + a propagated error", outcome, err)
+		}
+	})
 }
 
 // TestGitLabNoteHook_PlainCommentWithoutConverseBotFiltered pins that a

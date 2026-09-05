@@ -267,8 +267,17 @@ type Server struct {
 	// per-command MinReplierRole — test seam). nil → realWebhookCommandGate.
 	// Distinct from webhookNoteGate: no reply-in-thread/thread-context logic
 	// (that is the Revi-converse specialisation); a generic command authorises
-	// the replier and launches.
-	webhookCommandGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
+	// the replier and launches. The outcome is the SAME three-state
+	// prforgeGateOutcome as the GitHub/Forgejo twin (webhookPRForgeCommandGate)
+	// — /revi approve needs to tell a configuration gap (gateUnevaluable, told
+	// to the commenter) apart from an evaluated refusal (gateRefused, silent).
+	webhookCommandGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, route webhooks.CommandRoute) (outcome prforgeGateOutcome, reason string, err error)
+	// webhookGitLabPRResolver overrides the merge-request resolution the
+	// GitLab command lane's fork guard needs (the note payload carries
+	// neither source_project_id nor target_project_id, so
+	// forge.PullRef.HeadRepoFullName can only be proven via the API — test
+	// seam). nil → realWebhookGitLabPRResolver.
+	webhookGitLabPRResolver func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (forge.PullRef, error)
 	// webhookPRForgeCommandGate overrides the GitHub/Forgejo issue_comment
 	// command replier gate (forge token + loop-guard + allowlist/role authz —
 	// test seam). nil → realWebhookPRForgeCommandGate.
@@ -406,6 +415,14 @@ type Server struct {
 	// PR-comment client is resolved (the parked-review pause notice).
 	// Nil → real admin client via forgeAdminFor.
 	forgeIssueCommenterFor func(ctx context.Context, conn forge.Connection) (forgeIssueCommenter, error)
+
+	// forgeGitlabPullCommenterFor is a test seam overriding how a
+	// connection's GitLab MR-comment client is resolved (the /revi approve
+	// reply, which must land ON THE MERGE REQUEST — GitLab addresses it as a
+	// resource separate from issues, unlike GitHub/Forgejo's shared
+	// endpoint, so forgeIssueCommenterFor/CommentIssue would land on the
+	// wrong resource). Nil → real admin client via forgeAdminFor.
+	forgeGitlabPullCommenterFor func(ctx context.Context, conn forge.Connection) (gitlabPullCommenter, error)
 
 	// forgeReviewerAssignerFor is a test seam overriding how the
 	// publish-review handler resolves a connection's reviewer self-assign

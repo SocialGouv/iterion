@@ -46,8 +46,8 @@ func TestGitLabNoteHook_GenericCommandLaunches(t *testing.T) {
 	var calls int
 	var gotBot string
 	var gotVars map[string]string
-	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
 		calls++
@@ -75,8 +75,8 @@ func TestGitLabNoteHook_GenericCommandLaunches(t *testing.T) {
 func TestGitLabNoteHook_UnknownCommandFiltered(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var calls int
-	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "ok", nil
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "ok", nil
 	}
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 		calls++
@@ -98,8 +98,8 @@ func TestGitLabNoteHook_UnknownCommandFiltered(t *testing.T) {
 func TestGitLabNoteHook_CommandUnauthorizedFiltered(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var calls int
-	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return false, "replier not authorized", nil
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateRefused, "replier not authorized", nil
 	}
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 		calls++
@@ -112,6 +112,100 @@ func TestGitLabNoteHook_CommandUnauthorizedFiltered(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("unauthorized must not launch, calls=%d", calls)
+	}
+}
+
+// TestGitLabNoteHook_ForkMRFiltered pins the fork guard on the GitLab
+// command lane — parity with #642/#683 on the GitHub/Forgejo lane
+// (TestGitHubIssueComment_ForkPRFiltered below): the note payload carries
+// neither source_project_id nor target_project_id, so a resolved MR whose
+// head lives in a different project must refuse before any bot runs on it.
+func TestGitLabNoteHook_ForkMRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookGitLabPRResolver = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (forge.PullRef, error) {
+		return forge.PullRef{State: "open", SourceBranch: "feature/x", TargetBranch: "main", HeadRepoFullName: "mallory/widgets"}, nil
+	}
+	var launched int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-forbidden", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(featurlyConfig()), glNoteFeaturly))
+	if w.Code != http.StatusOK {
+		t.Fatalf("fork MR command must filter 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if launched != 0 {
+		t.Fatalf("fork MR must NOT launch (launched=%d — a bot answering fork code under the bot identity)", launched)
+	}
+}
+
+// TestGitLabNoteHook_SameProjectStillLaunches is the regression guard: the
+// fork check must not filter a same-project MR (source and target project
+// ids agree, so HeadRepoFullName names the project the note itself lives
+// in).
+func TestGitLabNoteHook_SameProjectStillLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookGitLabPRResolver = func(_ context.Context, _ webhooks.Config, p gitlab.ParsedNote, _ string) (forge.PullRef, error) {
+		return forge.PullRef{State: "open", SourceBranch: p.SourceBranch, TargetBranch: p.TargetBranch, HeadRepoFullName: p.ProjectPath}, nil
+	}
+	var launched int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-ok", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(featurlyConfig()), glNoteFeaturly))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("same-project command must launch (202), got %d body=%s", w.Code, w.Body.String())
+	}
+	if launched != 1 {
+		t.Fatalf("same-project command must launch exactly once, got %d", launched)
+	}
+}
+
+// TestGitLabNoteHook_UnnamedHeadProjectFailsClosed pins the fail-CLOSED
+// semantics on an unproven head: a fork MR (differing source/target project
+// ids) leaves forge.PullRef.HeadRepoFullName empty (pkg/forge/gitlab/ci.go
+// toRef), and SameRepoAs is false on an empty head — never assumed safe.
+func TestGitLabNoteHook_UnnamedHeadProjectFailsClosed(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookGitLabPRResolver = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (forge.PullRef, error) {
+		return forge.PullRef{State: "open", SourceBranch: "feature/x", TargetBranch: "main"}, nil // no HeadRepoFullName
+	}
+	var launched int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-forbidden", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(featurlyConfig()), glNoteFeaturly))
+	if launched != 0 {
+		t.Fatalf("an unnamed head project is a fork/unknown signal — MUST NOT launch (launched=%d)", launched)
+	}
+}
+
+// TestGitLabNoteHook_PRResolutionFailureIsVisible: when the MR resolution
+// itself fails (forge unreachable, no credential), the command must NOT
+// silently launch on unverified branch data — it fails loudly as a launch
+// error (502), never a 200, so the forge redelivers.
+func TestGitLabNoteHook_PRResolutionFailureIsVisible(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookGitLabPRResolver = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (forge.PullRef, error) {
+		return forge.PullRef{}, fmt.Errorf("forge unreachable")
+	}
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(featurlyConfig()), glNoteFeaturly))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("resolution failure must be a visible 502, got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("must not launch without a proven head project, calls=%d", calls)
 	}
 }
 
@@ -392,8 +486,8 @@ func TestGitLabNoteHook_BoardModeCreatesCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
-	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	var launches int
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -461,8 +555,8 @@ func TestGitLabIssueNote_BoardCardStampsOpenMR(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
-	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	var launches int
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -507,8 +601,8 @@ func TestGitLabIssueNote_NonOpensMRNoStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
-	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 		return "run-x", nil

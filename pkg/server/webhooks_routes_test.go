@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -43,6 +44,24 @@ func newWebhookTestServer(t *testing.T) *Server {
 	// route override this seam to return replyInThread=true.
 	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
 		return true, false, "", "test-gate", nil
+	}
+	// Allow-all generic command gate — the real gate needs a forge token +
+	// live GitLab API too (loop-guard, allowlist/role authz), same posture as
+	// webhookNoteGate above. Tests targeting a specific authorization outcome
+	// (refused, unevaluable) override this seam.
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "test-gate", nil
+	}
+	// Same-project by construction — the resolver echoes the note's own
+	// payload fields back as a PullRef whose HeadRepoFullName IS the note's
+	// project path, so the fork guard on the command lane's pr-surface never
+	// blocks a handler test that isn't exercising it. Fork-guard tests
+	// override this seam with a mismatched HeadRepoFullName.
+	s.webhookGitLabPRResolver = func(_ context.Context, _ webhooks.Config, p gitlab.ParsedNote, _ string) (forge.PullRef, error) {
+		return forge.PullRef{
+			State: "open", HeadRepoFullName: p.ProjectPath,
+			SourceBranch: p.SourceBranch, TargetBranch: p.TargetBranch, HeadSHA: p.HeadSHA,
+		}, nil
 	}
 	return s
 }

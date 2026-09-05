@@ -232,10 +232,12 @@ const noteRevi = `{
 }`
 
 // Parser-level note tests (TestParseNote, TestParseNote_NonMR,
-// TestNoteCommand) live in note_test.go next to the parser. Here we
-// cover the /revi specialization the re-review trigger consumes: MR
-// state + command grammar through IsReviewCommand, against the same
-// payload shape the handler sees.
+// TestNoteCommand) live in note_test.go next to the parser. Here we pin the
+// end-to-end shape the handler consumes: an MR note's `/revi` parses to the
+// generic command grammar (cmd="revi", no args) against the same payload
+// shape the handler sees — routing on it (bare → review-pr, with a
+// question → revi-converse) is now the GENERIC webhooks.ResolveCommandRoute
+// registry (pkg/server), not a GitLab-specific predicate here.
 func TestParseNote_ReviewCommandEndToEnd(t *testing.T) {
 	p, err := ParseNote([]byte(noteRevi))
 	if err != nil {
@@ -244,44 +246,8 @@ func TestParseNote_ReviewCommandEndToEnd(t *testing.T) {
 	if p.MRState != "opened" || p.AuthorUsername != "alice" {
 		t.Fatalf("note: %+v", p)
 	}
-	if !p.IsReviewCommand() {
-		t.Fatal("bare /revi on an open MR should be a review command")
-	}
-}
-
-func TestIsReviewCommand(t *testing.T) {
-	base := ParsedNote{MRIID: 7, MRState: "opened"}
-	cases := []struct {
-		note string
-		want bool
-	}{
-		{"/revi", true},
-		{"/revi focus=security", true},
-		{"   /revi   ", true}, // surrounding whitespace tolerated
-		{"please run /revi", false},
-		{"/revia", false},               // longer token; must NOT match
-		{"/REVI", true},                 // Command() is case-insensitive by design
-		{"> /revi quoted\n/revi", true}, // quote-reply prefix skipped (Command grammar)
-		{"> some quoted context\nhi", false},
-		{"", false},
-		{"hi", false},
-	}
-	for _, c := range cases {
-		p := base
-		p.NoteBody = c.note
-		if got := p.IsReviewCommand(); got != c.want {
-			t.Errorf("note=%q => %v want %v", c.note, got, c.want)
-		}
-	}
-	// closed MR is filtered even with the exact command
-	closed := ParsedNote{MRIID: 7, MRState: "closed", NoteBody: "/revi"}
-	if closed.IsReviewCommand() {
-		t.Fatal("closed MR must filter /revi")
-	}
-	// non-MR note (no MR attached — commit/issue/snippet) is filtered
-	issue := ParsedNote{MRState: "opened", NoteBody: "/revi"}
-	if issue.IsReviewCommand() {
-		t.Fatal("non-MR note must filter")
+	if cmd, args := p.Command(); cmd != "revi" || args != "" {
+		t.Fatalf("bare /revi on an open MR should parse to the revi command with no args, got cmd=%q args=%q", cmd, args)
 	}
 }
 
