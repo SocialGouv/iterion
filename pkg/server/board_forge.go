@@ -51,7 +51,7 @@ func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, to
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return 0, 0, fmt.Errorf("forge: provider %q has no issue client", provider)
+		return 0, 0, fmt.Errorf("forge: provider %q client (%T) does not implement forge.IssueClient", provider, admin)
 	}
 	// connID is empty for a self-hosted import: there is no persisted forge
 	// connection, and the deterministic card ID keys on provider+repo+number.
@@ -246,7 +246,7 @@ func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return 0, 0, fmt.Errorf("provider %s has no issue client", conn.Provider)
+		return 0, 0, forgeCapabilityErr(conn, admin, "IssueClient")
 	}
 	board := s.cfg.CloudBoardFor(teamID)
 	if board == nil {
@@ -833,7 +833,7 @@ func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, 
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		httpError(w, http.StatusNotImplemented, "provider %s has no issue client", conn.Provider)
+		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, admin, "IssueClient"))
 		return nil, forge.Connection{}, false
 	}
 	return ic, conn, true
@@ -846,7 +846,7 @@ func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, t
 	}
 	pc, ok := admin.(forge.PullClient)
 	if !ok {
-		httpError(w, http.StatusNotImplemented, "provider %s has no pull/CI client", conn.Provider)
+		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, admin, "PullClient"))
 		return nil, forge.Connection{}, false
 	}
 	return pc, conn, true
