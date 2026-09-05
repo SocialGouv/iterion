@@ -16,7 +16,7 @@ const ghClosedPR = `{
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
   "pull_request": {"number": 7, "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7", "state": "closed", "merged": true,
-    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": "alice"}
 }`
 

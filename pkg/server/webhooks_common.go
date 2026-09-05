@@ -1241,10 +1241,12 @@ const prClosedRunReason = store.RunEndReasonPRClosed
 // decoder records key presence (see prforge.Ref.RepoDeclared); collapsing
 // the two is what made this guard fail open.
 func forkGuardRefusal(headRepo, baseRepo string, withheld bool) string {
-	if withheld {
-		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a branch that does not live there"
-	}
-	if headRepo != "" && !forge.SameRepo(headRepo, baseRepo) {
+	switch {
+	case withheld:
+		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name"
+	case headRepo == "":
+		return "head repo not named by the payload — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere; the command lanes stay open to collaborators)"
+	case !forge.SameRepo(headRepo, baseRepo):
 		return "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)"
 	}
 	return ""

@@ -24,7 +24,7 @@ func ghReviewCommentReply(author, body string) string {
     "path": "pkg/x/y.go", "user": {"login": %q}},
   "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7",
-    "head": {"sha": "abc123", "ref": "feature/x"}, "base": {"ref": "main"}},
+    "head": {"sha": "abc123", "ref": "feature/x", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": %q}
 }`, body, author, author)
 }
@@ -273,7 +273,7 @@ func TestGitHubWebhook_ReviewThreadTopLevelCommentFiltered(t *testing.T) {
     "path": "pkg/x/y.go", "user": {"login": "alice"}},
   "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7",
-    "head": {"sha": "abc123", "ref": "feature/x"}, "base": {"ref": "main"}},
+    "head": {"sha": "abc123", "ref": "feature/x", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": "alice"}
 }`
 	w := httptest.NewRecorder()
@@ -508,4 +508,39 @@ func TestReviewReplyGateWithAPI_TokenIdentity(t *testing.T) {
 			t.Fatalf("a self reply must be refused before the comment walk: %d calls", api.listCalls)
 		}
 	})
+}
+
+// The reply lane shares the guard: a payload that never names the head
+// repo is filtered before the gate, exactly like a proven fork.
+func TestGitHubWebhook_ReviewThreadUnnamedHeadRepoFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	launches, gates := 0, 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launches++
+		return "run-x", nil
+	}
+	s.webhookPRForgeReviewReplyGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedReviewComment, string) (bool, string, string, error) {
+		gates++
+		return true, "", "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.EventAllowlist = []string{"issue_comment", "pull_request", "pull_request_review_comment"}
+
+	body := `{
+  "action": "created",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "comment": {"id": 9002, "in_reply_to_id": 9001, "body": "why?", "user": {"login": "alice"}},
+  "pull_request": {"number": 7, "state": "open", "title": "Add X", "body": "desc",
+    "html_url": "https://github.com/acme/widgets/pull/7",
+    "head": {"sha": "abc123", "ref": "feature/x"},
+    "base": {"ref": "main"}},
+  "sender": {"login": "alice"}
+}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderReviewComment, pt))
+	if w.Code != http.StatusOK || launches != 0 || gates != 0 {
+		t.Fatalf("an unnamed head repo must filter payload-only: code=%d launches=%d gates=%d", w.Code, launches, gates)
+	}
 }

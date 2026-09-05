@@ -72,7 +72,7 @@ const ghOpenPR = `{
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
   "pull_request": {"number": 7, "title": "Add X", "body": "desc",
     "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
-    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
   "sender": {"login": "alice"}
 }`
 
@@ -118,7 +118,7 @@ func ghReviewRequested(sender, reviewer, updatedAt string) string {
 	  "requested_reviewer": {"login": "` + reviewer + `"},
 	  "pull_request": {"number": 7, "title": "Add X", "body": "desc",
 	    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open", "updated_at": "` + updatedAt + `",
-	    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "` + sender + `"}
 	}`
 }
@@ -1307,5 +1307,50 @@ func TestGitHubWebhook_DeletedForkPRIsNotAutoLaunched(t *testing.T) {
 	}
 	if !strings.Contains(ds[0].Error, "head repo withheld") {
 		t.Fatalf("the refusal must name the state it refused (a withheld head, not \"fork PR\"), got %q", ds[0].Error)
+	}
+}
+
+// ghUnnamedHeadPR: a payload that never carried `head.repo` at all — the
+// shape no supported forge produces for a pull_request event, kept as the
+// third state the guard must refuse: same-repo is proven, never assumed.
+const ghUnnamedHeadPR = `{
+  "action": "opened", "number": 10,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 10, "title": "Add X", "body": "desc", "draft": false,
+    "html_url": "https://github.com/acme/widgets/pull/10", "state": "open",
+    "head": {"ref": "feature/x", "sha": "abc123"}, "base": {"ref": "main"}},
+  "sender": {"login": "alice"}
+}`
+
+// A head repo the payload does not NAME is refused like one it withheld:
+// the guard mirrors forge.PullRef.SameRepoAs (empty ⇒ not same-repo), so
+// the API-side and payload-side lanes cannot drift apart again — and the
+// refusal names this third state, not "fork PR".
+func TestGitHubWebhook_UnnamedHeadRepoIsNotAutoLaunched(t *testing.T) {
+	s := newWebhookTestServer(t)
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghUnnamedHeadPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered || launched != 0 {
+		t.Fatalf("an unnamed head repo must be filtered, never launched: status=%q launched=%d", resp["status"], launched)
+	}
+	ds, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 10)
+	if err != nil || len(ds) == 0 {
+		t.Fatalf("no delivery recorded: %v %d", err, len(ds))
+	}
+	if !strings.Contains(ds[0].Error, "head repo not named") {
+		t.Fatalf("the refusal must name the state it refused (an unnamed head), got %q", ds[0].Error)
 	}
 }
