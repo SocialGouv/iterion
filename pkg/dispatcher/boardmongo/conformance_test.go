@@ -1074,6 +1074,12 @@ func TestNativeStore_Conformance(t *testing.T) {
 		t.Fatalf("native.NewStore (launch): %v", err)
 	}
 	runLaunchClaimSuite(t, launch)
+
+	ownedFrom, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (owned-from): %v", err)
+	}
+	runOwnedFromSuite(t, ownedFrom)
 }
 
 // TestMongoStore_Conformance runs the same suite against the Mongo store.
@@ -1120,6 +1126,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	// twin too — its own tenant, so the ready/held cards it seeds never
 	// enter the coordinator listing below.
 	runLaunchClaimSuite(t, boardmongo.New(db, "launch-tenant"))
+	runOwnedFromSuite(t, boardmongo.New(db, "owned-from-tenant"))
 
 	// The Coordinator's cross-tenant ListEligible must find ready+unclaimed
 	// cards across tenants (verifies the issue.state / issue.claim BSON paths).

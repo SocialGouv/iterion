@@ -788,6 +788,14 @@ func (c *Dispatcher) dropJournalAfterRelease(issueID, identifier string, err err
 	c.claims.Remove(issueID)
 }
 
+// ownedFromUpdater is the fenced CAS-from-state write a lease backend
+// offers (native.Adapter does, over BoardStore.SetStateOwnedFrom). It is
+// what lets the finish worker's auto-transition be ONE write instead of
+// a state probe followed by a fenced overwrite.
+type ownedFromUpdater interface {
+	UpdateStateOwnedFrom(ctx context.Context, id, from, to string, tok tracker.ClaimToken) (bool, error)
+}
+
 // fencedUpdateState routes a state move through the claim fence when a
 // session token is available (UpdateStateOwned), else the legacy path.
 // The fence is what makes a superseded holder's late move a typed
@@ -972,6 +980,32 @@ func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, id
 	if completed == "" || completed == runningTarget {
 		return
 	}
+	if sess != nil && c.leaser != nil {
+		if fu, ok := c.leaser.(ownedFromUpdater); ok {
+			// ONE fenced CAS: "still in the running column" and the move
+			// are the same write. A probe followed by a fenced overwrite
+			// lost an operator move that landed in between — while the
+			// watchdog, judging on the CAS-observed state, honoured it.
+			changed, err := fu.UpdateStateOwnedFrom(ctx, issueID, runningTarget, completed, sess.Token())
+			switch {
+			case errors.Is(err, tracker.ErrNotFound):
+				// Issue disappeared from the tracker — refreshRunningStates'
+				// tombstone path already handled its cleanup.
+			case errors.Is(err, tracker.ErrTransitionRejected) || errors.Is(err, tracker.ErrNotSupported):
+				c.logger.Info("dispatcher: %s stayed in %s (tracker rejected move to %q): %v", identifier, runningTarget, completed, err)
+			case err != nil:
+				c.logger.Warn("dispatcher: completed-state move %s → %s: %v", identifier, completed, err)
+			case !changed:
+				// Workflow (or operator) already moved the state. Honor it.
+				c.logger.Info("dispatcher: %s already left %s before the auto-transition — leaving it where it was moved", identifier, runningTarget)
+			default:
+				c.logger.Info("dispatcher: %s moved %s → %s (workflow didn't change state, default auto-transition)", identifier, runningTarget, completed)
+			}
+			return
+		}
+	}
+	// Tokenless trackers (forge labels) carry no CAS: probe, then write —
+	// the window stays open exactly where no store can close it.
 	states, err := c.tracker.RefreshStates(ctx, []string{issueID})
 	if err != nil {
 		c.logger.Debug("dispatcher: completed-state probe %s: %v", identifier, err)

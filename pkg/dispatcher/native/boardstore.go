@@ -51,6 +51,15 @@ type BoardStore interface {
 	// of clobbering the new owner's state.
 	ReleaseOwned(id string, tok tracker.ClaimToken) error
 	SetStateOwned(id, newState string, tok tracker.ClaimToken) (*Issue, error)
+	// SetStateOwnedFrom is SetStateOwned with a source-state precondition:
+	// ONE CAS on (claim, claim_epoch, state == from). changed=false when
+	// the state drifted (somebody moved the card while its owner was
+	// deciding — nothing is written); ErrClaimConflict when the token no
+	// longer owns the card. The finish worker's auto-transition needs both
+	// halves in one write: fenced alone it overwrote an operator move that
+	// landed between its state probe and its write, while the watchdog —
+	// which judges on the CAS-observed state — would have honoured it.
+	SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (*Issue, bool, error)
 	SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
 	SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
 	SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error

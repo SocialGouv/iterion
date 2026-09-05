@@ -1326,7 +1326,28 @@ func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, 
 	// running state. If the workflow already moved it (typical clean
 	// finish path; the docs-refresh bot does this explicitly) or the
 	// operator dragged it on the kanban, leave the new state alone.
-	// RefreshStates is the cheapest read on the Tracker interface.
+	if currentTarget != "" && sess != nil && c.leaser != nil {
+		if fu, ok := c.leaser.(ownedFromUpdater); ok {
+			// ONE fenced CAS carries the safety check: a probe followed by
+			// a fenced write overwrote a move that landed in between (the
+			// maybeTransitionToCompleted class).
+			changed, err := fu.UpdateStateOwnedFrom(ctx, issueID, currentTarget, sourceState, sess.Token())
+			switch {
+			case errors.Is(err, tracker.ErrNotFound):
+				// Issue disappeared from the tracker — nothing to do.
+			case err != nil:
+				if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
+					c.logger.Warn("dispatcher: revert state %s → %s: %v", identifier, sourceState, err)
+				}
+			case !changed:
+				c.logger.Debug("dispatcher: %s already left %s, skipping revert to %s", identifier, currentTarget, sourceState)
+			}
+			return
+		}
+	}
+	// Tokenless trackers carry no CAS: RefreshStates is the cheapest read
+	// on the Tracker interface, and the window stays open exactly where
+	// no store can close it.
 	if currentTarget != "" {
 		if states, err := c.tracker.RefreshStates(ctx, []string{issueID}); err == nil {
 			cur, present := states[issueID]
