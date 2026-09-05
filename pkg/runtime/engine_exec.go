@@ -872,18 +872,29 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	// when a parent iteration legitimately re-enters.
 	if selected.LoopName == "" {
 		for loopName, loop := range e.workflow.Loops {
-			if loop == nil || len(loop.Entries) == 0 {
-				continue
-			}
-			if !loop.Entries[selected.To] || loop.Body[selected.From] {
+			if loop == nil || len(loop.Body) == 0 || loop.Body[selected.From] || !loop.Body[selected.To] {
 				continue
 			}
 			// Entering the body from outside re-bases the loop's price:
 			// its first back-edge crossing must cost one iteration, not
-			// everything the run spent before this loop existed. Outside
-			// the re-entry branch below — a FIRST entry needs the
-			// baseline just as much, and leaves the counter at 0.
+			// everything the run spent before this loop existed. At ANY
+			// body node — a loop that shares its verify/gate nodes with a
+			// sibling loop is entered there, off its own head, and a mark
+			// left at run start would price its first crossing at the
+			// whole run and decline it. A FIRST entry needs the baseline
+			// just as much as a re-entry, and leaves the counter at 0.
+			// Never while the loop is iterating, unless at one of its entries:
+			// a body computed over non-loop edges can leave a node of the
+			// cycle outside it, and the edge from that node back into the
+			// body fires every iteration — re-basing there would price the
+			// iteration at its tail alone and never decline the back-edge.
+			if rs.loopCounters[loopName] > 0 && !loop.Entries[selected.To] {
+				continue
+			}
 			markLoopBudget(rs, loopName)
+			if !loop.Entries[selected.To] {
+				continue
+			}
 			if prior, ok := rs.loopCounters[loopName]; ok && prior > 0 {
 				e.logger.Debug("loop %q: re-entered via edge %s→%s — counter reset from %d", loopName, selected.From, selected.To, prior)
 				rs.loopCounters[loopName] = 0

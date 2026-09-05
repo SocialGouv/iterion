@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"os"
 	"strings"
 	"time"
@@ -176,6 +178,57 @@ func (e *Engine) baselineUnpricedLoops(rs *runState) {
 		}
 		markLoopBudget(rs, loopName)
 	}
+}
+
+// loopBudgetMarksVersion is the format stamped on checkpoints: version 2
+// marks are measured (a loop's entry or its back-edge). Checkpoints below
+// it were written by an engine that also kept the run-start baseline on
+// loops never entered at their head — see restoreCheckpointBudget.
+const loopBudgetMarksVersion = 2
+
+// restoreCheckpointBudget restores consumption and loop prices from a
+// checkpoint, then drops what a legacy checkpoint could only have guessed:
+// a mark still at the run-start baseline on a loop whose body does not hold
+// the workflow entry. Such a loop was entered off its head, on an engine
+// that priced entries at the head only, and never measured; restored, the
+// zero would price its first crossing after the resume at everything the
+// run has spent and decline it. Dropped, the loop reports no shortfall
+// until measured and the session baseline prices it from the resume point.
+// Provenance decides, never the mark's shape: a version-2 checkpoint keeps
+// a zero that a loop legitimately entered at zero consumption.
+func (e *Engine) restoreCheckpointBudget(rs *runState, cp *store.Checkpoint) {
+	restoreBudgetAccounting(rs, cp)
+	if cp == nil || cp.LoopBudgetMarksV >= loopBudgetMarksVersion {
+		return
+	}
+	for loopName, mark := range rs.loopBudgetMarks {
+		if isRunStartBaseline(mark) && !loopHoldsEntry(e.workflow.Loops[loopName], e.workflow.Entry) {
+			delete(rs.loopBudgetMarks, loopName)
+		}
+	}
+}
+
+// isRunStartBaseline reports a mark taken before the run consumed anything:
+// no cost, no tokens, and less than a second of wall time.
+func isRunStartBaseline(mark loopBudgetMark) bool {
+	for dim, v := range mark {
+		if dim == "duration" {
+			if v >= float64(time.Second) {
+				return false
+			}
+			continue
+		}
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// loopHoldsEntry reports whether the workflow entry sits in the loop's
+// body — the one case where a run-start mark is the loop's true price.
+func loopHoldsEntry(loop *ir.Loop, entry string) bool {
+	return loop != nil && loop.Body[entry]
 }
 
 // restoreLoopBudgetMarks rehydrates the loop prices from a checkpoint so

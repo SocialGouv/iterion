@@ -460,3 +460,194 @@ func TestLoopBudgetVerdict_DurationDisplayIsInSeconds(t *testing.T) {
 		t.Errorf("non-duration axis was converted: %.0f/%.0f %q", s, r, u)
 	}
 }
+
+// lateLoopWorkflow: a costly prelude, then a verify/gate pair shared by a
+// loop whose head is `act` — the body is entered at `verify`, off its head,
+// exactly how a campaign bot's extension loop is entered after the lot's
+// own pass. maxTokens bounds the run.
+func lateLoopWorkflow(maxTokens int) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "late_loop",
+		Entry: "pre",
+		Nodes: map[string]ir.Node{
+			"pre":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "pre"}},
+			"verify": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "verify"}},
+			// A tool node, so the stub executor's verdict (needs_act) reaches
+			// the conditional loop edge — a bare compute node yields nothing.
+			"gate": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "gate"}},
+			"act":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "pre", To: "verify"},
+			{From: "verify", To: "gate"},
+			{From: "gate", To: "done", Condition: "converged"},
+			{From: "gate", To: "act", Condition: "needs_act", LoopName: "act_loop"},
+			{From: "act", To: "verify"},
+			{From: "gate", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"act_loop": {
+				Name:          "act_loop",
+				MaxIterations: 1,
+				Entries:       map[string]bool{"act": true},
+				Body:          map[string]bool{"act": true, "verify": true, "gate": true},
+			},
+		},
+		Budget: &ir.Budget{MaxTokens: maxTokens},
+	}
+}
+
+// TestLoopBudgetGuard_BodyEnteredOffItsHeadIsPricedFromThatEntry: a loop
+// whose body is entered at a node that is not its head (the verify a
+// sibling loop shares) must be priced from that entry, not from run
+// start. Priced from run start, the prelude's whole cost is what the
+// guard charges the loop's FIRST crossing — and declines it, so the act
+// the gate asked for never runs. Measured on a lot whose extension edge
+// was skipped with "last one took 29.21", the run's entire spend.
+func TestLoopBudgetGuard_BodyEnteredOffItsHeadIsPricedFromThatEntry(t *testing.T) {
+	wf := lateLoopWorkflow(12_000)
+	exec := newStubExecutor()
+	acts, gates := 0, 0
+	exec.on("pre", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 6_000}, nil
+	})
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+		gates++
+		if acts == 0 {
+			return map[string]any{"converged": false, "needs_act": true}, nil
+		}
+		return map[string]any{"converged": true, "needs_act": false}, nil
+	})
+	exec.on("act", func(_ map[string]any) (map[string]any, error) {
+		acts++
+		return map[string]any{"ok": true, "_tokens": 1_000}, nil
+	})
+	eng := New(wf, tmpStore(t), exec)
+	if err := eng.Run(context.Background(), "late", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if acts != 1 {
+		t.Fatalf("act ran %d times, want 1: the loop's first crossing was priced at the prelude's cost and declined", acts)
+	}
+	if gates != 2 {
+		t.Fatalf("gate ran %d times, want 2", gates)
+	}
+}
+
+// narrowBodyLoopWorkflow: the loop's body, computed over non-loop edges,
+// holds only its head and tail; the expensive node on its cycle sits
+// outside, and the edge from it back into the body fires every iteration.
+func narrowBodyLoopWorkflow(maxTokens int) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "narrow_body_loop",
+		Entry: "head",
+		Nodes: map[string]ir.Node{
+			"head": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "head"}},
+			"fix":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"tail": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "head", To: "fix"},
+			{From: "fix", To: "tail"},
+			{From: "tail", To: "head", LoopName: "narrow"},
+			{From: "tail", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"narrow": {
+				Name:          "narrow",
+				MaxIterations: 10,
+				Entries:       map[string]bool{"head": true},
+				Body:          map[string]bool{"head": true, "tail": true},
+			},
+		},
+		Budget: &ir.Budget{MaxTokens: maxTokens},
+	}
+}
+
+// TestLoopBudgetGuard_MidIterationCrossingDoesNotReBase: once a loop is
+// iterating, the edge from a node outside its computed body back into it
+// must not re-base the price — it fires every iteration, right before the
+// back-edge, and re-basing there prices the iteration at its tail alone:
+// the guard never declines, and the run walks into the hard limit with
+// its work stranded. Priced by the last back-edge, the third crossing is
+// declined and the run leaves through its exit path.
+func TestLoopBudgetGuard_MidIterationCrossingDoesNotReBase(t *testing.T) {
+	wf := narrowBodyLoopWorkflow(10_000)
+	exec := newStubExecutor()
+	fixes := 0
+	exec.on("head", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
+		fixes++
+		return map[string]any{"ok": true, "_tokens": 3_000}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	eng := New(wf, tmpStore(t), exec)
+	if err := eng.Run(context.Background(), "narrow", nil); err != nil {
+		t.Fatalf("Run must leave through the exit path, got: %v", err)
+	}
+	if fixes != 2 {
+		t.Fatalf("fix ran %d times, want 2: the third crossing must be declined at 6k spent + 3k priced ≥ 90%% of 10k", fixes)
+	}
+}
+
+// TestRestoreCheckpointBudget_LegacyMarksOfALateLoopAreDropped: provenance,
+// not shape, decides. A checkpoint below the marks version carries the
+// run-start baseline for loops an older engine never priced at their
+// off-head entry: those marks are dropped (unmarked reports no shortfall,
+// the session baseline then prices from the resume point); a loop holding
+// the workflow entry keeps its zero, a measured mark is kept. A version-2
+// checkpoint keeps a zero that a loop legitimately entered at zero.
+func TestRestoreCheckpointBudget_LegacyMarksOfALateLoopAreDropped(t *testing.T) {
+	wf := lateLoopWorkflow(12_000)
+	wf.Loops["outer"] = &ir.Loop{Name: "outer", MaxIterations: 3, Entries: map[string]bool{"pre": true}, Body: map[string]bool{"pre": true, "verify": true, "gate": true}}
+	wf.Loops["measured"] = &ir.Loop{Name: "measured", MaxIterations: 3, Entries: map[string]bool{"act": true}, Body: map[string]bool{"act": true, "verify": true}}
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	marks := map[string]map[string]float64{
+		"act_loop": {"tokens": 0, "cost_usd": 0, "duration": 500_000},
+		"outer":    {"tokens": 0, "cost_usd": 0, "duration": 500_000},
+		"measured": {"tokens": 5_000, "cost_usd": 0, "duration": 3e12},
+	}
+	for _, tc := range []struct {
+		name     string
+		version  int
+		wantLate bool
+	}{
+		{"legacy checkpoint: the late loop's run-start mark is dropped", 0, false},
+		{"version-2 checkpoint: a zero is a price", loopBudgetMarksVersion, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := eng.newRunState("r", nil)
+			rs.budget = newSharedBudget(wf.Budget, eng.logger)
+			cp := &store.Checkpoint{NodeID: "verify", BudgetTokensUsed: 8_000, LoopBudgetMarks: marks, LoopBudgetMarksV: tc.version}
+			eng.restoreCheckpointBudget(rs, cp)
+			if _, ok := rs.loopBudgetMarks["act_loop"]; ok != tc.wantLate {
+				t.Fatalf("act_loop marked = %v, want %v", ok, tc.wantLate)
+			}
+			if got := rs.loopBudgetMarks["outer"]["tokens"]; got != 0 {
+				t.Fatalf("outer mark = %v, want 0 kept: it holds the entry", got)
+			}
+			if got := rs.loopBudgetMarks["measured"]["tokens"]; got != 5_000 {
+				t.Fatalf("measured mark = %v, want 5000 kept", got)
+			}
+			eng.baselineUnpricedLoops(rs)
+			v := eng.loopBudgetShortfall("act_loop", rs)
+			if !tc.wantLate && v != nil {
+				t.Fatalf("a dropped mark is re-based by the session baseline; act_loop reports a shortfall right after the resume: %+v", v)
+			}
+			if tc.wantLate && v == nil {
+				t.Fatal("a kept zero is a price: act_loop's first crossing after the resume costs the whole spend and must be declined at 8000 + 8000 ≥ 90%% of 12000")
+			}
+		})
+	}
+}

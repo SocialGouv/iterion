@@ -1133,8 +1133,13 @@ type Checkpoint struct {
 	// loop's decision node would cross with no measurement and launch a
 	// pass the budget cannot fund, which is exactly the stranding the
 	// affordability guard exists to prevent.
-	LoopBudgetMarks  map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
-	ArtifactVersions map[string]int                `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	LoopBudgetMarks map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	// LoopBudgetMarksV is the format version of LoopBudgetMarks. Version 2
+	// marks are measured at a loop's entry or back-edge; earlier engines also
+	// wrote the run-start baseline for loops never entered at their head, a
+	// zero the resume must not read as a price.
+	LoopBudgetMarksV int            `json:"loop_budget_marks_v,omitempty" bson:"loop_budget_marks_v,omitempty"`
+	ArtifactVersions map[string]int `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
 	// SelectedIncoming records, per destination node, the incoming edges
 	// that routing actually selected for the current visit of that node.
 	// buildNodeInputRS applies with-mappings only from those edges so an

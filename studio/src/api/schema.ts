@@ -5499,6 +5499,7 @@ export interface components {
                     [key: string]: number;
                 };
             };
+            loop_budget_marks_v?: number;
             loop_counters: {
                 [key: string]: number;
             };
