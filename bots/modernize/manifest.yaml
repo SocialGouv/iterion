@@ -1,7 +1,14 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.2.0
+version: 0.3.0
+## 0.3.0 — `done` is the gate's word: a new mark_done node writes it after the
+## lot converged, a worker-written `done` or a rewritten contract is refused
+## before the gate runs, and a refusal that outlives the repair loop fails the
+## run. `gate_timeout_s` (contract, lot over top level, read at the base) walls
+## every gate command; an expiry is a verdict that fails the run at once. A
+## gate-less ready lot, a lot waiting on a dependency and an unreadable or
+## uneditable contract are typed verdicts too — never a green no-op.
 ## 0.2.0 — only_lot targeting a done/blocked/absent lot no longer exits
 ## green as nothing_to_do (native:670): plan_read resolves the named lot's
 ## actual status FIRST and, when it cannot be actioned, routes work_gate
