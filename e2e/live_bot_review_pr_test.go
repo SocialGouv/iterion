@@ -70,7 +70,7 @@ func Pick(items []string, idx int) string {
 	vars := map[string]any{
 		"workspace_dir":      workspaceDir,
 		"base_ref":           "main",
-		"post_to_board":      false, // contain side-effects: no board writes
+		"post_to_board":      "false", // contain side-effects: no board writes (string: post_to_board is a tri-state enum since #685)
 		"severity_threshold": "low",
 		"pr_url":             "", // markdown-only, no forge publish
 		"scope_notes":        "Review the diff for correctness and runtime-safety bugs.",

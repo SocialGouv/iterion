@@ -115,6 +115,80 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > so a forked-MR auto-review *is* reachable — bound that lane with an
 > `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
 
+## <a name="review-tiers"></a>Review tiers — glance / guard / audit
+
+A repo's criticality or budget policy can pick ONE preset (`review_tier`)
+instead of tuning five separate vars ([SocialGouv/iterion#685](https://github.com/SocialGouv/iterion/issues/685)):
+
+| Tier | severity_threshold | max_findings | post_to_board | review_mode | Reviewer model |
+|------|---------------------|--------------|----------------|-------------|-----------------|
+| `glance` | `high` | `5` | `false` | mono only | cheaper same-family (`claude-sonnet-5` / `openai/gpt-5.4-mini`) |
+| `guard` (**default**) | `medium` | `15` | `true` | mono (auto-resolved) | full-strength (`claude-opus-5` / `openai/gpt-5.5`), unchanged since 0.7.0 |
+| `audit` | `low` | `40` | `true` | **forced dual**, regardless of `review_mode` | full-strength, both families |
+
+`guard` is byte-identical to the bot's pre-#685 posture — an unpinned repo
+sees no behaviour change. The tier is a **preset, never a cage**: every
+knob above stays individually overridable via its own `--var` — a
+sentinel default (`"auto"` on the string vars, `0` on `max_findings`)
+means "let the tier decide"; any concrete value is an explicit operator
+override and wins, on every tier. `gate_severity` (the merge-blocking
+floor) is deliberately **not** tier-varied — every tier keeps the same
+blocking bar by default, so `audit`'s lower `severity_threshold` surfaces
+more low/medium findings as advisory PR comments without silently making
+them merge-blocking. A deterministic `tier_expand` compute node (no LLM)
+resolves the concrete values right after `diff_precheck`, so a capped or
+frugal review is deterministic, not a judgment call.
+
+**The measured floor argument (why glance attacks ingestion, not just
+output).** A day of production cost data on this repo fit `cost ≈ $2.24 +
+$0.00072 × added lines` — between +39 and +210 lines (a 5× size range),
+cost moved by only $0.60. Below roughly 500 lines **the floor dominates**:
+what a reviewer ingests before it reads a single diff line (a claude_code
+node's context injection — this repo's own `CLAUDE.md`/`AGENTS.md` — the
+plausible reason iterion's own floor ≈ $2.24 against
+code-du-travail-numerique's ≈ $1.84). A tier that only caps the diff, the
+findings, or the max_findings ceiling cannot move a small PR below ~$2 —
+it is trimming the part that already costs the least. So `glance`
+attacks the floor two ways: a cheaper model (see below), and a prompt
+instruction telling the reviewer to skip exploratory reads beyond the
+diff itself (`--stat` + the hunks + at most one targeted grep — never a
+whole surrounding package). Skipping claude_code's own context-file
+injection is a further, larger lever this pass did NOT take — it would
+need a per-node `setting_sources:` DSL field (today `ITERION_CLAUDE_CODE_SETTING_SOURCES`
+is engine-wide only), a genuinely new capability, filed as a follow-up
+rather than bundled into this preset.
+
+**The model-per-tier mechanism.** A node's `model:` (and `reasoning_effort:`)
+field resolves ONLY `${ENV_VAR:-default}` from the process environment,
+never `{{vars.x}}` — true on every backend, including `claw`'s in-process
+path, not just the CLI-delegated ones. So a `--var review_tier=glance`
+cannot retarget `reviewer_claude`'s/`reviewer_gpt`'s model directly; the
+bot instead declares two extra judge nodes, `reviewer_claude_glance` /
+`reviewer_gpt_glance`, pinned to the cheaper defaults, and the EXISTING
+`topology` condition router (ADR-052) picks between the full-strength and
+glance variant per family — the pattern to imitate for any future
+tier/variant knob that needs a different model, never a new engine branch.
+
+**Per-repo pin.** `review_tier` is an ordinary launch var, so it is
+pinned exactly like `gate_context` or `post_to_board` — through the
+integration's `launch_vars` (durable across re-provisioning, generic
+pass-through, no new engine code):
+
+```sh
+iterion remote forge repo-bots create --data '{
+  "connection_id": "<conn-id>",
+  "repo": "owner/repo",
+  "bot_ids": ["review-pr"],
+  "launch_vars": { "review_tier": "glance" }}'
+```
+
+The studio's repo detail page (`/repos/:key`) surfaces a three-position
+"Review tier" selector once `review-pr` is bound to that repo, writing the
+same `launch_vars.review_tier` field. A webhook-triggered launch never
+overrides an operator's pin — `reviewPRVars` / `buildPRForgeCommandVars`
+apply `launchVars` LAST, the same precedence every other operator pin on
+this bot already relies on.
+
 ## Activating the blocking gate on a repo
 
 The code posts the status unconditionally (advisory). To make it **block**,

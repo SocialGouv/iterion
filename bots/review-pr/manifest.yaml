@@ -1,7 +1,33 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.7.0
+version: 0.8.0
+## 0.8.0 — REVIEW TIERS (SocialGouv/iterion#685): a repo's criticality or
+## budget policy picks ONE preset (`review_tier`: glance | guard | audit)
+## instead of five separate vars. guard is the DEFAULT and is
+## byte-identical to 0.7.0's behaviour. glance is frugal — a cheaper
+## same-family reviewer model (claude-sonnet-5 / gpt-5.4-mini via two new
+## `reviewer_*_glance` nodes, since neither `model:` nor `reasoning_effort:`
+## can read a runtime var — only `${ENV_VAR}` — on ANY backend, claw
+## included; the `topology` router picks the node), a high drafting floor,
+## a small finding cap, no board writes, and a prompt instruction to skip
+## exploratory reads beyond the diff (the measured cost floor is what a
+## reviewer ingests BEFORE it reads a single diff line — native issue
+## #685's cost-model comment). audit is premium — forces the cross-family
+## dual fan-out regardless of `review_mode`, a low drafting floor, and a
+## raised cap (40, the pre-0.7.0 "everything" value). The tier is a
+## PRESET, not a cage: severity_threshold / max_findings / post_to_board /
+## review_mode all stay individually overridable via their own --var (a
+## sentinel default — "auto" or 0 — on each marks "let the tier decide";
+## any concrete value is an explicit operator override and wins). A new
+## deterministic `tier_expand` compute node (no LLM) resolves them right
+## after `diff_precheck`. Budget (max_cost_usd/max_duration) is
+## deliberately NOT tier-varied — the workflow budget block is a
+## compile-time DSL literal, disjoint from the vars a tier can reach; see
+## docs/merge-gate.md's "Review tiers" section. Pin per repo through the
+## integration's `launch_vars.review_tier` (already a generic pass-through
+## — no engine change needed) or the studio integration settings' 3-way
+## selector.
 ## 0.7.0 — COST REDUCTION pass (judging quality untouched — the
 ## reviewer stays on opus/high). Four levers: (1) the severity floor
 ## moves to the SOURCE — `severity_threshold` now defaults to "medium"
@@ -202,4 +228,4 @@ invocations:
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
 ## out of the form (still settable via --var / bot_args).
 launch:
-  primary: [pr_url, base_ref]
+  primary: [pr_url, base_ref, review_tier]
