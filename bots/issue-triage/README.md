@@ -2,8 +2,10 @@
 
 Triagy reads ONE native-kanban card, classifies it against the generated
 bot catalog's decision tree, and stamps **which bot will handle it**: the
-typed Bot field (`set_bot`), vocabulary-consistent labels (`set_labels`),
-and one paragraph of routing rationale (`comment_issue`). It never does
+typed Bot field (`set_bot`), vocabulary-consistent labels (`add_labels`,
+relative — never the absolute `set_labels`, which would re-arm the
+consumed trigger label), and one paragraph of routing rationale
+(`comment_issue`). It never does
 the work itself, never edits code, and never moves the card — the card
 stays in inbox, and launching remains the operator's drag to Ready, where
 the dispatcher claims the stamped bot. No confident fit → the Bot stays
@@ -36,9 +38,10 @@ triage  (agent · backend claw · model openai/gpt-5.5 · tools: [skill] · tool
   4. mcp__iterion_board__set_bot        technical dash-form name copied verbatim
                                         from the catalog persona table; skipped
                                         only on a no-fit
-  5. mcp__iterion_board__set_labels     pre-existing labels + source:issue-triage
-                                        (+ needs-manual-triage on a no-fit,
-                                        + at most one axis:<area>); ≤ 5 labels
+  5. mcp__iterion_board__add_labels     source:issue-triage (+ needs-manual-triage
+                                        on a no-fit, + at most one axis:<area>);
+                                        remove_labels for a lingering
+                                        needs:approval; ≤ 5 labels
   6. mcp__iterion_board__comment_issue  the one-paragraph routing rationale
   → triage_output { routed_bot: string, no_fit: bool, rationale: string }
 done
@@ -88,8 +91,8 @@ devbox run -- iterion run bots/issue-triage/main.bot --var issue_id=<card-id>
 
 The `triage` node declares
 `capabilities: [board.read, board.assign, board.label, board.comment]` —
-respectively `get_issue`/`list_labels`, `set_bot`, `set_labels` and
-`comment_issue`. Deliberately absent: `board.create`, `board.move` and
+respectively `get_issue`/`list_labels`, `set_bot`, `add_labels`/
+`remove_labels` and `comment_issue`. Deliberately absent: `board.create`, `board.move` and
 `board.close`, so the card's column and existence are not Triagy's to
 change (`transition_issue`, `create_issue` and `close_issue` are also
 forbidden by the prompt).

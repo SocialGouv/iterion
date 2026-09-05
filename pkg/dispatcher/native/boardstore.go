@@ -32,6 +32,15 @@ type BoardStore interface {
 	SetStateFrom(id, from, to string) (*Issue, bool, error)
 	Reopen(id, toState string) (*Issue, error)
 	Delete(id string) error
+	// AdjustLabels is the RELATIVE label write (add_labels /
+	// remove_labels): the delta applies to the card as it is, atomically
+	// — one critical section on the FS twin, one conditional write on the
+	// Mongo one. Update's absolute label list is the caller's intent and
+	// re-arms a one-shot trigger label consumed after the caller's read;
+	// this cannot. changed=false when nothing moved (no write, no event).
+	// Mandatory, not optional: a backend without it would degrade the
+	// board ops to the read-modify-write this exists to remove.
+	AdjustLabels(id string, add, remove []string) (*Issue, bool, error)
 
 	// Claim/Release are the dispatcher's per-issue claim (marker = the
 	// dispatcher instance id). Claim stamps a persisted LEASE and returns

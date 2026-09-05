@@ -186,8 +186,11 @@ real same-version lost update, closed at the choke). What remains — on
 BOTH twins, deliberately — is intent: `set_labels` is an ABSOLUTE list,
 so a bot that composed its list from a read taken before the consume
 re-arms the trigger by stating it. That is the API's shape (one-shots
-are documented re-armable), not a lost update; an add/remove label
-operation is the follow-up that would remove the foot-gun.
+are documented re-armable), not a lost update. The relative
+`add_labels` / `remove_labels` operations (`BoardStore.AdjustLabels` — one
+critical section on the FS twin, one pipeline update on Mongo) are the
+incremental path that cannot re-arm anything, and the agents are pointed
+at them; `set_labels` stays absolute by contract.
 Release N+1, once no old binary can un-lease a claim, enables the
 reaper — and with it the full decision table over whatever the
 mixed-fleet window stranded. The other gate-independent releaser is the

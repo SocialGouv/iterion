@@ -141,8 +141,8 @@ func TestInternalMCPShorthandsMatchRegistry(t *testing.T) {
 		live[bare] = true
 	}
 	for _, bare := range []string{
-		"assign_issue", "close_issue", "comment_issue", "create_issue",
-		"get_issue", "list_issues", "list_labels", "set_bot", "set_labels",
+		"add_labels", "assign_issue", "close_issue", "comment_issue", "create_issue",
+		"get_issue", "list_issues", "list_labels", "remove_labels", "set_bot", "set_labels",
 		"transition_issue", "subscribe", "unsubscribe",
 	} {
 		if !live[bare] {
