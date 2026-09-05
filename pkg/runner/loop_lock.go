@@ -38,7 +38,17 @@ func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, d
 		if held {
 			status = "lock_held"
 		}
-		logger.Warn("runner: lock %s: %v", msg.RunID, err)
+		// The same classification picks the log LEVEL, because pkg/log
+		// dispatches its hook at warn+ but errtrack.LogHook turns an ERROR
+		// line into a tracker event and a WARN line into a mere breadcrumb.
+		// A sibling holding the lease is expected traffic on a healthy fleet;
+		// a lock store that cannot answer is an infrastructure failure, and
+		// this is the only line either class logs on the deferral branch.
+		if held {
+			logger.Warn("runner: lock held for %s: %v", msg.RunID, err)
+		} else {
+			logger.Error("runner: lock %s: %v", msg.RunID, err)
+		}
 		if max := r.maxDeliver(); max > 0 && delivery.NumDelivered() >= max {
 			r.archiveLockFailure(msg, delivery, logger, err, held)
 		} else {

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,6 +107,89 @@ func TestLockFailureReasonSeparatesHeldFromUnconfirmed(t *testing.T) {
 		if !strings.Contains(reason, "run state unchanged") {
 			t.Fatalf("every lock-failure archive leaves the run untouched: %q", reason)
 		}
+	}
+}
+
+// hookRecord / hookRecorder capture the LEVEL each line was dispatched to
+// the logger's hook at. pkg/log/hook_test.go has the same shape, but it
+// lives in package log — this is the handful of lines pkg/runner needs.
+type hookRecord struct {
+	level iterlog.Level
+	msg   string
+}
+
+type hookRecorder struct {
+	mu   sync.Mutex
+	recs []hookRecord
+}
+
+func (h *hookRecorder) hook(level iterlog.Level, msg string, _ map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recs = append(h.recs, hookRecord{level: level, msg: msg})
+}
+
+func (h *hookRecorder) all() []hookRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]hookRecord(nil), h.recs...)
+}
+
+// The LEVEL is the assertion here, not the message text — do not "simplify"
+// this into a substring check, which cannot catch the regression it exists
+// for. pkg/log dispatches its hook at warn+, but errtrack.LogHook turns an
+// ERROR line into a tracker EVENT (pkg/errtrack/hook.go) and a WARN line
+// into a mere breadcrumb that ships only if some later error fires. So a
+// lock store that is down — every run in the fleet failing to start, each
+// message burning its whole redelivery budget before landing in the DLQ —
+// raises an alert only while this path logs at Error. Contention is the
+// opposite: a sibling holding the lease is expected traffic on a healthy
+// fleet, and paging on it would be noise.
+func TestLockFailureLogLevelSeparatesOutageFromContention(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		store func(store.RunStore) store.RunStore
+		want  iterlog.Level
+	}{
+		{"a lock store that cannot answer is an infrastructure failure",
+			func(s store.RunStore) store.RunStore { return lockBrokenStore{s} }, iterlog.LevelError},
+		{"a sibling holding the lease is ordinary contention",
+			func(s store.RunStore) store.RunStore { return lockHeldStore{s} }, iterlog.LevelWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			const id = "lock-level"
+			seedRunningRun(t, base, id)
+			rec := &hookRecorder{}
+			// NOT iterlog.Nop(): its level sits below LevelError, so log()
+			// returns before emitting OR dispatching and this test would pass
+			// with the bug present.
+			logger := iterlog.New(iterlog.LevelInfo, io.Discard)
+			logger.SetHook(rec.hook)
+
+			r := &Runner{cfg: Config{Store: tc.store(base), Logger: iterlog.Nop()}, maxDeliverOverride: 3}
+			// Deliveries remain, so this takes the DEFERRAL branch: cfg.NATS is
+			// nil (the delay falls back to DefaultLockTTL) and NakWithDelay
+			// returns nil, so logDeliveryErr is a no-op and the classification
+			// line is the only hook record. The archive branch logs lines of
+			// its own and would make the count assertion meaningless.
+			_, ok, _ := r.acquireRunLock(context.Background(),
+				&queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"},
+				&fakeDelivery{delivered: 1}, logger)
+			if ok {
+				t.Fatal("the lock must not be granted when LockRun fails")
+			}
+			got := rec.all()
+			if len(got) != 1 {
+				t.Fatalf("want exactly one hook record from the deferral branch, got %+v", got)
+			}
+			if got[0].level != tc.want {
+				t.Fatalf("hook level = %v, want %v (%q)", got[0].level, tc.want, got[0].msg)
+			}
+		})
 	}
 }
 
