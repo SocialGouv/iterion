@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -193,11 +192,9 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: connect: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := cli.Ping(pingCtx, readpref.Primary()); err != nil {
+	if err := pingPrimary(ctx, cli, defaultPingPolicy); err != nil {
 		_ = cli.Disconnect(context.Background())
-		return nil, fmt.Errorf("store/mongo: ping: %w", err)
+		return nil, err
 	}
 
 	maxAttach := cfg.MaxAttachmentBytes
