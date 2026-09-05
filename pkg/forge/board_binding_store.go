@@ -206,7 +206,16 @@ func (b BoardBinding) Fields() []LabelField {
 	return out
 }
 
-// OptionForState returns the board option id to write for a native state.
+// OptionForState returns the board option id CACHED for a native state.
+//
+// It is NOT an answer to "does the board still carry this column". The
+// reconciliation deliberately KEEPS a lost column's id — that is the evidence
+// that keeps the loss re-derivable on the next pass — so this returns
+// `(id, true)` for a column the board no longer has, and writing that id 422s.
+// A caller that writes must also consult the pass's
+// `StatusVocabularyRepair.LostStates`; one that only wants to know whether the
+// board carries the column should read `MissingStatuses`, which every
+// reconciliation recomputes.
 func (b BoardBinding) OptionForState(state string) (string, bool) {
 	id, ok := b.StatusOptions[state]
 	return id, ok && id != ""
