@@ -49,6 +49,18 @@ type PluginSource struct {
 	// Enabled gates whether this source contributes to the team's runs.
 	Enabled bool `bson:"enabled" json:"enabled"`
 
+	// DegradedReason is set when the last launch-time resolution of this
+	// source failed — a fetch the remote refused, a plugin.yaml that does
+	// not parse, a contribution file that cannot be read. A degraded source
+	// is SKIPPED by the launch that found it so (the run proceeds without
+	// its contributions) instead of failing every launch of the team; this
+	// flag is what keeps that skip from being silent. It clears on the next
+	// resolution that succeeds, or on a re-registration that verifies the
+	// source. Written only through MarkDegraded/ClearDegraded — Update
+	// never touches it.
+	DegradedReason string     `bson:"degraded_reason,omitempty" json:"degraded_reason,omitempty"`
+	DegradedAt     *time.Time `bson:"degraded_at,omitempty" json:"degraded_at,omitempty"`
+
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -63,6 +75,13 @@ type Store interface {
 	// ListEnabledByTenant returns the sources a launch must resolve.
 	ListEnabledByTenant(ctx context.Context, tenantID string) ([]PluginSource, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]PluginSource, error)
+	// MarkDegraded records that a launch could not resolve the source, and
+	// why; ClearDegraded records a resolution that succeeded. Keyed by the
+	// explicit tenant like ListEnabledByTenant: a launch resolves the team
+	// that owns the RUN, which is not always the caller's context tenant.
+	// Both return ErrNotFound when (tenant, id) names nothing.
+	MarkDegraded(ctx context.Context, tenantID, id, reason string) error
+	ClearDegraded(ctx context.Context, tenantID, id string) error
 }
 
 var (
@@ -91,6 +110,13 @@ func (s *PluginSource) Validate() error {
 		return fmt.Errorf("pluginsource: ref is required (pin a tag or sha)")
 	}
 	return nil
+}
+
+// Degraded reports whether the last resolution of this source failed. The
+// reason is in DegradedReason; a degraded source still lists as enabled — it
+// is the operator's declaration, and the flag is the engine's readout.
+func (s *PluginSource) Degraded() bool {
+	return s.DegradedReason != ""
 }
 
 // PinnedRef reports whether Ref looks like an immutable pin (a full sha or a

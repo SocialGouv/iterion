@@ -1447,11 +1447,11 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 // Tenant and owner identifiers are pulled from ctx (stamped by the
 // server's auth middleware) and propagate to both the persisted Run
 // document and the NATS message so the runner can verify isolation.
-func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (int, error) {
-	// 1. Persist the run with status=queued + workflow_hash + file_path
-	//    so List endpoints see it instantly and Resume can reload the
-	//    workflow. Single SaveRun (upsert) avoids the CreateRun → LoadRun
-	//    → SaveRun round-trip the previous shape required.
+func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (pos int, retErr error) {
+	// 1. Build the run doc (status=queued + workflow_hash + file_path so
+	//    List endpoints see it instantly and Resume can reload the
+	//    workflow). It is PERSISTED only once everything the queue message
+	//    needs has resolved — see the choke point before SaveRun.
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
@@ -1584,14 +1584,12 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 	}
 
-	if err := p.store.SaveRun(ctx, r); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
-	}
-
-	// 2. Build the RunMessage. We marshal the AST inline; p.publish then
-	//    offloads it out-of-band via an IRRef (T-42) if it would exceed
-	//    the NATS max_payload. The runner side re-parses + re-compiles, so
-	//    the wire payload is the AST File, not the compiled IR.
+	// 2. Resolve what the RunMessage carries BEFORE the run row exists, so a
+	//    failure here leaves no row at all. We marshal the AST inline;
+	//    p.publish then offloads it out-of-band via an IRRef (T-42) if it
+	//    would exceed the NATS max_payload. The runner side re-parses +
+	//    re-compiles, so the wire payload is the AST File, not the compiled
+	//    IR.
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return 0, err
@@ -1599,10 +1597,41 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// Plugin/library skills resolved HERE, from this instance's iterion home:
 	// the runner pod's is empty, so an operator-installed plugin's skill would
 	// otherwise never reach the workspace (see resolveContributions).
-	contributions, err := resolveContributionsFor(ctx, wf, "", tenantID, p.pluginSources, p.logger)
+	contributions, err := resolveContributionsFor(ctx, wf, "", tenantID, runID, p.pluginSources, p.logger)
 	if err != nil {
 		return 0, err
 	}
+
+	// 3. Persist the run — a single SaveRun (upsert). From here on a row
+	//    exists, and every exit that is not a successful publish must leave
+	//    it TERMINAL, in this one place: a `queued` row that no queue message
+	//    backs is a run nothing will ever claim, sitting in every list as
+	//    waiting (93 of them accumulated in one incident, one per failed
+	//    webhook launch). The row is kept, not deleted — `failed` with the
+	//    launch error is what the studio, the gate reconciler and an
+	//    operator can act on; a vanished row explains nothing. Cancel-immune
+	//    ctx: a launch failed BY request cancellation must not also doom the
+	//    rollback.
+	persisted := false
+	defer func() {
+		if !persisted || launched {
+			return
+		}
+		cause := "launch failed before its queue message was published"
+		if retErr != nil {
+			cause = retErr.Error()
+		}
+		rbCtx, rbCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer rbCancel()
+		if uerr := p.store.UpdateRunStatusCoded(rbCtx, runID, store.RunStatusFailed, cause, store.FailureLaunchFailed); uerr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
+		}
+	}()
+	if err := p.store.SaveRun(ctx, r); err != nil {
+		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
+	}
+	persisted = true
+
 	msg := &queue.RunMessage{
 		V:             queue.SchemaVersion,
 		Contributions: contributions,
@@ -1657,25 +1686,17 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Fallback: queueFallbackOf(spec.Fallback),
 	}
 	if err := p.publish(ctx, msg); err != nil {
-		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
-		// Roll the run doc back to failed so the studio surfaces the
-		// queue failure rather than a stuck "queued" row that never
-		// moves. Roll back on a cancel-immune ctx: a publish failure
-		// caused by request cancellation must not also doom the status
-		// rollback.
-		if uerr := p.store.UpdateRunStatus(context.WithoutCancel(ctx), runID, store.RunStatusFailed, fmt.Sprintf("queue publish: %v", err)); uerr != nil {
-			return 0, errors.Join(pubErr, fmt.Errorf("cloudpublisher: mark run %s failed after publish failure (run may be stuck queued): %w", runID, uerr))
-		}
-		return 0, pubErr
+		// The deferred choke point above flips the row to failed.
+		return 0, fmt.Errorf("cloudpublisher: publish: %w", err)
 	}
 	launched = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusQueued)).Inc()
 	}
 
-	// 3. Compute queue position: count of runs with status=queued
+	// 4. Compute queue position: count of runs with status=queued
 	//    and created_at <= ours.
-	pos, err := p.queuePosition(ctx, runID)
+	pos, err = p.queuePosition(ctx, runID)
 	if err != nil {
 		// Non-fatal: the studio falls back to "Waiting on the queue"
 		// generic copy when queue_position is zero.
@@ -1874,7 +1895,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
-	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, p.pluginSources, p.logger)
+	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, spec.RunID, p.pluginSources, p.logger)
 	if contribErr != nil {
 		return contribErr
 	}

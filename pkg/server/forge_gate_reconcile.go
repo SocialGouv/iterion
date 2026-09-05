@@ -399,8 +399,21 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	default: // a synthetic interruption
 		// The same run offered twice — the event and the sweep racing, or the
 		// sweep re-reading its window every minute for an hour — is already
-		// answered.
+		// answered as a STATUS. The recovery its first offer started may
+		// still owe a retry, though: a relaunch that failed to START is
+		// retried on a backoff under the head's claim key and escalated once
+		// its budget is spent (relaunchDeadGateRun). One store read decides,
+		// and only a launch_error row re-enters the tail, so a settled claim
+		// or a relaunch that was refused keeps this the cheap exit it has to
+		// be at one offer per minute per dead run.
 		if gateStatusSpeaksFor(gate, runURL) {
+			d := deadGateRun{
+				run: run, grant: grant, conn: conn, gc: gc,
+				repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
+			}
+			if s.gateRelaunchRetryPending(ctx, d) {
+				s.relaunchDeadGateRun(ctx, d)
+			}
 			return nil
 		}
 		// Unattributable: with no PublicURL configured every status is written
