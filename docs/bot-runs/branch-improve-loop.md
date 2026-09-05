@@ -10,12 +10,23 @@
 - Method: seeded with Revi's single new finding `R1dca02` plus five open
   questions, and with a plan a cross-model peer had already critiqued. The
   peer's catch changed the shipped result — see below.
-- Result: six commits, `38f2d98e2` … `cf39e2f72`. `R1dca02` fixed (the
+- Result: nine commits, `38f2d98e2` … `eaa33d0ce`. `R1dca02` fixed (the
   non-contention lock class logs at Error again, so a broken lock store
   raises a tracker event instead of a breadcrumb nobody ships); one open
   question promoted to a defect and closed; one phantom cross-reference
-  corrected; two ratchets landed. `task lint` and the full `task test` are
-  green.
+  corrected; two ratchets landed.
+- Verification — **passed** with the exit code captured before any pipe:
+  `task test` (rc 0), `go test ./e2e/...` (rc 0, 769s), `task lint` (rc 0),
+  `go test -race` on runner/queue-nats/server (rc 0), and the three studio
+  targets `studio:lint` / `studio:typecheck` / `studio:test` (rc 0, 1308
+  tests). **Unavailable locally**, left to the GitHub checks: the
+  `mongo-conformance` and `nats-conformance` jobs (each needs a service
+  container) and the Playwright UI suite (opt-in browser download).
+- Verification gotcha worth keeping: the first attempt at each of these
+  piped through `grep`/`tail` and then read `$?`, which reports the LAST
+  pipeline stage, not the test command. A studio `tsc` invocation that died
+  on `exit 127` (no `node_modules`) printed `EXIT=0` that way. Redirect to a
+  log, save `$?` immediately, then filter — or set `pipefail`.
 - Value — the open question was the bigger finding. Registering LockTTL in
   `RedeliveryWindow` is the obvious half, and on its own it is **inert**:
   `cmd/iterion/server.go`'s `natsq.Connect` literal never passed LockTTL, so
