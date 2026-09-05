@@ -20,6 +20,7 @@ type modernizeLotVerifyOut struct {
 	ContractRewrite []string `json:"contract_rewritten"`
 	GateTimedOut    bool     `json:"gate_timed_out"`
 	BlockReason     string   `json:"block_reason"`
+	Unreadable      bool     `json:"contract_unreadable"`
 	LogTail         string   `json:"log_tail"`
 }
 
@@ -366,8 +367,8 @@ lots:
 		ws, base, _ := selfWrittenDone(t)
 		env := append(os.Environ(), "PATH="+restrictedPATH(t, "python3", "git", "sh"))
 		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, gate, env)
-		if exit != 1 {
-			t.Fatalf("exit=%d, want 1 (typed refusal) — report %+v", exit, res)
+		if exit != 0 || !res.Unreadable {
+			t.Fatalf("exit=%d contract_unreadable=%v, want the typed refusal as a verdict — report %+v", exit, res.Unreadable, res)
 		}
 		if !strings.HasPrefix(res.LogTail, "CONTRACT_UNREADABLE") {
 			t.Fatalf("log_tail = %q, want CONTRACT_UNREADABLE", res.LogTail)
@@ -389,8 +390,8 @@ lots:
 			t.Fatal(err)
 		}
 		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, gate, nil)
-		if exit != 1 || !strings.Contains(res.LogTail, "not committed at the run's base") {
-			t.Fatalf("exit=%d log_tail=%q, want a typed refusal naming the uncommitted contract", exit, res.LogTail)
+		if exit != 0 || !res.Unreadable || !strings.Contains(res.LogTail, "not committed at the run's base") {
+			t.Fatalf("exit=%d contract_unreadable=%v log_tail=%q, want a typed refusal naming the uncommitted contract", exit, res.Unreadable, res.LogTail)
 		}
 	})
 
@@ -587,8 +588,8 @@ lots:
 			badPlan := strings.Replace(plan, "gate_timeout_s: 1\n", "gate_timeout_s: "+bad+"\n", 1)
 			ws, base, _ := netAndBase(t, badPlan, "")
 			res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, "sh -c 'echo ran > gate.marker'", nil)
-			if exit != 1 || !strings.Contains(res.LogTail, "CONTRACT_UNREADABLE") || !strings.Contains(res.LogTail, "gate_timeout_s") {
-				t.Fatalf("exit %d, log %q — want the typed refusal naming gate_timeout_s", exit, res.LogTail)
+			if exit != 0 || !res.Unreadable || !strings.Contains(res.LogTail, "CONTRACT_UNREADABLE") || !strings.Contains(res.LogTail, "gate_timeout_s") {
+				t.Fatalf("exit %d contract_unreadable=%v, log %q — want the typed refusal naming gate_timeout_s", exit, res.Unreadable, res.LogTail)
 			}
 			if _, err := os.Stat(filepath.Join(ws, "gate.marker")); err == nil {
 				t.Fatal("the gate ran under a wall the node could not read")

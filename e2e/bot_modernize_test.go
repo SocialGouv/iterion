@@ -19,7 +19,7 @@ func modernizeStubs(exec *scenarioExecutor, verdict func(pass int) map[string]an
 		return map[string]any{
 			"nothing_to_do": false, "lot_id": "L1", "lot_title": "raise the build tool",
 			"lot_intent": "bump it", "exit_gate": "true", "base_sha": "0123456789abcdef",
-			"refs_dir": ".golden-master/refs", "notice": "", "_tokens": 1,
+			"refs_dir": ".golden-master/refs", "notice": "", "lot_not_actionable": false, "lot_status": "", "refused": false, "_tokens": 1,
 		}, nil
 	})
 	pass := 0
@@ -33,7 +33,7 @@ func modernizeStubs(exec *scenarioExecutor, verdict func(pass int) map[string]an
 			"refs_changed": []any{}, "lot_blocked": false, "block_reason": "",
 			"oracle_invalid": []any{}, "extension_pending": []any{},
 			"done_self_written": false, "contract_rewritten": []any{},
-			"gate_timed_out": false, "log_tail": "", "_tokens": 1,
+			"gate_timed_out": false, "contract_unreadable": false, "log_tail": "", "_tokens": 1,
 		}
 		for k, v := range verdict(pass) {
 			out[k] = v
@@ -41,7 +41,7 @@ func modernizeStubs(exec *scenarioExecutor, verdict func(pass int) map[string]an
 		return out, nil
 	})
 	exec.on("mark_done", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"marked": true, "commit": "feedfacefeedface", "notice": "marked", "_tokens": 1}, nil
+		return map[string]any{"marked": true, "commit": "feedfacefeedface", "notice": "marked", "refused": false, "_tokens": 1}, nil
 	})
 }
 
@@ -122,19 +122,40 @@ func TestModernize_RefusedVerdictNeverEndsGreen(t *testing.T) {
 // an hour against the same wall, never a `finished` the programme would
 // relaunch into it.
 func TestModernize_GateTimeoutFailsAtOnce(t *testing.T) {
-	exec := newScenarioExecutor()
-	modernizeStubs(exec, func(int) map[string]any {
-		return map[string]any{"gate_timed_out": true, "block_reason": "GATE_TIMEOUT: exit_gate command `sleep` exceeded gate_timeout_s=1 after 1s"}
-	})
-	run := runModernize(t, exec, "run-mod-timeout")
-	if run.Status != store.RunStatusFailed {
-		t.Fatalf("status = %s, want failed", run.Status)
-	}
-	if exec.wasCalled("mark_done") {
-		t.Fatal("mark_done ran on a timed-out gate")
-	}
-	if got := exec.callCount("upgrade_campaign"); got != 1 {
-		t.Fatalf("upgrade_campaign called %d times, want 1 (no repair pass against the same wall)", got)
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"plain", nil},
+		// The same verdict carrying an invalidated mutant AND a pending
+		// extension: the fail edge is declared before the reanchor/extend
+		// edges, so neither subbot replays the timed-out gate first. With the
+		// edges in the other order the run dies in the subbot (no runner in
+		// this suite) as failed_resumable, not at the fail terminal.
+		{"with an invalidated mutant and a pending extension", map[string]any{
+			"oracle_invalid": []any{map[string]any{"id": "m1", "reason": "anchor vanished"}}, "extension_pending": []any{"E-1"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := newScenarioExecutor()
+			modernizeStubs(exec, func(int) map[string]any {
+				out := map[string]any{"gate_timed_out": true, "block_reason": "GATE_TIMEOUT: exit_gate command `sleep` exceeded gate_timeout_s=1 after 1s"}
+				for k, v := range tc.extra {
+					out[k] = v
+				}
+				return out
+			})
+			run := runModernize(t, exec, "run-mod-timeout")
+			if run.Status != store.RunStatusFailed {
+				t.Fatalf("status = %s, want failed (the fail terminal, before any subbot)", run.Status)
+			}
+			if exec.wasCalled("mark_done") {
+				t.Fatal("mark_done ran on a timed-out gate")
+			}
+			if got := exec.callCount("upgrade_campaign"); got != 1 {
+				t.Fatalf("upgrade_campaign called %d times, want 1 (no repair pass against the same wall)", got)
+			}
+		})
 	}
 }
 
@@ -156,4 +177,57 @@ func TestModernize_DeclaredBlockedStopsWithoutMarking(t *testing.T) {
 	if got := exec.callCount("upgrade_campaign"); got != 1 {
 		t.Fatalf("upgrade_campaign called %d times, want 1 (no repair pass against a declared wall)", got)
 	}
+}
+
+// TestModernize_RefusalsAreVerdicts: a contract the reader cannot read or
+// the gate cannot edit, a contract the verifier cannot read, a status the
+// gate cannot write — each is a typed verdict the graph fails on, once, with
+// no campaign pass spent on it (or, for the gate, the lot's work banked).
+// Never a tool error: the engine retries those once and leaves the run
+// `failed_resumable`, a terminal a router may probe-resume for nothing.
+func TestModernize_RefusalsAreVerdicts(t *testing.T) {
+	t.Run("plan_read refused: failed before any campaign pass", func(t *testing.T) {
+		exec := newScenarioExecutor()
+		modernizeStubs(exec, func(int) map[string]any { return nil })
+		exec.on("plan_read", func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{
+				"nothing_to_do": false, "lot_id": "", "lot_title": "", "lot_intent": "", "exit_gate": "",
+				"base_sha": "", "refs_dir": "", "notice": "CONTRACT_UNREADABLE: duplicate lot id L1",
+				"lot_not_actionable": false, "lot_status": "", "refused": true, "_tokens": 1,
+			}, nil
+		})
+		run := runModernize(t, exec, "run-mod-plan-refused")
+		if run.Status != store.RunStatusFailed || exec.wasCalled("upgrade_campaign") {
+			t.Fatalf("status = %s, campaign called = %v; want failed with no campaign pass", run.Status, exec.wasCalled("upgrade_campaign"))
+		}
+	})
+	t.Run("lot_verify unreadable: failed at once, no repair pass", func(t *testing.T) {
+		exec := newScenarioExecutor()
+		modernizeStubs(exec, func(int) map[string]any {
+			return map[string]any{"contract_unreadable": true, "log_tail": "CONTRACT_UNREADABLE: yq is not on PATH"}
+		})
+		run := runModernize(t, exec, "run-mod-verify-unreadable")
+		if run.Status != store.RunStatusFailed {
+			t.Fatalf("status = %s, want failed", run.Status)
+		}
+		if got := exec.callCount("upgrade_campaign"); got != 1 {
+			t.Fatalf("upgrade_campaign called %d times, want 1 (no repair pass on a contract nobody can read)", got)
+		}
+		if exec.wasCalled("mark_done") {
+			t.Fatal("mark_done ran on an unreadable contract")
+		}
+	})
+	t.Run("mark_done refused: failed, the lot's work banked", func(t *testing.T) {
+		exec := newScenarioExecutor()
+		modernizeStubs(exec, func(int) map[string]any {
+			return map[string]any{"gate_passed": true, "oracle_passed": true, "refs_untouched": true}
+		})
+		exec.on("mark_done", func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"marked": false, "commit": "", "notice": "lot L1: no `status:` line inside its block", "refused": true, "_tokens": 1}, nil
+		})
+		run := runModernize(t, exec, "run-mod-mark-refused")
+		if run.Status != store.RunStatusFailed {
+			t.Fatalf("status = %s, want failed (the gate could not write its word)", run.Status)
+		}
+	})
 }

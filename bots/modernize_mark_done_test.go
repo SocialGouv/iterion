@@ -12,9 +12,10 @@ import (
 
 // modernizeMarkDoneOut is the subset of mark_done's output the tests read.
 type modernizeMarkDoneOut struct {
-	Marked bool   `json:"marked"`
-	Commit string `json:"commit"`
-	Notice string `json:"notice"`
+	Marked  bool   `json:"marked"`
+	Commit  string `json:"commit"`
+	Notice  string `json:"notice"`
+	Refused bool   `json:"refused"`
 }
 
 // modernizeRepo builds a throwaway git repository carrying one committed
@@ -166,6 +167,33 @@ lots:
 		}
 	})
 
+	t.Run("an uncommitted worker edit to the contract does not ride along under the gate's subject", func(t *testing.T) {
+		ws, base, git := modernizeRepo(t, plan)
+		// The worker added a lot (a proposal the verdict accepts) and left it
+		// uncommitted: the gate's commit must carry HEAD's contract + its one
+		// flipped line, nothing else — the proposal stays the worker's.
+		added := plan + "  - id: L3\n    title: proposed by the worker\n    status: todo\n    exit_gate:\n      - \"true\"\n"
+		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(added), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res := modernizeMarkDone(t, script, ws, "L1", base, 0)
+		if !res.Marked || res.Commit == "" {
+			t.Fatalf("marked=%v commit=%q (%s)", res.Marked, res.Commit, res.Notice)
+		}
+		committed := git("show", "HEAD:.modernize/plan.yaml")
+		want := strings.TrimSpace(strings.Replace(plan, "status: todo   # a bookmark, never evidence", "status: done   # a bookmark, never evidence", 1))
+		if committed != want {
+			t.Fatalf("HEAD's contract must be the base + one flipped line, got:\n%s", committed)
+		}
+		got, _ := os.ReadFile(filepath.Join(ws, ".modernize", "plan.yaml"))
+		if !strings.Contains(string(got), "L3") || !strings.Contains(string(got), "status: done") {
+			t.Fatalf("the working tree must keep the worker's proposal and the flipped line:\n%s", got)
+		}
+		if dirty := git("status", "--porcelain", "--untracked-files=no"); dirty != "M .modernize/plan.yaml" {
+			t.Fatalf("status = %q, want the contract modified in the tree (the proposal, unstaged)", dirty)
+		}
+	})
+
 	t.Run("a rejecting pre-commit hook does not stop the gate's commit", func(t *testing.T) {
 		ws, base, git := modernizeRepo(t, plan)
 		hooks := filepath.Join(ws, ".git", "hooks")
@@ -183,8 +211,8 @@ lots:
 
 	t.Run("undeclared lot is refused", func(t *testing.T) {
 		ws, base, git := modernizeRepo(t, plan)
-		res := modernizeMarkDone(t, script, ws, "L9", base, 1)
-		if !strings.Contains(res.Notice, "not in the contract") {
+		res := modernizeMarkDone(t, script, ws, "L9", base, 0)
+		if !res.Refused || !strings.Contains(res.Notice, "not in the contract") {
 			t.Fatalf("notice = %q", res.Notice)
 		}
 		if head := git("rev-parse", "HEAD"); head != base {
@@ -195,8 +223,8 @@ lots:
 	t.Run("a block without a status line is refused, contract untouched", func(t *testing.T) {
 		noStatus := strings.Replace(plan, "    status: todo   # a bookmark, never evidence\n", "", 1)
 		ws, base, _ := modernizeRepo(t, noStatus)
-		res := modernizeMarkDone(t, script, ws, "L1", base, 1)
-		if !strings.Contains(res.Notice, "no `status:` line") {
+		res := modernizeMarkDone(t, script, ws, "L1", base, 0)
+		if !res.Refused || !strings.Contains(res.Notice, "no `status:` line") {
 			t.Fatalf("notice = %q", res.Notice)
 		}
 		got, _ := os.ReadFile(filepath.Join(ws, ".modernize", "plan.yaml"))

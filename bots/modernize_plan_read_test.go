@@ -86,7 +86,10 @@ lots:
         test -f "$f"
       done
     status: todo
-`, 1)
+`, 0)
+		if !res.Refused {
+			t.Fatalf("a gate the reader cannot use must be a typed verdict (refused), got %+v", res)
+		}
 		if !strings.Contains(res.Notice, "multi-line") {
 			t.Fatalf("notice = %q, want a multi-line refusal", res.Notice)
 		}
@@ -100,7 +103,10 @@ lots:
     exit_gate:
       build: ./gradlew build
     status: todo
-`, 1)
+`, 0)
+		if !res.Refused {
+			t.Fatalf("a gate the reader cannot use must be a typed verdict (refused), got %+v", res)
+		}
 		if !strings.Contains(res.Notice, "unreadable shape") {
 			t.Fatalf("notice = %q, want an unreadable-shape refusal", res.Notice)
 		}
@@ -115,6 +121,7 @@ type modernizePlanReadOut struct {
 	Notice           string `json:"notice"`
 	LotNotActionable bool   `json:"lot_not_actionable"`
 	LotStatus        string `json:"lot_status"`
+	Refused          bool   `json:"refused"`
 }
 
 // modernizePlanRead executes the REAL plan_read script against a throwaway
@@ -295,8 +302,8 @@ lots:
     exit_gate: [ "false" ]
 `
 		for _, only := range []string{"", "L1"} {
-			res := modernizePlanRead(t, script, dup, only, 1)
-			if !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE: duplicate lot id") {
+			res := modernizePlanRead(t, script, dup, only, 0)
+			if !res.Refused || !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE: duplicate lot id") {
 				t.Fatalf("only=%q notice = %q", only, res.Notice)
 			}
 		}
@@ -308,8 +315,8 @@ lots:
     title: numeric
     status: todo
     exit_gate: [ "true" ]
-`, "", 1)
-		if !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE") {
+`, "", 0)
+		if !res.Refused || !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE") {
 			t.Fatalf("notice = %q", res.Notice)
 		}
 	})
@@ -324,23 +331,25 @@ lots:
 			t.Fatalf("lot_not_actionable=%v lot_status=%q notice=%q, want the typed no_gate verdict", res.LotNotActionable, res.LotStatus, res.Notice)
 		}
 	})
-	t.Run("unfiltered mode keeps the documented no-op on a gate-less lot", func(t *testing.T) {
+	t.Run("unfiltered mode: a gate-less READY lot is the same typed verdict, never a no-op", func(t *testing.T) {
+		// The scan would re-pick this same lot at every relaunch: a green
+		// no-op here parks the programme in finished-at-zero-minutes runs.
 		res := modernizePlanRead(t, script, `version: 1
 lots:
-  - id: L5
+  - id: L1
     title: no gate
     status: todo
 `, "", 0)
-		if !res.NothingToDo {
-			t.Fatalf("expected the legitimate no-op, got %+v", res)
+		if !res.LotNotActionable || res.LotStatus != "no_gate" || res.NothingToDo {
+			t.Fatalf("lot_not_actionable=%v lot_status=%q nothing_to_do=%v, want the typed no_gate verdict", res.LotNotActionable, res.LotStatus, res.NothingToDo)
 		}
 	})
 	t.Run("a flow-mapping lot cannot be edited by the gate: refused before spend", func(t *testing.T) {
 		res := modernizePlanRead(t, script, `version: 1
 lots:
   - {id: L1, title: flow, status: todo, exit_gate: ["true"]}
-`, "L1", 1)
-		if !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
+`, "L1", 0)
+		if !res.Refused || !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
 			t.Fatalf("notice = %q", res.Notice)
 		}
 	})
@@ -351,8 +360,8 @@ lots:
 	// on exactly that, and `status: todo  ` passed plan_read to fail mark_done).
 	for _, line := range []string{"    status: todo  ", "    status: todo\t", "    status: todo extra"} {
 		t.Run("a status line the gate could not flip is refused before spend: "+strconv.Quote(line), func(t *testing.T) {
-			res := modernizePlanRead(t, script, "version: 1\nlots:\n  - id: L1\n    title: t\n"+line+"\n    exit_gate:\n      - \"true\"\n", "L1", 1)
-			if !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
+			res := modernizePlanRead(t, script, "version: 1\nlots:\n  - id: L1\n    title: t\n"+line+"\n    exit_gate:\n      - \"true\"\n", "L1", 0)
+			if !res.Refused || !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
 				t.Fatalf("notice = %q, want LOT_UNEDITABLE", res.Notice)
 			}
 		})
