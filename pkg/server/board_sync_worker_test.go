@@ -252,3 +252,51 @@ func (b *blockingBoardClient) ListProjectItems(ctx context.Context, ref forge.Pr
 	})
 	return b.fakeBoardClient.ListProjectItems(ctx, ref, opts)
 }
+
+// TestBoardSyncWorkerUsesAPerPassLeaseOwner pins that the worker's release is
+// scoped to the pass that took the lease, end to end.
+//
+// The store CASes on the owner; what the worker owes is a token that is FRESH
+// per pass. A per-replica token would let a replica whose earlier pass overran
+// release the lease its own next pass just took — the same re-admission, one
+// level up.
+func TestBoardSyncWorkerUsesAPerPassLeaseOwner(t *testing.T) {
+	bindings, board, bc := syncWorkerFixture(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	seedCard(t, board, 613, native.StateInbox)
+	bc.pages = [][]forge.ProjectItem{{item("PVTI_1", 613, statusValue("Planned", at))}}
+
+	w := newTestSyncWorker(bindings, board, bc, func() time.Time { return at })
+	if n, err := w.Tick(context.Background()); err != nil || n != 1 {
+		t.Fatalf("pass 1: n=%d err=%v", n, err)
+	}
+	first, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("GetByTenant: %v", err)
+	}
+	// The pass released, so nothing holds the board.
+	if !first.SyncLeaseUntil.IsZero() || first.SyncLeaseOwner != "" {
+		t.Fatalf("the board is still held after a finished pass: %+v", first)
+	}
+
+	w2 := newTestSyncWorker(bindings, board, bc, func() time.Time { return at.Add(2 * time.Minute) })
+	if n, err := w2.Tick(context.Background()); err != nil || n != 1 {
+		t.Fatalf("pass 2: n=%d err=%v", n, err)
+	}
+	// Whatever the first pass's token was, the second's must differ — the
+	// store's CAS is only worth anything if the token is not reused.
+	second, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("GetByTenant: %v", err)
+	}
+	if !second.SyncLeaseUntil.IsZero() || second.SyncLeaseOwner != "" {
+		t.Fatalf("the board is still held after the second pass: %+v", second)
+	}
+	// And a stale token from any earlier pass cannot free a live lease.
+	if _, err := bindings.ClaimSync(context.Background(), "team-a", second.LastSyncedAt, at.Add(4*time.Minute), "replica-live"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := bindings.ReleaseSync(context.Background(), "team-a", "some-earlier-pass"); !errors.Is(err, forge.ErrBoardSyncLeaseLost) {
+		t.Fatalf("a stale token released a live lease: %v", err)
+	}
+}

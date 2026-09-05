@@ -5369,6 +5369,7 @@ export interface components {
             };
             sync_every: number;
             sync_every_seconds: number;
+            sync_lease_owner?: string;
             /** Format: date-time */
             sync_lease_until?: string;
             tenant_id: string;

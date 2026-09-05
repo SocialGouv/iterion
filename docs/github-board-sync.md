@@ -150,7 +150,9 @@ permanent divergence.
   5-minute lease on it*; only the winner runs the pass, so N replicas cost one
   pass, not N — including when a pass outlives the interval, where the
   watermark alone would let a second replica join it. The lease is handed back
-  at pass end, so it only ever expires for a replica that died mid-pass.
+  at pass end — by the pass that took it, never by an older one that overran
+  (that release is declined and logged) — so it only ever expires for a
+  replica that died mid-pass.
 - **Cost**: one project read per bound team per interval. GitHub prices a
   Projects v2 page at a handful of points against a 5000/hour budget.
 - **Logs**: one line per pass.
