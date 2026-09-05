@@ -394,6 +394,9 @@
             },
             "type": "object"
           },
+          "loop_budget_marks_v": {
+            "type": "integer"
+          },
           "loop_counters": {
             "additionalProperties": {
               "type": "integer"
