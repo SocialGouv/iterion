@@ -435,6 +435,36 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		}
 	})
 
+	// `git commit --amend` with no pathspec rebuilds HEAD from the CURRENT
+	// INDEX. Only checking that HEAD is still the sync commit lets whatever is
+	// staged ride into the commit whose subject claims the harness alone — and
+	// the body then stamps it GREEN, a verdict the gate produced for a tree
+	// that did not contain it.
+	t.Run("a staged change is not folded into the sealed commit", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		res, _ := syncHarness(t, ws)
+		c := syncCommitNode(t, ws, res)
+		if err := os.WriteFile(filepath.Join(ws, "README.md"), []byte("staged behind the gate's back\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "README.md")
+
+		out, exit := runSyncNode(t, "seal_commit", ws, map[string]string{"sync_commit": c.Commit, "gate_command": "x", "gate_minutes": "0"})
+		var seal syncSealOut
+		if err := json.Unmarshal(out, &seal); err != nil {
+			t.Fatalf("seal_commit output is not JSON: %v (out %q)", err, out)
+		}
+		if exit != 1 || seal.Sealed || !strings.Contains(seal.Notice, "index carries changes") {
+			t.Fatalf("exit %d sealed=%v notice=%q, want the staged-index refusal", exit, seal.Sealed, seal.Notice)
+		}
+		if files := git("show", "--stat", "--format=", "HEAD"); strings.Contains(files, "README.md") {
+			t.Fatalf("the amend folded staged work into the harness-only commit:\n%s", files)
+		}
+		if msg := git("log", "-1", "--format=%B"); !strings.Contains(msg, "Full gate: pending") {
+			t.Fatalf("a refused seal must leave the commit as it was:\n%s", msg)
+		}
+	})
+
 	t.Run("red gate drops the sync commit, previous harness back at HEAD", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
 		base := git("rev-parse", "HEAD")

@@ -4028,6 +4028,20 @@ tool seal_commit:
 
     if git("rev-parse", "HEAD").stdout.strip() != sync_commit:
         refuse("HEAD is no longer the sync commit %s — nothing sealed" % sync_commit[:12])
+    # `--amend` without a pathspec rebuilds HEAD from the INDEX, not from the
+    # commit being amended. Anything staged since the gate's clean check —
+    # sub-second on a run that walks straight through, hours on one resumed
+    # from the checkpoint saved when gate_replay succeeded — would be folded
+    # into the commit whose subject says the harness alone, and then stamped
+    # GREEN by a gate that judged a tree without it. commit_harness is surgical
+    # about exactly this (`--only -- <path>`); this node has to be too.
+    staged = git("diff", "--cached", "--name-only", "-z")
+    if staged.returncode != 0:
+        refuse("git diff --cached failed in %s: %s" % (ws, staged.stderr[-300:]))
+    names = [e for e in staged.stdout.split("\0") if e.strip()]
+    if names:
+        refuse("the index carries changes the amend would fold into the harness-only commit (%s) — nothing sealed"
+               % ", ".join(names[:8]))
     msg = git("log", "-1", "--format=%B").stdout
     line = "Full gate: `%s` GREEN in %d min on this tree" % ({{input.gate_command}}, int({{input.gate_minutes}}))
     if "Full gate: pending" not in msg:
