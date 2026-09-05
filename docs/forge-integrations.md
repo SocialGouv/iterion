@@ -236,13 +236,34 @@ lookup runs under differs:
 
 A local `iterion studio` has no team and no forge connections, so it reads the
 `forge_token` secret instead (`iterion secret set forge_token`, the same name
-the catalog bots bind). The secret's own `allowed_hosts` pin is honoured: a
-token scoped to one forge is never sent to another because a launch named a PR
-there — pin yours with `--hosts <forge>` if that matters on your machine. With
-no usable credential the launch is **refused**, not admitted: the message names
-the secret and the alternative. `iterion run` does not go through this surface
-at all — it executes the checkout you already have — so a local CLI run of a PR
-bot is unaffected.
+the catalog bots bind). With no usable credential the launch is **refused**,
+not admitted: the message names the secret and the alternative. `iterion run`
+does not go through this surface at all — it executes the checkout you already
+have — so a local CLI run of a PR bot is unaffected.
+
+**The destination host is named by the request, so the token's reach is
+bounded, and for a self-hosted forge the pin is required.** `pr_url` decides
+which origin the lookup authenticates against, so:
+
+- A token with `allowed_hosts` set is bounded by it, exactly as when
+  `secretguard` materialises a placeholder: a token scoped to one forge is
+  never sent to another because a launch named a PR there.
+- A token with **no** pin — what `iterion secret set` produces unless you pass
+  `--hosts` — reaches only the three canonical origins iterion recognises on
+  its own: `https://github.com`, `https://gitlab.com`, `https://codeberg.org`.
+  Exact origins: a lookalike such as `github.com.evil.io`, a `www.` alias, a
+  port, and `http://` are all *not* on the list.
+
+So a **self-hosted GitHub Enterprise / GitLab / Forgejo** needs an explicit
+pin:
+
+```sh
+iterion secret set forge_token --hosts forge.example.com
+```
+
+Without it the launch is refused and the message names that exact command.
+A forge on a non-default port is pinned as `forge.example.com:8443` — the pin
+is compared against the host as it appears in `pr_url`, port included.
 
 #### Refused vs. could-not-ask
 
@@ -267,3 +288,8 @@ hiccup.
   HEAD-SHA validation, which is not implemented.
 - A `pr_url` outside the connection's App installation resolves as not-found,
   which refuses the launch.
+- On the board lane, a card whose return to `ready` cannot be written (the
+  board store is failing) keeps its claim rather than being released unfiled —
+  otherwise nothing would ever pick it up again. Recovering it needs the claim
+  watchdog (`ITERION_BOARD_CLAIM_REAPER`, off by default), which writes a
+  no-run card back to the pool at the next lease.
