@@ -174,6 +174,51 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 	})
 
+	t.Run("the claim CAS survives a sub-millisecond watermark", func(t *testing.T) {
+		// BSON keeps a datetime to the MILLISECOND, and a watermark reaches
+		// the store two ways: written by ClaimSync (time.Now, nanosecond) or
+		// carried in by an Upsert from a caller-supplied value. If the filter
+		// compared an un-truncated in-memory instant against the truncated
+		// stored one, the CAS would never match after the first pass and the
+		// reconciliation would stop dead. Both shapes must claim.
+		nsWatermark := base.Add(3 * time.Hour).Add(1234567 * time.Nanosecond)
+		if sub := nsWatermark.Sub(nsWatermark.Truncate(time.Millisecond)); sub == 0 {
+			t.Fatalf("fixture must carry sub-millisecond precision, got %v", sub)
+		}
+		b := binding("team-precision", time.Minute)
+		b.LastSyncedAt = nsWatermark
+		if err := store.Upsert(ctx, b); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		// (a) the value the CALLER holds — never round-tripped through the store.
+		at := nsWatermark.Add(time.Hour)
+		won, err := store.ClaimSync(ctx, "team-precision", nsWatermark, at)
+		if err != nil || !won {
+			t.Fatalf("claim with the caller's own watermark: won=%v err=%v", won, err)
+		}
+		if err := store.ReleaseSync(ctx, "team-precision"); err != nil {
+			t.Fatalf("ReleaseSync: %v", err)
+		}
+		// (b) the value READ BACK — the shape the sync worker actually uses,
+		// and the one a pass after the first always presents.
+		seen, err := store.GetByTenant(ctx, "team-precision")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		won2, err := store.ClaimSync(ctx, "team-precision", seen.LastSyncedAt, at.Add(time.Hour))
+		if err != nil || !won2 {
+			t.Fatalf("claim with the stored watermark: won=%v err=%v — the periodic pass would stop after its first run", won2, err)
+		}
+		if err := store.ReleaseSync(ctx, "team-precision"); err != nil {
+			t.Fatalf("ReleaseSync (second): %v", err)
+		}
+		// And a watermark that is genuinely different still loses, so the
+		// truncation has not turned the CAS into "always match".
+		if won3, err := store.ClaimSync(ctx, "team-precision", nsWatermark, at.Add(2*time.Hour)); err != nil || won3 {
+			t.Fatalf("a stale watermark must still lose: won=%v err=%v", won3, err)
+		}
+	})
+
 	t.Run("a claimed pass holds a bounded lease", func(t *testing.T) {
 		// The watermark CAS alone only elects one replica per TICK. A pass
 		// slower than the binding's interval (floor 1 min) makes the binding

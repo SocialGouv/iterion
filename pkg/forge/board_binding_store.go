@@ -467,7 +467,15 @@ func (s *MongoBoardBindingStore) DueBindings(ctx context.Context, now time.Time)
 }
 
 // ClaimSync is the multi-replica election: a conditional update on the
-// watermark the caller read. ModifiedCount == 1 means this replica owns the
+// watermark the caller read.
+//
+// The watermark is a BSON datetime, i.e. MILLISECOND precision, while the
+// value written is a nanosecond time.Now. That is safe because the driver
+// applies the same truncation to the FILTER value: a caller presenting either
+// the instant it supplied or the one it read back matches the stored one
+// either way (pinned by the conformance suite on a real replica set). A CAS
+// comparing an un-truncated instant against a truncated stored one would never
+// match after the first pass, which would stop the reconciliation dead. ModifiedCount == 1 means this replica owns the
 // pass; 0 means another replica already claimed it (or the binding is gone,
 // which the follow-up read distinguishes).
 func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error) {
