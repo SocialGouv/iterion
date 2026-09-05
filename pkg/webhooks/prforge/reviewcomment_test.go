@@ -67,17 +67,26 @@ func TestParseReviewCommentForkCarriesHeadRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.HeadRepoFullName != "mallory/widgets" || !p.IsCrossRepo() {
+	if p.HeadRepoFullName != "mallory/widgets" || p.SameRepoAsBase() {
 		t.Fatalf("fork head repo must be decoded and flagged: %+v", p)
 	}
 }
 
-func TestParseReviewCommentLegacyPayloadIsSameRepo(t *testing.T) {
+// A payload that does not name the head repo is NOT proven same-repo. The
+// reply lane launches on `<base>.CloneURL + p.SourceBranch`, and an unnamed
+// head is what a DELETED fork looks like — indistinguishable from a legacy
+// payload, so the pair cannot be trusted to name one repository. Refusing
+// costs a legacy sender its auto-reply; admitting answers a fork author
+// with a review grounded in the base repo's code.
+func TestParseReviewCommentUnnamedHeadRepoIsNotProvenSameRepo(t *testing.T) {
 	p, err := ParseReviewComment([]byte(reviewCommentReplyFixture))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.IsCrossRepo() {
-		t.Fatalf("a payload without head.repo must stay same-repo (no false gating): %+v", p)
+	if p.HeadRepoFullName != "" {
+		t.Fatalf("this fixture must carry no head repo, got %q", p.HeadRepoFullName)
+	}
+	if p.SameRepoAsBase() {
+		t.Fatalf("an unnamed head repo must never be proven same-repo: %+v", p)
 	}
 }

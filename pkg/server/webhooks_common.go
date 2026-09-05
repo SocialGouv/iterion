@@ -1218,6 +1218,38 @@ func (s *Server) launchWebhookTarget(
 // the webhook layer, so the vocabulary lives in the store, not here.
 const prClosedRunReason = store.RunEndReasonPRClosed
 
+// forkGuardRefusal is the SINGLE decision the unattended lanes share:
+// given a PR's head-repo identity, may a lane launch on the pair
+// `<base>.CloneURL + <head branch>`? It returns "" to allow, or the reason
+// to record on the filtered delivery.
+//
+// Three states, deliberately not two:
+//
+//   - PROVEN same repo → allow.
+//   - A DIFFERENT repo → refuse: an ordinary fork, untrusted.
+//   - WITHHELD (the forge declared head.repo and gave it no value) →
+//     refuse. This is what a fork looks like once its head repo is deleted
+//     or blocked, and it is the state the old guard admitted: reading it as
+//     "not a proven fork" aimed the bot at repoURL=<base> with a branch name
+//     the fork author chose, so a fixer would push LLM commits onto the base
+//     repo's branch of that name.
+//
+// A payload that never carried the key at all is a legacy/minimal sender,
+// not a fork whose identity was removed, and is allowed — refusing it would
+// silently disable auto-review for such a forge, and the failure would look
+// like nothing happening. The distinction is only decidable because the
+// decoder records key presence (see prforge.Ref.RepoDeclared); collapsing
+// the two is what made this guard fail open.
+func forkGuardRefusal(headRepo, baseRepo string, withheld bool) string {
+	if withheld {
+		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a branch that does not live there"
+	}
+	if headRepo != "" && !forge.SameRepo(headRepo, baseRepo) {
+		return "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)"
+	}
+	return ""
+}
+
 // stopRunsForDeadPR ends every run still bound to a pull request that just
 // closed or merged, and disarms any usage-window retry armed for one.
 //

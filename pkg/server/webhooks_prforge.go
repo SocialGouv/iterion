@@ -479,8 +479,8 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	// checkout would miss, or silently hit a same-named BASE branch and the
 	// bot would answer grounded in the wrong code. Same posture as the PR
 	// auto lane: filtered.
-	if p.IsCrossRepo() {
-		filtered("fork PR — review-thread replies are same-repo only")
+	if reason := forkGuardRefusal(p.HeadRepoFullName, p.ProjectPath, p.HeadRepoWithheld()); reason != "" {
+		filtered(reason)
 		return
 	}
 	// Loop-guard next, still without forge I/O: the converse bot answers

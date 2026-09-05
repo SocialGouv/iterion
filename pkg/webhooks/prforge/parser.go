@@ -37,8 +37,13 @@ type Parsed struct {
 	AuthorLogin string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
 	// differs from ProjectPath (the base repo) for a fork PR; empty when the
-	// payload omits head.repo. Read by IsCrossRepo for the fork guard.
+	// payload omits head.repo OR the head repo was deleted/blocked. Read by
+	// SameRepoAsBase, which treats empty as NOT proven same-repo.
 	HeadRepoFullName string
+	// HeadRepoDeclared reports whether the payload carried a head `repo`
+	// key at all — see Ref.RepoDeclared. Empty+declared is a DELETED or
+	// blocked fork; empty+undeclared is a legacy sender.
+	HeadRepoDeclared bool
 	// DequeueReason is the merge-queue eject reason on a `dequeued`
 	// action (e.g. "MERGE_CONFLICT", "CI_FAILURE"). Empty otherwise.
 	DequeueReason string
@@ -108,6 +113,7 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		SenderLogin:      e.Sender.Login,
 		AuthorLogin:      pr.User.Login,
 		HeadRepoFullName: pr.Head.Repo.FullName,
+		HeadRepoDeclared: pr.Head.RepoDeclared,
 		DequeueReason:    e.Reason,
 		Draft:            pr.Draft,
 		Labels:           labelNames(pr.Labels),
@@ -150,15 +156,28 @@ func labelNames(labels []Label) []string {
 	return out
 }
 
-// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
-// than its base — i.e. the PR comes from a fork. This is the fork-guard
-// signal: a fork PR is untrusted, so the inbound handler must not auto-launch a
-// MUTATING bot (which would run costly LLM work + push commits) on it without
-// operator validation — the anti budget-exhaustion boundary. An empty head
-// repo (minimal/legacy payloads) is treated as same-repo to avoid falsely
-// gating a trusted internal PR.
-func (p Parsed) IsCrossRepo() bool {
-	return !forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) && p.HeadRepoFullName != ""
+// SameRepoAsBase reports whether the PR's head branch is PROVEN to live in
+// the base repo — the fork guard for the payload-side types, mirroring
+// forge.PullRef.SameRepoAs.
+//
+// Every unattended lane that launches with the pair `<base>.CloneURL +
+// p.SourceBranch` must clear THIS. The predicate is deliberately
+// fail-CLOSED, and there is no fail-open twin to reach for by mistake: an
+// empty head repo means the payload omitted the field OR the head repo was
+// deleted/blocked, and `head.repo: null` is exactly the shape a fork takes
+// once deleted. A "not a proven fork" test answers "same repo" for the one
+// case that most needs gating, aiming the bot at repoURL=<base>
+// repoRef=<fork-controlled branch name>.
+func (p Parsed) SameRepoAsBase() bool {
+	return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath)
+}
+
+// HeadRepoWithheld reports the payload shape a fork takes once its head
+// repo is DELETED or blocked: the forge declared the key and gave it no
+// value. Distinct from a legacy sender that never carried the key —
+// see Ref.RepoDeclared for why the two must not be collapsed.
+func (p Parsed) HeadRepoWithheld() bool {
+	return p.HeadRepoDeclared && p.HeadRepoFullName == ""
 }
 
 // IsReviewable reports whether the PR action should AUTO-trigger a

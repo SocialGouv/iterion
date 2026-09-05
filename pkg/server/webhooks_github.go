@@ -121,8 +121,15 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// commenter's CollaboratorPermission, so only a trusted user, manually,
 	// triggers a run against fork code. Filtered as a clean 200 so the forge
 	// keeps the hook enabled.
-	if p.IsCrossRepo() {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)")
+	// Fail CLOSED, not merely "not a proven fork": an empty head repo means
+	// the payload omitted the field OR the head repo was deleted/blocked, and
+	// `head.repo: null` is exactly the shape a fork takes once it is deleted.
+	// Reading that as same-repo admitted the one case that most needs gating,
+	// and aimed the bot at repoURL=<base> repoRef=<fork-controlled branch> —
+	// a reviewer grounded in the wrong code, and for the auto-heal lane below
+	// a fixer pushing LLM commits onto the base repo's branch of that name.
+	if reason := forkGuardRefusal(p.HeadRepoFullName, p.ProjectPath, p.HeadRepoWithheld()); reason != "" {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
