@@ -187,6 +187,12 @@ func TestLiveGitLabAvatar(t *testing.T) {
 		t.Fatalf("WhoAmI: %v", err)
 	}
 	t.Logf("token authenticates as @%s (id %s, kind %s)", ident.Login, ident.ID, ident.Kind)
+	// The product never rebrands a person's account; neither does this test.
+	// The one legitimate exception is a throwaway USER account, named out
+	// loud: a personal PAT lying around in the environment must not do.
+	if ident.Kind != forge.AccountKindBot && os.Getenv("FORGE_AVATAR_ALLOW_USER") != "1" {
+		t.Skipf("@%s is kind %q, not a bot account — refusing to rebrand a person (FORGE_AVATAR_ALLOW_USER=1 for a throwaway user account)", ident.Login, ident.Kind)
+	}
 
 	png := brand.BotAvatar(brand.VariantPlain)
 	url, err := admin.SetAvatar(ctx, png)

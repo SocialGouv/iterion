@@ -254,7 +254,7 @@ func TestAppClient_CreateHookUsesInstallationToken(t *testing.T) {
 	}
 
 	id, _ := app.WhoAmI(context.Background())
-	if id.Login != "iterion[bot]" || id.Kind != "bot" {
+	if id.Login != "iterion[bot]" || id.Kind != forge.AccountKindInstallation {
 		t.Errorf("app identity = %+v", id)
 	}
 

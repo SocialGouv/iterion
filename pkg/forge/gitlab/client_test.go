@@ -497,3 +497,34 @@ func TestSetAvatar_Errors(t *testing.T) {
 		})
 	}
 }
+
+// A 404 is either the missing route (GitLab < 17.0) or a base URL that
+// redirects — the client follows a 301/302 as a body-less GET, which GitLab
+// answers 404. The error must keep ErrAvatarUnsupported AND quote the
+// instance so the operator can tell the two apart; and any 2xx is a success.
+func TestSetAvatar_RedirectAndOther2xx(t *testing.T) {
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if r.Method == http.MethodPut {
+			http.Redirect(w, r, "/api/v4/user/avatar", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"404 Not Found"}`))
+	}))
+	defer srv.Close()
+	_, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), []byte("png"))
+	if !errors.Is(err, forge.ErrAvatarUnsupported) || !strings.Contains(err.Error(), "redirect") || !strings.Contains(err.Error(), "404 Not Found") {
+		t.Errorf("err = %v; methods seen %v", err, methods)
+	}
+
+	created := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/u.png"})
+	}))
+	defer created.Close()
+	if url, err := New(created.Client(), created.URL, "tok").SetAvatar(context.Background(), []byte("png")); err != nil || url != "https://gl/u.png" {
+		t.Errorf("a 201 is a success: url=%q err=%v", url, err)
+	}
+}

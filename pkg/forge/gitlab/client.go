@@ -105,18 +105,21 @@ func (c *AdminClient) SetAvatar(ctx context.Context, png []byte) (string, error)
 	if err != nil {
 		return "", err
 	}
-	switch code {
-	case http.StatusOK:
+	switch {
+	case code/100 == 2:
 		return out.AvatarURL, nil
-	case http.StatusNotFound:
+	case code == http.StatusNotFound:
 		// The route itself is absent before 17.0 — a 404 here is the instance,
-		// not a missing user (statusErr would read it as a missing hook).
-		return "", fmt.Errorf("%w: PUT /user/avatar needs GitLab 17.0 or newer", forge.ErrAvatarUnsupported)
-	case http.StatusBadRequest:
+		// not a missing user (statusErr would read it as a missing hook). It is
+		// also what a 301/302 on the base URL produces: the client follows it
+		// as a GET without the body, and GitLab has no GET /user/avatar.
+		return "", fmt.Errorf("%w: PUT /user/avatar answered 404 — GitLab older than 17.0, or a base URL that redirects (a 301/302 turns the PUT into a body-less GET): %s",
+			forge.ErrAvatarUnsupported, forge.TrimBody(body))
+	case code == http.StatusBadRequest:
 		return "", fmt.Errorf("gitlab: avatar rejected (HTTP 400 — the file must be an image of at most 200 KiB): %s", forge.TrimBody(body))
-	case http.StatusUnauthorized:
+	case code == http.StatusUnauthorized:
 		return "", forge.ErrUnauthorized
-	case http.StatusForbidden:
+	case code == http.StatusForbidden:
 		return "", forge.ErrForbidden
 	}
 	return "", fmt.Errorf("gitlab: set avatar: HTTP %d: %s", code, forge.TrimBody(body))

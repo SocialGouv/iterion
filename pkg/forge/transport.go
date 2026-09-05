@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strings"
+	"unicode/utf8"
 )
 
 // DoJSON performs one JSON-over-HTTP API call shared by every outbound
@@ -24,17 +25,26 @@ import (
 // marshal, request, decode, drain-on-error — was previously copy-pasted
 // three times.
 func DoJSON(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), body, out any) (int, error) {
+	code, _, err := DoJSONErrBody(ctx, client, method, url, errPrefix, setHeaders, body, out)
+	return code, err
+}
+
+// DoJSONErrBody is DoJSON that hands back the response body of a NON-2xx
+// answer (capped at 8 KiB) instead of draining it, for the calls whose
+// refusal reason the operator needs verbatim (an avatar the forge rejects).
+// A 2xx body is still streamed into out and never returned.
+func DoJSONErrBody(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), body, out any) (int, []byte, error) {
 	var reqBody io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return 0, fmt.Errorf("%s: marshal body: %w", errPrefix, err)
+			return 0, nil, fmt.Errorf("%s: marshal body: %w", errPrefix, err)
 		}
 		reqBody = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if setHeaders != nil {
 		setHeaders(req)
@@ -47,17 +57,21 @@ func DoJSON(ctx context.Context, client *http.Client, method, url, errPrefix str
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	if out != nil && resp.StatusCode/100 == 2 {
+	if resp.StatusCode/100 != 2 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return resp.StatusCode, errBody, nil
+	}
+	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return resp.StatusCode, fmt.Errorf("%s: decode response: %w", errPrefix, err)
+			return resp.StatusCode, nil, fmt.Errorf("%s: decode response: %w", errPrefix, err)
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	}
-	return resp.StatusCode, nil
+	return resp.StatusCode, nil, nil
 }
 
 // StatusErr maps a non-2xx status to the appropriate forge sentinel,
@@ -90,7 +104,7 @@ func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errP
 	// Named explicitly: multipart.CreateFormFile would stamp
 	// application/octet-stream, and an upload validator may read the part's
 	// own type before sniffing the bytes.
-	hdr.Set("Content-Type", contentType)
+	hdr.Set("Content-Type", stripCRLF(contentType))
 	part, err := mw.CreatePart(hdr)
 	if err != nil {
 		return 0, nil, fmt.Errorf("%s: multipart: %w", errPrefix, err)
@@ -126,16 +140,30 @@ func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errP
 	return resp.StatusCode, body, nil
 }
 
-var quoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+// quoteEscaper makes a value safe inside a quoted multipart header
+// parameter. CR and LF are REMOVED, not escaped: a newline in a header value
+// is a new header, and a caller-supplied name would otherwise inject one
+// (a second Content-Type ahead of the part's own).
+var quoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\r", "", "\n", "")
 
 func quoteEscape(s string) string { return quoteEscaper.Replace(s) }
 
+var crlfStripper = strings.NewReplacer("\r", "", "\n", "")
+
+func stripCRLF(s string) string { return crlfStripper.Replace(s) }
+
 // TrimBody flattens a response body into one short line, for an error message
 // that quotes what the forge said without pasting a page of HTML into a log.
+// The cut lands on a rune boundary: the line ends up on a connection record
+// and in the studio, where a torn multi-byte character reads as mojibake.
 func TrimBody(b []byte) string {
 	s := strings.Join(strings.Fields(string(b)), " ")
 	if len(s) > 300 {
-		s = s[:300] + "…"
+		cut := 300
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
 	}
 	return s
 }

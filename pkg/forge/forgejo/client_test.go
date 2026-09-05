@@ -156,3 +156,18 @@ func TestSetAvatar_UnsupportedInstance(t *testing.T) {
 		t.Errorf("err = %v, want ErrAvatarUnsupported (a 404 is the missing route, not a missing hook)", err)
 	}
 }
+
+// A refusal keeps the forge's own words: a lowered AVATAR_MAX_FILE_SIZE
+// answers 413 with the limit in the body, and that is what the operator
+// needs on the connection record.
+func TestSetAvatar_RefusalKeepsTheReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`{"message":"avatar is too big (max 1048576 bytes)"}`))
+	}))
+	defer srv.Close()
+	_, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), []byte("png"))
+	if err == nil || !strings.Contains(err.Error(), "HTTP 413") || !strings.Contains(err.Error(), "too big (max 1048576 bytes)") {
+		t.Errorf("err = %v, want the 413 and its reason", err)
+	}
+}

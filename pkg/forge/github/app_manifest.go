@@ -211,14 +211,6 @@ func AppManageURL(webBase, ownerLogin, ownerType, slug string) string {
 	return base + "/settings/apps/" + slug + "/advanced"
 }
 
-// AppSettingsURL is the App's General settings page — the tab holding
-// "Display information", where its logo is uploaded by hand: GitHub has no API
-// for an App's logo and the manifest flow cannot set one (docs/brand.md).
-// Sibling of AppManageURL (the Advanced tab). Empty when the slug is unknown.
-func AppSettingsURL(webBase, ownerLogin, ownerType, slug string) string {
-	return strings.TrimSuffix(AppManageURL(webBase, ownerLogin, ownerType, slug), "/advanced")
-}
-
 // ConvertManifest exchanges the temporary code GitHub returns after the
 // operator confirms the manifest for the created App's credentials, via
 // POST {apiBase}/app-manifests/{code}/conversions. The code is single-use and

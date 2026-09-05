@@ -216,19 +216,26 @@ func (c *AdminClient) DeleteHook(ctx context.Context, repo, hookID string) error
 // so this is only ever reached through the operator's explicit apply action.
 func (c *AdminClient) SetAvatar(ctx context.Context, png []byte) (string, error) {
 	body := map[string]any{"image": base64.StdEncoding.EncodeToString(png)}
-	code, err := c.do(ctx, http.MethodPost, "/user/avatar", body, nil)
+	code, errBody, err := c.http().DoErrBody(ctx, http.MethodPost, "/user/avatar", body, nil)
 	if err != nil {
 		return "", err
 	}
-	if code == http.StatusNotFound {
+	switch {
+	case code/100 == 2:
+		return "", nil
+	case code == http.StatusNotFound:
 		// The route itself is absent on older releases (statusErr would read a
 		// 404 as a missing hook).
-		return "", fmt.Errorf("%w: POST /user/avatar needs Gitea/Forgejo 1.20 or newer", forge.ErrAvatarUnsupported)
+		return "", fmt.Errorf("%w: POST /user/avatar answered 404 — Gitea/Forgejo older than 1.20, or a base URL that redirects: %s",
+			forge.ErrAvatarUnsupported, forge.TrimBody(errBody))
+	case code == http.StatusUnauthorized:
+		return "", forge.ErrUnauthorized
+	case code == http.StatusForbidden:
+		return "", forge.ErrForbidden
 	}
-	if code/100 != 2 {
-		return "", statusErr("set avatar", code)
-	}
-	return "", nil
+	// The refusal keeps its reason (a lowered AVATAR_MAX_FILE_SIZE answers
+	// 413 with the limit in the body) — it lands on the connection record.
+	return "", fmt.Errorf("forgejo: set avatar: HTTP %d: %s", code, forge.TrimBody(errBody))
 }
 
 var _ forge.AvatarSetter = (*AdminClient)(nil)
