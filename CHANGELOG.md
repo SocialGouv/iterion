@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.104.2](https://github.com/SocialGouv/iterion/compare/v3.104.1...v3.104.2) (2026-09-05)
+
+### Bug Fixes
+
+* **modernize:** every refusal is a verdict the graph fails on; the gate's commit is HEAD plus one line; a timeout fails before any subbot ([#757](https://github.com/SocialGouv/iterion/issues/757)) ([7503e2f](https://github.com/SocialGouv/iterion/commit/7503e2fe5332f645178c0073c5df3368eef56978))
+
+    <details><summary>why</summary>
+
+    Third review round (two medium, three open questions), each reproduced and pinned.
+
+    </details>
+* **runtime:** elect a fan-out collector from predecessors inside the fan-out only ([#758](https://github.com/SocialGouv/iterion/issues/758)) ([2f69832](https://github.com/SocialGouv/iterion/commit/2f69832b05a0c5f107e747761d19adc2944e810e)), closes [#741](https://github.com/SocialGouv/iterion/issues/741), references [SocialGouv/iterion#741](https://github.com/SocialGouv/iterion/issues/741) [#741](https://github.com/SocialGouv/iterion/issues/741) [#741](https://github.com/SocialGouv/iterion/issues/741) [#741](https://github.com/SocialGouv/iterion/issues/741) [#741](https://github.com/SocialGouv/iterion/issues/741)
+
+    <details><summary>why</summary>
+
+    A fan-out target that is ALSO reachable from outside the fan-out — the mono/dual topology review-pr and evolve ship, where a `condition` router reaches the same reviewer directly or through the fan_out_all — has two distinct predecessors, and the collector election counted both. The target itself was elected: its branch stopped before executing anything, the sibling ran the whole post-fan-out chain inside its branch, and the trunk then ran the target plus the same chain a second time. Observed…
+
+    </details>
+* **sandbox:** the claw bind-mount follows the effective backend; a pod that never got placed parks the run failed_resumable ([#760](https://github.com/SocialGouv/iterion/issues/760)) ([cdcd63b](https://github.com/SocialGouv/iterion/commit/cdcd63b8fdb39187876df034b9112b2fc7d650f2)), closes [#724](https://github.com/SocialGouv/iterion/issues/724) [#699](https://github.com/SocialGouv/iterion/issues/699)
+
+    <details><summary>why</summary>
+
+    `containsClawNode` read each node's declared `backend:` and `fallbacks:` only. Launch-time model/backend overrides (`--backend '*=claw'`, `--model`, the studio override object, `RunMessage.model_overrides`) are applied at dispatch and never folded into the IR, so a workflow of `claude_code` nodes run with `--backend '*=claw'` got no in-container iterion binary: every node died on `exec: /usr/local/bin/iterion: no such file or directory`, and `sandbox_claw_routed_via_runner` stayed silent.
+
+    </details>
+* **store/mongo:** New retries a late server selection; the CI replica-set init fails without a PRIMARY ([#754](https://github.com/SocialGouv/iterion/issues/754)) ([d6e7985](https://github.com/SocialGouv/iterion/commit/d6e798548fb2c19268a9a11868e227e434801ea7)), closes [#729](https://github.com/SocialGouv/iterion/issues/729), references [#698](https://github.com/SocialGouv/iterion/issues/698)
+
+    <details><summary>why</summary>
+
+    A fresh client's first server selection can outlast a single 5 s ping on a loaded host while the replica set is healthy — the handshake is late, not the primary absent. New pinged once and turned that lag into a boot failure, and into a conformance harness that ejected a green PR from the merge queue (#729: "rs0 primary elected" printed, then the 5th fresh client saw ReplicaSetNoPrimary and PR #698 was thrown out).
+
+    </details>
+
 ## [3.104.1](https://github.com/SocialGouv/iterion/compare/v3.104.0...v3.104.1) (2026-09-05)
 
 ### Bug Fixes
