@@ -311,6 +311,14 @@ the hours this one spent.
   is set, one transaction per API request and per in-process LLM call), the
   scrubbing, and the smoke tests. Read it when a deployment needs to answer
   "what crashed, how often, since which release" or "where did the time go".
+- [docs/cloud-deployment.md](docs/cloud-deployment.md#verifying-that-an-infra-apps-push-landed-argocd-sync-liveness) —
+  how a build reaches a deployment: the server follows the moving `:edge`
+  tag (a `rollout restart` picks it up), the runner is pinned BY DIGEST in
+  the deployment's values (an explicit bump per engine build), the
+  generation-aware rollout epoch, and how to verify an infra-apps push
+  actually landed (Deployment generation, never pods — the ArgoCD stall of
+  2026-09-05 sat 2h30 until the next push). Read it on "I pushed the config
+  and nothing happened", or before shipping an engine fix to the runners.
 
 ## Work tracking & session methodology — read AGENTS.md
 

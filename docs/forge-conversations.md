@@ -90,7 +90,7 @@ MRs.
 
 `pkg/webhooks/gitlab/note.go` (done) parses the `Note Hook`: `discussion_id`
 (the thread to reply in), `note.body`, the author (`User`), and the MR
-context. `ParsedNote.Command()` extracts a leading `/revi …` command;
+context. `ParsedNote.Command()` extracts a leading slash command;
 `IsMergeRequestNote()` filters out issue/commit notes; `SubjectID()` is
 `note:<id>` for idempotency.
 
@@ -102,11 +102,27 @@ The handler (`pkg/server/webhooks_gitlab.go`, dispatch on
    (else the bot's reply re-triggers a run → infinite loop). Resolve the
    bot's forge user once from the forge_token (`GET /user`) and compare
    `author_id`; cache it per webhook.
-3. **Trigger gate:** a note triggers when it is a `/revi` command, a
-   mention of the bot, or a reply inside a bot-authored discussion thread
-   (configurable; `/revi` is the explicit path, reply-in-thread the
-   natural one).
-4. Idempotency on `note:<id>`; `MatchProject` as for MR events.
+3. **Trigger gate:** a note triggers when it carries a slash command or
+   is a reply inside a bot-authored discussion thread. A command — `/revi`
+   included — is routed generically through `webhooks.ResolveCommandRoute`
+   over the webhook's `CommandMap`: the manifests' `when_args_empty` /
+   `when_args_present` + `args_var` pair resolves a bare `/revi` to the
+   reviewer and `/revi <question>` to the conversational bot, exactly as
+   the GitHub `issue_comment` lane does. Only a plain reply-in-thread with
+   no command stays bespoke, routed to the `revi_converse` role bot — and
+   a provisioned but unresolvable converse bot is a visible
+   `launch_error`, not a silent fallback to the reviewer. `/revi approve`
+   uses the same helpers as GitHub: a maintainer floor (`approveFloor`,
+   raise-only), self-approval refused, a forge error on the authorization
+   read answered `200` + `launch_error`, an unauthorized replier silently
+   `filtered`.
+4. **Fork guard:** the note payload names no project ids, so the handler
+   resolves the MR through the forge API and refuses a cross-project or
+   unnamed head (`filtered`, 200); a resolution failure is a visible 502.
+5. Idempotency on `note:<id>`; `MatchProject` as for MR events. The gates
+   are thin wrappers over token-free cores (`gitlabCommandGateWithAPI`,
+   `gitlabNoteGateWithAPI`), so their real logic is unit-tested rather
+   than stubbed away.
 
 ## A2 — Authorization (the heart): two separate things
 
