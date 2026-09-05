@@ -386,12 +386,20 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 				// leaves a run pointer those reconcilers act on, so only this
 				// one needs the brake.
 				//
-				// Keep the claim: the same choice the claim watchdog's own
+				// Do not release: the same choice the claim watchdog's own
 				// `!filed` arm makes below, and the one shape a watchdog pass
 				// can still repair — its StuckReleaseOnly arm WRITES the card
 				// back to d.eligible[0] before releasing it.
-				d.warn("card %s/%s: its return to %s did not land — keeping the claim rather than stranding a card that "+
-					"never launched where no sweep reaches it; the claim watchdog retries the write at the next lease",
+				//
+				// One rule covers both ways the write can be refused. A STORE
+				// failure means we still hold the claim, and holding it is the
+				// brake. A FENCE refusal (tracker.ErrClaimConflict, logged on
+				// its own line just above) means we never held it — the
+				// release would be refused too, so skipping it costs nothing
+				// and the live owner disposes of the card.
+				d.warn("card %s/%s: its return to %s did not land — not releasing the claim, rather than strand a card that "+
+					"never launched where no sweep reaches it; if the write was refused by the fence the card already has "+
+					"another owner, and if the board store failed the claim watchdog returns it to the pool at the next lease",
 					c.Tenant, c.Issue.ID, final)
 				return
 			}

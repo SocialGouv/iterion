@@ -192,8 +192,8 @@ func TestHTTPLocalPRLaunchHonoursTheTokenHostPin(t *testing.T) {
 // host-trust rule ALONE: over plain HTTP the scheme rule would refuse it too
 // and neither check could be isolated.
 func TestHTTPLocalPRLaunchWithholdsAnUnpinnedTokenFromAnUntrustedHost(t *testing.T) {
-	s, forge, reqs := newLocalForgeEgressProbe(t) // unpinned token
-	rec := localPRLaunchAt(t, s, "unpinned-untrusted-host", forge+"/o/r/pull/7")
+	s, forgeURL, reqs := newLocalForgeEgressProbe(t) // unpinned token
+	rec := localPRLaunchAt(t, s, "unpinned-untrusted-host", forgeURL+"/o/r/pull/7")
 	// The egress oracle FIRST: it is the property under test, and a status
 	// assertion could pass on a launch that leaked the token and then failed
 	// for some unrelated reason.
@@ -219,8 +219,8 @@ func TestHTTPLocalPRLaunchWithholdsAnUnpinnedTokenFromAnUntrustedHost(t *testing
 // this one ever stopped observing a request, the zero above would be measuring
 // a broken probe rather than a withheld credential.
 func TestHTTPLocalPRLaunchPinnedTokenReachesASelfHostedForge(t *testing.T) {
-	s, forge, reqs := newLocalForgeEgressProbe(t, "PIN")
-	rec := localPRLaunchAt(t, s, "pinned-self-hosted", forge+"/o/r/pull/7")
+	s, forgeURL, reqs := newLocalForgeEgressProbe(t, "PIN")
+	rec := localPRLaunchAt(t, s, "pinned-self-hosted", forgeURL+"/o/r/pull/7")
 	if n := reqs.Load(); n != 1 {
 		t.Fatalf("a pinned host must be reachable: outbound calls = %d", n)
 	}
@@ -232,11 +232,12 @@ func TestHTTPLocalPRLaunchPinnedTokenReachesASelfHostedForge(t *testing.T) {
 	}
 }
 
-// The trust set is EXACT origins, so the two shapes that read as trusted at a
-// glance are not: a lookalike suffix, and an http:// scheme on a real SaaS
-// host (GitLab's and Forgejo's constructors keep the scheme verbatim, so that
-// one genuinely puts the token on the wire in plaintext). Both fail closed to
-// "needs a pin", and neither reaches the forge seam at all.
+// The trust set is EXACT origins, so the shapes that read as trusted at a
+// glance are not: a lookalike suffix, a www. alias, a port, and an http://
+// scheme on a real SaaS host (GitLab's and Forgejo's constructors keep the
+// scheme verbatim, so that last one genuinely puts the token on the wire in
+// plaintext). All four fail closed to "needs a pin", and none of them reaches
+// the forge seam at all.
 func TestHTTPLocalPRLaunchUnpinnedTrustIsExact(t *testing.T) {
 	for name, prURL := range map[string]string{
 		"suffix-lookalike":  "https://github.com.evil.io/o/r/pull/7",

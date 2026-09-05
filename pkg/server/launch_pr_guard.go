@@ -181,10 +181,14 @@ func (s *Server) localForgeToken(ctx context.Context, origin, host string) (stri
 	}
 	allowed := creds.GenericHosts[localForgeTokenSecret]
 	if !localTokenPermittedAt(allowed, origin, host) {
-		if s.logger != nil && len(allowed) > 0 {
+		// Name WHICH of the two grounds refused, or the operator reads one
+		// message for two different fixes.
+		switch {
+		case s.logger == nil:
+		case len(allowed) > 0:
 			s.logger.Warn("PR launch: the local %s secret is pinned to %v and cannot be used against %s — not sending it there",
 				localForgeTokenSecret, allowed, host)
-		} else if s.logger != nil {
+		default:
 			s.logger.Warn("PR launch: the local %s secret carries no host pin, and %s is not an origin iterion recognises on its own — "+
 				"not sending it there; authorise it with `iterion secret set %s --hosts %s`",
 				localForgeTokenSecret, origin, localForgeTokenSecret, host)
