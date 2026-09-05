@@ -434,6 +434,40 @@ func TestGoldenMasterSyncHarnessBotRefusals(t *testing.T) {
 		}
 	})
 
+	// "More than the harness moved" is the one refusal that fires AFTER the
+	// write, so it is the one that has to put something back — and only the
+	// harness is its to put back. The window it opens is the whole selftest,
+	// on a checkout the bot does not own (no `worktree:`), so a blanket
+	// `checkout -- .` there discarded work this node never touched.
+	t.Run("more than the harness moved: the harness goes back, the rest is left alone", func(t *testing.T) {
+		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		// Stands in for the selftest leaving another tracked file changed:
+		// injected at the point the node looks at the tree, so what is pinned
+		// is the node's reaction, not the way the tree got that way.
+		const check = "\nst = git(\"status\", \"--porcelain\", \"-z\", \"--untracked-files=no\")"
+		alsoMoved := func(s string) string {
+			if strings.Count(s, check) != 1 {
+				t.Fatalf("the post-selftest tree check moved, fix this test: %q", check)
+			}
+			return strings.Replace(s, check,
+				"\nopen(os.path.join(ws, \"README.md\"), \"w\").write(\"moved by something else\\n\")"+check, 1)
+		}
+		out, exit := runSyncNode(t, "sync_harness", ws, nil, alsoMoved)
+		var res syncHarnessOut
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("sync_harness output is not JSON: %v (out %q)", err, out)
+		}
+		if exit != 1 || !strings.Contains(res.Notice, "more than the harness moved") {
+			t.Fatalf("exit %d notice=%q, want the moved-too-much refusal", exit, res.Notice)
+		}
+		if got, _ := os.ReadFile(filepath.Join(ws, ".golden-master", "harness.py")); !strings.Contains(string(got), "# stale") {
+			t.Fatal("the harness was not put back")
+		}
+		if got, _ := os.ReadFile(filepath.Join(ws, "README.md")); string(got) != "moved by something else\n" {
+			t.Fatalf("README.md = %q: the refusal discarded a change that was never this node's to undo", got)
+		}
+	})
+
 	t.Run("a symlinked harness is refused, its referent untouched", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "")
 		outside := filepath.Join(t.TempDir(), "real.py")
