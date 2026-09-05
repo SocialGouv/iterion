@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.104.1](https://github.com/SocialGouv/iterion/compare/v3.104.0...v3.104.1) (2026-09-05)
+
+### Bug Fixes
+
+* **webhooks:** the GitLab note handler routes every slash command generically — /revi approve and the fork guard reach GitLab ([#753](https://github.com/SocialGouv/iterion/issues/753)) ([6f336f4](https://github.com/SocialGouv/iterion/commit/6f336f4a8f8b5b95bb8d29e557991f303607000d)), closes [#683](https://github.com/SocialGouv/iterion/issues/683)
+
+    <details><summary>why</summary>
+
+    GitLab addresses merge requests as a REST resource separate from issues (an MR and an issue can share the same iid in one project), so CommentIssue's /issues/:iid/notes endpoint would land on, or 404 against, the wrong resource for a caller replying on an MR. Adds the MR-scoped counterpart posting to /merge_requests/:iid/notes, needed by the upcoming GitLab /revi approve reply lane.
+
+    </details>
+
 ## [3.104.0](https://github.com/SocialGouv/iterion/compare/v3.103.0...v3.104.0) (2026-09-05)
 
 ### Features
