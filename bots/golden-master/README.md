@@ -117,14 +117,22 @@ bundle's, reviewed and tested upstream. A bug in that code is repaired upstream 
 reach every tree that judges with it. Before this bot the only path was a full rite (hours of agent
 work and a fresh held-out cycle) for a fix in a file no agent may edit.
 
-`sync-harness.bot` is tool-only — no LLM, no prompt — and does three things, each a typed refusal on
+`sync-harness.bot` is tool-only — no LLM, no prompt — and does four things, each a typed refusal on
 failure: it writes the canonical copy of THIS bundle's harness into `<oracle_dir>/harness.py` (the
 same bytes the gate would write, so the next gate writes nothing back) and runs the harness's own
-selftest on the written file — the half that DECIDES; it replays the target's full gate on the synced
-tree (`gate_cmd`, default the runner the net materialised) — the half that COMPARES; and it commits
-the harness alone, with both proofs in the commit body. A red gate restores the previous harness
-and ends the run at `fail`. It never pushes: landing the commit on the base branch is the act of
-whoever owns landings. Not a re-baseline — nothing compared changes, only the comparator.
+selftest on the written file — the half that DECIDES; it commits the harness alone with that proof,
+BEFORE the gate, because the harness refuses an uncommitted tree (mutant reverts restore HEAD
+mid-gate, so the verdict would describe a tree that never existed); it replays the target's full gate
+on that committed tree (`gate_cmd`, default the runner the net materialised) — the half that
+COMPARES; and it seals the gate's verdict and minutes into that commit. A red gate drops the commit,
+putting the previous harness back at HEAD, and ends the run at `fail` — and on the one case where it
+cannot (the sync commit is no longer HEAD, so dropping it would drop another hand's work), it says so
+in `log_tail` rather than leaving a red verdict to read as "nothing landed". It never pushes: landing
+the commit on the base branch is the act of whoever owns landings. Not a re-baseline — nothing
+compared changes, only the comparator.
+
+The sync commits on whatever branch the target has checked out, so run it where you want that commit:
+a scratch branch if the checkout is a protected base.
 
 ```
 iterion run bots/golden-master/sync-harness.bot            # in the target tree
