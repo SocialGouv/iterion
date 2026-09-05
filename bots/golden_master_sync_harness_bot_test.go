@@ -41,10 +41,20 @@ type syncCommitOut struct {
 
 // syncHarnessRepo is a target tree: a git repo whose net carries an OLD
 // materialised harness (the canonical header over a stale body) and the
-// runner the net emits.
+// runner the net emits. The workspace IS the repository root — the common
+// shape; syncHarnessRepoUnder builds the one where it is not.
 func syncHarnessRepo(t *testing.T, oldBody string) (string, func(args ...string) string) {
 	t.Helper()
-	ws, git := syncHarnessGitRepo(t)
+	return syncHarnessRepoUnder(t, oldBody, "")
+}
+
+// syncHarnessRepoUnder puts the net (and the workspace the bot is pointed at)
+// in `sub` of the repository, returning that subdirectory as the workspace —
+// a monorepo package, or a run started below the root.
+func syncHarnessRepoUnder(t *testing.T, oldBody, sub string) (string, func(args ...string) string) {
+	t.Helper()
+	root, git := syncHarnessGitRepo(t)
+	ws := filepath.Join(root, sub)
 	gm := filepath.Join(ws, ".golden-master")
 	if err := os.MkdirAll(filepath.Join(gm, "refs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -59,7 +69,8 @@ func syncHarnessRepo(t *testing.T, oldBody string) (string, func(args ...string)
 			t.Fatal(err)
 		}
 	}
-	git("add", ".golden-master")
+	// The helper is anchored at the repository root, so the pathspec is too.
+	git("add", filepath.Join(sub, ".golden-master"))
 	git("commit", "-qm", "net with a stale judge")
 	return ws, git
 }
@@ -178,6 +189,35 @@ func TestGoldenMasterSyncHarnessBotMaterialisesTheCanonicalCopy(t *testing.T) {
 			t.Fatalf("exit %d changed=%v notice=%q, want IN_SYNC", exit, res.Changed, res.Notice)
 		}
 	})
+}
+
+// TestGoldenMasterSyncHarnessBotNetBelowTheRepositoryRoot: git prints porcelain
+// paths relative to the REPOSITORY root, not to workspace_dir, and `git -C` does
+// not change that. A target whose net sits below the root — a monorepo package,
+// a run started from a subdirectory — must sync and commit exactly as one whose
+// workspace IS the root, not refuse naming the one file that was to move.
+func TestGoldenMasterSyncHarnessBotNetBelowTheRepositoryRoot(t *testing.T) {
+	ws, git := syncHarnessRepoUnder(t, "\nimport hashlib\n# stale\n", "pkg/proj")
+
+	res, exit := syncHarness(t, ws)
+	if exit != 0 || !res.Changed {
+		t.Fatalf("sync: exit %d changed=%v: %s", exit, res.Changed, res.Notice)
+	}
+	if moved := git("status", "--porcelain", "--untracked-files=no"); moved != "M pkg/proj/.golden-master/harness.py" { // the helper trims the leading column
+		t.Fatalf("tree after the sync: %q, want the harness alone", moved)
+	}
+
+	c := syncCommitNode(t, ws, res)
+	if head := git("rev-parse", "HEAD"); head != c.Commit {
+		t.Fatalf("provisional commit %s is not HEAD (%s)", c.Commit, head)
+	}
+	if files := git("show", "--stat", "--format=", "HEAD"); !strings.Contains(files, "1 file changed") ||
+		!strings.Contains(files, "pkg/proj/.golden-master/harness.py") {
+		t.Fatalf("the sync commit must carry the harness alone:\n%s", files)
+	}
+	if dirty := git("status", "--porcelain", "--untracked-files=no"); dirty != "" {
+		t.Fatalf("tree dirty after the commit: %q", dirty)
+	}
 }
 
 // TestGoldenMasterSyncHarnessBotRefusals: every precondition is a typed

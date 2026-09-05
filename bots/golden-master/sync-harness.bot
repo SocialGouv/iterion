@@ -138,6 +138,13 @@ tool sync_harness:
         refuse("%s/harness.py is not a tracked regular file (%s) — the sync overwrites it in place and undoes with "
                "git; an untracked file or a symlink has no undo"
                % (gm_rel, entry[0].split("\t")[0] if entry else "untracked"))
+    # Porcelain paths are relative to the REPOSITORY root, never to
+    # workspace_dir, and `-z` spares us git's C-quoting. `ls-files --full-name`
+    # prints that same form and canonicalises the pathspec, so `rel` is what
+    # porcelain will print for this file whatever the shape of the target: a
+    # net below the root (monorepo package, run started from a subdirectory) or
+    # a non-canonical `--var oracle_dir=./gm`.
+    rel = entry[0].split("\t", 1)[1]
     with open(target, encoding="utf-8") as f:
         old = f.read()
     if not old.startswith(HEADER):
@@ -174,9 +181,9 @@ tool sync_harness:
     lines = [l for l in (p.stdout + p.stderr).splitlines() if l.strip()]
     out["selftest"] = lines[-1] if lines else "(selftest printed nothing)"
 
-    st = git("status", "--porcelain", "--untracked-files=no")
-    moved = [l for l in st.stdout.splitlines() if l.strip()]
-    if moved != [" M %s/harness.py" % gm_rel]:
+    st = git("status", "--porcelain", "-z", "--untracked-files=no")
+    moved = [e for e in st.stdout.split("\0") if e.strip()]
+    if moved != [" M " + rel]:
         git("checkout", "-q", "--", ".")
         refuse("more than the harness moved after the sync: %s" % ", ".join(moved))
     out["changed"] = True
@@ -3930,9 +3937,18 @@ tool commit_harness:
             "the net's decision procedure, not a re-baseline.\n\n"
             "Harness sha256: %s\nSelftest in this tree: %s\nFull gate: pending"
             % ({{input.harness_sha256}}, {{input.selftest}}))
-    st = git("status", "--porcelain", "--untracked-files=no")
-    moved = [l for l in st.stdout.splitlines() if l.strip()]
-    if moved != [" M %s/harness.py" % gm_rel]:
+    # Repo-root-relative and unquoted at both ends — see the same derivation in
+    # sync_harness: a net below the repository root would otherwise refuse here
+    # naming the one file that was supposed to move.
+    ls = git("ls-files", "--stage", "--full-name", "-z", "--", "%s/harness.py" % gm_rel)
+    entry = [e for e in ls.stdout.split("\0") if e.strip()]
+    if len(entry) != 1 or not entry[0].startswith("100"):
+        refuse("%s/harness.py is not a tracked regular file (%s) — nothing committed"
+               % (gm_rel, entry[0].split("\t")[0] if entry else "untracked"))
+    rel = entry[0].split("\t", 1)[1]
+    st = git("status", "--porcelain", "-z", "--untracked-files=no")
+    moved = [e for e in st.stdout.split("\0") if e.strip()]
+    if moved != [" M " + rel]:
         refuse("the tree does not carry the synced harness alone (%s) — nothing committed" % ", ".join(moved))
     if git("add", "--", "%s/harness.py" % gm_rel).returncode != 0:
         refuse("git add failed")
