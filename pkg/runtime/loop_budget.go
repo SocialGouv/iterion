@@ -2,10 +2,11 @@ package runtime
 
 import (
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // loopBudgetMark records what a run had consumed, per enforced budget
@@ -161,48 +162,65 @@ func markLoopBudget(rs *runState, loopName string) {
 	rs.loopBudgetMarks[loopName] = mark
 }
 
-// baselineUnpricedLoops bases every not-yet-priced loop at the run's
-// current consumption. Called once before this session executes a node.
+// markLoopBudgetOnBodyEntry prices a loop whose body a plain edge enters
+// from outside, landing on `to`.
 //
-// It is the right baseline for a loop whose body contains the workflow
-// entry: execution starts INSIDE it, no edge ever enters it, so nothing
-// else would mark it — and at that moment the run has consumed nothing,
-// which is exactly what its first iteration will be measured against.
-// Loops entered later are re-marked at their entry edge, and a loop
-// whose price survived on the checkpoint keeps it.
+// The crossing is taken at ANY body node, not just the loop's head: a loop
+// that shares its verify/gate nodes with a sibling loop is entered there,
+// off its own head, and a loop left unpriced until its head would charge
+// its first back-edge crossing for everything the run spent before it.
+//
+// Off the head, only the FIRST such crossing prices the loop. computeLoopBodies
+// BFSes over non-loop edges alone, so a body can come out narrow enough that
+// nodes genuinely on the cycle sit OUTSIDE it (the case ir.Loop.Entries was
+// introduced for) — the edge back in from such a node then fires on every
+// iteration, mid-flight. Re-basing there would discard what the iteration had
+// already spent and silently disable the guard on exactly the loop paying for
+// the expensive work. A mark is therefore the record that a loop is under
+// measurement, and only the loop's own head re-bases one that exists.
+func markLoopBudgetOnBodyEntry(rs *runState, loopName string, loop *ir.Loop, to string) {
+	if _, measured := rs.loopBudgetMarks[loopName]; measured && !loop.Entries[to] {
+		return
+	}
+	markLoopBudget(rs, loopName)
+}
+
+// baselineUnpricedLoops bases the loop that HOLDS THE WORKFLOW ENTRY at the
+// run's current consumption. Called once before this session executes a node.
+//
+// That loop is the one case a run-start mark is right for: execution starts
+// INSIDE its body, no edge ever enters it, so nothing else would ever mark
+// it — and at that moment the run has consumed nothing, which is exactly
+// what its first iteration is measured against.
+//
+// Every OTHER loop is deliberately left unmarked, and that absence is
+// load-bearing twice over. loopBudgetShortfall reads an unmarked loop as
+// "not measured yet" and reports no shortfall, rather than pricing it from
+// run start — which would charge a loop entered late for everything that
+// ran before it existed and decline its very first crossing. And because a
+// mark now appears only where a loop was genuinely entered or crossed, the
+// mark's PRESENCE is the record that the loop is under measurement, which
+// is what markLoopBudgetOnBodyEntry keys its re-base decision on. Sniffing
+// a mark's VALUES for that ("all axes zero" ⇒ never measured) cannot work:
+// a loop legitimately entered before anything priced ran has a genuine
+// all-zero mark, and SharedBudget.Axes omits an unenforced dimension
+// entirely, so the run-start shape is not even distinguishable in general.
+//
+// A loop whose price survived on the checkpoint keeps it, measured or not:
+// a checkpoint written before this rule carries a run-start baseline for
+// every loop, and reading those as measured leaves a resumed run pricing
+// exactly as it did before — conservative, and never a pass the budget
+// cannot fund.
 func (e *Engine) baselineUnpricedLoops(rs *runState) {
 	for loopName, loop := range e.workflow.Loops {
-		mark, priced := rs.loopBudgetMarks[loopName]
-		// A restored mark still at the run-start baseline on a loop whose
-		// body does not hold the workflow entry was never measured: the
-		// run entered that body off its head, on an engine that only
-		// priced entries at the head, and carried the zero into the
-		// checkpoint. Kept, it would price the loop's first crossing at
-		// everything the run has spent and decline it. Re-based here, it
-		// prices from the resume point like a loop measured for the first
-		// time. A fresh run re-bases a zero with a zero — no change.
-		if priced && (!isRunStartBaseline(mark) || loopHoldsEntry(loop, e.workflow.Entry)) {
+		if _, priced := rs.loopBudgetMarks[loopName]; priced {
+			continue
+		}
+		if !loopHoldsEntry(loop, e.workflow.Entry) {
 			continue
 		}
 		markLoopBudget(rs, loopName)
 	}
-}
-
-// isRunStartBaseline reports a mark taken before the run consumed anything:
-// no cost, no tokens, and less than a second of wall time.
-func isRunStartBaseline(mark loopBudgetMark) bool {
-	for dim, v := range mark {
-		if dim == "duration" {
-			if v >= float64(time.Second) {
-				return false
-			}
-			continue
-		}
-		if v != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // loopHoldsEntry reports whether the workflow entry sits in the loop's

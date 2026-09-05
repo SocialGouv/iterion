@@ -875,15 +875,14 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 			if loop == nil || len(loop.Body) == 0 || loop.Body[selected.From] || !loop.Body[selected.To] {
 				continue
 			}
-			// Entering the body from outside re-bases the loop's price:
-			// its first back-edge crossing must cost one iteration, not
-			// everything the run spent before this loop existed. At ANY
-			// body node — a loop that shares its verify/gate nodes with a
-			// sibling loop is entered there, off its own head, and a mark
-			// left at run start would price its first crossing at the
-			// whole run and decline it. A FIRST entry needs the baseline
-			// just as much as a re-entry, and leaves the counter at 0.
-			markLoopBudget(rs, loopName)
+			// Entering the body from outside prices the loop from here, so
+			// its first back-edge crossing costs one iteration rather than
+			// everything the run spent before this loop existed. Taken at
+			// any body node, and only once off the loop's head — see
+			// markLoopBudgetOnBodyEntry for why the two halves of that rule
+			// are not the same rule. A FIRST entry needs the baseline just
+			// as much as a re-entry, and leaves the counter at 0.
+			markLoopBudgetOnBodyEntry(rs, loopName, loop, selected.To)
 			if !loop.Entries[selected.To] {
 				continue
 			}

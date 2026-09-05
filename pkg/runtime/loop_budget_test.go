@@ -541,37 +541,170 @@ func TestLoopBudgetGuard_BodyEnteredOffItsHeadIsPricedFromThatEntry(t *testing.T
 	}
 }
 
-// TestBaselineUnpricedLoops_ReBasesAStaleRunStartMarkOfALateLoop: a
-// checkpoint written by an engine that priced entries only at a loop's
-// head carries a run-start zero for a loop entered off its head. Restored
-// as is, that zero prices the loop's first crossing at everything the run
-// spent. The session baseline re-bases it at the resume point; a loop
-// that holds the workflow entry keeps its zero, which is its true price;
-// a measured mark is never touched.
-func TestBaselineUnpricedLoops_ReBasesAStaleRunStartMarkOfALateLoop(t *testing.T) {
+// TestBaselineUnpricedLoops_MarksOnlyTheLoopHoldingTheEntry: the run-start
+// baseline belongs to the loop execution starts INSIDE, and to no other. No
+// edge ever enters that loop, so nothing else would price it. Marking the
+// rest at run start charges a loop entered late for everything that ran
+// before it existed and declines its very first crossing — and it destroys
+// the signal the body-entry rule reads, since every loop then carries a mark
+// whether or not it was ever measured.
+func TestBaselineUnpricedLoops_MarksOnlyTheLoopHoldingTheEntry(t *testing.T) {
 	wf := lateLoopWorkflow(12_000)
 	wf.Loops["outer"] = &ir.Loop{Name: "outer", MaxIterations: 3, Entries: map[string]bool{"pre": true}, Body: map[string]bool{"pre": true, "verify": true, "gate": true}}
-	wf.Loops["measured"] = &ir.Loop{Name: "measured", MaxIterations: 3, Entries: map[string]bool{"act": true}, Body: map[string]bool{"act": true, "verify": true}}
 	eng := New(wf, tmpStore(t), newStubExecutor())
 	rs := eng.newRunState("r", nil)
 	rs.budget = newSharedBudget(wf.Budget, eng.logger)
 	rs.budget.RecordUsage(8_000, 0)
-	restoreLoopBudgetMarks(rs, map[string]map[string]float64{
-		"act_loop": {"tokens": 0, "cost_usd": 0, "duration": 500_000},
-		"outer":    {"tokens": 0, "cost_usd": 0, "duration": 500_000},
-		"measured": {"tokens": 5_000, "cost_usd": 0, "duration": 3e12},
-	})
 	eng.baselineUnpricedLoops(rs)
-	if got := rs.loopBudgetMarks["act_loop"]["tokens"]; got != 8_000 {
-		t.Fatalf("act_loop mark = %v tokens, want 8000: the stale run-start mark must be re-based at the resume point", got)
+	if _, marked := rs.loopBudgetMarks["act_loop"]; marked {
+		t.Fatalf("act_loop was baselined: a loop entered later must stay unmarked until it is genuinely entered")
 	}
-	if got := rs.loopBudgetMarks["outer"]["tokens"]; got != 0 {
-		t.Fatalf("outer mark = %v tokens, want 0: a loop holding the entry keeps its run-start price", got)
-	}
-	if got := rs.loopBudgetMarks["measured"]["tokens"]; got != 5_000 {
-		t.Fatalf("measured mark = %v tokens, want 5000: a measured mark is never touched", got)
+	if got := rs.loopBudgetMarks["outer"]["tokens"]; got != 8_000 {
+		t.Fatalf("outer mark = %v tokens, want 8000: the loop holding the entry is baselined at the run's consumption", got)
 	}
 	if v := eng.loopBudgetShortfall("act_loop", rs); v != nil {
-		t.Fatalf("act_loop reports a shortfall right after re-basing: %+v", v)
+		t.Fatalf("an unmarked loop reported a shortfall instead of no measurement: %+v", v)
+	}
+}
+
+// TestBaselineUnpricedLoops_KeepsALegitimateAllZeroMark: a loop entered
+// before anything priced ran carries a genuine all-zero mark, and the
+// session baseline must keep it. Inferring "never measured" from a mark's
+// VALUES re-based exactly this mark — on every entry path, including the
+// human-gate and failure resumes campaign bots hit routinely — handing the
+// loop's next crossing a price measured only from the resume point, i.e.
+// one iteration the budget never funded. The shape is not a usable signal
+// either way: SharedBudget.Axes emits a dimension only when it is enforced,
+// so a cost/token-capped run's marks carry no duration at all.
+func TestBaselineUnpricedLoops_KeepsALegitimateAllZeroMark(t *testing.T) {
+	wf := lateLoopWorkflow(12_000)
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("r", nil)
+	rs.budget = newSharedBudget(wf.Budget, eng.logger)
+	restoreLoopBudgetMarks(rs, map[string]map[string]float64{"act_loop": {"tokens": 0}})
+	rs.budget.RecordUsage(8_000, 0)
+	eng.baselineUnpricedLoops(rs)
+	if got := rs.loopBudgetMarks["act_loop"]["tokens"]; got != 0 {
+		t.Fatalf("act_loop mark = %v tokens, want 0: a restored mark is the loop's measurement and survives the session baseline whatever its values", got)
+	}
+}
+
+// siblingLoopsWorkflow: two loops sharing one verify/gate spine, with the
+// expensive node on the repair loop's own leg — the shape bots/modernize
+// compiles to. There, repair_loop's body is {lot_gate, lot_verify,
+// upgrade_campaign} while the sibling reanchor/extend legs sit outside it,
+// so `extend -> lot_verify` is an outside→inside crossing into repair_loop's
+// body that fires on EVERY cycle, in the middle of an iteration.
+//
+// computeLoopBodies BFSes over non-loop edges only, which is why a node
+// genuinely on the cycle lands outside the body it belongs to; ir.Loop.Entries
+// exists for precisely this. maxTokens bounds the run.
+func siblingLoopsWorkflow(maxTokens int) *ir.Workflow {
+	tool := func(id string) ir.Node { return &ir.ToolNode{BaseNode: ir.BaseNode{ID: id}} }
+	return &ir.Workflow{
+		Name:  "sibling_loops",
+		Entry: "pre",
+		Nodes: map[string]ir.Node{
+			"pre":    tool("pre"),
+			"heavy":  tool("heavy"),
+			"verify": tool("verify"),
+			"gate":   tool("gate"),
+			"side":   tool("side"),
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "pre", To: "heavy"},
+			{From: "heavy", To: "verify"},
+			{From: "verify", To: "gate"},
+			// The sibling detour is declared first, as modernize declares
+			// its reanchor/extend edges before the repair back-edge.
+			{From: "gate", To: "side", Condition: "needs_side", LoopName: "side_loop"},
+			{From: "side", To: "verify"},
+			{From: "gate", To: "heavy", Condition: "needs_repair", LoopName: "repair_loop"},
+			{From: "gate", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"repair_loop": {
+				Name: "repair_loop", MaxIterations: 3,
+				Entries: map[string]bool{"heavy": true},
+				Body:    map[string]bool{"heavy": true, "verify": true, "gate": true},
+			},
+			"side_loop": {
+				Name: "side_loop", MaxIterations: 1,
+				Entries: map[string]bool{"side": true},
+				Body:    map[string]bool{"side": true, "verify": true, "gate": true},
+			},
+		},
+		Budget: &ir.Budget{MaxTokens: maxTokens},
+	}
+}
+
+// TestLoopBudgetGuard_SiblingLegDoesNotReBaseALoopInFlight: crossing into a
+// loop's body from a SIBLING loop's leg must not re-price the loop that is
+// mid-iteration. Priced from its own entry, repair_loop's pass costs 6000 of
+// a 13000 cap and a second one cannot be funded, so the guard declines the
+// back-edge and the run leaves through its delivery tail with the work it
+// banked. Re-based by `side -> verify`, the same pass measures ~0, no axis
+// can starve the next iteration, and the guard is silently disabled on the
+// one loop paying for the expensive work.
+func TestLoopBudgetGuard_SiblingLegDoesNotReBaseALoopInFlight(t *testing.T) {
+	wf := siblingLoopsWorkflow(13_000)
+	exec := newStubExecutor()
+	heavies, sides, gates := 0, 0, 0
+	exec.on("pre", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("heavy", func(_ map[string]any) (map[string]any, error) {
+		heavies++
+		return map[string]any{"ok": true, "_tokens": 6_000}, nil
+	})
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("side", func(_ map[string]any) (map[string]any, error) {
+		sides++
+		return map[string]any{"ok": true, "_tokens": 100}, nil
+	})
+	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+		gates++
+		switch {
+		case sides == 0:
+			return map[string]any{"needs_side": true, "needs_repair": true}, nil
+		case heavies < 2:
+			return map[string]any{"needs_side": false, "needs_repair": true}, nil
+		default:
+			return map[string]any{"needs_side": false, "needs_repair": false}, nil
+		}
+	})
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "siblings", nil)
+	// A second repair pass is what the guard exists to refuse; it also lands
+	// the run past the 90% hard limit, which then refuses the next node. Name
+	// the guard failure rather than the budget error it surfaces as.
+	if heavies != 1 {
+		t.Fatalf("heavy ran %d times, want 1: repair_loop's price was re-based mid-iteration by the sibling's `side -> verify`, so its pass measured ~0 and the guard could not decline the back-edge (run err: %v)", heavies, err)
+	}
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sides != 1 || gates != 2 {
+		t.Fatalf("side ran %d times (want 1), gate ran %d times (want 2)", sides, gates)
+	}
+	events, err := s.LoadEvents(context.Background(), "siblings")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	var declined bool
+	for _, ev := range events {
+		if ev.Type == store.EventBudgetWarning && ev.Data["reason"] == "loop_budget_guard" {
+			declined = true
+		}
+	}
+	if !declined {
+		t.Fatal("no budget_warning{reason: loop_budget_guard} — repair_loop's back-edge was not declined by the guard")
 	}
 }
