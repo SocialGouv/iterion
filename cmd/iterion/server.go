@@ -527,6 +527,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// The un-leased claim horizon is a startup dial: read it before the
+	// coordinator's sweeps run, refuse a bad value rather than start a
+	// watchdog measuring against a horizon nobody intended.
+	if horizon, err := boardmongo.ConfigureUnleasedClaimHorizonFromEnv(); err != nil {
+		return err
+	} else if horizon != boardmongo.DefaultUnleasedClaimHorizon {
+		logger.Info("board watchdog: un-leased claim horizon set to %s (%s)", horizon, boardmongo.UnleasedClaimHorizonEnv)
+	}
+
 	srv := server.New(server.Config{
 		Port:        serverOpts.port,
 		Bind:        serverOpts.bind,

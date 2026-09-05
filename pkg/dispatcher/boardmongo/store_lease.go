@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -458,8 +460,56 @@ func isNoDocuments(err error) bool { return errors.Is(err, mongo.ErrNoDocuments)
 // lease: an expired lease is positive evidence a heartbeat stopped,
 // while a missing one is only an absence — so the bar is "nothing has
 // touched this card in a very long time" rather than "a beat was
-// missed".
-const unleasedClaimHorizon = 24 * time.Hour
+// missed". The default is the trade-off for a mixed fleet: during a
+// rolling deploy an OLD binary strips leases as it writes and does not
+// heartbeat, so a short horizon would release a card its old-binary
+// holder is still working. Tunable per deployment through
+// UnleasedClaimHorizonEnv (see SetUnleasedClaimHorizon) — set BEFORE the
+// coordinator runs; the queries read it unguarded.
+var unleasedClaimHorizon = DefaultUnleasedClaimHorizon
+
+// DefaultUnleasedClaimHorizon is the shipped horizon.
+const DefaultUnleasedClaimHorizon = 24 * time.Hour
+
+// UnleasedClaimHorizonEnv overrides the un-leased horizon (a Go duration,
+// e.g. "2h"). It must be at least one claim lease: below that, a claim
+// with NO lease would be reclaimable sooner than one whose lease merely
+// expired, inverting the evidence ordering the arms are built on.
+const UnleasedClaimHorizonEnv = "ITERION_BOARD_UNLEASED_CLAIM_HORIZON"
+
+// UnleasedClaimHorizon reports the horizon in force.
+func UnleasedClaimHorizon() time.Duration { return unleasedClaimHorizon }
+
+// SetUnleasedClaimHorizon installs the horizon. Refused loudly below one
+// lease (see UnleasedClaimHorizonEnv) — never silently clamped.
+func SetUnleasedClaimHorizon(d time.Duration) error {
+	if d < native.ClaimLeaseDuration {
+		return fmt.Errorf("%s: %s is below one claim lease (%s) — an un-leased claim would be reclaimable sooner than an expired one",
+			UnleasedClaimHorizonEnv, d, native.ClaimLeaseDuration)
+	}
+	unleasedClaimHorizon = d
+	return nil
+}
+
+// ConfigureUnleasedClaimHorizonFromEnv applies UnleasedClaimHorizonEnv
+// when set and reports the horizon in force. An unparsable or too-short
+// value is an error the caller surfaces at startup: a watchdog measuring
+// against a horizon nobody intended is worse than one that refuses to
+// start.
+func ConfigureUnleasedClaimHorizonFromEnv() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(UnleasedClaimHorizonEnv))
+	if raw == "" {
+		return unleasedClaimHorizon, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q: %w", UnleasedClaimHorizonEnv, raw, err)
+	}
+	if err := SetUnleasedClaimHorizon(d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
 
 // reclaimableLease is the ONE definition of "this claim may be taken":
 // an expired lease, or none at all past a much longer horizon. The

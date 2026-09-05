@@ -812,11 +812,24 @@ error conserves. Roll it out in two releases: ship the lease fields +
 heartbeats first (reaper off), then enable the reaper once no pre-lease
 binary is left in the fleet.
 
-The gate takes **`on` or `off` only** (case-insensitive) — not the
-`1`/`true` spellings some other `ITERION_*` toggles accept. Anything else
-leaves the watchdog OFF and is logged once at startup on both surfaces,
-so a mistyped cutover shows up in the log rather than as cards that
-quietly stay stuck.
+The gate takes `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no`
+(case-insensitive) — the spellings the repo's other `ITERION_*` toggles
+accept. Anything else leaves the watchdog OFF and is logged once at
+startup on both surfaces, so a mistyped cutover shows up in the log
+rather than as cards that quietly stay stuck.
+
+**The un-leased horizon (cloud board).** A claim a mixed-fleet write
+stripped of its lease is only reclaimable once nothing has touched the
+card for `ITERION_BOARD_UNLEASED_CLAIM_HORIZON` (default `24h`): an
+expired lease is positive evidence a heartbeat stopped, a missing one is
+an absence — and during a rolling deploy an OLD binary strips leases as
+it writes and does not heartbeat, so a short horizon would release a card
+its old-binary holder is still working. The default is sized for a
+day-long mixed window; a deployment whose rolling window is minutes can
+lower it (a Go duration, at least one claim lease — `15m` — or the server
+refuses to start). Until the horizon elapses a stripped claim is
+unwritable by anybody (ADR-096 §6): that stuck window is the accepted
+cost of the mixed fleet, bounded by this dial.
 
 Three properties of that routing are easy to assume wrongly:
 
