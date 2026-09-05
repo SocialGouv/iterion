@@ -13,9 +13,9 @@ none).
 |---|---|---|
 | `assets/brand/iterion-bot.png` | **master**, plain — the mascot on a transparent background, 460×460, pixel-equal to the `iterion-bot` account's avatar | every account avatar |
 | `assets/brand/iterion-bot-circle.png` | **master**, badge — dark disc + ring, 1254×1254 | every product surface |
-| `pkg/brand/*.png` | plain 460 (< 200 KiB, GitLab's limit) + circle 512, `go:embed` | `forge.AvatarSetter` uploads; `GET /brand/iterion-bot.png` + `/brand/iterion-bot-circle.png` (public) |
+| `pkg/brand/*.png` | plain 460, lossless (the master's own pixels; < 200 KiB, GitLab's limit) + circle 512, `go:embed` | `forge.AvatarSetter` uploads; `GET /brand/iterion-bot.png` + `/brand/iterion-bot-circle.png` (public) |
 | `studio/src/assets/iterion-mark.png` | circle 256 | the studio's `BrandMark` (sidebar, landing, shells) |
-| `studio/public/{android,apple,ms,favicon}-*.png`, `favicon.ico` (16/32/48) | the favicon pack; Apple/MS tiles on a flat navy (no alpha there) | `index.html`, `manifest.json`, `browserconfig.xml`, `service-worker.js` |
+| `studio/public/{android,apple,ms,favicon}-*.png`, `favicon.ico` (16/32/48) | the favicon pack; the Apple icons on a flat navy (iOS renders alpha as black), the rest transparent | `index.html`, `manifest.json`, `browserconfig.xml`, `service-worker.js` |
 | `docs/public/iterion-logo.png`, `docs/images/iterion-logo.png`, `docs/public/favicon.ico` | circle 512 | VitePress nav + hero, the README banner |
 | `docs/public/og.png` | 1200×630 card | OpenGraph / Twitter preview |
 | `build/appicon.png`, `cmd/iterion-desktop/appicon.png` | circle 1024 | Wails derives `.ico`/`.icns`; `desktop-release.yml`, the `.deb`/AppImage stage, the Helm chart `icon:` |

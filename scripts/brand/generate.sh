@@ -46,6 +46,16 @@ compress() {
   oxipng -o 4 --strip safe --quiet "$1"
 }
 
+# render_lossless SRC OUT — SRC copied pixel-for-pixel (metadata stripped,
+# losslessly recompressed): the plain avatar is the account's own pixels and
+# must stay so, and at 460 px it fits GitLab's 200 KiB limit without any
+# quantisation.
+render_lossless() {
+  mkdir -p "$(dirname "$2")"
+  magick "$1" -strip -define png:exclude-chunks=date,time "PNG32:$2"
+  oxipng -o 4 --strip safe --quiet "$2"
+}
+
 # render SRC SIZE OUT — SRC fitted into a SIZE×SIZE transparent square.
 render() {
   mkdir -p "$(dirname "$3")"
@@ -63,7 +73,7 @@ render_flat() {
 }
 
 # ---- Go embed (pkg/brand): the avatar uploads + the public /brand/ route ----
-render "$PLAIN"        460  "$OUT/pkg/brand/iterion-bot.png"
+render_lossless "$PLAIN"    "$OUT/pkg/brand/iterion-bot.png"
 render "$CIRCLE_TRIM"  512  "$OUT/pkg/brand/iterion-bot-circle.png"
 
 # ---- studio in-app mark (BrandMark), crisp at 4× DPR for a 28–64 px slot ----
