@@ -589,6 +589,42 @@ func TestBaselineUnpricedLoops_KeepsALegitimateAllZeroMark(t *testing.T) {
 	}
 }
 
+// TestMarkLoopBudgetOnBodyEntry_ReBasesOnlyAFirstEntryOrTheHead pins the
+// three cases of the body-entry rule at the site that decides them, so a
+// later edit cannot collapse them back into one unconditional re-base.
+func TestMarkLoopBudgetOnBodyEntry_ReBasesOnlyAFirstEntryOrTheHead(t *testing.T) {
+	loop := &ir.Loop{
+		Name:    "l",
+		Entries: map[string]bool{"head": true},
+		Body:    map[string]bool{"head": true, "shared": true},
+	}
+	for _, tc := range []struct {
+		name  string
+		to    string
+		start float64 // mark before the crossing; -1 = unmarked
+		want  float64
+	}{
+		{"first entry off the head prices the loop", "shared", -1, 900},
+		{"a later crossing off the head leaves the price alone", "shared", 100, 100},
+		{"the loop's own head always re-bases", "head", 100, 900},
+		{"a first entry at the head prices the loop", "head", -1, 900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := New(lateLoopWorkflow(12_000), tmpStore(t), newStubExecutor())
+			rs := eng.newRunState("r", nil)
+			rs.budget = newSharedBudget(&ir.Budget{MaxTokens: 12_000}, eng.logger)
+			if tc.start >= 0 {
+				restoreLoopBudgetMarks(rs, map[string]map[string]float64{"l": {"tokens": tc.start}})
+			}
+			rs.budget.RecordUsage(900, 0)
+			markLoopBudgetOnBodyEntry(rs, "l", loop, tc.to)
+			if got := rs.loopBudgetMarks["l"]["tokens"]; got != tc.want {
+				t.Fatalf("mark = %v tokens, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // siblingLoopsWorkflow: two loops sharing one verify/gate spine, with the
 // expensive node on the repair loop's own leg — the shape bots/modernize
 // compiles to. There, repair_loop's body is {lot_gate, lot_verify,
