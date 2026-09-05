@@ -1044,6 +1044,15 @@ extension supplies the MCP half; the rest stands. Consequences for a
 - **node `tools:` lists are advisory**, as for every CLI-agent backend. The
   one exception iterion enforces is a `readonly:` node, which pins pi to
   `--tools read,grep,find,ls`.
+- **A rejected credential is recorded as meter evidence, on the anthropic
+  wire only.** pi mints `ErrAuthFailed` from the upstream `401`/`403`, and
+  iterion records it as a `usagecap` `auth` refusal so the next resolution
+  routes around the dead credential instead of re-picking it — the same
+  behaviour as `claude_code` ([usage-caps.md](usage-caps.md)). A refusal on
+  any other provider is recorded NOWHERE: pi routes ~36 providers behind
+  one process, the credential-skip evidence is claude_code-metered end to
+  end, and a mislabelled reading would bench a healthy key. Visible as a
+  `debug` line naming the provider.
 
 A node that needs the remaining native gaps — subagents, todo, web
 fetch/search, notebooks, or background shell — should stay on `claude_code` or

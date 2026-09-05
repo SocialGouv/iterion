@@ -52,6 +52,35 @@ func TestUsageCapCredKeys_ALentCredentialIsNotTheBorrowersOwn(t *testing.T) {
 	}
 }
 
+// The labels pi stamps on its own auth-refusal evidence have to be ones
+// THIS meter understands, or the reading lands on whichever credential the
+// default precedence picks — which would bench a healthy key. The literals
+// are delegate.piUsageSource's, pinned on both sides (see
+// TestPiUsageSource): a label renamed on one side reddens the other.
+func TestUsageCapCredKeys_UnderstandsThePiSourceLabels(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderZAI:       "zai-token",
+			secrets.ProviderAnthropic: "sk-ant",
+		},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	scope := usagecap.TenantScope("team-7")
+	for _, c := range []struct{ source, wantFP string }{
+		{"anthropic-direct", "fp-ant"},
+		{"facade:pi-zai", "fp-zai"},
+	} {
+		if got := keys.forSource(c.source); got != usagecap.Key(delegate.BackendClaudeCode, scope, c.wantFP) {
+			t.Errorf("forSource(%q) = %q, want fingerprint %q", c.source, got, c.wantFP)
+		}
+	}
+}
+
 // The predicate itself, at the class: three tiers can fill a slot and only
 // one of them is the tenant's.
 func TestCredentials_IsTenantOwned(t *testing.T) {
