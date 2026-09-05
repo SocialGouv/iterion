@@ -319,19 +319,6 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// place, release the claim — the fork-adoption reconciler files it
 		// if the pointer later reaches a real terminal disposition.
 		final = ""
-	case runErr != nil && ctx.Err() != nil:
-		// THIS REPLICA is going away — that says nothing about the run,
-		// which keeps executing on its runner pod and will finish.
-		// Filing blocked here wrote a terminal "won't do" on live work,
-		// for ever (reconcileDeadPointer refuses to reclassify blocked:
-		// it is an operator-facing bad-outcome flag). Leave the card in
-		// place and only release the claim: unclaimed in_progress is
-		// exactly what the fork-adoption reconciler files once the run
-		// terminates — the same disposition the LOCAL twin's
-		// context.Canceled arm (finishRevert) reaches. The claim-lost
-		// path is unaffected: it cancels cardCtx, not this parent ctx.
-		final = ""
-		d.warn("card %s/%s: replica draining mid-run — leaving the card in place, releasing the claim", c.Tenant, c.Issue.ID)
 	case runErr != nil && errors.Is(runErr, errCardRetryable):
 		// NOTHING launched: the forge could not be ASKED whether the PR's head
 		// lives in the base repo, which says nothing about the card. Filing it
@@ -345,7 +332,31 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// return immediately on the empty LastRunID a card that never launched
 		// still carries. The write below goes out under the claim token, so a
 		// superseded replica cannot resurrect it.
+		//
+		// THE POSITION IS LOAD-BEARING — this arm MUST precede the draining
+		// one below. A drain cancels cardCtx, which is exactly what makes the
+		// guard's own forge lookup fail with context.Canceled; that is untyped,
+		// so classifyPRLookupError calls it retryable and processBoardCard
+		// marks it here. Evaluated after the draining arm, this case is
+		// unreachable on a drain and the card strands in_progress with the
+		// empty LastRunID no reconciler acts on. The two are not in tension:
+		// the marker is applied at ONE site that provably precedes
+		// runview.LaunchSpec, so "nothing launched" is the stronger statement
+		// and the drain arm's no-double-launch premise is untouched.
 		final, returnedToPool = d.retryStateFor(c, runErr)
+	case runErr != nil && ctx.Err() != nil:
+		// THIS REPLICA is going away — that says nothing about the run,
+		// which keeps executing on its runner pod and will finish.
+		// Filing blocked here wrote a terminal "won't do" on live work,
+		// for ever (reconcileDeadPointer refuses to reclassify blocked:
+		// it is an operator-facing bad-outcome flag). Leave the card in
+		// place and only release the claim: unclaimed in_progress is
+		// exactly what the fork-adoption reconciler files once the run
+		// terminates — the same disposition the LOCAL twin's
+		// context.Canceled arm (finishRevert) reaches. The claim-lost
+		// path is unaffected: it cancels cardCtx, not this parent ctx.
+		final = ""
+		d.warn("card %s/%s: replica draining mid-run — leaving the card in place, releasing the claim", c.Tenant, c.Issue.ID)
 	case runErr != nil:
 		final = d.blockedState
 		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)

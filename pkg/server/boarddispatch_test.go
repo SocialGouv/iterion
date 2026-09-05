@@ -2857,9 +2857,56 @@ func TestClassifyPRLookupError_PermanentAllowlist(t *testing.T) {
 // errCardRetryable marker it applies at the one site that knows no run exists.
 // TestProcessBoardCardMarksAnUnanswerableLookupRetryable pins that shape to the
 // real code path, so these dispatcher-level tests cannot drift from it.
-func prePreLaunchOutage(msg string) error {
+func prePreLaunchOutage(msg string) error { return prePreLaunchOutageFrom(errors.New(msg)) }
+
+// prePreLaunchOutageFrom is the same shape over an EXISTING error, which the
+// drain case needs: there the cause is context.Canceled itself, handed to the
+// guard's lookup by the cardCtx the drain cancelled.
+func prePreLaunchOutageFrom(cause error) error {
 	return fmt.Errorf("card native:1: %w: %w",
-		classifyPRLookupError("resolve head repository", errors.New(msg)), errCardRetryable)
+		classifyPRLookupError("resolve head repository", cause), errCardRetryable)
+}
+
+// A drain that lands BEFORE anything launched is not the draining arm's case.
+// The cancelled cardCtx is precisely what made the guard's own forge lookup
+// fail (context.Canceled is untyped, so classifyPRLookupError calls it
+// retryable), so the card never got past the pre-launch gate. Evaluated in the
+// wrong order the draining arm wins, leaves `final = ""`, and strands the card
+// in_progress with the empty LastRunID no reconciler acts on — tick lists
+// `ready` only, sweepParked lists awaiting_input only, and reconcileDeadPointer
+// returns immediately on an empty pointer. Ordering regression test.
+func TestBoardDispatcher_DrainBeforeLaunchReturnsTheCardToThePool(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	ctx, cancel := context.WithCancel(context.Background())
+	draining := true
+	d := newBoardDispatcher(f, func(c context.Context, _ string, _ native.Issue) error {
+		if !draining {
+			return nil
+		}
+		cancel()   // the replica begins draining while the guard is still asking
+		<-c.Done() // ... which is what kills the lookup
+		return prePreLaunchOutageFrom(c.Err())
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0 // the wait itself is not what this proves
+
+	d.tick(ctx)
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateReady {
+		t.Fatalf("a card drained BEFORE launch was left in %q — nothing launched, and nothing recovers that shape; want it back in %q", got, native.StateReady)
+	}
+	if len(f.claimed) != 0 {
+		t.Fatalf("the returned card must be released so another replica can claim it: %v", f.claimed)
+	}
+
+	// ... and it is genuinely launchable again once a live replica picks it up.
+	draining = false
+	if claimed := d.tick(context.Background()); claimed != 1 {
+		t.Fatalf("the card returned by the drain was not re-claimed: claimed=%d", claimed)
+	}
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateDone {
+		t.Fatalf("the recovered card did not launch, got %q", got)
+	}
 }
 
 // The linkage the dispatcher-level retry tests assume: the REAL processBoardCard
