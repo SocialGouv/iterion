@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"sync"
@@ -178,6 +179,7 @@ func (loop *ConversationLoop) workflowAgentBinding(ctx context.Context, el *even
 		label := ""
 		subagentType := "general-purpose"
 		model := ""
+		var schema map[string]interface{}
 		if opts, ok := call.Argument(1).Export().(map[string]interface{}); ok {
 			if v, ok := opts["label"].(string); ok {
 				label = v
@@ -188,6 +190,14 @@ func (loop *ConversationLoop) workflowAgentBinding(ctx context.Context, el *even
 			if v, ok := opts["model"].(string); ok {
 				model = v
 			}
+			if v, ok := opts["schema"].(map[string]interface{}); ok && len(v) > 0 {
+				schema = v
+			}
+		}
+		if schema != nil {
+			// The child is told to return through structured_output; the
+			// promise then resolves with that object, validated, or rejects.
+			prompt += structuredResultInstruction(schema)
 		}
 		if label == "" {
 			label = tools.SlugifyAgentLabel(prompt)
@@ -231,6 +241,22 @@ func (loop *ConversationLoop) workflowAgentBinding(ctx context.Context, el *even
 				if ok && got.Status.IsTerminal() {
 					output, _ := loop.TaskRegistry.Output(t.TaskID)
 					if got.Status == task.StatusCompleted {
+						if schema != nil {
+							payload, ok := loop.subagentStructuredOutput(t.TaskID)
+							if !ok {
+								appendLog(fmt.Sprintf("agent #%d %q completed without a structured result", n, label))
+								settle(reject, fmt.Sprintf("agent %q completed without calling structured_output (a schema was requested): %s", label, excerpt(output, 200)))
+								return
+							}
+							if verr := validateStructured(payload, schema); verr != nil {
+								appendLog(fmt.Sprintf("agent #%d %q returned a result that does not match its schema: %v", n, label, verr))
+								settle(reject, fmt.Sprintf("agent %q structured_output does not match the schema: %v", label, verr))
+								return
+							}
+							appendLog(fmt.Sprintf("agent #%d %q completed (structured)", n, label))
+							settle(resolve, payload)
+							return
+						}
 						appendLog(fmt.Sprintf("agent #%d %q completed", n, label))
 						settle(resolve, output)
 					} else {
@@ -250,4 +276,77 @@ func (loop *ConversationLoop) workflowAgentBinding(ctx context.Context, el *even
 
 		return vm.ToValue(promise)
 	}
+}
+
+// structuredResultInstruction is appended to a schema-bearing agent's prompt:
+// the child returns its result through structured_output, and that call is
+// what the workflow reads.
+func structuredResultInstruction(schema map[string]interface{}) string {
+	b, err := json.MarshalIndent(schema, "", "  ")
+	if err != nil {
+		b = []byte("{}")
+	}
+	return "\n\n## Structured result\n\nWhen your work is done, call the `structured_output` tool exactly once with a JSON object matching this schema — that call is your result, prose is not:\n```json\n" + string(b) + "\n```"
+}
+
+// validateStructured checks a structured_output payload against the shape a
+// workflow asked for: every `required` field present, every declared
+// property of the declared JSON type. Nested schemas are not descended —
+// the top-level contract is what a script branches on.
+func validateStructured(payload map[string]any, schema map[string]interface{}) error {
+	if req, ok := schema["required"].([]interface{}); ok {
+		for _, r := range req {
+			name, _ := r.(string)
+			if _, present := payload[name]; name != "" && !present {
+				return fmt.Errorf("missing required field %q", name)
+			}
+		}
+	}
+	props, _ := schema["properties"].(map[string]interface{})
+	for name, raw := range props {
+		v, present := payload[name]
+		if !present {
+			continue
+		}
+		ps, _ := raw.(map[string]interface{})
+		want, _ := ps["type"].(string)
+		if want != "" && !jsonTypeMatches(v, want) {
+			return fmt.Errorf("field %q: want %s, got %T", name, want, v)
+		}
+	}
+	return nil
+}
+
+func jsonTypeMatches(v any, want string) bool {
+	switch want {
+	case "string":
+		_, ok := v.(string)
+		return ok
+	case "number":
+		switch v.(type) {
+		case float64, float32, int, int64, int32, json.Number:
+			return true
+		}
+		return false
+	case "integer":
+		switch n := v.(type) {
+		case int, int64, int32:
+			return true
+		case float64:
+			return n == math.Trunc(n)
+		}
+		return false
+	case "boolean":
+		_, ok := v.(bool)
+		return ok
+	case "array":
+		_, ok := v.([]interface{})
+		return ok
+	case "object":
+		_, ok := v.(map[string]interface{})
+		return ok
+	case "null":
+		return v == nil
+	}
+	return true
 }
