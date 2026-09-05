@@ -184,8 +184,14 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	}
 	outcome, gateReason, aerr := gate(ctx, gateCfg, provider, p, route)
 	if aerr != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
-		httpError(w, http.StatusBadGateway, "authorization check failed")
+		// Never a 5xx: a forge that keeps seeing them disables the hook, and
+		// with it every future launch, re-review and override (#662). The
+		// commenter is still unverified here, so nothing is said on the PR;
+		// the delivery audit carries the reason.
+		why := "authz check: " + aerr.Error()
+		s.warnApproveDidNotLand(provider, p, why)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
 		return
 	}
 	switch outcome {

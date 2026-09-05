@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1304,5 +1306,45 @@ func TestReviewApprove_BindingOnlyReadFailureIsALaunchError(t *testing.T) {
 	}
 	if rows := approveDeliveries(t, s, cfg); len(rows) != 1 || rows[0].Status != webhooks.StatusLaunchError {
 		t.Fatalf("the only credential failing its read must audit one launch_error row, got %+v", rows)
+	}
+}
+
+// A forge error while READING the commenter's standing is not a refusal and
+// not a 5xx: GitHub disables a hook that keeps answering 5xx, taking every
+// future launch, re-review and override down with it (#662). The commenter
+// is unverified at that point, so the outcome is a 200 launch_error on the
+// delivery row and nothing on the PR.
+func TestReviewApprove_AuthzForgeErrorIs200LaunchError(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateRefused, "", errors.New("collaborator permission: github: http 503")
+	}
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"url":"https://api.github.com/repos/acme/widgets/pulls/7"}},"comment":{"id":1,"body":"/revi approve flaky finding","html_url":"https://github.com/acme/widgets/pull/7#issuecomment-1","user":{"login":"maintainer"}},"sender":{"login":"maintainer"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("a forge error on the authz read must never be a 5xx (the forge disables the hook), got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusLaunchError {
+		t.Fatalf("status must be launch_error, got %v", resp)
+	}
+	if launched != 0 {
+		t.Fatalf("nothing may launch on an unverified commenter (launched=%d)", launched)
+	}
+	ds, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 10)
+	if err != nil || len(ds) == 0 {
+		t.Fatalf("no delivery recorded: %v %d", err, len(ds))
+	}
+	if ds[0].Status != webhooks.StatusLaunchError || !strings.Contains(ds[0].Error, "authz check") {
+		t.Fatalf("the delivery row must carry the authz failure, got %s %q", ds[0].Status, ds[0].Error)
 	}
 }
