@@ -310,6 +310,15 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		return 1, 0, nil
 	}
 	labels := mergeForgeLabels(is.Labels, existing.Labels)
+	// Patch.External REPLACES the whole ref, so the project sync state — which
+	// this import knows nothing about and never sets — has to be carried
+	// across. Dropping it would silently reset every card on any plain issue
+	// import: the next project pass would read "first sight" and overwrite a
+	// native move it should have pushed to the board instead.
+	if existing.External != nil && existing.External.Project != nil {
+		p := *existing.External.Project
+		ext.Project = &p
+	}
 	if _, err := board.Update(cardID, native.Patch{
 		Title:    &is.Title,
 		Body:     &is.Body,

@@ -211,6 +211,52 @@ func TestSyncProjectBoardReflectFailureIsCountedNotFatal(t *testing.T) {
 	}
 }
 
+// TestIssueImportPreservesTheProjectSyncState is the class guard on the OTHER
+// writer of ExternalRef. The issue import replaces the whole ref with a fresh
+// one built from the forge issue; if it drops the project half, every plain
+// `iterion issue import` silently resets the sync state, the next project pass
+// reads "first sight", and any native move not yet reflected is overwritten by
+// the board instead of pushed to it.
+func TestIssueImportPreservesTheProjectSyncState(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	id := seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
+
+	// The issue-import upsert path, on a card that already exists.
+	b := board.Board()
+	_, updated, err := upsertForgeCardForTest(board, b, forge.IssueRef{
+		Number: 613, Title: "t", Body: "b", State: "open", URL: "u",
+	})
+	if err != nil {
+		t.Fatalf("upsertForgeCard: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1", updated)
+	}
+
+	got := mustGet(t, board, id)
+	if got.External == nil {
+		t.Fatal("ExternalRef dropped entirely")
+	}
+	if got.External.Project == nil {
+		t.Fatal("the issue import dropped the project sync state — the next project pass would read 'first sight' and overwrite an unreflected native move")
+	}
+	if got.External.Project.Status != "Planned" || got.External.Project.ItemID != "PVTI_1" {
+		t.Errorf("project sync state mangled: %+v", got.External.Project)
+	}
+	// And the forge half is still refreshed from the issue.
+	if got.External.URL != "u" {
+		t.Errorf("the forge half must still be updated: %+v", got.External)
+	}
+}
+
+// upsertForgeCardForTest calls the import's upsert with this suite's fixture
+// repo/provider, so the class guard exercises the REAL writer.
+func upsertForgeCardForTest(board native.BoardStore, b *native.Board, is forge.IssueRef) (int, int, error) {
+	return upsertForgeCard(board, b, native.StateInbox, native.StateDone,
+		forge.ProviderGitHub, "", "SocialGouv/iterion", is, true)
+}
+
 // TestSyncProjectBoardNeverReflectsAnUnrecordedCard: a card the board has
 // never been synced with has no recorded status, so "did the board move?" has
 // no answer — the first pass IMPORTS it rather than overwriting a column
