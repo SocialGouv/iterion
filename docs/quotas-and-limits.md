@@ -141,7 +141,51 @@ Cost metering is "floor, not invoice":
 - And the bucket is the **ORG**, not the credential: `recordOrgSpend` charges
   `msg.OrgID` whatever tier served the run (team forfait, credential pool,
   platform keys, BYOK). The figure answers "what did this org consume", never
-  "what did this key cost".
+  "what did this key cost" — which is what the **per-credential ledger**
+  below answers.
+
+## Per-credential usage — what did THIS key cost
+
+[`pkg/credusage`](../pkg/credusage/credusage.go) is the second bucket, fed
+from the same attempt beside `recordOrgSpend`. It keys on
+`{fingerprint, provider, tier, tenant} × month` and answers the question the
+org counter structurally cannot.
+
+Two properties carry it:
+
+- **Split by backend.** A run can spend a `claude_code` forfait on its
+  implementer and a platform codex key on its plan review, while
+  `RunTotals()` is one number that belongs to neither. The spend is taken per
+  `(backend, model)` ROUTE, and the MODEL is what names the provider (a
+  `claw` node can be pointed anywhere). A route iterion cannot attribute —
+  a bare model id on a multi-provider backend, a provider the run holds no
+  credential for — is charged to **nobody**: no figure beats a wrong one.
+- **Nature, in the API.** Every amount is typed `metered` (real money on an
+  invoice: a BYOK or lent API key) or `estimate` (a subscription — see the
+  `total_cost_usd` bullet above). The same line
+  `credpool.CredentialSource.Metered()` draws, asserted equal by
+  `TestCredentialNature_AgreesWithCredpoolMetered`. The list responses keep
+  `metered_usd` and `estimated_usd` **apart** for that reason: summing them
+  reproduces exactly the misreading the ledger exists to remove.
+
+The `tier` (`team` | `pool` | `platform`) is part of the meter identity, not
+a label: the same key lent through the pool and used by its owner are two
+different economic facts.
+
+```sh
+# This team's credentials, this month
+iterion remote usage --by-credential
+# GET /api/teams/{id}/credentials/usage
+
+# The platform tier across every tenant it served (super-admin)
+iterion remote api GET /api/admin/credentials/usage
+# ?tier=team|pool|platform — or ?fingerprint=<fp> for one credential,
+# whose rows live under each tenant that drew on it.
+```
+
+Metering is best effort throughout, like the org bucket: a missing counter,
+an unattributable route or a store failure leave the observation on the
+floor rather than turn a finished run into a failed one.
 
 ## Reading usage
 

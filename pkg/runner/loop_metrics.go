@@ -47,6 +47,15 @@ type metricsEmitter struct {
 	runInputTokens  int64
 	runOutputTokens int64
 
+	// byRoute splits the same accumulation per (backend, model) — the unit
+	// per-CREDENTIAL metering needs. One run can spend two credentials (a
+	// claude_code forfait for the implementer, a platform codex key for the
+	// plan review), and the run total cannot be attributed to either: it
+	// would charge one for the other's calls. Keyed by the pair because the
+	// model is what names the provider, and the backend alone does not (a
+	// claw node can be pointed at any provider the registry knows).
+	byRoute map[routeKey]routeTotals
+
 	// sawAuthFailure records that the provider rejected this run's
 	// credential at some point, even if the attempt did not END on that
 	// error. Recovery converts an auth failure into a human pause, so by
@@ -68,13 +77,53 @@ type modelRate struct {
 	known             bool
 }
 
+// routeKey names one (backend, model) pair a run spent on.
+type routeKey struct{ backend, model string }
+
+// routeTotals is one route's slice of the run's consumption.
+type routeTotals struct {
+	costUSD      float64
+	inputTokens  int64
+	outputTokens int64
+}
+
 func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
 	return &metricsEmitter{
 		inner:        inner,
 		reg:          reg,
 		modelByNode:  make(map[string]string),
 		priceByModel: make(map[string]modelRate),
+		byRoute:      make(map[routeKey]routeTotals),
 	}
+}
+
+// addRouteLocked folds one observation into its (backend, model) bucket.
+// Called with m.mu held, alongside the run-total accumulation it mirrors —
+// the two must never diverge, so they are updated in the same critical
+// section.
+func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64, in, out int64) {
+	if m.byRoute == nil {
+		m.byRoute = make(map[routeKey]routeTotals)
+	}
+	k := routeKey{backend: backend, model: modelName}
+	t := m.byRoute[k]
+	t.costUSD += cost
+	t.inputTokens += in
+	t.outputTokens += out
+	m.byRoute[k] = t
+}
+
+// RouteTotals snapshots what the run spent per (backend, model). The unit
+// per-credential metering charges, because one run can draw on two
+// credentials and the run total belongs to neither.
+func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[routeKey]routeTotals, len(m.byRoute))
+	for k, v := range m.byRoute {
+		out[k] = v
+	}
+	return out
 }
 
 // The executor writes through this emitter, but the ENGINE writes straight
@@ -204,6 +253,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
+		m.addRouteLocked(backend, modelName, costDelta, int64(inputT), int64(outputT))
 		m.mu.Unlock()
 
 		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
@@ -277,6 +327,10 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		modelName := m.modelByNode[evt.NodeID]
 		m.runInputTokens += int64(tokensF)
 		m.runCostUSD += costDelta
+		// The delegate reports one aggregated token count; booked as input
+		// here for the same reason addTokens labels it that way, so a sum
+		// across directions stays meaningful.
+		m.addRouteLocked(backend, modelName, costDelta, int64(tokensF), 0)
 		m.mu.Unlock()
 
 		// Delegate events report a single aggregated token count;

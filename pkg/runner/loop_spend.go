@@ -36,6 +36,11 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 	if usage == nil {
 		return
 	}
+	// The per-CREDENTIAL ledger, charged per (backend, model) route rather
+	// than from the run total — the same attempt, read by credential
+	// instead of by org (#641). Independent of the org gate below: a route
+	// the org bucket cannot break apart is exactly what this answers.
+	r.recordCredentialSpend(ctx, msg, usage, now)
 	costUSD, in, out := usage.RunTotals()
 	spent := costUSD > 0 || in > 0 || out > 0
 	if !spent {

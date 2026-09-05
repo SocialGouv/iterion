@@ -147,6 +147,10 @@ func (s *Server) routes() {
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
 	}
+	// Per-credential usage views (#641): what the org bucket cannot answer.
+	if s.credUsage != nil && s.authSvc != nil {
+		s.registerCredUsageRoutes()
+	}
 	// Local (non-cloud) single-operator secret store: unauthenticated
 	// /api/local/secrets, gated on local mode + a wired store + sealer.
 	if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {

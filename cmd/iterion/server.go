@@ -31,6 +31,7 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -632,6 +633,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookDeferred:        stores.webhooks.Deferred,
 		ConfigShares:           stores.configShares,
 		OrgUsage:               stores.orgUsage,
+		CredUsage:              stores.credUsage,
 		OrgDefaults:            orgLimitDefaultsFromEnv(),
 		CredPoolBroker:         credBroker,
 		CredPoolPools:          stores.credPools,
@@ -724,6 +726,7 @@ type cloudStores struct {
 	desktopTickets   *desktopsso.MongoStore
 	wsTickets        *wsticket.MongoStore
 	orgUsage         *orgusage.MongoCounter
+	credUsage        *credusage.MongoCounter
 	credPools        *credpool.MongoPoolStore
 	credPledges      *credpool.MongoPledgeStore
 	credLeases       *credpool.MongoLeaseStore
@@ -773,6 +776,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		desktopTickets:   desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
 		wsTickets:        wsticket.NewMongoStore(st.DB(), time.Minute),
 		orgUsage:         orgusage.NewMongoCounter(st.DB()),
+		credUsage:        credusage.NewMongoCounter(st.DB()),
 		credPools:        credpool.NewMongoPoolStore(st.DB()),
 		credPledges:      credpool.NewMongoPledgeStore(st.DB()),
 		credLeases:       credpool.NewMongoLeaseStore(st.DB()),
@@ -811,6 +815,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"desktop_sso_tickets", s.desktopTickets.EnsureSchema},
 		{"ws_tickets", s.wsTickets.EnsureSchema},
 		{"org_usage", func(c context.Context) error { return orgusage.EnsureSchema(c, st.DB()) }},
+		{"credential_usage", func(c context.Context) error { return credusage.EnsureSchema(c, st.DB()) }},
 		{"cred_pool", func(c context.Context) error { return credpool.EnsureSchema(c, st.DB()) }},
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},

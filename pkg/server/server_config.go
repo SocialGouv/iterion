@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -156,6 +157,11 @@ type Config struct {
 	// gateLaunch quota checks and increments the month's run counter;
 	// the usage REST views read it back. nil → no metering (local mode).
 	OrgUsage orgusage.Counter
+
+	// CredUsage, when non-nil, is the per-CREDENTIAL monthly ledger the
+	// runner feeds and the /credentials/usage views read. nil leaves those
+	// routes unregistered — the org bucket stays the only usage answer.
+	CredUsage credusage.Counter
 
 	// CredPool* wire the mutualised credential pool (pkg/credpool): the
 	// contributor-lent LLM subscriptions a run with no credential of its

@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -160,13 +161,16 @@ type Server struct {
 	webhookDeliveries webhooks.DeliveryStore
 	webhookCounter    webhooks.Counter
 	orgUsage          orgusage.Counter
-	orgDefaults       OrgLimitDefaults
-	credPool          *credpool.Broker
-	credPoolPools     credpool.PoolStore
-	credPoolPledges   credpool.PledgeStore
-	credPoolLeases    credpool.LeaseStore
-	credPoolLedger    credpool.Ledger
-	auditStore        audit.Store
+	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
+	// leaves the /credentials/usage views unregistered.
+	credUsage       credusage.Counter
+	orgDefaults     OrgLimitDefaults
+	credPool        *credpool.Broker
+	credPoolPools   credpool.PoolStore
+	credPoolPledges credpool.PledgeStore
+	credPoolLeases  credpool.LeaseStore
+	credPoolLedger  credpool.Ledger
+	auditStore      audit.Store
 	// usageCapSettings + usageCapSource are the platform runtime-settings
 	// store and its TTL-cached resolver (nil in env-only deployments):
 	// the admin settings routes mutate the former, /healthz and the
@@ -561,6 +565,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		redis:               cfg.Redis,
 		usageCaps:           cfg.UsageCaps,
 		usageCapTrust:       usagecap.DefaultTrust(),
+		credUsage:           cfg.CredUsage,
 	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
