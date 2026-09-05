@@ -58,8 +58,14 @@ bug until you know it is a decision:
 | **Fine-grained PAT** | organization permission **Projects: Read and write**. |
 | **Classic PAT** | the `project` scope (`read:project` alone gives a read-only binding). |
 
-A credential without the grant fails at **bind time** naming the problem, not
-hours later on the first status write.
+A **GitHub App** installation without the grant fails at **bind time** naming
+`organization_projects`, not hours later on the first status write: the bind
+reads the installation's approved permissions before it reads the board.
+
+A **PAT** cannot be probed that way — its scopes are not readable from the API
+— so a PAT missing the grant surfaces as `project not found` on the board read.
+That is GitHub's own answer for a project the token cannot see; if the board
+address is right, the scope is what is missing.
 
 ---
 

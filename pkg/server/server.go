@@ -217,6 +217,10 @@ type Server struct {
 	// forgeAdminFor path.
 	boardClientForConnection func(context.Context, string) (forge.BoardClient, forge.Provider, error)
 	boardClientForBinding    func(context.Context, forge.BoardBinding) (forge.BoardClient, error)
+	// forgeInstallationGrants reads what a GitHub App installation's owner
+	// actually approved. Nil in prod → the live InstallationInfo probe; a test
+	// injects the grant set without a signing key or an HTTP round trip.
+	forgeInstallationGrants func(context.Context, forge.Connection) (map[string]string, error)
 	// provisionApprovals parks team-admin provisioning requests when the
 	// org opted into ex-ante approval (Org.RequireProvisionApproval).
 	provisionApprovals forge.ProvisionApprovalStore

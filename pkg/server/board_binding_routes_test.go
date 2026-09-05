@@ -46,6 +46,21 @@ func seedConn(t *testing.T, s *Server, id, tenant string) {
 	}
 }
 
+// seedBoardAppConn seeds a GitHub-App connection whose installation reports the
+// given grant set — the shape the bind-time permission probe reads.
+func seedBoardAppConn(t *testing.T, s *Server, id, tenant string, granted map[string]string) {
+	t.Helper()
+	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
+		ID: id, TenantID: tenant, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
+		InstallationID: 42,
+	}); err != nil {
+		t.Fatalf("seed app connection %s: %v", id, err)
+	}
+	s.forgeInstallationGrants = func(context.Context, forge.Connection) (map[string]string, error) {
+		return granted, nil
+	}
+}
+
 func bindingReq(ctx context.Context, method, path, body, teamID string) *http.Request {
 	var r *http.Request
 	if body == "" {
@@ -332,4 +347,46 @@ func (f *bindRouteFake) AddItem(context.Context, string, string) (forge.ProjectI
 }
 func (f *bindRouteFake) SetSingleSelect(context.Context, string, string, string, string) error {
 	return nil
+}
+
+// TestBoardBindingPutNamesAMissingProjectGrant pins the diagnostic on the
+// feature's most likely first-run failure. GitHub answers a project the token
+// cannot see with NOT_FOUND, so a credential missing the org-level
+// organization_projects grant is indistinguishable — by its symptom — from a
+// mistyped board number. Telling an operator to check their number when the
+// real cause is a permission they have to have an org owner approve costs the
+// whole afternoon the helper was written to save.
+func TestBoardBindingPutNamesAMissingProjectGrant(t *testing.T) {
+	// The board answers exactly as GitHub does for an invisible project.
+	bc := &bindRouteFake{project: routeBoardProject(), err: forge.ErrProjectNotFound}
+	s := newBoardBindingTestServer(t, bc)
+	// conn-app is a GitHub App installation whose owner never approved the
+	// org-level projects grant.
+	seedBoardAppConn(t, s, "conn-app", "t1", map[string]string{"contents": "write", "metadata": "read"})
+
+	w := httptest.NewRecorder()
+	s.handlePutBoardBinding(w, bindingReq(superAdminCtx(), "PUT", "/api/teams/t1/board-binding",
+		`{"owner":"SocialGouv","number":203,"connection_id":"conn-app"}`, "t1"))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400 — body=%s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "organization_projects") {
+		t.Errorf("400 body = %s\nwant the missing grant NAMED — %q on its own sends the operator to check their board number",
+			body, "project not found")
+	}
+}
+
+// TestBoardBindingPutAllowsAGrantedApp is the other half: the probe must not
+// become a second way to refuse a working credential. An installation that
+// HOLDS the grant binds exactly as a PAT does.
+func TestBoardBindingPutAllowsAGrantedApp(t *testing.T) {
+	s := newBoardBindingTestServer(t, &bindRouteFake{project: routeBoardProject()})
+	seedBoardAppConn(t, s, "conn-app", "t1", map[string]string{"organization_projects": "write", "metadata": "read"})
+
+	w := httptest.NewRecorder()
+	s.handlePutBoardBinding(w, bindingReq(superAdminCtx(), "PUT", "/api/teams/t1/board-binding",
+		`{"owner":"SocialGouv","number":203,"connection_id":"conn-app"}`, "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 — body=%s", w.Code, w.Body.String())
+	}
 }

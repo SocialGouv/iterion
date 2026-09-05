@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 )
 
 // The team ⇄ project-board binding endpoints (ADR-097 §4).
@@ -132,7 +135,11 @@ func (s *Server) bindTeamBoard(ctx context.Context, teamID string, req boardBind
 	// org's credential indefinitely — and it WRITES, calling SetSingleSelect on
 	// that org's board. The refusal is non-enumerating: "not found" for both a
 	// foreign connection and a nonexistent one, so a caller cannot probe which.
-	if err := s.assertConnectionOwnedBy(ctx, teamID, req.ConnectionID); err != nil {
+	conn, err := s.connectionOwnedBy(ctx, teamID, req.ConnectionID)
+	if err != nil {
+		return forge.BoardBinding{}, err
+	}
+	if err := s.assertProjectGrant(ctx, conn); err != nil {
 		return forge.BoardBinding{}, err
 	}
 	bc, provider, err := s.boardClientFor(ctx, req.ConnectionID)
@@ -157,24 +164,94 @@ func (s *Server) bindTeamBoard(ctx context.Context, teamID string, req boardBind
 	return forge.BindBoard(ctx, bc, bind)
 }
 
+// assertProjectGrant refuses a bind whose GitHub-App credential does not hold
+// the org-level projects grant, NAMING it.
+//
+// It has to run before BindBoard because the symptom is indistinguishable from
+// the operator's own typo: GitHub answers a project the token cannot see with
+// NOT_FOUND, which `GetProject` maps to forge.ErrProjectNotFound, so without
+// this probe the most likely first-run failure of the whole feature reads as
+// "project not found: SocialGouv/203" and sends the operator to re-check a
+// board number that was right all along. The grant is org-scoped: only an org
+// owner can approve it, so the message has to say WHICH one.
+//
+// Only App connections are probed. A PAT's scopes are not readable from the
+// API, so for those the board read stays the only oracle.
+func (s *Server) assertProjectGrant(ctx context.Context, conn forge.Connection) error {
+	if conn.Kind != forge.KindGitHubApp {
+		return nil
+	}
+	granted, err := s.installationGrantsFor(ctx, conn)
+	if err != nil {
+		// The probe is a DIAGNOSTIC, not the gate — BindBoard's own read is.
+		// Refusing here would turn an unreachable /app/installations into a
+		// second way to fail a bind that would have worked. Say so, then let
+		// the board read answer.
+		if s.logger != nil {
+			s.logger.Warn("board binding: could not read installation %d grants for connection %s: %v",
+				conn.InstallationID, conn.ID, err)
+		}
+		return nil
+	}
+	missing := forgegithub.MissingProjectPermissions(granted)
+	if len(missing) == 0 {
+		// Also covers an unknown grant set: absence of data is not evidence of
+		// a gap (MissingProjectPermissions returns nothing for an empty map).
+		return nil
+	}
+	return fmt.Errorf("this GitHub App installation is missing the %s permission, which project boards need — "+
+		"add it to the App (Organization permissions → Projects: Read and write), have an org owner approve the "+
+		"new grant on the installation, then bind again", strings.Join(missing, ", "))
+}
+
+// installationGrantsFor reads what the installation's owner actually approved,
+// LIVE. The copy stored on the connection is a cache refreshed by the health
+// and refresh routes, so binding on it would refuse a board an owner approved
+// the grant for five minutes ago — the live read is the authority, the stored
+// one the fallback when there is no App config to sign with.
+func (s *Server) installationGrantsFor(ctx context.Context, conn forge.Connection) (map[string]string, error) {
+	if s.forgeInstallationGrants != nil {
+		return s.forgeInstallationGrants(ctx, conn)
+	}
+	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
+	if !ok || conn.InstallationID == 0 {
+		return conn.GrantedPermissions, nil
+	}
+	inst, err := forgegithub.InstallationInfo(ctx, s.forgeHTTPClient(),
+		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return inst.Permissions, nil
+}
+
 // errConnectionNotOwned is the single non-enumerating refusal both the
 // foreign-connection and the unknown-connection cases return.
 var errConnectionNotOwned = errors.New("connection not found")
 
-// assertConnectionOwnedBy refuses a connection that does not belong to teamID.
+// connectionOwnedBy resolves a connection AND refuses one that does not belong
+// to teamID. It returns the record so a caller needing both the boundary and
+// the credential's facts reads the store once.
 //
 // It fails CLOSED when the connection store is absent: a deployment with no
 // connection store cannot prove ownership, and a credential boundary that
 // degrades to "allow" when its evidence is missing is not a boundary.
-func (s *Server) assertConnectionOwnedBy(ctx context.Context, teamID, connID string) error {
+func (s *Server) connectionOwnedBy(ctx context.Context, teamID, connID string) (forge.Connection, error) {
 	if s.forgeConnections == nil {
-		return errors.New("forge connections are not configured on this instance")
+		return forge.Connection{}, errors.New("forge connections are not configured on this instance")
 	}
 	conn, err := s.forgeConnections.Get(ctx, connID)
 	if err != nil || conn.TenantID != teamID {
-		return errConnectionNotOwned
+		return forge.Connection{}, errConnectionNotOwned
 	}
-	return nil
+	return conn, nil
+}
+
+// assertConnectionOwnedBy is connectionOwnedBy for the callers that only need
+// the verdict.
+func (s *Server) assertConnectionOwnedBy(ctx context.Context, teamID, connID string) error {
+	_, err := s.connectionOwnedBy(ctx, teamID, connID)
+	return err
 }
 
 // boardClientFor resolves a forge connection into a project-board client. The
