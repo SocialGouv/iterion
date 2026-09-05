@@ -591,12 +591,24 @@ func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) 
 	}
 	token, terr := secrets.AnthropicForfaitToken(dir)
 	if errors.Is(terr, secrets.ErrAnthropicForfaitExpired) {
-		// The one case that is NOT "no credential here": a forfait was
-		// provisioned and its token lapsed, which means the refresh worker
-		// lagged or failed. Falling through would reach the env factory, find
-		// no ANTHROPIC_* var on a runner pod, and build the unauthenticated
-		// client whose 401 loop is issue #687 — the same reasoning that makes
-		// the forbid branch below refuse rather than degrade.
+		// EXPIRED refuses even when an ambient credential could serve, and the
+		// forbid branch below deliberately does the opposite. The asymmetry is
+		// the policy, not an oversight:
+		//
+		//   - forbid  = the operator CONFIGURED "do not spend subscriptions
+		//     here", so serving the run from the deployment's own ambient key
+		//     is the arrangement they asked for.
+		//   - expired = nobody configured anything; the tenant HAD a
+		//     credential and the refresh worker did not renew it. Degrading to
+		//     the ambient key would put a broken tenant's spend on whoever owns
+		//     that key — the same billing-boundary slip R413769 closed one seam
+		//     over — and it would do so silently, at the exact moment something
+		//     is already wrong.
+		//
+		// So: a lapsed forfait fails loudly rather than borrowing someone
+		// else's account. Falling through would also reach the env factory,
+		// find no ANTHROPIC_* var on a pod with no ambient key, and build the
+		// unauthenticated client whose 401 loop is issue #687.
 		return nil, true, fmt.Errorf("claw: %w (model %s): the runner's OAuth refresh worker has not renewed it", terr, modelID)
 	}
 	if terr != nil || token == "" {
