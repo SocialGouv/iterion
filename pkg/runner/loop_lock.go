@@ -24,13 +24,20 @@ func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, d
 	// same run is the contention this guards against.
 	lock, err := r.cfg.Store.LockRun(runCtx, msg.RunID)
 	if err != nil {
+		// AcquireLock maps ONLY jetstream.ErrKeyExists to ErrLockHeld, so
+		// held is CONFIRMED contention; every other lock error (KV bucket
+		// missing, marshal failure, a network blip on the Create) leaves
+		// ownership unknown — a sibling may hold the lease and its collision
+		// simply never got reported. Classify once here so the metric label
+		// and the archived reason cannot drift apart.
+		held := errors.Is(err, natsq.ErrLockHeld)
 		status := "failed"
-		if errors.Is(err, natsq.ErrLockHeld) {
+		if held {
 			status = "lock_held"
 		}
 		logger.Warn("runner: lock %s: %v", msg.RunID, err)
 		if max := r.maxDeliver(); max > 0 && delivery.NumDelivered() >= max {
-			r.archiveLockFailure(msg, delivery, logger, err)
+			r.archiveLockFailure(msg, delivery, logger, err, held)
 		} else {
 			delay := natsq.DefaultLockTTL
 			if r.cfg.NATS != nil {
@@ -93,10 +100,18 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelCauseFun
 
 // archiveLockFailure retains an exhausted delivery, not a failed execution.
 // Without the lock no writer may change the run's outcome or continuation.
-func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger, lockErr error) {
+func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger, lockErr error, held bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reason := fmt.Sprintf("run lock unavailable after %d deliveries: %v; run state unchanged — inspect the owner before replaying this delivery", delivery.NumDelivered(), lockErr)
+	// The operator triaging this DLQ entry decides between replay (which
+	// duplicates a live run) and discard (which destroys the last copy), so
+	// the reason must never claim more than the lock store proved. Only
+	// ErrLockHeld proves an owner; anything else leaves ownership
+	// unconfirmed — which is NOT the same as no owner.
+	reason := fmt.Sprintf("run lock acquisition failed after %d deliveries: %v; run state unchanged — ownership could not be confirmed, so inspect the run and the lock service before replaying this delivery", delivery.NumDelivered(), lockErr)
+	if held {
+		reason = fmt.Sprintf("run lock held by another runner after %d deliveries: %v; run state unchanged — inspect the owner before replaying this delivery", delivery.NumDelivered(), lockErr)
+	}
 	var err error
 	if r.lockFailureDLQ != nil {
 		err = r.lockFailureDLQ(ctx, delivery, reason)

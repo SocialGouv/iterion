@@ -44,6 +44,69 @@ func TestHeldLockDoesNotSpendFinalDeliverySilently(t *testing.T) {
 	}
 }
 
+// lockBrokenStore answers LockRun with the NON-contention class:
+// AcquireLock returns this shape for a KV bucket that is not initialised,
+// a marshal failure, or a network blip on the Create — none of which prove
+// anything about ownership.
+type lockBrokenStore struct{ store.RunStore }
+
+func (lockBrokenStore) LockRun(context.Context, string) (store.RunLock, error) {
+	return nil, errors.New("queue/nats: KV create r1: nats: connection closed")
+}
+
+// The archived reason is what an admin triages the DLQ entry on, and the
+// two lock-failure classes carry different evidence: ErrLockHeld proves a
+// live owner, every other error proves only that the lock store did not
+// answer. Neither may be described as the other, and the non-contention
+// one must never claim the run is free — replaying on top of a live owner
+// duplicates the run.
+func TestLockFailureReasonSeparatesHeldFromUnconfirmed(t *testing.T) {
+	reasonFor := func(t *testing.T, st store.RunStore, id string) string {
+		t.Helper()
+		var reason string
+		r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, maxDeliverOverride: 3}
+		r.lockFailureDLQ = func(_ context.Context, _ jsDelivery, got string) error {
+			reason = got
+			return nil
+		}
+		r.acquireRunLock(context.Background(), &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"},
+			&fakeDelivery{delivered: 3}, iterlog.Nop())
+		return reason
+	}
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningRun(t, base, "reason-held")
+	seedRunningRun(t, base, "reason-unconfirmed")
+
+	held := reasonFor(t, lockHeldStore{base}, "reason-held")
+	unconfirmed := reasonFor(t, lockBrokenStore{base}, "reason-unconfirmed")
+
+	if !strings.Contains(held, "held by another runner") || !strings.Contains(held, "inspect the owner") {
+		t.Fatalf("confirmed contention must name the owner: %q", held)
+	}
+	if strings.Contains(unconfirmed, "held by another runner") {
+		t.Fatalf("a lock error that is not contention must not assert an owner: %q", unconfirmed)
+	}
+	if !strings.Contains(unconfirmed, "could not be confirmed") {
+		t.Fatalf("a lock error that is not contention must name ownership as unconfirmed: %q", unconfirmed)
+	}
+	// Symmetrically: it must not claim the run is FREE either — the lease
+	// may well be held by a sibling whose collision never got reported.
+	for _, absence := range []string{"no owner", "never claimed", "not held", "nobody"} {
+		if strings.Contains(unconfirmed, absence) {
+			t.Fatalf("unconfirmed ownership must not be described as absence (%q): %q", absence, unconfirmed)
+		}
+	}
+	// Both stay true about the one thing this path guarantees.
+	for _, reason := range []string{held, unconfirmed} {
+		if !strings.Contains(reason, "run state unchanged") {
+			t.Fatalf("every lock-failure archive leaves the run untouched: %q", reason)
+		}
+	}
+}
+
 func TestHeldLockArchiveFailureLeavesDurableEvidence(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
