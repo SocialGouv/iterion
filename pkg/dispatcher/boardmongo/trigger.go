@@ -138,6 +138,12 @@ func (s *Store) UpsertPending(_ context.Context, rows []trigger.EffectRow) error
 		if r.State == "" {
 			r.State = trigger.EffectPending
 		}
+		// Persist an EXPLICIT kind, the way State already is: a blank `kind`
+		// in the collection then means exactly one thing — a row written by a
+		// replica that predates the discriminator, which reads as a launch.
+		if r.Kind == "" {
+			r.Kind = trigger.EffectKindLaunch
+		}
 		models = append(models, mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"_id": r.ID}).
 			SetUpdate(bson.M{"$setOnInsert": r}).

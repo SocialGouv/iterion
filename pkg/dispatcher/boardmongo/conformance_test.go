@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // lastStatePayload returns the newest EvtIssueState payload for id — the
@@ -1143,6 +1144,11 @@ func TestNativeStore_Conformance(t *testing.T) {
 		t.Fatalf("native.NewStore (adjust-labels): %v", err)
 	}
 	runAdjustLabelsSuite(t, adjust)
+
+	// The effect outbox's twin is trigger.MemoryEffectOutbox (the native
+	// filesystem board carries no outbox), and the effect KIND has to survive
+	// a round trip on it exactly as it does on Mongo.
+	runEffectOutboxKindSuite(t, trigger.NewMemoryEffectOutbox(), "memory-tenant")
 }
 
 // TestMongoStore_Conformance runs the same suite against the Mongo store.
@@ -1192,6 +1198,8 @@ func TestMongoStore_Conformance(t *testing.T) {
 	runOwnedFromSuite(t, boardmongo.New(db, "owned-from-tenant"))
 	runRenewAfterReleaseSuite(t, boardmongo.New(db, "late-renew-tenant"))
 	runAdjustLabelsSuite(t, boardmongo.New(db, "adjust-labels-tenant"))
+	runEffectOutboxKindSuite(t, boardmongo.New(db, "effect-kind-tenant"), "effect-kind-tenant")
+	runLegacyEffectRowSuite(ctx, t, db)
 
 	// The Coordinator's cross-tenant ListEligible must find ready+unclaimed
 	// cards across tenants (verifies the issue.state / issue.claim BSON paths).

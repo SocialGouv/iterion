@@ -45,6 +45,31 @@ const (
 	EffectFailed = "failed"
 )
 
+// Effect kinds — WHAT a row is owed, and therefore which arm executes it.
+//
+// The discriminator ships expand/contract over a durable collection: the ZERO
+// value is EffectKindLaunch, so a row written before the field existed (or by
+// a replica that still predates it, mid-rollout) reads as exactly what it is.
+// Nothing is removed, so there is no contract phase to schedule.
+const (
+	// EffectKindLaunch is ADR-094's original row: one per matched
+	// (board event, subscription) pair, executed as a launch or a board
+	// promote. Read from an ABSENT Kind, which is what makes the rollout
+	// additive.
+	EffectKindLaunch = "launch"
+	// EffectKindProjection is a state PROJECTION owed to the tenant's board
+	// BINDING, not to any subscription — the card's current column pushed
+	// onto the external board it is bound to (ADR-097 §10). It carries no
+	// SubID, spends no budget and starts no run, which is why it is exempt
+	// from the machine-caused decline the launch arm is subject to.
+	EffectKindProjection = "projection"
+)
+
+// projectionRowSuffix keys a projection row. It uses a separator EffectID does
+// not, so no (event, subscription) pair — whatever subscription id an operator
+// ends up with — can address a projection row.
+const projectionRowSuffix = "#projection"
+
 // MaxEffectAttempts bounds execution retries per row before it parks as
 // failed. Backoff is exponential from EffectRetryBase.
 const MaxEffectAttempts = 5
@@ -57,13 +82,22 @@ const EffectRetryBase = 15 * time.Second
 // Generous — an effect is a couple of Mongo writes plus a launch publish.
 const EffectLease = 2 * time.Minute
 
-// EffectRow is one (event, subscription) pair owed an effect execution.
+// EffectRow is one effect execution an event owes: to a matched subscription
+// (EffectKindLaunch) or to the tenant's board binding (EffectKindProjection).
 type EffectRow struct {
 	// ID is EffectID(event, subID) — the idempotency key a duplicate
-	// materialization (two replicas racing the same batch) collapses on.
+	// materialization (two replicas racing the same batch) collapses on. A
+	// projection row uses ProjectionEffectID(event) instead.
 	ID       string `bson:"_id" json:"id"`
 	TenantID string `bson:"tenant_id" json:"tenant_id"`
 	Event    Event  `bson:"event" json:"event"`
+	// Kind selects the executing arm. Empty means EffectKindLaunch — read it
+	// through EffectKind(), never raw, or a row from an older replica routes
+	// nowhere.
+	Kind string `bson:"kind,omitempty" json:"kind,omitempty"`
+	// SubID is the matched subscription, and is EMPTY on a projection row:
+	// there is no subscription behind a projection, which is precisely what
+	// keeps it out of /api/v1/triggers and out of an operator's reach.
 	SubID    string `bson:"sub_id" json:"sub_id"`
 	State    string `bson:"state" json:"state"`
 	Attempts int    `bson:"attempts" json:"attempts"`
@@ -87,6 +121,25 @@ type EffectRow struct {
 // EffectID derives the row key. The event ID already encodes the board event
 // seq (unique per tenant), so (event, sub) is the natural idempotency grain.
 func EffectID(eventID, subID string) string { return eventID + "|" + subID }
+
+// ProjectionEffectID derives a projection row's key. One per event: a
+// projection is owed to the tenant's single board binding, so the event alone
+// is the idempotency grain.
+func ProjectionEffectID(eventID string) string { return eventID + projectionRowSuffix }
+
+// EffectKind normalizes the discriminator. An ABSENT kind is a launch — that
+// is the whole expand half of the rollout, and reading r.Kind raw anywhere
+// else is how a mid-rollout row would route nowhere.
+func (r EffectRow) EffectKind() string {
+	if r.Kind == "" {
+		return EffectKindLaunch
+	}
+	return r.Kind
+}
+
+// IsProjection reports whether the row is owed to the tenant's board binding
+// rather than to a subscription.
+func (r EffectRow) IsProjection() bool { return r.EffectKind() == EffectKindProjection }
 
 // EffectOutbox is the durable store the source writes and the worker drains.
 // Implemented by boardmongo (cloud) and MemoryEffectOutbox (tests/local).
