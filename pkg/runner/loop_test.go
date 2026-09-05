@@ -1333,7 +1333,7 @@ func loadStatus(t *testing.T, st store.RunStore, id string) *store.Run {
 // A lease held by another pod is a live owner: the delivery naks away and
 // NOTHING is written — adoption never runs, because it runs after the
 // lock and the lock refused.
-func TestAcquireRunLock_LeaseHeldByAnotherNaksWithoutWrite(t *testing.T) {
+func TestAcquireRunLock_LeaseHeldByAnotherDefersWithoutWrite(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
@@ -1349,8 +1349,8 @@ func TestAcquireRunLock_LeaseHeldByAnotherNaksWithoutWrite(t *testing.T) {
 	if ok || status != "lock_held" {
 		t.Fatalf("acquireRunLock = (%v, %q), want (false, lock_held)", ok, status)
 	}
-	if d.naks != 1 || d.acks != 0 || d.terms != 0 || len(d.nakDelays) != 0 {
-		t.Fatalf("delivery transitions = %+v, want exactly one Nak (the sibling keeps the run)", d)
+	if d.naks != 0 || d.acks != 0 || d.terms != 0 || len(d.nakDelays) != 1 || d.nakDelays[0] != natsq.DefaultLockTTL {
+		t.Fatalf("delivery transitions = %+v, want one delayed Nak (the sibling keeps the run)", d)
 	}
 	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning || got.FailureCode != "" {
 		t.Fatalf("doc = %s/%q after a refused lock — a live sibling's run was written to", got.Status, got.FailureCode)

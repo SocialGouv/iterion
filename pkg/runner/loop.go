@@ -1145,6 +1145,15 @@ type Runner struct {
 	// maxDeliverOverride pins the redelivery budget in unit tests without
 	// a queue. 0 in production; the runner reads r.cfg.NATS then.
 	maxDeliverOverride int
+	// Test seam for the final delivery archive; production uses NATS.PublishDLQ.
+	lockFailureDLQ func(context.Context, jsDelivery, string) error
+	// publishTimeout bounds ONLY the DLQ publish in archiveLockFailure, so a
+	// test can exhaust a publish deadline in microseconds instead of waiting
+	// out a broker outage. 0 in production (archiveWriteTimeout). It must
+	// never reach the audit context: shortening both would expire the audit
+	// write too, and the regression would then fail WITH the fix applied —
+	// proving the opposite of what it exists to prove.
+	publishTimeout time.Duration
 }
 
 type inFlight struct {
