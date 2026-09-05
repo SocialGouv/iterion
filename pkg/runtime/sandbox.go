@@ -1473,6 +1473,11 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	emitForSandbox := func(t store.EventType, data map[string]any) error {
 		return e.emit(ctx, runID, t, "", data)
 	}
+	// A subbot child under a sandboxed parent executes in the PARENT's
+	// sandbox — never in one of its own (see SubbotRequest.ParentSandbox).
+	if e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
+		return e.adoptSharedSandbox(ctx, runID, emitForSandbox)
+	}
 	var attachHost string
 	if e.store != nil && e.store.Root() != "" {
 		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
@@ -1551,10 +1556,13 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	// prevent, inverted.
 	e.sandboxSettled = true
 	e.attachmentsContainerDir = ""
+	e.activeShare = nil
 	if active != nil {
 		e.attachmentsContainerDir = active.attachmentsDir
 	}
 	if active != nil && active.run != nil {
+		// The facts a subbot child needs to execute in this sandbox.
+		e.activeShare = &SharedSandbox{Run: active.run, WorkspaceFolder: active.workspaceFolder, SharedStateDir: active.sharedStateDir}
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
 		}
@@ -1715,4 +1723,74 @@ func exportSandboxWorkspaceOnCleanup(
 	if logger != nil {
 		logger.Info("runtime: sandbox workspace exported back to host")
 	}
+}
+
+
+// adoptSharedSandbox settles this run on a PARENT run's live sandbox: the
+// executor routes every command through the parent's driver handle,
+// ${PROJECT_DIR} remaps to the parent's in-container workspace, and the
+// files this run mirrored into the host workdir before this point (its
+// bundle's skills) are written through into a copy-based sandbox, which
+// would otherwise never see them. No Prepare, no Start, no Cleanup: the
+// parent owns the sandbox's lifecycle, and the cleanup returned here is a
+// no-op. Grandchildren inherit the same facts through activeShare.
+func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSandbox func(store.EventType, map[string]any) error) (func(), error) {
+	shared := e.sharedSandbox
+	e.sandboxSettled = true
+	e.attachmentsContainerDir = ""
+	e.activeShare = shared
+	e.containerWorkspace = shared.WorkspaceFolder
+	if s, ok := e.executor.(sandboxSetter); ok {
+		s.SetSandbox(shared.Run)
+	}
+	if s, ok := e.executor.(sharedStateSetter); ok && shared.SharedStateDir != "" {
+		s.SetSharedStateDir(shared.SharedStateDir)
+	}
+	pushed := 0
+	if refresher, ok := shared.Run.(sandbox.WorkspaceFileRefresher); ok {
+		pushed = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
+	}
+	if e.logger != nil {
+		e.logger.Info("runtime: executing in the parent run's sandbox (driver=%s, workspace=%s, skills written through=%d)", shared.Run.Driver(), shared.WorkspaceFolder, pushed)
+	}
+	if err := emitForSandbox(store.EventSandboxShared, map[string]any{
+		"driver": shared.Run.Driver(), "workspace": shared.WorkspaceFolder,
+		"parent_run": e.parentRunID, "skills_written_through": pushed,
+	}); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+	}
+	return func() {}, nil
+}
+
+// writeThroughMirroredSkills pushes every file under <workDir>/.claude/skills
+// into a copy-based sandbox through the driver's write-through seam. The
+// parent's own skills are already in its copy; re-writing them is
+// idempotent, and the child's are what the copy lacks. Returns the count
+// written; a failed write is logged and skipped — a skill the agent cannot
+// read is a degraded run, not a dead one.
+func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) int {
+	root := filepath.Join(workDir, ".claude", "skills")
+	n := 0
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(workDir, path)
+		if rerr != nil {
+			return nil
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		if werr := refresher.RefreshWorkspaceFile(ctx, filepath.ToSlash(rel), body); werr != nil {
+			if logger != nil {
+				logger.Warn("runtime: write-through of %s into the shared sandbox failed: %v", rel, werr)
+			}
+			return nil
+		}
+		n++
+		return nil
+	})
+	return n
 }

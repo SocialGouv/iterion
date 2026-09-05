@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -363,4 +366,99 @@ func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
 			t.Fatalf("child persisted budget = %+v, want max_iterations=1 from the platform ceiling", child.Budget)
 		}
 	})
+}
+
+// parentSandboxFake is the live sandbox a PARENT run would own on a pod:
+// commands run on this host so a tool-only child really executes, and
+// every routed command is counted — the proof that the child ran in the
+// parent's sandbox rather than in one of its own.
+type parentSandboxFake struct {
+	mu       sync.Mutex
+	commands int
+	cleanups int
+}
+
+func (f *parentSandboxFake) Driver() string { return "fake-parent" }
+func (f *parentSandboxFake) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
+	f.mu.Lock()
+	f.commands++
+	f.mu.Unlock()
+	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	c.Dir = opts.WorkDir
+	c.Env = os.Environ()
+	for k, v := range opts.Env {
+		c.Env = append(c.Env, k+"="+v)
+	}
+	return c
+}
+func (f *parentSandboxFake) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	out, err := f.Command(ctx, cmd, opts).CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	}
+	return sandbox.ExecResult{ExitCode: code, Stdout: out}, nil
+}
+func (f *parentSandboxFake) Cleanup(context.Context) error {
+	f.mu.Lock()
+	f.cleanups++
+	f.mu.Unlock()
+	return nil
+}
+
+// TestSubbotRunnerRunsTheChildInTheParentSandbox: a child whose request
+// carries the parent's live sandbox executes IN it — its tool node's
+// command is routed through the parent's handle — and starts no sandbox
+// of its own. Measured on the first cloud subbot: under the kubernetes
+// driver (a copy of the workspace per pod) the child got a pod of its own,
+// and its commits died with that pod while the parent re-judged an
+// unchanged tree.
+func TestSubbotRunnerRunsTheChildInTheParentSandbox(t *testing.T) {
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+	fake := &parentSandboxFake{}
+
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	out, err := run(context.Background(), runtime.SubbotRequest{
+		Source: "child.bot", Vars: map[string]any{"ticket": "T-3"},
+		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+		ParentSandbox: &runtime.SharedSandbox{Run: fake, WorkspaceFolder: dir},
+	})
+	if err != nil {
+		t.Fatalf("subbot runner: %v", err)
+	}
+	if e, _ := out["echoed"].(string); e != "T-3" {
+		t.Fatalf("child output = %v, want the child's own tool output", out)
+	}
+	if fake.commands == 0 {
+		t.Fatal("the child's tool command never went through the parent's sandbox handle")
+	}
+	if fake.cleanups != 0 {
+		t.Fatalf("cleanups = %d, want 0: the child must not tear down the parent's sandbox", fake.cleanups)
+	}
+	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+	ids, _ := st.ListRuns(idCtx)
+	var shared, started int
+	for _, id := range ids {
+		c, cerr := st.LoadRun(idCtx, id)
+		if cerr != nil || c.ParentRunID != msg.RunID {
+			continue
+		}
+		evs, _ := st.LoadEvents(idCtx, id)
+		for _, ev := range evs {
+			switch ev.Type {
+			case store.EventSandboxShared:
+				shared++
+			case store.EventSandboxStarted:
+				started++
+			}
+		}
+	}
+	if shared != 1 || started != 0 {
+		t.Fatalf("child events: sandbox_shared=%d sandbox_started=%d, want 1/0", shared, started)
+	}
 }

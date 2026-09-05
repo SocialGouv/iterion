@@ -147,6 +147,8 @@ type Engine struct {
 	boardMCPHandler          http.Handler             // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
 	subbotRunner             SubbotRunner             // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
 	sandboxRunObserver       func(sandbox.Run)        // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
+	sharedSandbox            *SharedSandbox           // optional: a PARENT run's live sandbox this engine executes in, instead of starting its own (a subbot child). Set via WithSharedSandbox; nil = this engine decides its own sandbox.
+	activeShare              *SharedSandbox           // the facts of the sandbox this run executes in (own or shared), handed to subbot children through SubbotRequest.ParentSandbox; nil when the run has no sandbox
 	answersBell              answersDoorbell          // in-process fast-path waking await_answers nodes when an async interaction is answered (ADR-081); rung via NotifyInteractionAnswered
 
 	// activeBudget points at the SharedBudget of the run currently
@@ -184,6 +186,14 @@ func (e *Engine) ActiveElapsed() time.Duration {
 // parent linkage so the runner can record a child run tied to the parent.
 type SubbotRequest struct {
 	Source      string         // child .bot path/ref (relative to the parent workdir)
+	// ParentSandbox is the live sandbox the PARENT run executes in, nil when
+	// it has none. A child must execute in it — not in a sandbox of its own:
+	// on a copy-based driver (kubernetes) a second pod is a second copy of
+	// the workspace, and the child's commits die with that pod while the
+	// parent re-judges an unchanged tree (measured on the first cloud
+	// subbot). On a bind-mount driver (docker) a second container happened
+	// to share the tree; sharing the parent's makes the two drivers agree.
+	ParentSandbox *SharedSandbox
 	Vars        map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
 	ParentRunID string
 	NodeID      string
