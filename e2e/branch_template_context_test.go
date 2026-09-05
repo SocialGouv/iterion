@@ -18,18 +18,26 @@ import (
 // it. The executor renders the prompt, so what lands here is the real
 // rendering — a literal `{{run.id}}` in the recording is a literal the
 // model would have been asked to read.
+//
+// It also records the ctx run ID each dispatch carried, which is the other
+// half of the contract: see assertBranchDispatchHasNoRunID.
 type promptRecorder struct {
 	mu      sync.Mutex
 	prompts map[string][]string
+	ctxRuns map[string][]string
 }
 
 func newPromptRecorder() *promptRecorder {
-	return &promptRecorder{prompts: make(map[string][]string)}
+	return &promptRecorder{
+		prompts: make(map[string][]string),
+		ctxRuns: make(map[string][]string),
+	}
 }
 
-func (p *promptRecorder) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
+func (p *promptRecorder) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
 	p.mu.Lock()
 	p.prompts[task.NodeID] = append(p.prompts[task.NodeID], task.UserPrompt)
+	p.ctxRuns[task.NodeID] = append(p.ctxRuns[task.NodeID], model.RunIDFromContext(ctx))
 	p.mu.Unlock()
 	return delegate.Result{
 		BackendName: delegate.BackendClaudeCode,
@@ -46,6 +54,12 @@ func (p *promptRecorder) rendered(t *testing.T, nodeID string, want int) []strin
 		t.Fatalf("node %q rendered %d prompts, want %d: %q", nodeID, len(got), want, got)
 	}
 	return got
+}
+
+func (p *promptRecorder) ctxRunIDs(nodeID string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.ctxRuns[nodeID]...)
 }
 
 // nodeOutputsFor returns every output a node published on a node_finished
@@ -169,6 +183,39 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Errorf("the two fan_out_each bodies rendered %v, want one prompt per item", items)
+	}
+
+	assertBranchDispatchHasNoRunID(t, recorder, runID)
+}
+
+// assertBranchDispatchHasNoRunID pins the other half of the contract: the
+// branch dispatch carries the template snapshot but NOT the ctx run ID.
+//
+// The two are not interchangeable. A run ID on the executor's context is a
+// capability switch — it arms the per-node claw session store, the operator
+// inbox drain and the async-ask binder, all keyed `(runID, nodeID)` with no
+// branch discriminator. A `fan_out_each` runs N branches concurrently under
+// ONE node id, so a run ID there makes item N's generation inherit item M's
+// stored messages and lets one arbitrary item swallow a steering message.
+// The `run=<id>` assertions above prove the snapshot is enough on its own,
+// so nothing is lost by keeping the ID on the trunk — and this is what fails
+// if someone "simplifies" the branch path back onto plain execContext.
+func assertBranchDispatchHasNoRunID(t *testing.T, recorder *promptRecorder, runID string) {
+	t.Helper()
+	for _, node := range []string{"trunk_agent", "all_agent", "each_agent"} {
+		got := recorder.ctxRunIDs(node)
+		if len(got) == 0 {
+			t.Fatalf("node %q never dispatched, cannot check its ctx run id", node)
+		}
+		want := ""
+		if node == "trunk_agent" {
+			want = runID // the trunk keeps every run-ID-gated feature
+		}
+		for i, id := range got {
+			if id != want {
+				t.Errorf("node %q dispatch %d carried ctx run id %q, want %q", node, i, id, want)
+			}
+		}
 	}
 }
 

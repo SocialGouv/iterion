@@ -631,26 +631,42 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 	}
 }
 
-// execContext is the SINGLE wiring point for the per-execution context
-// every executor.Execute call must carry: the run and node identity, plus
+// execContext is the SINGLE wiring point for the per-execution context a
+// TRUNK executor.Execute call must carry: the run and node identity, plus
 // the template snapshot that turns `{{run.*}}`, `{{outputs.*}}`,
 // `{{loop.*}}`, `{{artifacts.*}}` and `{{attachments.*}}` into values
 // instead of literals.
 //
-// Every dispatch site goes through it — the trunk, both fan-out kinds, the
-// llm router and the two resume re-invocations — so a namespace added to
-// TemplateData reaches all of them at once. A site that skips it renders a
-// literal `{{…}}` into a shell command, which is a silent constant.
+// Every trunk dispatch site goes through it — the main loop, the llm router
+// and the two resume re-invocations — so a namespace added to TemplateData
+// reaches all of them at once. A site that skips it renders a literal
+// `{{…}}` into a shell command, which is a silent constant. Fan-out branches
+// go through execContextBranch, which is this minus the run ID; read the
+// reason there before wiring a new branch dispatch.
 func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
-	return e.execContextScoped(ctx, rs, nodeID, rs.scope())
+	return e.execContextBranch(model.WithRunID(ctx, rs.runID), rs, nodeID, rs.scope())
 }
 
-// execContextScoped is execContext against an explicit outputs/artifacts
-// view. Fan-out branches pass the SAME merged scope the expr path resolves
-// `outputs.*` against, so a prompt and a `when` condition inside one branch
-// read one set of upstream outputs, not two.
-func (e *Engine) execContextScoped(ctx context.Context, rs *runState, nodeID string, sc resolveScope) context.Context {
-	ctx = model.WithRunID(ctx, rs.runID)
+// execContextBranch is execContext for a node dispatched INSIDE a fan-out
+// branch: the same node identity and the same template snapshot, taken
+// against an explicit outputs/artifacts view. Branches pass the SAME merged
+// scope the expr path resolves `outputs.*` against, so a prompt and a `when`
+// condition inside one branch read one set of upstream outputs, not two.
+//
+// It deliberately omits the run ID, and that omission is load-bearing. A run
+// ID on ctx is not just identity: it is the switch arming three executor
+// features keyed on `(runID, nodeID)` with NO branch discriminator — the
+// per-node claw session store (executor.go's withRuntimeContext, whose
+// messages applySessionMessages prepends to the NEXT generation under that
+// key), the operator/supervisor inbox drain, and the async-ask binder. A
+// `fan_out_each` runs N branches CONCURRENTLY under one node ID, so arming
+// them here would cross-feed item N's generation with item M's messages and
+// let whichever branch arrived first destructively drain a steering message
+// meant for the node. The three stay trunk-only, exactly as they were before
+// the template snapshot reached branches; `{{run.*}}` — including `run.id`,
+// which the tool path used to read from ctx — resolves from the snapshot's
+// own RunID instead.
+func (e *Engine) execContextBranch(ctx context.Context, rs *runState, nodeID string, sc resolveScope) context.Context {
 	ctx = model.WithNodeID(ctx, nodeID)
 	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }

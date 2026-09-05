@@ -734,10 +734,15 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // consumption and effective budget caps — read through the same
 // lookupRunTemplateRef the prompt path uses, so a shell guard on
 // `{{run.elapsed_seconds}}` cannot resolve in a prompt and stay literal in
-// a command. td may be nil (hosts that wire only WithRunID): `run.id` still
-// resolves, every other member renders empty rather than as its placeholder.
-// A run id and the budget figures are plain tokens with no `{{` of their
-// own, so the literal ReplaceAll cannot re-trigger on a substituted value.
+// a command. Either source alone is enough for `run.id`: td may be nil
+// (hosts that wire only WithRunID), and runID may be empty while td is
+// populated — a node inside a fan-out branch is dispatched WITHOUT a ctx run
+// id on purpose (runtime.execContextBranch), because that id also arms the
+// executor's `(runID, nodeID)`-keyed session store and inbox for N branches
+// sharing one node id. Every other member renders empty rather than as its
+// placeholder. A run id and the budget figures are plain tokens with no `{{`
+// of their own, so the literal ReplaceAll cannot re-trigger on a substituted
+// value.
 func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, render func(any) string) string {
 	for _, r := range refs {
 		if r == nil || r.Kind != ir.RefRun || len(r.Path) == 0 {
@@ -746,6 +751,9 @@ func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, re
 		var val any
 		if r.Path[0] == "id" {
 			val = runID
+			if val == "" && td != nil {
+				val = td.RunID
+			}
 		} else if td != nil {
 			if v, ok := td.Run[r.Path[0]]; ok {
 				val = v
