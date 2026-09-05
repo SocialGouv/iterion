@@ -42,6 +42,11 @@ const (
 	reaperMarkerPrefix = tracker.ReaperMarkerPrefix
 )
 
+// claimReaperTick is the cadence the local reaper goroutine actually
+// ticks on — the production constant, injectable so a pass can be driven
+// under test without waiting a real minute.
+var claimReaperTick = claimReaperInterval
+
 // ClaimReaperInterval is the watchdog's cadence, exported so the cloud
 // board dispatcher paces its own pass by the SAME constant instead of
 // inheriting whatever its dispatch tick happens to be.
@@ -124,15 +129,33 @@ func (c *Dispatcher) startClaimReaper() {
 		return
 	}
 	c.logger.Info("dispatcher: claim watchdog active (every %s — expired leases are reclaimed and routed by the decision table)", claimReaperInterval)
+	// Tracked by workersWG and cancelled by c.stop: Stop() promises that
+	// nothing of this dispatcher keeps writing once it returns
+	// (Manager.Stop tears the EngineRunner down right after; the studio
+	// rebuilds the dispatcher on a project switch). A pass on
+	// context.Background() outside the WaitGroup kept transferring
+	// claims, filing cards and writing run statuses under a config the
+	// operator had already replaced.
+	c.workersWG.Add(1)
 	errtrack.Go("dispatcher.claimReaper", func() {
-		t := time.NewTicker(claimReaperInterval)
+		defer c.workersWG.Done()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			select {
+			case <-c.stop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		t := time.NewTicker(claimReaperTick)
 		defer t.Stop()
 		for {
 			select {
 			case <-c.stop:
 				return
 			case <-t.C:
-				c.reapExpiredClaims(context.Background(), reaper, time.Now().UTC())
+				c.reapExpiredClaims(ctx, reaper, time.Now().UTC())
 			}
 		}
 	})
