@@ -339,7 +339,8 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 }
 
 // assertBranchDispatchHasNoRunID pins the other half of the contract: the
-// branch dispatch carries the template snapshot but NOT the ctx run ID.
+// branch dispatch carries the template snapshot but NOT the ctx run ID,
+// while every trunk site carries both.
 //
 // The two are not interchangeable. A run ID on the executor's context is a
 // capability switch — it arms the per-node claw session store, the operator
@@ -348,22 +349,32 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 // ONE node id, so a run ID there makes item N's generation inherit item M's
 // stored messages and lets one arbitrary item swallow a steering message.
 // The `run=<id>` assertions above prove the snapshot is enough on its own,
-// so nothing is lost by keeping the ID on the trunk — and this is what fails
-// if someone "simplifies" the branch path back onto plain execContext.
+// so nothing is lost by keeping the ID on the trunk.
+//
+// Both directions are load-bearing, because execContext is now defined as
+// execContextBranch plus the run ID: dropping the branch rows would let
+// someone "simplify" the branch path back onto execContext, and dropping the
+// trunk rows would let the composition be inverted — silently disabling
+// session compaction and operator steering for the whole run.
 func assertBranchDispatchHasNoRunID(t *testing.T, recorder *promptRecorder, runID string) {
 	t.Helper()
-	for _, node := range []string{"trunk_agent", "all_agent", "each_agent"} {
-		got := recorder.ctxRunIDs(node)
+	for _, tc := range []struct {
+		node string
+		want string
+	}{
+		{"trunk_agent", runID},    // trunk main loop (engine_exec)
+		{"route_probe", runID},    // trunk llm router (routing)
+		{"reinvoke_probe", runID}, // trunk re-dispatch (resume)
+		{"all_agent", ""},         // fan_out_all branch (branch)
+		{"each_agent", ""},        // fan_out_each body, same node id per item
+	} {
+		got := recorder.ctxRunIDs(tc.node)
 		if len(got) == 0 {
-			t.Fatalf("node %q never dispatched, cannot check its ctx run id", node)
-		}
-		want := ""
-		if node == "trunk_agent" {
-			want = runID // the trunk keeps every run-ID-gated feature
+			t.Fatalf("node %q never dispatched, cannot check its ctx run id", tc.node)
 		}
 		for i, id := range got {
-			if id != want {
-				t.Errorf("node %q dispatch %d carried ctx run id %q, want %q", node, i, id, want)
+			if id != tc.want {
+				t.Errorf("node %q dispatch %d carried ctx run id %q, want %q", tc.node, i, id, tc.want)
 			}
 		}
 	}
