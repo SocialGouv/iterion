@@ -226,6 +226,12 @@ divergence, it can only add a constraint. Same block idiom:
  "corpus_entries": [{"id": "<new-entry-id>", "...": "the full entry, tuple included"}],
  "justification": "one line: the observation the intent requires and the net lacks"}
 -->
+
+The certifier also reads the re-baseline ledger's spelling of the same request —
+`expected_paths` for `paths`, `entries` (a list of new entry ids) for
+`corpus_entries` — at its single parse point, so a ledger whose header taught
+that idiom keeps its requests judgeable. Write the block above; do not mix the
+two spellings in one request.
 <!-- iterion:extension-act
 {"id": "E-<lot>-<n>", "lot": "<lot-id>", "recorded_paths": ["…"], "ts": "…"}
 -->
