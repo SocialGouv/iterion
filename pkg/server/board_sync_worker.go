@@ -194,8 +194,13 @@ func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding, own
 	}
 	res, err := ImportProjectBoard(ctx, bc, b.Ref(), b.Provider, cards, &ProjectImportOptions{
 		Binding: &b,
-		Now:     w.Now,
-		Logger:  w.Logger,
+		// The pass may REPAIR the binding against the live board (a renamed or
+		// re-created column) and flag it degraded when it cannot. Handing it
+		// the store is what makes that repair survive the pass — without it
+		// every tick re-discovers the same drift and pays for it again.
+		Bindings: w.Bindings,
+		Now:      w.Now,
+		Logger:   w.Logger,
 	})
 	took := w.now().Sub(started)
 	if err != nil {
@@ -206,9 +211,10 @@ func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding, own
 		w.warn("board sync: team=%s board=%s failed after %s: %v", b.TenantID, b.Ref(), took.Round(time.Millisecond), err)
 		return false
 	}
-	w.info("board sync: team=%s board=%s items=%d moved=%d reflected=%d labelled=%d conflicts=%d refused_terminal=%d reflect_failed=%d skipped_no_card=%d skipped_archived=%d skipped=%d took=%s",
+	w.info("board sync: team=%s board=%s items=%d moved=%d reflected=%d labelled=%d conflicts=%d refused_terminal=%d reflect_failed=%d reflect_no_column=%d skipped_no_card=%d skipped_archived=%d skipped=%d took=%s",
 		b.TenantID, b.Ref(), res.Items, res.Moved, res.Reflected, res.Labelled,
-		res.Conflicts, res.RefusedTerminal, res.ReflectFailed, res.SkippedNoCard, res.SkippedArchived, res.Skipped,
+		res.Conflicts, res.RefusedTerminal, res.ReflectFailed, res.ReflectNoColumn,
+		res.SkippedNoCard, res.SkippedArchived, res.Skipped,
 		took.Round(time.Millisecond))
 	return true
 }

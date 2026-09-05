@@ -18,16 +18,31 @@ import (
 // is also the echo suppressor. That double duty is why neither direction needs
 // to maintain a separate "who moved last" flag on every write.
 
+// testBinding is the binding a bind against testProject() produces. Its option
+// ids are READ from that fixture rather than invented: the reflect writes by
+// id and compares by id, so a binding whose ids match no column on the board it
+// is bound to cannot exercise either.
 func testBinding() *forge.BoardBinding {
+	project := testProject()
+	field, ok := project.Field(forge.ProjectStatusFieldName)
+	if !ok {
+		panic("the project fixture must carry a " + forge.ProjectStatusFieldName + " field")
+	}
+	mapping := forge.DefaultStatusMapping()
+	opts := make(map[string]string, len(mapping))
+	for _, m := range mapping {
+		opt, ok := field.Option(m.Status)
+		if !ok {
+			panic("the project fixture must carry the " + m.Status + " column")
+		}
+		opts[m.State] = opt.ID
+	}
 	return &forge.BoardBinding{
 		TenantID: "team-a", Provider: forge.ProviderGitHub,
 		Owner: "SocialGouv", OwnerKind: forge.ProjectOwnerOrg, Number: 203,
-		ConnectionID: "conn-1", ProjectID: "PVT_p", StatusFieldID: "PVTSSF_status",
-		StatusOptions: map[string]string{
-			"inbox": "o_inbox", "ready": "o_planned", "in_progress": "o_prog",
-			"blocked": "o_blocked", "done": "o_done",
-		},
-		StatusMapping: forge.DefaultStatusMapping(),
+		ConnectionID: "conn-1", ProjectID: project.ID, StatusFieldID: field.ID,
+		StatusOptions: opts,
+		StatusMapping: mapping,
 	}
 }
 
@@ -83,7 +98,7 @@ func TestSyncProjectBoardReflectsANativeMove(t *testing.T) {
 		t.Fatalf("writes = %+v, want one Status write", bc.writes)
 	}
 	w := bc.writes[0]
-	if w.ProjectID != "PVT_p" || w.ItemID != "PVTI_1" || w.FieldID != "PVTSSF_status" || w.OptionID != "o_prog" {
+	if w.ProjectID != "PVT_p" || w.ItemID != "PVTI_1" || w.FieldID != "PVTSSF_status" || w.OptionID != optionID(t, testProject(), "In progress") {
 		t.Errorf("write = %+v, want the In progress option on PVTI_1", w)
 	}
 	// The card's state must NOT change — the reflect pushes, it does not pull.
@@ -195,7 +210,7 @@ func TestSyncProjectBoardReflectsWhenNativeWinsTheConflict(t *testing.T) {
 	if res.Reflected != 1 {
 		t.Fatalf("Reflected = %d, want 1 — the winner's state must reach the board (%+v)", res.Reflected, res)
 	}
-	if len(bc.writes) != 1 || bc.writes[0].OptionID != "o_blocked" {
+	if len(bc.writes) != 1 || bc.writes[0].OptionID != optionID(t, testProject(), "Blocked") {
 		t.Fatalf("writes = %+v, want the Blocked option", bc.writes)
 	}
 	if got := mustGet(t, board, id).State; got != native.StateBlocked {
@@ -535,7 +550,7 @@ func TestSyncProjectBoardConflictReadsTheNativeTransitionTime(t *testing.T) {
 	if res.Reflected != 1 || len(bc.writes) != 1 {
 		t.Fatalf("Reflected = %d writes = %+v, want the native move pushed to the board", res.Reflected, bc.writes)
 	}
-	if w := bc.writes[0]; w.OptionID != "o_planned" {
+	if w := bc.writes[0]; w.OptionID != optionID(t, testProject(), "Planned") {
 		t.Errorf("wrote option %q, want the Planned option for `ready`", w.OptionID)
 	}
 }
@@ -632,13 +647,20 @@ func TestSyncProjectBoardConvergesWhenBothSidesAgree(t *testing.T) {
 // unmapped native state, and a bound board with no column for the state.
 func TestSyncProjectBoardConvergesWhenTheReflectCannotWrite(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		state string
-		bind  func(*forge.BoardBinding)
+		name    string
+		state   string
+		bind    func(*forge.BoardBinding)
+		project func(*testing.T) forge.Project
 	}{
-		{"an unmapped native state is inert, not a standing conflict", native.StateReview, nil},
-		{"a board with no column for the state is reported once, not every tick", native.StateBlocked,
-			func(b *forge.BoardBinding) { delete(b.StatusOptions, "blocked") }},
+		{name: "an unmapped native state is inert, not a standing conflict", state: native.StateReview},
+		{
+			name: "a board with no column for the state is reported once, not every tick", state: native.StateBlocked,
+			// Both halves, or the fixture contradicts itself: dropping the id
+			// alone describes a binding the pass's reconciliation would
+			// repair from the board's still-present column.
+			bind:    func(b *forge.BoardBinding) { delete(b.StatusOptions, native.StateBlocked) },
+			project: func(t *testing.T) forge.Project { return deletedColumn(t, "Blocked") },
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			board := newTestBoard(t)
@@ -651,7 +673,11 @@ func TestSyncProjectBoardConvergesWhenTheReflectCannotWrite(t *testing.T) {
 			if tc.bind != nil {
 				tc.bind(bind)
 			}
-			bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+			project := testProject()
+			if tc.project != nil {
+				project = tc.project(t)
+			}
+			bc := &fakeBoardClient{project: project, pages: [][]forge.ProjectItem{{
 				item("PVTI_1", 613, statusValue("Done", cardStateAt(t, board, id).Add(-time.Minute))),
 			}}}
 			opts := &ProjectImportOptions{Binding: bind}

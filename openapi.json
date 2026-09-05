@@ -114,6 +114,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "degraded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
           "label_fields": {
             "items": {
               "$ref": "#/components/schemas/BoundLabelField"

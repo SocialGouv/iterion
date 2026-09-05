@@ -138,6 +138,35 @@ The same override exists for the dispatcher
 
 ---
 
+## Editing a bound board's columns
+
+Binding caches two things per column: the **option id** (what every write uses)
+and the **name** (what both directions compare). Editing a column on GitHub
+invalidates one or the other, so every reconciliation pass re-resolves both
+against the board's live schema — at no extra API cost, since the pass already
+reads it. What that repairs, and what it cannot:
+
+| you did on GitHub | what survives | what the pass does |
+|---|---|---|
+| **renamed** a column | its id | adopts the new name; both directions keep working, nothing is rewritten |
+| **deleted and re-added** a column under the same name | its name | adopts the new id |
+| **added** a column the map named and the board lacked | — | adopts it and drops it from `missing_statuses` |
+| **deleted** a column for good | nothing | marks the binding **degraded**, naming the column |
+
+A degraded binding is a **partial** outage, not a stop: every column it can
+still resolve keeps syncing, and only the cards whose state has no column are
+left alone (counted as `reflect_no_column` in the pass line). The reason is on
+the binding — `iterion remote board show`, or
+`GET /api/teams/{id}/board-binding` — and is logged **once**, when it starts,
+not on every pass.
+
+It clears by itself the moment the column exists again. Re-binding the board
+(`iterion remote board bind …`) also clears it, and is the way out when the
+column is gone for good: bind with a `--status-map` matching what the board
+actually carries.
+
+---
+
 ## Reconciliation
 
 The board pass IS the convergence: it recomputes the truth from the board and
@@ -159,8 +188,8 @@ permanent divergence.
 
 ```
 board sync: team=t_123 board=SocialGouv/203 items=214 moved=2 reflected=1 \
-  labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 \
-  skipped_no_card=4 skipped=11 took=812ms
+  labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 reflect_no_column=0 \
+  skipped_no_card=4 skipped_archived=3 skipped=11 took=812ms
 ```
 
 A failed pass logs `Warn` and **does not block the next tick**; one team's
@@ -237,11 +266,19 @@ mapped column the board lacks). Then check it is not a terminal card:
 which is by design — reopen it in iterion.
 
 **A card moved in iterion but not on GitHub.**
-Three causes, in order of likelihood: the state is unmapped (`review`,
+Four causes, in order of likelihood: the state is unmapped (`review`,
 `waiting_deps`, `awaiting_input`, `backlog` are inert); the binding has
-`sync_every: 0`; or the credential lacks the write grant —
-`reflect_failed > 0` with a `403 Resource not accessible by integration` in the
-log means the App's *Projects: Read and write* is not approved.
+`sync_every: 0`; the board has no column for that state — `reflect_no_column >
+0`, and `iterion remote board show` says which (a `!` on a mapped column, or a
+`degraded` reason when a column was deleted after the bind, see [Editing a
+bound board's columns](#editing-a-bound-boards-columns)); or the credential
+lacks the write grant — `reflect_failed > 0` with a `403 Resource not
+accessible by integration` in the log means the App's *Projects: Read and
+write* is not approved.
+
+**A card stopped following, and the item is not on the board any more.**
+It is archived. `skipped_archived > 0` in the pass line; un-archive it to put
+it back under sync (see [Archived items](#archived-items)).
 
 **Bind fails with "none of the mapped columns exist".**
 The board's real column names are listed in the error. Either rename them on

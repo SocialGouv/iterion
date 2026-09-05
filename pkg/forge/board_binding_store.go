@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,8 +24,11 @@ import (
 // other store already keys on.
 //
 // The discovered ids (project, status field, per-state option) are a CACHE of
-// what BindBoard read from the board by NAME — never an authority. Any sync
-// may re-run discovery, and a write that fails on a stale id re-discovers.
+// what BindBoard read from the board by NAME — never an authority. Every sync
+// pass re-resolves them, and the column names beside them, against the board's
+// live schema (BoardBinding.ReconcileStatusOptions in board_vocabulary.go) and
+// persists the repair through SaveStatusVocabulary. What no re-resolution can
+// repair — a column deleted outright — becomes DegradedReason.
 
 // ErrBoardBindingNotFound reports a team with no project board bound.
 var ErrBoardBindingNotFound = errors.New("forge: board binding not found")
@@ -138,6 +142,18 @@ type BoardBinding struct {
 	// the board — re-admitting the concurrent pass the lease exists to refuse.
 	SyncLeaseOwner string `bson:"sync_lease_owner,omitempty" json:"sync_lease_owner,omitempty"`
 
+	// DegradedReason is set when a sync pass found a bound status column the
+	// board no longer carries under either its cached id or its mapped name.
+	// Those cards stop being reflected — an explicit state on the record beats
+	// a failed write per card on every pass — and the reason names the columns
+	// so the remedy is readable from the binding itself.
+	//
+	// It is a HEALTH readout, written only through MarkDegraded/ClearDegraded
+	// and cleared by a re-bind (which re-discovers everything by name). The
+	// pluginsource quarantine precedent: degraded is skipped, never fatal.
+	DegradedReason string     `bson:"degraded_reason,omitempty" json:"degraded_reason,omitempty"`
+	DegradedAt     *time.Time `bson:"degraded_at,omitempty" json:"degraded_at,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -173,6 +189,11 @@ func (b BoardBinding) OptionForState(state string) (string, bool) {
 	id, ok := b.StatusOptions[state]
 	return id, ok && id != ""
 }
+
+// Degraded reports whether the last reconciliation found a bound column the
+// board no longer carries. A degraded binding still syncs every state it CAN
+// resolve — it is a partial outage, not a stop.
+func (b BoardBinding) Degraded() bool { return b.DegradedReason != "" }
 
 // DueAt reports when this binding's next periodic pass is due. The zero time
 // means "not scheduled" (SyncEvery == 0).
@@ -265,6 +286,19 @@ type BoardBindingStore interface {
 	// to a successor must not clear the successor's lease, and is told so with
 	// ErrBoardSyncLeaseLost rather than left believing it released cleanly.
 	ReleaseSync(ctx context.Context, tenantID, owner string) error
+
+	// SaveStatusVocabulary persists ONLY the cached name⇄id half of a binding,
+	// the way a sync pass repaired it against the live board. Narrow on
+	// purpose: a reconciliation may correct what the forge changed under it,
+	// never the address, credential or policy the operator chose.
+	SaveStatusVocabulary(ctx context.Context, tenantID string, v StatusVocabulary) error
+
+	// MarkDegraded / ClearDegraded write the health readout — a bound column
+	// the board no longer carries, and its repair. Separate from Upsert and
+	// SaveStatusVocabulary so neither can silently clear a degradation, and so
+	// the readout has exactly two writers (the pluginsource precedent).
+	MarkDegraded(ctx context.Context, tenantID, reason string) error
+	ClearDegraded(ctx context.Context, tenantID string) error
 }
 
 // ---- in-memory store (tests / local) ----
@@ -298,7 +332,55 @@ func (m *MemoryBoardBindingStore) Upsert(_ context.Context, b BoardBinding) erro
 		// the two twins disagree on whether the board is held.
 		b.SyncLeaseUntil, b.SyncLeaseOwner = prev.SyncLeaseUntil, prev.SyncLeaseOwner
 	}
+	// A re-bind CLEARS the degradation: it re-read the board and re-resolved
+	// every column by name, which is the documented remedy. Written explicitly
+	// rather than left to the zero value — the Mongo twin has to $unset it, so
+	// stating it here is what keeps the two answering the same thing.
+	b.DegradedReason, b.DegradedAt = "", nil
 	m.items[b.TenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) SaveStatusVocabulary(_ context.Context, tenantID string, v StatusVocabulary) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	b.SetVocabulary(v)
+	b.UpdatedAt = time.Now().UTC()
+	m.items[tenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) MarkDegraded(_ context.Context, tenantID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("forge: board binding: a degradation needs a reason")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	now := time.Now().UTC()
+	b.DegradedReason, b.DegradedAt = reason, &now
+	b.UpdatedAt = now
+	m.items[tenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) ClearDegraded(_ context.Context, tenantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	b.DegradedReason, b.DegradedAt = "", nil
+	b.UpdatedAt = time.Now().UTC()
+	m.items[tenantID] = b
 	return nil
 }
 
@@ -445,10 +527,78 @@ func (s *MongoBoardBindingStore) Upsert(ctx context.Context, b BoardBinding) err
 	}
 	_, err := s.coll.UpdateOne(ctx,
 		bson.M{"_id": b.TenantID},
-		bson.M{"$set": set, "$setOnInsert": bson.M{"created_at": b.CreatedAt}},
+		bson.M{
+			"$set": set,
+			// A re-bind re-read the board and re-resolved every column by
+			// name — the documented remedy for a degraded binding, so it
+			// clears the readout. Named explicitly: not writing the field
+			// would leave the stored degradation standing while the memory
+			// twin drops it.
+			"$unset":       bson.M{"degraded_reason": "", "degraded_at": ""},
+			"$setOnInsert": bson.M{"created_at": b.CreatedAt},
+		},
 		options.UpdateOne().SetUpsert(true))
 	if err != nil {
 		return fmt.Errorf("forge: upsert board binding: %w", err)
+	}
+	return nil
+}
+
+// SaveStatusVocabulary writes ONLY the cached name⇄id half — the fields a
+// reconciliation against the live board may correct. `missing_statuses` is set
+// unconditionally (including to nil) because a repair that resolves the last
+// missing column must be able to empty it.
+func (s *MongoBoardBindingStore) SaveStatusVocabulary(ctx context.Context, tenantID string, v StatusVocabulary) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{"$set": bson.M{
+			"status_mapping":   v.Mapping,
+			"status_options":   v.Options,
+			"status_field_id":  v.StatusFieldID,
+			"missing_statuses": v.MissingStatuses,
+			"updated_at":       time.Now().UTC(),
+		}})
+	if err != nil {
+		return fmt.Errorf("forge: save board status vocabulary: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
+}
+
+// MarkDegraded records that a bound status column no longer exists on the
+// board, and why.
+func (s *MongoBoardBindingStore) MarkDegraded(ctx context.Context, tenantID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("forge: board binding: a degradation needs a reason")
+	}
+	now := time.Now().UTC()
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{"$set": bson.M{"degraded_reason": reason, "degraded_at": now, "updated_at": now}})
+	if err != nil {
+		return fmt.Errorf("forge: mark board binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
+}
+
+// ClearDegraded records a reconciliation that resolved every column again.
+func (s *MongoBoardBindingStore) ClearDegraded(ctx context.Context, tenantID string) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{
+			"$unset": bson.M{"degraded_reason": "", "degraded_at": ""},
+			"$set":   bson.M{"updated_at": time.Now().UTC()},
+		})
+	if err != nil {
+		return fmt.Errorf("forge: clear board binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
 	}
 	return nil
 }

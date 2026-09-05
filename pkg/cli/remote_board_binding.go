@@ -186,6 +186,15 @@ func printBoardBinding(p *Printer, b forge.BoardBinding) {
 	if !b.LastSyncedAt.IsZero() {
 		p.KV("Last synced", b.LastSyncedAt.Format(time.RFC3339))
 	}
+	if b.Degraded() {
+		// A partial outage, and the one thing an operator has to act on: the
+		// reason names the column to re-create, or to re-bind around.
+		since := ""
+		if b.DegradedAt != nil {
+			since = " (since " + b.DegradedAt.Format(time.RFC3339) + ")"
+		}
+		p.KV("Degraded", b.DegradedReason+since)
+	}
 	p.Blank()
 	p.Line("Status map:")
 	if b.StatusFieldID == "" {

@@ -349,6 +349,93 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 	})
 
+	t.Run("the status vocabulary is repairable on its own", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-voc", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := store.SaveStatusVocabulary(ctx, "team-voc", forge.StatusVocabulary{
+			Mapping:       []forge.StatusMapping{{Status: "Ready to work", State: "ready"}, {Status: "Done", State: "done"}},
+			Options:       map[string]string{"ready": "opt_planned", "done": "opt_fresh"},
+			StatusFieldID: "PVTSSF_status2",
+		}); err != nil {
+			t.Fatalf("SaveStatusVocabulary: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-voc")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if s, ok := forge.StatusForState(got.Mapping(), "ready"); !ok || s != "Ready to work" {
+			t.Errorf("repaired column name = %q (ok=%v)", s, ok)
+		}
+		if got.StatusOptions["done"] != "opt_fresh" || got.StatusFieldID != "PVTSSF_status2" {
+			t.Errorf("repaired ids not stored: %+v / %q", got.StatusOptions, got.StatusFieldID)
+		}
+		// And ONLY the vocabulary: a sync pass may correct what the forge
+		// changed under it, never the address, credential or policy.
+		if got.ConnectionID != "conn-1" || got.Number != 203 || got.SyncEvery != time.Minute {
+			t.Errorf("a vocabulary repair must not touch the rest of the binding: %+v", got)
+		}
+		if err := store.SaveStatusVocabulary(ctx, "nobody", forge.StatusVocabulary{}); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Errorf("SaveStatusVocabulary on a missing binding: want ErrBoardBindingNotFound, got %v", err)
+		}
+	})
+
+	t.Run("the degraded readout has exactly two writers", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-deg", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := store.MarkDegraded(ctx, "team-deg", ""); err == nil {
+			t.Error("a degradation with no reason must be refused — the reason IS the remedy")
+		}
+		if err := store.MarkDegraded(ctx, "team-deg", "the Status field no longer carries \"Blocked\""); err != nil {
+			t.Fatalf("MarkDegraded: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-deg")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if !got.Degraded() || got.DegradedAt == nil {
+			t.Fatalf("binding must read degraded with a timestamp: %+v", got)
+		}
+
+		// A vocabulary repair must NOT clear it: only a resolution that
+		// succeeded, or a re-bind, says the board is serviceable again.
+		if err := store.SaveStatusVocabulary(ctx, "team-deg", got.Vocabulary()); err != nil {
+			t.Fatalf("SaveStatusVocabulary: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-deg"); !got.Degraded() {
+			t.Error("a vocabulary write must not silently clear a degradation")
+		}
+
+		if err := store.ClearDegraded(ctx, "team-deg"); err != nil {
+			t.Fatalf("ClearDegraded: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-deg"); got.Degraded() || got.DegradedAt != nil {
+			t.Errorf("ClearDegraded left %+v", got)
+		}
+
+		// A RE-BIND clears it too — it re-read the board and re-resolved every
+		// column by name, which is the documented remedy.
+		if err := store.MarkDegraded(ctx, "team-deg", "gone again"); err != nil {
+			t.Fatalf("MarkDegraded: %v", err)
+		}
+		if err := store.Upsert(ctx, binding("team-deg", time.Minute)); err != nil {
+			t.Fatalf("re-bind: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-deg"); got.Degraded() {
+			t.Errorf("a re-bind must clear the degradation, got %q", got.DegradedReason)
+		}
+
+		for _, err := range []error{
+			store.MarkDegraded(ctx, "nobody", "why"),
+			store.ClearDegraded(ctx, "nobody"),
+		} {
+			if !errors.Is(err, forge.ErrBoardBindingNotFound) {
+				t.Errorf("health write on a missing binding: want ErrBoardBindingNotFound, got %v", err)
+			}
+		}
+	})
+
 	t.Run("tenants are isolated", func(t *testing.T) {
 		if err := store.Upsert(ctx, binding("team-x", time.Minute)); err != nil {
 			t.Fatalf("Upsert: %v", err)

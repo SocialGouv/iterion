@@ -153,10 +153,51 @@ board — exactly the coupling the ENGINE-stays-bot-agnostic rule forbids. So
 `Status` / `Area` / `Mode` / `Priority` **by name**, and stores the ids it
 found on the binding.
 
-The cache is a cache, never an authority: any sync may re-run discovery, and a
-`Status` write that fails because an option id is gone re-discovers once and
-retries. A field renamed or deleted on GitHub surfaces as an explicit error
-naming the field, never as a silent skip.
+The cache is a cache, never an authority — and it is TWO caches that go stale
+independently:
+
+- the **option ids** are what every write uses. They survive a rename and die
+  with a delete;
+- the **column names** (the stored `StatusMapping`) are what both directions
+  COMPARE — the import maps a board status onto a state, the reflect checks the
+  state's status against the board's. They survive a delete-and-re-add and die
+  with a rename.
+
+So each edit an operator makes to a column breaks exactly one half. A rename
+leaves a perfectly valid id under a name nothing matches: the import goes inert
+and the reflect resolves the same still-valid option, writes it — a no-op on
+the forge's side — and records the old name, on every card, on every pass,
+indefinitely.
+
+**Every pass therefore re-resolves both halves** against the project schema it
+has already read for the label fields, so the repair costs no API call
+(`BoardBinding.ReconcileStatusOptions`). Per mapped state, in order: the cached
+**id** still on the field ⇒ adopt the board's current name (rename repaired);
+else the mapped **name** still on the field ⇒ adopt its id (re-created column,
+or one added since the bind); else **lost**. The `Status` field's own id is
+re-resolved the same way, by name.
+
+A LOST column is the only unrepairable case, and it becomes an explicit state
+rather than a retry loop (the `pluginsource` quarantine precedent): the dead id
+is dropped so nothing writes it, those cards are counted `reflect_no_column`,
+and the binding carries a `degraded_reason` NAMING the column — surfaced on
+`GET /api/teams/{id}/board-binding` and logged once, on the transition, not on
+every pass. It is a partial outage: every column that still resolves keeps
+syncing. It clears itself when the column reappears, and a re-bind clears it
+too — which is what makes "re-bind the board" a real remedy rather than the
+only one.
+
+The repaired vocabulary is persisted through a store method narrow enough to
+touch nothing else (`SaveStatusVocabulary`): a reconciliation may correct what
+the forge changed under it, never the address, credential or policy the
+operator chose. A pass with no binding store (the local one-shot `iterion issue
+import --project`) still repairs in memory — it converges, it just does not
+remember.
+
+Because the reflect ultimately WRITES an option id, it also compares one: when
+the item already carries the option about to be written, nothing is written,
+whatever the names say. The name comparison remains as the fallback for a
+provider that reports no option id.
 
 ### 6. The project import HYDRATES cards; it never creates them
 
