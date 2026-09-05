@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -118,6 +119,24 @@ func (s RunStatus) IsTerminal() bool {
 // running nor terminal; a resume continues it in place.
 func (s RunStatus) IsPaused() bool {
 	return s == RunStatusPausedWaitingHuman || s == RunStatusPausedOperator
+}
+
+// RunEndReasonPRClosed is the exact reason prefix written to run.Error when
+// the stop-on-close webhook lane cancels a run because its pull request was
+// closed or merged. Consumers detect it via strings.Contains — CancelRunWithReason
+// wraps the reason as "<reason> (was <status>: <prior>)", so a match on this
+// prefix survives that wrapping. Shared vocabulary between the webhook layer
+// (writer) and the runner admission (reader), so a redelivery that arrived
+// after the cancel does not resurrect a dead PR's review.
+const RunEndReasonPRClosed = "pull request closed or merged — nothing left to review"
+
+// IsPRClosedCancel reports whether run.Error carries the PR-closed cancel
+// reason (RunEndReasonPRClosed). Used by the runner admission to drop a
+// redelivered message — including an explicit-resume one — for a run whose
+// PR is gone: nothing the review would say can matter, and continuing burns
+// provider quota on a diff no one will merge. Empty string → false.
+func IsPRClosedCancel(runError string) bool {
+	return runError != "" && strings.Contains(runError, RunEndReasonPRClosed)
 }
 
 // ---------------------------------------------------------------------------

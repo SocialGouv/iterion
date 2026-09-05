@@ -109,11 +109,17 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > **Forgejo** the guard is unconditional and needs no configuration: an
 > inbound PR event whose head is a fork is filtered before the sync lane
 > is even considered, so the fork re-review exposure above cannot occur
-> there. A repo collaborator can still launch a bot on fork code
-> deliberately with a `/command`, which gates on the commenter's
-> permission. On **GitLab** there is no fork/cross-project guard at all,
-> so a forked-MR auto-review *is* reachable — bound that lane with an
-> `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
+> there. The `/command` lanes refuse a fork (or an unnamed head repo) too —
+> same-repo only, silently: the fork's work needs a branch in the base repo
+> before any bot runs on it. On **GitLab** the inbound MR lane has no fork/cross-project
+> guard, so a forked-MR auto-review *is* reachable — bound that lane with
+> an `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
+> The two lanes that resolve the MR through the API instead — auto-fix and
+> gate relaunch, both fail-closed on an unproven head repo — do guard on
+> GitLab: a same-project MR qualifies (the MR's source and target project
+> ids agree, so the head lives in the project the lane queried), a fork MR
+> is refused (GitLab's MR payload names the source project's id only, never
+> its path, so the head stays unproven).
 
 ## Activating the blocking gate on a repo
 
@@ -465,20 +471,46 @@ Three ways, in order of preference:
 2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR to
    force-green the `revi/review` status on the current head, for a finding
    they dispute. Authorized through the **same PR-comment command gate as
-   every other `/command`**: the commenter must hold a live repo role at or
-   above `MinReplierRole` (or be in `AuthorizedRepliers`), verified via the
-   forge permission API, and the review bot's own comment can't self-approve
-   (WhoAmI loop-guard) — an arbitrary contributor cannot wave a finding
-   through. The status carries "approved by @user: reason" and links to the
-   comment as the audit trail. It does **not** launch a re-review. *(GitHub +
-   Forgejo today; GitLab `/revi approve` on a note is a follow-on.)*
-   **Known gap (SocialGouv/iterion#662):** on a GitHub App integration the
-   command currently fails with `set commit status: forge: insufficient
-   scope` (the webhook answers 502) — until it lands, the admin can write the
-   same status by hand (`POST /repos/{owner}/{repo}/statuses/{sha}`, the
-   repo's `gate_context`, `state: success`, "approved by @user: reason" as
-   the description, the comment URL as `target_url`), which the armed
-   auto-merge then picks up like any other green.
+   every other `/command`**: the commenter must hold a live repo role of at
+   least **maintainer**, verified via the forge permission API. The webhook's
+   `min_replier_role` pin may RAISE that floor (pin `owner` and only owners
+   may approve) and never lowers it: that pin is the talk-back floor — who
+   may question a bot — and an operator who lowers it so reporters can ask
+   the converse bot must not lower the merge-queue bypass with it. Role
+   only, for the same reason: the webhook's `AuthorizedRepliers` allowlist
+   (who may talk back to the bot) does not apply to a force-green. On
+   Forgejo/Gitea, whose collaborator vocabulary is `owner | admin | write |
+   read` (there is no `maintain`), the `maintainer` floor resolves to **owner
+   or admin** — deliberately narrower than on GitHub, never wider. Two additional guards close self-approve
+   loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
+   the PR author cannot approve their own PR (a maintainer must). The status
+   carries "approved by @user: reason" and links to the comment as the audit
+   trail. It does **not** launch a re-review. Works on GitHub App
+   integrations (posts through the connection's installation token so the
+   `statuses` scope is present) and hand-owned webhooks with a `forge_token`
+   binding. The token client serves when no connection covers the repo,
+   and when the covering connection cannot serve the write — for exactly
+   two reasons: its installation-token mint fails (a grant that lags the
+   requested permissions, a rotated App key), or the installation
+   withholds `statuses:write` (one created before the merge gate, or one
+   that declined the permission: the App client re-mints without it, so
+   its reads still work and only the status write would 403). In both
+   cases the lane warns and reads, writes and replies through the
+   binding; with no binding, the refusal names the withheld grant to
+   approve on the App. **Who is told what:** the role gate runs before
+   anything the lane says on the PR. A commenter it refuses — below the
+   floor, or the bot's own comment — gets **no reply**; the webhook's
+   delivery audit records the refusal. `/revi approve` is intercepted
+   before any scope or route admission, so that branch is reachable by
+   anyone who can comment, and a bot comment there would be one any
+   drive-by could drive, N times for N comments. Past the gate the
+   commenter is a maintainer, and every configuration refusal or forge
+   failure (bot not enabled, no connection and no binding, withheld
+   grant, no gate context, no head sha, a rejected status write) is told
+   on the PR as **what to fix**; connection ids and the forge's own error
+   text stay in the server log and on the audit row, never in the
+   comment. *(GitHub + Forgejo today;
+   GitLab `/revi approve` on a note is a follow-on.)*
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.
 

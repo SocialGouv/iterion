@@ -168,7 +168,9 @@ func (s *Service) logSkippedRun(id string, err error) {
 	if s.logger == nil {
 		return
 	}
-	if errors.Is(err, store.ErrRunNotFound) {
+	if store.RunAbsent(err) {
+		// Never existed, or deleted and tombstoned between the list and
+		// the load: gone either way, never an unreadable document.
 		if _, dup := s.skipRunLogged.LoadOrStore("gone:"+id, struct{}{}); !dup {
 			s.logger.Debug("runview: skip run %s (stale index entry, logged once): %v", id, err)
 		}

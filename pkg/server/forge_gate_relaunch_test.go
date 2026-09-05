@@ -510,6 +510,45 @@ func TestGateRelaunch(t *testing.T) {
 			t.Fatalf("after exhaustion: launches=%d cards=%d comments=%d, want 3/1/1 — the lane must stop", launches, cards(), rc.calls)
 		}
 	})
+
+	// The relaunch pair — CloneURLFor(base) + d.pr.SourceBranch — is the
+	// same fork-unsafe pair the auto-launch and autofix lanes guard against.
+	// #642: SameRepoAs is false on a different owner AND on
+	// empty HeadRepoFullName (deleted-fork payloads), so the relaunch is
+	// refused before the tail publishes a fresh grant to a fork ref.
+	t.Run("a fork PR is never relaunched", func(t *testing.T) {
+		w := build(t, nil)
+		w.gc.headRepo = "mallory/widgets" // fork of acme/widgets
+		runID := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if *w.launched != 0 {
+			t.Fatal("relaunched on a fork PR — the recovery run would push to a base-repo ref")
+		}
+	})
+	t.Run("an empty head repo blocks the relaunch too", func(t *testing.T) {
+		w := build(t, nil)
+		// The deleted-fork payload shape — both GitHub and Forgejo emit
+		// head.repo: null when the head repo is gone; the parser leaves
+		// PullRef.HeadRepoFullName empty. Drive relaunchDeadGateRun
+		// directly with that shape (the reconciler in front might abstain
+		// on other conditions and hide the class-miss).
+		runID := seedDeadRun(t, w.s)
+		run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main" /* HeadRepoFullName intentionally empty */},
+			gateCtx: gateNm, prURL: prURL,
+		})
+		if *w.launched != 0 {
+			t.Fatal("relaunched with an empty HeadRepoFullName — deleted-fork payloads must fail closed")
+		}
+	})
 }
 
 // The escalation body is published on a PULL REQUEST by iterion's own forge

@@ -31,6 +31,17 @@ func (d *Delivery) NumDelivered() int {
 	return int(md.NumDelivered)
 }
 
+// StreamSeq reports the message's JetStream stream sequence — the stable
+// identity of one published message across its redeliveries, read from the
+// same metadata NumDelivered parses. Zero when unavailable.
+func (d *Delivery) StreamSeq() uint64 {
+	md, err := d.raw.Metadata()
+	if err != nil {
+		return 0
+	}
+	return md.Sequence.Stream
+}
+
 // MaxDeliver exposes the configured redelivery budget so consumers
 // (the runner) can implement the "exhausted → DLQ" bridge without
 // duplicating the default.

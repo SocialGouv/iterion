@@ -24,7 +24,7 @@ const ghRenovatePR = `{
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
   "pull_request": {"number": 8, "title": "chore(deps): bump lib", "body": "renovate",
     "html_url": "https://github.com/acme/widgets/pull/8", "state": "open",
-    "head": {"ref": "renovate/lib-1.x", "sha": "def456"}, "base": {"ref": "main"},
+    "head": {"ref": "renovate/lib-1.x", "sha": "def456", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"},
     "user": {"login": "socialgouv-renovate[bot]"}},
   "sender": {"login": "socialgouv-renovate[bot]"}
 }`
@@ -38,7 +38,7 @@ const ghRenovatePRHumanPush = `{
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
   "pull_request": {"number": 8, "title": "chore(deps): bump lib", "body": "renovate",
     "html_url": "https://github.com/acme/widgets/pull/8", "state": "open",
-    "head": {"ref": "renovate/lib-1.x", "sha": "fff999"}, "base": {"ref": "main"},
+    "head": {"ref": "renovate/lib-1.x", "sha": "fff999", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"},
     "user": {"login": "socialgouv-renovate[bot]"}},
   "sender": {"login": "alice"}
 }`
@@ -318,7 +318,7 @@ func TestFanOut_ForkPRStillBlocked(t *testing.T) {
 	cfg, pt := fanoutConfig(t, s)
 	cfg.BlockForkPRs = true
 	forkPR := strings.Replace(ghOpenPR,
-		`"head": {"ref": "feature/x", "sha": "abc123"}`,
+		`"head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}`,
 		`"head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "mallory/widgets"}}`, 1)
 
 	w := httptest.NewRecorder()

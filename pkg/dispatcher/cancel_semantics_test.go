@@ -178,6 +178,23 @@ func TestRunStatusOnDisk_UnreadableRecordIsKnownFalse(t *testing.T) {
 	if status, known := c.runStatusOnDisk("never-existed"); !known || status != "" {
 		t.Fatalf("a missing record must stay the legitimate fresh start: status=%q known=%v", status, known)
 	}
+	// A DELETED run leaves a tombstone (ErrRunDeleted, not ErrRunNotFound):
+	// nothing is alive behind the id either way, so it is the same fresh
+	// start — not "no information", which would refuse the mint forever.
+	del, err := s.CreateRun(ctx, "deleted-1", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	del.Status = store.RunStatusFinished
+	if err := s.SaveRun(ctx, del); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(ctx, "deleted-1"); err != nil {
+		t.Fatal(err)
+	}
+	if status, known := c.runStatusOnDisk("deleted-1"); !known || status != "" {
+		t.Fatalf("a deleted (tombstoned) record must read as provably absent, like a missing one: status=%q known=%v", status, known)
+	}
 }
 
 // TestCmdCancel_OperatorCauseIsPlainCanceled pins that the HTTP cancel

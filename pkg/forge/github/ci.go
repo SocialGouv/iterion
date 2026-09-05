@@ -24,8 +24,11 @@ type githubPull struct {
 	HTMLURL string `json:"html_url"`
 	Draft   bool   `json:"draft"`
 	Head    struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -44,18 +47,19 @@ func (gp githubPull) toRef() forge.PullRef {
 		state = "merged"
 	}
 	return forge.PullRef{
-		Number:       gp.Number,
-		Title:        gp.Title,
-		State:        state,
-		URL:          gp.HTMLURL,
-		SourceBranch: gp.Head.Ref,
-		TargetBranch: gp.Base.Ref,
-		HeadSHA:      gp.Head.SHA,
-		Author:       gp.User.Login,
-		Draft:        gp.Draft,
-		CreatedAt:    gp.CreatedAt,
-		UpdatedAt:    gp.UpdatedAt,
-		LinkedIssues: forge.ParseIssueRefs(false, gp.Title, gp.Body),
+		Number:           gp.Number,
+		Title:            gp.Title,
+		State:            state,
+		URL:              gp.HTMLURL,
+		SourceBranch:     gp.Head.Ref,
+		TargetBranch:     gp.Base.Ref,
+		HeadSHA:          gp.Head.SHA,
+		HeadRepoFullName: gp.Head.Repo.FullName,
+		Author:           gp.User.Login,
+		Draft:            gp.Draft,
+		CreatedAt:        gp.CreatedAt,
+		UpdatedAt:        gp.UpdatedAt,
+		LinkedIssues:     forge.ParseIssueRefs(false, gp.Title, gp.Body),
 	}
 }
 

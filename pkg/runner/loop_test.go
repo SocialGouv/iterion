@@ -595,6 +595,26 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	save("run-failres", store.RunStatusFailedResumable, &store.Checkpoint{NodeID: "n1"})
 	save("run-pausedop", store.RunStatusPausedOperator, &store.Checkpoint{NodeID: "n1"})
 	save("run-finished", store.RunStatusFinished, nil)
+	// A PR-closed cancel writes the reason (wrapped by CancelRunWithReason)
+	// into run.Error. The runner admission MUST detect it and drop the
+	// redelivery even when it carries an explicit resume — see the new
+	// case rows below (#663).
+	saveErr := func(id string, status store.RunStatus, cp *store.Checkpoint, errText string) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{ID: id, WorkflowName: "wf", Status: status, Checkpoint: cp, Error: errText}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	// The exact prefix CancelRunWithReason wraps ("(was <status>: <prior>)"),
+	// so the substring detection has to survive it — that's the WHOLE point of
+	// exposing store.IsPRClosedCancel as a helper.
+	saveErr("run-cancel-pr-closed", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"},
+		store.RunEndReasonPRClosed+" (was failed_resumable: node \"campaign\": rate_limited)")
+	// An operator cancel of a QUEUED resume: every cloud resume CASes the
+	// doc to queued before publishing, so `cancelled` at admission always
+	// post-dates the publish — whatever the error shape.
+	saveErr("run-cancelled-op", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled")
+	saveErr("run-cancelled-interrupted", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled (was running: runtime: run interrupted)")
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 
@@ -614,7 +634,20 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 		// auto-resume here resurrected operator-cancelled runs (live:
 		// 019f8ba3, three times). Only an explicit resume proceeds.
 		{"cancel checkpoint stays cancelled", "run-cancelled-cp", nil, false, actionAck, "cancelled", false},
-		{"cancel checkpoint explicit resume proceeds", "run-cancelled-cp", &queue.ResumeSpec{}, true, 0, "", true},
+		// A resume message on a cancelled doc: the cancel post-dates the
+		// publish (every cloud resume CASes to queued first), so it is an
+		// operator's decision the message must not override.
+		{"cancel checkpoint with resume set still drops", "run-cancelled-cp", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"operator cancel of a queued resume drops", "run-cancelled-op", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"interrupted-shaped cancel with resume set drops", "run-cancelled-interrupted", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"empty-reason cancel with resume set drops", "run-cancelled-cp", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		// #663: a PR-closed cancel is terminal for EVERY redelivery,
+		// including one that carries msg.Resume set (from the retry
+		// sweeper's SubmitResume or a Nak of the previous attempt).
+		// Without this the run 01a06885 dogfood on #646 re-launched a
+		// review 2s after the PR merged, burning provider quota.
+		{"cancel PR-closed drops resume redelivery", "run-cancel-pr-closed", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"cancel PR-closed drops bare redelivery too", "run-cancel-pr-closed", nil, false, actionAck, "cancelled", false},
 		{"failed_resumable converts to resume", "run-failres", nil, true, 0, "", true},
 		{"paused_operator converts to resume", "run-pausedop", nil, true, 0, "", true},
 		{"explicit resume passes through", "run-failres", &queue.ResumeSpec{}, true, 0, "", true},
@@ -1162,6 +1195,18 @@ func TestRecordRunGitMeta(t *testing.T) {
 			t.Error("pod-confirmed empty snapshot was not persisted")
 		}
 	})
+}
+
+// A precondition drop must carry the JetStream attempt count and stream
+// sequence on its own line; a silent outcome stays silent.
+func TestWithDeliveryAttempt(t *testing.T) {
+	f, a := withDeliveryAttempt("runner: run %s is cancelled — dropping redelivery (resume=%v)", []any{"run-1", true}, 2, 77)
+	if got := fmt.Sprintf(f, a...); got != "runner: run run-1 is cancelled — dropping redelivery (resume=true) (delivery=2 seq=77)" {
+		t.Fatalf("rendered %q", got)
+	}
+	if f, a := withDeliveryAttempt("", nil, 3, 9); f != "" || a != nil {
+		t.Fatalf("silent outcome must stay silent, got %q %v", f, a)
+	}
 }
 
 // The admission gauntlet runs BEFORE the per-run lock. A `running` doc

@@ -113,11 +113,10 @@ func TestParsePullRequest_Forgejo(t *testing.T) {
 	}
 }
 
-// TestIsCrossRepo guards the fork-guard signal: a PR whose head branch lives
-// in a different repo than its base is a fork (untrusted), and a payload with
-// no head.repo defaults to same-repo so a trusted internal PR is never falsely
-// gated off the auto-launch path.
-func TestIsCrossRepo(t *testing.T) {
+// TestSameRepoAsBase guards the fork guard, which is fail-CLOSED: a lane
+// launching on `<base>.CloneURL + head branch` may only proceed when the
+// head is PROVEN to live in the base repo.
+func TestSameRepoAsBase(t *testing.T) {
 	same, err := ParsePullRequest([]byte(sameRepoPR))
 	if err != nil {
 		t.Fatal(err)
@@ -125,8 +124,8 @@ func TestIsCrossRepo(t *testing.T) {
 	if same.HeadRepoFullName != "acme/widgets" {
 		t.Fatalf("same-repo head: %q", same.HeadRepoFullName)
 	}
-	if same.IsCrossRepo() {
-		t.Error("same-repo PR must NOT be cross-repo")
+	if !same.SameRepoAsBase() {
+		t.Error("a same-repo PR must be proven same-repo")
 	}
 
 	fork, err := ParsePullRequest([]byte(forkPR))
@@ -136,17 +135,25 @@ func TestIsCrossRepo(t *testing.T) {
 	if fork.HeadRepoFullName != "mallory/widgets" {
 		t.Fatalf("fork head: %q", fork.HeadRepoFullName)
 	}
-	if !fork.IsCrossRepo() {
-		t.Error("fork PR MUST be cross-repo (fork-guard signal)")
+	if fork.SameRepoAsBase() {
+		t.Error("a fork PR must NOT be proven same-repo")
 	}
 
-	// Legacy/minimal payload with no head.repo → same-repo (not a fork).
-	min, err := ParsePullRequest([]byte(githubOpenPR))
+	// The hole this predicate closes: `head.repo: null` is what a fork
+	// looks like once it is DELETED, and it is indistinguishable from a
+	// payload that never carried the field. Reading either as same-repo
+	// aims the bot at the base repo with a head branch name the fork
+	// author chose — a fixer would push LLM commits onto the base repo's
+	// branch of that name.
+	unnamed, err := ParsePullRequest([]byte(githubOpenPR))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if min.IsCrossRepo() {
-		t.Error("PR with no head.repo must default to same-repo")
+	if unnamed.HeadRepoFullName != "" {
+		t.Fatalf("this fixture must carry no head repo, got %q", unnamed.HeadRepoFullName)
+	}
+	if unnamed.SameRepoAsBase() {
+		t.Error("an unnamed head repo must never be proven same-repo — a deleted fork has exactly this shape")
 	}
 }
 

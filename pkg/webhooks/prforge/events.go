@@ -9,6 +9,8 @@
 // differs and lives in pkg/webhooks/gitlab.
 package prforge
 
+import "encoding/json"
+
 // EventHeaderPullRequest is the X-{GitHub,Forgejo,Gitea}-Event value for
 // a PR event. Both forge families also send events like "ping", "push",
 // "issue_comment" on the same URL; the handler filters on this constant.
@@ -71,6 +73,33 @@ type Ref struct {
 	// differs from base.repo (full_name) — the signal the fork guard reads to
 	// keep an untrusted fork PR off the mutating auto-launch path.
 	Repo Repository `json:"repo"`
+	// RepoDeclared reports whether the payload CARRIED a `repo` key here —
+	// true even when its value is `null`. The two absences are not the same
+	// fact and a plain struct (or a pointer) collapses them: a forge that
+	// models forks sends `"repo": null` when the head repo was DELETED or
+	// blocked, which is a fork whose identity is gone, while a payload that
+	// omits the key entirely is a legacy/minimal sender that never had one.
+	// The fork guard refuses the first and admits the second.
+	RepoDeclared bool `json:"-"`
+}
+
+// UnmarshalJSON decodes a Ref and records whether `repo` was present, which
+// the generated decoding cannot express (both `null` and absent yield the
+// zero value). See RepoDeclared.
+func (r *Ref) UnmarshalJSON(b []byte) error {
+	type plain Ref // no method set ⇒ no recursion
+	var v plain
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	_, declared := keys["repo"]
+	*r = Ref(v)
+	r.RepoDeclared = declared
+	return nil
 }
 
 type Sender struct {

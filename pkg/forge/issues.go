@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -103,9 +104,47 @@ type PullRef struct {
 	Draft        bool      `json:"draft,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
+	// differs from the base repo (the endpoint's own path parameter) for a
+	// fork PR; empty when the provider omits it. Read by SameRepoAs for the
+	// fork guard on lanes that resolve a PR via the forge API and therefore
+	// cannot rely on the webhook payload's own head.repo field.
+	HeadRepoFullName string `json:"head_repo_full_name,omitempty"`
 	// LinkedIssues are issue numbers this PR references / closes, best-effort
 	// parsed from the title/body ("fixes #12", "Closes #7", "!?").
 	LinkedIssues []int `json:"linked_issues,omitempty"`
+}
+
+// SameRepoAs reports whether the PR's head branch lives in the SAME repo as
+// baseRepo — the fork guard of the API-side lanes. Every launch pair
+// combining `<base repo>.CloneURL + pr.SourceBranch` MUST clear this before
+// dispatching: an empty head repo means the provider omitted the field OR
+// the head repo was deleted/blocked, and launching on it aims the bot at
+// repoURL=<base> repoRef=<head branch> — a fixer would push LLM commits to
+// the BASE repo's branch of that name.
+//
+// Empty head repo → false (never proven safe). Empty base → false. Both set
+// and case-insensitively equal → true. The command lane, the autofix lane
+// and the gate-relaunch lane all consult this before launching.
+func (p PullRef) SameRepoAs(baseRepo string) bool {
+	return SameRepo(p.HeadRepoFullName, baseRepo)
+}
+
+// SameRepo reports whether two "owner/repo" identifiers name the same
+// repository, case-insensitively (owner/repo names are uniquely
+// case-insensitive on every supported forge). Empty on either side → false:
+// "unknown" is never proven equal, so a caller that fails-closed inherits
+// the safe answer for free.
+//
+// The one vocabulary behind every cross-repo predicate — PullRef.SameRepoAs
+// here, prforge.Parsed / prforge.ParsedReviewComment SameRepoAsBase in
+// pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo" never disagree
+// between the payload side and the API side.
+func SameRepo(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.EqualFold(a, b)
 }
 
 // PullListOptions filters ListPullRequests.

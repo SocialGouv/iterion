@@ -63,10 +63,19 @@ type fakeGateClient struct {
 	// correct hand-off from a status that overwrote something it should not.
 	posted   []forge.CommitStatus
 	setCalls int
+	// headRepo overrides HeadRepoFullName on the returned PullRef. Empty
+	// defaults to the base repo the endpoint is called with (i.e. a
+	// same-repo PR), so pre-#642 fixtures pass the fork-guard fail-CLOSED
+	// check without editing every callsite; a fork test sets it explicitly.
+	headRepo string
 }
 
-func (f *fakeGateClient) GetPullRequest(context.Context, string, int) (forge.PullRef, error) {
-	return forge.PullRef{HeadSHA: f.headSHA}, f.getErr
+func (f *fakeGateClient) GetPullRequest(_ context.Context, repo string, _ int) (forge.PullRef, error) {
+	head := f.headRepo
+	if head == "" {
+		head = repo
+	}
+	return forge.PullRef{HeadSHA: f.headSHA, HeadRepoFullName: head}, f.getErr
 }
 
 func (f *fakeGateClient) SetCommitStatus(_ context.Context, _, sha string, st forge.CommitStatus) error {
