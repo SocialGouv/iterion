@@ -236,12 +236,30 @@ this board), which is what the rule read before.
    it is checked first, in both directions: a Status the reflect just wrote
    reads back as "already equal" at the next import, so a write can never
    ping-pong.
-2. Both sides moved since the last sync ⇒ the **newer** timestamp wins.
-3. Timestamps equal ⇒ **GitHub wins**, because it is the roadmap authority a
+2. **Only one side moved ⇒ no conflict**, and no timestamp is consulted. The
+   native side is unmoved while the card still sits in the state the RECORDED
+   status maps to — that mapped state is iterion's own last write, so a card
+   still there has not moved. The oracle is that fact, not a timestamp
+   comparison: `Issue.StateAt` is bumped by any move, including a move away
+   and back, so "the card's transition is newer than the board's" does not
+   mean the card is anywhere other than where iterion last put it. A one-sided
+   board move is therefore a plain apply and a one-sided native move a plain
+   reflect. A recorded status the mapping does not cover leaves the question
+   undecidable (iterion never derived a state from it) and is treated as
+   moved — a phantom conflict costs one `Warn`, the reverse silently overwrites
+   somebody's decision.
+3. Both sides moved since the last sync ⇒ the **newer** timestamp wins.
+4. Timestamps equal ⇒ **GitHub wins**, because it is the roadmap authority a
    human is looking at.
-4. Every applied conflict resolution is logged at `Warn` with both timestamps,
+5. Every applied conflict resolution is logged at `Warn` with both timestamps,
    both values and the winner — a silent overwrite of somebody's decision is
    the one outcome that must never be invisible.
+
+Rule 2 is what keeps `Conflicts` meaning what §9.2 says it means. Without it a
+human's drag — the ordinary gesture on a project board — counted as "both sides
+moved", and whenever the card's transition happened to be the newer of the two,
+the phantom conflict resolved in the native side's favour and the reflect pushed
+the card's OLD column back over the drag.
 
 The native write is a **CAS** (`SetStateFrom(id, seen, want)`), so an operator
 who moved the card between our read and our write wins over the stale fact we

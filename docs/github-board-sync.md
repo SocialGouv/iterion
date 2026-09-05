@@ -174,12 +174,19 @@ When both sides moved since the last pass:
 
 1. **Value already equal ⇒ nothing happens.** This is checked first and is what
    makes the loop terminate: a status iterion itself wrote reads back as equal.
-2. Otherwise the **newer** state change wins — the card's own transition time
+2. **Only one side moved ⇒ no conflict.** The native side is unmoved while the
+   card still sits in the column the recorded status maps to — iterion's own
+   last write. A one-sided board move is a plain apply, a one-sided native move
+   a plain reflect, and neither touches the counter.
+3. Otherwise the **newer** state change wins — the card's own transition time
    (stamped by the board store at every move, wherever the move came from)
    against the board column's `updatedAt`.
-3. A tie goes to **GitHub** — it is the roadmap a human is looking at.
-4. Every resolution is logged at `Warn` with both timestamps, both values and
+4. A tie goes to **GitHub** — it is the roadmap a human is looking at.
+5. Every resolution is logged at `Warn` with both timestamps, both values and
    the winner.
+
+So `conflicts=N` counts people and bots actually fighting over the board. A
+board whose humans and bots take turns reads `conflicts=0`.
 
 The native write is a CAS, so an operator who moved the card between our read
 and our write wins over the stale fact we were carrying.

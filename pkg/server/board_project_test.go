@@ -616,3 +616,75 @@ func TestImportProjectBoardDoesNotCountACASLossAsAMove(t *testing.T) {
 		t.Errorf("recorded status = %q, want none — the write did not land", ext.Project.Status)
 	}
 }
+
+// TestImportProjectBoardOneSidedMoveIsNotAConflict pins ADR-097 §9.2's own
+// definition of the counter: items where BOTH sides had moved.
+//
+// Dragging a card is the ordinary gesture on a forge board, and the native
+// side has NOT moved when the card still sits in the column iterion's own last
+// recorded status put it in. Counting that as a conflict saturates the one
+// number that answers "how often are people and bots fighting over this
+// board". Worse, when the card's transition time happens to be the newer of
+// the two, the phantom conflict resolves in the native side's favour and the
+// reflect pushes the card's OLD column back over the human's drag.
+func TestImportProjectBoardOneSidedMoveIsNotAConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// cardState is where the card sits; recorded is the board status
+		// iterion last synchronized — its mapped state IS iterion's own last
+		// write, so cardState == map(recorded) means "the native side has not
+		// moved".
+		cardState, recorded, boardStatus string
+		// boardOffset positions the board's status timestamp relative to the
+		// card's real transition.
+		boardOffset                            time.Duration
+		wantState                              string
+		wantMoved, wantReflected, wantConflict int
+		wantWrites                             int
+	}{
+		{
+			name: "only the board moved", cardState: native.StateReady,
+			recorded: "Planned", boardStatus: "In progress", boardOffset: -time.Hour,
+			wantState: native.StateInProgress, wantMoved: 1,
+		},
+		{
+			name: "only the native board moved", cardState: native.StateInProgress,
+			recorded: "Planned", boardStatus: "Planned", boardOffset: -time.Hour,
+			wantState: native.StateInProgress, wantReflected: 1, wantWrites: 1,
+		},
+		{
+			name: "both moved", cardState: native.StateInProgress,
+			recorded: "Planned", boardStatus: "Blocked", boardOffset: time.Hour,
+			wantState: native.StateBlocked, wantMoved: 1, wantConflict: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			board := newTestBoard(t)
+			id := seedSynced(t, board, 613, tc.cardState, tc.recorded, time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC))
+			ghAt := cardStateAt(t, board, id).Add(tc.boardOffset)
+			bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+				item("PVTI_1", 613, statusValue(tc.boardStatus, ghAt)),
+			}}}
+
+			res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+				&ProjectImportOptions{Binding: testBinding()})
+			if err != nil {
+				t.Fatalf("ImportProjectBoard: %v", err)
+			}
+			if got := mustGet(t, board, id).State; got != tc.wantState {
+				t.Errorf("state = %q, want %q", got, tc.wantState)
+			}
+			if res.Moved != tc.wantMoved || res.Reflected != tc.wantReflected {
+				t.Errorf("Moved/Reflected = %d/%d, want %d/%d (%+v)",
+					res.Moved, res.Reflected, tc.wantMoved, tc.wantReflected, res)
+			}
+			if res.Conflicts != tc.wantConflict {
+				t.Errorf("Conflicts = %d, want %d — the counter means BOTH sides moved", res.Conflicts, tc.wantConflict)
+			}
+			if len(bc.writes) != tc.wantWrites {
+				t.Errorf("board writes = %+v, want %d — a one-sided board move must never be pushed back",
+					bc.writes, tc.wantWrites)
+			}
+		})
+	}
+}

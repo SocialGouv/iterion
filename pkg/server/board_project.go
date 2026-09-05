@@ -251,7 +251,7 @@ func applyProjectItem(
 	}
 
 	nativeAt := nativeStateAt(card, sync)
-	targetState, decision := decideProjectStatus(statusName, statusAt, nativeAt, sync, opts)
+	targetState, decision := decideProjectStatus(statusName, statusAt, nativeAt, card.State, sync, opts)
 	switch decision {
 	case projectStatusConflictGitHub, projectStatusConflictNative:
 		res.Conflicts++
@@ -523,8 +523,8 @@ func nativeStateAt(card *native.Issue, sync native.ExternalProject) time.Time {
 
 // decideProjectStatus resolves ADR-097's conflict rule. It returns the native
 // state to write ("" = write nothing) and why. nativeAt is the card's own
-// transition time (nativeStateAt).
-func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, sync native.ExternalProject, opts *ProjectImportOptions) (string, projectStatusDecision) {
+// transition time (nativeStateAt); cardState is the column it sits in now.
+func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, cardState string, sync native.ExternalProject, opts *ProjectImportOptions) (string, projectStatusDecision) {
 	if strings.TrimSpace(statusName) == "" {
 		return "", projectStatusNoop
 	}
@@ -545,12 +545,40 @@ func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, sync n
 		// First sight: the board is the authority on the join.
 		return state, projectStatusApply
 	}
-	// 2/3. Both sides moved. Newer wins; a tie goes to the board, which is
+	// 2. Only the BOARD moved — the ordinary gesture on a forge board. It is a
+	// plain apply, never a conflict: the counter means "both sides moved"
+	// (ADR-097 §9.2), and a conflict resolved in the native side's favour
+	// makes the reflect push the card's old column back over the drag.
+	if !nativeMovedSince(sync, cardState, opts) {
+		return state, projectStatusApply
+	}
+	// 3/4. Both sides moved. Newer wins; a tie goes to the board, which is
 	// what a human is looking at.
 	if nativeAt.After(statusAt) {
 		return "", projectStatusConflictNative
 	}
 	return state, projectStatusConflictGitHub
+}
+
+// nativeMovedSince reports whether the card's column changed since the last
+// synchronization with this board.
+//
+// The oracle is a FACT, not a timestamp comparison: sync.Status is the board
+// status iterion last synchronized, so the native state it maps to IS
+// iterion's own last write. A card still sitting there has not moved, and a
+// timestamp-only rule cannot tell that from a card that moved and came back.
+//
+// A recorded status the mapping does not cover leaves the question
+// undecidable — iterion never derived a state from it — and the answer is
+// "assume it moved". A conflict that turns out one-sided costs one Warn; the
+// reverse silently overwrites somebody's decision, which is the one outcome
+// ADR-097 §9.4 forbids.
+func nativeMovedSince(sync native.ExternalProject, cardState string, opts *ProjectImportOptions) bool {
+	recorded, ok := forge.StateForStatus(opts.statusMapping(), sync.Status)
+	if !ok {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(recorded), strings.TrimSpace(cardState))
 }
 
 // applyProjectLabels folds the item's label-bound field values into the card's
