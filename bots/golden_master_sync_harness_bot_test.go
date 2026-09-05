@@ -377,6 +377,31 @@ func TestGoldenMasterSyncHarnessBotRefusals(t *testing.T) {
 		}
 	})
 
+	// The header guard exists to refuse a file this bot did not write, and
+	// such a file need not be UTF-8 — a hand-written judge saved as latin-1
+	// (this codebase comments in French) decodes as neither. The guard never
+	// ran: the read raised first and the node died with a traceback, nothing
+	// on stdout where the graph reads the refusal.
+	t.Run("a harness that is not even UTF-8 is refused, not raised on", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "")
+		hp := filepath.Join(ws, ".golden-master", "harness.py")
+		if err := os.WriteFile(hp, []byte("# juge \xe9crit \xe0 la main\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		git("commit", "-qam", "hand-written, latin-1")
+		out, exit := runSyncNode(t, "sync_harness", ws, nil)
+		var res syncHarnessOut
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("no typed refusal on stdout (%v) — the node died instead of refusing: %q", err, out)
+		}
+		if exit != 1 || !strings.Contains(res.Notice, "not a file this bot overwrites") {
+			t.Fatalf("exit %d notice=%q, want the not-ours refusal", exit, res.Notice)
+		}
+		if got, _ := os.ReadFile(hp); !strings.Contains(string(got), "juge") {
+			t.Fatalf("the refused harness was overwritten: %q", got)
+		}
+	})
+
 	t.Run("a dirty tree is refused before the write", func(t *testing.T) {
 		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
 		if err := os.WriteFile(filepath.Join(ws, "README.md"), []byte("edited, not committed\n"), 0o644); err != nil {
