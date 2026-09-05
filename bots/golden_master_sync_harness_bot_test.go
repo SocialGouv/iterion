@@ -459,6 +459,42 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		}
 	})
 
+	// The drop is declined when HEAD is no longer the sync commit — resetting
+	// would take another hand's work. Declining must cost the tree NOTHING:
+	// the window it opens is the whole gate (hours, on a live checkout), and a
+	// blanket `checkout -- .` ahead of the HEAD check discarded every unstaged
+	// tracked edit made in it while dropping no commit at all.
+	t.Run("a declined drop leaves the working tree alone", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		res, _ := syncHarness(t, ws)
+		c := syncCommitNode(t, ws, res)
+		// Another hand commits while the gate runs, so the drop will decline.
+		if err := os.WriteFile(filepath.Join(ws, "README.md"), []byte("moved on\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("commit", "-qam", "another hand")
+		later := git("rev-parse", "HEAD")
+		// ...and leaves work in progress behind, uncommitted.
+		if err := os.WriteFile(filepath.Join(ws, "README.md"), []byte("work in progress\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": "sh -c 'echo divergence; exit 3'", "harness_sha256": res.HarnessSHA256, "sync_commit": c.Commit})
+		var gate syncGateOut
+		if err := json.Unmarshal(out, &gate); err != nil || exit != 0 {
+			t.Fatalf("gate_replay: exit %d, %v, out %q", exit, err, out)
+		}
+		if gate.Passed {
+			t.Fatalf("gate = %+v, want red", gate)
+		}
+		if head := git("rev-parse", "HEAD"); head != later {
+			t.Fatalf("HEAD=%s, want %s: the drop must never reach a commit that is not the sync's", head, later)
+		}
+		if got, _ := os.ReadFile(filepath.Join(ws, "README.md")); string(got) != "work in progress\n" {
+			t.Fatalf("README.md = %q: a declined drop discarded an unstaged edit it never had to touch", got)
+		}
+	})
+
 	t.Run("a gate run before the commit is what the real harness refuses — the graph never does it", func(t *testing.T) {
 		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
 		res, _ := syncHarness(t, ws)
