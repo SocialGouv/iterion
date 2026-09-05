@@ -133,6 +133,38 @@ func TestStartWaitsForThePodUpToTheConfiguredTimeout(t *testing.T) {
 	}
 }
 
+// Sub-second remainders round UP: a wait is never shorter than configured.
+func TestStartRoundsTheReadyTimeoutUp(t *testing.T) {
+	capture := kubectlCaptureShim(t)
+	sched, err := schedulingFromEnv(envOf(map[string]string{PodReadyTimeoutEnvVar: "1500ms"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Driver{namespace: "ns", kubectl: "kubectl", logger: iterlog.New(iterlog.LevelInfo, io.Discard), sched: sched}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "img", User: "1000:1000"}, workspace: "/workspace"}
+	if _, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "01a0-run"}); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if wait := waitArgv(t, capture); !strings.Contains(wait, "--timeout=2s") {
+		t.Fatalf("1500ms must round up to 2s, got %q", wait)
+	}
+}
+
+// A Driver that did not go through New() has no policy: Start must refuse
+// rather than issue `kubectl wait --timeout=0s`, which kills the pod at once.
+func TestStartRefusesWithoutAReadyTimeout(t *testing.T) {
+	capture := kubectlCaptureShim(t)
+	d := &Driver{namespace: "ns", kubectl: "kubectl", logger: iterlog.New(iterlog.LevelInfo, io.Discard)}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "img", User: "1000:1000"}, workspace: "/workspace"}
+	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "01a0-run"})
+	if err == nil || !strings.Contains(err.Error(), "ready timeout is unset") {
+		t.Fatalf("Start must refuse a zero ready timeout, got %v", err)
+	}
+	if _, statErr := os.Stat(capture + ".wait"); statErr == nil {
+		t.Fatal("no kubectl wait must be issued without a timeout")
+	}
+}
+
 // Without a policy the applied pod is the manifest of a driver that never
 // had the knobs.
 func TestStartAppliesNoPolicyByDefault(t *testing.T) {

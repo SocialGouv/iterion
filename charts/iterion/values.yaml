@@ -157,9 +157,10 @@ runner:
     # (measured: 5 of 6 runs on one 8-core worker at 89 % CPU). Set at
     # least the requests on any multi-node cluster — e.g. requests cpu "2",
     # memory "4Gi", spread "hostname" — and bump config.rollout.runnerEpoch
-    # with the rollout like any runner change. Values are Kubernetes
-    # quantities; the runner refuses to start on a malformed one. See
-    # docs/sandbox.md § "Scheduling: requests and node spread".
+    # with the rollout like any runner change. Requests and limits are
+    # Kubernetes quantities, podReadyTimeout a Go duration; the runner
+    # refuses to start on a malformed one. See docs/sandbox.md
+    # § "Scheduling: requests and node spread".
     scheduling:
       requests:
         cpu: ""
