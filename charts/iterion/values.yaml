@@ -68,6 +68,10 @@ server:
       cpu: 1000m
       memory: 1Gi
   podAnnotations: {}
+  # PriorityClass of the server pods (empty = the cluster default). Give the
+  # platform pods a class ABOVE the run pods: a sandboxed run that bursts is
+  # then preempted before the server or a runner is.
+  priorityClassName: ""
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -105,6 +109,10 @@ runner:
   # only. The devbox runner image runs as uid 1000 (Nix store owned by `devbox`),
   # so set runAsUser/runAsGroup/fsGroup: 1000 when using it. Empty = inherit the
   # shared context.
+  # PriorityClass of the runner pods (empty = the cluster default). Same
+  # rule as server.priorityClassName: the runner outranks the run pods it
+  # starts, so a bursting sandbox never evicts the process that owns its run.
+  priorityClassName: ""
   podSecurityContext: {}
   containerSecurityContext: {}
   # Prometheus metrics port for the runner. Defaults to the same
