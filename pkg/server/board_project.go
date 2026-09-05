@@ -131,8 +131,10 @@ type ProjectImportResult struct {
 	// Counted whichever side won — the number an operator needs is "how often
 	// are people and bots fighting over this board".
 	Conflicts int `json:"conflicts"`
-	// SkippedNoCard is items backed by an issue with no native card yet: run
-	// the issue import for that repo first.
+	// SkippedNoCard is items backed by an issue with no native card yet: the
+	// repo's issue sync has to run first — server-side on a cloud instance
+	// (`iterion remote forge integrations sync <id>`, or the periodic worker
+	// on a sync-enabled integration), `iterion issue import` on a local store.
 	SkippedNoCard int `json:"skipped_no_card"`
 	// MissingRepos breaks SkippedNoCard down by repository, most-missing
 	// first. A bare count tells an operator nothing they can act on; the
@@ -331,8 +333,8 @@ func applyProjectItem(
 	switch {
 	case errors.Is(err, tracker.ErrNotFound) || (err == nil && card == nil):
 		// The item's issue has no card yet — the ONE reading that means "run
-		// the issue import for this repo". Both store twins answer a missing
-		// card with this sentinel; the Mongo one wraps everything else.
+		// this repo's issue sync". Both store twins answer a missing card with
+		// this sentinel; the Mongo one wraps everything else.
 		res.SkippedNoCard++
 		missing[it.Content.Repo]++
 		return nil

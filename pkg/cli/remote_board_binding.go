@@ -179,7 +179,7 @@ func printBoardBinding(p *Printer, b forge.BoardBinding) {
 	p.KV("Connection", b.ConnectionID)
 	switch {
 	case b.SyncEvery <= 0:
-		p.KV("Reconcile", "off (the reflect has no net — `iterion issue import --project` by hand)")
+		p.KV("Reconcile", "off (the reflect has no net — re-bind with --sync-every to arm it)")
 	default:
 		p.KV("Reconcile", "every "+b.SyncEvery.String())
 	}

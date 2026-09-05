@@ -12,7 +12,7 @@ Methodology this serves: [AGENTS.md](../AGENTS.md).
 
 | | direction | who writes it |
 |---|---|---|
-| Title, body, labels, assignees, open/closed | GitHub issue → card | `iterion issue import` |
+| Title, body, labels, assignees, open/closed | GitHub issue → card | the **issue sync**: `iterion remote forge integrations sync <id>` on cloud, `iterion issue import` on a local store |
 | **`Status`** | **both ways** | the project pass |
 | `Area` / `Mode` / `Priority` | board → card labels | the project pass |
 | everything else on the board | — | nothing |
@@ -38,7 +38,8 @@ bug until you know it is a decision:
 1. **It never creates a card.** A project item has no body, no labels and no
    author — and creating from one would bypass the author-trust gate that runs
    at issue ingest. Items with no card are counted and their **repositories are
-   named**, so you know which issue imports to run.
+   named**, so you know which issue syncs to run — the cloud one on a cloud
+   instance, see [Troubleshooting](#troubleshooting).
 2. **It never reopens a closed card.** Leaving a terminal column (`done`,
    `blocked`) is a *reopen* — an operator gesture with a dependents check and
    an audit trail. Dragging a card out of *Done* on GitHub is reported
@@ -100,9 +101,17 @@ iterion remote board show                   # the effective map + coverage
 ```
 
 From then on the server reconciles the board on its own (default every 2
-minutes; see [Reconciliation](#reconciliation)). Cards still have to exist:
-enable issue sync on each repository integration, or run the import above once
-per repo.
+minutes; see [Reconciliation](#reconciliation)). Cards still have to exist, and
+`iterion issue import` cannot make them — it writes to a LOCAL store, not the
+instance's. Turn on issue sync per repository integration and let the
+5-minute worker fill the board, or force one pass now:
+
+```bash
+iterion remote forge repo-bots               # the integrations, with their ids
+iterion remote forge integrations update <integration-id> \
+  --data '{"sync_issues_enabled":true}'      # the 5-minute worker takes over
+iterion remote forge integrations sync <integration-id>   # one pass, right now
+```
 
 `iterion remote board unbind` stops it.
 
@@ -256,8 +265,25 @@ The dispatcher can take its workflow state from the board instead of labels —
 
 **`skipped_no_card` is large / a card never appears.**
 The project pass hydrates, it does not create. Read the repositories it names
-(CLI output, `missing_repos` in the API response) and run the issue import for
-each one.
+(CLI output, `missing_repos` in the API response) and run the **issue sync**
+for each one. On a cloud instance that is the server-side pass, not
+`iterion issue import` — the import writes to a local store the instance never
+reads:
+
+```bash
+iterion remote forge repo-bots                            # integration ids
+iterion remote forge integrations sync <integration-id>   # → {"synced":N,…}
+```
+
+Enable `sync_issues_enabled` on the integration (see [Cloud — bind the team
+once](#cloud--bind-the-team-once)) and the 5-minute worker keeps it filled.
+
+**The sync answers `does not implement forge.IssueClient`.**
+The connection's credential shape resolves to a client that cannot read the
+issue API. The message names the connection kind and the concrete client, which
+is what to act on. GitHub App, PAT and OAuth connections all serve it; a
+provider that genuinely does not is the remaining case, and re-connecting the
+repository under a supported one is the fix.
 
 **A card moved on GitHub but not in iterion.**
 Check the column is in the map (`iterion remote board show` — a `!` marks a

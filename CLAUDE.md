@@ -288,8 +288,11 @@ the hours this one spent.
   log line per pass, and the conflict rule. Read it when a card moved on one
   board and not the other — the three answers are almost always an unmapped
   state (inert by design), a terminal card (automation never reopens), or a
-  card the project pass could not create because the issue import had not run
-  for that repo (it names the repos).
+  card the project pass could not create because that repo's **issue sync**
+  had not run (it names the repos). On cloud that sync is the server's own —
+  `iterion remote forge integrations sync <id>` / `sync_issues_enabled` — not
+  `iterion issue import`, which writes to a local store the instance never
+  reads.
 - [docs/ticket-context.md](docs/ticket-context.md) — plugging tracker
   tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
   verifies the PR delivers what the ticket asks: the team wiring (team
