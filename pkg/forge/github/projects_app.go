@@ -6,25 +6,22 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
-// AppClient's half of forge.BoardClient. Every call mints a DEDICATED
-// organization_projects:write installation token for that single call — the
-// CreateRepo precedent — so the cached runtime token keeps its minimal
-// permission set and an org-wide roadmap grant never rides an ordinary push.
+// AppClient's half of forge.BoardClient. Every call goes through a DEDICATED
+// organization_projects:write installation token, cached separately from the
+// runtime one, so the runtime token keeps its minimal permission set and an
+// org-wide roadmap grant never rides an ordinary push.
 //
 // The pair exists at all because of the parity rule: a capability wired for
 // one credential shape and not the other is a defect, and a board binding
 // resolves whichever connection the team holds.
 
 // projectsREST returns an AdminClient backed by a token minted for board calls
-// only. It is deliberately NOT cached: the grant is broad, and a short-lived
-// token per call bounds the blast radius of a leak to one operation.
+// only, cached per permission set (scopedREST): the org-wide grant is served
+// back only to another board call, never to an ordinary push, while one
+// reconciliation pass pays ONE mint instead of one per project read, item page
+// and reflected card.
 func (a *AppClient) projectsREST(ctx context.Context) (*AdminClient, error) {
-	tok, _, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
-		&InstallationTokenOptions{Permissions: ProjectsInstallationPermissions()})
-	if err != nil {
-		return nil, err
-	}
-	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: tok}, nil
+	return a.scopedREST(ctx, ProjectsInstallationPermissions())
 }
 
 // GraphQL performs a GraphQL call under a board-scoped installation token.
