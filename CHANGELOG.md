@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.105.0](https://github.com/SocialGouv/iterion/compare/v3.104.2...v3.105.0) (2026-09-05)
+
+### Features
+
+* **board:** sync a team's GitHub Projects v2 board with the native board — ADR-097 ([#745](https://github.com/SocialGouv/iterion/issues/745)) ([3e991ce](https://github.com/SocialGouv/iterion/commit/3e991ce0ae90714ed0da033bf0847892d45d3017)), references [#2](https://github.com/SocialGouv/iterion/issues/2) [#1](https://github.com/SocialGouv/iterion/issues/1) [SocialGouv/iterion#613](https://github.com/SocialGouv/iterion/issues/613)
+
+    <details><summary>why</summary>
+
+    AGENTS.md makes the Projects v2 board the roadmap truth and the native board the bots' operational surface, but nothing joins them: the board's Status/Area/Mode/Priority live in the GraphQL API, and no seam in iterion speaks GraphQL to a forge. So a human's "In progress" never reaches the dispatcher and a bot's "done" never reaches the roadmap.
+
+    </details>
+
 ## [3.104.2](https://github.com/SocialGouv/iterion/compare/v3.104.1...v3.104.2) (2026-09-05)
 
 ### Bug Fixes
