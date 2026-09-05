@@ -125,11 +125,11 @@ lots:
 	const gate = "sh -c 'echo ran > gate.marker'"
 
 	t.Run("worker wrote done: refused before the gate runs", func(t *testing.T) {
-		ws, base, git := modernizeRepo(t, plan)
+		ws, _, git := modernizeRepo(t, plan)
 		modernizeNet(t, ws)
 		git("add", ".golden-master")
 		git("commit", "-qm", "net")
-		base = git("rev-parse", "HEAD")
+		base := git("rev-parse", "HEAD")
 		flipped := strings.Replace(plan, "status: todo", "status: done", 1)
 		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(flipped), 0o644); err != nil {
 			t.Fatal(err)
