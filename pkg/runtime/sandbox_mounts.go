@@ -554,8 +554,8 @@ func applyHostUIDRemap(
 // the silent skip when no host binary can be located is intentional;
 // the absence will then surface as a clear "exec: iterion: not found"
 // at runner invocation time.
-func addClawBinaryMount(spec *sandbox.Spec, wf *ir.Workflow) {
-	if wf == nil || !containsClawNode(wf) {
+func addClawBinaryMount(spec *sandbox.Spec, wf *ir.Workflow, resolver effectiveBackendResolver) {
+	if wf == nil || !containsClawNode(wf, resolver) {
 		return
 	}
 	hostBin := locateHostIterionBinary()

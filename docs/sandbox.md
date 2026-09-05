@@ -564,6 +564,17 @@ boundary instead of escaping to the host.
 local sandboxes built from third-party images you can mount the host
 binary in (subject to architecture matching) via `runArgs`:
 
+> **The mount decision reads the EFFECTIVE backend, not the `.bot`.**
+> `--backend '*=claw'` (and `--model`, the studio override object,
+> `RunMessage.model_overrides`) is applied at dispatch and never folded
+> back into the IR, so the bind is decided through the executor's own
+> resolution chain — the same one the node will dispatch on. It is a
+> UNION with the authored IR, never a narrowing: a node that *declares*
+> `claw` keeps the mount even when an override routes it elsewhere,
+> because the resolver reads the HOST's credentials and the container may
+> resolve differently, and a missing binary is a hard mid-run death while
+> an unused read-only bind costs nothing.
+
 ```jsonc
 // .devcontainer/devcontainer.json
 {
@@ -1058,6 +1069,10 @@ use an iterion sandbox image that includes the binary, add it to your
 custom image, set `ITERION_BIN` so the host can mount it, or add an
 explicit read-only mount that places a compatible `iterion` binary on
 the container PATH.
+
+The bind and the `sandbox_claw_routed_via_runner` event are decided on
+the backend DISPATCH resolves, launch overrides included — so a workflow
+of `claude_code` nodes run with `--backend '*=claw'` gets both.
 
 ### `network_blocked` events you don't expect
 
