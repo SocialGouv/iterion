@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.106.0](https://github.com/SocialGouv/iterion/compare/v3.105.0...v3.106.0) (2026-09-05)
+
+### Features
+
+* **bots:** the campaign fleet plans by default, refuses a missing repo typed, and carries Persy ([#761](https://github.com/SocialGouv/iterion/issues/761)) ([7aa77ff](https://github.com/SocialGouv/iterion/commit/7aa77ffeba2e01c18c0f4c529ac978bb566d42a5)), references [#751](https://github.com/SocialGouv/iterion/issues/751) [#752](https://github.com/SocialGouv/iterion/issues/752) [#619](https://github.com/SocialGouv/iterion/issues/619) [#751](https://github.com/SocialGouv/iterion/issues/751) [#752](https://github.com/SocialGouv/iterion/issues/752) [#619](https://github.com/SocialGouv/iterion/issues/619)
+
+    <details><summary>why</summary>
+
+    The seven campaign bots (feature-dev, feature-gap-fill, branch-improve-loop, whole-improve-loop, test-coverage, e2e-coverage, app-dev) keyed their plan phase on plan_review, which ResolvePlanReview answers off on every single-provider deployment - so the commonest setup never planned, silently, under a var named after a review (#751).
+
+    </details>
+
+### Bug Fixes
+
+* **golden-master:** the certifier reads a request in the re-baseline ledger's spelling too; an act already at the base is not an extension ([#765](https://github.com/SocialGouv/iterion/issues/765)) ([21ee24f](https://github.com/SocialGouv/iterion/commit/21ee24f124b3b90519a2f34d391f04857c0e886f))
+
+    <details><summary>why</summary>
+
+    Measured on the first extension request to reach the additions-only verdict in cloud: the request had been written as the ledger's own header taught — `expected_paths` and `entries` (the re-baseline idiom a worker had copied into the header) — while `extension_verdict` read only `paths` and `corpus_entries`. Every conforming request was therefore "smuggled": "1 added entry no acted request claims", "refs/<id>.txt is neither declared in the request's paths nor derived from a claimed corpus…
+
+    </details>
+
 ## [3.105.0](https://github.com/SocialGouv/iterion/compare/v3.104.2...v3.105.0) (2026-09-05)
 
 ### Features
