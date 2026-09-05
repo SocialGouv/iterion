@@ -251,9 +251,8 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// is filtered (the hold gate already ran unconditionally above — the
 	// re-request has no exemption to lose). An authz ERROR demotes too
 	// when an automatic lane co-rides the event (R34eb8c — a transient
-	// members-API failure must not strand a merge-gate resync), and 502s
-	// only when the click was the delivery's sole reason (so the forge
-	// redelivers it).
+	// members-API failure must not strand a merge-gate resync), and records a launch error
+	// when the click was the delivery's sole reason.
 	if reviewRequested {
 		botID := ""
 		if rr := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author()); len(rr) > 0 {
@@ -271,8 +270,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 			}
 			reviewRequested = false
 		case gerr != nil:
-			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
-			httpError(w, http.StatusBadGateway, "authorization check failed")
+			s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "re-request authz check", gerr)
 			return
 		case !authorized:
 			reviewRequested = false
