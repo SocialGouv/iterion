@@ -127,7 +127,7 @@ TeamID, Provider, Owner, OwnerKind (org|user), ProjectNumber,
 ConnectionID   (the forge.Connection supplying the token)
 StatusMapping  []{Status, State}      the EFFECTIVE map (§2), stored so what
                                       a deployment runs is always readable
-SyncEvery      the reconciliation interval (0 = off, default 10m — §10)
+SyncEvery      the reconciliation interval (0 = off, default 2m — §10)
 ProjectID, ProjectTitle, StatusFieldID, StatusOptions map[state]optionID,
 LabelFields []BoundField{FieldID, Name, Prefix}
 BoundAt, UpdatedAt
@@ -236,58 +236,92 @@ The native write is a **CAS** (`SetStateFrom(id, seen, want)`), so an operator
 who moved the card between our read and our write wins over the stale fact we
 were carrying, exactly as the issue import already behaves.
 
-### 10. The reflect is an EFFECT, not a new worker
+### 10. The reflect is the second direction of ONE reconciliation pass
 
-A card transition reaches GitHub through the seam both delivery paths already
-share: `trigger.Evaluator.applyEffect`. The binding materializes an ordinary
-board-kind `trigger.Subscription` (matcher `card.moved`), and the projection is
-a third arm next to *promote a card* and *launch a bot*.
+Both directions run in the same pass, on the same board read, elected per
+tenant. For each item the pass asks one question — **does the board still say
+what iterion last recorded?** — and that single comparison is simultaneously
+the who-moved oracle and the echo suppressor:
 
-That single choice buys both halves at once:
+- **the board's status differs from the recorded one** ⇒ the board moved ⇒ the
+  import arm applies §9's conflict rule;
+- **the board matches the record, but the card's column maps to a different
+  status** ⇒ nobody but iterion put that status there, so the divergence can
+  only be a native move ⇒ write the `Status` field;
+- **first sight** (nothing recorded) ⇒ import only: the board is the authority
+  on the join, and pushing would overwrite a column nobody has reconciled yet;
+- **unmapped native state** ⇒ inert (§2).
 
-- **Cloud** — board events do not ride the bus at all since ADR-094; they are
-  materialized into the `trigger_effects` outbox inside `drainTenant`, under
-  the per-tenant CAS cursor that elects the materializing replica, and executed
-  by `trigger.EffectWorker` with an atomic leased claim, bounded exponential
-  retry and a dead-letter row. A projection inherits every one of those
-  guarantees for free. No in-process global is the authority; N replicas are
-  correct.
-- **Local** — the FS board's `Subscribe` seam publishes onto `InProcBus`, whose
-  subscriber is the same `Evaluator`, which calls the same `applyEffect`. One
-  implementation, two buses, two stores.
+Because the recorded status advances on every write, a pass with nothing moving
+writes nothing — the property that keeps the loop from re-pushing forever and
+stamping a fresh `updatedAt` that would then win every conflict against the
+operator.
 
-*Rejected: a standalone reflect worker subscribed to the bus.* It reads as the
-smaller change and is not: in cloud it would receive **nothing** (the board no
-longer publishes), so it would need either a re-publish — reintroducing a lossy
-path that then owes its own reconciliation sweep — or a second poll-tail with a
-second per-tenant cursor. Strictly more machinery, and one more place for the
-two modes to drift.
+**Owner and election.** `BoardSyncWorker` ticks every 30s, takes each binding
+whose own `sync_every` is due, and **CAS-advances that binding's watermark**;
+only the winner runs the pass. No in-process global is the authority, N
+replicas are correct, and a replica dying mid-pass costs one interval rather
+than a stuck board. Each pass logs exactly one line: an `Info` with the
+counters (`items`, `moved`, `reflected`, `labelled`, `conflicts`,
+`refused_terminal`, `reflect_failed`, `skipped_no_card`) and its duration, or a
+`Warn` naming the failure — which never blocks the next tick, since a
+persistently failing board must not pin the sweep. One tenant's revoked token
+skips that tenant, not the sweep.
+
+**Cost and cadence.** `sync_every` defaults to **2 minutes** (floor 1 minute,
+`0` = off, refused below the floor rather than clamped). Ten minutes was
+rejected as the default: a roadmap lagging a bot by ten minutes reads as broken
+to the human watching it. The price is one project read per bound team per
+interval — GitHub prices a Projects v2 page at a handful of points against a
+5000/hour budget, so a few-hundred-item board costs well under 1% of it.
+
+Locally the same pass is the operator's to run: `iterion issue import
+--project` by hand, or wired into `iterion schedule`.
+
+*Rejected: a third arm of `trigger.Evaluator.applyEffect`* — the shape this ADR
+first proposed, before the code was read. Three facts killed it:
+
+1. `EffectRow` carries **no effect-kind**, and `MaterializeEffects` only
+   creates rows for *matched subscriptions*. A projection reaches the cloud
+   outbox only by BEING a subscription, or by an expand/contract migration of a
+   durable schema.
+2. Being a subscription means a new `bundle.ExecutionMode` — a bot-manifest
+   vocabulary — for a row with no bot, which `/api/v1/triggers` would list and
+   an operator could delete, silently killing the reflect.
+3. `matchingSubscriptions` declines machine-caused events **in the shared
+   prelude, before the mode switch**. A projection must NOT be declined (a
+   watchdog filing a card in `blocked` is exactly what the roadmap must show),
+   so it would require editing the admission path that protects the fleet from
+   mass launches — the riskiest line in that file.
+
+The pass form needs none of that, and it *is* the reconciliation net rather
+than a second mechanism beside one.
+
+*Rejected: a standalone reflect worker subscribed to the bus.* In cloud it
+would receive **nothing** (board events left the bus at ADR-094), so it would
+need either a re-publish — reintroducing a lossy path that then owes its own
+sweep — or a second poll-tail with a second per-tenant cursor.
+
+**Named follow-up.** If sub-minute reflect latency is ever wanted, the clean
+path is an **effect-kind on `EffectRow`** (expand/contract) with the projection
+as a first-class effect — not a pseudo-subscription. The pass stays the net
+underneath it either way.
 
 Everything else follows the shipped doctrine:
 
 - Every native write is a CAS; every GitHub write is idempotent by construction
   (setting a single-select to the value it already has is a no-op we skip
   anyway, per rule 9.1).
-- The periodic import is the **reconciliation net** for the reflect path. Local
-  delivery is best-effort by design (`BoardSource` drops on a full buffer) and
-  the cloud tail can step over a gap loudly, so convergence may not be assumed
-  from event delivery: a dropped event costs a delay, never a divergence,
-  because the next import recomputes the truth from both timestamps.
-
-  **That net has a named owner**, because a reconciliation net nobody runs is a
-  comment. In cloud, a **project sync worker** ticks each bound team on the
-  binding's own `sync_every` (default 10m; `0` = off), **elected per tenant**
-  with the same leased-claim shape as the board tail — never an in-process
-  global — and logs one Info line per pass carrying the counters (`hydrated`,
-  `conflicts`, `refused_terminal`, `skipped_no_card`), so a board drifting
-  quietly is visible in the logs rather than in someone's confusion. Locally
-  the net is the operator's: `iterion issue import --project` by hand, or wired
-  into `iterion schedule` — documented as such, not implied.
-- Machine-caused events (`tracker.IsMachineReason` — watchdog, state/field
-  rename or delete) are declined for *launches* because they must not spend
-  budget. A projection is not a launch: a watchdog that files a card in
-  `blocked` is precisely the movement the roadmap must show, so the projection
-  arm is exempted from that gate, explicitly and in one place.
+- The pass IS the convergence, not a hope about delivery. It recomputes the
+  truth from the board and the cards on every run, so a missed transition costs
+  a delay of at most one interval, never a permanent divergence. That is why it
+  has a named owner (§10) rather than a sentence in a doc.
+- **A machine-caused move still reaches the roadmap.** The trigger spine
+  declines `tracker.IsMachineReason` events (watchdog, state/field rename) for
+  *launches*, because they must not spend budget. The pass form needs no
+  exemption for that gate: it reads the card's CURRENT column, so a watchdog
+  filing a card in `blocked` is reflected like any other move — which is
+  precisely what the roadmap must show.
 
 ### 11. Permissions, stated up front
 

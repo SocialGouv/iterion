@@ -3345,6 +3345,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/board-binding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/board-binding */
+        get: operations["getTeamsByIdBoardBinding"];
+        /** PUT /api/teams/{id}/board-binding */
+        put: operations["putTeamsByIdBoardBinding"];
+        post?: never;
+        /** DELETE /api/teams/{id}/board-binding */
+        delete: operations["deleteTeamsByIdBoardBinding"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/bot-sources": {
         parameters: {
             query?: never;
@@ -10638,6 +10659,66 @@ export interface operations {
         };
     };
     getTeamsByIdAudit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdBoardBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdBoardBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdBoardBinding: {
         parameters: {
             query?: never;
             header?: never;

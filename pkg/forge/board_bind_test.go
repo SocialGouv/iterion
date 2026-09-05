@@ -232,6 +232,19 @@ func TestBindBoardSyncEveryIsExplicit(t *testing.T) {
 	}); err == nil {
 		t.Error("a negative interval must be refused, not silently coerced")
 	}
+	// Below the floor is REFUSED, not clamped: an operator who typed 10s must
+	// see that they did not get 10s.
+	tooFast := 10 * time.Second
+	_, err = forge.BindBoard(context.Background(), bc, forge.BindRequest{
+		TenantID: "team-a", Provider: forge.ProviderGitHub, Ref: bindRef(), ConnectionID: "conn-1",
+		SyncEvery: &tooFast,
+	})
+	if err == nil {
+		t.Fatal("an interval under the floor must be refused")
+	}
+	if !strings.Contains(err.Error(), forge.MinBoardSyncEvery.String()) {
+		t.Errorf("the error must name the floor, got %q", err)
+	}
 }
 
 func TestBindBoardSurfacesAnUnreachableBoard(t *testing.T) {

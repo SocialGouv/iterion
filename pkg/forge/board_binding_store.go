@@ -30,9 +30,21 @@ import (
 var ErrBoardBindingNotFound = errors.New("forge: board binding not found")
 
 // DefaultBoardSyncEvery is the reconciliation interval a binding gets when the
-// operator does not choose one. It is the net under the reflect's lossy
-// delivery, so it is on by default; `0` turns it off explicitly.
-const DefaultBoardSyncEvery = 10 * time.Minute
+// operator does not choose one. It is the net under the reflect, so it is on
+// by default; `0` turns it off explicitly.
+//
+// Two minutes, not ten: a roadmap that lags a bot by ten minutes reads as
+// broken to the human watching it, and the cost is one project read per bound
+// team per interval — GitHub prices a Projects v2 page at a handful of points
+// against a 5000-point hourly budget, so a board of a few hundred items costs
+// well under 1% of it.
+const DefaultBoardSyncEvery = 2 * time.Minute
+
+// MinBoardSyncEvery is the floor on a binding's interval. Below it the pass
+// stops being a reconciliation net and becomes a poll: the fast path is the
+// reflect, and a sub-minute sweep would spend the API budget re-reading a
+// board nothing changed on.
+const MinBoardSyncEvery = time.Minute
 
 // BoundLabelField is one board single-select field imported onto cards as a
 // namespaced label.

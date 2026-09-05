@@ -202,6 +202,15 @@ type Server struct {
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// boardBindings ties a team to one forge PROJECT board (ADR-097). Nil in
+	// local mode, which is what self-disables the endpoints and the sync
+	// worker.
+	boardBindings forge.BoardBindingStore
+	// boardClientForConnection / boardClientForBinding override the
+	// connection → board-client resolution in tests. Nil in prod → the
+	// forgeAdminFor path.
+	boardClientForConnection func(context.Context, string) (forge.BoardClient, forge.Provider, error)
+	boardClientForBinding    func(context.Context, forge.BoardBinding) (forge.BoardClient, error)
 	// provisionApprovals parks team-admin provisioning requests when the
 	// org opted into ex-ante approval (Org.RequireProvisionApproval).
 	provisionApprovals forge.ProvisionApprovalStore
@@ -384,6 +393,9 @@ type Server struct {
 
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
 	gateReconcileCancel func()
+	// boardSyncCancel stops the project-board reconciliation worker at
+	// shutdown, so a drain does not leave a pass writing to a forge.
+	boardSyncCancel func()
 	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
 	gateAutofixCancel func()
 	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
@@ -539,6 +551,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		sandboxCfgStore:    cfg.SandboxSettings,
 		botVarsStore:       cfg.BotVarsSettings,
 		forgeIntegrations:  cfg.ForgeIntegrations,
+		boardBindings:      cfg.BoardBindings,
 		provisionApprovals: cfg.ProvisionApprovals,
 		forgeOAuthApps:     cfg.ForgeOAuthApps,
 		forgeGitHubApp:     cfg.ForgeGitHubApp,

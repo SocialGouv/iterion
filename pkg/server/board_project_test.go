@@ -50,6 +50,7 @@ type fakeBoardClient struct {
 	pages   [][]forge.ProjectItem
 	writes  []boardWrite
 	err     error
+	setErr  error
 }
 
 type boardWrite struct{ ProjectID, ItemID, FieldID, OptionID string }
@@ -98,6 +99,9 @@ func (f *fakeBoardClient) AddItem(context.Context, string, string) (forge.Projec
 	return forge.ProjectItem{}, errors.New("not used")
 }
 func (f *fakeBoardClient) SetSingleSelect(_ context.Context, projectID, itemID, fieldID, optionID string) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
 	f.writes = append(f.writes, boardWrite{projectID, itemID, fieldID, optionID})
 	return nil
 }

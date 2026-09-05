@@ -7773,6 +7773,54 @@
         }
       ]
     },
+    "/api/teams/{id}/board-binding": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBoardBinding",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdBoardBinding",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBoardBinding",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/bot-sources": {
       "get": {
         "operationId": "getTeamsByIdBotSources",

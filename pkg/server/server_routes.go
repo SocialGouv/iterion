@@ -223,6 +223,8 @@ func (s *Server) routes() {
 		// per-card push-to-forge + linked-PR/CI views (no-op without a cloud
 		// board). See board_forge.go.
 		s.registerBoardForgeRoutes()
+		// Team ⇄ forge PROJECT board binding (ADR-097).
+		s.registerBoardBindingRoutes()
 	}
 
 	// Per-tenant SSO providers (a tenant's own Keycloak + GitHub team-gating).

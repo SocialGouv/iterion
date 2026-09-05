@@ -85,6 +85,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		WebhookCounter:     webhooks.NewMemoryCounter(),
 		ForgeConnections:   forge.NewMemoryConnectionStore(),
 		ForgeIntegrations:  forge.NewMemoryRepoIntegrationStore(),
+		BoardBindings:      forge.NewMemoryBoardBindingStore(),
 		ProvisionApprovals: forge.NewMemoryProvisionApprovalStore(),
 		ForgeOAuthApps:     forge.NewMemoryOAuthAppStore(),
 		OrgSSO:             orgsso.NewMemoryStore(),

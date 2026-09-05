@@ -56,8 +56,15 @@ func (r BindRequest) validate() error {
 	if strings.TrimSpace(r.ConnectionID) == "" {
 		return errors.New("forge: bind board: a forge connection is required")
 	}
-	if r.SyncEvery != nil && *r.SyncEvery < 0 {
-		return fmt.Errorf("forge: bind board: sync interval must be >= 0 (0 = off), got %v", *r.SyncEvery)
+	if r.SyncEvery != nil {
+		switch d := *r.SyncEvery; {
+		case d < 0:
+			return fmt.Errorf("forge: bind board: sync interval must be >= 0 (0 = off), got %v", d)
+		case d > 0 && d < MinBoardSyncEvery:
+			// Refused rather than clamped: an operator who typed 10s must see
+			// that they did not get 10s.
+			return fmt.Errorf("forge: bind board: sync interval must be 0 (off) or at least %v, got %v", MinBoardSyncEvery, d)
+		}
 	}
 	return nil
 }
