@@ -294,8 +294,10 @@ func applyProjectItem(
 	//
 	// A native-wins conflict is the exception: recording the board's status
 	// here would tell the reflect below "the board already agrees", and it
-	// would push nothing. The reflect overwrites these two fields itself with
-	// what it actually wrote, which is what makes the next pass a no-op.
+	// would push nothing. The reflect writes these two fields itself with what
+	// it actually wrote — and when it writes NOTHING the caller closes them
+	// with what it observed, so the divergence is derived once rather than on
+	// every tick (see the reflect call below).
 	//
 	// A REFUSED write is the other exception, and the sharper one: recording a
 	// status iterion could not apply makes the NEXT pass read "the board
@@ -327,7 +329,22 @@ func applyProjectItem(
 	// It does NOT run when the board won (`applied`, or a GitHub-wins
 	// conflict): pushing there would overwrite the decision we just read.
 	if !applied && (decision == projectStatusNoop || decision == projectStatusConflictNative) {
-		reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res)
+		// A native-wins conflict declined to record the board's status above,
+		// on the promise that the reflect overwrites it with what it WROTE.
+		// The reflect has exits that write nothing — the two sides already
+		// agree, the native state is unmapped, the bound board has no column
+		// for it, the pass is read-only — and there the promise is unkept: the
+		// record stays stale, the next pass recomputes identical inputs and
+		// re-derives the same conflict, warning and counting on every tick for
+		// a divergence nothing is going to resolve. Recording what was
+		// OBSERVED closes it, and is not a false claim: the board says this
+		// value now, and it is exactly what "the status last synchronized"
+		// means. A FAILED write is the exception — the next pass must retry it.
+		if out := reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res); out == reflectNothingToWrite &&
+			decision == projectStatusConflictNative {
+			sync.Status = statusName
+			sync.StatusAt = statusAt
+		}
 	}
 	// Write ONLY what changed. This pass runs over every card on its interval,
 	// and native.Store.Update treats a non-nil Patch.External as a change with
@@ -367,6 +384,10 @@ func applyProjectItem(
 //
 // A failed write is counted and logged, never fatal: one card's 403 must not
 // abandon the rest of the board.
+//
+// The outcome is the caller's business: it is what tells a native-wins
+// conflict whether the record it declined to write was overwritten here, or
+// has to be closed by the caller instead.
 func reflectNativeState(
 	ctx context.Context,
 	bc forge.BoardClient,
@@ -376,42 +397,43 @@ func reflectNativeState(
 	boardStatus string,
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
-) {
+) reflectOutcome {
 	binding := opts.binding()
 	if binding == nil {
-		return // read-only pass: no write authority
+		return reflectNothingToWrite // read-only pass: no write authority
 	}
 	if sync.Status == "" {
 		// First sight of this card on this board: the board is the authority
 		// on the join, and the import already applied it. Pushing here would
-		// overwrite a column nobody has reconciled yet.
-		return
+		// overwrite a column nobody has reconciled yet. Only reachable from
+		// the no-op arm, which recorded the status already.
+		return reflectNothingToWrite
 	}
 	want, ok := forge.StatusForState(opts.statusMapping(), card.State)
 	if !ok {
 		// An unmapped native state (`review`, `waiting_deps`, …) is INERT: the
 		// board keeps showing the last true thing it was told.
-		return
+		return reflectNothingToWrite
 	}
 	if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(boardStatus)) {
-		return // already there — the idempotence that keeps a pass free
+		return reflectNothingToWrite // already there — the idempotence that keeps a pass free
 	}
 	option, ok := binding.OptionForState(card.State)
 	if !ok {
 		logProjectWarn(opts, "project reflect: the bound board has no column for this state",
 			"card", card.ID, "state", card.State, "status", want)
-		return
+		return reflectNothingToWrite
 	}
 	if binding.ProjectID == "" || binding.StatusFieldID == "" {
 		logProjectWarn(opts, "project reflect: the binding carries no project/status id",
 			"card", card.ID, "state", card.State)
-		return
+		return reflectNothingToWrite
 	}
 	if err := bc.SetSingleSelect(ctx, binding.ProjectID, it.ID, binding.StatusFieldID, option); err != nil {
 		res.ReflectFailed++
 		logProjectWarn(opts, "project reflect: status write refused",
 			"card", card.ID, "item", it.ID, "state", card.State, "status", want, "error", err.Error())
-		return
+		return reflectFailed
 	}
 	res.Reflected++
 	// Record what we just wrote, so the next pass reads "already equal" and
@@ -421,6 +443,7 @@ func reflectNativeState(
 	sync.Status = want
 	sync.StatusAt = opts.now()
 	sync.StateAt = opts.now()
+	return reflectWrote
 }
 
 // projectSyncState reads the card's recorded sync state, resetting it when the
@@ -448,6 +471,23 @@ func projectStatusValue(it forge.ProjectItem) (string, time.Time) {
 	}
 	return fv.Value, fv.UpdatedAt
 }
+
+// reflectOutcome says what one reflect did to the board, which is what decides
+// whether the caller still owes the sync record an update.
+type reflectOutcome int
+
+const (
+	// reflectNothingToWrite: there was nothing to push, or nothing that COULD
+	// be pushed. Either way the board's status will not change on this pass,
+	// so a divergence left open here would be re-derived forever.
+	reflectNothingToWrite reflectOutcome = iota
+	// reflectWrote: the board's Status now says what the card's column means,
+	// and the reflect recorded it itself.
+	reflectWrote
+	// reflectFailed: the forge refused the write. The record stays stale ON
+	// PURPOSE — that is what makes the next pass retry.
+	reflectFailed
+)
 
 type projectStatusDecision int
 
