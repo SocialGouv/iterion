@@ -104,12 +104,20 @@ func (r *Registry) registerDefaults() {
 		// setup (a Claude subscription, no API key) builds a client with NO
 		// credential and every claw call answers 401.
 		//
-		// Only when the wire is un-redirected: an operator who pointed
-		// ANTHROPIC_BASE_URL at a gateway chose that destination, and a
-		// subscription bearer must not be sent there implicitly. An explicit
+		// Only onto the real Anthropic wire (secrets.AnthropicForfaitWireOK —
+		// the same predicate the ctx factory and the supervisor's funding check
+		// use): an operator who pointed ANTHROPIC_BASE_URL at a gateway chose
+		// that destination, and a subscription bearer, which carries the whole
+		// Claude account, must not be sent there implicitly. An explicit
 		// ANTHROPIC_AUTH_TOKEN still reaches any base URL — that one IS the
 		// operator's choice.
-		if apiKey == "" && authToken == "" && baseURL == "" {
+		//
+		// KNOWN LIMITATION, shared with the codex path below: the resolved
+		// client is cached for the life of the process, so a long-running
+		// studio/dispatcher keeps the token captured at first resolve. Claude
+		// Code rotates it on expiry; restart the daemon to pick up the new one.
+		// An already-expired token is skipped rather than baked in.
+		if apiKey == "" && authToken == "" && secrets.AnthropicForfaitWireOK(baseURL) {
 			authToken = secrets.AnthropicForfaitAccessTokenFromDisk()
 		}
 		cfg := api.ProviderConfig{
@@ -573,19 +581,31 @@ func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (ap
 // balance rather than the plan's limits, hence the same one-time notice.
 func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
 	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-	lowBase := strings.ToLower(baseURL)
-	if strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel") {
+	if !secrets.AnthropicForfaitWireOK(baseURL) {
 		return nil, false, nil
 	}
 	dir := oauthDirLookup(ctx, string(secrets.OAuthKindClaudeCode))
 	if dir == "" {
 		return nil, false, nil
 	}
-	view, err := secrets.LoadAnthropicCredentialsFrom(dir)
-	if err != nil || view.ClaudeAIOauth.AccessToken == "" {
+	token := secrets.AnthropicForfaitAccessToken(dir)
+	if token == "" {
 		return nil, false, nil
 	}
 	if secrets.ForbidSubscriptionOAuth() {
+		// The flag means "this credential does not count", which is the reading
+		// pkg/supervise's ctxFundsProvider already takes — not "the run dies".
+		// A pod carrying an ambient key (the `anthropic-env` shape named in
+		// pkg/runner/usage_cap.go) served fine before this branch existed, and
+		// CLAUDE.md recommends the flag on exactly those shared deployments: a
+		// hard refusal here would break every run whose tenant merely HAS a
+		// forfait connected.
+		if ambientAnthropicCredential() {
+			return nil, false, nil
+		}
+		// Sole candidate: now the refusal IS the useful answer. Falling through
+		// would build the unauthenticated client this function exists to
+		// prevent, and a silent 401 per call is issue #687 itself.
 		return nil, true, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
 	}
 	claudeForfaitWarnOnce.Do(func() {
@@ -595,10 +615,24 @@ func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) 
 	cfg := api.ProviderConfig{
 		Model:      modelID,
 		BaseURL:    baseURL,
-		OAuthToken: view.ClaudeAIOauth.AccessToken,
+		OAuthToken: token,
 	}
 	client, cerr := anthropicprovider.New().NewClient(withClientIdentity(cfg))
 	return client, true, cerr
+}
+
+// ambientAnthropicCredential reports whether this process's own environment
+// already carries something that can authenticate an Anthropic call without the
+// forfait. The AUTH_TOKEN case is shape-checked on purpose: that variable is
+// overloaded — a z.ai facade key or a gateway bearer is an ordinary credential,
+// while an `sk-ant-oat…` value is another subscription token, which is the very
+// thing the forbid flag refuses.
+func ambientAnthropicCredential() bool {
+	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ZAI_API_KEY") != "" {
+		return true
+	}
+	tok := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	return tok != "" && !secrets.IsAnthropicSubscriptionToken(tok)
 }
 
 // oauthDirResolver maps an OAuth kind ("codex" / "claude_code") to its

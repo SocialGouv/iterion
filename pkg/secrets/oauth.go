@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,7 +310,42 @@ func AnthropicForfaitAccessToken(dir string) string {
 	if err != nil {
 		return ""
 	}
+	// An expired blob is worse than no blob. Baked into a process-lifetime
+	// client cache it answers 401 with nothing naming expiry as the cause, and
+	// the CLI path degrades better without it — claude re-reads and refreshes
+	// the file itself. `expiresAt == 0` means the payload states no expiry, not
+	// that it expired.
+	if exp := view.ClaudeAIOauth.ExpiresAt; exp > 0 && time.UnixMilli(exp).Before(time.Now()) {
+		return ""
+	}
 	return strings.TrimSpace(view.ClaudeAIOauth.AccessToken)
+}
+
+// AnthropicForfaitWireOK reports whether a Claude subscription bearer may be
+// sent to baseURL. Only the real Anthropic API qualifies: an empty value (the
+// SDK default) or the exact host api.anthropic.com.
+//
+// Everything else is a destination the OPERATOR chose — a z.ai/bigmodel facade
+// that wants the token as an x-api-key-style key, a corporate gateway, an
+// interception proxy — and a forfait bearer is not a scoped key: it carries the
+// whole Claude account. On a cloud deployment the base URL is set by the
+// platform while the credential belongs to the tenant, so the consent gap is
+// wider there than on a laptop, never narrower.
+//
+// It is deliberately ONE predicate: the desktop factory, the per-run ctx
+// factory and pkg/supervise's funding check all decide this same question, and
+// a supervisor that calls anthropic funded for a wire the registry then
+// declines is the disagreement this package keeps paying for.
+func AnthropicForfaitWireOK(baseURL string) bool {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "api.anthropic.com")
 }
 
 // ClaudeCodeConfigDir returns the on-disk CLAUDE_CONFIG_DIR the Claude Code

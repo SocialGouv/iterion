@@ -150,7 +150,7 @@ func assertForfaitEnv(t *testing.T, got map[string]string, wantDir string) {
 // without a readable file degrades to the file path (no token key).
 func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
 	dir := t.TempDir()
-	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":4102444800000,"scopes":["user:inference"]}}`
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestShouldDropSessionFork_UnknownCurrentKeepsForkWithParentSet(t *testing.T
 // refresher keeps fresh.
 func TestClaudeForfaitEnv_SandboxedRemapsConfigDir(t *testing.T) {
 	dir := t.TempDir()
-	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":4102444800000,"scopes":["user:inference"]}}`
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -394,5 +394,26 @@ func TestStampUsageSource(t *testing.T) {
 	}
 	if stampUsageSource(nil, "x") != nil {
 		t.Fatal("no observer must stay no observer")
+	}
+}
+
+// An EXPIRED credentials file must not export CLAUDE_CODE_OAUTH_TOKEN. That
+// variable is the first-precedence headless auth path — the CLI reads it BEFORE
+// the credentials file — so exporting a dead token would shadow the very file
+// the CLI (or the runner's refresh worker) can still renew from. Dropping the
+// key degrades to the file path, which is this resolver's documented fallback.
+func TestClaudeForfaitEnv_SkipsExpiredOAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-STALE","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeForfaitEnv(dir, false)
+	if v, present := got["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+		t.Errorf("expired token exported as %q — it would shadow the refreshable file", v)
+	}
+	// The file path itself still travels: the CLI reads and refreshes it.
+	if got["CLAUDE_CONFIG_DIR"] != dir {
+		t.Errorf("CLAUDE_CONFIG_DIR: got %q, want %q", got["CLAUDE_CONFIG_DIR"], dir)
 	}
 }

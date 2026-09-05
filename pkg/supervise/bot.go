@@ -200,11 +200,10 @@ func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
 			}
 			return creds.OAuthCredentialFiles[string(secrets.OAuthKindCodex)] != ""
 		case "anthropic":
-			// The forfait bearer is not the credential a z.ai/bigmodel
-			// facade expects, and the opt-out refuses the path outright.
-			base := strings.ToLower(os.Getenv("ANTHROPIC_BASE_URL"))
+			// Same predicate the registry's two anthropic factories use, so a
+			// hint can never resolve a wire they will decline.
 			if secrets.ForbidSubscriptionOAuth() ||
-				strings.Contains(base, "z.ai") || strings.Contains(base, "bigmodel") {
+				!secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
 				return false
 			}
 			return creds.OAuthCredentialFiles[string(secrets.OAuthKindClaudeCode)] != ""
