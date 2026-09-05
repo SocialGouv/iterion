@@ -123,7 +123,12 @@ func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, 
 	data := map[string]any{"reason": reason, "delivered": delivery.NumDelivered(), "parked": err == nil}
 	if err != nil {
 		data["error"] = err.Error()
-		logger.Error("runner: exhausted lock delivery for %s could not be archived: %v — no queue copy remains", msg.RunID, err)
+		// PublishDLQ waits for the JetStream PubAck, so a deadline or a lost
+		// connection leaves the outcome genuinely indeterminate: the server
+		// may have persisted the copy and only the ack went missing. Saying
+		// the copy is gone would invite a blind replay that duplicates the
+		// run when it did land — report it as UNCONFIRMED.
+		logger.Error("runner: exhausted lock delivery for %s was not confirmed archived: %v — a DLQ copy may or may not exist; inspect the DLQ before replaying or discarding", msg.RunID, err)
 	} else {
 		logger.Warn("runner: exhausted lock delivery for %s archived on DLQ; the owner's run is unchanged", msg.RunID)
 	}
