@@ -52,6 +52,10 @@ type Credentials struct {
 	// scope metering or policy per tenant must treat these as the
 	// deployment's own credential, not the tenant's.
 	PlatformSourced map[string]bool
+	// PoolSourced marks the slots the credential pool filled with a lent
+	// credential — see RunBundle.PoolSourced. Metering that scopes a bump
+	// per tenant must treat these as the donor's, not the run's tenant's.
+	PoolSourced map[string]bool
 	// Fingerprints maps a credential slot (a Provider name or an OAuth
 	// kind) to the audit identity of what filled it. Not sensitive (8
 	// hash bytes) and deliberately NOT zeroed by cleanup: it says WHICH
@@ -77,6 +81,12 @@ type Credentials struct {
 // the platform tier rather than the tenant's own stores.
 func (c Credentials) IsPlatformSourced(slot string) bool {
 	return c.PlatformSourced[slot]
+}
+
+// IsPoolSourced reports whether the named credential slot was filled by the
+// mutualised credential pool with a contributor's lent credential.
+func (c Credentials) IsPoolSourced(slot string) bool {
+	return c.PoolSourced[slot]
 }
 
 // WireFamily groups credential slots (Provider names and OAuthKinds) that

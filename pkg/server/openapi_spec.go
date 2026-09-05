@@ -98,6 +98,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		CredPoolLedger:     credpool.NewMemoryLedger(),
 		Audit:              audit.NewMemoryStore(),
 		UsageCapSettings:   usagecap.NewMemorySettingsStore(),
+		UsageCaps:          usagecap.NewMemStore(),
 		BotSources:         botsource.NewMemoryStore(),
 		BotRolesSettings:   platformcfg.NewMemoryStore[platformcfg.BotRoles](),
 		SandboxSettings:    platformcfg.NewMemoryStore[platformcfg.Sandbox](),

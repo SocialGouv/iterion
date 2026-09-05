@@ -109,6 +109,13 @@ func usagePreflightFrom(src usagecap.PolicySource) (blocked bool, reason string)
 	if err != nil {
 		return false, ""
 	}
-	d := usagecap.Preflight(readings, pol, time.Now().UTC(), usagecap.DefaultMaxAge)
+	// A malformed trust window already refused the process at startup
+	// (FromEnv validates it); here it fails open like every other
+	// uncertainty of this pre-flight.
+	trust, err := usagecap.TrustFromEnv()
+	if err != nil {
+		return false, ""
+	}
+	d := usagecap.Preflight(readings, pol, time.Now().UTC(), trust)
 	return d.Blocked, d.Reason
 }

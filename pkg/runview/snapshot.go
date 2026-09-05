@@ -83,6 +83,20 @@ type RunHeader struct {
 	// ("off"|"ask"|"deny"); empty when the gate is off/unset. The studio
 	// badges ask/deny. See docs/permissions.md.
 	PermissionMode string `json:"permission_mode,omitempty"`
+	// CredFingerprints are the audit identities of the credentials the run
+	// can spend (store.Run.CredFingerprints — the same fingerprints the key
+	// and connection views show, never secrets), stamped at launch and at
+	// every resume. This is what the per-key concurrency ceiling counts, so
+	// an operator can audit a key's occupancy from the run list instead of
+	// the server logs. Empty for local runs and runs that sealed nothing.
+	CredFingerprints []string `json:"cred_fingerprints,omitempty"`
+	// LLMIdleSince is set while the run executes no model-calling node —
+	// it then holds none of its credentials' concurrency slots.
+	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty"`
+	// SkippedCredReopensAt is when the earliest credential the launch's
+	// resolution passed over reopens — the instant a usage-window retry may
+	// arm on instead of the failed credential's own reset.
+	SkippedCredReopensAt *time.Time `json:"skipped_cred_reopens_at,omitempty"`
 	// ModelOverrides are the launch-time per-node/-group model/backend
 	// pins captured on the run, surfaced so the studio Overview can show
 	// what the run was launched with. Empty when none were set.
@@ -1411,47 +1425,50 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 
 func headerFromRun(r *store.Run) RunHeader {
 	h := RunHeader{
-		ID:                r.ID,
-		Name:              r.Name,
-		WorkflowName:      r.WorkflowName,
-		WorkflowHash:      r.WorkflowHash,
-		FilePath:          r.FilePath,
-		BundleName:        r.BundleName,
-		BundleDisplayName: r.BundleDisplayName,
-		Status:            r.Status,
-		Inputs:            r.Inputs,
-		PermissionMode:    r.PermissionMode,
-		ModelOverrides:    r.ModelOverrides,
-		NodesServed:       r.NodesServed,
-		Budget:            r.Budget,
-		CreatedAt:         r.CreatedAt,
-		UpdatedAt:         r.UpdatedAt,
-		FinishedAt:        r.FinishedAt,
-		Error:             r.Error,
-		FailureCode:       r.FailureCode,
-		Checkpoint:        r.Checkpoint,
-		WorkDir:           r.WorkDir,
-		ProjectPath:       r.ProjectPath,
-		Worktree:          r.Worktree,
-		WorktreeAvailable: worktreeAvailable(r.WorkDir),
-		FinalCommit:       r.FinalCommit,
-		FinalBranch:       r.FinalBranch,
-		FinalBranchError:  r.FinalBranchError,
-		RoutingPolicy:     r.RoutingPolicy,
-		OutcomeSeq:        r.OutcomeSeq,
-		ContinuationState: r.ContinuationState,
-		MergedInto:        r.MergedInto,
-		MergedCommit:      r.MergedCommit,
-		MergeStrategy:     r.MergeStrategy,
-		MergeStatus:       r.MergeStatus,
-		AutoMerge:         r.AutoMerge,
-		Source:            r.Source,
-		ParentRunID:       r.ParentRunID,
-		ParentNodeID:      r.ParentNodeID,
-		ShardIndex:        r.ShardIndex,
-		ShardCount:        r.ShardCount,
-		ShardLabel:        r.ShardLabel,
-		WatchedIssueIDs:   r.WatchedIssueIDs,
+		ID:                   r.ID,
+		Name:                 r.Name,
+		WorkflowName:         r.WorkflowName,
+		WorkflowHash:         r.WorkflowHash,
+		FilePath:             r.FilePath,
+		BundleName:           r.BundleName,
+		BundleDisplayName:    r.BundleDisplayName,
+		Status:               r.Status,
+		Inputs:               r.Inputs,
+		PermissionMode:       r.PermissionMode,
+		CredFingerprints:     r.CredFingerprints,
+		LLMIdleSince:         r.LLMIdleSince,
+		SkippedCredReopensAt: r.SkippedCredReopensAt,
+		ModelOverrides:       r.ModelOverrides,
+		NodesServed:          r.NodesServed,
+		Budget:               r.Budget,
+		CreatedAt:            r.CreatedAt,
+		UpdatedAt:            r.UpdatedAt,
+		FinishedAt:           r.FinishedAt,
+		Error:                r.Error,
+		FailureCode:          r.FailureCode,
+		Checkpoint:           r.Checkpoint,
+		WorkDir:              r.WorkDir,
+		ProjectPath:          r.ProjectPath,
+		Worktree:             r.Worktree,
+		WorktreeAvailable:    worktreeAvailable(r.WorkDir),
+		FinalCommit:          r.FinalCommit,
+		FinalBranch:          r.FinalBranch,
+		FinalBranchError:     r.FinalBranchError,
+		RoutingPolicy:        r.RoutingPolicy,
+		OutcomeSeq:           r.OutcomeSeq,
+		ContinuationState:    r.ContinuationState,
+		MergedInto:           r.MergedInto,
+		MergedCommit:         r.MergedCommit,
+		MergeStrategy:        r.MergeStrategy,
+		MergeStatus:          r.MergeStatus,
+		AutoMerge:            r.AutoMerge,
+		Source:               r.Source,
+		ParentRunID:          r.ParentRunID,
+		ParentNodeID:         r.ParentNodeID,
+		ShardIndex:           r.ShardIndex,
+		ShardCount:           r.ShardCount,
+		ShardLabel:           r.ShardLabel,
+		WatchedIssueIDs:      r.WatchedIssueIDs,
 	}
 	// Bootstrap fallback: when the run is already running but the WS
 	// catch-up hasn't yet seen the run_started event, anchor on

@@ -67,6 +67,10 @@ func routeSchemas() map[string]routeOp {
 		"PATCH /api/admin/llm/api-keys/{key_id}":  {request: updateApiKeyReq{}, response: apiKeyView{}},
 		"DELETE /api/admin/llm/api-keys/{key_id}": {},
 
+		// Usage-window readings (super-admin) — forget one credential's
+		// stored readings after a provider reset the ledger cannot see.
+		"DELETE /api/admin/usage-readings/{fingerprint}": {response: usageReadingsClearedView{}},
+
 		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
 		"GET /api/admin/bots": {
 			response: struct {

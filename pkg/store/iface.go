@@ -69,19 +69,27 @@ type RunStore interface {
 
 	// Credential-concurrency meter (secrets.ApiKey.MaxConcurrentRuns).
 	//
-	// SetRunCredFingerprints stamps the run with the stable audit
-	// identities of the credentials the publisher sealed for it — never
-	// secrets. Re-stamped on every resume: re-resolution may pick
-	// different credentials, and a stale stamp would meter a key the run
-	// no longer holds.
+	// SetRunCredStamp stamps the run with what its credential resolution
+	// produced (RunCredStamp): the stable audit identities of the
+	// credentials the publisher sealed for it — never secrets — and when
+	// the earliest credential it passed over reopens. Re-stamped on every
+	// resume: re-resolution may pick different credentials, and a stale
+	// stamp would meter a key the run no longer holds, or arm a retry on
+	// a credential that is no longer the one it was refused.
+	//
+	// SetRunLLMIdle marks the run as executing no model-calling node
+	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince.
+	// SetRunCredStamp also clears the marker: a re-resolution is a fresh
+	// attempt, which counts until it proves idle.
 	//
 	// CountAliveRunsWithCredFingerprint counts runs in the queued or
-	// running states stamped with fingerprint, excluding excludeRunID
-	// (the run being resolved is already persisted and must not count
-	// itself toward its own ceiling). Deliberately NOT tenant-scoped:
-	// a platform key serves every tenant on one ceiling, and a tenant
-	// key's runs all live in one tenant anyway.
-	SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error
+	// running states stamped with fingerprint whose LLMIdleSince is nil,
+	// excluding excludeRunID (the run being resolved is already persisted
+	// and must not count itself toward its own ceiling). Deliberately NOT
+	// tenant-scoped: a platform key serves every tenant on one ceiling,
+	// and a tenant key's runs all live in one tenant anyway.
+	SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error
+	SetRunLLMIdle(ctx context.Context, runID string, idleSince *time.Time) error
 	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
 
 	// SetRunBudgetOverrides updates the persisted launch-time budget

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -124,4 +126,21 @@ func (s *MongoStore) Latest(ctx context.Context, key string) ([]Reading, error) 
 		})
 	}
 	return out, nil
+}
+
+// DeleteByFingerprint drops every document whose key ends in the
+// credential's fp segment. A suffix match cannot use the key index, so it
+// scans the collection — bounded by design: one document per (credential,
+// window) with a 14-day TTL, and this runs once per operator decision.
+func (s *MongoStore) DeleteByFingerprint(ctx context.Context, fingerprint string) (int, error) {
+	if strings.TrimSpace(fingerprint) == "" {
+		return 0, nil
+	}
+	res, err := s.col.DeleteMany(ctx, bson.M{
+		"key": bson.M{"$regex": regexp.QuoteMeta(keyFingerprintSuffix(fingerprint)) + "$"},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("usagecap: delete readings for fingerprint %s: %w", fingerprint, err)
+	}
+	return int(res.DeletedCount), nil
 }

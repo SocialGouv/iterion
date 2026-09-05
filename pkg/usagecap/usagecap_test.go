@@ -152,7 +152,7 @@ func TestReadingFresh(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.r.Fresh(now, DefaultMaxAge); got != tt.want {
+			if got := tt.r.Fresh(now, DefaultTrust()); got != tt.want {
 				t.Errorf("Fresh = %v, want %v", got, tt.want)
 			}
 		})
@@ -165,13 +165,13 @@ func TestPreflight(t *testing.T) {
 	late := now.Add(30 * time.Hour)
 
 	t.Run("nothing measured yet", func(t *testing.T) {
-		if d := Preflight(nil, joPolicy(), now, DefaultMaxAge); d.Blocked {
+		if d := Preflight(nil, joPolicy(), now, DefaultTrust()); d.Blocked {
 			t.Fatal("blocked with no readings — an unmeasured deployment must not be stranded")
 		}
 	})
 
 	t.Run("a soft cap also stops new work", func(t *testing.T) {
-		d := Preflight([]Reading{reading(WindowFiveHour, 0.90, soon)}, joPolicy(), now, DefaultMaxAge)
+		d := Preflight([]Reading{reading(WindowFiveHour, 0.90, soon)}, joPolicy(), now, DefaultTrust())
 		if !d.Blocked || d.Stop {
 			t.Fatalf("blocked=%v stop=%v, want blocked without stop: soft means 'start nothing new'", d.Blocked, d.Stop)
 		}
@@ -179,7 +179,7 @@ func TestPreflight(t *testing.T) {
 
 	t.Run("stale readings are ignored", func(t *testing.T) {
 		rolled := reading(WindowSevenDay, 0.99, now.Add(-time.Minute))
-		if d := Preflight([]Reading{rolled}, joPolicy(), now, DefaultMaxAge); d.Blocked {
+		if d := Preflight([]Reading{rolled}, joPolicy(), now, DefaultTrust()); d.Blocked {
 			t.Fatal("blocked on a window that already rolled over")
 		}
 	})
@@ -188,7 +188,7 @@ func TestPreflight(t *testing.T) {
 		d := Preflight([]Reading{
 			reading(WindowFiveHour, 0.90, soon),
 			reading(WindowSevenDay, 0.99, late),
-		}, joPolicy(), now, DefaultMaxAge)
+		}, joPolicy(), now, DefaultTrust())
 		if !d.Blocked {
 			t.Fatal("want blocked")
 		}
@@ -229,7 +229,7 @@ func TestWindowAuth_evidenceNotCap(t *testing.T) {
 		t.Fatal("FamilyOf(WindowAuth) = FamilyNone — the evidence consumers would filter it out")
 	}
 	pol := Policy{FiveHour: WindowPolicy{MaxPercent: 85, Mode: ModeSoft}, Week: WindowPolicy{MaxPercent: 85, Mode: ModeHard}}
-	d := Preflight([]Reading{{Window: WindowAuth, Status: StatusRejected, ObservedAt: time.Now()}}, pol, time.Now(), DefaultMaxAge)
+	d := Preflight([]Reading{{Window: WindowAuth, Status: StatusRejected, ObservedAt: time.Now()}}, pol, time.Now(), DefaultTrust())
 	if d.Blocked {
 		t.Fatal("an auth refusal must never block a launch through the usage cap — it is routing evidence, not quota")
 	}
@@ -248,5 +248,99 @@ func TestWindowSpend_evidenceNotCap(t *testing.T) {
 	// wall, not a percentage iterion stops itself at.
 	if p := (Policy{}).For(FamilyAccount); p.Enabled() {
 		t.Fatalf("FamilyAccount must stay uncapped (the provider's wall, not a percentage we stop at), got %+v", p)
+	}
+}
+
+// #690 — a dated reading is trusted for a bounded time, not for its whole
+// window. The provider reset every window early on 2026-09-04; readings
+// taken before it (95%, resets three days out) kept every walk skipping
+// both forfaits for four days, and the only writer of a fresh reading is a
+// live session, which the skip itself prevented. Past the trust window a
+// reading is suggestive, not authoritative: the walk lets the tier through
+// and the next session's rate_limit_event re-establishes the truth.
+func TestReadingFresh_TrustWindowBoundsADatedReading(t *testing.T) {
+	now := time.Date(2026, 9, 4, 20, 20, 0, 0, time.UTC)
+	trust := Trust{MaxAge: time.Hour, Window: 2 * time.Hour}
+	threeDays := now.Add(72 * time.Hour)
+
+	// Blind judge: 95%, reset three days out, observed six hours ago —
+	// older than the trust window, so NOT fresh.
+	stale := Reading{Window: WindowSevenDay, Utilization: 0.95, Status: StatusAllowed, ResetsAt: threeDays, ObservedAt: now.Add(-6 * time.Hour)}
+	if stale.Fresh(now, trust) {
+		t.Fatal("a reading older than the trust window is still trusted — the self-sustaining lock of #690")
+	}
+	// No hysteria: the same reading observed ten minutes ago still holds.
+	recent := stale
+	recent.ObservedAt = now.Add(-10 * time.Minute)
+	if !recent.Fresh(now, trust) {
+		t.Fatal("a recent reading inside its window must stay fresh")
+	}
+	// The reset instant still ends a reading early, whatever its age.
+	rolled := recent
+	rolled.ResetsAt = now.Add(-time.Minute)
+	if rolled.Fresh(now, trust) {
+		t.Fatal("a reading past its reset instant must not be fresh")
+	}
+	// A zero Trust means the defaults (MaxAge 1h, Window 3h), so every
+	// caller that has no operator value keeps a bounded trust.
+	if !recent.Fresh(now, Trust{}) {
+		t.Fatal("zero Trust must normalise to the defaults, not to 'never fresh'")
+	}
+	if (Reading{Window: WindowSevenDay, Utilization: 0.95, ResetsAt: threeDays, ObservedAt: now.Add(-(DefaultTrustWindow + time.Minute))}).Fresh(now, Trust{}) {
+		t.Fatalf("zero Trust must bound a dated reading at DefaultTrustWindow (%s)", DefaultTrustWindow)
+	}
+}
+
+// The same two cases through Preflight — the gate the runner and the
+// publisher's walk actually consult.
+func TestPreflight_StaleDatedReadingDoesNotBlock(t *testing.T) {
+	now := time.Date(2026, 9, 4, 20, 20, 0, 0, time.UTC)
+	trust := Trust{MaxAge: time.Hour, Window: 2 * time.Hour}
+	pol := Policy{Week: WindowPolicy{MaxPercent: 85, Mode: ModeHard}}
+	threeDays := now.Add(72 * time.Hour)
+
+	stale := Reading{Window: WindowSevenDay, Utilization: 0.95, Status: StatusAllowed, ResetsAt: threeDays, ObservedAt: now.Add(-6 * time.Hour)}
+	if d := Preflight([]Reading{stale}, pol, now, trust); d.Blocked {
+		t.Fatalf("blocked on a six-hour-old reading under a 2h trust window: %s", d.Reason)
+	}
+	recent := stale
+	recent.ObservedAt = now.Add(-10 * time.Minute)
+	d := Preflight([]Reading{recent}, pol, now, trust)
+	if !d.Blocked || !d.Stop {
+		t.Fatalf("a ten-minute-old 95%% reading must still block (hard): blocked=%v stop=%v", d.Blocked, d.Stop)
+	}
+	if !d.ResetsAt.Equal(threeDays) {
+		t.Fatalf("ResetsAt = %v, want %v", d.ResetsAt, threeDays)
+	}
+}
+
+// The operator knob: ITERION_USAGE_CAP_TRUST_WINDOW. Unset → the default;
+// a malformed or non-positive value is an error — the package's standing
+// rule that a typo must never silently change enforcement — and FromEnv
+// refuses to start on it like on every other cap variable, kill switch
+// included.
+func TestTrustFromEnv(t *testing.T) {
+	got, err := TrustFromEnv()
+	if err != nil || got != DefaultTrust() {
+		t.Fatalf("unset: got %+v, %v; want the defaults", got, err)
+	}
+	t.Setenv(EnvTrustWindow, "90m")
+	got, err = TrustFromEnv()
+	if err != nil || got.Window != 90*time.Minute || got.MaxAge != DefaultMaxAge {
+		t.Fatalf("90m: got %+v, %v", got, err)
+	}
+	for _, bad := range []string{"soon", "0", "-1h", "3"} {
+		t.Setenv(EnvTrustWindow, bad)
+		if _, err := TrustFromEnv(); err == nil {
+			t.Errorf("TrustFromEnv accepted %q", bad)
+		}
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("FromEnv accepted %s=%q — a malformed trust window must refuse to start", EnvTrustWindow, bad)
+		}
+		t.Setenv(EnvEnabled, "off")
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("FromEnv accepted %s=%q under the kill switch — the trust window also governs the credential-skip evidence, which the switch does not disarm", EnvTrustWindow, bad)
+		}
+		t.Setenv(EnvEnabled, "")
 	}
 }

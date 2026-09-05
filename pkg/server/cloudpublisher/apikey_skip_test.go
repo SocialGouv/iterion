@@ -27,7 +27,7 @@ func TestApiKeyUsable(t *testing.T) {
 	scope := usagecap.TenantScope("team")
 	key := secrets.ApiKey{Provider: secrets.ProviderZAI, Name: "primary", Fingerprint: "fp-zai-1"}
 
-	usable := p.apiKeyUsable(context.Background(), scope, "run-x")
+	usable := p.apiKeyUsable(context.Background(), scope, "run-x", nil)
 	if !usable(key) {
 		t.Fatal("no evidence must mean usable")
 	}
@@ -54,7 +54,7 @@ func TestApiKeyUsable(t *testing.T) {
 			ObservedAt: time.Now()}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if !p2.apiKeyUsable(context.Background(), scope, "run-x")(key) {
+	if !p2.apiKeyUsable(context.Background(), scope, "run-x", nil)(key) {
 		t.Fatal("a rejected overage reading is no quota evidence — the key must stay usable")
 	}
 	other := secrets.ApiKey{Provider: secrets.ProviderOpenAI, Name: "m", Fingerprint: "fp-zai-1"}
@@ -208,7 +208,7 @@ func TestApiKeyUsable_authRefusalSkips(t *testing.T) {
 			ObservedAt: time.Now()}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if p.apiKeyUsable(context.Background(), scope, "run-x")(key) {
+	if p.apiKeyUsable(context.Background(), scope, "run-x", nil)(key) {
 		t.Fatal("a fresh auth refusal under the key's fingerprint must skip it")
 	}
 }
@@ -263,7 +263,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 		if err := rs.SaveRun(ctx, r); err != nil {
 			t.Fatalf("SaveRun: %v", err)
 		}
-		if err := rs.SetRunCredFingerprints(ctx, id, []string{fp}); err != nil {
+		if err := rs.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{fp}}); err != nil {
 			t.Fatalf("stamp: %v", err)
 		}
 	}
@@ -271,7 +271,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 	mkRun("alive-2", store.RunStatusQueued, "fp-capped")
 
 	p := &Publisher{usageCaps: usagecap.NewMemStore(), store: rs, logger: testLogger()}
-	usable := p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new")
+	usable := p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new", nil)
 
 	capped := secrets.ApiKey{Provider: secrets.ProviderZAI, Name: "capped", Fingerprint: "fp-capped", MaxConcurrentRuns: 2}
 	if usable(capped) {
@@ -288,7 +288,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 
 	// The run being resolved is already persisted and stamped (a resume):
 	// it must not consume its own slot.
-	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1")(capped) {
+	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1", nil)(capped) {
 		t.Fatal("a resume must not count itself toward the key's ceiling")
 	}
 }
@@ -326,7 +326,7 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	hr, _ := rs.LoadRun(ctx, "holder")
 	hr.Status = store.RunStatusRunning
 	_ = rs.SaveRun(ctx, hr)
-	_ = rs.SetRunCredFingerprints(ctx, "holder", []string{"fp-zai-a"})
+	_ = rs.SetRunCredStamp(ctx, "holder", store.RunCredStamp{Fingerprints: []string{"fp-zai-a"}})
 	// The run being resolved must pre-exist for the stamp.
 	if _, err := rs.CreateRun(ctx, "run-c1", "demo", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)

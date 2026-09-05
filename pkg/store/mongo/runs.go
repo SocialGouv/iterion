@@ -673,14 +673,41 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // PatchRunSteering persists the live-steering state (loop grants +
 // absolute budget raises) with a partial $set, tenant-scoped. Partial:
 // nil inputs leave the stored field untouched.
-// SetRunCredFingerprints stamps the sealed credentials' audit identities
-// on the run document (see store.RunStore). Tenant-scoped like every
-// other targeted patch: the caller stamps a run it just persisted.
-func (s *Store) SetRunCredFingerprints(ctx context.Context, id string, fingerprints []string) error {
-	set := bson.M{"cred_fingerprints": fingerprints, "updated_at": time.Now().UTC()}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+// SetRunCredStamp writes a credential resolution's stamp on the run
+// document (see store.RunStore). Tenant-scoped like every other targeted
+// patch: the caller stamps a run it just persisted. Granular $set/$unset
+// so a status transition racing this write is never disturbed.
+func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunCredStamp) error {
+	set := bson.M{"cred_fingerprints": stamp.Fingerprints, "updated_at": time.Now().UTC()}
+	// A re-stamp is a fresh attempt: it counts until it proves idle.
+	unset := bson.M{"llm_idle_since": ""}
+	if stamp.SkippedReopensAt != nil {
+		set["skipped_cred_reopens_at"] = stamp.SkippedReopensAt.UTC()
+	} else {
+		unset["skipped_cred_reopens_at"] = ""
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set, "$unset": unset})
 	if err != nil {
-		return fmt.Errorf("store/mongo: set run cred fingerprints: %w", err)
+		return fmt.Errorf("store/mongo: set run cred stamp: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
+// SetRunLLMIdle toggles the model-idle marker (see store.RunStore).
+// Granular $set/$unset, tenant-scoped like the other targeted patches.
+func (s *Store) SetRunLLMIdle(ctx context.Context, id string, idleSince *time.Time) error {
+	update := bson.M{"$set": bson.M{"updated_at": time.Now().UTC()}}
+	if idleSince != nil {
+		update["$set"].(bson.M)["llm_idle_since"] = idleSince.UTC()
+	} else {
+		update["$unset"] = bson.M{"llm_idle_since": ""}
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: set run llm idle: %w", err)
 	}
 	if res.MatchedCount == 0 {
 		return store.ErrRunNotFound
@@ -730,9 +757,9 @@ func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.Ru
 	return nil
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running runs stamped
-// with fingerprint (see store.RunStore). Deliberately NO tenant filter —
-// a platform key serves every tenant on one ceiling.
+// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
+// stamped with fingerprint (see store.RunStore). Deliberately NO tenant
+// filter — a platform key serves every tenant on one ceiling.
 func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
@@ -746,6 +773,9 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 	filter := notDeleted(bson.M{
 		"cred_fingerprints": fingerprint,
 		"status":            bson.M{"$in": holding},
+		// {field: null} matches both an absent and an explicit null
+		// marker: legacy documents and documents the runner cleared.
+		"llm_idle_since": nil,
 	})
 	if excludeRunID != "" {
 		filter["_id"] = bson.M{"$ne": excludeRunID}
