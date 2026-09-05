@@ -481,16 +481,29 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			if interp == "" {
 				return nil, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
 			}
-			// Temp file lives in the workspace so it is visible from inside the
-			// sandbox bind-mount (e.workDir is the host-side bind source the
-			// container also sees); a basename written there is reachable from
-			// both sides via the same relative path. Removed on success or
-			// failure via the returned cleanup.
+			// The script file must be reachable from where the interpreter
+			// runs. Out of the judged tree whenever a place exists that both
+			// sides see at the same path: the host's temp dir for an
+			// unsandboxed run, the shared state dir for a bind-mount sandbox
+			// that has one. Only a copy-based sandbox, or a bind-mount without
+			// a shared dir, still gets the file in the workspace (basename,
+			// same relative path on both sides, pushed through the write-
+			// through seam below where the driver copies) — a dotfile a gate
+			// that judges the tree's cleanliness would otherwise read as
+			// uncommitted work of the run. Removed on success or failure via
+			// the returned cleanup.
 			wd := e.workDir
 			if wd == "" {
 				wd = "."
 			}
-			tmpFile, err := os.CreateTemp(wd, ".iterion-script-*"+ext)
+			_, copyBased := e.sandbox.(sandbox.WorkspaceFileRefresher)
+			scriptDir, inWorkspace := scriptScratchDir(wd, e.sharedStateDir, e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut), copyBased)
+			if !inWorkspace {
+				if merr := os.MkdirAll(scriptDir, 0o755); merr != nil {
+					return nil, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
+				}
+			}
+			tmpFile, err := os.CreateTemp(scriptDir, ".iterion-script-*"+ext)
 			if err != nil {
 				return nil, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
 			}
@@ -510,12 +523,18 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 				return nil, nil, fmt.Errorf("model: tool node %q: close temp script: %w", node.ID, cerr)
 			}
 			base := filepath.Base(tmpPath)
+			// Out of the workspace, the interpreter is handed the absolute
+			// path — the same on both sides by construction of the scratch.
+			scriptArg := base
+			if !inWorkspace {
+				scriptArg = tmpPath
+			}
 			// Copy-based sandboxes (kubernetes: workspace tar-copied at
 			// Prepare time) never see a host-side file created mid-run, so
 			// the script must ALSO be pushed through the write-through seam.
 			// The in-pod copy is removed on cleanup — a stray workspace
 			// dotfile would otherwise be swept up by a later `git add -A`.
-			if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+			if inWorkspace && e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
 				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
 					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
 						cleanup()
@@ -531,9 +550,9 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 					}
 				}
 			}
-			// Pass just the basename for the in-sandbox view (the bind mount
-			// uses the same path; portable whether we run via sandbox or host).
-			return e.toolNodeScriptCommand(ctx, interp, base), cleanup, nil
+			// In the workspace, just the basename (the bind mount uses the same
+			// relative path); out of it, the absolute scratch path.
+			return e.toolNodeScriptCommand(ctx, interp, scriptArg), cleanup, nil
 		}
 }
 
@@ -1193,4 +1212,20 @@ func sliceHasComplexElement(s []any) bool {
 func shellEscape(s string) string {
 	// Replace each ' with '\'': end current quote, insert escaped quote, reopen quote.
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// scriptScratchDir decides where a tool node's script file is written, and
+// whether that is inside the judged workspace. The host's temp dir serves an
+// unsandboxed run; a bind-mount sandbox with a shared state dir gets a
+// `scripts` scratch under it, reachable at the same absolute path on both
+// sides; a copy-based sandbox, or a bind-mount without a shared dir, keeps
+// the file in the workspace — the only place both sides then agree on.
+func scriptScratchDir(workDir, sharedStateDir string, sandboxed, copyBased bool) (dir string, inWorkspace bool) {
+	switch {
+	case !sandboxed:
+		return os.TempDir(), false
+	case !copyBased && sharedStateDir != "":
+		return filepath.Join(sharedStateDir, "scripts"), false
+	}
+	return workDir, true
 }
