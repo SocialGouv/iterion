@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +54,14 @@ func recreatedColumn(t *testing.T, name, newID string) forge.Project {
 // deletedColumn returns the fixture project with one Status option removed.
 func deletedColumn(t *testing.T, name string) forge.Project {
 	t.Helper()
-	p := testProject()
+	return withoutColumn(t, testProject(), name)
+}
+
+// withoutColumn removes one Status option from an arbitrary project, so a
+// fixture can drop two independently.
+func withoutColumn(t *testing.T, p forge.Project, name string) forge.Project {
+	t.Helper()
+	p.Fields = append([]forge.ProjectField(nil), p.Fields...)
 	for i, f := range p.Fields {
 		if !strings.EqualFold(f.Name, forge.ProjectStatusFieldName) {
 			continue
@@ -267,8 +275,14 @@ func TestSyncProjectBoardDegradesOnADeletedColumn(t *testing.T) {
 	if !stored.Degraded() || !strings.Contains(stored.DegradedReason, "In progress") {
 		t.Fatalf("binding must be degraded and NAME the lost column, got %q", stored.DegradedReason)
 	}
-	if stored.StatusOptions[native.StateInProgress] != "" {
-		t.Errorf("the dead option id must be dropped, got %q", stored.StatusOptions[native.StateInProgress])
+	// The dead id is KEPT: it is what lets the NEXT pass re-derive the loss
+	// instead of reading a healthy binding. The reflect is refused by the
+	// pass's lost set, asserted below.
+	if stored.StatusOptions[native.StateInProgress] == "" {
+		t.Errorf("the cached id must survive as the evidence of the loss: %v", stored.StatusOptions)
+	}
+	if !slices.Contains(stored.MissingStatuses, "In progress") {
+		t.Errorf("MissingStatuses = %v, want the lost column listed", stored.MissingStatuses)
 	}
 
 	// Two more passes: still no writes, and the reason is logged ONCE — an
@@ -325,6 +339,121 @@ func TestSyncProjectBoardClearsDegradedWhenTheColumnComesBack(t *testing.T) {
 	}
 	if len(bc.writes) != 1 || bc.writes[0].OptionID != "PVTSSO_back" {
 		t.Errorf("writes = %+v, want the push the degraded pass could not make", bc.writes)
+	}
+}
+
+// TestSyncProjectBoardStaysDegradedWhileTheColumnIsStillGone is the shape a
+// health flag derived from a single observation cannot hold.
+//
+// The loss is observable on ONE pass only if that pass destroys its own
+// evidence. Then the next pass sees nothing lost, and the first UNRELATED
+// repair — a column somewhere else on the board coming back — reads as "the
+// binding resolves again" and clears the flag. The binding then reads healthy
+// forever while every reflect onto the missing column still refuses, counted
+// and invisible.
+//
+// So the readout is re-derived from the binding's CURRENT shape on every pass:
+// a state the binding HAS an option for, that the board answers to under
+// neither that id nor the mapped name, is lost — for as long as that stays
+// true.
+func TestSyncProjectBoardStaysDegradedWhileTheColumnIsStillGone(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
+	project := testProject()
+
+	bindings := forge.NewMemoryBoardBindingStore()
+	binding := boundBinding(t, project)
+	// `blocked` is a column the board never carried — the ordinary
+	// partial-coverage shape, reported as missing_statuses and NOT a
+	// degradation. It is what comes back later, unrelated to the loss.
+	delete(binding.StatusOptions, native.StateBlocked)
+	binding.MissingStatuses = []string{"Blocked"}
+	if err := bindings.Upsert(context.Background(), *binding); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	var logs bytes.Buffer
+	opts := &ProjectImportOptions{Binding: binding, Bindings: bindings,
+		Logger: iterlog.New(iterlog.LevelWarn, &logs)}
+
+	// Pass 1: the operator deletes the "In progress" column AND the board has
+	// no "Blocked" one yet.
+	gone := deletedColumn(t, "In progress")
+	bc := &fakeBoardClient{project: withoutColumn(t, gone, "Blocked"), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusOption("Planned", optionID(t, project, "Planned"), at)),
+	}}}
+	if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if stored, _ := bindings.GetByTenant(context.Background(), "team-a"); !stored.Degraded() {
+		t.Fatalf("pass 1 must degrade on the deleted column: %+v", stored)
+	}
+	logged := strings.Count(logs.String(), "no longer exists")
+
+	// Pass 2: the operator adds a "Blocked" column — an adoption that has
+	// nothing to do with the column that is still missing.
+	bc.project = gone
+	if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	stored, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if !stored.Degraded() || !strings.Contains(stored.DegradedReason, "In progress") {
+		t.Fatalf("an unrelated repair cleared the degradation: %q — \"In progress\" is still gone", stored.DegradedReason)
+	}
+	if stored.StatusOptions[native.StateBlocked] == "" {
+		t.Errorf("the unrelated column must still be adopted: %v", stored.StatusOptions)
+	}
+	// Re-derived, not re-announced: the transition is logged once.
+	if got := strings.Count(logs.String(), "no longer exists"); got != logged {
+		t.Errorf("logged %d more times; a standing state is read off the binding, not re-warned every pass", got-logged)
+	}
+	// And the cards of the lost column are still refused, every pass.
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 3: %v", err)
+	}
+	if res.ReflectNoColumn != 1 || len(bc.writes) != 0 {
+		t.Errorf("pass 3: ReflectNoColumn = %d writes = %+v — the reflect must keep refusing a column that is still gone",
+			res.ReflectNoColumn, bc.writes)
+	}
+}
+
+// TestSyncProjectBoardDoesNotDegradeOnPartialCoverage: a column the map names
+// and the board never carried is `missing_statuses` — a bind that was accepted
+// on purpose ("the covered half works"), not a board that broke under us.
+// Degrading it would make the readout fire on the ordinary case of a
+// three-column board bound with the five-column default map.
+func TestSyncProjectBoardDoesNotDegradeOnPartialCoverage(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	seedSynced(t, board, 613, native.StateReady, "Planned", at)
+	project := deletedColumn(t, "Blocked")
+
+	bindings := forge.NewMemoryBoardBindingStore()
+	binding := boundBinding(t, project) // bound against the board as it IS
+	if err := bindings.Upsert(context.Background(), *binding); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	bc := &fakeBoardClient{project: project, pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusOption("Planned", optionID(t, project, "Planned"), at)),
+	}}}
+
+	if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: binding, Bindings: bindings}); err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	stored, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if stored.Degraded() {
+		t.Errorf("partial coverage is a reported bind, not a degradation: %q", stored.DegradedReason)
+	}
+	if len(stored.MissingStatuses) == 0 {
+		t.Errorf("...but it must still be REPORTED: %+v", stored.MissingStatuses)
 	}
 }
 
