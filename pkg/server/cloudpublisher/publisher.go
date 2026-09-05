@@ -114,6 +114,11 @@ type Config struct {
 	// passed over like a refused one, so the tiers stay a fallback chain.
 	// Nil keeps the walk refusal-evidence-only.
 	CapPolicy usagecap.PolicySource
+	// UsageCapTrust bounds how long a stored reading is believed by the
+	// credential walk — the refusal evidence and the cap mirror alike
+	// (usagecap.TrustFromEnv). The zero value applies the package
+	// defaults.
+	UsageCapTrust usagecap.Trust
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -161,6 +166,7 @@ type Publisher struct {
 	credPool       *credpool.Broker
 	usageCaps      usagecap.Store
 	capPolicy      usagecap.PolicySource
+	trust          usagecap.Trust
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -255,6 +261,7 @@ func New(cfg Config) (*Publisher, error) {
 		credPool:       cfg.CredPool,
 		usageCaps:      cfg.UsageCaps,
 		capPolicy:      cfg.CapPolicy,
+		trust:          cfg.UsageCapTrust.Normalized(),
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -1021,12 +1028,13 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		return time.Time{}, ""
 	}
 	now := time.Now()
+	trust := p.trust.Normalized()
 	// When several windows are refused, the one that reopens LAST rules:
 	// the credential stays unusable until every refusal has lapsed.
 	var until time.Time
 	var why string
 	for _, r := range readings {
-		if r.Status != usagecap.StatusRejected || !r.Fresh(now, usagecap.DefaultMaxAge) {
+		if r.Status != usagecap.StatusRejected || !r.Fresh(now, trust) {
 			continue
 		}
 		// Windows usagecap itself never blocks on are no evidence here
@@ -1042,7 +1050,7 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		if reopen.IsZero() {
 			// A refusal with no reset instant is trusted only for the
 			// reading's own staleness bound.
-			reopen = r.ObservedAt.Add(usagecap.DefaultMaxAge)
+			reopen = r.ObservedAt.Add(trust.MaxAge)
 		}
 		if reopen.After(until) {
 			until = reopen
@@ -1079,10 +1087,10 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		// A blocked window with no reset instant is trusted for the
 		// reading's own staleness bound, the same synthesis the refusal
 		// branch above applies: bounded, self-healing, and symmetric.
-		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, usagecap.DefaultMaxAge); d.Blocked {
+		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, trust); d.Blocked {
 			reopen := d.ResetsAt
 			if reopen.IsZero() {
-				reopen = now.Add(usagecap.DefaultMaxAge)
+				reopen = now.Add(trust.MaxAge)
 			}
 			until = reopen
 			why = fmt.Sprintf("the operator's cap on the %s window is reached (%.0f%% ≥ %.0f%%)", d.Window, d.Percent, d.Cap)

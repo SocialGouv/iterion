@@ -178,6 +178,11 @@ type Config struct {
 	// GET/PUT /api/admin/settings/usage-caps routes and switches the
 	// /healthz usage_cap echo to the EFFECTIVE (db-or-env) values.
 	UsageCapSettings usagecap.SettingsStore
+	// UsageCaps, when non-nil, is the fleet's shared ledger of usage-window
+	// readings (pkg/usagecap Store — written by every runner, read by the
+	// launch walk). Enables the super-admin
+	// DELETE /api/admin/usage-readings/{fingerprint} escape hatch.
+	UsageCaps usagecap.Store
 	// OrgDefaults are the platform-wide launch limits applied when a
 	// team has no per-org override. Zero values mean "no limit".
 	OrgDefaults OrgLimitDefaults

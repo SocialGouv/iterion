@@ -243,6 +243,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: %w", err)
 	}
+	usageCapTrust, err := usagecap.TrustFromEnv()
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
 	usageCapStore := usagecap.NewMongoStore(st.DB())
 	usageCapSource := usagecap.NewResolver(
 		usagecap.NewMongoSettingsStore(st.DB()), usageCapEnvPolicy,
@@ -332,6 +336,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		CredPool:       credBroker,
 		UsageCapSource: usageCapSource,
 		UsageCaps:      usageCapStore,
+		UsageCapTrust:  usageCapTrust,
 		BotsPaths:      botsPaths,
 		BotSources:     botsource.NewMongoStore(st.DB()),
 		// Sandbox-by-default: the runner is a product entry point like

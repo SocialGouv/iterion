@@ -348,6 +348,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		v, ok := rec.Vars[name]
 		return v, ok
 	})
+	// One readings ledger shared by the publisher's credential walk and the
+	// admin route that clears a credential's readings, and one trust bound
+	// for the walk — resolved once, so a malformed value refuses the boot
+	// here rather than degrading silently at the first launch.
+	usageCapStore := usagecap.NewMongoStore(st.DB())
+	usageCapTrust, err := usagecap.TrustFromEnv()
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -368,7 +377,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// skipped at launch so the run falls through to the next
 		// credential tier instead of parking for a reset it could have
 		// avoided.
-		UsageCaps: usagecap.NewMongoStore(st.DB()),
+		UsageCaps:     usageCapStore,
+		UsageCapTrust: usageCapTrust,
 		// The operator's cap posture, consulted by the walk over the same
 		// readings: the runner's pre-flight parks on a hard cap before any
 		// node runs, so a capped credential must be passed over like a
@@ -613,6 +623,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CredPoolLedger:         stores.credLedger,
 		Audit:                  stores.audit,
 		UsageCapSettings:       stores.usageCapSettings,
+		UsageCaps:              usageCapStore,
 		Marketplace:            stores.marketplace,
 		Redis:                  redisClient,
 		PATs:                   stores.pat,

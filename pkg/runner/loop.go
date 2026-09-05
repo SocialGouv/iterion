@@ -905,6 +905,10 @@ type Config struct {
 	// rediscovering a ceiling another pod already hit. nil disables the
 	// pre-flight; the in-run guard still applies.
 	UsageCaps usagecap.Store
+	// UsageCapTrust bounds how long a stored reading is believed by the
+	// pre-flight (usagecap.TrustFromEnv). The zero value applies the
+	// package defaults.
+	UsageCapTrust usagecap.Trust
 
 	// OrgUsage, when non-nil, receives each run's accumulated LLM
 	// cost/tokens into the org's monthly bucket at the end of every

@@ -173,9 +173,12 @@ type Server struct {
 	// launch preflight read the latter.
 	usageCapSettings usagecap.SettingsStore
 	usageCapSource   *usagecap.Resolver
-	pats             pat.Store
-	queue            QueueBackend
-	botBindings      secrets.BotSecretBindingStore
+	// usageCaps is the readings ledger the admin escape hatch clears (nil
+	// outside cloud mode).
+	usageCaps   usagecap.Store
+	pats        pat.Store
+	queue       QueueBackend
+	botBindings secrets.BotSecretBindingStore
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
 	// restart re-derives instead of silently dropping the plugin from runs.
@@ -529,6 +532,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		credPoolLedger:     cfg.CredPoolLedger,
 		auditStore:         cfg.Audit,
 		usageCapSettings:   cfg.UsageCapSettings,
+		usageCaps:          cfg.UsageCaps,
 		pats:               cfg.PATs,
 		queue:              cfg.Queue,
 		botBindings:        cfg.BotBindings,
