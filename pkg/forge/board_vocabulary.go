@@ -255,7 +255,7 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 	// 2. Recover the bind-time accepted set for a binding written before it
 	// was recorded, so step 3 can tell "never had one" from "lost one".
 	if b.UnresolvedAtBind == nil {
-		b.UnresolvedAtBind = reconstructUnresolvedAtBind(b, missing)
+		b.UnresolvedAtBind = reconstructUnresolvedAtBind(b)
 		rep.changed = true
 	}
 	accepted := make(map[string]bool, len(b.UnresolvedAtBind))
@@ -298,11 +298,21 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 }
 
 // reconstructUnresolvedAtBind recovers the bind-time accepted set for a binding
-// stored before it was recorded, and the reconstruction is deliberately
-// ASYMMETRIC on the binding's own health:
+// stored before it was recorded.
 //
-//   - a HEALTHY legacy binding: whatever it cannot resolve now is what it has
-//     always run with, so it was accepted. A three-column board bound with the
+// It reads the BINDING, never the live board: a mapped column with no cached
+// option id is one the bind could not resolve and did not refuse over, which is
+// the definition of the set. The board's current shape is the wrong oracle —
+// "what the board lacks NOW" and "what the bind accepted" diverge exactly when
+// something broke in the upgrade window, and diverge catastrophically when the
+// Status field has vanished (every mapped column lacks a home, and recording
+// all of them as accepted persists a lie the operator reads back on the binding
+// API). Independent of the board, this cannot be poisoned by one bad pass.
+//
+// It is deliberately ASYMMETRIC on the binding's own health:
+//
+//   - a HEALTHY legacy binding: a column it never resolved is one it has always
+//     run without, so it was accepted. A three-column board bound with the
 //     five-column default map must not start reading as broken on an upgrade;
 //   - a DEGRADED one: NOTHING was accepted. Its record already says a column
 //     broke, and the release that flagged it also deleted that column's cached
@@ -312,12 +322,18 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 //
 // That is the rule in one line: a health flag is never cleared by the absence
 // of the evidence that would have kept it.
-func reconstructUnresolvedAtBind(b *BoardBinding, unresolvedNow []string) []string {
+func reconstructUnresolvedAtBind(b *BoardBinding) []string {
+	out := []string{} // non-nil: reconstructed-as-empty, not un-recorded
 	if b.Degraded() {
-		return []string{} // non-nil: reconstructed-as-empty, not un-recorded
+		return out
 	}
-	out := make([]string, 0, len(unresolvedNow))
-	return append(out, unresolvedNow...)
+	for _, m := range b.Mapping() {
+		if b.StatusOptions[m.State] == "" {
+			out = append(out, m.Status)
+		}
+	}
+	sort.Strings(out) // stable report, like the bind's own
+	return out
 }
 
 // sameStringSet compares two already-sorted name lists.
