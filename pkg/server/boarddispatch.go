@@ -730,6 +730,7 @@ func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time
 		card := dispatcher.StuckCard{
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+			RecordedRunID:   cand.Claim.LastRunID,
 		}
 		// Release for every disposition the RECONCILER can then file, not
 		// only finished: a released card is exactly what the
@@ -844,6 +845,7 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 		card := dispatcher.StuckCard{
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+			RecordedRunID:   cand.Claim.LastRunID,
 		}
 		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep &&
 			!dispatcher.RecoveryHoldExpired(run, runErr, card, cand.Claim.Prev) {
