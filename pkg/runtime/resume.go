@@ -785,7 +785,8 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 // (setupFailureStatus), so the runner's retry lane reads a resumed run
 // exactly as a launched one: a sandbox phase timeout lands as
 // SANDBOX_SETUP_TIMEOUT (a redelivery to a fresh pod routinely clears
-// the stall), a drain as INTERRUPTED. An operator cancel is honoured as
+// the stall), a pod the cluster had no room for as SANDBOX_CAPACITY, a
+// drain as INTERRUPTED. An operator cancel is honoured as
 // `cancelled` with the checkpoint kept — the same CAS shape the node
 // loop uses, so a reason the publisher already recorded is never
 // overwritten. Every write is loud on failure: a park that does not
@@ -802,8 +803,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 // The returned error is what the runner classifies, so it carries the
 // same sentinel the status carries — ErrRunCancelled for an operator
 // cancel (acked, never redelivered), ErrRunInterrupted for a drain
-// (naked, exempt from the DLQ park), the driver's own sandbox.ErrPhaseTimeout
-// for a stall (naked with a delay) — mirroring setupErr on the launch
+// (naked, exempt from the DLQ park), the driver's own
+// sandbox.ErrPhaseTimeout for a stall and sandbox.ErrCapacity for a pod
+// that never got placed (both naked with a delay) — mirroring setupErr on the launch
 // path. A bare wrap would read as a generic failure: an operator cancel
 // burning a delivery, a drain parked on the DLQ.
 func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp *store.Checkpoint, fallbackNode string, sbErr error) error {

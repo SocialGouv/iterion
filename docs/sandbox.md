@@ -863,6 +863,29 @@ an exponent, or the SI/binary byte suffixes (`4Gi`); `m` on memory
 (milli-bytes) and a byte suffix on CPU are refused, as are zero quantities
 (a block that schedules like no block). The API server owns the rest.
 
+**When the deadline does expire, the failure is classified.** The driver
+reads the pod's own status once, before deleting it, and decides between
+a PLACEMENT failure — the pod is still `Pending`, which is the API's own
+guarantee that no container was created: unscheduled (`Unschedulable`,
+`Insufficient cpu`) or scheduled onto a node that had not started it — and
+everything else. A placement failure carries `sandbox.ErrCapacity`, so the run parks
+`failed_resumable` + `SANDBOX_CAPACITY` and the cloud runner re-offers
+the delivery after a delay long enough for an autoscaler cycle, instead
+of dying terminal and silently losing an hourly sentinel's tick. A broken
+image reference, an invalid spec, a crash-looping container or a pod the
+driver could not read stay terminal `failed`: a redelivery re-hits them
+identically and spends a pod for it. The full table is in
+[resume](resume.md#sandbox-startup--which-failures-are-resumable).
+
+The capacity signal is read from the pod's `PodScheduled` condition, not
+from the `TriggeredScaleUp` **Event** the autoscaler writes: Events need
+a `get events` verb the runner's namespaced Role deliberately does not
+grant, and the condition already says the same thing. There is no second
+"keep waiting while a node is coming" deadline either — the resumable
+classification IS that wait, with the queue as its timer and a different,
+less loaded pod free to claim the redelivery; a run that needs longer in
+one shot raises `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT`.
+
 **Nothing is shipped by default.** Measured on a three-worker cluster with the
 image on one node only: no requests → 2/3/1, requests alone → 2/2/2, requests
 plus spread → 2/2/2 — the request is the half that moves the pods (it is what

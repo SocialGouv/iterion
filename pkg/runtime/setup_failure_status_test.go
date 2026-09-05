@@ -74,6 +74,42 @@ func TestSetupFailureStatus_PhaseTimeoutIsResumable(t *testing.T) {
 	}
 }
 
+// A pod that never got placed executed NOTHING: no node started, no
+// command ran. Classified `failed` it is dead on arrival — an hourly
+// sentinel silently loses its tick and a campaign loses its launch (#699,
+// measured in production with every worker at 88–94 % CPU requested).
+func TestSetupFailureStatus_CapacityIsResumable(t *testing.T) {
+	cause := fmt.Errorf("kubernetes: wait for pod ready: %w",
+		errors.Join(sandbox.ErrCapacity, errors.New("0/12 nodes are available: 11 Insufficient cpu")))
+
+	got, msg, code := setupFailureStatus(context.Background(), "sandbox start", cause)
+	if got != store.RunStatusFailedResumable {
+		t.Fatalf("capacity status = %q, want failed_resumable — nothing retries a terminal failure, and the pod did no work", got)
+	}
+	if code != store.FailureSandboxCapacity {
+		t.Fatalf("capacity code = %q, want SANDBOX_CAPACITY — the retry lane and the gate notice cannot tell it from a generic failure", code)
+	}
+	if !strings.Contains(msg, "Insufficient cpu") {
+		t.Fatalf("the cluster's reason must reach the run record, got %q", msg)
+	}
+}
+
+// The status and the error have to agree: the runner classifies the
+// sentinel itself, so a capacity failure that lost it would be ACKed and
+// dropped by the queue while the run record claims it is resumable.
+func TestSetupErr_CapacityKeepsItsOwnSentinel(t *testing.T) {
+	e := &Engine{}
+	capacity := fmt.Errorf("runtime: sandbox: %w",
+		errors.Join(sandbox.ErrCapacity, errors.New("unschedulable")))
+	err := e.setupErr(context.Background(), capacity)
+	if !errors.Is(err, sandbox.ErrCapacity) {
+		t.Fatalf("capacity identity lost after setupErr; got %v", err)
+	}
+	if errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("capacity was dressed up as an interruption: %v — the runner would exempt it from the DLQ park", err)
+	}
+}
+
 // setupErr hands the phase timeout to the runner under its OWN sentinel:
 // the runner's ack policy classifies sandbox.ErrPhaseTimeout itself. It
 // must not be dressed up as ErrRunInterrupted — an interruption is exempt

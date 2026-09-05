@@ -526,6 +526,32 @@ schema validation, edge/routing failures, budget and timeout errors, fan-out
 failures, and resumable sandbox startup failures. A recovery policy may retry,
 repair, or ask a human before the final status is written.
 
+### Sandbox startup — which failures are resumable
+
+A failure at `sandbox start` happens before the first node runs, so it is
+classified from the DRIVER's typed error rather than assumed either way.
+Both resumable codes are persisted on `failed_resumable`, so
+`iterion resume`, `--auto-resume` and the cloud runner's redelivery all
+pick them up; anything else stays terminal `failed`, because a redelivery
+would re-hit it identically and only spend a pod per attempt.
+
+| Failure | Code | Status |
+|---|---|---|
+| A bounded setup phase that RAN and stalled (workspace copy, git fixup) | `SANDBOX_SETUP_TIMEOUT` | `failed_resumable` — a fresh pod routinely clears the stall |
+| The pod is still `Pending` past the deadline, unscheduled (`Unschedulable`, `Insufficient cpu`: the fleet is at its request ceiling) | `SANDBOX_CAPACITY` | `failed_resumable` — the run executed nothing; a later attempt re-places it |
+| The pod is still `Pending`, scheduled, its node not having started the container (`ContainerCreating`, `PodInitializing`, or no container status reported yet) | `SANDBOX_CAPACITY` | `failed_resumable` — same: `Pending` IS the API's guarantee that no container was created |
+| A broken image reference (`ErrImagePull`, `ImagePullBackOff`, `InvalidImageName`) | — | `failed` — every pod re-hits it; the operator fixes the reference. Overrides the phase: such a pod is `Pending` too |
+| An invalid spec (`CreateContainerConfigError`, `CreateContainerError`) or a crash-looping container | — | `failed` |
+| The pod reached `Running` (or `Unknown`) but never Ready | — | `failed` — a container came up; nothing says the run did nothing |
+| The pod could not be inspected at all (RBAC, apiserver blip) | — | `failed` — no evidence, nothing claimed |
+
+The cloud runner re-offers a `SANDBOX_CAPACITY` delivery after a delay
+long enough for a cluster autoscaler to add a node; a fleet that stays
+full through every permitted delivery parks the run on the DLQ like any
+other repeated failure. The start deadline itself is
+`ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` — see
+[sandbox](sandbox.md#scheduling-requests-and-node-spread).
+
 Cancellation saves state with a detached, bounded store context so Ctrl-C can
 still persist after the execution context is cancelled. If checkpoint writing
 itself fails, the runtime logs the loss and can fall back to non-resumable

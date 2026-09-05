@@ -499,6 +499,10 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 //     expired while the run ctx stayed live. failed_resumable, so the
 //     runner's NAK redelivers the run to a healthy pod, which routinely
 //     clears the stall;
+//   - a sandbox the driver could not PLACE (sandbox.ErrCapacity) — the
+//     cluster had no room for the pod, or its node was still bringing the
+//     container up: nothing of the run executed. failed_resumable, so the
+//     redelivery re-places it once the fleet has room;
 //   - the run ctx cancelled with ErrRunInterrupted (runner drain, lost
 //     heartbeat) — infrastructure took the run away: failed_resumable, so
 //     the ordinary retry puts it on a healthy pod;
@@ -518,6 +522,16 @@ func setupFailureStatus(ctx context.Context, phase string, cause error) (store.R
 		return store.RunStatusFailedResumable,
 			fmt.Sprintf("%s: sandbox setup phase timed out (resumable — a fresh pod on redelivery routinely clears the stall): %v", phase, cause),
 			store.FailureSandboxSetupTimeout
+	}
+	// Same arm, same reason, one step earlier: the sandbox never got
+	// PLACED (the driver classified the cluster's own evidence). Nothing
+	// of the run executed, so a terminal status would lose the whole
+	// launch — an hourly sentinel's tick, a campaign's start — over a
+	// condition that clears as soon as the fleet has room.
+	if errors.Is(cause, sandbox.ErrCapacity) {
+		return store.RunStatusFailedResumable,
+			fmt.Sprintf("%s: the sandbox could not be placed (resumable — the run executed nothing; a redelivery re-places it): %v", phase, cause),
+			store.FailureSandboxCapacity
 	}
 	if ctx == nil || ctx.Err() == nil {
 		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
@@ -547,11 +561,12 @@ func setupFailureCode(cause error) store.FailureCode {
 // the status written above would say resumable while the queue had
 // already dropped the run — the two halves have to agree.
 //
-// A sandbox phase timeout is NOT dressed up as an interruption: it keeps
-// its own sentinel (sandbox.ErrPhaseTimeout, wrapped through by the
-// driver), and the runner's ack policy classifies that shape itself — a
-// NAK for redelivery, with the DLQ park still applying on the last
-// permitted delivery, which an interruption is exempt from.
+// A sandbox phase timeout and an unplaced sandbox are NOT dressed up as
+// an interruption: each keeps its own sentinel (sandbox.ErrPhaseTimeout /
+// sandbox.ErrCapacity, wrapped through by the driver), and the runner's
+// ack policy classifies those shapes itself — a NAK for redelivery, with
+// the DLQ park still applying on the last permitted delivery, which an
+// interruption is exempt from.
 func (e *Engine) setupErr(ctx context.Context, err error) error {
 	if ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrRunInterrupted) {
 		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
