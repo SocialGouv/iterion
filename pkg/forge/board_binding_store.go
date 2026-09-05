@@ -29,6 +29,15 @@ import (
 // ErrBoardBindingNotFound reports a team with no project board bound.
 var ErrBoardBindingNotFound = errors.New("forge: board binding not found")
 
+// ErrBoardSyncLeaseLost reports a release by a pass that no longer holds the
+// lease — it overran the TTL and another replica has since claimed the board.
+//
+// It is an ERROR rather than a quiet no-op because it is the only moment the
+// overrun is knowable: the release is refused (clearing a successor's lease is
+// precisely the damage), and the caller has just learned that its pass may
+// have run alongside another one.
+var ErrBoardSyncLeaseLost = errors.New("forge: board sync lease no longer held")
+
 // DefaultBoardSyncEvery is the reconciliation interval a binding gets when the
 // operator does not choose one. It is the net under the reflect, so it is on
 // by default; `0` turns it off explicitly.
@@ -123,6 +132,11 @@ type BoardBinding struct {
 	// Stamped by ClaimSync, cleared by ReleaseSync at pass end; a value in the
 	// future refuses a second replica's claim. Zero = no pass running.
 	SyncLeaseUntil time.Time `bson:"sync_lease_until,omitempty" json:"sync_lease_until,omitempty"`
+	// SyncLeaseOwner identifies the pass holding the lease, and is what makes
+	// the release CONDITIONAL. Without it a pass that overran the TTL would,
+	// on finishing, clear the lease of the successor that legitimately took
+	// the board — re-admitting the concurrent pass the lease exists to refuse.
+	SyncLeaseOwner string `bson:"sync_lease_owner,omitempty" json:"sync_lease_owner,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -240,12 +254,17 @@ type BoardBindingStore interface {
 	// replica presenting a stale watermark loses, and so does one whose tick
 	// finds a pass still running (the watermark alone cannot tell them apart —
 	// an overrunning pass leaves a watermark that matches).
-	ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error)
+	// owner identifies the claiming pass, and is what ReleaseSync CASes on.
+	ClaimSync(ctx context.Context, tenantID string, seen, at time.Time, owner string) (bool, error)
 	// ReleaseSync clears the lease at pass end, whatever the pass's outcome,
 	// so the next tick may claim immediately. Without it a board would sit out
 	// the whole TTL after every pass; with it the TTL only ever fires for a
 	// replica that died mid-pass.
-	ReleaseSync(ctx context.Context, tenantID string) error
+	//
+	// It is a CAS on `owner`: a pass that overran the TTL and lost the board
+	// to a successor must not clear the successor's lease, and is told so with
+	// ErrBoardSyncLeaseLost rather than left believing it released cleanly.
+	ReleaseSync(ctx context.Context, tenantID, owner string) error
 }
 
 // ---- in-memory store (tests / local) ----
@@ -277,7 +296,7 @@ func (m *MemoryBoardBindingStore) Upsert(_ context.Context, b BoardBinding) erro
 		// A re-bind must not release a pass that is running: the Mongo twin
 		// never names the field in its $set, so dropping it here would make
 		// the two twins disagree on whether the board is held.
-		b.SyncLeaseUntil = prev.SyncLeaseUntil
+		b.SyncLeaseUntil, b.SyncLeaseOwner = prev.SyncLeaseUntil, prev.SyncLeaseOwner
 	}
 	m.items[b.TenantID] = b
 	return nil
@@ -333,7 +352,7 @@ func (m *MemoryBoardBindingStore) snapshot(keep func(BoardBinding) bool) []Board
 	return out
 }
 
-func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, seen, at time.Time) (bool, error) {
+func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, seen, at time.Time, owner string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	b, ok := m.items[tenantID]
@@ -351,19 +370,24 @@ func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, 
 	}
 	b.LastSyncedAt = at
 	b.SyncLeaseUntil = at.Add(BoardSyncLeaseTTL)
+	b.SyncLeaseOwner = owner
 	b.UpdatedAt = time.Now().UTC()
 	m.items[tenantID] = b
 	return true, nil
 }
 
-func (m *MemoryBoardBindingStore) ReleaseSync(_ context.Context, tenantID string) error {
+func (m *MemoryBoardBindingStore) ReleaseSync(_ context.Context, tenantID, owner string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	b, ok := m.items[tenantID]
 	if !ok {
 		return ErrBoardBindingNotFound
 	}
+	if b.SyncLeaseOwner != owner {
+		return ErrBoardSyncLeaseLost
+	}
 	b.SyncLeaseUntil = time.Time{}
+	b.SyncLeaseOwner = ""
 	b.UpdatedAt = time.Now().UTC()
 	m.items[tenantID] = b
 	return nil
@@ -478,7 +502,7 @@ func (s *MongoBoardBindingStore) DueBindings(ctx context.Context, now time.Time)
 // match after the first pass, which would stop the reconciliation dead. ModifiedCount == 1 means this replica owns the
 // pass; 0 means another replica already claimed it (or the binding is gone,
 // which the follow-up read distinguishes).
-func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error) {
+func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string, seen, at time.Time, owner string) (bool, error) {
 	filter := bson.M{"_id": tenantID}
 	// The lease half of the claim: no pass may be running. An absent field is
 	// a binding that never ran (or was released), so the predicate has to
@@ -503,6 +527,7 @@ func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string,
 		bson.M{"$set": bson.M{
 			"last_synced_at":   at,
 			"sync_lease_until": at.Add(BoardSyncLeaseTTL),
+			"sync_lease_owner": owner,
 			"updated_at":       time.Now().UTC(),
 		}})
 	if err != nil {
@@ -520,20 +545,28 @@ func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string,
 	return false, nil
 }
 
-// ReleaseSync clears the lease. It is deliberately NOT conditional on who
-// holds it: the only caller is the pass that just claimed, and a release that
-// could fail on a lease already expired-and-retaken would leave the board held
-// by a pass that ended.
-func (s *MongoBoardBindingStore) ReleaseSync(ctx context.Context, tenantID string) error {
-	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": tenantID},
-		bson.M{"$unset": bson.M{"sync_lease_until": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}})
+// ReleaseSync clears the lease, CAS'd on the owner that took it: a pass that
+// overran the TTL and lost the board must not clear its SUCCESSOR's lease.
+//
+// Not matching is not the same as not existing, so the two are distinguished:
+// a missing binding is ErrBoardBindingNotFound, a lease that moved on is
+// ErrBoardSyncLeaseLost — the only moment an overrun is knowable, and worth a
+// line in the log rather than a silent success.
+func (s *MongoBoardBindingStore) ReleaseSync(ctx context.Context, tenantID, owner string) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID, "sync_lease_owner": owner},
+		bson.M{"$unset": bson.M{"sync_lease_until": "", "sync_lease_owner": ""},
+			"$set": bson.M{"updated_at": time.Now().UTC()}})
 	if err != nil {
 		return fmt.Errorf("forge: release board sync: %w", err)
 	}
-	if res.MatchedCount == 0 {
-		return ErrBoardBindingNotFound
+	if res.MatchedCount == 1 {
+		return nil
 	}
-	return nil
+	if _, err := s.GetByTenant(ctx, tenantID); err != nil {
+		return err
+	}
+	return ErrBoardSyncLeaseLost
 }
 
 func (s *MongoBoardBindingStore) find(ctx context.Context, filter bson.M) ([]BoardBinding, error) {

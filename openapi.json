@@ -172,6 +172,9 @@
           "sync_every_seconds": {
             "type": "integer"
           },
+          "sync_lease_owner": {
+            "type": "string"
+          },
           "sync_lease_until": {
             "format": "date-time",
             "type": "string"

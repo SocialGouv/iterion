@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -123,8 +125,12 @@ func (w *BoardSyncWorker) Tick(ctx context.Context) (int, error) {
 	}
 	ran := 0
 	for _, b := range due {
-		// Elect: exactly one replica advances the watermark, and only it runs.
-		won, err := w.Bindings.ClaimSync(ctx, b.TenantID, b.LastSyncedAt, now)
+		// Elect: exactly one replica advances the watermark and takes the
+		// lease, and only it runs. The owner token is per PASS, not per
+		// replica: a replica whose earlier pass overran and lost the board
+		// must not be able to release the lease its own next pass took.
+		owner := uuid.NewString()
+		won, err := w.Bindings.ClaimSync(ctx, b.TenantID, b.LastSyncedAt, now, owner)
 		if err != nil {
 			if errors.Is(err, forge.ErrBoardBindingNotFound) {
 				continue // unbound between the list and the claim
@@ -135,7 +141,7 @@ func (w *BoardSyncWorker) Tick(ctx context.Context) (int, error) {
 		if !won {
 			continue // another replica owns this pass
 		}
-		if w.runPass(ctx, b) {
+		if w.runPass(ctx, b, owner) {
 			ran++
 		}
 	}
@@ -150,16 +156,26 @@ func (w *BoardSyncWorker) Tick(ctx context.Context) (int, error) {
 // It reports whether the pass RAN — a claim taken and then abandoned on a
 // revoked token is not a reconciliation, and counting it as one would make
 // Tick's return value useless as a health signal.
-func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding) bool {
+func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding, owner string) bool {
 	// Hand the board back however this ends, so the next tick may claim
 	// immediately and the lease TTL is only ever reached by a replica that
 	// died. Released on a context that may already be cancelled — a shutdown
 	// must not leave the board held for the whole TTL — so the release gets
 	// its own short-lived context.
+	//
+	// The release is a CAS on this pass's own token: a pass that outlived the
+	// TTL no longer owns the board, and clearing the lease its successor took
+	// would re-admit the concurrent pass the lease exists to refuse. That
+	// refusal is the ONE moment the overrun is knowable, so it is logged as
+	// such rather than swallowed.
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if err := w.Bindings.ReleaseSync(rctx, b.TenantID); err != nil && !errors.Is(err, forge.ErrBoardBindingNotFound) {
+		switch err := w.Bindings.ReleaseSync(rctx, b.TenantID, owner); {
+		case errors.Is(err, forge.ErrBoardSyncLeaseLost):
+			w.warn("board sync: team=%s board=%s: this pass outlived its %s lease and another replica has since claimed the board — it may have run concurrently; consider a longer interval",
+				b.TenantID, b.Ref(), forge.BoardSyncLeaseTTL)
+		case err != nil && !errors.Is(err, forge.ErrBoardBindingNotFound):
 			// Not fatal: the lease expires on its own. Visible, though — a
 			// board that keeps needing its TTL to come free is a symptom.
 			w.warn("board sync: team=%s: release lease: %v", b.TenantID, err)

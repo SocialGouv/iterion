@@ -294,6 +294,13 @@ the CAS matches, and two replicas reconcile the same board at once, issuing
 duplicate `SetSingleSelect` calls and duplicate `External` writes on the same
 cards. With the lease, the second one loses without advancing the watermark.
 
+The release is a **CAS on the pass's own owner token** (`sync_lease_owner`,
+fresh per pass). Without it, a pass that overran the TTL would clear the lease
+of the successor that legitimately took the board, re-admitting exactly the
+concurrent pass the lease refuses; with it, the late release is declined and
+reported (`ErrBoardSyncLeaseLost` → one Warn naming the overrun), which is the
+only moment an overrun is knowable at all.
+
 The TTL is a backstop, not the normal release: `runPass` hands the board back
 when it ends, whatever the outcome, so the TTL only ever fires for a replica
 that **died** mid-pass — bounding that death to one TTL of staleness rather
