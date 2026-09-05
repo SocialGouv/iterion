@@ -863,6 +863,14 @@ tool lot_verify:
                         "modernising against it — a green build proves the code "
                         "compiles, never that it still behaves." % verify)
     else:
+        # The gate wrapper writes its report where GM_REPORT_TMP says, and
+        # defaults to a dotfile INSIDE the net. Judged next, that file reads
+        # as uncommitted work of the run — and the finalize banks it as wip,
+        # which a converged lot then never lands over. The report goes to the
+        # run's scratch instead: content of the run, never of the tree.
+        import tempfile
+        scratch = os.environ.get("ITERION_ARTIFACT_FILES_DIR") or tempfile.gettempdir()
+        os.environ.setdefault("GM_REPORT_TMP", os.path.join(scratch, "gm-last-report.json"))
         code, log = run(verify)
         report["oracle_passed"] = code == 0
         if code is None:

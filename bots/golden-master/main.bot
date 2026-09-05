@@ -4163,7 +4163,9 @@ tool emit_runner:
         # Without this default the very first redirect below writes to an empty
         # filename and the runner dies before reaching the gate. Red, so not a
         # false green -- but an emitted deliverable that cannot run at all.
-        '[ -n "$GM_REPORT_TMP" ] || GM_REPORT_TMP="$GM_WORKSPACE/$GM_DIR/.last-report.json"',
+        # Out of the tree: a report dropped inside the net reads, at the next
+        # gate, as uncommitted work of whoever ran this one.
+        '[ -n "$GM_REPORT_TMP" ] || GM_REPORT_TMP="/tmp/gm-last-report-$$.json"',
         "export GM_DIR GM_WORKSPACE GM_MUTATION_FLOOR GM_REPORT_TMP",
         # The mode comes from the ARGUMENTS and from nothing else. Inherited, it
         # is a way to make this runner green forever WITHOUT touching a line of
