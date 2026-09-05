@@ -43,12 +43,108 @@ func TestGoldenMasterSyncHarnessBotCompiles(t *testing.T) {
 
 // syncHarnessHeader is the canonical header the gate writes above the body —
 // the sync bot must reproduce it byte for byte, or the next gate writes the
-// file back and dirties the tree it was meant to leave clean.
+// file back and dirties the tree it was meant to leave clean. Pinned to the
+// gate's own copy by TestGoldenMasterSyncHarnessWritesTheBytesTheGateWrites.
 const syncHarnessHeader = "#!/usr/bin/env python3\n" +
 	"\"\"\"Materialised oracle harness — the decision procedure, not the campaign's to edit.\n" +
 	"The reviewable source of truth lives in the golden-master bot bundle; this copy\n" +
 	"exists so the emitted runner, CI and later passes judge with the same code.\n" +
 	"Regenerated at every gate; edits made here do not survive.\"\"\"\n"
+
+// pythonStringLiterals evaluates the run of adjacent Python string literals
+// that follows `assign` in a node's script, with python3's own parser — so
+// what is compared is the STRING, not one of its spellings.
+func pythonStringLiterals(t *testing.T, script, assign string) string {
+	t.Helper()
+	const prog = `
+import ast, sys
+src, assign = sys.stdin.read(), sys.argv[1]
+if src.count(assign) != 1:
+    sys.exit("%d occurrences of %r, want exactly one" % (src.count(assign), assign))
+lit = []
+for line in src[src.index(assign) + len(assign):].split("\n")[1:]:
+    s = line.strip()
+    if not (s.startswith('"') or s.startswith("'")):
+        break
+    lit.append(s)
+# A literal always ends on its quote, so any trailing ")" closes the block.
+sys.stdout.write(ast.literal_eval("(" + "\n".join(lit).rstrip().rstrip(")") + ")"))
+`
+	cmd := exec.Command("python3", "-c", prog, assign)
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		t.Fatalf("reading %q: %v (%s) — the block was restructured, fix this test", assign, err, stderr)
+	}
+	if len(out) == 0 {
+		t.Fatalf("%q yielded nothing — the block was restructured, fix this test", assign)
+	}
+	return string(out)
+}
+
+// TestGoldenMasterSyncHarnessWritesTheBytesTheGateWrites pins the invariant the
+// whole bot rests on: sync_harness writes "the same bytes the gate would write,
+// so the next gate writes nothing back". Both sites compose their copy exactly
+// the same way — a hand-copied canonical header, then their OWN script from
+// "\nimport hashlib" to its end — which makes the block scalars' TRAILING bytes
+// load-bearing, and nothing pinned either half.
+// TestGoldenMasterHarnessCopiesStayInSync compares the two bodies through
+// strings.TrimSpace, which erases precisely where a trailing-byte difference
+// would live; TestGoldenMasterSyncHarnessBotMaterialisesTheCanonicalCopy
+// compares the written file against a constant derived from oracle-harness.py,
+// never against what main.bot's gate actually emits.
+//
+// If either half drifts, the failure is not subtle: every gate after a sync
+// rewrites harness.py, gate_replay reports "the gate left the tree changed",
+// the sync commit is dropped, and the bot can never land anything again.
+func TestGoldenMasterSyncHarnessWritesTheBytesTheGateWrites(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	gate := toolScript(t, "golden-master/main.bot", "oracle_run")
+	driver := toolScript(t, "golden-master/sync-harness.bot", "sync_harness")
+
+	gateHeader := pythonStringLiterals(t, gate, "canon_copy = (")
+	driverHeader := pythonStringLiterals(t, driver, "HEADER = (")
+	if driverHeader != gateHeader {
+		t.Fatalf("sync-harness.bot's driver writes a header the gate does not:\n  driver: %q\n  gate:   %q\n"+
+			"The sync would be undone by the next gate. Copy the harness's own `canon_copy` header into "+
+			"the driver's HEADER.", driverHeader, gateHeader)
+	}
+	// And the constant the rest of this file asserts against is that header, so
+	// those assertions are about the gate's form and not a third spelling.
+	if syncHarnessHeader != gateHeader {
+		t.Fatalf("syncHarnessHeader has drifted from the gate's own:\n  const: %q\n  gate:  %q", syncHarnessHeader, gateHeader)
+	}
+
+	const bodyStart = "\nimport hashlib"
+	tail := func(what, script string) string {
+		i := strings.Index(script, bodyStart)
+		if i < 0 {
+			t.Fatalf("%s: %q not found — the node no longer composes its copy from its own source, fix this test", what, bodyStart)
+		}
+		return script[i:]
+	}
+	gateBody, driverBody := tail("main.bot's oracle_run", gate), tail("sync-harness.bot's sync_harness", driver)
+	if gateBody == driverBody {
+		return
+	}
+	a, b := strings.Split(driverBody, "\n"), strings.Split(gateBody, "\n")
+	for i := 0; i < len(a) || i < len(b); i++ {
+		if x, y := lineAt(a, i), lineAt(b, i); x != y {
+			t.Fatalf("sync_harness would write bytes main.bot's gate does not, from body line %d.\n"+
+				"  sync-harness.bot (the copy SYNCED): %q\n"+
+				"  main.bot (the copy the GATE writes): %q\n"+
+				"Regenerate both inlined copies from the standalone one (bots/golden-master/sync-harness.py); "+
+				"a difference in trailing blank lines counts.", i+1, x, y)
+		}
+	}
+	t.Fatalf("the two copies differ in length: %d lines under sync-harness.bot's driver, %d under main.bot's gate", len(a), len(b))
+}
 
 type syncHarnessOut struct {
 	Changed       bool   `json:"changed"`
