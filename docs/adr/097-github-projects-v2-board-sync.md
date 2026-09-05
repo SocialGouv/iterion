@@ -516,6 +516,19 @@ what makes the pass re-derive and arbitrate §9's conflict with real timestamps.
 A previous state the map does not carry is inert (§2), so it is not a
 divergence and the reflect proceeds.
 
+The other thing a board read would have told it is **which columns the board
+still carries**, and §5's repair makes that answerable without one: a lost
+column KEEPS its cached option id, so the option map alone would hand the fast
+path a dead id to fire at the forge — once per move of every card in that
+column, each burning an outbox row's whole retry budget for a column no retry
+can bring back. Both callers therefore build the reflect's column knowledge
+through one constructor, whose lost set is a UNION: the binding's persisted
+`missing_statuses` (all a path with no board read can know, and enough) plus,
+for the pass alone, the live repair it has just computed. `nil` there means
+"this call observed nothing about the board" — never "the board is fine". A
+card the fast path cannot reflect is counted, logged once for that event, and
+its row RETIRES rather than retries.
+
 The pass is unchanged and remains the net. Both orders are idempotent and
 tested as such: after a projection the next pass writes nothing (to the forge
 or to the card — a gratuitous `External` write is a `card.updated` that

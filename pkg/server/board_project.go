@@ -287,15 +287,59 @@ func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImpo
 			}
 		}
 	}
-	return bindingRepair{renamed: rep.Renames(), lost: rep.LostStates()}
+	return newBindingRepair(binding, &rep)
 }
 
-// bindingRepair is what one pass's reconciliation tells the item loop: the
-// column renames a card's recorded status must be read through, and the
-// columns no card can be reflected onto.
+// bindingRepair is what the item loop — and the projection fast path — are
+// told about the board's columns: the renames a card's recorded status must be
+// read through, and the states no card can be reflected onto.
 type bindingRepair struct {
 	renamed map[string]string
 	lost    map[string]bool
+}
+
+// newBindingRepair builds that answer for BOTH reflect callers, which is the
+// point: they disagree about nothing.
+//
+// The lost set is a UNION of two sources, and the second is what lets a caller
+// that never reads the board still refuse a write:
+//
+//   - the binding's own `MissingStatuses` — every mapped column the board did
+//     not carry as of the last reconciliation, persisted. Always consulted,
+//     because it is the only source available to a path with no board read;
+//   - the live repair, when the caller HAS just read the board (the periodic
+//     pass). Fresher, and the one that lets a re-created column resolve again
+//     within the same pass.
+//
+// `rep == nil` means "this call observed nothing about the board" — not "the
+// board is fine". The consequence has to be safe, and is: a lost column keeps
+// its cached option id (that id is the evidence the degradation is re-derived
+// from), so `OptionForState` still answers it and only this set refuses the
+// write. Reading the persisted set is what keeps the fast path from firing a
+// dead option id at the forge on every card of a broken column.
+func newBindingRepair(b *forge.BoardBinding, rep *forge.StatusVocabularyRepair) bindingRepair {
+	out := bindingRepair{}
+	if rep != nil {
+		out.renamed = rep.Renames()
+		out.lost = rep.LostStates()
+	}
+	if b == nil || len(b.MissingStatuses) == 0 {
+		return out
+	}
+	absent := make(map[string]bool, len(b.MissingStatuses))
+	for _, s := range b.MissingStatuses {
+		absent[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+	for _, m := range b.Mapping() {
+		if !absent[strings.ToLower(strings.TrimSpace(m.Status))] {
+			continue
+		}
+		if out.lost == nil {
+			out.lost = map[string]bool{}
+		}
+		out.lost[m.State] = true
+	}
+	return out
 }
 
 // rename resolves a recorded status name through this pass's renames.
