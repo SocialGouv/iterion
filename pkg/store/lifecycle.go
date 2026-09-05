@@ -94,6 +94,13 @@ const (
 	// FailureDLQParked: the queue exhausted its deliveries for this run
 	// and parked it on the DLQ — replay via /api/admin/dlq.
 	FailureDLQParked FailureCode = "DLQ_PARKED"
+	// FailureLaunchFailed: the run never left the launch path. Its row was
+	// persisted but no queue message was ever published for it (the
+	// publish, the IR encoding or the contribution payload failed), so no
+	// runner will ever claim it; the error names the step. Terminal — the
+	// launch is re-done by its caller (a forge redelivery, a new click),
+	// never by resuming this row.
+	FailureLaunchFailed FailureCode = "LAUNCH_FAILED"
 	// FailureSandboxSetupTimeout: a sandbox driver's bounded SETUP
 	// phase (workspace copy, git fixup, …) exceeded its per-phase
 	// budget. Distinct from FailureTimeout (a node's deadline — raising

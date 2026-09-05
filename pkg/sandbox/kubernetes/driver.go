@@ -47,11 +47,14 @@ var (
 // not exist in pure k8s pod networking).
 const PodIPEnvVar = "ITERION_POD_IP"
 
-// DefaultPodReadyTimeoutSecs caps how long the driver waits for a
-// freshly-applied pod to reach Ready. Image pulls dominate this in
-// practice (cluster-cached images go Ready in <2s; cold pulls of
-// multi-GB images take 30-60s).
-const DefaultPodReadyTimeoutSecs = 180
+// DefaultPodReadyTimeout caps how long the driver waits for a
+// freshly-applied pod to reach Ready, unless PodReadyTimeoutEnvVar says
+// otherwise. The wait covers everything between apply and Ready:
+// scheduling (a cluster autoscaler adding a node takes minutes), the CNI
+// setup of a fresh node, and the image pull (a 736 MB sandbox image took
+// 1m37 to 3m05 on cold nodes). A 180 s cap killed pods one second after
+// their container started, right as the autoscaler had made room for them.
+const DefaultPodReadyTimeout = 10 * time.Minute
 
 // DefaultWorkspaceCopyTimeout bounds populateWorkspace (host tar |
 // kubectl exec pod tar) and the git fixup that follows, each end-to-end.
@@ -218,6 +221,11 @@ const (
 	// (e.g. topology.kubernetes.io/zone) that the nodes actually carry —
 	// nodes without the label are excluded from scheduling, soft or not.
 	SpreadEnvVar = "ITERION_SANDBOX_K8S_SPREAD"
+	// PodReadyTimeoutEnvVar caps how long Start waits for the sibling pod to
+	// reach Ready, as a Go duration of at least 1s (e.g. 10m); unset =
+	// DefaultPodReadyTimeout. Validated with the rest of the policy at the
+	// runner's bootstrap.
+	PodReadyTimeoutEnvVar = "ITERION_SANDBOX_K8S_POD_READY_TIMEOUT"
 )
 
 // hostnameTopologyKey is the node-level spread, the one key every node
@@ -292,8 +300,9 @@ var topologyKeyRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9
 
 // podScheduling is the parsed form of the scheduling env vars.
 type podScheduling struct {
-	resources PodResources
-	spreadKey string // "" = no spread constraint
+	resources    PodResources
+	spreadKey    string        // "" = no spread constraint
+	readyTimeout time.Duration // how long Start waits for the pod to be Ready
 }
 
 // String renders the policy for logs, events and the doctor report.
@@ -321,6 +330,7 @@ func (s podScheduling) String() string {
 	} else {
 		parts = append(parts, "spread="+s.spreadKey)
 	}
+	parts = append(parts, "ready-timeout="+s.readyTimeout.String())
 	return strings.Join(parts, ", ")
 }
 
@@ -425,6 +435,14 @@ func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
 			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a topology key (want hostname, none, or a prefixed label key such as topology.kubernetes.io/zone)", SpreadEnvVar, v)
 		}
 		s.spreadKey = v
+	}
+	s.readyTimeout = DefaultPodReadyTimeout
+	if v := strings.TrimSpace(getenv(PodReadyTimeoutEnvVar)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Second {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a duration of at least 1s (want e.g. 5m, 10m)", PodReadyTimeoutEnvVar, v)
+		}
+		s.readyTimeout = d
 	}
 	return s, nil
 }
@@ -788,7 +806,14 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		r.networkPolicyApplied = true
 	}
 
-	if err := waitForPodRunning(ctx, d.namespace, podName, DefaultPodReadyTimeoutSecs); err != nil {
+	// The policy is parsed by New(); a Driver built any other way has no
+	// timeout, and `kubectl wait --timeout=0s` would kill the pod at once.
+	if d.sched.readyTimeout < time.Second {
+		_ = r.Cleanup(ctx)
+		return nil, fmt.Errorf("kubernetes: pod ready timeout is unset (%s) — the driver was not built by New()", d.sched.readyTimeout)
+	}
+	readySecs := int((d.sched.readyTimeout + time.Second - 1) / time.Second) // rounded up: never shorter than configured
+	if err := waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
 	}
@@ -800,8 +825,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// workspace (the V1 limitation, docs/sandbox.md) and a repo-bound bot
 	// has nothing to work on. Skipped for workspace-less runs.
 	//
-	// Both phases are BOUNDED (the pod-Ready wait has its own cap,
-	// DefaultPodReadyTimeoutSecs): a stuck kubectl-exec pipe must fail the
+	// Both phases are BOUNDED (the pod-Ready wait has its own cap, the
+	// policy's readyTimeout): a stuck kubectl-exec pipe must fail the
 	// phase as a typed error, not block the run until the outer
 	// max_duration fires. resolveWorkspaceCopyTimeout is the budget
 	// (DefaultWorkspaceCopyTimeout; ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT

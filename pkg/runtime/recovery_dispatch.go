@@ -144,7 +144,17 @@ func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, r
 			eventExtra["last_error_details"] = errFields
 		}
 	}
-	if err := e.doPause(rs, nodeID, questions, eventExtra, pauseInfo{}); err != nil {
+	// The checkpoint carries the recovery marker so resume re-executes the
+	// node: without it the pause is indistinguishable from an ordinary
+	// human gate, whose answers BECOME the node's output and whose resume
+	// walks on to the next node — the failed node would be recorded as
+	// finished with the acknowledgement as its result.
+	info := pauseInfo{
+		RecoveryPause: true,
+		RecoveryCode:  code,
+		Kind:          store.InteractionKindRecovery,
+	}
+	if err := e.doPause(rs, nodeID, questions, eventExtra, info); err != nil {
 		return err
 	}
 	return ErrRunPaused

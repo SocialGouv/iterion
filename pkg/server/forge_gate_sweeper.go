@@ -168,7 +168,9 @@ func (s *Server) gateSweepIsLastPass(run *store.Run) bool {
 	return s.gateNow().Sub(run.UpdatedAt) >= gateSweepLookback-2*gateSweepInterval
 }
 
-// gateNow reads the wall clock the gate sweeper judges its window by,
+// gateNow reads the wall clock the gate lanes measure by — the sweeper's
+// lookback window and the unattended launch-failure backoff (the launch tail
+// stamps Delivery.FailedAt from it so both sides of that backoff agree) —
 // overridable in tests (mirrors scheduleClock).
 func (s *Server) gateNow() time.Time {
 	if s != nil && s.gateClock != nil {

@@ -47,7 +47,7 @@ func TestQueueBotBundleRef(t *testing.T) {
 // Without a resolver the publisher keeps its previous local-only behaviour, so
 // non-cloud and un-migrated deployments are unaffected.
 func TestResolveContributionsFor_NilResolverIsLocalOnly(t *testing.T) {
-	got, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "team-1", nil, nil)
+	got, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "team-1", "run-x", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

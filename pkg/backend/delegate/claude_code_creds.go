@@ -80,6 +80,25 @@ func strictMCPFromEnv() bool {
 	}
 }
 
+// orchestrationTools is the claude_code tool surface that spawns background
+// work (Agent, and Task on older CLIs) or waits on it (TaskOutput, Monitor).
+// Withheld as one unit by ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS:
+// a waiter without a spawner is only a way to deadlock, and a spawner
+// without a waiter leaves background results unreadable.
+var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
+
+// disallowOrchestrationToolsFromEnv reads
+// ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;
+// "1"/"true"/"on"/"yes" → true).
+func disallowOrchestrationToolsFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 // anthropicCredOptsForCLI returns claudesdk.WithEnv options that point
 // the spawned Claude Code subprocess at the right credentials.
 //

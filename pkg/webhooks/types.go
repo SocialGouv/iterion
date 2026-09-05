@@ -527,6 +527,14 @@ type Delivery struct {
 	SourceIP   string     `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
 	ReceivedAt time.Time  `bson:"received_at" json:"received_at"`
 	LaunchedAt *time.Time `bson:"launched_at,omitempty" json:"launched_at,omitempty"`
+	// Attempts counts the launches tried under this idempotency key: 1 on
+	// the first, one more each time a launch_error row is retried. The
+	// unattended gate lanes read it as their failure budget — it lives on
+	// the row the claim key already names, so every replica reads the same
+	// count. FailedAt is when the latest attempt failed (launch_error rows
+	// only); the same lanes measure their backoff from it.
+	Attempts int        `bson:"attempts,omitempty" json:"attempts,omitempty"`
+	FailedAt *time.Time `bson:"failed_at,omitempty" json:"failed_at,omitempty"`
 }
 
 // Delivery status values.

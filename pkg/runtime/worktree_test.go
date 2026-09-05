@@ -3,12 +3,14 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -994,5 +996,82 @@ func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A converged run's squash message can aggregate more than a single argv
+// element may carry (Linux caps one argument at 128 KiB): `git commit -m
+// <msg>` then fails with "argument list too long" — on the merge of a run
+// the operator has nothing left to do but merge. The message travels over
+// stdin, so its size is bounded by nothing the kernel enforces on argv.
+func TestTrySquashMerge_LargeMessageCommits(t *testing.T) {
+	repo, _ := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", "-b", "iterion/run/big", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	addCommit(t, wt, "a.go", "package main\n// a\n", "feat: add a")
+
+	message := "feat: a converged campaign\n\n" + strings.Repeat("- report line that a campaign wrote into its message\n", 6000)
+	if len(message) < 300<<10 {
+		t.Fatalf("fixture message is %d bytes, want >= 300 KiB", len(message))
+	}
+	sha, err := trySquashMerge(repo, "main", "iterion/run/big", "main", message, nil)
+	if err != nil {
+		t.Fatalf("squash with a %d-byte message: %v", len(message), err)
+	}
+	got := string(mustOutput(t, repo, "git", "log", "-1", "--pretty=format:%B", sha))
+	if strings.TrimRight(got, "\n") != strings.TrimRight(message, "\n") {
+		t.Fatalf("committed message differs from the one supplied (%d vs %d bytes)", len(got), len(message))
+	}
+}
+
+// A multi-commit squash lists the commits so the audit trail survives in
+// collapsed form — but a campaign that committed in stride for hours would
+// otherwise list thousands of lines. Past the cap the list is elided into a
+// count that says where the rest lives, rather than dropped without a word.
+func TestAssembleSquashMessage_ElidesALongCommitList(t *testing.T) {
+	commits := make([]gitlib.CommitInfo, 0, maxSquashMessageCommits+37)
+	for i := 0; i < cap(commits); i++ {
+		commits = append(commits, gitlib.CommitInfo{Short: fmt.Sprintf("%07x", i), Subject: fmt.Sprintf("step %d", i)})
+	}
+	got := assembleSquashMessage(commits, "run")
+	if n := strings.Count(got, "\n- "); n != maxSquashMessageCommits+1 {
+		t.Fatalf("listed %d lines, want %d commits + 1 elision line:\n%s", n, maxSquashMessageCommits, got[len(got)-300:])
+	}
+	if !strings.Contains(got, "and 37 more commits") {
+		t.Fatalf("the elision must count what it dropped:\n%s", got[len(got)-300:])
+	}
+	if strings.Contains(got, "step "+fmt.Sprint(maxSquashMessageCommits)+"\n") {
+		t.Fatal("a commit past the cap leaked into the list")
+	}
+}
+
+// A single-commit run reuses that commit's message verbatim. When the body IS
+// the report (hundreds of KiB), the squash keeps the title and says what it
+// cut — the storage branch has the full text; the target branch needs a
+// summary that git can carry.
+func TestBuildSquashMessage_BoundsASingleOversizedBody(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	body := strings.Repeat("a line of the campaign's report that nobody needs on main\n", 6000)
+	msgFile := filepath.Join(t.TempDir(), "msg")
+	writeFile(t, msgFile, "feat(report): converge\n\n"+body)
+	writeFile(t, filepath.Join(wt, "a.go"), "package main\n")
+	mustRun(t, wt, "git", "add", "a.go")
+	mustRun(t, wt, "git", "commit", "-F", msgFile)
+	finalSHA := strings.TrimSpace(string(mustOutput(t, wt, "git", "rev-parse", "HEAD")))
+
+	got := buildSquashMessage(repo, originalTip, finalSHA, "run")
+	if len(got) > maxSquashMessageBytes+256 {
+		t.Fatalf("squash message is %d bytes, want it bounded near %d", len(got), maxSquashMessageBytes)
+	}
+	if !strings.HasPrefix(got, "feat(report): converge\n") {
+		t.Fatalf("the title must survive the cut:\n%.120s", got)
+	}
+	if !strings.Contains(got, "message truncated by iterion") || !strings.Contains(got, "bytes elided") {
+		t.Fatalf("a cut that does not announce itself reads as a complete report:\n%.200s", got[len(got)-200:])
 	}
 }

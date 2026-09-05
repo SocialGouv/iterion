@@ -319,6 +319,12 @@
           "parallel": {
             "$ref": "#/components/schemas/ParallelCheckpoint"
           },
+          "recovery_code": {
+            "type": "string"
+          },
+          "recovery_pause": {
+            "type": "boolean"
+          },
           "round_robin_counters": {
             "additionalProperties": {
               "type": "integer"

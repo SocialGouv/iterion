@@ -1079,6 +1079,25 @@ type TaskHooks struct {
 	// there is still a turn left to steer. Runs on the stream-handling
 	// goroutine: must not block.
 	OnUsageProgress func(UsageProgress)
+
+	// OnOrchestrationStall fires when the backend classifies a silent
+	// session as blocked on an orchestration tool (TaskOutput / Monitor)
+	// with no background work to wait on, and says how the stall ended:
+	// Recovered when the in-place interrupt + follow-up got the session
+	// moving again, not recovered when it was aborted for the executor's
+	// retry. The metering seam for that failure class (delegate_stall event
+	// → the runner's iterion_delegate_idle_deadlock_total counter). Runs on
+	// the stream-handling goroutine: must not block.
+	OnOrchestrationStall func(OrchestrationStall)
+}
+
+// OrchestrationStall describes one classified orchestration deadlock.
+type OrchestrationStall struct {
+	Backend   string        // backend that classified it
+	Tool      string        // the blocking tool the session sat on
+	Model     string        // effective model serving the session, "" when unknown
+	IdleFor   time.Duration // silence that triggered the classification
+	Recovered bool          // true when the session continued in place
 }
 
 // UsageProgress is the cumulative token usage of an in-flight delegate

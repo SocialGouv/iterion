@@ -37,13 +37,19 @@ type Registry struct {
 	MongoChangeStreamLagS prometheus.Gauge
 
 	// --- Runner-side metrics -------------------------------------
-	NATSPendingMessages     prometheus.Gauge
-	WorkspaceCloneDuration  prometheus.Histogram
-	LLMTokensTotal          *prometheus.CounterVec // backend, model, direction
-	LLMCostUSDTotal         *prometheus.CounterVec // backend, model
-	RunnerHeartbeatErrors   prometheus.Counter
-	RunnerAdmissionRejected *prometheus.CounterVec // reason (schema|future_epoch)
-	RolloutEpochRegression  *prometheus.CounterVec // component (server|runner)
+	NATSPendingMessages    prometheus.Gauge
+	WorkspaceCloneDuration prometheus.Histogram
+	LLMTokensTotal         *prometheus.CounterVec // backend, model, direction
+	LLMCostUSDTotal        *prometheus.CounterVec // backend, model
+	// DelegateIdleDeadlockTotal counts delegate sessions classified as
+	// blocked on an orchestration tool (TaskOutput/Monitor) with no
+	// background work to wait on, by outcome: recovered in place, or
+	// aborted for a node restart. The number an admission decision about a
+	// served model family can rest on.
+	DelegateIdleDeadlockTotal *prometheus.CounterVec // backend, model, outcome (recovered|aborted)
+	RunnerHeartbeatErrors     prometheus.Counter
+	RunnerAdmissionRejected   *prometheus.CounterVec // reason (schema|future_epoch)
+	RolloutEpochRegression    *prometheus.CounterVec // component (server|runner)
 
 	// --- Control-plane metrics ------------------------------------
 	// Deliberately NO tenant labels anywhere (cardinality discipline);
@@ -126,6 +132,10 @@ func New() *Registry {
 		Name: "iterion_llm_cost_usd_total",
 		Help: "Cumulative LLM cost in USD by backend and model.",
 	}, []string{"backend", "model"})
+	r.DelegateIdleDeadlockTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_delegate_idle_deadlock_total",
+		Help: "Delegate sessions classified as blocked on an orchestration tool (TaskOutput/Monitor) with no background work to wait on, by backend, model and outcome (recovered in place | aborted for retry).",
+	}, []string{"backend", "model", "outcome"})
 	r.RunnerHeartbeatErrors = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "iterion_runner_heartbeat_errors_total",
 		Help: "Number of NATS KV lease refresh failures encountered while a run was in flight.",
@@ -196,7 +206,7 @@ func New() *Registry {
 		r.RunsCreatedTotal, r.RunsActive, r.RunDurationSeconds,
 		r.WSConnections, r.MongoChangeStreamLagS,
 		r.NATSPendingMessages, r.WorkspaceCloneDuration,
-		r.LLMTokensTotal, r.LLMCostUSDTotal, r.RunnerHeartbeatErrors,
+		r.LLMTokensTotal, r.LLMCostUSDTotal, r.DelegateIdleDeadlockTotal, r.RunnerHeartbeatErrors,
 		r.RunnerAdmissionRejected, r.RolloutEpochRegression,
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,

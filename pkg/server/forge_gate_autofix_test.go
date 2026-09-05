@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -375,6 +378,80 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Error("a second attempt fired on a head that already had one — the loop is unbounded")
+		}
+	})
+
+	// A fixer launch that cannot START (a queue blip, a deploy window, a broken
+	// plugin source) is a different loop from the one the per-PR ceiling
+	// bounds: that ceiling counts LAUNCHED passes, and a launch_error row is
+	// retryable by design, so every sweep offer re-attempted the same failure
+	// (2026-08-26: ~90 minutes of it). The failure budget on the claim row
+	// bounds it — retried on a backoff, escalated to the board once spent,
+	// then left alone.
+	t.Run("a fixer launch that keeps failing is retried on a backoff, escalated once, then left alone", func(t *testing.T) {
+		w := build(t, nil)
+		at := time.Date(2026, 8, 26, 16, 9, 0, 0, time.UTC)
+		w.s.gateClock = func() time.Time { return at }
+		fails := 0
+		w.s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+			fails++
+			return "", errors.New("cloudpublisher: publish: nats: no responders available")
+		}
+		board, err := native.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.s.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
+		rc := &fakeReviewClient{}
+		w.s.forgeReviewClientFor = func(context.Context, forge.Connection) (forge.ReviewClient, error) {
+			return rc, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		offer := func() { w.s.autofixOffer(context.Background(), runID) }
+		cards := func() int {
+			t.Helper()
+			got, err := board.List(native.ListFilter{Labels: []string{gateAutofixLabel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(got)
+		}
+
+		offer()
+		if fails != 1 {
+			t.Fatalf("launch attempts after the first offer = %d, want 1", fails)
+		}
+		offer()
+		offer()
+		if fails != 1 {
+			t.Fatalf("re-attempted inside the backoff: %d launch attempts, want still 1", fails)
+		}
+		at = at.Add(5*time.Minute + time.Second)
+		offer()
+		if fails != 2 {
+			t.Fatalf("launch attempts once the first backoff elapsed = %d, want 2", fails)
+		}
+		if n := cards(); n != 0 {
+			t.Fatalf("escalated before the budget was spent (%d card(s))", n)
+		}
+		at = at.Add(10*time.Minute + time.Second)
+		offer()
+		if fails != 3 {
+			t.Fatalf("launch attempts once the second backoff elapsed = %d, want 3", fails)
+		}
+		if n := cards(); n != 1 || rc.calls != 1 {
+			t.Fatalf("after the third failure: cards=%d comments=%d, want 1/1", n, rc.calls)
+		}
+		got, _ := board.List(native.ListFilter{Labels: []string{gateAutofixLabel}})
+		if !strings.Contains(got[0].Body, "3 times") || !strings.Contains(got[0].Body, "no responders") {
+			t.Fatalf("the card must say how many times and why:\n%s", got[0].Body)
+		}
+		for i := 0; i < 3; i++ {
+			at = at.Add(time.Hour)
+			offer()
+		}
+		if fails != 3 || cards() != 1 || rc.calls != 1 {
+			t.Fatalf("after exhaustion: attempts=%d cards=%d comments=%d, want 3/1/1 — the lane must stop", fails, cards(), rc.calls)
 		}
 	})
 }

@@ -106,6 +106,16 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	if strictMCPFromEnv() {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
+	// Opt-in: withhold the subagent/orchestration tool surface from nodes
+	// that are not in ultracode mode. Off by default — a claude_code node
+	// keeps its full native toolset, subagents included; that adaptivity is
+	// the point of the backend. A deployment whose served model family
+	// hallucinates task ids and deadlocks on TaskOutput can switch the
+	// surface off wholesale instead of relying on the stall recovery.
+	// Ultracode nodes keep it: orchestration is what the mode grants.
+	if disallowOrchestrationToolsFromEnv() && !task.Ultracode {
+		opts = append(opts, claudesdk.WithDisallowedTools(orchestrationTools...))
+	}
 	// Cwd handling differs by sandbox state. On the host (no sandbox)
 	// we pass the workdir straight through to claudesdk → cmd.Dir.
 	// In the sandbox it's the host worktree path that doesn't exist
