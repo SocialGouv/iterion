@@ -8,7 +8,37 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
+
+// TestGoldenMasterSyncHarnessBotCompiles: a sibling workflow is not a
+// `main.bot`, so the catalog's parse/compile gates never see it — and
+// sync-harness.py rewrites this file's block scalar on every regeneration.
+// A graph that a fresh `iterion validate` would reject must fail here.
+func TestGoldenMasterSyncHarnessBotCompiles(t *testing.T) {
+	src := readHarnessFile(t, "golden-master/sync-harness.bot")
+	pr := parser.Parse("golden-master/sync-harness.bot", src)
+	for _, d := range pr.Diagnostics {
+		t.Logf("parse diagnostic: %s", d.Error())
+	}
+	if pr.File == nil {
+		t.Fatal("parse produced no File")
+	}
+	cr := ir.Compile(pr.File)
+	if cr.HasErrors() {
+		for _, d := range cr.Diagnostics {
+			t.Errorf("compile: %s", d.Error())
+		}
+		t.FailNow()
+	}
+	for _, node := range []string{"sync_harness", "commit_harness", "gate_replay", "seal_commit"} {
+		if _, ok := cr.Workflow.Nodes[node]; !ok {
+			t.Errorf("node %s missing from the compiled graph", node)
+		}
+	}
+}
 
 // syncHarnessHeader is the canonical header the gate writes above the body —
 // the sync bot must reproduce it byte for byte, or the next gate writes the
