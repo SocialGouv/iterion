@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.110.0](https://github.com/SocialGouv/iterion/compare/v3.109.0...v3.110.0) (2026-09-05)
+
+### Features
+
+* **trigger:** an effect KIND on the outbox — a native card move reaches the bound GitHub board through the durable outbox, the pass stays the net ([#793](https://github.com/SocialGouv/iterion/issues/793)) ([7d01723](https://github.com/SocialGouv/iterion/commit/7d01723333c26ae64c4d66821c3de21424977c05))
+
+    <details><summary>why</summary>
+
+    The outbox row gains a discriminator so an effect that is NOT owed to a subscription can ride it: `launch` (ADR-094's original) and `projection` (ADR-097 §10's named follow-up).
+
+    </details>
+
+### Bug Fixes
+
+* **runtime:** a loop is priced on any entry into its body; a stale run-start mark is re-based on resume ([#783](https://github.com/SocialGouv/iterion/issues/783)) ([d69189a](https://github.com/SocialGouv/iterion/commit/d69189ae8bd4d647c2fd076556ef73d26c62b4f3))
+
+    <details><summary>why</summary>
+
+    The loop budget guard prices the next iteration by the last one, from a mark set when the loop is entered from outside. That mark was only set when the body was entered at the loop's HEAD (loop.Entries). A campaign bot's extension loop is entered elsewhere: its body shares the verify and gate nodes with the lot's own repair loop, so the run reaches it at verify, off its head, and the loop kept the mark the session baseline had set at run start. Its first crossing was then priced at everything…
+
+    </details>
+
 ## [3.109.0](https://github.com/SocialGouv/iterion/compare/v3.108.3...v3.109.0) (2026-09-05)
 
 ### Features
