@@ -250,7 +250,11 @@ jobs:
               rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] });
             }
           '
-          # Wait for primary election before letting tests connect.
+          # Wait for primary election before letting tests connect. No
+          # PRIMARY within the window fails the STEP: falling through would
+          # let the harness connect to a set with no primary and report the
+          # failure as a store bug on whatever PR happens to be in the queue.
+          STATE=""
           for i in $(seq 1 30); do
             STATE=$(docker exec mongo-rs mongosh --quiet --eval 'rs.status().members[0].stateStr' 2>/dev/null || true)
             if [ "$STATE" = "PRIMARY" ]; then
@@ -259,6 +263,12 @@ jobs:
             fi
             sleep 2
           done
+          if [ "$STATE" != "PRIMARY" ]; then
+            echo "rs0: no PRIMARY after 60s (last state: ${STATE:-unknown})" >&2
+            docker exec mongo-rs mongosh --quiet --eval 'printjson(rs.status())' || true
+            docker logs --tail 100 mongo-rs || true
+            exit 1
+          fi
 
       - name: Mongo conformance harness
         # Alongside the pkg/store/mongo harness, run EVERY suite gated on
@@ -280,6 +290,24 @@ jobs:
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/...
+
+      - name: Mongo diagnostics on failure
+        # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
+        # election step printed "primary elected" is a broker-side event
+        # (a step-down, a restart, a late handshake under load), not a
+        # store regression. Capture what the set and the container saw
+        # so the failure can be attributed without re-running the job.
+        if: failure()
+        run: |
+          echo "::group::rs.status()"
+          docker exec mongo-rs mongosh --quiet --eval 'printjson(rs.status())' || true
+          echo "::endgroup::"
+          echo "::group::container state"
+          docker inspect mongo-rs --format 'status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}} oom={{.State.OOMKilled}}' || true
+          echo "::endgroup::"
+          echo "::group::docker logs mongo-rs (tail 300)"
+          docker logs --tail 300 mongo-rs || true
+          echo "::endgroup::"
 
   nats-conformance:
     # Runs the JetStream integration tests (mixed-version schema rollout,
