@@ -131,7 +131,11 @@ type cloudBoardSource struct {
 	subs    trigger.SubscriptionStore
 	eval    *trigger.Evaluator
 	logger  *iterlog.Logger
-	tick    time.Duration
+	// bindings decides whether a tenant's card move owes its bound external
+	// board a projection row. nil = no board binding store on this instance,
+	// so no projection is ever materialized.
+	bindings trigger.ProjectionBindings
+	tick     time.Duration
 	// ticks counts tickOnce passes (single goroutine) for the slow-cadence
 	// outbox drain.
 	ticks int
@@ -291,7 +295,7 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		if !ok {
 			continue // card deleted between the transition and the read — definitive
 		}
-		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, te, now)
+		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, s.bindings, te, now)
 		if merr != nil {
 			if s.poisoned(tenant, evt.Seq) {
 				continue

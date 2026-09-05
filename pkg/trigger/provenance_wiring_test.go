@@ -179,7 +179,7 @@ func TestEffectWorker_MachineCausedIsTerminalBenign(t *testing.T) {
 	// machine-caused event materializes ZERO durable rows (a schema
 	// migration is cards x subscriptions of guaranteed no-ops queued
 	// FIFO ahead of the next genuine trigger otherwise).
-	rows, err := MaterializeEffects(context.Background(), subs, ev, time.Now().UTC())
+	rows, err := MaterializeEffects(context.Background(), subs, nil, ev, time.Now().UTC())
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("materialize: rows=%d err=%v — a machine-caused event must not reach the outbox", len(rows), err)
 	}
