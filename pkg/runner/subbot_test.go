@@ -315,7 +315,7 @@ workflow child:
 // budget carries the ceiling, and a two-node child under a one-iteration
 // ceiling does not reach its second node.
 func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
-	runChild := func(t *testing.T) (map[string]any, error, *store.Run) {
+	runChild := func(t *testing.T) (map[string]any, *store.Run, error) {
 		t.Helper()
 		r, st := subbotTestRunner(t)
 		dir := t.TempDir()
@@ -341,11 +341,11 @@ func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
 		if child == nil {
 			t.Fatal("no child run persisted")
 		}
-		return out, err, child
+		return out, child, err
 	}
 
 	t.Run("no ceiling: the child runs both nodes", func(t *testing.T) {
-		out, err, _ := runChild(t)
+		out, _, err := runChild(t)
 		if err != nil {
 			t.Fatalf("child: %v", err)
 		}
@@ -355,7 +355,7 @@ func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
 	})
 	t.Run("ceiling of one iteration: the child is clamped and stops after its first node", func(t *testing.T) {
 		t.Setenv("ITERION_CLOUD_MAX_ITERATIONS", "1")
-		_, err, child := runChild(t)
+		_, child, err := runChild(t)
 		if !errors.Is(err, runtime.ErrBudgetExceeded) {
 			t.Fatalf("err = %v, want the budget refusal — the ceiling did not reach the child", err)
 		}

@@ -22,7 +22,7 @@ func (q *queuedCreatingStore) CreateRun(ctx context.Context, id, workflowName st
 	if err != nil {
 		return nil, err
 	}
-	if err := q.FilesystemRunStore.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
+	if err := q.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
 		return nil, err
 	}
 	run.Status = store.RunStatusQueued
@@ -34,7 +34,7 @@ func (q *queuedCreatingStore) CreateChildRun(ctx context.Context, id, workflowNa
 	if err != nil {
 		return nil, err
 	}
-	if err := q.FilesystemRunStore.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
+	if err := q.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
 		return nil, err
 	}
 	run.Status = store.RunStatusQueued
