@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.108.2](https://github.com/SocialGouv/iterion/compare/v3.108.1...v3.108.2) (2026-09-05)
+
+### Bug Fixes
+
+* **runner:** retain exhausted lock deliveries in the DLQ ([#770](https://github.com/SocialGouv/iterion/issues/770)) ([c804064](https://github.com/SocialGouv/iterion/commit/c80406445b17f4d4ce42ed55be6f58795db01593)), closes [#703](https://github.com/SocialGouv/iterion/issues/703)
+
+    <details><summary>why</summary>
+
+    Delay lock contention by the configured lease interval and retain the final delivery in the DLQ with a durable event. Closes #703.
+
+    </details>
+
 ## [3.108.1](https://github.com/SocialGouv/iterion/compare/v3.108.0...v3.108.1) (2026-09-05)
 
 ### Bug Fixes
