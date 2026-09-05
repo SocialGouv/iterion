@@ -155,6 +155,32 @@ func IssueCommentInstallationPermissions() map[string]string {
 	}
 }
 
+// IssueReadOrPullInstallationPermissions is the grant set minted for a read
+// whose target may be either: issues read, pull_requests read, and the
+// mandatory metadata baseline.
+//
+// It is the read counterpart of IssueCommentInstallationPermissions, and it
+// exists for the same reason: GET /repos/{owner}/{repo}/issues/{number} serves
+// a pull request too, and GitHub gates the call on the RESOURCE, not the path
+// — `pull_requests` for a PR, `issues` for an issue. A number the client
+// cannot classify without an extra round trip needs both.
+//
+// GitHub hides what a token cannot see, so the refusal is a 404, not a 403 —
+// indistinguishable from a deleted PR at the call site. The hold-label veto
+// reads through here and fails closed, which stops the autofix and
+// gate-relaunch lanes launching at all; that is why the grant is not optional.
+//
+// ListIssues deliberately does NOT use this profile: it reads the issues
+// COLLECTION, which is gated on `issues` alone, and the board-sync pass runs
+// often enough that keeping its token narrow is worth a fourth cached set.
+func IssueReadOrPullInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":        "read",
+		"pull_requests": "read",
+		"metadata":      "read",
+	}
+}
+
 // MissingProjectPermissions lists the project-board grants an installation does
 // NOT have, so a board binding fails at BIND time naming the missing permission
 // rather than hours later on the first status write. Empty when nothing is

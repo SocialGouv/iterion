@@ -164,19 +164,19 @@ func TestAppClientIssueReadsReuseTheCachedToken(t *testing.T) {
 	if _, err := a.ListIssues(ctx, "o/r", forge.IssueListOptions{Page: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.GetIssue(ctx, "o/r", 7); err != nil {
+	if _, err := a.ListIssues(ctx, "o/r", forge.IssueListOptions{Page: 3}); err != nil {
 		t.Fatal(err)
 	}
 	mints, bearers, _ := r.snapshot()
 	if len(mints) != 1 {
-		t.Fatalf("mints = %d over 3 reads, want 1 (the scoped token is cached)", len(mints))
+		t.Fatalf("mints = %d over 3 pages, want 1 (the scoped token is cached)", len(mints))
 	}
 	if len(bearers) != 3 {
 		t.Fatalf("bearers = %d, want one per REST call", len(bearers))
 	}
 	for _, b := range bearers[1:] {
 		if b != bearers[0] {
-			t.Errorf("every read must reuse the same cached token, got %v", bearers)
+			t.Errorf("every page must reuse the same cached token, got %v", bearers)
 		}
 	}
 }
@@ -212,12 +212,13 @@ func TestAppClientIssueWritesMintTheirOwnScopedToken(t *testing.T) {
 	}
 }
 
-// A comment is the one issue call whose permission depends on WHAT it targets:
-// GitHub serves PR comments from the issues endpoint but gates them on
-// `pull_requests`, and every AppClient.CommentIssue caller in pkg/server
-// targets a pull request (the gate pause notice, the DLQ notice, the
-// approve-rejection reply). All three swallow the error at Debug, so a token
-// short of that grant would turn every notice into a silent 403.
+// A comment is ONE of the two issue calls whose permission depends on WHAT it
+// targets (GetIssue is the other, below): GitHub serves PR comments from the
+// issues endpoint but gates them on `pull_requests`, and every
+// AppClient.CommentIssue caller in pkg/server targets a pull request (the gate
+// pause notice, the DLQ notice, the approve-rejection reply). All three
+// swallow the error at Debug, so a token short of that grant would turn every
+// notice into a silent 403.
 func TestAppClientCommentIssueMintsAPullRequestScopedToken(t *testing.T) {
 	r := newIssueMintRecorder(t)
 
@@ -295,6 +296,68 @@ func TestAppClientCommentAndReadDoNotShareAToken(t *testing.T) {
 	}
 }
 
+// GetIssue is the OTHER call whose grant follows the resource, not the path:
+// its only production caller — the gate-autofix / gate-relaunch hold-label
+// veto — always reads a PULL REQUEST number. A token short of pull_requests
+// gets 404/403 there, the veto cannot be evaluated, and a veto that cannot be
+// evaluated has not been cleared: both lanes stop launching.
+func TestAppClientGetIssueMintsAPullReadableToken(t *testing.T) {
+	r := newIssueMintRecorder(t)
+	if _, err := r.appClient(t).GetIssue(context.Background(), "o/r", 12); err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	mints, _, _ := r.snapshot()
+	if len(mints) != 1 {
+		t.Fatalf("mints = %d, want exactly 1", len(mints))
+	}
+	if mints[0]["pull_requests"] != "read" {
+		t.Errorf("mint permissions = %v, want pull_requests:read — the hold-label veto reads a PR "+
+			"number through this call, and without the grant the read is refused", mints[0])
+	}
+	if mints[0]["issues"] != "read" {
+		t.Errorf("mint permissions = %v, want issues:read — the same call reads a real issue too", mints[0])
+	}
+	for _, w := range []string{"contents", "repository_hooks", "statuses"} {
+		if _, ok := mints[0][w]; ok {
+			t.Errorf("a read token must not carry %s, got %v", w, mints[0])
+		}
+	}
+	for name, level := range mints[0] {
+		if level != "read" {
+			t.Errorf("a read token must carry no write grant, got %s:%s in %v", name, level, mints[0])
+		}
+	}
+}
+
+// The board-sync pass stays on the NARROW read token: it lists the issues
+// collection, which is gated on `issues` alone, and it runs far more often
+// than anything else. Widening it to serve GetIssue would hand every sync a
+// grant it never uses.
+func TestAppClientListIssuesKeepsTheNarrowReadToken(t *testing.T) {
+	r := newIssueMintRecorder(t)
+	a := r.appClient(t)
+	ctx := context.Background()
+	if _, err := a.ListIssues(ctx, "o/r", forge.IssueListOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GetIssue(ctx, "o/r", 12); err != nil {
+		t.Fatal(err)
+	}
+	mints, bearers, _ := r.snapshot()
+	if len(mints) != 2 {
+		t.Fatalf("mints = %d, want 2 (the list and the get do not share a scope)", len(mints))
+	}
+	if _, ok := mints[0]["pull_requests"]; ok {
+		t.Errorf("the list token must stay narrow, got %v", mints[0])
+	}
+	if mints[1]["pull_requests"] != "read" {
+		t.Errorf("the get token = %v, want pull_requests:read", mints[1])
+	}
+	if bearers[0] == bearers[1] {
+		t.Error("the list and the get must not share a token: that is the widening this test forbids")
+	}
+}
+
 // The scoped profiles are their own, and never leak into the runtime baseline
 // the cached management token carries.
 func TestIssuePermissionProfiles(t *testing.T) {
@@ -310,10 +373,14 @@ func TestIssuePermissionProfiles(t *testing.T) {
 	if comment["issues"] != "write" || comment["pull_requests"] != "write" || comment["metadata"] != "read" || len(comment) != 3 {
 		t.Errorf("comment profile = %v, want exactly issues:write + pull_requests:write + metadata:read", comment)
 	}
-	// The three stay below the runtime baseline: none of them may acquire a
+	readOrPull := IssueReadOrPullInstallationPermissions()
+	if readOrPull["issues"] != "read" || readOrPull["pull_requests"] != "read" || readOrPull["metadata"] != "read" || len(readOrPull) != 3 {
+		t.Errorf("read-or-pull profile = %v, want exactly issues:read + pull_requests:read + metadata:read", readOrPull)
+	}
+	// The four stay below the runtime baseline: none of them may acquire a
 	// grant the management token holds for other work.
 	base := RuntimeInstallationPermissions()
-	for _, profile := range []map[string]string{read, write, comment} {
+	for _, profile := range []map[string]string{read, write, comment, readOrPull} {
 		for name := range profile {
 			if _, ok := base[name]; !ok {
 				t.Errorf("profile %v carries %s, which is not even in the runtime baseline", profile, name)
