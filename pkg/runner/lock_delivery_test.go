@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,73 @@ func TestHeldLockArchiveFailureLeavesDurableEvidence(t *testing.T) {
 	after := loadStatus(t, st, before.ID)
 	if after.Status != before.Status || !after.UpdatedAt.Equal(before.UpdatedAt) || d.terms != 1 {
 		t.Fatalf("run=%+v delivery=%+v", after, d)
+	}
+}
+
+// ctxHonouringStore refuses an AppendEvent whose context is already spent.
+// FilesystemRunStore DISCARDS ctx (store_events.go), so every other test
+// here would pass on an expired one; Mongo threads it into
+// guardNotDeleted/allocSeq/InsertOne and fails instantly — and the cloud
+// runner, the only place this path executes, uses Mongo. Without this
+// double the regression below cannot fail.
+type ctxHonouringStore struct{ store.RunStore }
+
+func (s ctxHonouringStore) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
+func (ctxHonouringStore) LockRun(context.Context, string) (store.RunLock, error) {
+	return nil, natsq.ErrLockHeld
+}
+
+// A broker outage makes PublishDLQ burn its ENTIRE deadline before giving
+// up — it waits for a PubAck. The audit row is then the only confirmed
+// trail this delivery leaves (the DLQ copy is, by definition, unconfirmed),
+// so it must not be written on the context the publish just spent.
+func TestExhaustedPublishDeadlineStillRecordsTheAuditRow(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := seedRunningRun(t, base, "held-publish-timeout")
+	r := &Runner{
+		cfg:                Config{Store: ctxHonouringStore{base}, Logger: iterlog.Nop()},
+		maxDeliverOverride: 3,
+		publishTimeout:     time.Millisecond,
+		// A broker that never answers: the publish returns only once its own
+		// deadline expires, exactly as PublishMsg does awaiting a PubAck.
+		lockFailureDLQ: func(ctx context.Context, _ jsDelivery, _ string) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	d := &fakeDelivery{delivered: 3}
+	r.acquireRunLock(context.Background(),
+		&queue.RunMessage{RunID: before.ID, TenantID: "team-1", OwnerID: "u1"}, d, iterlog.Nop())
+
+	events, err := base.LoadEvents(context.Background(), before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != store.EventRunDeliveryExhausted {
+		t.Fatalf("the exhausted delivery left no trail on the run: %+v", events)
+	}
+	if events[0].Data["parked"] != false {
+		t.Fatalf("an unacknowledged publish is not a confirmed archive: %+v", events[0].Data)
+	}
+	if got := fmt.Sprint(events[0].Data["error"]); !strings.Contains(got, context.DeadlineExceeded.Error()) {
+		t.Fatalf("the row must name why the archive was not confirmed, got %q", got)
+	}
+	// The invariant the whole path exists for: no lock, no run mutation.
+	after := loadStatus(t, base, before.ID)
+	if after.Status != before.Status || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("live owner mutated: before=%+v after=%+v", before, after)
+	}
+	if d.terms != 1 || d.naks != 0 || d.acks != 0 || len(d.nakDelays) != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one Term", d)
 	}
 }
 

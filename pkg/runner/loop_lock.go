@@ -101,8 +101,6 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelCauseFun
 // archiveLockFailure retains an exhausted delivery, not a failed execution.
 // Without the lock no writer may change the run's outcome or continuation.
 func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger, lockErr error, held bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	// The operator triaging this DLQ entry decides between replay (which
 	// duplicates a live run) and discard (which destroys the last copy), so
 	// the reason must never claim more than the lock store proved. Only
@@ -112,14 +110,20 @@ func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, 
 	if held {
 		reason = fmt.Sprintf("run lock held by another runner after %d deliveries: %v; run state unchanged — inspect the owner before replaying this delivery", delivery.NumDelivered(), lockErr)
 	}
+	publishTimeout := archiveWriteTimeout
+	if r.publishTimeout > 0 {
+		publishTimeout = r.publishTimeout
+	}
+	publishCtx, publishCancel := context.WithTimeout(context.Background(), publishTimeout)
 	var err error
 	if r.lockFailureDLQ != nil {
-		err = r.lockFailureDLQ(ctx, delivery, reason)
+		err = r.lockFailureDLQ(publishCtx, delivery, reason)
 	} else if d, ok := delivery.(*natsq.Delivery); ok && r.cfg.NATS != nil {
-		err = r.cfg.NATS.PublishDLQ(ctx, d, reason)
+		err = r.cfg.NATS.PublishDLQ(publishCtx, d, reason)
 	} else {
 		err = errors.New("DLQ publisher unavailable")
 	}
+	publishCancel()
 	data := map[string]any{"reason": reason, "delivered": delivery.NumDelivered(), "parked": err == nil}
 	if err != nil {
 		data["error"] = err.Error()
@@ -132,9 +136,24 @@ func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, 
 	} else {
 		logger.Warn("runner: exhausted lock delivery for %s archived on DLQ; the owner's run is unchanged", msg.RunID)
 	}
-	if _, auditErr := r.cfg.Store.AppendEvent(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.RunID,
+	// The publish above is bounded by its context ALONE and can burn the
+	// whole deadline waiting on a PubAck during a broker outage — which is
+	// precisely when this row matters most, the DLQ copy being unconfirmed
+	// and this the only trail that is not. Inheriting the spent publish
+	// context would fail the append instantly on any store that honours it:
+	// Mongo threads ctx into guardNotDeleted/allocSeq/InsertOne, and the
+	// cloud runner — the only place this path executes — uses Mongo. Same
+	// hazard, same remedy as parkAdmissionMismatch's status flip.
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), archiveWriteTimeout)
+	defer auditCancel()
+	if _, auditErr := r.cfg.Store.AppendEvent(store.WithIdentity(auditCtx, msg.TenantID, msg.OwnerID), msg.RunID,
 		store.Event{Type: store.EventRunDeliveryExhausted, Data: data}); auditErr != nil {
 		logger.Error("runner: record exhausted lock delivery for %s: %v", msg.RunID, auditErr)
 	}
 	termTerminal(logger, delivery, "term-lock-exhausted", msg.RunID)
 }
+
+// archiveWriteTimeout bounds each of the two INDEPENDENT writes the
+// archive path makes — the DLQ publish, then the audit event. They never
+// share a deadline: see archiveLockFailure.
+const archiveWriteTimeout = 10 * time.Second
