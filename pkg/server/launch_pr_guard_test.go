@@ -46,12 +46,18 @@ func TestPRLaunchRejectsUnprovenHead(t *testing.T) {
 				return launchPullClient{pr: forge.PullRef{State: "open", HeadRepoFullName: tc.head, SourceBranch: "main"}, err: tc.err}, nil
 			}
 			vars := map[string]string{"pr_url": "https://github.com/o/r/pull/7"}
-			out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+			_, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
 			if err == nil {
 				t.Fatal("unverified PR launch was admitted")
 			}
-			if out[forgePublishVarToken] != "" {
-				t.Fatal("unverified PR received a launch grant")
+			// The registry, not the returned map: indexing the map proves
+			// nothing when a refusal can hand back one that was never written.
+			if n := len(s.forgePublishTokens.(*ForgePublishTokenRegistry).tokens); n != 0 {
+				t.Fatalf("unverified PR received a launch grant (%d in the registry)", n)
+			}
+			// A failure to ASK is retryable; a decision about the PR is not.
+			if got := prLaunchUnavailable(err); got != (tc.err != nil) {
+				t.Fatalf("retryable = %v for %q, want %v", got, tc.name, tc.err != nil)
 			}
 		})
 	}

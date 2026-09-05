@@ -226,11 +226,25 @@ a branch in the base repository before launching through these surfaces.
 The guard applies to every launch carrying `pr_url`; only the credential the
 lookup runs under differs:
 
-| Surface | Credential | When it cannot ask |
-|---|---|---|
-| Cloud studio / API (team identity) | the team's forge connection | refused (`422`) |
-| Board card (dispatcher) | the tenant's forge connection | card filed `blocked` |
-| Local studio / API (no team) | the operator's local `forge_token` secret | refused (`422`), with what to add |
+| Surface | Credential | Head proven elsewhere | Forge could not be asked |
+|---|---|---|---|
+| Cloud studio / API (team identity) | the team's forge connection | refused, `422` | `502` — retry the call |
+| Local studio / API (no team) | the operator's local `forge_token` secret | refused, `422` | `502` — retry the call |
+| Board card (dispatcher) | the tenant's forge connection | card filed `blocked` | card returned to `ready`, retried |
+
+The last column is a real distinction, not a nicety. A **refusal** is a decision
+about the pull request or the configuration — a fork, an unparsable URL, no
+connection, a rejected credential — and re-asking changes nothing. A forge that
+could not be *asked* (5xx, a timeout, a network blip) says nothing about the
+card: a board card is put back in the pool and retried on a later pass, up to a
+bounded number of attempts with a backoff, and only then filed `blocked`.
+Filing it immediately would write an operator-facing terminal flag — one the
+reconcilers deliberately refuse to reclassify — for a thirty-second hiccup.
+
+Two classification limits worth knowing: GitHub answers `403` for both a
+permission denial and a secondary rate limit, so a rate-limited card is treated
+as a decision and filed; and the attempt counter is per-replica, so a fleet of
+N replicas grants up to N× the attempts before escalating.
 
 A local `iterion studio` has no team and no forge connections, so it reads the
 `forge_token` secret instead (`iterion secret set forge_token`, the same name

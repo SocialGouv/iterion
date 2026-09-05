@@ -67,6 +67,29 @@ var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
 // blocked, the flag no reconciler lifts.
 var errCardContinuable = errors.New("board dispatcher: run continuable")
 
+// cardRetryLimit / cardRetryBackoff bound the PRE-LAUNCH retry of a card whose
+// forge lookup could not be answered. The bound is mandatory, not decorative:
+// the poll interval is 5s, so an unbounded return-to-ready hammers the forge
+// during the very outage it reacts to — and LifetimeRuns, the watchdog's own
+// ceiling, cannot advance before a run exists, so nothing else stops the loop.
+// Both are the DEFAULTS behind injectable fields, so the escalation is provable
+// without waiting a real half-minute (the sessionInterval precedent).
+const (
+	cardRetryLimit   = 5
+	cardRetryBackoff = 30 * time.Second
+)
+
+// cardRetryTTL forgets a card's attempt counter once it has stopped failing
+// for long enough that the next failure is a NEW incident, not the old one.
+const cardRetryTTL = 10 * time.Minute
+
+// cardRetry is one card's pre-launch attempt budget.
+type cardRetry struct {
+	attempts  int
+	notBefore time.Time
+	seen      time.Time
+}
+
 // pollDisposition maps a TERMINAL polled status to the poll's verdict:
 // finished = clean; failed = the one filing-worthy failure; everything
 // else terminal (failed_resumable, cancelled) is continuable — the retry
@@ -128,6 +151,19 @@ type boardDispatcher struct {
 	reconcileMemoMu sync.Mutex
 	reconcileMemo   map[string]time.Time
 
+	// retryMemo bounds the PRE-LAUNCH retry of a card whose forge lookup could
+	// not be answered (keyed tenant|issueID). Same shape as reconcileMemo, and
+	// the same honest caveat as every in-memory bound here: it is PER-REPLICA,
+	// so a fleet of N grants up to N× the attempts. Acceptable for a bound
+	// whose job is "stop hammering, then become visible" — persisting the
+	// counter on the card is a schema change this does not need.
+	retryMemoMu sync.Mutex
+	retryMemo   map[string]cardRetry
+	// retryLimit / retryBackoff default to cardRetryLimit / cardRetryBackoff;
+	// injectable so a test can drive the escalation edge in real time.
+	retryLimit   int
+	retryBackoff time.Duration
+
 	// sweepKeepWarned / sweepListFailed / sweepBatchFull dedup the repair
 	// sweeps' per-pass warns on their edges (the sweeps run every
 	// watchdog pass; their populations are self-sustaining under a
@@ -180,6 +216,8 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		awaitingState:   native.StateAwaitingInput,
 		interval:        5 * time.Second,
 		reapEvery:       dispatcher.ClaimReaperInterval(),
+		retryLimit:      cardRetryLimit,
+		retryBackoff:    cardRetryBackoff,
 		sem:             make(chan struct{}, concurrency),
 		logger:          logger,
 	}
@@ -195,6 +233,13 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 	}
 	claimed := 0
 	for _, c := range cands {
+		// A card returned to the pool by the pre-launch retry arm waits out its
+		// backoff HERE rather than being re-claimed on the next 5s tick — which
+		// would re-ask the forge twelve times a minute during the outage the
+		// backoff exists for, and churn the card's state each time.
+		if !d.cardRetryDue(c.Tenant, c.Issue.ID) {
+			continue
+		}
 		select {
 		case d.sem <- struct{}{}: // acquired a slot
 		default:
@@ -273,9 +318,28 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// path is unaffected: it cancels cardCtx, not this parent ctx.
 		final = ""
 		d.warn("card %s/%s: replica draining mid-run — leaving the card in place, releasing the claim", c.Tenant, c.Issue.ID)
+	case runErr != nil && prLaunchUnavailable(runErr):
+		// NOTHING launched: the forge could not be ASKED whether the PR's head
+		// lives in the base repo, which says nothing about the card. Filing it
+		// blocked would write an operator-facing terminal flag — one
+		// reconcileDeadPointer refuses to reclassify — for a 30-second hiccup,
+		// on a lane that made no forge call at all before this guard existed.
+		//
+		// Return it to the pool instead. NOT errCardContinuable's `final = ""`:
+		// that leaves the card in_progress, and nothing recovers that shape
+		// pre-launch — the poll claims `ready` only, and both reconcilers
+		// return immediately on the empty LastRunID a card that never launched
+		// still carries. The write below goes out under the claim token, so a
+		// superseded replica cannot resurrect it.
+		final = d.retryStateFor(c, runErr)
 	case runErr != nil:
 		final = d.blockedState
 		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+	}
+	if final != d.eligible0() {
+		// Past the pre-launch gate (launched, filed, parked or draining): this
+		// card's attempt budget belongs to a finished incident.
+		d.clearCardRetry(c.Tenant, c.Issue.ID)
 	}
 	// Final writes on a DETACHED ctx: a superseded claim cancelled
 	// cardCtx (the fenced writes must still run to be REFUSED loudly —
@@ -577,6 +641,74 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 // reconcileDue reports whether the sweep's evaluation of a (tenant, issue)
 // card is due again — false while a previous evaluation is younger than
 // forkAdoptionScanTTL.
+// eligible0 is the state a card is returned to when nothing launched — the
+// first state the poll claims from. Empty when a hand-built dispatcher lists
+// none, which the retry arm reads as "there is no pool to return to".
+func (d *boardDispatcher) eligible0() string {
+	if len(d.eligible) == 0 {
+		return ""
+	}
+	return d.eligible[0]
+}
+
+// retryStateFor books one pre-launch attempt against a card and answers where
+// it goes: back to the eligible pool while its budget holds, else blocked —
+// escalating rather than looping, because an outage that outlives the budget
+// has become an operator's problem and a card nobody can see is worse than one
+// filed wrongly. Mirrors the watchdog's refusal to strand: with no eligible
+// state to return to, file rather than leave the card mid-flight.
+func (d *boardDispatcher) retryStateFor(c boardmongo.Candidate, runErr error) string {
+	pool := d.eligible0()
+	attempts, mayRetry := d.noteCardRetry(c.Tenant, c.Issue.ID)
+	if pool == "" || !mayRetry {
+		d.warn("card %s/%s: the forge could not verify the pull request's head after %d attempts — filing %s: %v",
+			c.Tenant, c.Issue.ID, attempts, d.blockedState, runErr)
+		return d.blockedState
+	}
+	d.warn("card %s/%s: the forge could not verify the pull request's head (attempt %d/%d) — returning it to %s, retrying in %s: %v",
+		c.Tenant, c.Issue.ID, attempts, d.retryLimit, pool, d.retryBackoff, runErr)
+	return pool
+}
+
+// noteCardRetry records one failed pre-launch attempt, arms the backoff window
+// and reports (attempts so far, whether the card may go back to the pool).
+func (d *boardDispatcher) noteCardRetry(tenant, issueID string) (int, bool) {
+	d.retryMemoMu.Lock()
+	defer d.retryMemoMu.Unlock()
+	if d.retryMemo == nil {
+		d.retryMemo = map[string]cardRetry{}
+	}
+	now := time.Now()
+	for k, r := range d.retryMemo {
+		if now.Sub(r.seen) >= cardRetryTTL {
+			delete(d.retryMemo, k)
+		}
+	}
+	key := tenant + "|" + issueID
+	r := d.retryMemo[key]
+	r.attempts++
+	r.notBefore = now.Add(d.retryBackoff)
+	r.seen = now
+	d.retryMemo[key] = r
+	return r.attempts, r.attempts < d.retryLimit
+}
+
+// cardRetryDue reports whether a card's pre-launch backoff window has elapsed.
+// True for every card the retry arm never touched, which is nearly all of them.
+func (d *boardDispatcher) cardRetryDue(tenant, issueID string) bool {
+	d.retryMemoMu.Lock()
+	defer d.retryMemoMu.Unlock()
+	r, ok := d.retryMemo[tenant+"|"+issueID]
+	return !ok || !time.Now().Before(r.notBefore)
+}
+
+// clearCardRetry forgets a card's attempt budget.
+func (d *boardDispatcher) clearCardRetry(tenant, issueID string) {
+	d.retryMemoMu.Lock()
+	defer d.retryMemoMu.Unlock()
+	delete(d.retryMemo, tenant+"|"+issueID)
+}
+
 func (d *boardDispatcher) reconcileDue(tenant, issueID string) bool {
 	d.reconcileMemoMu.Lock()
 	defer d.reconcileMemoMu.Unlock()

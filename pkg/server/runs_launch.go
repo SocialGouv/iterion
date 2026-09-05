@@ -452,6 +452,16 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		err = s.verifyLocalPRHead(r.Context(), prURL)
 	}
 	if err != nil {
+		// A refusal is about the request (422); a forge that could not be asked
+		// is a dependency failure the same call survives on retry (502, the
+		// status this handler already uses for a forge-side failure above).
+		// Answering 422 there tells the operator to change a request that was
+		// fine.
+		if prLaunchUnavailable(err) {
+			s.httpErrorFor(w, r, http.StatusBadGateway, "%v", err)
+			span.SetStatus(codes.Error, "PR head repository unverifiable")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", err)
 		span.SetStatus(codes.Error, "PR launch head repository refused")
 		return

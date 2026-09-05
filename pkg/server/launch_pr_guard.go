@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -16,6 +17,63 @@ import (
 // operator who can already run a PR bot locally has it configured.
 const localForgeTokenSecret = "forge_token"
 
+// prLaunchError separates the two things a refused PR launch can mean, because
+// the board lane must dispose of them differently: a REFUSAL is a decision
+// about this pull request or this deployment's configuration (a fork, an
+// unparsable URL, no connection, a rejected credential) and re-asking changes
+// nothing; an UNAVAILABLE is a failure to ask at all (5xx, a timeout, a
+// network blip) and the same card would have launched a minute later.
+//
+// Collapsing them is what filed a card `blocked` — an operator-facing terminal
+// flag reconcileDeadPointer refuses to reclassify — for a 30-second forge
+// hiccup, on a lane that made no forge call at all before this guard existed.
+type prLaunchError struct {
+	msg   string
+	cause error
+	// retryable is the CONSERVATIVE half: only errors we could not turn into
+	// a decision land here, never a refusal.
+	retryable bool
+}
+
+func (e *prLaunchError) Error() string { return e.msg }
+func (e *prLaunchError) Unwrap() error { return e.cause }
+
+// prLaunchUnavailable reports whether err is a failure to ASK rather than a
+// decision — the only class a caller may retry.
+func prLaunchUnavailable(err error) bool {
+	var pe *prLaunchError
+	return errors.As(err, &pe) && pe.retryable
+}
+
+// classifyPRLookupError decides which of the two a forge lookup failure is.
+//
+// The allowlist runs in the PERMANENT direction, never "untyped ⇒ transient":
+// forge.StatusErr types only 401/403/404, so 400/422/429/5xx all arrive as one
+// untyped "HTTP <code>" string. Treating the typed sentinels as permanent and
+// everything else as retryable therefore costs an untyped 400/422 a few
+// attempts before it is filed — visible in the same place, just later — while
+// a 5xx or a timeout self-heals, which is the failure this exists for.
+//
+// Known residual: GitHub answers 403 for BOTH a permission denial and a
+// secondary rate limit, so a rate-limited card is filed terminally. Splitting
+// them needs response headers the admin clients do not surface.
+func classifyPRLookupError(op string, err error) error {
+	permanent := errors.Is(err, forge.ErrUnauthorized) ||
+		errors.Is(err, forge.ErrForbidden) ||
+		errors.Is(err, forge.ErrHookNotFound) ||
+		errors.Is(err, forge.ErrPermissionsNotGranted)
+	return &prLaunchError{
+		msg:       fmt.Sprintf("PR launch: %s: %v", op, err),
+		cause:     err,
+		retryable: !permanent,
+	}
+}
+
+// prLaunchRefusal builds the terminal half: a decision, never retried.
+func prLaunchRefusal(format string, args ...any) error {
+	return &prLaunchError{msg: fmt.Sprintf(format, args...)}
+}
+
 // verifyPRHeadInBaseRepo is issue #702's guard, and the ONE place the launch
 // surfaces apply it: the head branch a run will check out must be PROVEN to
 // live in the base repo. When it does not, the checkout either misses or
@@ -27,10 +85,10 @@ const localForgeTokenSecret = "forge_token"
 func verifyPRHeadInBaseRepo(ctx context.Context, gc forgeGateClient, repo string, number int) error {
 	pr, err := gc.GetPullRequest(ctx, repo, number)
 	if err != nil {
-		return fmt.Errorf("PR launch: resolve head repository: %w", err)
+		return classifyPRLookupError("resolve head repository", err)
 	}
 	if refusal := forkGuardRefusal(pr.SameRepoAs(repo), false, pr.HeadRepoFullName); refusal != "" {
-		return fmt.Errorf("PR launch: %s", refusal)
+		return prLaunchRefusal("PR launch: %s", refusal)
 	}
 	return nil
 }
@@ -53,30 +111,30 @@ func verifyPRHeadInBaseRepo(ctx context.Context, gc forgeGateClient, repo string
 func (s *Server) verifyLocalPRHead(ctx context.Context, prURL string) error {
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
-		return fmt.Errorf("PR launch: %w", err)
+		return prLaunchRefusal("PR launch: %v", err)
 	}
 	provider, base, ok := providerForPullURL(prURL, host)
 	if !ok {
-		return fmt.Errorf("PR launch: cannot tell which forge serves %s, so the PR's head repository cannot be verified — "+
+		return prLaunchRefusal("PR launch: cannot tell which forge serves %s, so the PR's head repository cannot be verified — "+
 			"iterion refuses rather than assume the head branch lives in %s (a fork's branch can silently resolve to a same-named branch there). "+
 			"Launch from a checkout of the PR branch with `iterion run` instead", prURL, repo)
 	}
 	token, err := s.localForgeToken(ctx, host)
 	if err != nil {
-		return fmt.Errorf("PR launch: reading the local %s secret to verify %s: %w", localForgeTokenSecret, prURL, err)
+		return prLaunchRefusal("PR launch: reading the local %s secret to verify %s: %v", localForgeTokenSecret, prURL, err)
 	}
 	if token == "" {
-		return fmt.Errorf("PR launch: no credential can verify that %s's head branch lives in %s — this server holds no forge connection for %s "+
+		return prLaunchRefusal("PR launch: no credential can verify that %s's head branch lives in %s — this server holds no forge connection for %s "+
 			"and no local `%s` secret usable there. iterion refuses rather than assume same-repo: a fork's head branch can silently resolve to a "+
 			"same-named branch in the base repo and a code-pushing bot would commit onto it. Add one with `iterion secret set %s`, or launch from a "+
 			"checkout of the PR branch with `iterion run`", prURL, repo, host, localForgeTokenSecret, localForgeTokenSecret)
 	}
 	gc, err := s.localGateClientFor(ctx, provider, base, token)
 	if err != nil {
-		return fmt.Errorf("PR launch: resolve forge client: %w", err)
+		return classifyPRLookupError("resolve forge client", err)
 	}
 	if gc == nil {
-		return fmt.Errorf("PR launch: provider %s cannot resolve pull requests", provider)
+		return prLaunchRefusal("PR launch: provider %s cannot resolve pull requests", provider)
 	}
 	return verifyPRHeadInBaseRepo(ctx, gc, repo, number)
 }

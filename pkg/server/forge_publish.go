@@ -685,18 +685,18 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 	// (indexing nil yields "" whether or not the guard ran).
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
-		return vars, fmt.Errorf("PR launch: %w", err)
+		return vars, prLaunchRefusal("PR launch: %v", err)
 	}
 	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
 	if !ok {
-		return vars, fmt.Errorf("PR launch: no forge connection can verify the head repository for %s", prURL)
+		return vars, prLaunchRefusal("PR launch: no forge connection can verify the head repository for %s", prURL)
 	}
 	client, err := s.gateClientFor(ctx, conn)
 	if err != nil {
-		return vars, fmt.Errorf("PR launch: resolve forge client: %w", err)
+		return vars, classifyPRLookupError("resolve forge client", err)
 	}
 	if client == nil {
-		return vars, fmt.Errorf("PR launch: provider %s cannot resolve pull requests", conn.Provider)
+		return vars, prLaunchRefusal("PR launch: provider %s cannot resolve pull requests", conn.Provider)
 	}
 	// The guard itself is verifyPRHeadInBaseRepo — shared with the no-team
 	// lane so both surfaces refuse the same three states (launch_pr_guard.go).

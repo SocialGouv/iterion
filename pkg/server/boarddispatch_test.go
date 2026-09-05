@@ -836,7 +836,11 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Errorf("the stale provisioning won the policy: %q", out["gate_context"])
 	}
 
-	// Same slug on another forge is a different repo: no policy, no grant.
+	grantsBefore := len(s.forgePublishTokens.(*ForgePublishTokenRegistry).tokens)
+	// Same slug on another forge is a different repo — and since no connection
+	// covers that host, nothing can verify the PR's head there either, so the
+	// launch is now REFUSED rather than merely left ungranted. The vars come
+	// back untouched: no policy, no grant.
 	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://gitlab.example/o/r/-/merge_requests/7"}, nil)
 	if err == nil {
@@ -845,8 +849,11 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	if _, ok := out["gate_context"]; ok {
 		t.Errorf("policy applied across forge hosts: %v", out)
 	}
-	if _, ok := out[forgePublishVarToken]; ok {
-		t.Error("grant minted for a repo on a host no connection covers")
+	// Assert the SIDE EFFECT, not the returned map: a refusal used to return a
+	// NIL map, on which "no token key present" holds whether or not the guard
+	// ran. The registry's own size cannot be faked that way.
+	if got := len(s.forgePublishTokens.(*ForgePublishTokenRegistry).tokens); got != grantsBefore {
+		t.Errorf("grant minted for a repo on a host no connection covers: registry grew %d → %d", grantsBefore, got)
 	}
 
 	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
@@ -2726,5 +2733,122 @@ func TestCloudSweep_GateOffReleasesAnAbandonedRecoveryHold(t *testing.T) {
 	}
 	if state != native.StateInProgress {
 		t.Fatalf("state = %q — a release restores the card, it must never ROUTE an operator-cancelled run", state)
+	}
+}
+
+// A card whose PR-head lookup could not be ANSWERED (forge 5xx, timeout,
+// network blip) must not be filed blocked: nothing launched, and blocked is an
+// operator-facing terminal flag reconcileDeadPointer refuses to reclassify.
+// The card goes back to the eligible pool and launches on the next pass — the
+// property the whole retry arm exists for, proven end-to-end rather than by an
+// errors.Is assertion.
+func TestBoardDispatcher_ForgeOutageReturnsTheCardAndRetries(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	outage := true
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		if outage {
+			return fmt.Errorf("card native:1: %w",
+				classifyPRLookupError("resolve head repository", errors.New("github: GET pull: HTTP 503")))
+		}
+		return nil
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0 // the wait itself is not what this proves
+
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateReady {
+		t.Fatalf("an unanswerable lookup must return the card to the pool, got %q", got)
+	}
+	if len(f.claimed) != 0 {
+		t.Fatalf("the card must be released so the next pass can claim it: %v", f.claimed)
+	}
+
+	outage = false
+	if claimed := d.tick(context.Background()); claimed != 1 {
+		t.Fatalf("the recovered card was not re-claimed: claimed=%d", claimed)
+	}
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateDone {
+		t.Fatalf("the card did not launch once the forge recovered, got %q", got)
+	}
+}
+
+// The retry is BOUNDED: an outage that outlives the budget escalates to
+// blocked rather than looping forever against the forge it cannot reach.
+func TestBoardDispatcher_ForgeOutageEscalatesAfterTheBudget(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return classifyPRLookupError("resolve head repository", errors.New("github: GET pull: HTTP 502"))
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0
+	d.retryLimit = 3
+	for i := 0; i < d.retryLimit; i++ {
+		d.tick(context.Background())
+		d.wg.Wait()
+	}
+	if got := f.states["native:1"]; got != native.StateBlocked {
+		t.Fatalf("a lookup failing past the budget must escalate to blocked, got %q after %d passes", got, d.retryLimit)
+	}
+	if len(f.claimed) != 0 {
+		t.Fatalf("the escalated card must still be released: %v", f.claimed)
+	}
+}
+
+// A PROVEN fork is a decision, not an outage: it is filed blocked on the FIRST
+// pass. Retrying it would re-ask a question the forge already answered.
+func TestBoardDispatcher_ForkRefusalIsTerminalOnTheFirstPass(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return prLaunchRefusal("PR launch: %s", forkGuardRefusal(false, false, "contributor/r"))
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateBlocked {
+		t.Fatalf("a proven fork must be filed blocked immediately, got %q", got)
+	}
+}
+
+// The backoff is enforced at CLAIM time: a card returned to the pool is not
+// re-claimed on the very next 5s tick, or the retry hammers the forge during
+// the outage it is reacting to.
+func TestBoardDispatcher_ReturnedCardWaitsOutItsBackoff(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	passes := 0
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		passes++
+		return classifyPRLookupError("resolve head repository", errors.New("dial tcp: i/o timeout"))
+	}, "replica-A", 4, nil)
+	d.retryBackoff = time.Hour
+	d.tick(context.Background())
+	d.wg.Wait()
+	if claimed := d.tick(context.Background()); claimed != 0 || passes != 1 {
+		t.Fatalf("a card inside its backoff window was re-claimed: claimed=%d passes=%d", claimed, passes)
+	}
+}
+
+// The permanent/transient split is an explicit allowlist in the PERMANENT
+// direction: the typed forge sentinels are decisions, everything else is a
+// failure to ask. "Untyped ⇒ transient" would retry a config defect forever.
+func TestClassifyPRLookupError_PermanentAllowlist(t *testing.T) {
+	for _, permanent := range []error{
+		forge.ErrUnauthorized, forge.ErrForbidden, forge.ErrHookNotFound, forge.ErrPermissionsNotGranted,
+	} {
+		if err := classifyPRLookupError("resolve head repository", permanent); prLaunchUnavailable(err) {
+			t.Errorf("%v must be terminal, not retried", permanent)
+		}
+	}
+	for _, transient := range []error{
+		errors.New("github: GET pull: HTTP 503"),
+		errors.New("github: GET pull: HTTP 429"),
+		context.DeadlineExceeded,
+	} {
+		if err := classifyPRLookupError("resolve head repository", transient); !prLaunchUnavailable(err) {
+			t.Errorf("%v must be retryable — it says nothing about the card", transient)
+		}
+	}
+	// A refusal is never retryable, whatever it wraps.
+	if prLaunchUnavailable(prLaunchRefusal("PR launch: fork PR")) {
+		t.Error("a refusal must never be retried")
 	}
 }
