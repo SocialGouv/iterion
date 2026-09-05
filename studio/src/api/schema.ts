@@ -6199,6 +6199,7 @@ export interface components {
         forgeOAuthAppReq: {
             admin_token?: string;
             allow_app_delivery?: boolean;
+            allow_project_board?: boolean;
             allow_repo_creation?: boolean;
             allow_security_read?: boolean;
             client_id?: string;

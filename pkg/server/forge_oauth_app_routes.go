@@ -70,6 +70,15 @@ type forgeOAuthAppReq struct {
 	// Without it here, an existing App has to be edited on GitHub by hand
 	// and re-approved by an org admin.
 	AllowSecurityRead bool `json:"allow_security_read,omitempty"`
+	// AllowProjectBoard (github-manifest): request organization_projects:write
+	// so iterion can read the org's Projects v2 board and reflect native card
+	// transitions onto its Status field (ADR-097, docs/github-board-sync.md).
+	// Opt-in: it is an ORG-level grant spanning every project the org owns,
+	// not only the installed repositories, and at run time it is minted per
+	// board call only — the cached runtime token never carries it. Without it
+	// here, an existing App has to be edited on GitHub by hand and the new
+	// grant re-approved by an org owner.
+	AllowProjectBoard bool `json:"allow_project_board,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {

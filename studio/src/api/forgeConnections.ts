@@ -392,6 +392,9 @@ export async function startGitHubManifest(
   // allow_security_read requests vulnerability_alerts:read so a bot can read
   // the org's Dependabot alerts (docs/forge-security-read.md); off by default
   // and only ever minted into a dedicated token.
+  // allow_project_board requests organization_projects:write so a team can
+  // bind a GitHub Projects v2 board to its native board (docs/github-board-
+  // sync.md); off by default and only ever minted per board call.
   // security_read_only builds a WATCH-ONLY App instead: metadata + Dependabot
   // alerts, both read, and nothing else — the shape meant to be installed on
   // ALL repositories without granting write anywhere. It replaces the runtime
@@ -404,6 +407,7 @@ export async function startGitHubManifest(
     allow_repo_creation?: boolean;
     allow_app_delivery?: boolean;
     allow_security_read?: boolean;
+    allow_project_board?: boolean;
     security_read_only?: boolean;
   },
 ): Promise<GitHubManifestStart> {

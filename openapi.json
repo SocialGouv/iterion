@@ -2773,6 +2773,9 @@
           "allow_app_delivery": {
             "type": "boolean"
           },
+          "allow_project_board": {
+            "type": "boolean"
+          },
           "allow_repo_creation": {
             "type": "boolean"
           },

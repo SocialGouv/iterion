@@ -54,7 +54,7 @@ bug until you know it is a decision:
 
 | credential | what it needs |
 |---|---|
-| **GitHub App** | organization permission **Projects: Read and write** (`organization_projects`). It is **org-level**, so an existing installation does not acquire it silently — an org owner must approve the new grant. Enable it at App creation (`AllowProjectBoard`); at run time iterion mints a dedicated token per board call, so the cached runtime token stays minimal. |
+| **GitHub App** | organization permission **Projects: Read and write** (`organization_projects`). It is **org-level**, so an existing installation does not acquire it silently — an org owner must approve the new grant. Request it at App creation: tick *"Allow iterion to sync this org's project boards"* in the connect wizard (`allow_project_board` on `POST /api/teams/{id}/forge/oauth-apps/github-manifest`). At run time iterion mints a dedicated token per board call, so the cached runtime token stays minimal. |
 | **Fine-grained PAT** | organization permission **Projects: Read and write**. |
 | **Classic PAT** | the `project` scope (`read:project` alone gives a read-only binding). |
 
