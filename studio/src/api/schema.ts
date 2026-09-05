@@ -454,6 +454,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/usage-readings/{fingerprint}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/admin/usage-readings/{fingerprint} */
+        delete: operations["deleteAdminUsageReadingsByFingerprint"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/users": {
         parameters: {
             query?: never;
@@ -5796,6 +5815,7 @@ export interface components {
             continuation_state?: string;
             /** Format: date-time */
             created_at: string;
+            cred_fingerprints?: string[];
             /** Format: date-time */
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];
@@ -5812,6 +5832,8 @@ export interface components {
             inputs?: {
                 [key: string]: unknown;
             };
+            /** Format: date-time */
+            llm_idle_since?: string;
             loc_added?: number;
             loc_deleted?: number;
             loops?: {
@@ -5836,6 +5858,8 @@ export interface components {
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
+            /** Format: date-time */
+            skipped_cred_reopens_at?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
             /** Format: date-time */
@@ -5973,6 +5997,7 @@ export interface components {
             stale_hash?: boolean;
         };
         apiKeyView: {
+            alive_runs?: number;
             created_at: string;
             fingerprint?: string;
             id: string;
@@ -6226,6 +6251,10 @@ export interface components {
             monthly_run_quota?: number;
             name?: string;
             slug?: string;
+        };
+        usageReadingsClearedView: {
+            deleted: number;
+            fingerprint: string;
         };
     };
     responses: never;
@@ -7005,6 +7034,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    deleteAdminUsageReadingsByFingerprint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["usageReadingsClearedView"];
+                };
             };
         };
     };
