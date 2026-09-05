@@ -188,8 +188,10 @@ func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
 		t.Errorf("FinishedAt should be cleared by LoadRun, got %v", healed.FinishedAt)
 	}
 
-	// And the heal must be persisted to disk so subsequent reloads stay
-	// clean even without going through LoadRun in the same process.
+	// The heal is in-memory only: a read never writes run.json back (see
+	// TestLoadRunDoesNotWriteBack — a reader is not the run's owner), so the
+	// stale field stays on disk until the next legitimate write, and every
+	// LoadRun heals it again.
 	raw, err := os.ReadFile(s.runJSONPath("run-stale"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -198,8 +200,15 @@ func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if onDisk.FinishedAt != nil {
-		t.Errorf("FinishedAt should be persisted as nil on disk, got %v", onDisk.FinishedAt)
+	if onDisk.FinishedAt == nil {
+		t.Error("LoadRun must not write the heal back to disk")
+	}
+	again, err := s.LoadRun(context.Background(), "run-stale")
+	if err != nil {
+		t.Fatalf("LoadRun (heal again): %v", err)
+	}
+	if again.FinishedAt != nil {
+		t.Errorf("FinishedAt should be healed on every read, got %v", again.FinishedAt)
 	}
 }
 

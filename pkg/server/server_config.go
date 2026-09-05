@@ -231,6 +231,12 @@ type Config struct {
 	// nil answers 501 there. The durable counterpart to a plugin installed
 	// into a pod's iterion home, which a restart silently loses.
 	PluginSources pluginsource.Store
+	// PluginSourceFetcher is what POST/PATCH /plugin-sources verify a source
+	// with before persisting it (clone + parse the manifest + read the
+	// contributions — the same materialisation a launch performs). Nil skips
+	// the verification, with a warning per registration: a source accepted
+	// unverified is only found broken by the launches that skip it.
+	PluginSourceFetcher *pluginsource.Fetcher
 
 	// BotSources holds team-authored bot bundles (pkg/botsource). Non-nil
 	// registers /api/teams/:id/bot-sources and enables cloud bot editing

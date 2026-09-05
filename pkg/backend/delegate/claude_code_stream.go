@@ -76,19 +76,63 @@ func resolveStreamHotTimeout() time.Duration {
 
 // defaultOrchStallTimeout bounds how long the session may sit idle while the
 // model is BLOCKED on an orchestration tool (TaskOutput / Monitor) that it
-// reached WITHOUT having spawned a subagent (Task) first. That is the exact
-// shape of the observed deadlock: a reviewer called TaskOutput(block:true) on
-// a background task that never existed and hung until the 15-min hot timeout,
-// producing zero events meanwhile. Waiting on a task it never spawned can
-// never make progress, so we abort fast — on this short budget instead of the
-// hot budget — and, because the error still carries "session idle for", the
-// executor's retry loop auto-re-executes the node on a fresh subprocess (no
-// manual resume). A LEGITIMATE TaskOutput that follows a real Task spawn keeps
-// the full hot budget: a working subagent can legitimately take minutes.
+// reached WITHOUT any background work to wait on — no subagent spawned
+// (`Agent`, or `Task` on CLIs that predate the rename), no command started
+// with run_in_background. That is the exact shape of the observed deadlock:
+// a session called TaskOutput(block:true) on a task id it never created and
+// hung until the 15-min hot timeout, producing zero events meanwhile. Such a
+// wait can never make progress, so it is classified on this short budget
+// instead of the hot one. What follows is the in-place recovery below
+// (defaultOrchRecoveryTimeout); only when that fails is the session aborted
+// — the error then still carries "session idle for", so the executor's retry
+// loop re-executes the node on a fresh subprocess. A LEGITIMATE blocking
+// call that follows real background work keeps the full hot budget: a
+// working subagent or a background build can legitimately take minutes.
 const defaultOrchStallTimeout = 4 * time.Minute
 
 func resolveOrchStallTimeout() time.Duration {
 	return envDurationOr("ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT", defaultOrchStallTimeout)
+}
+
+// defaultOrchRecoveryTimeout bounds the in-place recovery of that deadlock.
+// Once the stall is classified the session is INTERRUPTED — the CLI's
+// control-protocol interrupt aborts the tool call it is blocked on and
+// closes the turn — and when the turn closes within this budget the model
+// gets a user message naming the wait that could not return, then continues
+// on the same session. Killing the session instead costs a node restart:
+// the resume re-clones, re-provisions and replays the node, and a run close
+// to its wall dies. Only when the turn does not close within this budget, or
+// the model blocks the same way again, is the session aborted for the
+// executor's retry. 0 disables the recovery: the stall aborts immediately.
+const defaultOrchRecoveryTimeout = 30 * time.Second
+
+func resolveOrchRecoveryTimeout() time.Duration {
+	return envDurationOr("ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT", defaultOrchRecoveryTimeout)
+}
+
+// spawnsBackgroundWork reports whether a tool call creates work that a later
+// TaskOutput / Monitor can legitimately wait on: a subagent (`Agent`, or
+// `Task` on CLIs that predate the rename) or any tool started with
+// run_in_background (a Bash build, a background agent).
+func spawnsBackgroundWork(tu *claudesdk.ToolUseBlock) bool {
+	switch tu.Name {
+	case "Agent", "Task":
+		return true
+	}
+	bg, ok := tu.Input["run_in_background"].(bool)
+	return ok && bg
+}
+
+// orchStallNudge is the user message that follows a successful interrupt:
+// it names the wait that could not return so the model does not re-issue it.
+func orchStallNudge(tool string) string {
+	return fmt.Sprintf("[iterion] Your %s call was interrupted by the runtime: it waited on a background task this session never started (no Agent/Task call and no run_in_background command preceded it), so it could never return. Do not wait on task ids you did not create in this session. Continue the work directly and finish it.", tool)
+}
+
+// orchStallError keeps the "session idle for" prefix that isDelegateRetryable
+// classifies as retryable, so an aborted session still re-executes the node.
+func orchStallError(idle time.Duration, tool, outcome string) error {
+	return fmt.Errorf("claude session idle for %s — blocked on an orchestration tool (%s) with no background work to wait on (likely deadlock); %s (tune ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT / ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT, 0 to disable)", idle, tool, outcome)
 }
 
 // defaultNoProgressTimeout bounds how long the session may keep producing
@@ -279,13 +323,33 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	defer idle.Stop()
 
 	// Deadlock guard (see defaultOrchStallTimeout): spawnedTask records whether
-	// the model ever spawned a subagent; awaitingBlockingTool records whether
-	// its most recent turn left it blocked on TaskOutput/Monitor. Blocked on a
-	// blocking orchestration tool with no prior Task spawn == a hung wait that
-	// can never return → short-circuit the idle budget.
+	// the model ever started background work (a subagent, a run_in_background
+	// command); awaitingBlockingTool records whether its most recent turn left
+	// it blocked on TaskOutput/Monitor, stallTool which one. Blocked on a
+	// blocking orchestration tool with nothing to wait on == a hung wait that
+	// can never return → short-circuit the idle budget, then recover in place
+	// (see defaultOrchRecoveryTimeout): recovering is set between the
+	// interrupt and the turn closing, recovered once a recovery was spent —
+	// a second stall on the same session is aborted.
 	spawnedTask := false
 	awaitingBlockingTool := false
+	stallTool := ""
+	stallIdle := time.Duration(0)
+	recovering := false
+	recovered := false
 	orchStall := resolveOrchStallTimeout()
+	orchRecovery := resolveOrchRecoveryTimeout()
+	reportStall := func(ok bool) {
+		if task.Hooks.OnOrchestrationStall != nil {
+			task.Hooks.OnOrchestrationStall(OrchestrationStall{
+				Backend:   BackendClaudeCode,
+				Tool:      stallTool,
+				Model:     meta.effectiveModel,
+				IdleFor:   stallIdle,
+				Recovered: ok,
+			})
+		}
+	}
 
 	// Forward-progress watchdog (see defaultNoProgressTimeout): a SECOND timer,
 	// distinct from the silence-only idle timer, that resets ONLY on a message
@@ -325,9 +389,36 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			currentTimeout = orchStall
 			idle.Reset(orchStall)
 		}
+		// The interrupt is out: the only thing waited on now is the turn
+		// closing, on the recovery budget.
+		if recovering {
+			currentTimeout = orchRecovery
+			idle.Reset(orchRecovery)
+		}
 
 		select {
 		case it, ok := <-items:
+			if !ok && recovering {
+				// The interrupted turn closed (its ResultMessage ended the
+				// stream); the session is intact. Name the wait that could
+				// not return and let the model continue on a fresh turn.
+				if result == nil {
+					reportStall(false)
+					return nil, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the session ended while the interrupt was pending (cli_exit_code=%d); aborting for auto-retry", sess.ExitCode()))
+				}
+				if err := sess.Send(ctx, orchStallNudge(stallTool)); err != nil {
+					reportStall(false)
+					return nil, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: could not send the follow-up (%v); aborting for auto-retry", err))
+				}
+				items = forwardSessionStream(streamCtx, sess)
+				recovering, recovered = false, true
+				awaitingBlockingTool = false
+				result = nil
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 interrupted the pending %s call; the session continues in place with a note that it was waiting on nothing",
+					task.NodeID, task.Iteration, stallTool)
+				reportStall(true)
+				continue
+			}
 			if !ok {
 				// Stream closed without surfacing an error.
 				if result == nil {
@@ -381,14 +472,25 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				// result. Reset awaiting on each assistant turn so only the LATEST
 				// blocking call counts.
 				awaitingBlockingTool = false
+				if recovering {
+					// The model took the interrupted tool result and went on
+					// by itself: the session is moving again, and this turn's
+					// result is a real one — no follow-up needed.
+					recovering, recovered = false, true
+					b.Logger.Warn("[%s#%d/claude-code] 🪤 the session resumed on its own after the %s interrupt",
+						task.NodeID, task.Iteration, stallTool)
+					reportStall(true)
+				}
 				if m.Message != nil {
 					for _, blk := range m.Message.Content {
 						if tu, ok := blk.(*claudesdk.ToolUseBlock); ok {
 							progressed = true // the agent invoked a tool
-							if tu.Name == "Task" {
+							if spawnsBackgroundWork(tu) {
 								spawnedTask = true
-							} else if isBlockingOrchestrationTool(tu.Name) {
+							}
+							if isBlockingOrchestrationTool(tu.Name) {
 								awaitingBlockingTool = true
+								stallTool = tu.Name
 							}
 						}
 					}
@@ -427,15 +529,46 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			if currentTimeout <= 0 {
 				continue
 			}
-			cancelStream()
-			// Deadlock case: blocked on TaskOutput/Monitor with no Task spawned.
-			// Keep "session idle for" in the message so isDelegateRetryable still
-			// classifies it retryable → the executor auto-re-executes the node.
-			if awaitingBlockingTool && !spawnedTask {
-				b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on an orchestration tool (TaskOutput/Monitor) with no subagent spawned for %s — likely a deadlock, aborting for auto-retry",
-					task.NodeID, task.Iteration, currentTimeout)
-				return result, meta, fmt.Errorf("claude session idle for %s — blocked on an orchestration tool (TaskOutput/Monitor) with no subagent spawned (likely deadlock); aborting for auto-retry (tune ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT, 0 to disable)", currentTimeout)
+			if recovering {
+				// The interrupt did not close the turn: the CLI is wedged
+				// past what the control protocol can reach. Abort for retry.
+				cancelStream()
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 the %s interrupt did not close the turn within %s — aborting for auto-retry",
+					task.NodeID, task.Iteration, stallTool, currentTimeout)
+				reportStall(false)
+				return result, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the interrupt did not close the turn within %s; aborting for auto-retry", currentTimeout))
 			}
+			// Deadlock case: blocked on TaskOutput/Monitor with nothing to
+			// wait on. Recover in place once (interrupt + follow-up); abort
+			// when recovery is disabled, already spent, or the interrupt
+			// cannot be written. The abort keeps "session idle for" in the
+			// message so isDelegateRetryable still classifies it retryable
+			// → the executor auto-re-executes the node.
+			if awaitingBlockingTool && !spawnedTask {
+				stallIdle = currentTimeout
+				if !recovered && orchRecovery > 0 {
+					if err := sess.Interrupt(); err == nil {
+						recovering = true
+						b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on %s with no background work to wait on for %s — likely a deadlock; interrupting the call (the turn gets %s to close)",
+							task.NodeID, task.Iteration, stallTool, currentTimeout, orchRecovery)
+						continue
+					} else {
+						b.Logger.Warn("[%s#%d/claude-code] 🪤 could not interrupt the pending %s call: %v", task.NodeID, task.Iteration, stallTool, err)
+					}
+				}
+				cancelStream()
+				outcome := "aborting for auto-retry (in-place recovery disabled)"
+				if recovered {
+					outcome = "blocked the same way again after an in-place recovery; aborting for auto-retry"
+				} else if orchRecovery > 0 {
+					outcome = "in-place recovery failed: the interrupt could not be sent; aborting for auto-retry"
+				}
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on %s with no background work to wait on for %s — %s",
+					task.NodeID, task.Iteration, stallTool, currentTimeout, outcome)
+				reportStall(false)
+				return result, meta, orchStallError(currentTimeout, stallTool, outcome)
+			}
+			cancelStream()
 			phase := "cold"
 			envHint := "ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT"
 			if receivedAny {

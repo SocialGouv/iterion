@@ -753,6 +753,10 @@ type webhookLaunchResult struct {
 
 	denial     *launchDenial
 	httpStatus int
+	// attempts is the claim row's launch count after this call — what the
+	// unattended gate lanes read their failure budget from. Zero when no
+	// attempt was recorded (a replay, a denial, a delivery-store failure).
+	attempts int
 }
 
 // supersedeLiveRuns cancels the runs a fresh delivery has made obsolete, when
@@ -1098,11 +1102,14 @@ func (s *Server) launchWebhookTarget(
 	delivery := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	delivery.IdempotencyKey = idemKey
 	delivery.BotID = botID
+	delivery.Attempts = 1
 	if reusePriorFailure != nil {
-		// Retry: keep the prior row's identity + received-at, clear the
-		// error, and UPDATE it (Insert would ErrDuplicate on the idemKey).
+		// Retry: keep the prior row's identity + received-at, count the
+		// attempt, clear the error, and UPDATE it (Insert would
+		// ErrDuplicate on the idemKey).
 		delivery.ID = reusePriorFailure.ID
 		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
+		delivery.Attempts = reusePriorFailure.Attempts + 1
 		if s.webhookDeliveries != nil {
 			if err := s.webhookDeliveries.Update(ctx, delivery); err != nil {
 				adm.rollback(s.logger)
@@ -1174,13 +1181,16 @@ func (s *Server) launchWebhookTarget(
 	// repository in the studio.
 	runID, lerr := launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
 	if lerr != nil {
+		failedAt := s.gateNow()
 		delivery.Status = webhooks.StatusLaunchError
 		delivery.Error = lerr.Error()
+		delivery.FailedAt = &failedAt
 		s.updateWebhookDelivery(ctx, delivery)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
 		out.Status = webhooks.StatusLaunchError
 		out.Error = fmt.Sprintf("launch failed: %v", lerr)
 		out.DeliveryID = delivery.ID
+		out.attempts = delivery.Attempts
 		out.httpStatus = http.StatusBadGateway
 		return out
 	}

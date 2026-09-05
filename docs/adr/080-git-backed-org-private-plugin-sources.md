@@ -59,6 +59,13 @@ team**, never globally, so two orgs may each bring their own `deploy-target`.
   the operator explicitly enabled that fails to fetch **fails the launch**.
   Silently contributing nothing is the precise failure this ADR exists to
   remove.
+  *Amended 2026-09-05 (#536).* Launch-fatal proved the wrong lever: one
+  team's unparseable `plugin.yaml` failed every launch of the team for 2h22
+  in production. Loudness now lives in two other places — registration
+  verifies the source (clone + parse + read, `422` with the error otherwise),
+  and a source that breaks later is **skipped for the launch and flagged
+  `degraded` with the reason** on its record and in the server log. The run
+  proceeds without that source; nothing about the skip is silent.
 - **REST** at `/api/teams/{id}/plugin-sources`, team admin/owner only — a source
   designates code mirrored into *every* run of the team, so it is org automation
   policy, not a personal preference. Responses carry `pinned_ref` so the UI can

@@ -102,6 +102,17 @@ type UsageProgressInfo struct {
 	CacheWriteTokens int
 }
 
+// OrchestrationStallInfo is one classified orchestration deadlock — a
+// delegate session blocked on TaskOutput / Monitor with no background work
+// to wait on — and its outcome, passed to the OnOrchestrationStall hook.
+type OrchestrationStallInfo struct {
+	Backend   string
+	Tool      string
+	Model     string
+	IdleFor   time.Duration
+	Recovered bool
+}
+
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
 type LLMToolCallInfo struct {
 	ToolName  string

@@ -436,6 +436,16 @@ means "I start from a review and act on it".
   stops pushing; one that keeps pushing without converging frees a fresh claim
   every cycle. After five unattended passes the lane stops and leaves the PR to
   a human — the `/command` road is still open.
+- **Three launch attempts per head.** A fixer that cannot even be *started* (a
+  queue outage, a deploy window, a broken plugin source) spends neither of the
+  two bounds above — the claim binds only once a launch succeeds, and the
+  per-PR ceiling counts launched passes — so it used to be re-attempted on
+  every sweep offer, once a minute, for as long as the run stayed in the sweep
+  window (2026-08-26: ~90 minutes of it). The launch failure is now retried on
+  a backoff (5 min, then 10 min) from the count the claim row itself carries
+  (`attempts` / `failed_at` on the delivery), and after the third failure the
+  lane files a board card labelled `source:gate-autofix` + a PR comment naming
+  the failure and stops — a new head gets a fresh budget.
 
 It also obeys the ordinary launch gate (org quota, cost cap, concurrency) and
 the hold label, which pauses this lane like every other. Note the org cost cap
@@ -690,9 +700,21 @@ veto, `overlap: supersede`). The bound is the idempotency key itself: **one
 relaunch per (PR, head sha), ever.** The fresh run posts the real verdict over
 the synthetic failure when it completes.
 
+A relaunch that **cannot start** — the launch itself fails (a queue outage,
+a deploy window, the 2026-08-26 plugin-source parse error) rather than the
+relaunched run dying — does not spend the claim, and the sweep keeps offering
+the dead run every minute for an hour. Those offers are the retry, and the
+retry is bounded: the launch tail counts the attempts on the claim row
+(`attempts` / `failed_at` on the delivery), the lane retries on a backoff
+(5 min, then 10 min), and the **third** failure escalates exactly like a second
+death and then stops. An admission denial (org quota, cost cap, concurrency)
+still escalates on the first refusal — its horizon is not one the sweep window
+outlasts. Human-driven redeliveries carry no such budget: an operator retrying
+after a fix must be able to.
+
 When the one relaunch is already spent and the gate dies AGAIN on the same
-head — or the relaunch cannot start at all — the problem graduates to the
-team's board: a card labelled `source:gate-reconcile` naming BOTH dead runs
+head — or the relaunch cannot start within that budget — the problem graduates
+to the team's board: a card labelled `source:gate-reconcile` naming BOTH dead runs
 (the relaunch stamps a `gate_relaunch_of` launch var so its own death can name
 the original), the failure reasons, and the remedy. The same escalation is
 ALSO posted as a **PR comment** through the connection's review client: the

@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -407,6 +409,105 @@ func TestGateRelaunch(t *testing.T) {
 		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
 		if *w.launched != 0 {
 			t.Fatal("relaunched a bot the operator has since removed from the repo")
+		}
+	})
+
+	// A relaunch that cannot START — a deploy window, a queue blip, the
+	// 2026-08-26 plugin-source parse error — is retried on a backoff and
+	// escalated once its budget is spent, then left alone. The budget lives on
+	// the delivery row under the per-head claim key, so every replica reads
+	// the same count; the sweep re-offering the dead run every minute for an
+	// hour is what carries the retries.
+	t.Run("a relaunch that cannot start is retried on a backoff, escalated once, then silent", func(t *testing.T) {
+		w := build(t, nil)
+		rc := &fakeReviewClient{}
+		w.s.forgeReviewClientFor = func(context.Context, forge.Connection) (forge.ReviewClient, error) {
+			return rc, nil
+		}
+		at := time.Date(2026, 8, 26, 16, 9, 0, 0, time.UTC)
+		w.s.gateClock = func() time.Time { return at }
+		launches := 0
+		w.s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+			launches++
+			return "", errors.New(`pluginsource: load "deploy-onyxia": plugin: parse manifest: yaml: line 3: mapping values are not allowed in this context`)
+		}
+		runID := seedDeadRun(t, w.s)
+		offer := func() {
+			t.Helper()
+			if err := w.s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+		}
+		cards := func() int {
+			t.Helper()
+			got, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(got)
+		}
+
+		// First offer: the synthetic failure lands, the relaunch is tried once
+		// and fails. No escalation yet — a human told "automation is out of
+		// moves" on a first failure would be told so on every deploy window.
+		offer()
+		if launches != 1 {
+			t.Fatalf("launches after the first offer = %d, want 1", launches)
+		}
+		if n := cards(); n != 0 {
+			t.Fatalf("escalated on the FIRST failed relaunch (%d card(s)) — a transient failure must get its retries first", n)
+		}
+		// The head now carries this run's own synthetic marker, and the sweep
+		// re-offers the run every minute.
+		w.gc.statuses = []forge.CommitStatus{{
+			Context: gateNm, State: forge.CommitStateFailure,
+			Description: gateInterruptedDescription,
+			TargetURL:   "https://iterion.test/runs/" + runID,
+		}}
+		for i := 0; i < 4; i++ {
+			at = at.Add(time.Minute)
+			offer()
+		}
+		if launches != 1 {
+			t.Fatalf("launches inside the first backoff = %d, want still 1", launches)
+		}
+		at = at.Add(2 * time.Minute) // past 5 min since the first failure
+		offer()
+		if launches != 2 {
+			t.Fatalf("launches once the first backoff elapsed = %d, want 2", launches)
+		}
+		if n := cards(); n != 0 {
+			t.Fatalf("escalated after the second failure (%d card(s)), want the budget's third attempt first", n)
+		}
+		at = at.Add(5 * time.Minute) // inside the second (10 min) backoff
+		offer()
+		if launches != 2 {
+			t.Fatalf("launches inside the second backoff = %d, want still 2", launches)
+		}
+		at = at.Add(6 * time.Minute) // past it
+		offer()
+		if launches != 3 {
+			t.Fatalf("launches once the second backoff elapsed = %d, want 3", launches)
+		}
+		// The budget is spent on that third failure: the card and the PR
+		// comment land now, naming the count and the failure.
+		if n := cards(); n != 1 {
+			t.Fatalf("cards after the budget is spent = %d, want 1", n)
+		}
+		got, _ := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if !strings.Contains(got[0].Body, "3 times") || !strings.Contains(got[0].Body, "parse manifest") {
+			t.Fatalf("the card must say how many times and why:\n%s", got[0].Body)
+		}
+		if rc.calls != 1 {
+			t.Fatalf("PR comments = %d, want 1", rc.calls)
+		}
+		// From here on, silence: no launch, no second card, no second comment.
+		for i := 0; i < 3; i++ {
+			at = at.Add(time.Hour)
+			offer()
+		}
+		if launches != 3 || cards() != 1 || rc.calls != 1 {
+			t.Fatalf("after exhaustion: launches=%d cards=%d comments=%d, want 3/1/1 — the lane must stop", launches, cards(), rc.calls)
 		}
 	})
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -34,6 +35,10 @@ const gateAutofixName = "forge-gate-autofix"
 // autofixEventKind marks this lane's rows in the delivery audit, so an operator
 // can see every unattended launch it made and the per-PR ceiling can count them.
 const autofixEventKind = "gate_autofix"
+
+// gateAutofixLabel marks the board cards this lane files when a fixer launch
+// keeps failing to start, so an operator can find them in one query.
+const gateAutofixLabel = "source:gate-autofix"
 
 // maxAutofixAttemptsPerPR is the ceiling the per-head claim cannot provide.
 //
@@ -156,12 +161,28 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	// gate it backs. `reviewed` is the only sha a launch is possible for
 	// (the head must still equal it), so the key needs nothing from the
 	// forge. A launch_error row does not settle the head: the launch may
-	// legitimately retry.
+	// legitimately retry — on the budget the same row carries, then never
+	// again on this head (see forge_gate_launch_budget.go).
 	idem := autofixIdemKey(grant.TeamID, repo, number, reviewed)
-	if s.webhookDeliveries != nil {
-		if d, derr := s.webhookDeliveries.GetByIdempotencyKey(store.WithoutTenantFilter(ctx), idem); derr == nil && d.Status != webhooks.StatusLaunchError {
-			return nil // this head already had its pass — zero forge traffic
+	prior, found, verdict, wait := s.unattendedLaunchVerdict(ctx, idem)
+	if found && prior.Status != webhooks.StatusLaunchError {
+		return nil // this head already had its pass — zero forge traffic
+	}
+	switch verdict {
+	case launchRetryWait:
+		if s.logger != nil {
+			s.logger.Debug("gate auto-fix: the fixer on %s#%d@%s failed to start %d time(s) — next attempt in %s",
+				repo, number, shortSHA(reviewed), prior.Attempts, wait.Round(time.Second))
 		}
+		return nil
+	case launchRetryExhausted:
+		// Escalated at the failure that spent the budget; re-filing is a
+		// deduped no-op that only exists so a board outage at that moment
+		// does not lose the notice.
+		if conn, cerr := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID); cerr == nil && conn.TenantID == grant.TeamID {
+			s.escalateExhaustedAutofix(ctx, conn, grant.TeamID, repo, number, prURL, reviewed, gateCtx, prior.BotID, prior.Attempts, prior.Error)
+		}
+		return nil
 	}
 
 	integration, err := s.forgeIntegrations.GetByConnRepo(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID, repo)
@@ -321,13 +342,69 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		RepoRef: pr.SourceBranch,
 	}, "", "")
 	if res.RunID == "" {
-		return nil // replayed, denied, or failed — the tail recorded why
+		// Replayed, denied, or failed — the tail recorded why. A launch that
+		// failed to START is retried on the budget the claim row carries and
+		// escalated when it is spent; the sweep's next offers carry the
+		// retries. A denial keeps its own recovery (the forge is told, the
+		// org quota resets on its own horizon).
+		if res.Status == webhooks.StatusLaunchError && res.denial == nil {
+			why := strings.TrimSpace(res.Error)
+			switch {
+			case res.attempts >= maxUnattendedLaunchAttempts:
+				s.escalateExhaustedAutofix(ctx, conn, grant.TeamID, repo, number, prURL, pr.HeadSHA, gateCtx, fixer, res.attempts, why)
+			case res.attempts == 0:
+				s.logWarn("gate auto-fix: %s on %s#%d@%s failed to start (%s) — the next offer retries",
+					fixer, repo, number, shortSHA(pr.HeadSHA), why)
+			default:
+				s.logWarn("gate auto-fix: %s on %s#%d@%s failed to start (attempt %d/%d: %s) — retrying in %s",
+					fixer, repo, number, shortSHA(pr.HeadSHA), res.attempts, maxUnattendedLaunchAttempts, why,
+					unattendedLaunchBackoff(res.attempts))
+			}
+		}
+		return nil
 	}
 	if s.logger != nil {
 		s.logger.Info("gate auto-fix: %s red on %s#%d@%s → launched %s (run %s)",
 			gateCtx, repo, number, pr.HeadSHA[:7], fixer, res.RunID)
 	}
 	return nil
+}
+
+// escalateExhaustedAutofix files the out-of-moves card when the fixer could
+// not be STARTED within its budget on this head — a different notice from a
+// fixer that ran and did not converge (which the per-PR ceiling logs). Deduped
+// per (PR, head) by the card id; also posted on the PR.
+func (s *Server) escalateExhaustedAutofix(ctx context.Context, conn forge.Connection, teamID, repo string, number int, prURL, headSHA, gateCtx, fixer string, attempts int, lastErr string) {
+	if fixer == "" {
+		fixer = "the repo's fixer"
+	}
+	body := fmt.Sprintf(
+		"The merge gate `%s` on %s#%d is red and the automatic fix pass could not start: the launch of `%s` failed %d times — last: `%s`.\n\n"+
+			"- Pull request: %s\n"+
+			"- Head: `%s`\n\n"+
+			"The lane has stopped retrying this revision. Fix the launch cause — a broken plugin source, a queue outage, "+
+			"a bot that no longer resolves — then push, or run the fixer with its command; a new head gets a fresh attempt.",
+		gateCtx, repo, number, fixer, attempts, orNoError(lastErr),
+		prURL,
+		headSHA)
+	filed := s.fileGateEscalation(ctx, gateEscalation{
+		teamID:  teamID,
+		conn:    conn,
+		repo:    repo,
+		number:  number,
+		headSHA: headSHA,
+		lane:    "gate-autofix",
+		label:   gateAutofixLabel,
+		title:   fmt.Sprintf("Auto-fix of %s#%d cannot start", repo, number),
+		body:    body,
+	})
+	if filed {
+		s.logWarn("gate auto-fix: %s on %s#%d@%s failed to start %d times — no further attempt on this head; escalated to the board",
+			fixer, repo, number, shortSHA(headSHA), attempts)
+	} else if s.logger != nil {
+		s.logger.Debug("gate auto-fix: %s on %s#%d@%s is out of launch attempts and already escalated",
+			fixer, repo, number, shortSHA(headSHA))
+	}
 }
 
 // autofixIdemKey derives the per-(PR, head) claim key. The sha is lowercased

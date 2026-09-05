@@ -3,13 +3,11 @@ package server
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"context"
 
-	"github.com/google/uuid"
-
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -30,6 +28,12 @@ import (
 // The once-per-head bound is the idempotency key itself — if the relaunched
 // run dies on the same head too, the claim is already spent, the synthetic
 // failure stays, and the problem graduates to the board (below) for a human.
+//
+// A relaunch that fails to START is a different case from one that dies: the
+// claim key is not spent by a launch_error row, and the sweep re-offers the
+// dead run every minute for an hour. That retry is wanted (a deploy window, a
+// queue blip) but bounded — see forge_gate_launch_budget.go: a few attempts on
+// a backoff, then the same escalation, then silence.
 const gateRelaunchEventKind = "gate_relaunch"
 
 // gateRelaunchLabel marks the board cards this lane creates, so an operator
@@ -58,6 +62,47 @@ type deadGateRun struct {
 	prURL   string
 }
 
+// gateRelaunchBotID names the bot the dead run owed the gate for.
+func gateRelaunchBotID(d deadGateRun) string {
+	botID := strings.TrimSpace(d.run.BotID)
+	if botID == "" {
+		botID = strings.TrimSpace(d.grant.Bot)
+	}
+	return botID
+}
+
+// gateRelaunchIdemKey is the relaunch claim: one per (team, repo, PR, head,
+// BOT) — EVER, once a launch succeeds under it. A second death of the same
+// bot on the same head replays as a duplicate of this key, which is the
+// signal that automation is out of moves for this revision. The bot id is
+// part of the key because a repo's gate context is shared and the publish
+// grant is minted for ANY bot launched with a pr_url: two different gating
+// bots dying on one head are two independent recoveries, and folding them
+// onto one key would deny the second its relaunch while filing a board card
+// that names the wrong run.
+func gateRelaunchIdemKey(d deadGateRun, botID string) string {
+	return knowledge.ChecksumHex([]byte(fmt.Sprintf("gaterelaunch|%s|%s|%d|%s|%s", d.grant.TeamID, d.repo, d.number, d.pr.HeadSHA, botID)))
+}
+
+// gateRelaunchRetryPending reports whether the head's relaunch claim is a
+// launch that FAILED TO START and still has the lane's attention — a retry
+// due, or a spent budget whose escalation must be (re)filed. It is the one
+// case the reconciler re-enters the relaunch tail for from behind this run's
+// own synthetic marker. One store read; a settled claim, a fresh key, or a
+// failure still inside its backoff all answer no, which keeps the own-marker
+// offer the cheap exit it has to be at one offer per minute per dead run.
+func (s *Server) gateRelaunchRetryPending(ctx context.Context, d deadGateRun) bool {
+	if d.run == nil || s == nil || s.webhookDeliveries == nil {
+		return false
+	}
+	botID := gateRelaunchBotID(d)
+	if botID == "" {
+		return false
+	}
+	_, _, verdict, _ := s.unattendedLaunchVerdict(ctx, gateRelaunchIdemKey(d, botID))
+	return verdict == launchRetryDue || verdict == launchRetryExhausted
+}
+
 // relaunchDeadGateRun relaunches the bot that owed the (now synthetically
 // failed) gate, bounded to one attempt per (PR, head sha). Every refusal is
 // deliberate and most are silent: this runs on a bus goroutine after the
@@ -82,12 +127,26 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		}
 		return
 	}
-	botID := strings.TrimSpace(d.run.BotID)
-	if botID == "" {
-		botID = strings.TrimSpace(d.grant.Bot)
-	}
+	botID := gateRelaunchBotID(d)
 	if botID == "" {
 		return // cannot name the bot to re-run
+	}
+	idem := gateRelaunchIdemKey(d, botID)
+
+	// The failure budget, BEFORE any forge round trip: the sweep offers this
+	// dead run every minute, and the hold-label read below is a forge call
+	// against the same App quota the reconciler lives on.
+	prior, _, verdict, wait := s.unattendedLaunchVerdict(ctx, idem)
+	switch verdict {
+	case launchRetryWait:
+		if s.logger != nil {
+			s.logger.Debug("gate relaunch: %s on %s#%d@%s failed to start %d time(s) — next attempt in %s",
+				botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), prior.Attempts, wait.Round(time.Second))
+		}
+		return
+	case launchRetryExhausted:
+		s.escalateExhaustedRelaunch(ctx, d, botID, prior.Attempts, prior.Error)
+		return
 	}
 
 	integration, err := s.forgeIntegrations.GetByConnRepo(store.WithoutTenantFilter(ctx), d.grant.TeamID, d.grant.ConnectionID, d.repo)
@@ -158,15 +217,6 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		SubjectURL:  d.prURL,
 		SubjectSHA:  d.pr.HeadSHA,
 	}
-	// One relaunch per (team, repo, PR, head, BOT) — EVER. A second death of
-	// the same bot on the same head replays as a duplicate of this key, which
-	// is the signal that automation is out of moves for this revision. The
-	// bot id is part of the key because a repo's gate context is shared and
-	// the publish grant is minted for ANY bot launched with a pr_url: two
-	// different gating bots dying on one head are two independent recoveries,
-	// and folding them onto one key would deny the second its relaunch while
-	// filing a board card that names the wrong run.
-	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("gaterelaunch|%s|%s|%d|%s|%s", d.grant.TeamID, d.repo, d.number, d.pr.HeadSHA, botID)))
 	res := s.launchWebhookTarget(launchCtx, nil, cfg, meta, forgeLaunchTarget{
 		BotID:   botID,
 		IdemKey: idem,
@@ -178,8 +228,8 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	switch res.Status {
 	case webhooks.StatusLaunched:
 		if s.logger != nil {
-			s.logger.Info("gate relaunch: %s died on %s#%d@%s without a verdict → relaunched %s (run %s)",
-				d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA), botID, res.RunID)
+			s.logger.Info("gate relaunch: %s died on %s#%d@%s without a verdict → relaunched %s (run %s, launch attempt %d)",
+				d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA), botID, res.RunID, max(res.attempts, 1))
 		}
 	case webhooks.StatusDuplicate:
 		// The one attempt this head gets was already spent (res.RunID names
@@ -218,50 +268,59 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		if why == "" {
 			why = res.Status
 		}
-		if s.escalateDeadGateToBoard(ctx, d, "", "the automatic relaunch could not start: "+why) {
-			s.logWarn("gate relaunch: could not relaunch %s on %s#%d@%s (%s) — escalated to the board",
+		// An admission denial (org quota, cost cap, concurrency, suspension)
+		// names a horizon the sweep window will not outlast: escalate now,
+		// as before. A launch that failed to START is retried on the budget
+		// — the claim row counts the attempts — and escalates when it is
+		// spent; the sweep's next offers carry the retries.
+		if res.denial != nil {
+			if s.escalateDeadGateToBoard(ctx, d, "", "the automatic relaunch could not start: "+why) {
+				s.logWarn("gate relaunch: could not relaunch %s on %s#%d@%s (%s) — escalated to the board",
+					botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), why)
+			} else if s.logger != nil {
+				s.logger.Debug("gate relaunch: could not relaunch %s on %s#%d@%s (%s) — already escalated",
+					botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), why)
+			}
+			return
+		}
+		switch {
+		case res.attempts >= maxUnattendedLaunchAttempts:
+			s.escalateExhaustedRelaunch(ctx, d, botID, res.attempts, why)
+		case res.attempts == 0:
+			// Nothing was recorded (the delivery store itself failed), so
+			// nothing was spent: the next offer retries on a fresh read.
+			s.logWarn("gate relaunch: %s on %s#%d@%s failed to start (%s) — the next offer retries",
 				botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), why)
-		} else if s.logger != nil {
-			s.logger.Debug("gate relaunch: could not relaunch %s on %s#%d@%s (%s) — already escalated",
-				botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), why)
+		default:
+			s.logWarn("gate relaunch: %s on %s#%d@%s failed to start (attempt %d/%d: %s) — retrying in %s",
+				botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), res.attempts, maxUnattendedLaunchAttempts, why,
+				unattendedLaunchBackoff(res.attempts))
 		}
 	}
 }
 
-// escalateDeadGateToBoard leaves a board card when the relaunch lane is out of
-// moves: the gate died, the one automatic re-run either died too or could not
-// start, and from here only a human can unstick the PR. Best-effort by
-// construction — the synthetic failure status is already on the PR, so a board
-// that cannot be written costs visibility, never correctness.
-//
-// One card per (PR, head): a closed card means a human already dealt with this
-// revision, and a fresh death on the SAME head adds nothing they don't know.
-// A freshly filed card is ALSO posted as a PR comment — the board is the
-// operator's queue, but the PR is where the people waiting on the merge look
-// (a card alone sat unseen for 7 days while a security PR stayed blocked).
-//
-// Returns whether THIS call filed the card. The dedup is a deterministic card
-// id (UUIDv5 of the (repo, PR, head) key), not just the List pre-check: the
-// gate sweep runs unelected on every replica, and two replicas racing past
-// the List would otherwise each create a card AND each post the PR comment —
-// the store's unique-id insert is the only primitive here that serialises
-// cross-replica. The label stays on the card for querying.
-func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, priorRelaunchRunID, why string) bool {
-	if s.cfg.CloudBoardFor == nil {
-		s.logWarn("gate relaunch: no board on this deployment — %s#%d stays red with no card; the failure status carries the remedy", d.repo, d.number)
-		return false
+// escalateExhaustedRelaunch files the out-of-moves card once the relaunch's
+// failure budget is spent. Deduped per (PR, head) by the card id, so the
+// sweep's later offers cost one board read and add nothing.
+func (s *Server) escalateExhaustedRelaunch(ctx context.Context, d deadGateRun, botID string, attempts int, lastErr string) {
+	why := fmt.Sprintf("the automatic relaunch of %s failed to start %d times (last: %s)", botID, attempts, orNoError(lastErr))
+	if s.escalateDeadGateToBoard(ctx, d, "", why) {
+		s.logWarn("gate relaunch: %s on %s#%d@%s failed to start %d times — no further attempt on this head; escalated to the board",
+			botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), attempts)
+	} else if s.logger != nil {
+		s.logger.Debug("gate relaunch: %s on %s#%d@%s is out of launch attempts and already escalated",
+			botID, d.repo, d.number, shortSHA(d.pr.HeadSHA))
 	}
-	board := s.cfg.CloudBoardFor(d.grant.TeamID)
-	if board == nil {
-		s.logWarn("gate relaunch: no board for team %s — %s#%d stays red with no card", d.grant.TeamID, d.repo, d.number)
-		return false
-	}
-	dedup := fmt.Sprintf("gate-dead:%s#%d@%s", d.repo, d.number, shortSHA(d.pr.HeadSHA))
-	if existing, err := board.List(native.ListFilter{Labels: []string{dedup}}); err == nil && len(existing) > 0 {
-		return false
-	}
-	cardID := "native:" + uuid.NewSHA1(uuid.NameSpaceURL, []byte("iterion://gate-dead/"+d.grant.TeamID+"/"+dedup)).String()
+}
 
+// escalateDeadGateToBoard leaves a board card when the relaunch lane is out of
+// moves: the gate died, the automatic re-run either died too or could not
+// start within its budget, and from here only a human can unstick the PR.
+// One card per (PR, head): a closed card means a human already dealt with
+// this revision, and a fresh death on the SAME head adds nothing they don't
+// know. The card is also posted as a PR comment (fileGateEscalation). Returns
+// whether THIS call filed the card.
+func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, priorRelaunchRunID, why string) bool {
 	// Name the two runs that died — not one of them twice. The escalating
 	// pass is usually the RELAUNCHED run's own death: the idempotency claim
 	// then names d.run itself, and the card used to cite that one URL as both
@@ -313,27 +372,17 @@ func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, pri
 		"Fix the cause, then push or comment the bot's command to re-run; the synthetic `failure` " +
 		"status on the PR is overwritten by the next real verdict."
 
-	if _, err := board.Create(native.Issue{
-		ID:     cardID,
-		Title:  truncate(fmt.Sprintf("Merge gate %s keeps dying on %s#%d", d.gateCtx, d.repo, d.number), 120),
-		Body:   body,
-		Labels: []string{gateRelaunchLabel, dedup},
-	}); err != nil {
-		// A create refused on the deterministic id means another replica won
-		// the race a moment ago — the escalation exists, nothing to add. Any
-		// other failure is a real board problem: say so, the PR keeps its
-		// synthetic status either way.
-		if existing, lerr := board.List(native.ListFilter{Labels: []string{dedup}}); lerr == nil && len(existing) > 0 {
-			return false
-		}
-		s.logWarn("gate relaunch: board card create failed for %s#%d: %v", d.repo, d.number, err)
-		return false
-	}
-	if s.logger != nil {
-		s.logger.Info("gate relaunch: board card filed for %s on %s#%d@%s", d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA))
-	}
-	s.commentDeadGateOnPR(ctx, d, body)
-	return true
+	return s.fileGateEscalation(ctx, gateEscalation{
+		teamID:  d.grant.TeamID,
+		conn:    d.conn,
+		repo:    d.repo,
+		number:  d.number,
+		headSHA: d.pr.HeadSHA,
+		lane:    "gate-dead",
+		label:   gateRelaunchLabel,
+		title:   fmt.Sprintf("Merge gate %s keeps dying on %s#%d", d.gateCtx, d.repo, d.number),
+		body:    body,
+	})
 }
 
 // gateRunRef names a run in the escalation body. A deployment with no
@@ -392,32 +441,6 @@ func orNoError(err string) string {
 	}
 	flat := strings.Join(strings.Fields(err), " ")
 	return strings.ReplaceAll(flat, "`", "'")
-}
-
-// commentDeadGateOnPR posts the escalation on the pull request itself — the
-// one surface the PR's audience is guaranteed to see. The commit status only
-// offers 140 characters and the board card lives on the integration's team
-// board, which the people waiting on THIS merge may never open. Best-effort,
-// and deliberately gated on the board card having just been created: the card
-// dedup is what bounds this to one comment per (PR, head) — a deployment with
-// no board gets no comment rather than one per sweep pass.
-func (s *Server) commentDeadGateOnPR(ctx context.Context, d deadGateRun, body string) {
-	rc, err := s.reviewClientFor(ctx, d.conn)
-	if err != nil {
-		s.logWarn("gate relaunch: no review client for %s (%v) — escalation stays board+status only", d.repo, err)
-		return
-	}
-	if rc == nil {
-		s.logWarn("gate relaunch: provider %s cannot post PR comments — escalation stays board+status only", d.conn.Provider)
-		return
-	}
-	if _, err := rc.CreatePullReview(ctx, d.repo, d.number, forge.NewReview{Body: body}); err != nil {
-		s.logWarn("gate relaunch: escalation comment on %s#%d failed: %v", d.repo, d.number, err)
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("gate relaunch: escalation comment posted on %s#%d", d.repo, d.number)
-	}
 }
 
 // relaunchStillRunning reports whether the run an idempotency claim named is

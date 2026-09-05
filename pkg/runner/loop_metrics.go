@@ -225,6 +225,26 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			m.sawAuthFailure = true
 			m.mu.Unlock()
 		}
+	case store.EventDelegateStall:
+		// The F8.1 class: a served model blocking on an orchestration wait
+		// it never armed. Counted per outcome so "recovered in place" and
+		// "aborted, node restarted" stay distinguishable.
+		if m.reg == nil {
+			return
+		}
+		backend, _ := evt.Data["backend"].(string)
+		if backend == "" {
+			backend = "delegate"
+		}
+		modelName, _ := evt.Data["model"].(string)
+		if modelName == "" {
+			modelName = m.lookupModel(evt.NodeID)
+		}
+		outcome, _ := evt.Data["outcome"].(string)
+		if outcome == "" {
+			outcome = "aborted"
+		}
+		m.reg.DelegateIdleDeadlockTotal.WithLabelValues(backend, normalizeModelLabel(modelName), outcome).Inc()
 	case store.EventDelegateFinished:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {
