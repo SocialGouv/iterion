@@ -8,6 +8,7 @@ import type {
   ToolNodeDecl,
   ComputeDecl,
   SubbotDecl,
+  FailDecl,
   SchemaDecl,
   PromptDecl,
 } from "@/api/types";
@@ -103,7 +104,7 @@ export function findNodeDecl(
   doc: IterDocument,
   name: string,
 ):
-  | { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl | SubbotDecl }
+  | { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl | SubbotDecl | FailDecl }
   | null {
   const agent = doc.agents?.find((a) => a.name === name);
   if (agent) return { kind: "agent", decl: agent };
@@ -119,6 +120,11 @@ export function findNodeDecl(
   if (compute) return { kind: "compute", decl: compute };
   const subbot = doc.subbots?.find((sb) => sb.name === name);
   if (subbot) return { kind: "subbot", decl: subbot };
+  // A named `fail <name>:` IS a graph node: the canvas draws it, so every
+  // surface that resolves a node by name has to know it too, or the
+  // inspector reports the node it just rendered as "not found".
+  const fail = doc.fails?.find((f) => f.name === name);
+  if (fail) return { kind: "fail", decl: fail };
   return null;
 }
 
@@ -131,5 +137,8 @@ export function getAllNodeNames(doc: IterDocument): Set<string> {
   for (const t of doc.tools) names.add(t.name);
   for (const c of doc.computes ?? []) names.add(c.name);
   for (const sb of doc.subbots ?? []) names.add(sb.name);
+  // Without this a user can name an agent after a declared fail node and
+  // only discover the collision at compile time (C041).
+  for (const f of doc.fails ?? []) names.add(f.name);
   return names;
 }
