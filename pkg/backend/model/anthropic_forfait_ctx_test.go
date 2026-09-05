@@ -2,11 +2,13 @@ package model
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // clientBearerForTest reads the OAuth bearer a resolved claw client will send.
@@ -307,5 +309,46 @@ func TestResolve_AnthropicDiskForfaitSkipsExpiredToken(t *testing.T) {
 	}
 	if tok := clientBearerForTest(client); tok != "" {
 		t.Fatalf("expired bearer %q was baked into the cached client", tok)
+	}
+}
+
+// R721331: an EXPIRED ctx forfait is not "no credential here" — one WAS
+// provisioned and the refresh worker did not renew it. Falling through reaches
+// the env factory, finds no ANTHROPIC_* var on a pod, and builds the
+// unauthenticated client whose 401 loop is issue #687. It must surface.
+func TestAnthropicFromCtxForfait_ExpiredSurfacesInsteadOfDegrading(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-stale","expiresAt":1000000000000}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		return func(string) string { return dir }, true
+	})
+	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+
+	_, ok, err := NewRegistry().anthropicFromCtxForfait(context.Background(), "claude-haiku-4-5")
+	if !ok || err == nil {
+		t.Fatalf("an expired ctx forfait must fail loudly, got ok=%v err=%v", ok, err)
+	}
+	if !errors.Is(err, secrets.ErrAnthropicForfaitExpired) {
+		t.Errorf("error must name expiry so the cause is legible, got %v", err)
+	}
+}
+
+// An ABSENT or malformed blob keeps degrading quietly: nothing was provisioned,
+// so there is a legitimate fall-back to try.
+func TestAnthropicFromCtxForfait_AbsentStillDegradesQuietly(t *testing.T) {
+	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		return func(string) string { return t.TempDir() }, true
+	})
+	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+
+	if _, ok, err := NewRegistry().anthropicFromCtxForfait(context.Background(), "claude-haiku-4-5"); ok || err != nil {
+		t.Errorf("an absent blob must degrade quietly, got ok=%v err=%v", ok, err)
 	}
 }

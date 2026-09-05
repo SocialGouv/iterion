@@ -309,11 +309,19 @@ func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
 	// env can shadow it, so the CLI reports "Not logged in" despite a valid
 	// materialised forfait. Reading it here from the materialised file (kept
 	// fresh by the runner's refresh worker; re-read per spawn) makes the env
-	// token deterministically win. Best-effort: on any read/parse failure we
-	// fall back to the file path alone (prior behaviour).
-	if tok := readForfaitAccessToken(dir); tok != "" {
-		env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
-	}
+	// token deterministically win.
+	//
+	// ALWAYS write the key, empty when there is no usable token. Leaving it
+	// ABSENT is not neutral: this variable outranks the credentials file, the
+	// host spawn inherits os.Environ(), and a prod runner pod carries an
+	// ambient CLAUDE_CODE_OAUTH_TOKEN of its own — the PLATFORM forfait. An
+	// absent key therefore lets that platform token serve in place of the
+	// per-run CLAUDE_CONFIG_DIR just pointed at, so a tenant whose blob is
+	// missing or stale (the refresh worker lagged) authenticates and bills
+	// against someone else's Claude account instead of failing. The three
+	// ANTHROPIC_* siblings above are cleared for exactly this reason; this one
+	// is the same class.
+	env["CLAUDE_CODE_OAUTH_TOKEN"] = readForfaitAccessToken(dir)
 	return env
 }
 

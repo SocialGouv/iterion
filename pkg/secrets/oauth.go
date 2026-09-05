@@ -305,6 +305,29 @@ func LoadAnthropicCredentialsFrom(dir string) (AnthropicCredentialsView, error) 
 // It exists because three readers were extracting the same field from the same
 // file independently (the CLI env builder, the forfait usage prober, the claw
 // ctx factory); the fourth would have drifted. The token is never logged.
+// ErrAnthropicForfaitExpired names the one failure mode that is not "there is
+// no credential here": a forfait WAS provisioned into this dir and its access
+// token has lapsed. Callers that can still fall back keep treating it as
+// absent; callers whose fall-back is an unauthenticated client must surface it,
+// because a lapsed blob is a refresh that did not happen, not a host without a
+// subscription.
+var ErrAnthropicForfaitExpired = errors.New("secrets: the materialised Claude Code forfait has expired")
+
+// AnthropicForfaitToken returns the usable access token in dir, or an error
+// naming why there is none — ErrAnthropicForfaitExpired when the blob lapsed,
+// a read/parse error otherwise, and (\"\", nil) when the dir simply holds no
+// token. AnthropicForfaitAccessToken is the "usable or not" shorthand over it.
+func AnthropicForfaitToken(dir string) (string, error) {
+	view, err := LoadAnthropicCredentialsFrom(dir)
+	if err != nil {
+		return "", err
+	}
+	if exp := view.ClaudeAIOauth.ExpiresAt; exp > 0 && time.UnixMilli(exp).Before(time.Now()) {
+		return "", ErrAnthropicForfaitExpired
+	}
+	return strings.TrimSpace(view.ClaudeAIOauth.AccessToken), nil
+}
+
 func AnthropicForfaitAccessToken(dir string) string {
 	view, err := LoadAnthropicCredentialsFrom(dir)
 	if err != nil {

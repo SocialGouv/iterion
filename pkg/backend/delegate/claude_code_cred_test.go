@@ -160,10 +160,12 @@ func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want the file's accessToken", got["CLAUDE_CODE_OAUTH_TOKEN"])
 	}
 
-	// No file → no token key, file path preserved.
+	// No readable file → the key is still written, empty, for the same
+	// suppression reason: we have pointed the CLI at a per-run config dir, so
+	// an inherited platform token must not quietly serve in its place.
 	bare := claudeForfaitEnv(t.TempDir(), false)
-	if _, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; present {
-		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent when no credentials file is present: %v", bare)
+	if v, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; !present || v != "" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be present-and-empty with no credentials file: present=%v val=%q", present, v)
 	}
 }
 
@@ -409,8 +411,15 @@ func TestClaudeForfaitEnv_SkipsExpiredOAuthToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := claudeForfaitEnv(dir, false)
-	if v, present := got["CLAUDE_CODE_OAUTH_TOKEN"]; present {
-		t.Errorf("expired token exported as %q — it would shadow the refreshable file", v)
+	// PRESENT AND EMPTY, not absent. This variable is the CLI's
+	// first-precedence auth path, so an absent key lets the pod's own ambient
+	// CLAUDE_CODE_OAUTH_TOKEN — the PLATFORM forfait on a prod runner —
+	// outrank the per-run CLAUDE_CONFIG_DIR we just pointed at, and a tenant
+	// whose blob went stale would silently bill the platform's account. The
+	// three ANTHROPIC_* siblings are cleared for exactly this reason.
+	v, present := got["CLAUDE_CODE_OAUTH_TOKEN"]
+	if !present || v != "" {
+		t.Errorf("expired token must CLEAR the inherited one: present=%v val=%q", present, v)
 	}
 	// The file path itself still travels: the CLI reads and refreshes it.
 	if got["CLAUDE_CONFIG_DIR"] != dir {

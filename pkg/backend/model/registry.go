@@ -4,6 +4,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -588,8 +589,17 @@ func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) 
 	if dir == "" {
 		return nil, false, nil
 	}
-	token := secrets.AnthropicForfaitAccessToken(dir)
-	if token == "" {
+	token, terr := secrets.AnthropicForfaitToken(dir)
+	if errors.Is(terr, secrets.ErrAnthropicForfaitExpired) {
+		// The one case that is NOT "no credential here": a forfait was
+		// provisioned and its token lapsed, which means the refresh worker
+		// lagged or failed. Falling through would reach the env factory, find
+		// no ANTHROPIC_* var on a runner pod, and build the unauthenticated
+		// client whose 401 loop is issue #687 — the same reasoning that makes
+		// the forbid branch below refuse rather than degrade.
+		return nil, true, fmt.Errorf("claw: %w (model %s): the runner's OAuth refresh worker has not renewed it", terr, modelID)
+	}
+	if terr != nil || token == "" {
 		return nil, false, nil
 	}
 	if secrets.ForbidSubscriptionOAuth() {
