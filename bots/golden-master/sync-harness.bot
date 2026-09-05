@@ -3991,8 +3991,8 @@ tool seal_commit:
     if "Full gate: pending" not in msg:
         refuse("the sync commit's message does not carry the pending gate line — not a commit this node seals")
     msg = msg.replace("Full gate: pending", line, 1)
-    c = git("-c", "user.name=iterion-golden-master", "-c", "user.email=golden-master@iterion.local",
-            "commit", "-q", "--amend", "--no-verify", "-F", "-")
+    # The one amend, and the only git call here that does not go through the
+    # helper: the message is fed on stdin, which the helper cannot do.
     c = subprocess.run(["git", "-C", ws, "-c", "user.name=iterion-golden-master", "-c",
                         "user.email=golden-master@iterion.local", "commit", "-q", "--amend",
                         "--no-verify", "-F", "-"], input=msg, capture_output=True, text=True, timeout=120)

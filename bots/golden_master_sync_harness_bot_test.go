@@ -373,6 +373,12 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		if strings.Contains(msg, "Full gate: pending") || !strings.Contains(msg, "GREEN in 0 min") {
 			t.Fatalf("sealed body lacks the gate verdict:\n%s", msg)
 		}
+		// Exactly one amend, the one fed the message on stdin. A second call
+		// shipped here once, discarded into the same `c`: it aborted on an
+		// empty message and was invisible to every assertion above.
+		if n := strings.Count(toolScript(t, "golden-master/sync-harness.bot", "seal_commit"), "--amend"); n != 1 {
+			t.Fatalf("seal_commit issues %d amends, want exactly the one that feeds the message on stdin", n)
+		}
 		if dirty := git("status", "--porcelain", "--untracked-files=no"); dirty != "" {
 			t.Fatalf("tree dirty after sealing: %q", dirty)
 		}
