@@ -104,13 +104,27 @@ copies of feature-dev's `verify-build`, `code-review-invariants`,
 
 ## Plan phase (cross-model pair review, ADR-091)
 
-`plan_review: auto` resolves at launch from the run's credentials: when a
-SECOND model family is available, the build plan is authored after the
-spec hand-off (claude, read-only), critiqued by a cross-family peer
-(`claw` + `openai/gpt-5.6-sol` by default), and revised by the SAME
-author session before the campaign builds; otherwise the spec hands off
-straight to the campaign (the v2 shape, unchanged). `plan_review_policy`
-picks the mid-run peer-unavailability behaviour: `wait` (default — the
-run parks failed_resumable, the usage-window retry resumes it) or `skip`
-(the reviewer's `action: skip` route — continue unreviewed, loudly
-stamped).
+The build plan is AUTHORED by default after the spec hand-off (claude,
+read-only); `plan_phase: off` is the explicit opt-out (the spec hands off
+straight to the campaign — plan in stride). `plan_review: auto` resolves
+at launch from the run's credentials and gates ONLY the peer review: when
+a SECOND model family is available, the plan is critiqued by a
+cross-family peer (`claw` + `openai/gpt-5.6-sol` by default) and revised
+by the SAME author session before the campaign builds; otherwise the
+campaign receives the author's plan stamped as unreviewed
+(`plan_provenance`). `plan_review_policy` picks the mid-run
+peer-unavailability behaviour: `skip` (default — the reviewer's
+`action: skip` route: continue unreviewed, loudly stamped) or `wait` (the
+run parks failed_resumable, the usage-window retry resumes it).
+
+No workspace precondition here, unlike the other campaign bots: a
+greenfield run starts from an EMPTY directory and `git init`s from
+slice 0.
+
+## Persy (perseverance coach)
+
+A `supervisor persy:` block watches the `campaign` node
+(docs/supervisors.md): it pushes back on premature "impossible" verdicts,
+expedient shortcuts, failure loops and unbanked state under budget
+pressure — never on the interviewer or the draft-review turns, which are
+conversations with the operator. `--supervisors off` disables it per run.

@@ -40,6 +40,9 @@ skipped.
 ## Shape (v2 — one agent, minimal framing)
 
 ```
+workspace_probe → fail            when not ok (WORKSPACE_NOT_A_REPO, no LLM spent)
+workspace_probe → plan_topology   when ok
+plan_topology → plan → plan_review_topology → (plan_review → plan_gate → plan_revise)
 campaign → verify_build → verify_run → gate
 gate → done            when converged (suite green AND matrix_ok AND
                        coverage_complete AND (scoped OR 0 uncovered rows))
@@ -47,6 +50,14 @@ gate → campaign        as continuation_loop(max_passes), carrying fail_log
 gate → done            (loop exhausted — ship what is banked)
 ```
 
+- `workspace_probe` — deterministic entry precondition (~100ms, no LLM):
+  a launch whose `workspace_dir` is absent or not a git repository fails
+  typed (`WORKSPACE_NOT_A_REPO`) before any LLM node spends.
+- plan phase (ADR-091) — the plan is AUTHORED by default (`plan_phase:
+  off` opts out); `plan_review: auto` gates ONLY the cross-model peer
+  review (on iff a second model family is credentialed at launch),
+  otherwise the campaign gets the author's plan stamped as unreviewed
+  (`plan_provenance`).
 - `campaign` — one adaptive claude_code agent: feature inventory → matrix →
   per gap: observable contract → deterministic e2e test in the repo's own
   idiom → see it pass → flip the row → commit test+row together.
@@ -59,6 +70,8 @@ gate → done            (loop exhausted — ship what is banked)
   the claims check is the stronger floor, and a legitimate pure-mapping
   pass (citing pre-existing tests during inventory) must be able to
   converge without new code.
+- `supervisor persy:` — the perseverance coach watching `campaign`
+  (docs/supervisors.md); `--supervisors off` disables it per run.
 
 ## Run
 

@@ -60,11 +60,13 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ gate
                                               mr_gate ──▶ (finalize_mr) ──▶ done
 ```
 
-(The diagram elides two deterministic pre-flight probes: `verify_probe` sits
-between `campaign` and `verify_build` — it reuses a valid `verify.sh` on
-passes 2+, skipping the LLM `verify_build`; and `forge_auth_probe` sits between
-`mr_gate` and `finalize_mr` — a ~100ms credential check so the graph only pays
-the `finalize_mr` agent when a push can actually happen.)
+(The diagram elides three deterministic pre-flight probes and the plan
+phase: `workspace_probe` is the entry — see "Precondition" below;
+`verify_probe` sits between `campaign` and `verify_build` — it reuses a
+valid `verify.sh` on passes 2+, skipping the LLM `verify_build`; and
+`forge_auth_probe` sits between `mr_gate` and `finalize_mr` — a ~100ms
+credential check so the graph only pays the `finalize_mr` agent when a
+push can actually happen.)
 
 - **`campaign`** (adaptive, claude_code, whole-repo, full tools) is the whole
   engine: it reads `git log`, builds a living todo list from a brief
@@ -165,12 +167,29 @@ budget) to finish a larger axis in one run.
 
 ## Plan phase (cross-model pair review, ADR-091)
 
-`plan_review: auto` resolves at launch from the run's credentials: when a
-SECOND model family is available, the sweep plan is authored (claude,
-read-only), critiqued by a cross-family peer (`claw` +
-`openai/gpt-5.6-sol` by default), and revised by the SAME author session
-before the campaign sweeps; otherwise the phase is bypassed whole (the
-v2 shape, unchanged). `plan_review_policy` picks the mid-run
-peer-unavailability behaviour: `wait` (default — the run parks
-failed_resumable, the usage-window retry resumes it) or `skip` (the
-reviewer's `action: skip` route — continue unreviewed, loudly stamped).
+The sweep plan is AUTHORED by default on every deployment (claude,
+read-only); `plan_phase: off` is the explicit opt-out (plan in stride, the
+v2 shape). `plan_review: auto` resolves at launch from the run's
+credentials and gates ONLY the peer review: when a SECOND model family is
+available, the plan is critiqued by a cross-family peer (`claw` +
+`openai/gpt-5.6-sol` by default) and revised by the SAME author session
+before the campaign sweeps; otherwise the campaign receives the author's
+plan stamped as unreviewed (`plan_provenance`). `plan_review_policy`
+picks the mid-run peer-unavailability behaviour: `skip` (default — the
+reviewer's `action: skip` route: continue unreviewed, loudly stamped) or
+`wait` (the run parks failed_resumable, the usage-window retry resumes
+it — the deliberate-spend posture).
+
+## Precondition (`workspace_probe`)
+
+The run's entry is a deterministic tool node (~100ms, no LLM): a launch
+whose `workspace_dir` is absent or not a git repository fails typed
+(`WORKSPACE_NOT_A_REPO` on the node's output and in the tool log) before
+any LLM node spends.
+
+## Persy (perseverance coach)
+
+A `supervisor persy:` block watches the `campaign` node
+(docs/supervisors.md): it pushes back on premature "impossible" verdicts,
+expedient shortcuts, failure loops and unbanked state under budget
+pressure. `--supervisors off` disables it per run.

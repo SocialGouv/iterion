@@ -162,12 +162,17 @@ run astray.
 
 ## The perseverance-coach pattern
 
-The first shipped use of the DSL block is **Persy**, feature-dev's
-perseverance coach ([bots/feature-dev/main.bot](../bots/feature-dev/main.bot)
-— `supervisor persy:` + `prompt persy_policy:`): a supervisor that
-reproduces, agent-side, the push a good operator supplies when watching
-a coding session live. Its policy is a reference for authoring similar
-coaches:
+The shipped use of the DSL block is **Persy**, the perseverance coach
+carried by all seven campaign bots (feature-dev, feature-gap-fill,
+branch-improve-loop, whole-improve-loop, test-coverage, e2e-coverage,
+app-dev — `supervisor persy:` + `prompt persy_policy:` next to each
+`campaign` node, with the mission and the termination field adapted per
+bot; feature-dev's
+[bots/feature-dev/main.bot](../bots/feature-dev/main.bot) is the
+reference, `bots/campaign_supervisor_test.go` the fleet guard): a
+supervisor that reproduces, agent-side, the push a good operator
+supplies when watching a coding session live. Its policy is a reference
+for authoring similar coaches:
 
 - **monitors-first, pre-seeded, pinned** — the give-up markers
   (`impossible`, `unsolvable`, `infeasib…`, `giving/gave/give up`,

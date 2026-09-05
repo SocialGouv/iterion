@@ -433,7 +433,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
-- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; consumed by the 7 campaign bots' plan phase), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
+- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; it gates ONLY the peer review of the 7 campaign bots' plan phase — the phase itself runs by default, `plan_phase: off` being its own switch, and the campaign receives the plan stamped with its `plan_provenance`), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
@@ -1087,8 +1087,10 @@ the run-level override travels onto the cloud queue
 operator's `off`. The supervisor hub rides BOTH event seams (engine
 observer + backend-hook `ExecutorSpec.EventObservers`) — hook events
 (`assistant_text`, `tool_*`) never fire the engine seam, and text
-monitors are blind without the second wire. feature-dev's Persy
-(perseverance coach) is the shipped reference use. Reference:
+monitors are blind without the second wire. Persy (perseverance coach)
+is the shipped use — carried by all seven campaign bots on their
+`campaign` node, feature-dev's being the reference and
+`bots/campaign_supervisor_test.go` the fleet guard. Reference:
 [docs/supervisors.md](docs/supervisors.md),
 [examples/supervisor/sample.bot](examples/supervisor/sample.bot).
 

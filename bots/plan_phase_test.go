@@ -192,7 +192,7 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 			// plan_budget_gate, native:695) — the invariant is the same
 			// either way, and pinning the literal source name here would
 			// make this shared test bot-specific.
-			planFields := []string{"plan", "plan_critique", "plan_responses"}
+			planFields := []string{"plan", "plan_critique", "plan_responses", "plan_provenance"}
 			type fieldMapping struct {
 				idx   int
 				from  string

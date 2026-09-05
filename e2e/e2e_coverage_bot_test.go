@@ -39,6 +39,11 @@ type endyState struct {
 // verify_run (suite green + matrix contract satisfied). Individual tests
 // override a node afterward (later .on wins).
 func stubEndyCampaign(exec *scenarioExecutor, st *endyState) {
+	// The entry precondition passes and the plan phase (on by default)
+	// authors a plan; plan_review is unresolved (auto → off) in this
+	// harness, so the peer never runs.
+	stubWorkspaceProbeOK(exec)
+	stubPlanAuthor(exec)
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
@@ -349,15 +354,22 @@ func TestE2ECoverage_EventTrace(t *testing.T) {
 	}
 }
 
-// TestE2ECoverage_Structural pins the v2 IR shape: the plan-phase gate as
-// entry (ADR-091 — it routes straight to campaign when plan_review resolved
-// off), the two adaptive agents, the deterministic verify_run tool + gate
-// compute, and the single bounded continuation loop.
+// TestE2ECoverage_Structural pins the v2 IR shape: the deterministic
+// workspace precondition as entry, then the plan-phase gate (ADR-091 — on
+// by default; plan_phase=off routes straight to campaign, the inventory as
+// its own first move), the two adaptive agents, the deterministic
+// verify_run tool + gate compute, and the single bounded continuation loop.
 func TestE2ECoverage_Structural(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 
-	if wf.Entry != "plan_topology" {
-		t.Errorf("workflow entry = %q, want %q (the plan-phase gate; off → straight to campaign, the inventory as its own first move)", wf.Entry, "plan_topology")
+	if wf.Entry != "workspace_probe" {
+		t.Errorf("workflow entry = %q, want %q (the deterministic precondition ahead of any LLM node)", wf.Entry, "workspace_probe")
+	}
+	if _, ok := wf.Nodes["workspace_probe"].(*ir.ToolNode); !ok {
+		t.Errorf("workspace_probe is %T, want *ir.ToolNode (deterministic precondition)", wf.Nodes["workspace_probe"])
+	}
+	if _, ok := wf.Nodes["plan_topology"].(*ir.ComputeNode); !ok {
+		t.Errorf("plan_topology is %T, want *ir.ComputeNode (deterministic gate)", wf.Nodes["plan_topology"])
 	}
 	for _, id := range []string{"campaign", "verify_build"} {
 		node, ok := wf.Nodes[id]
