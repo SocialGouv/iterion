@@ -51,6 +51,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `is_default` | the default for its `(team, user, provider)` tuple — `ClearDefault` keeps it unique |
 | `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends. **Scope follows the key's tier**: a tenant's own key is bumped under the run's tenant only, so a different tenant that stored the byte-identical secret never reads its own key as "in use" (the studio shows this field as exactly that, before a rotate or delete); a platform-tier or pool-lent key (`RunBundle.PlatformSourced` / `PoolSourced`) is bumped across tenants, because its row lives under the platform sentinel or in the donor's tenant and it serves every tenant |
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
+| `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
 | `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
 | `expires_at` | optional |
 
@@ -186,6 +187,16 @@ mechanism; the wiring threads a webhook's pinned keys through to it:
    another tenant or the wrong provider at config time (the resolver is
    already tenant-scoped, so this is a fail-fast UX guard, not the
    security boundary).
+
+**A pin bypasses the refusal skip, and says so.** The evidence predicate is
+consulted in Pass 2 only: an operator who names a key gets that key, even
+when the provider is freshly refusing it — honouring the pin over the
+optimisation is what keeps the predicate an optimisation. Because the walk
+then logs no skip, a pinned dead key used to be visible only as the absence
+of a line. It now emits one warn per launch naming the key, its fingerprint,
+why the provider is refusing it and when that lapses, and the key's own view
+carries `refused_until` / `refused_reason`. The pin still wins; it is no
+longer silent.
 
 Example: `PATCH /api/teams/{id}/webhooks/{wid}` with
 `{"key_overrides": {"anthropic": "<key_id>", "openai": "<key_id>"}}`.

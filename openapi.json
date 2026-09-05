@@ -2217,6 +2217,12 @@
           "provider": {
             "type": "string"
           },
+          "refused_reason": {
+            "type": "string"
+          },
+          "refused_until": {
+            "type": "string"
+          },
           "scope_user_id": {
             "type": "string"
           }

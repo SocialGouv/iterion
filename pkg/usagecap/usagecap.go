@@ -396,6 +396,80 @@ func (r Reading) Fresh(now time.Time, t Trust) bool {
 	return now.Before(r.ResetsAt)
 }
 
+// Refusal is a credential the provider is currently turning away, folded
+// out of everything the ledger holds about it.
+type Refusal struct {
+	// Until is when the LAST-lapsing refusal stops being believed — the
+	// credential is unusable up to it. Zero means "nothing is refusing it".
+	Until time.Time
+	// Window names the refusal that lasts longest.
+	Window Window
+	// Reason is a one-line human explanation, safe for a log line and an
+	// API field.
+	Reason string
+}
+
+// Refused reports whether anything is refusing the credential.
+func (r Refusal) Refused() bool { return !r.Until.IsZero() }
+
+// RefusedUntil folds a credential's readings into the refusal that keeps it
+// unusable longest, or the zero value when none does.
+//
+// It is the ONE reading of "the provider is turning this credential away",
+// shared by every consumer — the launch walk's credential-tier skips, the
+// pinned-key warning, and the operator's key view — because a view that
+// computed it differently from the gate would report a state the gate does
+// not act on.
+//
+// Everything uncertain means "not refused": a stale reading (Fresh already
+// encodes both the reset instant and the escalating rest), an allowed or
+// warning status at any utilization, and a window no cap family governs —
+// a rejected OVERAGE reading is about the pay-as-you-go money channel, and
+// an unknown window must not be folded into a rule never meant to govern
+// it (FamilyOf's own contract). The store is populated unfiltered, so the
+// filter has to live here.
+func RefusedUntil(readings []Reading, now time.Time, trust Trust) Refusal {
+	trust = trust.Normalized()
+	var out Refusal
+	for _, r := range readings {
+		if r.Status != StatusRejected || !r.Fresh(now, trust) {
+			continue
+		}
+		if FamilyOf(r.Window) == FamilyNone {
+			continue
+		}
+		reopen := r.ResetsAt
+		if reopen.IsZero() {
+			// A refusal with no reset instant is trusted only for the
+			// reading's own staleness bound, stretched by its streak.
+			reopen = r.ObservedAt.Add(r.RestBound(trust))
+		}
+		if !reopen.After(out.Until) {
+			continue
+		}
+		out.Until = reopen
+		out.Window = r.Window
+		out.Reason = refusalReason(r)
+	}
+	return out
+}
+
+// refusalReason words one refusal for a human.
+func refusalReason(r Reading) string {
+	// Frequency, spend and auth are refusals, not windows with a fill
+	// level — "(0% used)" on them would read as a contradiction.
+	switch r.Window {
+	case WindowAuth:
+		return "provider rejected the credential itself (auth failure)"
+	case WindowFrequency:
+		return "provider refused the account's request rate (fair-usage)"
+	case WindowSpend:
+		return "the account's spend ceiling is reached — an admin must raise it (claude.ai/settings/usage)"
+	default:
+		return fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
+	}
+}
+
 // Decision is what a policy says about a reading (or a set of them).
 type Decision struct {
 	// Blocked is true when a cap is met or exceeded: no NEW work should

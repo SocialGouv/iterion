@@ -6010,6 +6010,8 @@ export interface components {
             max_concurrent_runs?: number;
             name: string;
             provider: string;
+            refused_reason?: string;
+            refused_until?: string;
             scope_user_id?: string;
         };
         botSourceForkReq: {
