@@ -32,10 +32,15 @@ type fakeBoardCoord struct {
 	states   map[string]string
 	claimErr map[string]error
 	stateErr map[string]error
-	renews   map[string]int
-	epochs   map[string]int64
-	expired  []boardmongo.ExpiredCandidate
-	unleased []boardmongo.ExpiredCandidate
+	// stateErrTo fault-injects ONE target transition (keyed "id|state"),
+	// where stateErr fails every write for a card. The distinction matters
+	// whenever the first write (→ in_progress) must land and only a later
+	// one fails, which is the whole shape of a final-write fault.
+	stateErrTo map[string]error
+	renews     map[string]int
+	epochs     map[string]int64
+	expired    []boardmongo.ExpiredCandidate
+	unleased   []boardmongo.ExpiredCandidate
 	// recoveryLists counts ListAbandonedRecoveryClaims calls — the
 	// periodicity oracle for the repair-sweep cadence.
 	recoveryLists int
@@ -123,6 +128,9 @@ func (f *fakeBoardCoord) SetState(ctx context.Context, _, id, state string) erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.stateErr[id]; err != nil {
+		return err
+	}
+	if err := f.stateErrTo[id+"|"+state]; err != nil {
 		return err
 	}
 	f.states[id] = state
@@ -2865,6 +2873,49 @@ func prePreLaunchOutage(msg string) error { return prePreLaunchOutageFrom(errors
 func prePreLaunchOutageFrom(cause error) error {
 	return fmt.Errorf("card native:1: %w: %w",
 		classifyPRLookupError("resolve head repository", cause), errCardRetryable)
+}
+
+// The pre-launch return-to-pool is the ONE disposition whose card carries no
+// run pointer, so a refused final write cannot just be logged past: releasing
+// the claim there leaves an unclaimed card in the running column with an empty
+// LastRunID, and no path picks that up. The claim is retained instead — the
+// shape the claim watchdog can still write back to the pool.
+func TestBoardDispatcher_UnlandedReturnToPoolKeepsTheClaim(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	// Only the RETURN write fails; the → in_progress one must land, or the
+	// card never reaches the disposition under test.
+	f.stateErrTo = map[string]error{"native:1|" + native.StateReady: errors.New("board store unavailable")}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return prePreLaunchOutage("github: GET pull: HTTP 503")
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0
+
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateInProgress {
+		t.Fatalf("state = %q — the premise is a REFUSED return write, so the card must still sit in %q", got, native.StateInProgress)
+	}
+	if _, held := f.claimed["native:1"]; !held {
+		t.Fatal("the claim was released over a card that never launched and never returned to the pool: " +
+			"unclaimed, in the running column, with no run pointer is the one shape nothing recovers")
+	}
+}
+
+// The brake is scoped to that disposition: a card that DID launch and failed
+// still releases its claim even when its filing is refused, because the run
+// pointer it leaves behind is what the reconcilers act on.
+func TestBoardDispatcher_UnlandedFilingStillReleasesAfterALaunch(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	f.stateErrTo = map[string]error{"native:1|" + native.StateBlocked: errors.New("board store unavailable")}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return errors.New("the run failed after launching")
+	}, "replica-A", 4, nil)
+
+	d.tick(context.Background())
+	d.wg.Wait()
+	if _, held := f.claimed["native:1"]; held {
+		t.Fatal("a post-launch filing failure must still release: the card keeps its run pointer, which the reconcilers read")
+	}
 }
 
 // A drain that lands BEFORE anything launched is not the draining arm's case.

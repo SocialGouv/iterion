@@ -376,6 +376,25 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	if final != "" {
 		if err := d.coord.SetStateOwned(finCtx, c.Tenant, c.Issue.ID, final, tok); err != nil {
 			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
+			if returnedToPool {
+				// The return to the pool did not LAND, and this is the one
+				// disposition whose card carries no run pointer: releasing now
+				// leaves an unclaimed card in the running column with an empty
+				// LastRunID, which nothing picks up — tick lists d.eligible,
+				// sweepParked lists awaiting_input, and both reconcilers return
+				// immediately on an empty pointer. Every OTHER disposition here
+				// leaves a run pointer those reconcilers act on, so only this
+				// one needs the brake.
+				//
+				// Keep the claim: the same choice the claim watchdog's own
+				// `!filed` arm makes below, and the one shape a watchdog pass
+				// can still repair — its StuckReleaseOnly arm WRITES the card
+				// back to d.eligible[0] before releasing it.
+				d.warn("card %s/%s: its return to %s did not land — keeping the claim rather than stranding a card that "+
+					"never launched where no sweep reaches it; the claim watchdog retries the write at the next lease",
+					c.Tenant, c.Issue.ID, final)
+				return
+			}
 		}
 	}
 	// Announce the release BEFORE it lands (the local twin's rule, see
