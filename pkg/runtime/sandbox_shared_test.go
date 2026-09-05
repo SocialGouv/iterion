@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -87,6 +89,12 @@ func TestStartSandboxSharedAdoptsTheParentRun(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, ".claude", "skills", "child-skill.md"), []byte("# child skill\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(workDir, ".claude", "commands"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, ".claude", "commands", "child-cmd.md"), []byte("# child command\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	fake := &sharedFakeRun{}
 	exec := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
 	wf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}
@@ -115,6 +123,9 @@ func TestStartSandboxSharedAdoptsTheParentRun(t *testing.T) {
 	}
 	if got := string(fake.written[".claude/skills/child-skill.md"]); got != "# child skill\n" {
 		t.Fatalf("the child's mirrored skill was not written through into the parent's sandbox: %q", got)
+	}
+	if got := string(fake.written[".claude/commands/child-cmd.md"]); got != "# child command\n" {
+		t.Fatalf("the child's plugin command was not written through: %q", got)
 	}
 	cleanup()
 	if fake.cleanups != 0 {
@@ -192,5 +203,292 @@ workflow parent:
 				t.Fatalf("ParentSandbox = %v, want %v", got, tc.share)
 			}
 		})
+	}
+}
+
+// bindOnly is a parent sandbox that bind-mounts the workspace: its method
+// set has NO write-through seam, so the code reads it as bind-mount.
+type bindOnly struct{ r *sharedFakeRun }
+
+func (b bindOnly) Driver() string { return "fake-bind" }
+func (b bindOnly) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
+	return b.r.Command(ctx, cmd, opts)
+}
+func (b bindOnly) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	return b.r.Exec(ctx, cmd, opts)
+}
+func (b bindOnly) Cleanup(ctx context.Context) error { return b.r.Cleanup(ctx) }
+
+func sharedTestEngine(t *testing.T, wf *ir.Workflow, workDir string, share *SharedSandbox, extra ...EngineOption) (*Engine, *sandboxCapturingExecutor, store.RunStore) {
+	t.Helper()
+	st := tmpStore(t)
+	exec := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
+	opts := append([]EngineOption{WithWorkDir(workDir), WithSandboxOverride("none"), WithParentRunID("run-parent"), WithSharedSandbox(share)}, extra...)
+	return New(wf, st, exec, opts...), exec, st
+}
+
+// TestStartSandboxShared_ExplicitNoneIsHonouredOrRefused: a child's own
+// `sandbox: none` is the operator's choice — honoured under a bind-mount
+// parent (host and container share the tree), refused in words under a
+// copy-based one (the child's work would land on the host, outside the
+// tree the parent judges). Never silently overridden either way.
+func TestStartSandboxShared_ExplicitNoneIsHonouredOrRefused(t *testing.T) {
+	wf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}, Sandbox: &ir.SandboxSpec{Mode: "none"}}
+	ctx := context.Background()
+
+	t.Run("bind-mount parent: honoured", func(t *testing.T) {
+		fake := &sharedFakeRun{}
+		e, exec, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{fake}, WorkspaceFolder: "/workspace"})
+		if _, err := st.CreateRun(ctx, "run-none-bind", "child", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.startSandbox(ctx, "run-none-bind", e.workDir, "", nil); err != nil {
+			t.Fatalf("startSandbox: %v", err)
+		}
+		if exec.sandbox != nil {
+			t.Fatalf("the child's explicit sandbox: none was overridden by the parent's sandbox (%v)", exec.sandbox)
+		}
+		evs, _ := st.LoadEvents(ctx, "run-none-bind")
+		var saidSo bool
+		for _, ev := range evs {
+			if ev.Type == store.EventSandboxShared && ev.Data["adopted"] == false {
+				saidSo = true
+			}
+		}
+		if !saidSo {
+			t.Fatal("honouring the declaration must be said in the events (sandbox_shared adopted=false)")
+		}
+	})
+	t.Run("copy-based parent: refused, typed", func(t *testing.T) {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: "/workspace"})
+		if _, err := st.CreateRun(ctx, "run-none-copy", "child", nil); err != nil {
+			t.Fatal(err)
+		}
+		_, err := e.startSandbox(ctx, "run-none-copy", e.workDir, "", nil)
+		if err == nil || !strings.Contains(err.Error(), "copy-based") {
+			t.Fatalf("err = %v, want the typed refusal naming the copy-based parent", err)
+		}
+	})
+}
+
+// TestStartSandboxShared_PausingChildRefusedOnCopyBasedParent: a child
+// that can park for an operator is resumed outside its parent — in a
+// sandbox of its own, a fresh copy — so under a copy-based parent it is
+// refused at the door; under a bind-mount parent it runs.
+func TestStartSandboxShared_PausingChildRefusedOnCopyBasedParent(t *testing.T) {
+	wf := compileBot(t, `
+schema answer:
+  confirmed: bool
+
+prompt ask_text:
+  Confirm.
+
+human gate:
+  instructions: ask_text
+  output: answer
+  interaction: human
+
+workflow child:
+  entry: gate
+  gate -> done
+`).Workflow
+	ctx := context.Background()
+	t.Run("copy-based: refused", func(t *testing.T) {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: "/workspace"})
+		_, _ = st.CreateRun(ctx, "run-gate-copy", "child", nil)
+		_, err := e.startSandbox(ctx, "run-gate-copy", e.workDir, "", nil)
+		if err == nil || !strings.Contains(err.Error(), "human gate") {
+			t.Fatalf("err = %v, want the typed refusal of a pausing child", err)
+		}
+	})
+	t.Run("bind-mount: adopted", func(t *testing.T) {
+		fake := &sharedFakeRun{}
+		e, exec, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{fake}, WorkspaceFolder: "/workspace"})
+		_, _ = st.CreateRun(ctx, "run-gate-bind", "child", nil)
+		if _, err := e.startSandbox(ctx, "run-gate-bind", e.workDir, "", nil); err != nil {
+			t.Fatalf("startSandbox: %v", err)
+		}
+		if exec.sandbox == nil {
+			t.Fatal("a pausing child under a bind-mount parent must still adopt the parent's sandbox")
+		}
+	})
+}
+
+// TestRefuseResumeOfSharedChild: a child that executed in its parent's
+// copy-based sandbox is not resumed on its own — a fresh copy, diverging
+// work — but a bind-mount lineage resumes freely, and an engine holding a
+// parent handle is never refused.
+func TestRefuseResumeOfSharedChild(t *testing.T) {
+	ctx := context.Background()
+	mk := func(t *testing.T, id string, data map[string]any, share *SharedSandbox) (*Engine, *store.Run) {
+		t.Helper()
+		st := tmpStore(t)
+		opts := []EngineOption{WithSandboxOverride("none")}
+		if share != nil {
+			opts = append(opts, WithSharedSandbox(share))
+		}
+		e := New(&ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}, st, newStubExecutor(), opts...)
+		pc := store.AsParentedRunCreator(st)
+		if pc == nil {
+			t.Fatal("the filesystem store must create parented runs")
+		}
+		r, err := pc.CreateChildRun(ctx, id, "child", "run-parent", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data != nil {
+			if err := e.emit(ctx, id, store.EventSandboxShared, "", data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return e, r
+	}
+	t.Run("copy-based lineage: refused, typed", func(t *testing.T) {
+		e, r := mk(t, "run-c1", map[string]any{"adopted": true, "copy_based": true}, nil)
+		err := e.refuseResumeOfSharedChild(ctx, r)
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeResumeInvalid || !strings.Contains(rt.Message, "through the parent") {
+			t.Fatalf("err = %v, want RESUME_INVALID naming the parent", err)
+		}
+	})
+	t.Run("bind-mount lineage: resumes", func(t *testing.T) {
+		e, r := mk(t, "run-c2", map[string]any{"adopted": true, "copy_based": false}, nil)
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("declaration honoured (not adopted): resumes", func(t *testing.T) {
+		e, r := mk(t, "run-c3", map[string]any{"adopted": false}, nil)
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("with a parent handle to adopt: resumes", func(t *testing.T) {
+		e, r := mk(t, "run-c4", map[string]any{"adopted": true, "copy_based": true}, &SharedSandbox{Run: &sharedFakeRun{}})
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	// The guard is wired into both resume paths — a failed child and a
+	// parked one — before any sandbox of their own is started.
+	t.Run("wired: Resume of a failed_resumable child", func(t *testing.T) {
+		wf := compileBot(t, `
+schema out:
+  ok: bool
+
+compute step:
+  output: out
+  expr:
+    ok: "true"
+
+workflow child:
+  entry: step
+  step -> done
+`).Workflow
+		st := tmpStore(t)
+		pc := store.AsParentedRunCreator(st)
+		if _, err := pc.CreateChildRun(ctx, "run-c5", "child", "run-parent", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FailRunResumable(ctx, "run-c5", &store.Checkpoint{NodeID: "step"}, "boom", ""); err != nil {
+			t.Fatal(err)
+		}
+		e := New(wf, st, newStubExecutor(), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+		if err := e.emit(ctx, "run-c5", store.EventSandboxShared, "", map[string]any{"adopted": true, "copy_based": true}); err != nil {
+			t.Fatal(err)
+		}
+		err := e.Resume(ctx, "run-c5", nil)
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeResumeInvalid {
+			t.Fatalf("Resume err = %v, want RESUME_INVALID from the shared-child guard", err)
+		}
+		r, _ := st.LoadRun(ctx, "run-c5")
+		if r.Status != store.RunStatusFailedResumable {
+			t.Fatalf("status = %q, want the run left failed_resumable for its parent to resume", r.Status)
+		}
+	})
+	t.Run("wired: Resume of a parked child", func(t *testing.T) {
+		wf := compileBot(t, `
+schema answer:
+  confirmed: bool
+
+prompt ask_text:
+  Confirm.
+
+human gate:
+  instructions: ask_text
+  output: answer
+  interaction: human
+
+workflow child:
+  entry: gate
+  gate -> done
+`).Workflow
+		st := tmpStore(t)
+		pc := store.AsParentedRunCreator(st)
+		if _, err := pc.CreateChildRun(ctx, "run-c6", "child", "run-parent", nil); err != nil {
+			t.Fatal(err)
+		}
+		e := New(wf, st, newStubExecutor(), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+		if err := e.Run(ctx, "run-c6", nil); !errors.Is(err, ErrRunPaused) {
+			t.Fatalf("Run err = %v, want ErrRunPaused", err)
+		}
+		if err := e.emit(ctx, "run-c6", store.EventSandboxShared, "", map[string]any{"adopted": true, "copy_based": true}); err != nil {
+			t.Fatal(err)
+		}
+		err := e.Resume(ctx, "run-c6", map[string]any{"confirmed": true})
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeResumeInvalid {
+			t.Fatalf("Resume err = %v, want RESUME_INVALID from the shared-child guard", err)
+		}
+		r, _ := st.LoadRun(ctx, "run-c6")
+		if r.Status != store.RunStatusPausedWaitingHuman {
+			t.Fatalf("status = %q, want the run left parked for its parent to resume", r.Status)
+		}
+	})
+}
+
+// TestSharedChildRunsInPlace: a child in its parent's sandbox works in the
+// parent's tree — it never creates a worktree of its own, which the
+// parent's sandbox would never mount.
+func TestSharedChildRunsInPlace(t *testing.T) {
+	workDir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.email", "t@x"}, {"config", "user.name", "t"}} {
+		if out, err := exec.Command("git", append([]string{"-C", workDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", workDir, "add", "-A").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", workDir, "commit", "-qm", "seed").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v %s", err, out)
+	}
+	wf := compileBot(t, `
+schema out:
+  ok: bool
+
+compute step:
+  output: out
+  expr:
+    ok: "true"
+
+workflow child:
+  entry: step
+  step -> done
+`).Workflow
+	e, _, st := sharedTestEngine(t, wf, workDir, &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: "/workspace"})
+	if err := e.Run(context.Background(), "run-inplace", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(st.Root(), "worktrees")); len(entries) != 0 {
+		t.Fatalf("a shared child created a worktree of its own: %v", entries)
+	}
+	r, _ := st.LoadRun(context.Background(), "run-inplace")
+	if r.WorkDir != "" && r.WorkDir != workDir {
+		t.Fatalf("run.WorkDir = %q, want the parent's tree %q", r.WorkDir, workDir)
 	}
 }

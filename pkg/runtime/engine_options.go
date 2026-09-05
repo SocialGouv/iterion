@@ -38,6 +38,12 @@ type SharedSandbox struct {
 	Run             sandbox.Run
 	WorkspaceFolder string
 	SharedStateDir  string
+	// The parent's per-run MCP listeners, reachable from the same sandbox:
+	// a child's board-capability and interactive nodes use them instead of
+	// listeners of their own (none are started for a child).
+	BoardEndpoint   string
+	AskUserEndpoint string
+	AskUserToken    string
 }
 
 // WithSharedSandbox makes the engine execute every node in the given

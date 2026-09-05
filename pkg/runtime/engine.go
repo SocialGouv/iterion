@@ -185,7 +185,7 @@ func (e *Engine) ActiveElapsed() time.Duration {
 // SubbotRunner: the child .bot source, the resolved input vars, and the
 // parent linkage so the runner can record a child run tied to the parent.
 type SubbotRequest struct {
-	Source      string         // child .bot path/ref (relative to the parent workdir)
+	Source string // child .bot path/ref (relative to the parent workdir)
 	// ParentSandbox is the live sandbox the PARENT run executes in, nil when
 	// it has none. A child must execute in it — not in a sandbox of its own:
 	// on a copy-based driver (kubernetes) a second pod is a second copy of
@@ -194,9 +194,9 @@ type SubbotRequest struct {
 	// subbot). On a bind-mount driver (docker) a second container happened
 	// to share the tree; sharing the parent's makes the two drivers agree.
 	ParentSandbox *SharedSandbox
-	Vars        map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
-	ParentRunID string
-	NodeID      string
+	Vars          map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
+	ParentRunID   string
+	NodeID        string
 	// ReattachKey uniquely identifies THIS execution of the subbot node
 	// (node id + loop-iteration path + fan-out branch id) so the runner can
 	// persist the child run id under it on the parent and, on a resumed

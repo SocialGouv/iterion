@@ -106,7 +106,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	var worktreeCleanup func()
 	var wtCtx worktreeContext
 	worktreeActive := false
-	if e.workflow.Worktree == "auto" {
+	if e.workflow.Worktree == "auto" && e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
+		// A subbot child in its parent's sandbox works in the PARENT's tree:
+		// a worktree of its own would be a tree the parent's sandbox never
+		// mounts — its skills mirrored there, its commits landing there.
+		if e.logger != nil {
+			e.logger.Info("runtime: executing in the parent run's sandbox — running in place in %s (no worktree of its own)", e.workDir)
+		}
+	} else if e.workflow.Worktree == "auto" {
 		// Workspace isolation is the IR default (ir.defaultWorktreeMode),
 		// so any `iterion run` against a non-git workspace would otherwise
 		// hard-fail with "not a git repository". Degrade gracefully to

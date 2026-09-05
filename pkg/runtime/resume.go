@@ -88,6 +88,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			return fmt.Errorf("runtime: resume run %q: %w", runID, linkErr)
 		}
 	}
+	// A child that executed in its parent's copy-based sandbox is resumed
+	// through the parent, never on its own: refused before the claim, so
+	// the run keeps the resumable status the parent's resume relies on.
+	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
+		return rerr
+	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPause(ctx, r, answers)

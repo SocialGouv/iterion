@@ -157,6 +157,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			last   map[string]any
 		)
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{})
+		// The child works in the parent's EFFECTIVE workdir (its worktree when
+		// it swapped to one), not the service's repo root: that is the tree
+		// the parent's sandbox mounts and the parent's gate judges.
+		if req.WorkDir != "" {
+			opts = append(opts, runtime.WithWorkDir(req.WorkDir))
+		}
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
