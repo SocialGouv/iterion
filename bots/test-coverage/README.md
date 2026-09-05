@@ -37,12 +37,23 @@ Testy chooses the types that fit the code and the repo's conventions.
 ## Shape (v2 — one agent, minimal framing)
 
 ```
+workspace_probe → fail            when not ok (WORKSPACE_NOT_A_REPO, no LLM spent)
+workspace_probe → plan_topology   when ok
+plan_topology → plan → plan_review_topology → (plan_review → plan_gate → plan_revise)
 campaign → verify_build → verify_run → gate
 gate → done            when converged (suite green AND new test code AND coverage_complete)
 gate → campaign        as continuation_loop(max_passes), carrying fail_log
 gate → done            (loop exhausted — ship what is banked)
 ```
 
+- `workspace_probe` — deterministic entry precondition (~100ms, no LLM):
+  a launch whose `workspace_dir` is absent or not a git repository fails
+  typed (`WORKSPACE_NOT_A_REPO`) before any LLM node spends.
+- plan phase (ADR-091) — the plan is AUTHORED by default (`plan_phase:
+  off` opts out); `plan_review: auto` gates ONLY the cross-model peer
+  review (on iff a second model family is credentialed at launch),
+  otherwise the campaign gets the author's plan stamped as unreviewed
+  (`plan_provenance`).
 - `campaign` — one adaptive claude_code agent: coverage scan, living todo
   of gaps, one verified `test:` commit per gap, mutation-test discipline
   in the contract.
@@ -54,6 +65,8 @@ gate → done            (loop exhausted — ship what is banked)
   in-tree `.test_coverage.verify.sh` scratch of v1 is gone).
 - `gate` — deterministic compute:
   `converged = passed && new_test_code && coverage_complete`.
+- `supervisor persy:` — the perseverance coach watching `campaign`
+  (docs/supervisors.md); `--supervisors off` disables it per run.
 
 The v1 staged pipeline (plan → act → simplify → verify_run_tests →
 repair_tests → alternating cross-family review/fix loop →

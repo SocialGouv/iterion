@@ -211,12 +211,23 @@ vars:
   forge_publish_url: string = ""
   forge_publish_token: string = ""
 
-  ## ─── Plan phase (cross-model pair review) ─────────────────────
-  ## Resolved at LAUNCH by pkg/reviewtopology from the run's credentials:
-  ## auto → "on" iff a SECOND model family is credentialed (host
-  ## detection locally, the sealed bundle on cloud), else "off" — the
-  ## v2 plan-in-stride shape, at zero extra cost. "on" forces the phase
-  ## (the peer reviewer then fails loudly on a missing credential).
+  ## ─── Plan phase ───────────────────────────────────────────────
+  ## The plan phase itself — the AUTHORED triage plan the campaign fixes
+  ## from — runs by default, on every deployment, whatever `plan_review`
+  ## resolves to. off = skip planning altogether: the campaign starts
+  ## immediately and plans in stride (the deliberate cost-saving posture
+  ## for a small, well-scoped diff). Independent of `plan_review`, which
+  ## gates ONLY the cross-model peer review of that plan. The plan-phase
+  ## budget guard below bounds the phase either way.
+  plan_phase: string [enum: "on", "off"] = "on"
+  ## ─── Cross-model pair review of the plan ──────────────────────
+  ## Gates ONLY the peer review — never the plan phase (plan_phase).
+  ## Resolved at LAUNCH by pkg/reviewtopology from the run's
+  ## credentials: auto → "on" iff a SECOND model family is credentialed
+  ## (host detection locally, the sealed bundle on cloud), else "off" —
+  ## the plan is then authored and handed to the campaign unreviewed,
+  ## stamped as such, at zero extra cost. "on" forces the review (the
+  ## peer reviewer then fails loudly on a missing credential).
   plan_review: string = "auto"
   ## What a MID-RUN peer failure (forfait window shut, provider down,
   ## credential revoked) does: "skip" (default) arms the reviewer's
@@ -401,6 +412,18 @@ prompt campaign_system:
       ask. This question sharpens what you ship; it never grows the pass,
       never blocks it.
 
+  PERSISTENCE — the durable path, to the end. Never declare a
+  sub-problem infeasible on reasoning alone: instrument it (add debug
+  output, shrink the repro, bisect) and let the evidence decide — most
+  premature verdicts of infeasibility are one experiment away from a
+  small fix. Prefer the durable path over the expedient shortcut: no
+  façade that satisfies the letter of the gate, no silently skipped or
+  weakened test, no temporary patch where the real fix is reachable
+  this pass. If something genuinely stays out of reach, bank your
+  state first — commit what is green, then a precise `issues_remaining`
+  note naming the paths you tried and the evidence that closed them —
+  never a silent abandon.
+
   TERMINATION CONTRACT (required structured output — this is how the engine
   detects completion; an under-specified end just gets re-poked):
     - branch_clean: true ONLY when a fresh RE-REVIEW of the branch diff (re-run
@@ -472,9 +495,13 @@ prompt campaign_user:
   what this shows before continuing to review the diff):
   {{input.fail_log}}
 
-  PEER-REVIEWED TRIAGE PLAN (empty = no plan phase ran, plan in stride
-  as usual; on continuation passes read `git log` instead). The plan is
-  a MAP, not a contract — reality wins; note where you diverge:
+  TRIAGE PLAN (empty = no plan phase ran, plan in stride as usual; on
+  continuation passes read `git log` instead). Provenance — who
+  authored it and whether a cross-model peer challenged it (empty = no
+  plan):
+  {{input.plan_provenance}}
+  The plan is a MAP, not a contract — reality wins; note where you
+  diverge:
   {{input.plan}}
 
   Peer critique of that plan (cross-model reviewer; the plan author
@@ -490,6 +517,59 @@ prompt campaign_user:
   issue remaining. Read `git log` first to see what earlier passes already
   fixed. Then report the termination contract (branch_clean, commits_this_pass,
   issues_remaining).
+
+## ─── supervisor (Persy, the perseverance coach) ─────────────────────
+## Concurrent LLM watcher on the campaign node enforcing the contract's
+## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
+## the run's first event); see docs/supervisors.md for the knobs and the
+## per-run kill switch. Every text marker is pinned to `assistant_text`
+## — the agent's own words — so tool output and prompt echoes never wake
+## an eval (measured: 5 of 10 evals burned on echoes when unpinned).
+supervisor persy:
+  watches: [campaign]
+  system: persy_policy
+  cooldown: "5m"
+  max_evals: 10
+  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
+
+prompt persy_policy:
+  You are Persy, a perseverance coach watching a senior engineer agent
+  (the `campaign` node) review and improve the changes a branch
+  introduces over its base, committing each fix in stride. Your ONLY
+  job is to keep it on the durable path and moving to completion — the
+  push a good human operator supplies when watching the session live.
+  The agent's own contract already states the policy (its PERSISTENCE
+  clause); you enforce it from outside when the agent drifts.
+
+  STAY SILENT while progress is steady — the diff being read, fixes
+  landing, builds passing, commits landing. Silence is your default;
+  most wakes end with intervene: false. Your monitors are pre-seeded;
+  register more only when the run shows you a sharper signal.
+
+  INTERVENE with ONE short message (2–4 sentences, specific and
+  actionable, like an operator typing mid-session) only on:
+  1. GIVING UP — a real issue declared unfixable, or quietly deferred
+     without evidence. Demand one more INSTRUMENTED attempt (add debug
+     output, shrink the repro, bisect) and name the cheapest next
+     experiment visible in the recent events. Evidence decides, not
+     fatigue. A finding REFUSED with evidence is not giving up.
+  2. EXPEDIENT PATH — a façade, a skipped or weakened test, a
+     temporary patch where the durable fix is reachable this pass.
+     Name the durable alternative and ask for it.
+  3. FAILURE LOOP — the same command failing repeatedly with no change
+     of approach. Ask for a different approach, not another retry.
+  4. PRESSURE — a budget warning or a visibly long pass. Tell it to
+     BANK NOW: commit what is green, write a precise issues_remaining
+     and a complete finding_ledger, leave the tree clean — before
+     attempting anything else.
+
+  NEVER: contest an honest termination report — branch_clean, or a
+  precise issues_remaining with evidence, is a valid outcome
+  (completion is the goal, not perpetual motion); enlarge the scope
+  beyond the branch diff; re-raise a point the agent already answered
+  with evidence; stack a second message on a signal you already
+  steered. Once the agent reports its structured termination output,
+  you are done.
 
 ## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
 ## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
@@ -655,6 +735,9 @@ schema campaign_input:
   plan: string
   plan_critique: string
   plan_responses: string
+  ## Who authored the plan and whether a cross-model peer challenged it:
+  ## a stamp set on each hand-off edge, empty when no plan ran.
+  plan_provenance: string
 
 ## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
 ## keys convergence on. branch_clean is the done-oracle (a fresh re-review of
@@ -784,14 +867,16 @@ schema finalize_mr_output:
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
-## ─── Plan phase (opt-in cross-model pair review) ────────────────────
-## Active only when `plan_review` resolved "on" at launch. Shape:
-## the plan AUTHOR (claude family, read-only) triages the branch diff →
-## a peer from the OTHER family (claw + gpt) critiques the triage
-## against the actual diff → the SAME author session challenges the
-## critique and integrates what holds → the campaign fixes. ONE revision
-## turn, no loop — the campaign stays the arbiter of reality (asymptote
-## intact). When off, entry routes straight to `campaign`: v2 unchanged.
+## ─── Plan phase (authored triage + opt-in cross-model pair review) ──
+## The plan AUTHOR (claude family, read-only) triages the branch diff;
+## then, ONLY when `plan_review` resolved "on" at launch, a peer from the
+## OTHER family (claw + gpt) critiques the triage against the actual
+## diff and the SAME author session challenges the critique and
+## integrates what holds; then the campaign fixes. ONE revision turn, no
+## loop — the campaign stays the arbiter of reality (asymptote intact).
+## With the review off, the campaign still gets the authored triage,
+## stamped unreviewed. `plan_phase: off` skips the phase altogether.
+## Either way the phase passes through plan_budget_gate before campaign.
 
 prompt plan_system:
   You are the triage planner for a branch-review campaign. You are
@@ -908,8 +993,19 @@ prompt plan_revise_user:
   Your plan as reviewed:
   {{input.plan}}
 
+## workspace_probe output — the deterministic "is there a repository to
+## work on, with the base reachable?" verdict. ok=false carries the typed
+## code WORKSPACE_NOT_A_REPO and a reason naming what was refused.
+schema workspace_probe_state:
+  ok: bool
+  code: string
+  reason: string
+
 schema plan_topology_state:
   do_plan: bool
+
+schema plan_review_topology_state:
+  do_review: bool
 
 ## plan_scope_state is plan_scope_probe's contract: the diff footprint +
 ## size classification (drives the large-diff adaptation in plan_system/
@@ -951,6 +1047,10 @@ schema plan_review_output:
 schema plan_gate_state:
   skipped: bool
   skip_revise: bool
+  ## The provenance stamp for the skip_revise route, naming WHICH of the
+  ## two stories applies (peer skipped vs. revise bypassed on a large
+  ## diff) — the campaign reads it, so the two must not blur.
+  provenance: string
 
 schema plan_revise_input:
   plan: string
@@ -975,11 +1075,13 @@ schema plan_cost_probe_input:
   plan: string
   plan_critique: string
   plan_responses: string
+  plan_provenance: string
 
 schema plan_cost_probe_state:
   plan: string
   plan_critique: string
   plan_responses: string
+  plan_provenance: string
   plan_cost_usd: float
 
 ## plan_budget_gate's contract. exhausted is the deterministic verdict
@@ -995,6 +1097,7 @@ schema plan_budget_gate_input:
   plan: string
   plan_critique: string
   plan_responses: string
+  plan_provenance: string
   plan_cost_usd: float
   started_epoch: int
 
@@ -1005,14 +1108,54 @@ schema plan_budget_gate_state:
   plan: string
   plan_critique: string
   plan_responses: string
+  plan_provenance: string
 
-## plan_topology lifts the launch-resolved plan_review var into a bool
-## so the entry edges use the C012-exhaustive simple form. No LLM.
+## workspace_probe — DETERMINISTIC precondition and the run's ENTRY: a
+## launch with nothing to work on is refused BEFORE any LLM node spends
+## (a `--bot` launch carrying only pr_url attaches no repository; the
+## plan node would otherwise triage a diff against nothing). Refuses
+## with the typed code WORKSPACE_NOT_A_REPO in two shapes: workspace_dir
+## is absent or is not a git repository (`git rev-parse --git-dir`
+## fails); or the repository exists but base_ref is not reachable from
+## HEAD (`git merge-base <base_ref> HEAD` fails) — every diff-anchored
+## instruction of the campaign would then range over nothing. The
+## verdict is the node's OUTPUT (ok/code/reason, routed to `fail` by the
+## workflow) and is echoed on stderr for the tool log; the process exits
+## 0 on purpose — a non-zero exit would replace the typed verdict with
+## the engine's generic tool failure. python3 for safe JSON (mirrors
+## verify_run); read-only, ~100ms.
+tool workspace_probe:
+  description: "Precondition: workspace_dir is a git repository with base_ref reachable"
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
+import os, subprocess, json, sys
+ws = (os.environ.get('WS') or '').strip()
+base = (os.environ.get('BASE') or '').strip()
+def refuse(reason):
+    sys.stderr.write('WORKSPACE_NOT_A_REPO: ' + reason + chr(10))
+    print(json.dumps({'ok': False, 'code': 'WORKSPACE_NOT_A_REPO', 'reason': reason}))
+    raise SystemExit(0)
+if not ws or not os.path.isdir(ws):
+    refuse('workspace_dir ' + repr(ws) + ' does not exist')
+p = subprocess.run(['git', '-C', ws, 'rev-parse', '--git-dir'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+if p.returncode != 0:
+    refuse('workspace_dir ' + repr(ws) + ' is not a git repository (git rev-parse --git-dir: ' + (p.stderr or '').strip()[-300:] + ')')
+if base:
+    m = subprocess.run(['git', '-C', ws, 'merge-base', base, 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+    if m.returncode != 0:
+        refuse('base_ref ' + repr(base) + ' is not reachable from HEAD in ' + ws + ' (git merge-base: ' + (m.stderr or '').strip()[-300:] + ')')
+print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (base or '(none)') + ' reachable'}))
+"`
+  output: workspace_probe_state
+
+## plan_topology lifts the plan_phase switch into a bool so the entry
+## edges use the C012-exhaustive simple form. No LLM. This gate is the
+## PHASE (on by default); whether a cross-model peer reviews the authored
+## triage is decided after it exists, by plan_review_topology.
 compute plan_topology:
-  description: "Plan phase gate (launch-resolved)"
+  description: "Plan phase gate (plan_phase switch)"
   output: plan_topology_state
   expr:
-    do_plan: "vars.plan_review == 'on'"
+    do_plan: "vars.plan_phase == 'on'"
 
 ## plan_scope_probe — DETERMINISTIC pre-flight for the plan phase: the diff
 ## footprint (git diff --stat, capped) + a large-diff classification (drives
@@ -1066,6 +1209,18 @@ agent plan:
   session: fresh
   readonly: true
 
+## plan_review_topology — is a cross-model peer wired for this run? Lifts
+## the launch-resolved plan_review var (auto → on iff a second model
+## family is credentialed) into a bool AFTER the triage is authored, so
+## an edge condition can read it. off → the authored triage goes on to
+## the budget gate and the campaign unreviewed, stamped so the campaign
+## knows no peer looked at it. No LLM.
+compute plan_review_topology:
+  description: "Peer review gate (launch-resolved plan_review)"
+  output: plan_review_topology_state
+  expr:
+    do_review: "vars.plan_review == 'on'"
+
 ## plan_review — the PEER, pinned to the other family. claw because
 ## "openai/*" models only resolve there; both knobs env-overridable so a
 ## host without OpenAI quota can run the peer elsewhere. Read-only
@@ -1112,6 +1267,7 @@ compute plan_gate:
   expr:
     skipped: "outputs.plan_review._skipped == true"
     skip_revise: "outputs.plan_review._skipped == true || outputs.plan_scope_probe.large"
+    provenance: "if(outputs.plan_review._skipped == true, 'authored by the plan node - the cross-model peer review was SKIPPED mid-run (peer unavailable, plan_review_policy skip); the author-written triage, unchallenged', 'authored by the plan node and critiqued by a cross-model peer; the author-revise turn was BYPASSED on a large diff, so the critique reaches you unrevised - weigh it on its merits')"
 
 ## plan_revise — the AUTHOR again, SAME session (the `_session_id`
 ## carried on the edge), challenging the peer's critique. Read-only.
@@ -1145,6 +1301,7 @@ compute plan_cost_probe:
     plan: "input.plan"
     plan_critique: "input.plan_critique"
     plan_responses: "input.plan_responses"
+    plan_provenance: "input.plan_provenance"
     plan_cost_usd: "if(outputs.plan._cost_usd, outputs.plan._cost_usd, 0) + if(outputs.plan_review._cost_usd, outputs.plan_review._cost_usd, 0) + if(outputs.plan_revise._cost_usd, outputs.plan_revise._cost_usd, 0)"
 
 ## plan_budget_gate — the SOLE choke point before campaign (native:695).
@@ -1157,7 +1314,7 @@ compute plan_cost_probe:
 ## JSON (mirrors verify_run/publish_verdict); read-only, idempotent.
 tool plan_budget_gate:
   input: plan_budget_gate_input
-  command: `STARTED={{input.started_epoch}} COST={{input.plan_cost_usd}} RATIO={{vars.plan_budget_ratio}} MAXMIN={{vars.budget_max_duration_minutes}} MAXCOST={{vars.budget_max_cost_usd}} PLAN={{input.plan}} CRITIQUE={{input.plan_critique}} RESPONSES={{input.plan_responses}} python3 -c "
+  command: `STARTED={{input.started_epoch}} COST={{input.plan_cost_usd}} RATIO={{vars.plan_budget_ratio}} MAXMIN={{vars.budget_max_duration_minutes}} MAXCOST={{vars.budget_max_cost_usd}} PLAN={{input.plan}} CRITIQUE={{input.plan_critique}} RESPONSES={{input.plan_responses}} PROVENANCE={{input.plan_provenance}} python3 -c "
 import os, time, json
 def as_float(name, default):
     try:
@@ -1188,6 +1345,7 @@ print(json.dumps({
     'plan': os.environ.get('PLAN', ''),
     'plan_critique': os.environ.get('CRITIQUE', ''),
     'plan_responses': os.environ.get('RESPONSES', ''),
+    'plan_provenance': os.environ.get('PROVENANCE', ''),
 }))
 "`
   output: plan_budget_gate_state
@@ -1723,13 +1881,18 @@ emit(True, note)
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow branch_improve_loop:
-  ## Entry is the plan-phase gate. When `plan_review` resolved OFF at
-  ## launch it routes STRAIGHT to the campaign — the mission starts
-  ## working immediately (no blocking upfront diff-chunk scan), exactly
-  ## the v2 shape. When ON, the diff triage is authored, peer-reviewed
-  ## cross-model, and author-revised first. A re-dispatch's campaign
-  ## reads `git log`, re-diffs the branch, and continues either way.
-  entry: plan_topology
+  ## Entry is the deterministic workspace precondition: a launch with no
+  ## repository to work on, or whose base_ref is not reachable from HEAD,
+  ## fails typed (WORKSPACE_NOT_A_REPO) before any LLM node spends. Then
+  ## the plan phase: on by default, the diff triage is AUTHORED (a
+  ## read-only map, not the v1 blocking diff-chunk scan), peer-reviewed
+  ## cross-model ONLY when `plan_review` resolved on at launch (a second
+  ## model family credentialed), bounded by plan_budget_gate, and handed
+  ## to the campaign — stamped with its provenance — before it fixes.
+  ## `plan_phase: off` starts the campaign immediately (plan in stride).
+  ## A re-dispatch's campaign reads `git log`, re-diffs the branch, and
+  ## continues either way.
+  entry: workspace_probe
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
   ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
@@ -1756,25 +1919,41 @@ workflow branch_improve_loop:
     threshold: 0.9
     preserve_recent: 8
 
-  ## Plan phase (skipped whole when plan_review resolved off).
+  ## Precondition: nothing LLM runs on a workspace with no repository
+  ## (or with an unreachable base_ref).
+  workspace_probe -> plan_topology when ok
+  workspace_probe -> fail when not ok
+
+  ## Plan phase: on by default; plan_phase off → straight to the campaign.
   plan_topology -> plan_scope_probe when do_plan
   ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
   plan_topology -> campaign when not do_plan with {
-    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+    fail_log: "", plan: "", plan_critique: "", plan_responses: "",
+    plan_provenance: ""
   }
 
   plan_scope_probe -> plan with {
     diff_stat: "{{outputs.plan_scope_probe.diff_stat}}",
     large:     "{{outputs.plan_scope_probe.large}}"
   }
-  plan -> plan_review with {
+  ## The authored triage meets the peer-review gate: a second model
+  ## family credentialed (plan_review on) → cross-model critique + author
+  ## revision; otherwise the triage goes straight to the budget gate
+  ## unreviewed, with a provenance stamp that says so.
+  plan -> plan_review_topology
+  plan_review_topology -> plan_review when do_review with {
     plan:        "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
     risks:       "{{outputs.plan.risks}}",
     diff_stat:   "{{outputs.plan_scope_probe.diff_stat}}",
     large:       "{{outputs.plan_scope_probe.large}}"
+  }
+  plan_review_topology -> plan_cost_probe when not do_review with {
+    plan: "{{outputs.plan.plan}}",
+    plan_critique: "", plan_responses: "",
+    plan_provenance: "authored by the plan node - NOT peer-reviewed (plan_review resolved off: one model family credentialed, or the operator said off); the author-written triage, unchallenged"
   }
   plan_review -> plan_gate
   ## Peer served AND the diff is small enough to be worth a second read →
@@ -1794,22 +1973,25 @@ workflow branch_improve_loop:
   plan_gate -> plan_cost_probe when skip_revise with {
     plan: "{{outputs.plan.plan}}",
     plan_critique: "{{outputs.plan_review.concerns}}",
-    plan_responses: ""
+    plan_responses: "",
+    plan_provenance: "{{outputs.plan_gate.provenance}}"
   }
   plan_revise -> plan_cost_probe with {
-    plan:           "{{outputs.plan_revise.plan}}",
-    plan_critique:  "{{outputs.plan_review.concerns}}",
-    plan_responses: "{{outputs.plan_revise.review_responses}}"
+    plan:            "{{outputs.plan_revise.plan}}",
+    plan_critique:   "{{outputs.plan_review.concerns}}",
+    plan_responses:  "{{outputs.plan_revise.review_responses}}",
+    plan_provenance: "authored by the plan node, critiqued by a cross-model peer, and revised by the author (its accepted/rejected responses follow)"
   }
 
   ## plan_cost_probe is a nil-safe relay (see its own comment): it always
   ## produces a real float even when plan_revise never ran this pass.
   plan_cost_probe -> plan_budget_gate with {
-    plan:           "{{outputs.plan_cost_probe.plan}}",
-    plan_critique:  "{{outputs.plan_cost_probe.plan_critique}}",
-    plan_responses: "{{outputs.plan_cost_probe.plan_responses}}",
-    plan_cost_usd:  "{{outputs.plan_cost_probe.plan_cost_usd}}",
-    started_epoch:  "{{outputs.plan_scope_probe.started_epoch}}"
+    plan:            "{{outputs.plan_cost_probe.plan}}",
+    plan_critique:   "{{outputs.plan_cost_probe.plan_critique}}",
+    plan_responses:  "{{outputs.plan_cost_probe.plan_responses}}",
+    plan_provenance: "{{outputs.plan_cost_probe.plan_provenance}}",
+    plan_cost_usd:   "{{outputs.plan_cost_probe.plan_cost_usd}}",
+    started_epoch:   "{{outputs.plan_scope_probe.started_epoch}}"
   }
   ## Within its share → the campaign starts, carrying the (possibly
   ## unrevised) plan forward exactly as the pre-guard edges did. Over its
@@ -1818,10 +2000,11 @@ workflow branch_improve_loop:
   ## the run's OWN failure message stays the engine's generic one while
   ## this node's output carries the typed code + reason.
   plan_budget_gate -> campaign when not exhausted with {
-    fail_log:       "",
-    plan:           "{{outputs.plan_budget_gate.plan}}",
-    plan_critique:  "{{outputs.plan_budget_gate.plan_critique}}",
-    plan_responses: "{{outputs.plan_budget_gate.plan_responses}}"
+    fail_log:        "",
+    plan:            "{{outputs.plan_budget_gate.plan}}",
+    plan_critique:   "{{outputs.plan_budget_gate.plan_critique}}",
+    plan_responses:  "{{outputs.plan_budget_gate.plan_responses}}",
+    plan_provenance: "{{outputs.plan_budget_gate.plan_provenance}}"
   }
   plan_budget_gate -> fail when exhausted
 
@@ -1858,7 +2041,7 @@ workflow branch_improve_loop:
   ## plan would re-anchor later passes that must read `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
     fail_log: "{{outputs.gate.fail_log}}",
-    plan: "", plan_critique: "", plan_responses: ""
+    plan: "", plan_critique: "", plan_responses: "", plan_provenance: ""
   }
   ## continuation_loop exhausted (max_passes hit while issues still remain) →
   ## ship what is banked anyway (every committed fix is real, landed work).

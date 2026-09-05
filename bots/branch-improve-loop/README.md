@@ -69,7 +69,9 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ review ──▶ 
 
 (`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
 `verify_build`; the mr tail forks to `finalize_mr` (open PR) or the PR
-push-back lane — see below.)
+push-back lane — see below. Ahead of the loop, the diagram elides the
+deterministic `workspace_probe` entry precondition and the plan phase —
+both described under their own headings below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
   runs `git add -N .` then reads the branch diff, builds a living todo list of
@@ -196,14 +198,35 @@ See [main.bot](main.bot) for the full DSL.
 
 ## Plan phase (cross-model pair review, ADR-091)
 
-`plan_review: auto` resolves at launch from the run's credentials: when a
-SECOND model family is available, the diff triage is authored (claude,
-read-only), critiqued by a cross-family peer (`claw` +
-`openai/gpt-5.6-sol` by default), and revised by the SAME author session
-before the campaign fixes; otherwise the phase is bypassed whole (the v2
-shape, unchanged). `plan_review_policy` picks the mid-run
-peer-unavailability behaviour: `skip` (default — the reviewer's
-`action: skip` route: continue unreviewed, loudly stamped; the peer is
-an optional enrichment and must never block the campaign — Anthropic
-alone always suffices) or `wait` (the run parks failed_resumable, the
-usage-window retry resumes it — the deliberate-spend posture).
+The diff triage is AUTHORED by default on every deployment (claude,
+read-only); `plan_phase: off` is the explicit opt-out (plan in stride, the
+v2 shape). `plan_review: auto` resolves at launch from the run's
+credentials and gates ONLY the peer review: when a SECOND model family is
+available, the triage is critiqued by a cross-family peer (`claw` +
+`openai/gpt-5.6-sol` by default) and revised by the SAME author session
+before the campaign fixes; otherwise the campaign receives the author's
+triage stamped as unreviewed (`plan_provenance`, relayed through the
+budget gate). `plan_review_policy` picks the mid-run peer-unavailability
+behaviour: `skip` (default — the reviewer's `action: skip` route:
+continue unreviewed, loudly stamped; the peer is an optional enrichment
+and must never block the campaign — Anthropic alone always suffices) or
+`wait` (the run parks failed_resumable, the usage-window retry resumes it
+— the deliberate-spend posture). Either way `plan_budget_gate` bounds the
+phase (native:695).
+
+## Precondition (`workspace_probe`)
+
+The run's entry is a deterministic tool node (~100ms, no LLM): a launch
+whose `workspace_dir` is absent or not a git repository, OR whose
+`base_ref` is not reachable from HEAD (`git merge-base` fails — every
+diff-anchored instruction would then range over nothing), fails typed
+(`WORKSPACE_NOT_A_REPO` on the node's output and in the tool log) before
+any LLM node spends.
+
+## Persy (perseverance coach)
+
+A `supervisor persy:` block watches the `campaign` node
+(docs/supervisors.md): it pushes back on premature "unfixable" verdicts,
+expedient shortcuts, failure loops and unbanked state under budget
+pressure — a finding refused WITH evidence is not giving up.
+`--supervisors off` disables it per run.

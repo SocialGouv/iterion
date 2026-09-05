@@ -32,6 +32,11 @@ type campaignState struct {
 // credential-present → finalize_mr). Individual tests override a node
 // afterward (later .on wins) to exercise a red verify pass or the MR path.
 func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
+	// The entry precondition passes and the plan phase (on by default)
+	// authors a plan; plan_review is unresolved (auto → off) in this
+	// harness, so the peer never runs.
+	stubWorkspaceProbeOK(exec)
+	stubPlanAuthor(exec)
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
@@ -282,11 +287,15 @@ func TestWholeImproveLoop_EventTrace(t *testing.T) {
 func TestWholeImproveLoop_Structural(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 
-	// Entry is the plan-phase gate (ADR-091), whose off branch routes
-	// STRAIGHT to the campaign — the v2 "start working immediately" shape
-	// is preserved whenever plan_review resolves off.
-	if wf.Entry != "plan_topology" {
-		t.Errorf("workflow entry = %q, want %q (the plan-phase gate; its off branch is the v2 immediate-campaign shape)", wf.Entry, "plan_topology")
+	// Entry is the deterministic workspace precondition (a tool node, no
+	// LLM), then the plan-phase gate (ADR-091) — on by default, its off
+	// branch (plan_phase=off) being the v2 "start working immediately"
+	// shape.
+	if wf.Entry != "workspace_probe" {
+		t.Errorf("workflow entry = %q, want %q (the deterministic precondition ahead of any LLM node)", wf.Entry, "workspace_probe")
+	}
+	if _, ok := wf.Nodes["workspace_probe"].(*ir.ToolNode); !ok {
+		t.Errorf("workspace_probe is %T, want *ir.ToolNode (deterministic precondition)", wf.Nodes["workspace_probe"])
 	}
 	if _, ok := wf.Nodes["plan_topology"].(*ir.ComputeNode); !ok {
 		t.Errorf("plan_topology is %T, want *ir.ComputeNode (deterministic gate)", wf.Nodes["plan_topology"])

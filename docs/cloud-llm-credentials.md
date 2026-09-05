@@ -223,8 +223,11 @@ iterion remote admin llm oauth set codex --from-file ~/.codex/auth.json
 The next launch of a declaring bot logs
 `plan review: on · llm families: claude,gpt` and runs the phase. Verify
 with the usual smoke: a one-node `claw` + `openai/gpt-5.6-sol` bot via
-`iterion remote runs launch --follow`. To force or refuse per run:
-`--var plan_review=on|off`; deployment-wide brake:
+`iterion remote runs launch --follow`. To force or refuse the REVIEW per
+run: `--var plan_review=on|off` — the plan itself is still authored
+either way (the campaign then gets it stamped `plan_provenance:
+… NOT peer-reviewed …`); skipping planning altogether is the separate
+`--var plan_phase=off`. Deployment-wide brake:
 `ITERION_PLAN_REVIEW=off` on the **server** (studio/API) env — NOT the
 runner: the resolution happens at publish, the runner consumes
 already-resolved vars, so setting it on the runner Deployment is a

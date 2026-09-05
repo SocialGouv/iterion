@@ -1,13 +1,21 @@
 ## Minimal fixture mirroring the plan phase of the campaign bots
-## (feature-dev / app-dev / branch-improve-loop / whole-improve-loop):
-## a launch-resolved `plan_review` gate, the plan AUTHOR, a cross-model
-## peer reviewer carrying the `action: skip` fallback route driven by
-## `plan_review_policy`, the deterministic `plan_gate` reading the
-## _skipped stamp, and the author's revise turn. Exercised by
-## plan_review_test.go with the scenario stub — no LLM, no tools.
+## (feature-dev / app-dev / branch-improve-loop / whole-improve-loop /
+## feature-gap-fill / test-coverage / e2e-coverage): the `plan_phase`
+## switch (on by default), the plan AUTHOR, the launch-resolved
+## `plan_review` gate AFTER the plan (it gates the peer review only), a
+## cross-model peer reviewer carrying the `action: skip` fallback route
+## driven by `plan_review_policy`, the deterministic `plan_gate` reading
+## the _skipped stamp, the author's revise turn, and the provenance
+## stamp every hand-off edge sets. Exercised by plan_review_test.go with
+## the scenario stub — no LLM, no tools. (The workspace precondition the
+## repo-requiring bots put ahead of this phase is covered by
+## bots/workspace_probe_test.go + e2e/campaign_plan_phase_test.go.)
 
 schema plan_topology_state:
   do_plan: bool
+
+schema plan_review_topology_state:
+  do_review: bool
 
 schema plan_output:
   plan: string
@@ -28,6 +36,7 @@ schema campaign_input:
   plan: string
   plan_critique: string
   plan_responses: string
+  plan_provenance: string
 
 schema campaign_output:
   done: bool
@@ -36,17 +45,23 @@ schema gate_state:
   converged: bool
 
 vars:
+  plan_phase: string [enum: "on", "off"] = "on"
   plan_review: string = "auto"
   plan_review_policy: string = "wait"
 
 compute plan_topology:
   output: plan_topology_state
   expr:
-    do_plan: "vars.plan_review == 'on'"
+    do_plan: "vars.plan_phase == 'on'"
 
 agent plan:
   model: "claude-opus-4-7"
   output: plan_output
+
+compute plan_review_topology:
+  output: plan_review_topology_state
+  expr:
+    do_review: "vars.plan_review == 'on'"
 
 judge plan_review:
   model: "claude-opus-4-7"
@@ -84,34 +99,44 @@ workflow plan_review_mini:
 
   ## The with{} bodies MIRROR the shipped bots': every campaign_input
   ## field explicitly mapped (an unmapped field is not "" but the raw
-  ## {{input.x}} placeholder leaking into the prompt), and the loop
-  ## back-edge BLANKS the plan fields (forward mappings re-apply on
-  ## every re-entry — a stale pass-1 plan would re-anchor later passes).
+  ## {{input.x}} placeholder leaking into the prompt), a literal
+  ## provenance stamp on each hand-off, and the loop back-edge BLANKS
+  ## the plan fields (forward mappings re-apply on every re-entry — a
+  ## stale pass-1 plan would re-anchor later passes).
   plan_topology -> plan when do_plan
   plan_topology -> campaign when not do_plan with {
-    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+    fail_log: "", plan: "", plan_critique: "", plan_responses: "",
+    plan_provenance: ""
   }
 
-  plan -> plan_review
+  plan -> plan_review_topology
+  plan_review_topology -> plan_review when do_review
+  plan_review_topology -> campaign when not do_review with {
+    fail_log: "", plan: "{{outputs.plan.plan}}",
+    plan_critique: "", plan_responses: "",
+    plan_provenance: "authored - NOT peer-reviewed (plan_review off)"
+  }
   plan_review -> plan_gate
   plan_gate -> plan_revise when not skipped with {
     plan: "{{outputs.plan.plan}}"
   }
   plan_gate -> campaign when skipped with {
     fail_log: "", plan: "{{outputs.plan.plan}}",
-    plan_critique: "", plan_responses: ""
+    plan_critique: "", plan_responses: "",
+    plan_provenance: "authored - the peer review was SKIPPED mid-run"
   }
   plan_revise -> campaign with {
-    fail_log:       "",
-    plan:           "{{outputs.plan_revise.plan}}",
-    plan_critique:  "{{outputs.plan_review.concerns}}",
-    plan_responses: "{{outputs.plan_revise.review_responses}}"
+    fail_log:        "",
+    plan:            "{{outputs.plan_revise.plan}}",
+    plan_critique:   "{{outputs.plan_review.concerns}}",
+    plan_responses:  "{{outputs.plan_revise.review_responses}}",
+    plan_provenance: "authored, peer-reviewed, revised by the author"
   }
 
   campaign -> gate
   gate -> done when converged
   gate -> campaign as continuation_loop(3) with {
     fail_log: "FAILLOG",
-    plan: "", plan_critique: "", plan_responses: ""
+    plan: "", plan_critique: "", plan_responses: "", plan_provenance: ""
   }
   gate -> done

@@ -1,7 +1,17 @@
 name: e2e-coverage
 display_name: Endy
 icon: 🕸️
-version: 0.2.0
+version: 0.3.0
+## 0.3.0 — the plan phase runs by default on every deployment: `plan_review`
+## gates ONLY the cross-model peer review (the plan_topology gate no longer
+## skips planning when it resolves off); the new `plan_phase` (on|off) is
+## the phase's own switch, and the campaign receives the authored plan
+## stamped with its provenance (`plan_provenance`). `workspace_probe`, a
+## deterministic entry precondition, refuses a launch whose workspace_dir
+## is absent or not a git repository (typed WORKSPACE_NOT_A_REPO) before
+## any LLM node spends. Persy, the perseverance-coach supervisor on the
+## campaign node + the contract's PERSISTENCE clause (fleet-wide, from
+## feature-dev 2.2.0).
 ## 0.2.0 — cross-model plan phase (ADR-091) ahead of the campaign; budget +30m/+$15 to fund it
 ## 0.1.0 — initial release (ADR-058 v2 shape, sibling of test-coverage).
 ## ONE adaptive `campaign` agent drives an application's FEATURE-level
