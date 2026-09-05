@@ -429,3 +429,65 @@ lots:
 		}
 	})
 }
+
+// TestModernizeLotVerifyOlderNetIsNotRefused pins the pre-extension
+// behaviour for a net materialised before the extension feature: no
+// `extend-verify` mode means no certificate and no exemption — never "the
+// certifier returned no usable verdict", which refused every lot on every
+// older net. A certifier that EXISTS and cannot answer stays a refusal.
+func TestModernizeLotVerifyOlderNetIsNotRefused(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	const plan = `version: 1
+oracle:
+  refs_dir: .golden-master/refs
+lots:
+  - id: L1
+    title: "raise the build tool"
+    status: todo
+    exit_gate:
+      - "true"
+`
+	const gate = "sh -c 'echo ran > gate.marker'"
+	setup := func(t *testing.T, harness string) (string, string) {
+		t.Helper()
+		ws, _, git := modernizeRepo(t, plan)
+		modernizeNet(t, ws)
+		hp := filepath.Join(ws, ".golden-master", "harness.py")
+		if harness == "" {
+			if err := os.Remove(hp); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(hp, []byte(harness), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "-A", ".golden-master")
+		git("commit", "-qm", "net")
+		return ws, git("rev-parse", "HEAD")
+	}
+
+	t.Run("no harness at all: the references are judged in git, nothing is refused", func(t *testing.T) {
+		ws, base := setup(t, "")
+		res := modernizeLotVerify(t, script, ws, "L1", base, gate)
+		if !res.GatePassed || !res.OraclePassed || !res.RefsUntouched {
+			t.Fatalf("an older net without a harness must not be refused: %+v", res)
+		}
+		if strings.Contains(res.LogTail, "no usable verdict") {
+			t.Fatalf("log_tail carries the certifier refusal on a net that has no certifier: %q", res.LogTail)
+		}
+	})
+	t.Run("a harness without the extend-verify mode: same, the older net's legal state", func(t *testing.T) {
+		ws, base := setup(t, "import json\nprint(json.dumps({\"mode\": \"gate\"}))\n")
+		res := modernizeLotVerify(t, script, ws, "L1", base, gate)
+		if !res.RefsUntouched || strings.Contains(res.LogTail, "no usable verdict") {
+			t.Fatalf("older-net harness refused: %+v", res)
+		}
+	})
+	t.Run("a certifier that exists and answers garbage is still a refusal", func(t *testing.T) {
+		ws, base := setup(t, "import os\nmode = os.environ.get(\"GM_MODE\")\nif mode == \"extend-verify\":\n    print(\"not json at all\")\nelse:\n    print(\"{}\")\n")
+		res := modernizeLotVerify(t, script, ws, "L1", base, gate)
+		if res.RefsUntouched || !strings.Contains(res.LogTail, "no usable verdict") {
+			t.Fatalf("a mute certifier must refuse: %+v", res)
+		}
+	})
+}

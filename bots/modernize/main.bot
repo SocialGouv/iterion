@@ -824,10 +824,18 @@ tool lot_verify:
         # additions are exempted from the immutability verdict below, and
         # ONLY those: an addition cannot mask an existing divergence, which
         # is the one property that makes the exemption safe to grant.
+        # A net materialised BEFORE the extension feature has no `extend-verify`
+        # mode: that is the legal state of an older net — no extension
+        # machinery, no exemption, the immutability diff alone judges (the
+        # pre-feature behaviour) — and it is NOT the same event as a certifier
+        # that exists and cannot answer, which is a refusal. Two sentinels,
+        # because conflating them refused every lot on every older net.
+        CAPABILITY_ABSENT = {"__capability_absent__": True}
+
         def harness_json(mode, **extra):
             hp = os.path.join(ws, gm_dir, "harness.py")
             if not os.path.isfile(hp):
-                return None
+                return CAPABILITY_ABSENT
             # A net materialised BEFORE this feature has no extension modes:
             # its main() would fall through to the FULL gate path — boot the
             # app, run the campaign — and die on this call's timeout (review
@@ -838,7 +846,7 @@ tool lot_verify:
             try:
                 with open(hp, encoding="utf-8") as f:
                     if 'mode == "extend-verify"' not in f.read():
-                        return None
+                        return CAPABILITY_ABSENT
             except OSError as e:
                 problems.append("cannot read %s to probe its capabilities: %s"
                                 % (hp, e))
@@ -862,11 +870,11 @@ tool lot_verify:
                 return None
 
         listing = harness_json("extensions")
-        if listing is not None:
+        if listing is not None and listing is not CAPABILITY_ABSENT:
             report["extension_pending"] = listing.get("pending") or []
         exempt = set()
         verdict = harness_json("extend-verify", GM_BASE=base)
-        if verdict is not None and not verdict.get("error"):
+        if verdict is not None and verdict is not CAPABILITY_ABSENT and not verdict.get("error"):
             exempt = set(verdict.get("ok_paths") or [])
 
         # The certifier is the TARGET's harness copy — a file the lot could
@@ -940,7 +948,11 @@ tool lot_verify:
         # a green — extension_verdict SEES both frauds and its verdict was
         # read for ok_paths only (consolidation finding, executed: emptied
         # ledger and act recording "peu-importe-quoi" both came out green).
-        if verdict is not None and not verdict.get("error"):
+        if verdict is CAPABILITY_ABSENT:
+            # Older net: nothing to certify and nothing to refuse. The
+            # references are still judged, in git, two blocks above.
+            pass
+        elif verdict is not None and not verdict.get("error"):
             bad = [r for r in (verdict.get("acted") or []) if not r.get("ok")]
             if verdict.get("problems") or bad \
                     or not verdict.get("ledger_append_only", True):
