@@ -14,11 +14,14 @@ import (
 )
 
 // acquireRunLock claims the distributed run lock guarding against two
-// runners executing the same run. ErrLockHeld means a sibling already
-// has it. Retry with a delay while attempts remain; archive the delivery on
-// exhaustion without changing the run owned by that sibling. Returns
-// (lock, true, "") on success; (nil, false, finalStatus) when the caller
-// must abandon the delivery (finalStatus is the metric label).
+// runners executing the same run. Any failure to take it — ErrLockHeld
+// (a sibling demonstrably has it) or a lock store that could not answer —
+// is retried with a delay while attempts remain, then archived on
+// exhaustion. No branch here changes the run: without the lock this pod
+// is not entitled to write its outcome or its continuation, whether or
+// not somebody else turns out to own it. Returns (lock, true, "") on
+// success; (nil, false, finalStatus) when the caller must abandon the
+// delivery (finalStatus is the metric label).
 func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger) (store.RunLock, bool, string) {
 	// Acquire the distributed lock. Two competing runners on the
 	// same run is the contention this guards against.
@@ -134,7 +137,7 @@ func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, 
 		// run when it did land — report it as UNCONFIRMED.
 		logger.Error("runner: exhausted lock delivery for %s was not confirmed archived: %v — a DLQ copy may or may not exist; inspect the DLQ before replaying or discarding", msg.RunID, err)
 	} else {
-		logger.Warn("runner: exhausted lock delivery for %s archived on DLQ; the owner's run is unchanged", msg.RunID)
+		logger.Warn("runner: exhausted lock delivery for %s archived on DLQ; the run is unchanged", msg.RunID)
 	}
 	// The publish above is bounded by its context ALONE and can burn the
 	// whole deadline waiting on a PubAck during a broker outage — which is
