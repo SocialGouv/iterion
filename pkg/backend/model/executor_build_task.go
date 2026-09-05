@@ -1225,14 +1225,16 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if delegate.HasBoardCapability(effectiveCaps) && len(effectiveTools) > 0 {
 		effectiveTools = append(effectiveTools, delegate.BoardToolsFor(effectiveCaps)...)
 	}
-	// Ultracode grants standing consent to orchestrate subagents. On claw,
-	// the orchestration capability is the `agent` subagent tool; ensure it is
-	// in the allowlist when the node restricts its tool set (mirrors the
-	// board-tools append above). An unrestricted tool set already exposes the
-	// claw builtins, and the claude_code backend orchestrates via its native
-	// subagent mechanism, so neither needs the explicit append.
+	// Ultracode grants standing consent to orchestrate subagents AND
+	// workflows. On claw the orchestration surface is the `agent` subagent
+	// tool and the `workflow` tool (a deterministic fan-out script whose
+	// agent() resolves with typed results); ensure both are in the allowlist
+	// when the node restricts its tool set (mirrors the board-tools append
+	// above). An unrestricted tool set already exposes the claw builtins,
+	// and the claude_code backend orchestrates via its native mechanism, so
+	// neither needs the explicit append.
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
-		effectiveTools = ensureToolPresent(effectiveTools, "agent")
+		effectiveTools = withClawOrchestrationTools(effectiveTools)
 	}
 	// Keep the agent's task list available so the per-run Session board
 	// (Tasks tab) is populated regardless of a node's `tools:` list. Only
@@ -1388,4 +1390,13 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 	if a, ok := input[delegate.ResumeAnswerKey].(string); ok {
 		task.ResumeAnswer = a
 	}
+}
+
+// withClawOrchestrationTools is what ultracode grants a claw node that
+// restricts its tools: the `agent` subagent tool and the `workflow` tool —
+// the deterministic fan-out whose agent() resolves with typed results.
+// Idempotent: a tool already listed is not listed twice.
+func withClawOrchestrationTools(tools []string) []string {
+	tools = ensureToolPresent(tools, "agent")
+	return ensureToolPresent(tools, "workflow")
 }
