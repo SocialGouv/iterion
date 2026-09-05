@@ -214,13 +214,43 @@ and must never block the campaign — Anthropic alone always suffices) or
 — the deliberate-spend posture). Either way `plan_budget_gate` bounds the
 phase (native:695).
 
+## Plan-phase budget guard (`plan_budget_gate`)
+
+One deterministic `compute`, the sole choke point before `campaign`. It
+reads the run itself — `run.elapsed_seconds` / `run.cost_usd` against
+`run.max_duration_seconds` / `run.max_cost_usd`, the caps IN FORCE after
+any `--max-duration` / `--max-cost-usd` override, the recipe, the
+platform ceiling and any live raise_budget — and refuses when either
+crosses `plan_budget_ratio` (default 0.3) of its cap. `campaign` is
+therefore guaranteed at least `1 - plan_budget_ratio` of the budget
+whenever it starts. A cap of `0` is UNBOUNDED on that axis, so a run
+launched with no cost cap never refuses on cost.
+
+The refusal is the named `plan_exhausted` fail node: `failure_code =
+PLAN_BUDGET_EXHAUSTED` and an `error` naming what was used against what
+was allowed, both on the RUN — `iterion runs list`, the studio, the
+merge-gate notice and the alert sinks read them. It is **resumable**: the
+checkpoint anchors on `plan_budget_gate`, so
+
+```sh
+iterion resume --run-id <id> --file bots/branch-improve-loop/main.bot \
+  --max-duration 5h --max-cost-usd 150
+```
+
+re-evaluates the guard against the new caps and takes the `campaign` edge
+— the plan phase this run already paid for is not re-run. Lowering
+`plan_budget_ratio` on the resume works the same way. Nothing picks the
+refusal up by itself (not `--auto-resume`, not the cloud retry): a
+deliberate refusal only changes verdict when an operator changes an input.
+
 ## Precondition (`workspace_probe`)
 
 The run's entry is a deterministic tool node (~100ms, no LLM): a launch
 whose `workspace_dir` is absent or not a git repository, OR whose
 `base_ref` resolves nowhere or shares no history with HEAD (every
 diff-anchored instruction would then range over nothing), fails typed
-(`WORKSPACE_NOT_A_REPO` on the node's output and in the tool log) before
+(`WORKSPACE_NOT_A_REPO` — on the run's own `failure_code`/`error` through
+the `workspace_not_a_repo` fail node, and on the probe's output) before
 any LLM node spends. `base_ref` is resolved, never fetched: the bare
 name first, then `refs/remotes/origin/<base_ref>` — a cloud PR run's
 checkout carries only the default branch and the PR head as local

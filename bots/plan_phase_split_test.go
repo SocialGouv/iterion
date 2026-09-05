@@ -186,7 +186,9 @@ var repoRequiringCampaignBots = []string{
 // node (no LLM, no budget) refusing with the typed code WORKSPACE_NOT_A_REPO
 // when workspace_dir is absent / not a git repository — and, for a bot whose
 // mission is anchored on a base ref, when that base is not reachable from
-// HEAD. The verdict lands on the node's output and routes to `fail`.
+// HEAD. The verdict lands on the node's output and routes to the named
+// `workspace_not_a_repo` fail node, which stamps the code on the RUN
+// (bots/typed_fail_test.go owns that half).
 func TestCampaignWorkspacePrecondition(t *testing.T) {
 	for _, bot := range repoRequiringCampaignBots {
 		t.Run(bot, func(t *testing.T) {
@@ -218,7 +220,7 @@ func TestCampaignWorkspacePrecondition(t *testing.T) {
 				switch {
 				case e.To == "plan_topology" && e.Condition == "ok" && !e.Negated:
 					toGate = true
-				case e.To == "fail" && e.Condition == "ok" && e.Negated:
+				case e.To == "workspace_not_a_repo" && e.Condition == "ok" && e.Negated:
 					toFail = true
 				default:
 					t.Errorf("%s: unexpected edge workspace_probe -> %s (when %q negated=%v)", bot, e.To, e.Condition, e.Negated)
@@ -228,7 +230,7 @@ func TestCampaignWorkspacePrecondition(t *testing.T) {
 				t.Errorf("%s: no edge workspace_probe -> plan_topology when ok", bot)
 			}
 			if !toFail {
-				t.Errorf("%s: no edge workspace_probe -> fail when not ok — a refused workspace would not fail the run", bot)
+				t.Errorf("%s: no edge workspace_probe -> workspace_not_a_repo when not ok — a refused workspace would not fail the run", bot)
 			}
 			out, ok := wf.Schemas["workspace_probe_state"]
 			if !ok {
