@@ -32,6 +32,15 @@ type BoardStore interface {
 	SetStateFrom(id, from, to string) (*Issue, bool, error)
 	Reopen(id, toState string) (*Issue, error)
 	Delete(id string) error
+	// AdjustLabels is the RELATIVE label write (add_labels /
+	// remove_labels): the delta applies to the card as it is, atomically
+	// — one critical section on the FS twin, one conditional write on the
+	// Mongo one. Update's absolute label list is the caller's intent and
+	// re-arms a one-shot trigger label consumed after the caller's read;
+	// this cannot. changed=false when nothing moved (no write, no event).
+	// Mandatory, not optional: a backend without it would degrade the
+	// board ops to the read-modify-write this exists to remove.
+	AdjustLabels(id string, add, remove []string) (*Issue, bool, error)
 
 	// Claim/Release are the dispatcher's per-issue claim (marker = the
 	// dispatcher instance id). Claim stamps a persisted LEASE and returns
@@ -51,6 +60,15 @@ type BoardStore interface {
 	// of clobbering the new owner's state.
 	ReleaseOwned(id string, tok tracker.ClaimToken) error
 	SetStateOwned(id, newState string, tok tracker.ClaimToken) (*Issue, error)
+	// SetStateOwnedFrom is SetStateOwned with a source-state precondition:
+	// ONE CAS on (claim, claim_epoch, state == from). changed=false when
+	// the state drifted (somebody moved the card while its owner was
+	// deciding — nothing is written); ErrClaimConflict when the token no
+	// longer owns the card. The finish worker's auto-transition needs both
+	// halves in one write: fenced alone it overwrote an operator move that
+	// landed between its state probe and its write, while the watchdog —
+	// which judges on the CAS-observed state — would have honoured it.
+	SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (*Issue, bool, error)
 	SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
 	SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
 	SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error
@@ -122,9 +140,13 @@ type StateReasoner interface {
 // atomically claim a Ready ticket for launch — a CAS StateReady →
 // StateInProgress that reports whether THIS caller won (PR #193 M2). It
 // closes the check-then-act window where a live dispatcher and the studio
-// admission loop both pick the same Ready ticket. The filesystem store
-// implements it; a backend that does not cleanly degrades to the caller's
-// best-effort SetState (the documented V1 window).
+// admission loop both pick the same Ready ticket, and it reads the CLAIM
+// family too: the dispatcher wins a card with the claim and moves it to
+// in_progress afterwards, so a claimed card can legally sit in Ready while
+// its run is already launching. Both twins implement it (the filesystem
+// store here, boardmongo for the cloud — pinned by the shared conformance
+// suite); a backend without it degrades the caller to a best-effort
+// SetState, which under the claim lease is a second launch authority.
 type LaunchClaimer interface {
 	ClaimForLaunch(id string) (*Issue, bool, error)
 }

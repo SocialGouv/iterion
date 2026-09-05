@@ -6,8 +6,11 @@ description: Triagy's single-shot routing procedure — read one board card, sta
 # issue-triage — the routing contract
 
 You process exactly ONE card (vars.issue_id) and your only outputs are:
-a `set_bot` stamp (or none), a `set_labels` refresh, and one
-`comment_issue` paragraph. The card's COLUMN is not yours: launching is
+a `set_bot` stamp (or none), an `add_labels` stamp (and a
+`remove_labels` when `needs:approval` lingers), and one `comment_issue`
+paragraph. Never `set_labels`: it replaces the whole list from your
+earlier read and re-adds the consumed `triage:auto`, which launches you
+again. The card's COLUMN is not yours: launching is
 the operator's drag to Ready, where the dispatcher claims the stamped
 bot. You never `transition_issue`, never `create_issue`, never
 `close_issue`, never touch another card.
@@ -19,8 +22,8 @@ bot. You never `transition_issue`, never `create_issue`, never
   launching you (that label is already gone; do not re-add it).
 - An operator's "Approve & triage" on an external-author card — they
   swapped `needs:approval` for `triage:auto`. If `needs:approval` is
-  still present on the card, remove it in your `set_labels` (the
-  operator's approval superseded it).
+  still present on the card, `remove_labels` it (the operator's
+  approval superseded it).
 - A manual `triage:auto` label on any card — re-triage on demand. Your
   new comment supersedes your old one; re-stamp `set_bot` if your
   routing changed.

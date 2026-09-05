@@ -450,9 +450,9 @@ func TestResolver_ResolvesTeamSourcesFromGit(t *testing.T) {
 	seed(t, st, other)
 
 	r := &Resolver{Store: st, Fetcher: &Fetcher{CacheDir: t.TempDir()}}
-	files, err := r.Resolve(ctx, "team-1")
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+	files, skipped, err := r.Resolve(ctx, "team-1")
+	if err != nil || len(skipped) != 0 {
+		t.Fatalf("resolve: %v (skipped %d)", err, len(skipped))
 	}
 	if len(files) != 1 {
 		t.Fatalf("got %d files, want 1: %+v", len(files), files)
@@ -462,17 +462,167 @@ func TestResolver_ResolvesTeamSourcesFromGit(t *testing.T) {
 	}
 }
 
-// An enabled source that cannot be fetched must ERROR, not quietly contribute
-// nothing — a run missing its platform playbook still "succeeds" while doing
-// the wrong thing.
-func TestResolver_UnfetchableSourceIsAnError(t *testing.T) {
+// brokenManifestOrigin builds a plugin repo whose plugin.yaml does not parse
+// (an unquoted `: ` inside a value — the exact shape of the 2026-08-26
+// incident), tagged v0.1.0, plus a v0.1.1 tag that fixes it.
+func brokenManifestOrigin(t *testing.T) string {
+	t.Helper()
+	origin := t.TempDir()
+	gitRun(t, origin, "init", "--quiet", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(origin, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "skills", "deploy.md"), []byte("# deploy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	broken := "name: deploy-onyxia\nversion: 0.1.0\ndescription: deploy: to onyxia\ncontributes:\n  skills:\n    - skills/deploy.md\n"
+	if err := os.WriteFile(filepath.Join(origin, "plugin.yaml"), []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, origin, "add", "-A")
+	gitRun(t, origin, "commit", "-m", "broken manifest")
+	gitRun(t, origin, "tag", "v0.1.0")
+	fixed := "name: deploy-onyxia\nversion: 0.1.1\ndescription: \"deploy: to onyxia\"\ncontributes:\n  skills:\n    - skills/deploy.md\n"
+	if err := os.WriteFile(filepath.Join(origin, "plugin.yaml"), []byte(fixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, origin, "add", "-A")
+	gitRun(t, origin, "commit", "-m", "quote the description")
+	gitRun(t, origin, "tag", "v0.1.1")
+	return origin
+}
+
+// One team's broken plugin.yaml made EVERY launch of that team fail for 2h22
+// (2026-08-26): the resolver failed the whole launch on the first source it
+// could not load. A source that cannot be materialised is now SKIPPED for
+// the launch — the run proceeds with the sources that work — and the skip is
+// recorded on the source (degraded + reason) so nothing about it is silent.
+// The flag clears on the next resolution that succeeds.
+func TestResolver_BrokenManifestIsQuarantinedNotFatal(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	st := NewMemoryStore()
+	healthy := validSource()
+	healthy.Name, healthy.GitURL, healthy.Ref = "healthy-skills", gitOrigin(t, "v1.0.0"), "v1.0.0"
+	healthy = seed(t, st, healthy)
+	broken := validSource()
+	broken.Name, broken.GitURL, broken.Ref = "deploy-onyxia", brokenManifestOrigin(t), "v0.1.0"
+	broken = seed(t, st, broken)
+
+	r := &Resolver{Store: st, Fetcher: &Fetcher{CacheDir: t.TempDir()}}
+	files, skipped, err := r.Resolve(ctx, "team-1")
+	if err != nil {
+		t.Fatalf("one broken source failed the whole resolution: %v", err)
+	}
+	if len(files) != 1 || files[0].Name != "deploy-target.md" {
+		t.Fatalf("the healthy source's files must still ship: %+v", files)
+	}
+	if len(skipped) != 1 || skipped[0].Source.ID != broken.ID || skipped[0].Err == nil ||
+		!strings.Contains(skipped[0].Err.Error(), "parse") {
+		t.Fatalf("the broken source must be reported skipped with its parse error: %+v", skipped)
+	}
+	got, err := st.Get(ctx, broken.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Degraded() || !strings.Contains(got.DegradedReason, "parse") || got.DegradedAt == nil {
+		t.Fatalf("the skipped source must read degraded with the reason on its record: %+v", got)
+	}
+	if h, _ := st.Get(ctx, healthy.ID); h.Degraded() {
+		t.Fatalf("the healthy source must not be flagged: %+v", h)
+	}
+
+	// The operator fixes the manifest and re-pins (re-seeded rather than
+	// Updated: Validate refuses the local origin, and the flag must survive
+	// the re-pin so that clearing it is the resolver's doing): the next
+	// launch resolves it and clears the flag by itself.
+	got.Ref = "v0.1.1"
+	seed(t, st, got)
+	if again, _ := st.Get(ctx, broken.ID); !again.Degraded() {
+		t.Fatal("fixture: the re-pin must not clear the flag by itself")
+	}
+	files, skipped, err = r.Resolve(ctx, "team-1")
+	if err != nil || len(skipped) != 0 || len(files) != 2 {
+		t.Fatalf("after the fix: files=%d skipped=%d err=%v, want 2/0/nil", len(files), len(skipped), err)
+	}
+	if got, _ := st.Get(ctx, broken.ID); got.Degraded() {
+		t.Fatalf("a successful resolution must clear the flag: %+v", got)
+	}
+}
+
+// An unfetchable source (unreachable remote, wrong ref) is the same class as
+// an unparseable one: skipped and flagged, never fatal for the team's launches.
+func TestResolver_UnfetchableSourceIsSkippedAndFlagged(t *testing.T) {
 	ctx := context.Background()
 	st := NewMemoryStore()
 	s := validSource()
 	s.GitURL, s.Ref = t.TempDir(), "v1.0.0" // not a git repo
-	seed(t, st, s)
+	s = seed(t, st, s)
 	r := &Resolver{Store: st, Fetcher: &Fetcher{CacheDir: t.TempDir()}}
-	if _, err := r.Resolve(ctx, "team-1"); err == nil {
-		t.Fatal("expected an explicit error for an unfetchable enabled source")
+	files, skipped, err := r.Resolve(ctx, "team-1")
+	if err != nil {
+		t.Fatalf("an unfetchable source must not fail the launch: %v", err)
+	}
+	if len(files) != 0 || len(skipped) != 1 {
+		t.Fatalf("files=%d skipped=%d, want 0/1", len(files), len(skipped))
+	}
+	if got, _ := st.Get(ctx, s.ID); !got.Degraded() || !strings.Contains(got.DegradedReason, "fetch") {
+		t.Fatalf("the source must read degraded with the fetch failure: %+v", got)
+	}
+}
+
+// A source list that cannot be READ is not a broken source: nothing can tell a
+// healthy team from one whose sources are all lost, so that still fails the
+// launch with the cause.
+func TestResolver_UnlistableStoreIsAnError(t *testing.T) {
+	r := &Resolver{Store: unlistableStore{}, Fetcher: &Fetcher{CacheDir: t.TempDir()}}
+	if _, _, err := r.Resolve(context.Background(), "team-1"); err == nil {
+		t.Fatal("a store that cannot list the team's sources must fail the resolution explicitly")
+	}
+}
+
+type unlistableStore struct{ Store }
+
+func (unlistableStore) ListEnabledByTenant(context.Context, string) ([]PluginSource, error) {
+	return nil, context.DeadlineExceeded
+}
+
+// Health is the engine's readout: an operator's Update (rename, re-pin,
+// toggle) never rewrites it — only Mark/ClearDegraded do, and only for the
+// owning tenant.
+func TestMemoryStore_DegradedIsOwnedByTheResolver(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemoryStore()
+	s := validSource()
+	if err := st.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := st.ListByTenant(ctx, "team-1")
+	s = list[0]
+
+	if err := st.MarkDegraded(ctx, "team-2", s.ID, "not yours"); err != ErrNotFound {
+		t.Fatalf("another tenant must not flag this source: %v", err)
+	}
+	if err := st.MarkDegraded(ctx, "team-1", s.ID, "fetch refused"); err != nil {
+		t.Fatal(err)
+	}
+	s.Ref = "v1.0.1"
+	if err := st.Update(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.Get(ctx, s.ID)
+	if got.Ref != "v1.0.1" || got.DegradedReason != "fetch refused" || got.DegradedAt == nil {
+		t.Fatalf("Update must apply the operator's fields and leave the health readout alone: %+v", got)
+	}
+	if err := st.ClearDegraded(ctx, "team-1", s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Get(ctx, s.ID); got.Degraded() || got.DegradedAt != nil {
+		t.Fatalf("ClearDegraded must clear both fields: %+v", got)
+	}
+	if err := st.ClearDegraded(ctx, "team-1", "nope"); err != ErrNotFound {
+		t.Fatalf("clearing an unknown id = %v, want ErrNotFound", err)
 	}
 }

@@ -67,8 +67,35 @@ func (m *MemoryStore) Update(_ context.Context, s PluginSource) error {
 	}
 	s.CreatedAt = prev.CreatedAt
 	s.CreatedBy = prev.CreatedBy
+	// Health is the engine's readout, written only by Mark/ClearDegraded.
+	s.DegradedReason, s.DegradedAt = prev.DegradedReason, prev.DegradedAt
 	s.UpdatedAt = time.Now().UTC()
 	m.byID[s.ID] = s
+	return nil
+}
+
+func (m *MemoryStore) MarkDegraded(_ context.Context, tenantID, id, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.byID[id]
+	if !ok || s.TenantID != tenantID {
+		return ErrNotFound
+	}
+	now := time.Now().UTC()
+	s.DegradedReason, s.DegradedAt = reason, &now
+	m.byID[id] = s
+	return nil
+}
+
+func (m *MemoryStore) ClearDegraded(_ context.Context, tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.byID[id]
+	if !ok || s.TenantID != tenantID {
+		return ErrNotFound
+	}
+	s.DegradedReason, s.DegradedAt = "", nil
+	m.byID[id] = s
 	return nil
 }
 

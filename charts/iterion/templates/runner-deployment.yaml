@@ -147,6 +147,10 @@ spec:
             - name: ITERION_SANDBOX_K8S_SPREAD
               value: {{ .spread | quote }}
             {{- end }}
+            {{- if .podReadyTimeout }}
+            - name: ITERION_SANDBOX_K8S_POD_READY_TIMEOUT
+              value: {{ .podReadyTimeout | quote }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.runner.cache.enabled }}

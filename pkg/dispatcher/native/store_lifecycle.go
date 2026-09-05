@@ -290,6 +290,9 @@ func (s *Store) setGaveUpLocked(iss *Issue, g *GiveUp) error {
 		// record exists to reconstruct what actually happened.
 		payload["state"] = stamped.State
 		payload["attempts"] = stamped.Attempts
+		if stamped.Reason != "" {
+			payload["reason"] = stamped.Reason
+		}
 	}
 	return s.emitPostCommitEvent(Event{
 		Type:    EvtIssueGaveUp,
@@ -331,7 +334,7 @@ func SameGiveUp(a, b *GiveUp) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
+	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts && a.Reason == b.Reason
 }
 
 // AddComment appends a note to the issue's discussion thread and returns

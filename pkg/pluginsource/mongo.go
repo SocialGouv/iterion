@@ -148,6 +148,42 @@ func (s *MongoStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// MarkDegraded stamps the source's health readout. Filtered by the explicit
+// tenant, never the context one, for the reason list() gives.
+func (s *MongoStore) MarkDegraded(ctx context.Context, tenantID, id, reason string) error {
+	if tenantID == "" {
+		return ErrTenantMissing
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}, bson.M{"$set": bson.M{
+		"degraded_reason": reason,
+		"degraded_at":     time.Now().UTC(),
+	}})
+	if err != nil {
+		return fmt.Errorf("pluginsource: mark degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *MongoStore) ClearDegraded(ctx context.Context, tenantID, id string) error {
+	if tenantID == "" {
+		return ErrTenantMissing
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}, bson.M{"$unset": bson.M{
+		"degraded_reason": "",
+		"degraded_at":     "",
+	}})
+	if err != nil {
+		return fmt.Errorf("pluginsource: clear degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *MongoStore) ListEnabledByTenant(ctx context.Context, tenantID string) ([]PluginSource, error) {
 	return s.list(ctx, tenantID, bson.M{"enabled": true})
 }

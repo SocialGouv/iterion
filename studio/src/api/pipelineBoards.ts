@@ -75,6 +75,12 @@ export interface PipelineBoardGiveUp {
   state?: string;
   /** How many attempts were burned before giving up. */
   attempts?: number;
+  /**
+   * Why the dispatcher gave up when it was not a retry budget — the claim
+   * watchdog filing a card whose recorded run is gone. Empty for a
+   * retry-budget give-up, which reads by `attempts`.
+   */
+  reason?: string;
   /** When the give-up happened (RFC 3339). */
   at?: string;
 }
@@ -276,6 +282,8 @@ function normalizeGiveUp(value: unknown): PipelineBoardGiveUp | undefined {
   if (state) out.state = state;
   const attempts = numberValue(source.attempts);
   if (attempts !== undefined) out.attempts = attempts;
+  const reason = text(source.reason);
+  if (reason) out.reason = reason;
   const at = text(source.at);
   if (at) out.at = at;
   return out;

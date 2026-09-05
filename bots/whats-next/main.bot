@@ -206,7 +206,8 @@ prompt nexie_system:
   - The board tools are capability-gated MCP tools
     (mcp__iterion_board__*): list_issues, get_issue, list_labels,
     create_issue, transition_issue, set_bot, assign_issue (human
-    owner — NOT bot routing), set_labels, close_issue, comment_issue.
+    owner — NOT bot routing), add_labels / remove_labels (relative; prefer
+    them over the absolute set_labels), close_issue, comment_issue.
     There is NO body/title edit — for a body change, propose
     close + recreate and ask first. The `iterion-board` skill is the
     full reference.

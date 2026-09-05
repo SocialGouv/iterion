@@ -21,6 +21,14 @@ type fakeGH struct {
 	calls        [][]string
 	failNum      int
 	editErr      error
+	// labelListOut is the canned `gh label list --json name` answer
+	// (nil = an empty repository: no labels at all).
+	labelListOut []byte
+	// labelCreateErr fails `gh label create`.
+	labelCreateErr error
+	// editErrOnce fails the FIRST `issue edit` only, then clears — the
+	// shape of a label deleted behind the adapter's back.
+	editErrOnce error
 }
 
 func (f *fakeGH) cmd(_ context.Context, args []string, _ []string) ([]byte, error) {
@@ -47,7 +55,22 @@ func (f *fakeGH) cmd(_ context.Context, args []string, _ []string) ([]byte, erro
 			return nil, fmt.Errorf("no canned response for path %q", path)
 		}
 		return f.apiOut, nil
+	case args[0] == "label" && args[1] == "list":
+		if f.labelListOut == nil {
+			return []byte("[]"), nil
+		}
+		return f.labelListOut, nil
+	case args[0] == "label" && args[1] == "create":
+		if f.labelCreateErr != nil {
+			return nil, f.labelCreateErr
+		}
+		return nil, nil
 	case args[0] == "issue" && (args[1] == "edit" || args[1] == "comment"):
+		if f.editErrOnce != nil {
+			err := f.editErrOnce
+			f.editErrOnce = nil
+			return nil, err
+		}
 		if f.editErr != nil {
 			return nil, f.editErr
 		}
@@ -225,8 +248,15 @@ func TestGitHubClaimAndRelease(t *testing.T) {
 	if err := a.Release(context.Background(), "github:owner/repo#5", "h-1"); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	// Last two calls should be edit --add-label, edit --remove-label.
-	if !contains(fake.calls[0], "--add-label") || !contains(fake.calls[1], "--remove-label") {
+	// The last two ISSUE edits are --add-label then --remove-label (the
+	// claim may be preceded by the label bootstrap).
+	var edits [][]string
+	for _, c := range fake.calls {
+		if len(c) > 1 && c[0] == "issue" && c[1] == "edit" {
+			edits = append(edits, c)
+		}
+	}
+	if len(edits) != 2 || !contains(edits[0], "--add-label") || !contains(edits[1], "--remove-label") {
 		t.Fatalf("unexpected calls: %v", fake.calls)
 	}
 }
@@ -340,6 +370,31 @@ func TestGitHubReleaseMapsMissingIssueToNotFound(t *testing.T) {
 	fake.editErr = errors.New("HTTP 503: service unavailable")
 	if err := a.Release(context.Background(), "github:owner/repo#7", "m"); err == nil || errors.Is(err, tracker.ErrNotFound) {
 		t.Fatalf("a transient failure must stay a real error, got %v", err)
+	}
+}
+
+// TestGitHubReleaseNarrowsRest404ToTheIssue: GitHub answers 404 (not 403)
+// for a repository a token can no longer see, so a REST 404 that names
+// only the REPO is a permission regression, not a gone issue — mapping it
+// to ErrNotFound drops the claim-journal entry (this adapter's only
+// recovery path) while the claim label stays on the issue. Only a 404
+// whose URL names THIS issue is the permanent shape.
+func TestGitHubReleaseNarrowsRest404ToTheIssue(t *testing.T) {
+	fake := &fakeGH{}
+	a := newGHAdapter(t, fake, nil)
+	fake.editErr = errors.New("HTTP 404: Not Found (https://api.github.com/repos/owner/repo/issues/638/labels/iterion-claimed)")
+	if err := a.Release(context.Background(), "github:owner/repo#638", "m"); !errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("an issue-scoped REST 404 = %v, want ErrNotFound (the issue is gone; the entry would be retried at every boot)", err)
+	}
+	for _, msg := range []string{
+		"HTTP 404: Not Found (https://api.github.com/repos/owner/repo)",
+		"HTTP 404: Not Found (https://api.github.com/repos/owner/repo/issues/6380)",
+		"GraphQL: Could not resolve to a Repository with the name 'owner/repo'. (repository)",
+	} {
+		fake.editErr = errors.New(msg)
+		if err := a.Release(context.Background(), "github:owner/repo#638", "m"); err == nil || errors.Is(err, tracker.ErrNotFound) {
+			t.Fatalf("%q must stay a real error (the journal entry is the only recovery path), got %v", msg, err)
+		}
 	}
 }
 

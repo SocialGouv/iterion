@@ -473,6 +473,29 @@ re-invoked after the answer:
 This keeps multi-turn interaction attached to the same node rather than
 mistaking the pause for a completed human node.
 
+### Recovery pauses re-execute the node
+
+A **recovery pause** is written by the recovery dispatcher for a node whose
+execution *failed* (`RecoveryPauseForHuman`: the provider rejected the
+credential, the budget is exhausted, a policy asked for a human). Its
+synthetic question (`acknowledge_recovery`, plus `recovery_code` and
+`last_error`) promises a retry, and the resume delivers one: the answer is
+recorded on the interaction (`kind: "recovery"`) as the audit trail of what
+was fixed, and the node **re-executes from its own dispatch** — exactly as a
+`failed_resumable` resume restarts it — before any successor runs. The
+acknowledgement never becomes the node's output. The checkpoint carries the
+marker (`recovery_pause` / `recovery_code`), and the `run_resumed` event
+names the retry: `{resumed_from: "recovery_pause", restart_node, recovery_code}`.
+The per-(node, code) attempt counters survive the pause, so a second identical
+failure is judged as the second attempt. A budget pause resumed without a
+raised cap is refused up front with the real cause, the same pre-flight the
+failure path applies — raise it with the `--max-*` flags.
+
+Distinguish it from a delegate pause: an agent that *asks* (`ask_user`,
+`_needs_interaction`) has not failed; it re-invokes mid-conversation with the
+answer merged into its input (above), and its checkpoint carries the backend
+session, not the recovery marker.
+
 ## Dispatcher and last_run
 
 A run is durable across a studio or dispatcher restart. If the board card

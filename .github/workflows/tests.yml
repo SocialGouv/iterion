@@ -252,6 +252,7 @@ jobs:
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
+            ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/...
 
   nats-conformance:

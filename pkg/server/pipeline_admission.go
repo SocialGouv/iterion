@@ -287,8 +287,17 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 // parent iss.LastRunID still names (the board mutates its own copy of
 // the issue on SetLastRun).
 func (s *Server) fileFinishedTicket(board native.BoardStore, iss *native.Issue, runID string) {
-	if _, _, err := board.SetStateFrom(iss.ID, iss.State, native.StateDone); err != nil {
+	_, changed, err := board.SetStateFrom(iss.ID, iss.State, native.StateDone)
+	if err != nil {
 		s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, runID, err)
+		return
+	}
+	if !changed {
+		// The CAS found the card already moved out of the state the sweep
+		// saw — an operator's (or the bot's) decision that predates this
+		// filing. Say THAT: an operator debugging a ticket that never
+		// reached done must not read a filing that did not happen.
+		s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) but already left %s — leaving it where it was moved", iss.ID, runID, iss.State)
 		return
 	}
 	s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, runID)
@@ -384,10 +393,13 @@ func (s *Server) warnAdmissionSkipOnce(ticketID, bot string, found bool) {
 func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStore, iss *native.Issue) {
 	// Atomically claim the Ready ticket before launching so a live dispatcher
 	// and this admission loop can't both win the same one in the check-then-act
-	// window (PR #193 M2). On backends without the CAS we degrade to the
-	// best-effort SetState claim inside launchTicketNow (the documented V1
-	// window). When the CAS wins, launchTicketNow's own SetState(InProgress) is
-	// an idempotent no-op (already in that state).
+	// window (PR #193 M2). The CAS also refuses a card under a live claim —
+	// the dispatcher's own in_progress move lands after its claim, so state
+	// alone never proves a Ready card is free. Both board twins implement
+	// it; a backend without it degrades to the best-effort SetState claim
+	// inside launchTicketNow, which is exactly the double-launch window.
+	// When the CAS wins, launchTicketNow's own SetState(InProgress) is an
+	// idempotent no-op (already in that state).
 	if claimer := native.AsLaunchClaimer(board); claimer != nil {
 		_, won, err := claimer.ClaimForLaunch(iss.ID)
 		if err != nil {

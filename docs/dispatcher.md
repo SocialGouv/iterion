@@ -695,8 +695,14 @@ tracker:
 ```
 
 The dispatcher's `Claim` adds `iterion-claimed`; `Release` removes it.
-`ListCandidates` filters via `gh issue list --search` so pagination
-and rate-limit handling come for free.
+`gh issue edit --add-label` refuses a label the repository does not
+carry, so the first claim **creates the label** when it is missing
+(`gh label list` then `gh label create`, once per dispatcher process,
+neutral grey — an existing label keeps the colour and description you
+gave it). A label deleted later is re-created on the next claim. The
+token therefore needs write access to the repository's labels (it
+already needs it for issues). `ListCandidates` filters via `gh issue
+list --search` so pagination and rate-limit handling come for free.
 
 **Environment hygiene.** When `tracker.github.token` is set, iterion
 exports it as `GH_TOKEN` / `GITHUB_TOKEN` only to the `gh` subprocess,
@@ -874,11 +880,24 @@ error conserves. Roll it out in two releases: ship the lease fields +
 heartbeats first (reaper off), then enable the reaper once no pre-lease
 binary is left in the fleet.
 
-The gate takes **`on` or `off` only** (case-insensitive) — not the
-`1`/`true` spellings some other `ITERION_*` toggles accept. Anything else
-leaves the watchdog OFF and is logged once at startup on both surfaces,
-so a mistyped cutover shows up in the log rather than as cards that
-quietly stay stuck.
+The gate takes `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no`
+(case-insensitive) — the spellings the repo's other `ITERION_*` toggles
+accept. Anything else leaves the watchdog OFF and is logged once at
+startup on both surfaces, so a mistyped cutover shows up in the log
+rather than as cards that quietly stay stuck.
+
+**The un-leased horizon (cloud board).** A claim a mixed-fleet write
+stripped of its lease is only reclaimable once nothing has touched the
+card for `ITERION_BOARD_UNLEASED_CLAIM_HORIZON` (default `24h`): an
+expired lease is positive evidence a heartbeat stopped, a missing one is
+an absence — and during a rolling deploy an OLD binary strips leases as
+it writes and does not heartbeat, so a short horizon would release a card
+its old-binary holder is still working. The default is sized for a
+day-long mixed window; a deployment whose rolling window is minutes can
+lower it (a Go duration, at least one claim lease — `15m` — or the server
+refuses to start). Until the horizon elapses a stripped claim is
+unwritable by anybody (ADR-096 §6): that stuck window is the accepted
+cost of the mixed fleet, bounded by this dial.
 
 Three properties of that routing are easy to assume wrongly:
 
@@ -892,6 +911,16 @@ Three properties of that routing are easy to assume wrongly:
 - **A card in the running column with no run recorded is left alone.**
   The run stamp is best-effort and lands after the launch, so its absence
   proves nothing — freeing the card could double-launch a live worker.
+- **A card whose recorded run is GONE is filed, never re-dispatched.** A
+  pointer at a run that `iterion runs prune` removed (or that was deleted
+  behind a tombstone) means a run happened and its outcome is unknowable.
+  Freeing the card would mint a fresh run for work that may already be
+  delivered, so the watchdog files it into the failed column with a
+  give-up stamp naming the gone run and why (visible in the pipeline
+  board's *Needs attention* lane, "The dispatcher gave up … recorded run
+  … is gone"). Reopen or re-queue it to run it again; close it to
+  acknowledge. The filing carries machine provenance, so no trigger fires
+  on it.
 - **Returning a card to the pool is bounded in cloud** (`watchdogRunCeiling`,
   20 lifetime runs): the cloud launcher starts a fresh run rather than
   resuming the recorded one, so an always-failing card would otherwise be

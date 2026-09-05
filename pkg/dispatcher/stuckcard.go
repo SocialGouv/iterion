@@ -34,6 +34,15 @@ const (
 	// StuckReleaseOnly: the claimant died before leaving any run — free
 	// the claim so the card is simply eligible again.
 	StuckReleaseOnly
+	// StuckGiveUp: the card RECORDS a run whose document is gone (pruned
+	// by the retention command, or deleted behind a tombstone). A run
+	// happened and nobody can tell any more whether its work was
+	// delivered — so the watchdog neither re-dispatches it (a fresh run
+	// on possibly-delivered work) nor files it as a plain failure (a
+	// terminal state that reads as a human's decision): it files the
+	// card as failed WITH a give-up stamp naming why, and an operator
+	// decides.
+	StuckGiveUp
 )
 
 func (a StuckAction) String() string {
@@ -46,6 +55,8 @@ func (a StuckAction) String() string {
 		return "repark"
 	case StuckReleaseOnly:
 		return "release"
+	case StuckGiveUp:
+		return "give_up"
 	default:
 		return "keep"
 	}
@@ -113,6 +124,10 @@ func ShouldFileStuckCard(cardState, runningState, target string, launchStates []
 // The table, in precedence order — every arm is a test:
 //
 //	run load error        → Keep      (a read error conserves — ADR-070)
+//	recorded run is GONE  → GiveUp    (pruned/tombstoned pointer: a run
+//	                                   happened, its outcome is unknowable —
+//	                                   filed as failed with a give-up stamp
+//	                                   for an operator, never re-dispatched)
 //	no run at all         → Release   (died pre-launch; card re-eligible)
 //	running / queued      → Keep      (liveness-first — a live run is
 //	                                   never stolen from; the caller's
@@ -136,6 +151,21 @@ func DecideStuckCard(run *store.Run, runErr error, card StuckCard) StuckDecision
 		return StuckDecision{StuckKeep, fmt.Sprintf("run unreadable (%v) — a read error conserves", runErr)}
 	}
 	if run == nil {
+		if card.RecordedRunID != "" {
+			// The card RECORDS a run and that run is gone: pruned by the
+			// retention command, or deleted behind a tombstone. This is
+			// not the no-run row — a stamp landed, so a run happened, and
+			// nobody can tell any more whether its work was delivered.
+			// Freeing the card re-dispatches it (the running column is
+			// eligible locally; the cloud repark writes it back into the
+			// pool) and the launch path reads the absence as a legitimate
+			// fresh start: a NEW run, on the watchdog's own authority, for
+			// work that may already be delivered. The stamp window does
+			// not apply either — the pointer IS the stamp.
+			return StuckDecision{StuckGiveUp, fmt.Sprintf(
+				"recorded run %s is gone (pruned or deleted) — a run happened and nobody can tell whether its work was delivered; filed for an operator rather than re-dispatched",
+				card.RecordedRunID)}
+		}
 		// "No run recorded" only means "died pre-launch" if the card never
 		// reached the running column. Stamping the run onto the card is
 		// BEST-EFFORT on both launch paths and happens AFTER the launch, so
@@ -235,10 +265,12 @@ func RecoveryHoldExpired(run *store.Run, runErr error, card StuckCard, prev trac
 
 // stampMayStillLand: the card is in the running column and was claimed
 // recently enough that its run stamp — written after the launch, and
-// best-effort — could still be on its way. ONE definition, read by both
-// the table and the pre-transfer decision.
+// best-effort — could still be on its way. A card that RECORDS a run has
+// its stamp: nothing is in flight, whatever the window says. ONE
+// definition, read by the table, the pre-transfer decision and the
+// recovery-hold bound.
 func stampMayStillLand(card StuckCard) bool {
-	return card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen
+	return card.RecordedRunID == "" && card.RunningState != "" && card.State == card.RunningState && card.StampWindowOpen
 }
 
 // parkedOutOfPool: the card is neither running nor in a column it would
@@ -255,6 +287,13 @@ type StuckCard struct {
 	State        string
 	RunningState string
 	LaunchStates []string
+	// RecordedRunID is the run the card's pointer names (LastRunID). It
+	// is what tells "no run was ever recorded" (the claimant died before
+	// launching) from "the recorded run is GONE" (pruned or tombstoned):
+	// the caller loads nil in both cases, and the two must not share a
+	// disposition — freeing the second re-dispatches work that may have
+	// been delivered.
+	RecordedRunID string
 	// StampWindowOpen says a run stamp could still plausibly be in
 	// flight for this card — the claim was taken moments ago. The stamp
 	// is written AFTER the launch and best-effort, so its absence means

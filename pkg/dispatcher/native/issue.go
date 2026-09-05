@@ -150,6 +150,11 @@ type GiveUp struct {
 	State string `json:"state,omitempty"`
 	// Attempts is how many attempts were made before giving up.
 	Attempts int `json:"attempts,omitempty"`
+	// Reason, when set, says WHY the dispatcher gave up when it was not a
+	// retry budget: the claim watchdog filing a card whose recorded run
+	// is gone. Operator-facing (rendered on the pipeline board); a
+	// retry-budget give-up leaves it empty and reads by Attempts.
+	Reason string `json:"reason,omitempty"`
 	// At is when the give-up was stamped (UTC).
 	At time.Time `json:"at"`
 }

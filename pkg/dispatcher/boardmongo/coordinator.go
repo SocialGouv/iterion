@@ -162,6 +162,12 @@ func (c *Coordinator) ReleaseOwned(_ context.Context, tenant, id string, tok tra
 	return c.StoreFor(tenant).ReleaseOwned(id, tok)
 }
 
+// SetGaveUpOwned is the fenced give-up stamp — the watchdog's record that
+// a filing was ITS decision (a pruned pointer), not a human's.
+func (c *Coordinator) SetGaveUpOwned(_ context.Context, tenant, id string, g *native.GiveUp, tok tracker.ClaimToken) error {
+	return c.StoreFor(tenant).SetGaveUpOwned(id, g, tok)
+}
+
 // ExpiredCandidate is one cross-tenant reap candidate.
 type ExpiredCandidate struct {
 	Tenant string

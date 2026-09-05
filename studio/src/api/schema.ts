@@ -5435,6 +5435,8 @@ export interface components {
                 };
             };
             parallel?: components["schemas"]["ParallelCheckpoint"];
+            recovery_code?: string;
+            recovery_pause?: boolean;
             round_robin_counters?: {
                 [key: string]: number;
             };
@@ -5590,6 +5592,7 @@ export interface components {
             /** Format: date-time */
             at: string;
             attempts?: number;
+            reason?: string;
             run_id?: string;
             state?: string;
         };

@@ -160,6 +160,8 @@ parent's).
   },
   "backend_session_state_ref": "",
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
+  "recovery_pause": true,
+  "recovery_code": "AUTH_FAILED",
   "budget_tokens_used": 42000,
   "budget_cost_usd": 1.25,
   "budget_iterations_used": 7,
@@ -171,6 +173,12 @@ parent's).
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+`recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
+for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
+the node still owes its work, so the answer that resumes the run is an
+acknowledgement, never the node's output, and resume re-executes the node
+(the interaction is written with `kind: "recovery"`). Both are cleared with
+the pause pointer once a resume claims the run.
 `selected_incoming` is the set of incoming edges routing actually fired
 into each node for its current visit, so a resume of that node applies
 the same with-mappings (issue #484). Missing fields on historical
@@ -205,7 +213,7 @@ emitter when a consumer needs an exact payload contract.
 |---|---|
 | Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_workspace_bank_restored`, `run_redelivery_deferred`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
-| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback`, `model_drift` |
+| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `model_fallback`, `model_drift` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |

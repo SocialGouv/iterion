@@ -1336,26 +1336,37 @@ func TestReapOne_FailedFilingKeepsTheClaim(t *testing.T) {
 // stay stuck. That is the failure mode reaper.go's own comment says this
 // whole chantier exists to end.
 func TestClaimReaperGate_UnrecognisedValueIsLoud(t *testing.T) {
-	for _, v := range []string{"1", "true", "yes", "enabled"} {
+	// The spellings the repo's other toggles accept enable the gate — an
+	// operator reaching for ITERION_OPENAI_USE_OAUTH=1's shape must not
+	// get a watchdog that is OFF.
+	for _, v := range []string{"on", "ON", "On", "1", "true", "TRUE", "yes", "t"} {
 		t.Setenv(claimReaperEnv, v)
-		if ClaimReaperEnabled() {
-			t.Fatalf("%s=%q must not enable the gate — only %q does", claimReaperEnv, v, "on")
+		if !ClaimReaperEnabled() {
+			t.Fatalf("%s=%q must enable the gate", claimReaperEnv, v)
 		}
-		if msg := ClaimReaperMisspelling(); msg == "" {
-			t.Fatalf("%s=%q disabled the watchdog with no diagnostic — a declared watchdog that silently "+
-				"isn't running is exactly what this must not do", claimReaperEnv, v)
-		}
-	}
-	// The two spellings it DOES understand say nothing.
-	for _, v := range []string{"", "off", "OFF", "on", "On"} {
-		t.Setenv(claimReaperEnv, v)
 		if msg := ClaimReaperMisspelling(); msg != "" {
 			t.Fatalf("%s=%q is a valid spelling but warned: %s", claimReaperEnv, v, msg)
 		}
 	}
-	t.Setenv(claimReaperEnv, "ON")
-	if !ClaimReaperEnabled() {
-		t.Fatal("the gate must stay case-insensitive on its own spelling")
+	for _, v := range []string{"", "off", "OFF", "0", "false", "no", "f"} {
+		t.Setenv(claimReaperEnv, v)
+		if ClaimReaperEnabled() {
+			t.Fatalf("%s=%q must leave the gate off", claimReaperEnv, v)
+		}
+		if msg := ClaimReaperMisspelling(); msg != "" {
+			t.Fatalf("%s=%q is a valid spelling but warned: %s", claimReaperEnv, v, msg)
+		}
+	}
+	// Anything else still leaves it OFF and says so — a declared watchdog
+	// that silently isn't running is exactly what this must not do.
+	for _, v := range []string{"enabled", "oui", "2", "y", "n"} {
+		t.Setenv(claimReaperEnv, v)
+		if ClaimReaperEnabled() {
+			t.Fatalf("%s=%q must not enable the gate", claimReaperEnv, v)
+		}
+		if msg := ClaimReaperMisspelling(); msg == "" {
+			t.Fatalf("%s=%q disabled the watchdog with no diagnostic", claimReaperEnv, v)
+		}
 	}
 }
 

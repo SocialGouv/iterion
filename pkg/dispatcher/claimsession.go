@@ -54,18 +54,31 @@ type claimSession struct {
 	done      chan struct{}
 }
 
-// StartClaimSession begins heartbeating. leaser must be non-nil; the
-// caller decides what "no lease backend" means (it logs once and runs
-// legacy, per the ClaimLeaser contract).
+// StartClaimSession begins heartbeating at the production cadence (a
+// third of the lease). leaser must be non-nil; the caller decides what
+// "no lease backend" means (it logs once and runs legacy, per the
+// ClaimLeaser contract).
 func StartClaimSession(leaser tracker.ClaimLeaser, issueID string, tok tracker.ClaimToken,
 	warn func(string, ...any), onLost func(error)) *claimSession {
+	return StartClaimSessionEvery(leaser, issueID, tok, warn, onLost, native.ClaimLeaseDuration/3)
+}
+
+// StartClaimSessionEvery is StartClaimSession with the heartbeat cadence
+// supplied — the seam a caller outside this package uses to drive a beat
+// into a window it wants to prove (the cloud dispatcher's release). A
+// non-positive interval means the production cadence.
+func StartClaimSessionEvery(leaser tracker.ClaimLeaser, issueID string, tok tracker.ClaimToken,
+	warn func(string, ...any), onLost func(error), interval time.Duration) *claimSession {
+	if interval <= 0 {
+		interval = native.ClaimLeaseDuration / 3
+	}
 	s := &claimSession{
 		issueID:  issueID,
 		tok:      tok,
 		leaser:   leaser,
 		warn:     warn,
 		onLost:   onLost,
-		interval: native.ClaimLeaseDuration / 3,
+		interval: interval,
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,6 +277,122 @@ func LoadCodexCredentialsFrom(dir string) (CodexCredentialsView, error) {
 		return CodexCredentialsView{}, fmt.Errorf("secrets: read %s: %w", path, err)
 	}
 	return ParseCodexView(data)
+}
+
+// LoadAnthropicCredentialsFrom reads and parses a Claude Code
+// .credentials.json from an EXPLICIT CLAUDE_CONFIG_DIR-shaped directory, the
+// anthropic twin of LoadCodexCredentialsFrom. This is the cloud path: the
+// runner materialises the tenant's resolved Claude forfait into a per-run temp
+// dir (Credentials.OAuthDir("claude_code")), where the in-process claw factory
+// reads it instead of the pod's (empty) ~/.claude. Empty dir → error.
+func LoadAnthropicCredentialsFrom(dir string) (AnthropicCredentialsView, error) {
+	if strings.TrimSpace(dir) == "" {
+		return AnthropicCredentialsView{}, fmt.Errorf("secrets: empty claude_code credentials dir")
+	}
+	path := filepath.Join(dir, ClaudeCodeCredentialsFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return AnthropicCredentialsView{}, fmt.Errorf("secrets: read %s: %w", path, err)
+	}
+	return ParseAnthropicView(data)
+}
+
+// AnthropicForfaitAccessToken returns the Claude Code OAuth access token
+// materialised in a CLAUDE_CONFIG_DIR-shaped dir, or "" for every failure
+// mode (no dir, absent file, malformed JSON, blank token) — a missing file is
+// the ordinary "not a forfait host" case, not an error to propagate.
+//
+// It exists because three readers were extracting the same field from the same
+// file independently (the CLI env builder, the forfait usage prober, the claw
+// ctx factory); the fourth would have drifted. The token is never logged.
+// ErrAnthropicForfaitExpired names the one failure mode that is not "there is
+// no credential here": a forfait WAS provisioned into this dir and its access
+// token has lapsed. Callers that can still fall back keep treating it as
+// absent; callers whose fall-back is an unauthenticated client must surface it,
+// because a lapsed blob is a refresh that did not happen, not a host without a
+// subscription.
+var ErrAnthropicForfaitExpired = errors.New("secrets: the materialised Claude Code forfait has expired")
+
+// AnthropicForfaitToken returns the usable access token in dir, or an error
+// naming why there is none — ErrAnthropicForfaitExpired when the blob lapsed,
+// a read/parse error otherwise, and (\"\", nil) when the dir simply holds no
+// token. AnthropicForfaitAccessToken is the "usable or not" shorthand over it.
+func AnthropicForfaitToken(dir string) (string, error) {
+	view, err := LoadAnthropicCredentialsFrom(dir)
+	if err != nil {
+		return "", err
+	}
+	if exp := view.ClaudeAIOauth.ExpiresAt; exp > 0 && time.UnixMilli(exp).Before(time.Now()) {
+		return "", ErrAnthropicForfaitExpired
+	}
+	return strings.TrimSpace(view.ClaudeAIOauth.AccessToken), nil
+}
+
+func AnthropicForfaitAccessToken(dir string) string {
+	view, err := LoadAnthropicCredentialsFrom(dir)
+	if err != nil {
+		return ""
+	}
+	// An expired blob is worse than no blob. Baked into a process-lifetime
+	// client cache it answers 401 with nothing naming expiry as the cause, and
+	// the CLI path degrades better without it — claude re-reads and refreshes
+	// the file itself. `expiresAt == 0` means the payload states no expiry, not
+	// that it expired.
+	if exp := view.ClaudeAIOauth.ExpiresAt; exp > 0 && time.UnixMilli(exp).Before(time.Now()) {
+		return ""
+	}
+	return strings.TrimSpace(view.ClaudeAIOauth.AccessToken)
+}
+
+// AnthropicForfaitWireOK reports whether a Claude subscription bearer may be
+// sent to baseURL. Only the real Anthropic API qualifies: an empty value (the
+// SDK default) or the exact host api.anthropic.com.
+//
+// Everything else is a destination the OPERATOR chose — a z.ai/bigmodel facade
+// that wants the token as an x-api-key-style key, a corporate gateway, an
+// interception proxy — and a forfait bearer is not a scoped key: it carries the
+// whole Claude account. On a cloud deployment the base URL is set by the
+// platform while the credential belongs to the tenant, so the consent gap is
+// wider there than on a laptop, never narrower.
+//
+// It is deliberately ONE predicate: the desktop factory, the per-run ctx
+// factory and pkg/supervise's funding check all decide this same question, and
+// a supervisor that calls anthropic funded for a wire the registry then
+// declines is the disagreement this package keeps paying for.
+func AnthropicForfaitWireOK(baseURL string) bool {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "api.anthropic.com")
+}
+
+// ClaudeCodeConfigDir returns the on-disk CLAUDE_CONFIG_DIR the Claude Code
+// CLI stores its forfait credentials in, honouring the env override and
+// falling back to `~/.claude`. Returns "" when no home directory resolves,
+// which callers treat as "no forfait on this host".
+func ClaudeCodeConfigDir() string {
+	if d := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude")
+}
+
+// AnthropicForfaitAccessTokenFromDisk is the desktop twin of
+// LoadCodexCredentialsFromDisk: the Claude Code forfait token from this host's
+// own config dir, or "" when there is none. Used by the in-process claw
+// anthropic factory so a laptop with a Claude subscription authenticates the
+// same way one with a ChatGPT subscription already did.
+func AnthropicForfaitAccessTokenFromDisk() string {
+	return AnthropicForfaitAccessToken(ClaudeCodeConfigDir())
 }
 
 // LoadCodexCredentialsFromDisk reads and parses Codex CLI's auth.json from
