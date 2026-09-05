@@ -138,7 +138,8 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		cancelRefresh = func() { once.Do(func() { close(stopRefresh) }) }
 		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles)
 	}
-	return secrets.WithCredentials(ctx, creds), cleanup, nil
+	ctx = secrets.WithCredentials(ctx, creds)
+	return ctx, cleanup, nil
 }
 
 // deleteRunSecrets best-effort removes the persistent sealed bundle for

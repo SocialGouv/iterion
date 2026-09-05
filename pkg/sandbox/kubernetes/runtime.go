@@ -33,10 +33,12 @@ package kubernetes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
@@ -95,6 +97,11 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	proc.DetachProcessGroup(cmd)
+	// A cancelled context kills kubectl, not the children it spawned (the
+	// process group is detached): a credential plugin still holding the
+	// stdout/stderr pipes would keep Wait blocked for as long as it lives.
+	// WaitDelay bounds that orphan-pipe wait so a timeout is a timeout.
+	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }
 
@@ -139,7 +146,67 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 		fmt.Sprintf("--timeout=%ds", timeoutSecs))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s", podName, err, string(out))
+		// `kubectl wait` only says the condition never came. The cluster
+		// knows WHY, and the reason decides between two different fixes: a
+		// resource request no node can hold (Unschedulable: Insufficient
+		// memory) and a slow or broken image pull. Read it on the error
+		// path only.
+		return fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s%s", podName, err, string(out), podScheduledReason(ctx, namespace, podName))
 	}
 	return nil
+}
+
+// NodeLabelCoverage counts the cluster's nodes and those carrying the label
+// key, for the doctor: a topology spread over a key some nodes lack
+// excludes those nodes from scheduling, soft constraint or not, and a key
+// no node carries leaves every pod Pending. Listing nodes is a
+// cluster-scoped permission the chart's namespaced runner Role does not
+// grant on purpose, so the error must carry kubectl's reason (Forbidden)
+// for the doctor to say why it could not answer.
+func NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, err error) {
+	cmd := kubectlCmdContext(ctx, "get", "nodes", "-o", "json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if reason := strings.TrimSpace(stderr.String()); reason != "" {
+			return 0, 0, fmt.Errorf("kubectl get nodes: %w: %s", err, reason)
+		}
+		return 0, 0, fmt.Errorf("kubectl get nodes: %w", err)
+	}
+	var nodes struct {
+		Items []struct {
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		return 0, 0, fmt.Errorf("kubectl get nodes: decode: %w", err)
+	}
+	for _, n := range nodes.Items {
+		if _, ok := n.Metadata.Labels[key]; ok {
+			labelled++
+		}
+	}
+	return labelled, len(nodes.Items), nil
+}
+
+// podScheduledReason renders the pod's PodScheduled condition (status,
+// reason, message) as a "\nscheduling: …" suffix for a wait error — "" when
+// it cannot be read. Best-effort: it decorates an error, it never creates one.
+func podScheduledReason(ctx context.Context, namespace, podName string) string {
+	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "get", "pod", podName, "-o",
+		`jsonpath={.status.conditions[?(@.type=="PodScheduled")].status}{" "}{.status.conditions[?(@.type=="PodScheduled")].reason}{": "}{.status.conditions[?(@.type=="PodScheduled")].message}`)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// A scheduled pod has no reason and no message: the jsonpath's literal
+	// ": " then dangles after the status and is dropped here.
+	reason := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(string(out)), ":"))
+	if reason == "" {
+		return ""
+	}
+	return "\nscheduling: " + reason
 }

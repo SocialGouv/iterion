@@ -293,21 +293,14 @@ func toRunFallback(entries []FallbackEntry) []ir.Fallback {
 	return out
 }
 
-// toModelOverrides folds the launch entries into the engine's ModelOverrides.
+// toModelOverrides folds the launch entries into the engine's ModelOverrides
+// through model.OverridesFrom — the one fold every launch surface shares.
 func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 	}
-	return o
+	return model.OverridesFrom(out)
 }
 
 // toRunModelOverrides converts the launch entries into the persisted,
@@ -383,6 +376,15 @@ type ResumeSpec struct {
 	// reads. Operator surfaces (HTTP resume, WS answers, chat commands,
 	// studio, MCP) leave this false.
 	Automatic bool
+
+	// Budget re-states the operator's cap ask FOR THIS RESUME. Non-nil
+	// overrides the launch-time budget persisted on the run doc (which
+	// is otherwise the replay source) — the "raise the cap + resume"
+	// recovery. Persisted to the run doc so a subsequent auto-retry
+	// keeps the raised cap instead of silently reverting to the launch
+	// ask that already killed the run. Nil = inherit the doc's replay
+	// source (today's behaviour).
+	Budget *ir.BudgetOverrides
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

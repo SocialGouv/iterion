@@ -368,6 +368,58 @@ func TestSweepDueRetries_AbandonRepublishesTheRunOutcome(t *testing.T) {
 	}
 }
 
+// A run parked on the DLQ (final for automation — the gate reconciler has
+// already posted the synthetic failure and relaunched once per head) that
+// still carries an armed retry_after must be DISARMED, not resumed: a
+// resume here runs the bot a second time on the same PR head, sharing one
+// gate context. And the disarm must not replay the run's outcome event —
+// the DLQ notice keys on that event firing once per park.
+func TestSweepDueRetries_DLQParkedRunIsDisarmedNotResumed(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-dlq"] = true
+	st.loadRun["run-dlq"] = &store.Run{
+		ID: "run-dlq", TenantID: "team-1",
+		Status:            store.RunStatusFailedResumable,
+		FailureCode:       store.FailureDLQParked,
+		ContinuationState: store.ContinuationFinal,
+	}
+	resumer := &fakeResumer{}
+	// Local mode on purpose: the fixture bot resolves, so the only thing
+	// between the claim and a Resume call is the DLQ guard.
+	s := newRetrySweeperServer(t, st, resumer)
+
+	bus := eventbus.NewInProcBus(nil)
+	s.cfg.EventsBus = bus
+	replayed := make(chan trigger.Event, 1)
+	if _, err := bus.Subscribe("probe", trigger.Matcher{
+		Sources: []trigger.Source{trigger.SourceRun},
+		Kinds:   []string{trigger.KindRunFailed},
+	}, func(_ context.Context, ev trigger.Event) error {
+		replayed <- ev
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-dlq", time.Now().UTC().Add(-time.Minute))}}, resumer, time.Now().UTC())
+
+	if len(resumer.calls) != 0 {
+		t.Fatalf("Resume called %d times for a DLQ-parked run, want 0 — two runs of the bot on one PR head sharing one gate context", len(resumer.calls))
+	}
+	reason, ok := st.abandoned["run-dlq"]
+	if !ok {
+		t.Fatal("the stale retry was not disarmed — the next sweep tick claims it again")
+	}
+	if !strings.Contains(reason, "DLQ") {
+		t.Fatalf("abandon reason = %q, want it to name the DLQ park", reason)
+	}
+	select {
+	case ev := <-replayed:
+		t.Fatalf("the park's outcome was replayed (%s) — the DLQ notice has no dedup of its own and would post on the PR a second time", ev.Kind)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 func TestSweepDueRetries_RespectsTheBatchCap(t *testing.T) {
 	st := newFakeRetryStore()
 	var refs []mongostore.RetryDueRef

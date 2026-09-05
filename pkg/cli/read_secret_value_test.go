@@ -39,6 +39,24 @@ func TestReadSecretValue_RejectsEmpty(t *testing.T) {
 		}
 	})
 
+	t.Run("a CRLF file keeps only the value", func(t *testing.T) {
+		// A file written on Windows ends \r\n. Trimming only \n left the
+		// \r glued to the token, and the server refused it as a control
+		// character "that looks like a terminal transcript" — the right
+		// refusal for the wrong reason, on a file that is perfectly fine.
+		f := filepath.Join(t.TempDir(), "crlf")
+		if err := os.WriteFile(f, []byte("sk-real\r\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		v, err := ReadSecretValue("", f, false)
+		if err != nil {
+			t.Fatalf("CRLF file rejected: %v", err)
+		}
+		if v != "sk-real" {
+			t.Fatalf("value = %q, want %q — a trailing CR reaches the server's shape gate", v, "sk-real")
+		}
+	})
+
 	t.Run("a real value passes", func(t *testing.T) {
 		t.Setenv("ITER_REAL_SECRET", "sk-real")
 		v, err := ReadSecretValue("ITER_REAL_SECRET", "", false)

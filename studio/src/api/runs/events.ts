@@ -407,6 +407,7 @@ export type PassthroughEventType =
   | "run_auto_resumed"
   | "run_workspace_reset"
   | "run_workspace_bank_restored"
+  | "run_redelivery_deferred"
   | "run_bank_refused"
   | "run_bank_superseded"
   | "run_bank_attempt"

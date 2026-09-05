@@ -3,6 +3,54 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.0](https://github.com/SocialGouv/iterion/compare/v3.101.3...v3.102.0) (2026-09-04)
+
+### Features
+
+* **sandbox/kubernetes:** run pods carry resource requests and a soft node spread ([#694](https://github.com/SocialGouv/iterion/issues/694)) ([8243001](https://github.com/SocialGouv/iterion/commit/8243001d56d18f00bc85ef8569f765e54c73384c))
+
+    <details><summary>why</summary>
+
+    A sibling pod that requests nothing scores every node the same, so the scheduler packs a campaign's runs onto whichever node already holds the sandbox image. Measured on a three-worker pool (8 cores each): five of six run pods on one node at 89% CPU while two workers idled, and a behavioural oracle's 300 s application boot budget blown at 459 s — red verdicts on untouched trees, one run burning its 8 h budget on that red.
+
+    </details>
+
+## [3.101.3](https://github.com/SocialGouv/iterion/compare/v3.101.2...v3.101.3) (2026-09-04)
+
+### Bug Fixes
+
+* **runner:** a stalled resume is adopted, re-budgeted and told apart from a quota pause ([#689](https://github.com/SocialGouv/iterion/issues/689)) ([9f7bc53](https://github.com/SocialGouv/iterion/commit/9f7bc5391a6e157b3d16fe49a3f3e958c0de1838)), references [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#652](https://github.com/SocialGouv/iterion/issues/652) [#669](https://github.com/SocialGouv/iterion/issues/669) [652/#669](https://github.com/SocialGouv/iterion/issues/669) [#652](https://github.com/SocialGouv/iterion/issues/652) [#669](https://github.com/SocialGouv/iterion/issues/669) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#652](https://github.com/SocialGouv/iterion/issues/652) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [#669](https://github.com/SocialGouv/iterion/issues/669) [resume#1](https://github.com/resume/issues/1) [resume#2](https://github.com/resume/issues/2)
+
+    <details><summary>why</summary>
+
+    A DLQ-parked run reached noticeGatePausedForRetry with the same RetryState the pre-park usage-window carried, so the PR got a second "the LLM provider's quota is exhausted … resume automatically at HH:MM" — but nothing wakes a DLQ-parked run automatically; only `iterion remote admin dlq` replays it. Observed live 2026-09-03: the comment sent the operator down the wrong path.
+
+    </details>
+
+## [3.101.2](https://github.com/SocialGouv/iterion/compare/v3.101.1...v3.101.2) (2026-09-04)
+
+### Bug Fixes
+
+* **credentials:** the wants a run actually needs, and a refusal that says why ([#682](https://github.com/SocialGouv/iterion/issues/682)) ([d2f7cee](https://github.com/SocialGouv/iterion/commit/d2f7cee5c54d1f02f7b1721899f5dda238ca3557)), references [#627](https://github.com/SocialGouv/iterion/issues/627) [#668](https://github.com/SocialGouv/iterion/issues/668) [#654](https://github.com/SocialGouv/iterion/issues/654) [#668](https://github.com/SocialGouv/iterion/issues/668) [#668](https://github.com/SocialGouv/iterion/issues/668) [#659](https://github.com/SocialGouv/iterion/issues/659) [#659](https://github.com/SocialGouv/iterion/issues/659) [#668](https://github.com/SocialGouv/iterion/issues/668) [#668](https://github.com/SocialGouv/iterion/issues/668) [#659](https://github.com/SocialGouv/iterion/issues/659) [#627](https://github.com/SocialGouv/iterion/issues/627) [#654](https://github.com/SocialGouv/iterion/issues/654) [#659](https://github.com/SocialGouv/iterion/issues/659) [#668](https://github.com/SocialGouv/iterion/issues/668) [#654](https://github.com/SocialGouv/iterion/issues/654) [#627](https://github.com/SocialGouv/iterion/issues/627)
+
+    <details><summary>why</summary>
+
+    Two paid failures in prod, hours apart, were accepted silently by the server: a claude_code accessToken pasted as a terminal transcript (embedded newlines/ANSI escapes) and a claude_code record missing expiresAt/scopes — the shape the CLI reads as "Not logged in". Both lived on disk after ingestion, so every downstream call from a full fleet of runs would die on 401 for hours before the cause was found.
+
+    </details>
+
+## [3.101.1](https://github.com/SocialGouv/iterion/compare/v3.101.0...v3.101.1) (2026-09-04)
+
+### Bug Fixes
+
+* **docs-refresh:** 3.5.7 — scan_hints stops manufacturing the same false positives every pass ([#680](https://github.com/SocialGouv/iterion/issues/680)) ([e1786cc](https://github.com/SocialGouv/iterion/commit/e1786cc3bc48bce89ac3ea957f463543bbce5da2))
+
+    <details><summary>why</summary>
+
+    A link written /dsl is SITE-absolute: every static-site generator routes it from the site root. os.path.join drops everything left of an absolute path, so the scanner asked the filesystem for /dsl and reported it dead. On prod run 01a055f9 that was 20 of the 22 hints, every one false, and the remaining 2 were explicit HTML anchors the heading-only collector could not see.
+
+    </details>
+
 ## [3.101.0](https://github.com/SocialGouv/iterion/compare/v3.100.3...v3.101.0) (2026-09-04)
 
 ### Features

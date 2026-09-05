@@ -177,17 +177,32 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
 		return nil
 	}
-	// A resumable failure is only "not dead" when something will actually
-	// resume it. The runner arms a durable retry for usage-window failures
-	// (persisted BEFORE the outcome event fires — pkg/runner/loop.go parks
-	// first, then fires), and that armed retry is the whole promise. Every
-	// other failed_resumable — budget exceeded, retries exhausted, a plain
-	// execution failure — sits until a human notices, which with an absent
-	// required check is never. Observed in production 2026-08-03: a Vetty run
-	// died on its own duration budget mid-audit and the PR it gated stayed
-	// silently unmergeable. Those runs ARE dead; reconcile them.
-	if run.Status == store.RunStatusFailedResumable &&
+	// A DLQ park is FINAL for automation whatever RetryState still says:
+	// the queue exhausted its deliveries and only an operator's replay
+	// puts the message back. A retry_after can survive on such a doc (the
+	// usage-window park that preceded an operator resume, when the clear
+	// on resume did not land), and standing down on it would leave the
+	// required check on its in-flight claim for a run nothing will wake.
+	// So: say so on the PR once (the event path — the sweep re-offers the
+	// same run every minute for an hour), then fall through to the
+	// dead-review repair below, which is what actually happens next — the
+	// synthetic failure on the head and one relaunch per head.
+	if run.Status == store.RunStatusFailedResumable && run.FailureCode == store.FailureDLQParked {
+		if via == gateTriggerEvent {
+			s.noticeGateDLQParked(ctx, run)
+		}
+	} else if run.Status == store.RunStatusFailedResumable &&
 		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+		// A resumable failure is only "not dead" when something will
+		// actually resume it. The runner arms a durable retry for
+		// usage-window failures (persisted BEFORE the outcome event fires
+		// — pkg/runner/loop.go parks first, then fires), and that armed
+		// retry is the whole promise. Every other failed_resumable —
+		// budget exceeded, retries exhausted, a plain execution failure —
+		// sits until a human notices, which with an absent required check
+		// is never. Observed in production 2026-08-03: a Vetty run died on
+		// its own duration budget mid-audit and the PR it gated stayed
+		// silently unmergeable. Those runs ARE dead; reconcile them.
 		// Not dead, but not silent either: the check stays on its in-flight
 		// claim, which reads identically to a review that died. Say on the
 		// PR that it parked and when it resumes — on the EVENT only, since

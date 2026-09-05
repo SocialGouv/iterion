@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -180,6 +182,162 @@ func (f fakeDriver) Prepare(context.Context, sandbox.Spec) (sandbox.PreparedSpec
 }
 func (f fakeDriver) Start(context.Context, sandbox.PreparedSpec, sandbox.RunInfo) (sandbox.Run, error) {
 	return nil, nil
+}
+
+// fakePolicyDriver is a fakeDriver that also reports a scheduling policy,
+// the way the kubernetes driver does.
+type fakePolicyDriver struct {
+	fakeDriver
+	policy string
+	err    error
+}
+
+func (f fakePolicyDriver) SchedulingPolicy() (string, error) { return f.policy, f.err }
+
+// A malformed policy fails every run at sandbox start, never the
+// constructor — the doctor must surface it as a FAIL naming the cause.
+func TestRunSchedulingPolicyStrictCheck(t *testing.T) {
+	t.Run("driver without a policy adds nothing", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSchedulingPolicyStrictCheck(r, fakeDriver{name: "fake"})
+		if len(r.Checks) != 0 {
+			t.Fatalf("expected no check, got %+v", r.Checks)
+		}
+	})
+	t.Run("malformed policy fails", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSchedulingPolicyStrictCheck(r, fakePolicyDriver{err: errors.New("kubernetes: ITERION_SANDBOX_K8S_REQUESTS_CPU=\"two\" is not a Kubernetes quantity")})
+		if !hasFailNamed(r, "sandbox scheduling policy") {
+			t.Fatalf("expected a scheduling policy failure, got %+v", r.Checks)
+		}
+		if !strings.Contains(r.Checks[0].Detail, "ITERION_SANDBOX_K8S_REQUESTS_CPU") {
+			t.Fatalf("the failure must name the variable, got %+v", r.Checks[0])
+		}
+		// The knobs are literal PodTemplate env from runner.sandbox.scheduling;
+		// a value fixed in config.extraEnv (the shared ConfigMap) is lost to
+		// them — the remediation must send the operator to the right place.
+		if hint := r.Checks[0].Remediation; !strings.Contains(hint, "runner.sandbox.scheduling") || strings.Contains(hint, "(chart config.extraEnv)") {
+			t.Fatalf("the remediation must point at runner.sandbox.scheduling, got %q", hint)
+		}
+	})
+	t.Run("valid policy passes with its summary", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSchedulingPolicyStrictCheck(r, fakePolicyDriver{policy: "requests cpu=2 memory=4Gi, spread=kubernetes.io/hostname"})
+		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Detail != "requests cpu=2 memory=4Gi, spread=kubernetes.io/hostname" {
+			t.Fatalf("expected one passing check carrying the summary, got %+v", r.Checks)
+		}
+	})
+}
+
+// kubectlNodesShim puts a fake `kubectl` first on PATH whose `get nodes -o json`
+// answers with the given node labels.
+func kubectlNodesShim(t *testing.T, nodesJSON string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in \"get nodes \"*) printf '%s' '" + nodesJSON + "'; exit 0 ;; esac\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// A spread over a label the nodes do not carry excludes them from scheduling
+// — soft or not — so the doctor must say which nodes carry it.
+func TestRunSpreadCoverageStrictCheck(t *testing.T) {
+	threeNodes := `{"items":[{"metadata":{"labels":{"topology.kubernetes.io/zone":"a"}}},{"metadata":{"labels":{}}},{"metadata":{"labels":{"topology.kubernetes.io/zone":"b"}}}]}`
+
+	t.Run("hostname needs no check", func(t *testing.T) {
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "kubernetes.io/hostname")
+		if len(r.Checks) != 0 {
+			t.Fatalf("expected no check, got %+v", r.Checks)
+		}
+	})
+	t.Run("no node carries the key fails", func(t *testing.T) {
+		kubectlNodesShim(t, threeNodes)
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		if !hasFailNamed(r, "k8s spread key coverage") {
+			t.Fatalf("expected a coverage failure, got %+v", r.Checks)
+		}
+	})
+	t.Run("partial coverage warns", func(t *testing.T) {
+		kubectlNodesShim(t, threeNodes)
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "topology.kubernetes.io/zone")
+		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Status != CheckWarn || !strings.Contains(r.Checks[0].Detail, "2 of 3") {
+			t.Fatalf("expected a 2 of 3 warning, got %+v", r.Checks)
+		}
+	})
+	// The cause is asserted only when known: in-cluster the runner's
+	// namespaced Role cannot list nodes (Forbidden), a slow cluster exhausts
+	// the probe budget, anything else stays what kubectl said — and every
+	// case hands over the operator command.
+	failingKubectl := func(t *testing.T, script string) {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	oneWarning := func(t *testing.T, r *SandboxStrictReport) SandboxCheck {
+		t.Helper()
+		if r.Failed() || len(r.Checks) != 1 || r.Checks[0].Status != CheckWarn {
+			t.Fatalf("expected one warning, got %+v", r.Checks)
+		}
+		if !strings.Contains(r.Checks[0].Remediation, "kubectl get nodes -L example.com/rack") {
+			t.Fatalf("the remediation must hand over the operator command, got %+v", r.Checks[0])
+		}
+		return r.Checks[0]
+	}
+	t.Run("list forbidden names the chart's Role", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\necho 'Error from server (Forbidden): nodes is forbidden: User \"system:serviceaccount:ns:runner\" cannot list resource \"nodes\" in API group \"\" at the cluster scope' >&2\nexit 1\n")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Detail, "Forbidden") || !strings.Contains(c.Remediation, "namespace-scoped") {
+			t.Fatalf("a Forbidden must be explained by the namespaced Role, got %+v", c)
+		}
+	})
+	t.Run("list timeout names the probe budget, not RBAC", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\nexec sleep 5\n")
+		t.Setenv("ITERION_SANDBOX_DOCTOR_TIMEOUT", "200ms")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Remediation, "did not answer within 200ms") || strings.Contains(c.Remediation, "namespace-scoped") {
+			t.Fatalf("a timed-out probe must be named as such, got %+v", c)
+		}
+	})
+	t.Run("a Forbidden written before the deadline still names the Role", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\necho 'Error from server (Forbidden): nodes is forbidden' >&2\nexec sleep 5\n")
+		t.Setenv("ITERION_SANDBOX_DOCTOR_TIMEOUT", "200ms")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Detail, "Forbidden") || !strings.Contains(c.Remediation, "namespace-scoped") || strings.Contains(c.Remediation, "did not answer") {
+			t.Fatalf("the cluster's own word must win over the inferred deadline, got %+v", c)
+		}
+	})
+	t.Run("other list errors keep kubectl's reason and claim no cause", func(t *testing.T) {
+		failingKubectl(t, "#!/bin/sh\necho 'Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout' >&2\nexit 1\n")
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if !strings.Contains(c.Detail, "Unable to connect") || strings.Contains(c.Remediation, "namespace-scoped") || strings.Contains(c.Remediation, "did not answer") {
+			t.Fatalf("an unknown cause must not be asserted, got %+v", c)
+		}
+	})
+	t.Run("an empty node list does not blame RBAC", func(t *testing.T) {
+		kubectlNodesShim(t, `{"items":[]}`)
+		r := &SandboxStrictReport{}
+		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
+		c := oneWarning(t, r)
+		if strings.Contains(c.Remediation, "RBAC") || !strings.Contains(c.Remediation, "right cluster") {
+			t.Fatalf("a successful empty list is a context problem, not RBAC, got %+v", c)
+		}
+	})
 }
 
 func TestRunCapabilityStrictChecks(t *testing.T) {

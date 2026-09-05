@@ -126,6 +126,84 @@ type PodManifestInput struct {
 	// rather than idling as `sleep infinity` forever. Derived from the
 	// run's max_duration + a margin (see driver.go). See ADR-070.
 	ActiveDeadlineSeconds int64
+
+	// Resources is rendered as the workload container's `resources` block.
+	// A pod that requests nothing scores every node the same, so the
+	// scheduler packs the runs of a whole campaign onto the node that
+	// already holds the image (measured: 5 of 6 run pods on one 8-core
+	// worker at 89 % CPU while two workers idled — an oracle's 300 s boot
+	// budget blown at 459 s). The request is what makes LeastAllocated
+	// spread them and what lets a cluster autoscaler size the pool. Zero
+	// value → no `resources` key, the manifest of a driver without the knob.
+	Resources PodResources
+
+	// SpreadTopologyKey, when non-empty, adds a soft
+	// topologySpreadConstraint (maxSkew 1, ScheduleAnyway) over that
+	// topology key across every pod carrying the sandbox-run component
+	// label — the steering that requests alone don't give when nodes are
+	// equally loaded. Soft: it never makes a pod unschedulable.
+	SpreadTopologyKey string
+}
+
+// PodResources is the `resources` block of the workload container.
+// Quantities are Kubernetes strings passed through verbatim (the driver
+// validates their grammar at startup, the API server their semantics);
+// "" means unset and the key is omitted.
+type PodResources struct {
+	Requests ResourceList
+	Limits   ResourceList
+}
+
+// ResourceList is one side of a resources block (requests or limits).
+type ResourceList struct {
+	CPU    string
+	Memory string
+}
+
+// json renders the list with only its set quantities, nil when empty.
+func (l ResourceList) json() map[string]any {
+	out := map[string]any{}
+	if l.CPU != "" {
+		out["cpu"] = l.CPU
+	}
+	if l.Memory != "" {
+		out["memory"] = l.Memory
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// json renders the block with only its set sides, nil when nothing is set
+// so the caller omits the key entirely.
+func (r PodResources) json() map[string]any {
+	out := map[string]any{}
+	if req := r.Requests.json(); req != nil {
+		out["requests"] = req
+	}
+	if lim := r.Limits.json(); lim != nil {
+		out["limits"] = lim
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// spreadConstraintJSON renders the soft topology spread over the sandbox-run
+// pods for the given topology key.
+func spreadConstraintJSON(topologyKey string) []any {
+	return []any{
+		map[string]any{
+			"maxSkew":           1,
+			"topologyKey":       topologyKey,
+			"whenUnsatisfiable": "ScheduleAnyway",
+			"labelSelector": map[string]any{
+				"matchLabels": map[string]any{LabelComponent: ComponentSandboxRun},
+			},
+		},
+	}
 }
 
 // caSecretKey is the Secret data key + projected filename for the egress
@@ -284,6 +362,20 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	volumes = append(volumes, secretFileVolumes...)
 	volumes = append(volumes, caVolumes...)
 
+	workload := map[string]any{
+		"name":            "workload",
+		"image":           in.Spec.Image,
+		"imagePullPolicy": pullPolicyForImage(in.Spec.Image),
+		"command":         []any{"sleep", "infinity"},
+		"workingDir":      workspace,
+		"env":             envSlice,
+		"securityContext": defaultContainerSecurityContext(in.Spec.User),
+		"volumeMounts":    volumeMounts,
+	}
+	if res := in.Resources.json(); res != nil {
+		workload["resources"] = res
+	}
+
 	podSpec := map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
@@ -292,24 +384,16 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 			"fsGroup":        1000,
 		},
-		"containers": []any{
-			map[string]any{
-				"name":            "workload",
-				"image":           in.Spec.Image,
-				"imagePullPolicy": pullPolicyForImage(in.Spec.Image),
-				"command":         []any{"sleep", "infinity"},
-				"workingDir":      workspace,
-				"env":             envSlice,
-				"securityContext": defaultContainerSecurityContext(in.Spec.User),
-				"volumeMounts":    volumeMounts,
-			},
-		},
-		"volumes": volumes,
+		"containers": []any{workload},
+		"volumes":    volumes,
 	}
 	// Bound the pod's lifetime so a leaked pod self-fails instead of
 	// idling forever (runner killed mid-run before Cleanup fired).
 	if in.ActiveDeadlineSeconds > 0 {
 		podSpec["activeDeadlineSeconds"] = in.ActiveDeadlineSeconds
+	}
+	if in.SpreadTopologyKey != "" {
+		podSpec["topologySpreadConstraints"] = spreadConstraintJSON(in.SpreadTopologyKey)
 	}
 
 	pod := map[string]any{

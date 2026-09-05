@@ -158,6 +158,18 @@ const (
 	//     branch advanced past the recorded head, unrelated_history,
 	//     fetch_failed, …) — the failure shape, with restored=false
 	EventRunWorkspaceBankRestored EventType = "run_workspace_bank_restored"
+	// EventRunRedeliveryDeferred marks a delivery the runner handed back
+	// to the queue with a DELAY instead of at once — a sandbox setup
+	// phase that timed out is re-offered to a fresh pod minutes later so
+	// the infrastructure can clear the stall. Between two attempts the run
+	// sits failed_resumable with nothing else on its timeline; this event
+	// says why and for how long. Data:
+	//   - reason: the runner's outcome label ("sandbox_setup_timeout")
+	//   - delay_seconds: how long JetStream holds the message
+	//   - delivery / max_deliver: this attempt's rank in the redelivery
+	//     budget (the DLQ park follows the last one)
+	//   - error: the engine's error text
+	EventRunRedeliveryDeferred EventType = "run_redelivery_deferred"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
 	// the storage branch — because that attempt banked a strictly richer

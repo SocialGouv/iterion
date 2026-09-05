@@ -358,7 +358,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -417,6 +417,16 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
+	}
+	// E3 (part of #652 review round 1): validate the resume budget
+	// ask synchronously — a malformed max_duration ("4 hours") would
+	// otherwise ride RunMessage.Budget through the cloud queue, fail
+	// the runner's applyBudgetOverrides on EVERY redelivery, and burn
+	// the delivery budget into a DLQ park. Same pre-flight as Launch.
+	if spec.Budget != nil {
+		if err := spec.Budget.Validate(); err != nil {
+			return nil, fmt.Errorf("budget: %w", err)
+		}
 	}
 
 	// Wait out a previous runner that is still tearing down, BEFORE anything
@@ -486,10 +496,28 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
+	// The budget a resume executes against composes, per field, the ask
+	// persisted at launch (the doc's replay source) and THIS resume's
+	// ask — non-zero wins, zero inherits — applied to wf BEFORE the
+	// branch fork so every downstream path (cloud publish, detached,
+	// in-process) sees the same caps. The executor snapshots Budget at
+	// construction time, so this must happen before BuildExecutor below.
+	// Same merge the cloud wire performs (resolveResumeBudgetAsk).
+	if fromDoc := runtime.BudgetOverridesFromRun(r.BudgetOverrides); fromDoc != nil {
+		ir.ApplyBudgetOverrides(wf, *fromDoc)
+	}
+	raised := spec.Budget != nil && !spec.Budget.IsZero()
+	if raised {
+		ir.ApplyBudgetOverrides(wf, *spec.Budget)
+	}
+
 	// Cloud-mode resume: republish the RunMessage with ResumeSpec
 	// set so the runner pool re-enters the engine via Engine.Resume.
 	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
-	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
+	// in MongoRunStore.SaveCheckpoint (CASVersion increment). The doc's
+	// effective-caps snapshot is the publisher's to stamp, from the
+	// merged ask, after its own status CAS — not this layer's: the wire
+	// carries the merge, and the doc copy loaded above is stale by then.
 	if s.publisher != nil {
 		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
 			return nil, err
@@ -497,6 +525,28 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		closed := make(chan struct{})
 		close(closed)
 		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
+	}
+
+	// Local paths (detached subprocess, in-process): a raised cap is
+	// persisted here twice over, the way SubmitResume does it on the
+	// cloud path — the MERGED ask as the replay source (so the next
+	// resume, ask-less or not, and the detached subprocess that re-reads
+	// the doc, keep the raise), and the effective caps as the snapshot
+	// the studio Overview draws, since the engine stamps Run.Budget only
+	// at launch. Both granular on purpose: a whole-doc SaveRun from the
+	// copy loaded at the top of this method would revert any transition
+	// that landed since (a cancel, a finish). Best-effort: a store blip
+	// here does not fail the resume.
+	if raised {
+		merged := runtime.MergeResumeBudgetAsk(spec.Budget, r.BudgetOverrides)
+		if perr := s.store.SetRunBudgetOverrides(parent, spec.RunID, runtime.RunBudgetOverridesOf(merged)); perr != nil && s.logger != nil {
+			s.logger.Warn("runview: resume: persist merged budget ask on %s: %v", spec.RunID, perr)
+		}
+		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
+			if serr := s.store.SetRunBudgetSnapshot(parent, spec.RunID, snap); serr != nil && s.logger != nil {
+				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
+			}
+		}
 	}
 
 	if detachedEnabled() {
@@ -882,6 +932,10 @@ type launchExtras struct {
 	// run-level kill switch for DSL-declared supervisor watchers,
 	// resolved above ITERION_SUPERVISORS.
 	supervisors string
+	// budgetAsk mirrors LaunchSpec.Budget: the operator's launch-time
+	// budget ask, handed to the engine so the run doc persists it as the
+	// replay source every resume surface reads (runtime.WithBudgetAsk).
+	budgetAsk *ir.BudgetOverrides
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -936,6 +990,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	// onto the run record. Nil for CLI / studio / fork launches.
 	if ex.source != nil {
 		opts = append(opts, runtime.WithSource(ex.source))
+	}
+	if ex.budgetAsk != nil {
+		opts = append(opts, runtime.WithBudgetAsk(ex.budgetAsk))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /

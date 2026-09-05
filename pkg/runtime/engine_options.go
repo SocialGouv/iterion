@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -230,6 +231,27 @@ func WithRunName(name string) EngineOption {
 // selected.
 func WithPreset(name string) EngineOption {
 	return func(e *Engine) { e.preset = name }
+}
+
+// WithBudgetAsk records the operator's launch-time budget ask (the
+// `--max-*` flags, the launch modal's budget object) so runResolveDoc
+// persists it on the run doc as Run.BudgetOverrides — the replay source
+// every resume surface reads, so an ask-less resume keeps the cap the
+// operator launched with instead of falling back to the .bot's own. The
+// effective caps (Run.Budget) are stamped separately from wf.Budget,
+// which the caller has already applied the ask to. Nil or all-zero
+// persists nothing. Every LOCAL launch surface passes it (the CLI, the
+// in-process service, and through the CLI the detached subprocess); the
+// cloud publisher persists the ask itself at publish time and the
+// runner therefore does not.
+func WithBudgetAsk(o *ir.BudgetOverrides) EngineOption {
+	return func(e *Engine) {
+		if o == nil || o.IsZero() {
+			return
+		}
+		ask := *o
+		e.budgetAsk = &ask
+	}
 }
 
 // WithSource records the originating action that produced this run.

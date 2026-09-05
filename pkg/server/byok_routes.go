@@ -186,6 +186,14 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		httpError(w, http.StatusBadRequest, "name + secret required")
 		return
 	}
+	// Ingestion gate — reject a pasted transcript / credentials.json blob
+	// before it lands in the store, the same backstop as sealOAuthRecord.
+	// Per provider: a bearer token has no whitespace or control character;
+	// Bedrock/Vertex carry a JSON credential document instead.
+	if err := secrets.ValidateAPIKeyShape(provider, req.Secret); err != nil {
+		s.refuseApiKey(w, r, teamID, "", provider, err)
+		return
+	}
 	if req.MaxConcurrentRuns < 0 {
 		httpError(w, http.StatusBadRequest, "max_concurrent_runs must be >= 0 (0 = uncapped)")
 		return
@@ -227,6 +235,22 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 	writeJSON(w, s.toApiKeyView(key))
 }
 
+// refuseApiKey answers a BYOK shape refusal (create or rotate): 400 with
+// the reason, plus the trace the success path already leaves — a Warn
+// and an audit event naming the provider, the field and the reason,
+// never the value — so a paste that would have burned a fleet of runs
+// on 401s is findable after the fact. keyID is empty on a create.
+func (s *Server) refuseApiKey(w http.ResponseWriter, r *http.Request, teamID, keyID string, provider secrets.Provider, err error) {
+	field, reason := "secret", err.Error()
+	var se *secrets.ShapeError
+	if errors.As(err, &se) {
+		field, reason = se.Field, se.Reason
+	}
+	s.logger.Warn("byok: team=%s key=%q provider=%s credential REFUSED at ingestion (field=%s): %s", teamID, keyID, provider, field, reason)
+	s.auditApiKey(r, teamID, "refused", keyID, map[string]any{"provider": string(provider), "field": field, "reason": reason})
+	httpError(w, http.StatusBadRequest, "%s", err.Error())
+}
+
 func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
@@ -254,6 +278,13 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 		key.Name = *req.Name
 	}
 	if req.Secret != nil && *req.Secret != "" {
+		// Same ingestion gate as create — a rotate that pastes a transcript
+		// is exactly as bad as a create that pastes one, and the runtime
+		// error is identical (401 on every call). Refuse it here.
+		if err := secrets.ValidateAPIKeyShape(key.Provider, *req.Secret); err != nil {
+			s.refuseApiKey(w, r, key.ScopeTeamID, key.ID, key.Provider, err)
+			return
+		}
 		sealed, err := secrets.SealAPIKey(s.sealer, key.ID, []byte(*req.Secret))
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "seal: %v", err)

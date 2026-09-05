@@ -154,6 +154,27 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		for k, v := range spec.Answers {
 			args = append(args, "--answer", k+"="+v)
 		}
+		// E2 (#652 review round 1): forward budget overrides as CLI
+		// flags so a detached resume raises the cap identically to
+		// the in-process / cloud paths. Without it the child re-parsed
+		// the .bot's cap and died at the same wall.
+		if b := spec.Budget; b != nil {
+			if b.MaxCostUSD > 0 {
+				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
+			}
+			if b.MaxTokens > 0 {
+				args = append(args, "--max-tokens", strconv.Itoa(b.MaxTokens))
+			}
+			if b.MaxDuration != "" {
+				args = append(args, "--max-duration", b.MaxDuration)
+			}
+			if b.MaxIterations > 0 {
+				args = append(args, "--max-iterations", strconv.Itoa(b.MaxIterations))
+			}
+			if b.MaxParallelBranches > 0 {
+				args = append(args, "--max-parallel-branches", strconv.Itoa(b.MaxParallelBranches))
+			}
+		}
 	default:
 		return nil, fmt.Errorf("runview: detached: unknown command %q", spec.Command)
 	}
@@ -393,6 +414,11 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*Laun
 		Supervisors:     spec.Supervisors,
 		Force:           spec.Force,
 		Timeout:         spec.Timeout,
+		// E2 (#652 review round 1): forward the resume-time budget
+		// override so the detached CLI subprocess raises the cap too.
+		// Without it a --max-cost-usd on a detached resume was inert
+		// — the child ran the launch-time figure that killed the run.
+		Budget: spec.Budget,
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)

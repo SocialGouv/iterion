@@ -66,6 +66,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
+	t.Run("FinalContinuationDisarmsRetry", func(t *testing.T) { testFinalContinuationDisarmsRetry(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
 	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
@@ -81,6 +82,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
+	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
+	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -188,7 +191,7 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 
 	// A delivery from before this requeue must not fail the new attempt.
-	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second))
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second), store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal})
 	if err != nil || changed {
 		t.Fatalf("stale attempt CAS = (%t, %v), want (false, nil)", changed, err)
 	}
@@ -197,12 +200,21 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 
 	// The delivery belonging to this attempt may perform the terminal flip.
-	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second))
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second), store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal})
 	if err != nil || !changed {
 		t.Fatalf("current attempt CAS = (%t, %v), want (true, nil)", changed, err)
 	}
-	if got, _ := s.LoadRun(ctx, runID); got == nil || got.Status != store.RunStatusFailedResumable {
+	got, _ := s.LoadRun(ctx, runID)
+	if got == nil || got.Status != store.RunStatusFailedResumable {
 		t.Fatalf("current attempt left run at %+v, want failed_resumable", got)
+	}
+	// The park's typed WHY rides the same write as the flip: a DLQ park
+	// with an empty code reads as a quota pause to the gate notice.
+	if got.FailureCode != store.FailureDLQParked {
+		t.Fatalf("FailureCode after the admission park = %q, want %s (the notice keys on it)", got.FailureCode, store.FailureDLQParked)
+	}
+	if got.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("ContinuationState after the admission park = %q, want final (nothing on the platform wakes a parked run)", got.ContinuationState)
 	}
 }
 
@@ -2556,5 +2568,221 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-anthropic", ""); err != nil || n != 2 {
 		t.Errorf("alive(fp-anthropic) after re-stamp = %d/%v, want 2", n, err)
+	}
+}
+
+// testSetRunBudgetOverrides exercises the granular budget-ask setter
+// SubmitResume calls when the operator raises a cap on THIS resume
+// (E4, #652 review round 1). Contract: replaces the field wholesale,
+// nil clears, touches nothing else on the doc — SubmitResume has
+// already CAS-transitioned the status to `queued` and a whole-doc
+// SaveRun would clobber it.
+func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	// Seed a run with a launch-time budget ask; also set a peer field
+	// (Status) so the granular-update contract is verifiable.
+	if _, err := s.CreateRun(ctx, "bo_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Status = store.RunStatusQueued
+	r.BudgetOverrides = &store.RunBudgetOverrides{MaxCostUSD: 50, MaxDuration: "2h30m"}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	seeded, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun seeded: %v", err)
+	}
+	// Mongo stores updated_at at millisecond resolution, so give the
+	// setter's stamp a tick it can be strictly greater in.
+	time.Sleep(2 * time.Millisecond)
+
+	// Raise the cap — SubmitResume's E4 write.
+	if err := s.SetRunBudgetOverrides(ctx, "bo_run", &store.RunBudgetOverrides{MaxCostUSD: 120, MaxDuration: "4h", MaxTokens: 5_000_000}); err != nil {
+		t.Fatalf("SetRunBudgetOverrides: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.BudgetOverrides == nil {
+		t.Fatal("BudgetOverrides = nil after set")
+	}
+	if got.BudgetOverrides.MaxCostUSD != 120 || got.BudgetOverrides.MaxDuration != "4h" || got.BudgetOverrides.MaxTokens != 5_000_000 {
+		t.Fatalf("BudgetOverrides after set = %+v, want the raised ask", got.BudgetOverrides)
+	}
+	// The peer field must survive. NOTE this is a SERIAL call, so it
+	// does NOT prove the granularity the interface promises: a
+	// load-modify-save satisfies it trivially, nothing having changed
+	// between the load and the save. The granular shape is pinned
+	// per-twin instead (fs: TestSetRunBudgetOverridesDoesNotReplaceTheDocument
+	// on updated_at + the peer fields; mongo: the $set/$unset itself).
+	if got.Status != store.RunStatusQueued {
+		t.Fatalf("Status after SetRunBudgetOverrides = %s, want queued (a whole-doc replace would revert the CAS transition)", got.Status)
+	}
+	// updated_at is the half a whole-document replace fails even
+	// serially — SaveRun stamps no timestamp of its own.
+	if !got.UpdatedAt.After(seeded.UpdatedAt) {
+		t.Fatalf("UpdatedAt after SetRunBudgetOverrides = %s, want it advanced past %s (the setter owns budget_overrides AND updated_at)", got.UpdatedAt, seeded.UpdatedAt)
+	}
+
+	// Nil clears (the field is opt-in).
+	if err := s.SetRunBudgetOverrides(ctx, "bo_run", nil); err != nil {
+		t.Fatalf("SetRunBudgetOverrides(nil): %v", err)
+	}
+	got, err = s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.BudgetOverrides != nil {
+		t.Fatalf("BudgetOverrides after nil set = %+v, want nil (clear)", got.BudgetOverrides)
+	}
+
+	// A missing run returns ErrRunNotFound.
+	err = s.SetRunBudgetOverrides(ctx, "does-not-exist", &store.RunBudgetOverrides{MaxCostUSD: 1})
+	if err == nil {
+		t.Fatal("SetRunBudgetOverrides on missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// testFinalContinuationDisarmsRetry pins the transition-tail rule: a
+// `final` continuation (the DLQ park, the orphan sweeper, the PR-close
+// cancel) disarms retry_state.retry_after on both twins, because a doc
+// carrying both a final continuation and an armed retry gets BOTH
+// automations — the gate reconciler's dead-review repair and the
+// sweeper's auto-resume. The rest of the retry bookkeeping is history and
+// stays; a non-final write leaves the retry armed; a doc that never
+// carried retry state does not grow one.
+func testFinalContinuationDisarmsRetry(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_final_disarms_retry"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	at := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Millisecond)
+	r.Status = store.RunStatusFailedResumable
+	r.ContinuationState = store.ContinuationRetryArmed
+	r.RetryState = &store.RunRetryState{RetryAfter: &at, Reason: "usage_window", Code: "USAGE_LIMIT_BLOCKED", Attempts: 1}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// The runner's redelivery promote is not final: the retry stays armed.
+	changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "",
+		store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending}, []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("redelivery promote: changed=%v err=%v", changed, err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState == nil || got.RetryState.RetryAfter == nil || !got.RetryState.RetryAfter.Equal(at) {
+		t.Fatalf("retry state after a non-final write = %+v, want retry_after %s still armed", got.RetryState, at)
+	}
+
+	// The DLQ park is final: the arming goes, the bookkeeping stays.
+	changed, err = s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "max deliveries exhausted (parked on DLQ)",
+		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal}, []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("DLQ park: changed=%v err=%v", changed, err)
+	}
+	got, err = s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState == nil {
+		t.Fatal("retry state gone after the final write — attempts/reason are the run's history and must stay")
+	}
+	if got.RetryState.RetryAfter != nil {
+		t.Fatalf("retry_after = %s after a final continuation, want disarmed — the sweeper would auto-resume a DLQ-parked run the gate reconciler already repaired", got.RetryState.RetryAfter)
+	}
+	if got.RetryState.Attempts != 1 || got.RetryState.Reason != "usage_window" || got.RetryState.Code != "USAGE_LIMIT_BLOCKED" {
+		t.Fatalf("retry bookkeeping after the final write = %+v, want attempts/reason/code kept", got.RetryState)
+	}
+	if got.ContinuationState != store.ContinuationFinal || got.FailureCode != store.FailureDLQParked {
+		t.Fatalf("continuation/code = %q/%q, want final/DLQ_PARKED (the disarm must not disturb the transition)", got.ContinuationState, got.FailureCode)
+	}
+
+	// A doc that never carried retry state must not grow one.
+	const bare = "run_final_no_retry_state"
+	if _, err := s.CreateRun(ctx, bare, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := s.UpdateRunOutcome(ctx, bare, store.RunStatusFailedResumable, "orphaned",
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal}, nil); err != nil {
+		t.Fatalf("final write on a bare doc: %v", err)
+	}
+	got, err = s.LoadRun(ctx, bare)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState != nil {
+		t.Fatalf("a final write materialised retry state %+v on a doc that never had one", got.RetryState)
+	}
+}
+
+// testSetRunBudgetSnapshot exercises the granular effective-caps setter
+// every resume surface that raises a cap writes. Contract: replaces
+// Run.Budget wholesale, nil clears, touches nothing else on the doc — a
+// transition that landed between the resume's load and this write (here
+// a cancel with its typed cause) must survive, which a whole-doc SaveRun
+// from the stale copy would revert.
+func testSetRunBudgetSnapshot(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "bs_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Budget = &store.RunBudget{MaxCostUSD: 20, MaxDuration: "2h30m", MaxTokens: 5000}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	// The concurrent transition the granular write must not revert.
+	if err := s.UpdateRunStatusCoded(ctx, "bs_run", store.RunStatusCancelled, "cancelled by the operator", store.FailureCancelled); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	if err := s.SetRunBudgetSnapshot(ctx, "bs_run", &store.RunBudget{MaxCostUSD: 50, MaxDuration: "4h", MaxTokens: 5000}); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.Budget == nil || got.Budget.MaxCostUSD != 50 || got.Budget.MaxDuration != "4h" || got.Budget.MaxTokens != 5000 {
+		t.Fatalf("Budget after set = %+v, want the raised effective caps", got.Budget)
+	}
+	if got.Status != store.RunStatusCancelled || got.FailureCode != store.FailureCancelled {
+		t.Fatalf("status/code after SetRunBudgetSnapshot = %s/%q, want cancelled/CANCELLED untouched (a whole-doc replace from the pre-cancel copy reverts the operator's cancel)", got.Status, got.FailureCode)
+	}
+
+	if err := s.SetRunBudgetSnapshot(ctx, "bs_run", nil); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot(nil): %v", err)
+	}
+	got, err = s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.Budget != nil {
+		t.Fatalf("Budget after nil set = %+v, want nil (clear)", got.Budget)
+	}
+	if err := s.SetRunBudgetSnapshot(ctx, "does-not-exist", &store.RunBudget{MaxCostUSD: 1}); err == nil {
+		t.Fatal("SetRunBudgetSnapshot on a missing run returned nil, want ErrRunNotFound")
 	}
 }

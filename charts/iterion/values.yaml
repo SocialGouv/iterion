@@ -149,6 +149,27 @@ runner:
   # sandbox feature; turn on per-environment via values-prod.yaml.
   sandbox:
     enabled: false
+    # Scheduling policy the kubernetes sandbox driver stamps on every
+    # per-run sandbox pod, rendered as LITERAL env on the runner PodTemplate
+    # (a pod from an old ReplicaSet keeps the policy it was rolled out
+    # with). Empty = not rendered: the pods request nothing and, on a
+    # multi-node cluster, pile onto the node that already holds the image
+    # (measured: 5 of 6 runs on one 8-core worker at 89 % CPU). Set at
+    # least the requests on any multi-node cluster — e.g. requests cpu "2",
+    # memory "4Gi", spread "hostname" — and bump config.rollout.runnerEpoch
+    # with the rollout like any runner change. Values are Kubernetes
+    # quantities; the runner refuses to start on a malformed one. See
+    # docs/sandbox.md § "Scheduling: requests and node spread".
+    scheduling:
+      requests:
+        cpu: ""
+        memory: ""
+      limits:
+        cpu: ""
+        memory: ""
+      # "" or "none" = no spread constraint; "hostname" = soft spread across
+      # nodes; or a prefixed label key every node carries.
+      spread: ""
   # --- Persistent build cache (warm runner pods) --------------------
   # A bot's verify gate re-clones the target repo per run into an
   # ephemeral workdir, so a fresh/scaled-up runner pod otherwise
@@ -206,6 +227,9 @@ config:
   # ConfigMap (both the server and runner deployments envFrom it).
   # e.g. TZ: Europe/Paris — the binary embeds the IANA tz database
   # (time/tzdata), so TZ works even in tzdata-less images.
+  # NOT the place for generation-sensitive runner settings (the epoch, the
+  # sandbox pod scheduling policy): those are literal PodTemplate values —
+  # see runner.sandbox.scheduling.
   extraEnv: {}
   log:
     format: json

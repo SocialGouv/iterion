@@ -31,14 +31,18 @@ func ReadSecretValue(fromEnv, fromFile string, stdinOK bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		v = strings.TrimRight(string(b), "\n")
+		// CRLF too: a file written on Windows leaves a trailing \r, which
+		// the server's shape gate refuses as a control character with a
+		// message about a terminal transcript — right refusal, misleading
+		// cause, for a file that is perfectly fine.
+		v = strings.TrimRight(string(b), "\r\n")
 	case stdinOK:
 		r := bufio.NewReader(os.Stdin)
 		line, err := r.ReadString('\n')
 		if err != nil && line == "" {
 			return "", fmt.Errorf("read secret from stdin: %w", err)
 		}
-		v = strings.TrimRight(line, "\n")
+		v = strings.TrimRight(line, "\r\n")
 	default:
 		return "", fmt.Errorf("provide the value via --from-env <VAR>, --from-file <path>, or pipe it on stdin")
 	}

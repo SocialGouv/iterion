@@ -94,6 +94,16 @@ const (
 	// FailureDLQParked: the queue exhausted its deliveries for this run
 	// and parked it on the DLQ — replay via /api/admin/dlq.
 	FailureDLQParked FailureCode = "DLQ_PARKED"
+	// FailureSandboxSetupTimeout: a sandbox driver's bounded SETUP
+	// phase (workspace copy, git fixup, …) exceeded its per-phase
+	// budget. Distinct from FailureTimeout (a node's deadline — raising
+	// max_duration is not the cure here) and from FailureInterrupted
+	// (runner drain / lost heartbeat): the phase ran on a
+	// driver-internal child ctx with a driver-internal bound while the
+	// run ctx stayed live. Persisted on RunStatusFailedResumable so the
+	// redelivery lands on a healthy pod, where a stuck kubectl-exec pipe
+	// routinely clears.
+	FailureSandboxSetupTimeout FailureCode = "SANDBOX_SETUP_TIMEOUT"
 )
 
 // AllRunStatuses is the exhaustive status vocabulary, for callers that

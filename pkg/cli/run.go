@@ -260,6 +260,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return UserInputError(err)
 	}
 	applyBudgetOverrides(wf, opts.Budget)
+	// The raw ask is persisted on the run doc (Run.BudgetOverrides) as the
+	// resume path's replay source — an ask-less `iterion resume` keeps the
+	// cap this launch asked for instead of the .bot's own. The detached
+	// studio launch reaches this same line through its `iterion run`
+	// subprocess, so one option covers both.
+	engineOpts = append(engineOpts, runtime.WithBudgetAsk(&opts.Budget))
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)

@@ -243,10 +243,27 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// CLI budget overrides — applied before buildResumeExecutor (which
 	// snapshots Budget), same seam as the run path. Lets an operator raise
 	// a cap and resume a budget-exceeded run without editing the .bot.
+	// The ask persisted on the run doc replays FIRST (an ask-less resume
+	// keeps the cap the run was launched with, never the .bot's own), the
+	// flags merge over it per field; a raise is persisted back so the
+	// next resume — and the doc's own snapshot — carry it. The detached
+	// studio resume reaches this same line through its subprocess.
 	if err := opts.Budget.Validate(); err != nil {
 		return UserInputError(err)
 	}
-	applyBudgetOverrides(wf, opts.Budget)
+	if merged := runtime.MergeResumeBudgetAsk(&opts.Budget, r.BudgetOverrides); merged != nil {
+		applyBudgetOverrides(wf, *merged)
+		if !opts.Budget.IsZero() {
+			if perr := s.SetRunBudgetOverrides(ctx, r.ID, runtime.RunBudgetOverridesOf(merged)); perr != nil {
+				logger.Warn("resume: persist merged budget ask on %s: %v", r.ID, perr)
+			}
+			if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
+				if serr := s.SetRunBudgetSnapshot(ctx, r.ID, snap); serr != nil {
+					logger.Warn("resume: refresh budget snapshot on %s: %v", r.ID, serr)
+				}
+			}
+		}
+	}
 
 	// DSL-declared supervisors resume with the run: the resumed stretch is
 	// the same campaign the supervisor was declared to watch. Same wiring

@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
+	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -287,6 +288,14 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build events bus: %w", err)
 	}
+	// A malformed sandbox scheduling policy must stop the rollout here, before
+	// the consumer exists and the epoch mark advances: the sandbox driver
+	// factory skips constructor errors, so nothing downstream can refuse it —
+	// every run would fail at sandbox start instead.
+	if err := k8ssandbox.ValidateSchedulingEnv(); err != nil {
+		return fmt.Errorf("runner: sandbox scheduling policy: %w", err)
+	}
+
 	// Prove the durable consumer can be created before advancing the rollout
 	// high-water mark. The handle is inert until Runner.Run starts fetching.
 	preparedConsumer, err := natsConn.PrepareConsumer(rootCtx)
@@ -314,13 +323,17 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		RunSecrets:          runSecretsStore,
 		Sealer:              sealer,
 		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
-		MemoryStore:         memStore,
-		OrgUsage:            orgUsageCounter,
-		CredPool:            credBroker,
-		UsageCapSource:      usageCapSource,
-		UsageCaps:           usageCapStore,
-		BotsPaths:           botsPaths,
-		BotSources:          botsource.NewMongoStore(st.DB()),
+		// BYOK store shared with the publisher — the runner bumps
+		// `last_used_at` at metering time so the studio distinguishes an
+		// idle key from one currently serving (#659 pt 2).
+		ApiKeys:        secrets.NewMongoApiKeyStore(st.DB()),
+		MemoryStore:    memStore,
+		OrgUsage:       orgUsageCounter,
+		CredPool:       credBroker,
+		UsageCapSource: usageCapSource,
+		UsageCaps:      usageCapStore,
+		BotsPaths:      botsPaths,
+		BotSources:     botsource.NewMongoStore(st.DB()),
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's

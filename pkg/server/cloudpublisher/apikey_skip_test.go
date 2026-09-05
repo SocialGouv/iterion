@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"testing"
 	"time"
 
@@ -341,7 +342,7 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	}
 	// The harvest names the credential the bundle ACTUALLY sealed — the
 	// meter would count the wrong key otherwise.
-	creds, err := p.resolveAndSealCredentials(ctx, "run-c2", "", "team1", "owner1", "", nil, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-c2", "", "team1", "owner1", "", nil, nil, nil, model.ModelOverrides{}, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
