@@ -263,14 +263,27 @@ func applyProjectItem(
 		// CAS on the snapshot: an operator who moved the card between our read
 		// and this write wins — the board must not clobber a fresh decision
 		// with a fact it read a moment ago.
-		if _, _, err := board.SetStateFrom(cardID, card.State, targetState); err != nil {
+		//
+		// Losing that CAS is NOT an error: SetStateFrom answers a drifted card
+		// with (issue, changed=false, nil). Reading only the error counted a
+		// transition the store never made and recorded the board's status as
+		// synchronized, which turns every later pass into a no-op — and on the
+		// one-shot `iterion issue import --project` path nothing ever repairs
+		// it. A refused write and a lost CAS are the same fact here: nothing
+		// landed.
+		switch _, changed, err := board.SetStateFrom(cardID, card.State, targetState); {
+		case err != nil:
 			refused = true
 			if errors.Is(err, tracker.ErrTerminalStateExit) {
 				res.RefusedTerminal++
 			}
 			logProjectWarn(opts, "project import: state write refused", "card", cardID,
 				"from", card.State, "to", targetState, "error", err.Error())
-		} else {
+		case !changed:
+			refused = true
+			logProjectWarn(opts, "project import: state write skipped, the card moved first",
+				"card", cardID, "from", card.State, "to", targetState)
+		default:
 			applied = true
 			res.Moved++
 		}
