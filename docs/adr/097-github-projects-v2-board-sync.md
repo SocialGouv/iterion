@@ -178,14 +178,32 @@ or one added since the bind); else **lost**. The `Status` field's own id is
 re-resolved the same way, by name.
 
 A LOST column is the only unrepairable case, and it becomes an explicit state
-rather than a retry loop (the `pluginsource` quarantine precedent): the dead id
-is dropped so nothing writes it, those cards are counted `reflect_no_column`,
-and the binding carries a `degraded_reason` NAMING the column — surfaced on
+rather than a retry loop (the `pluginsource` quarantine precedent): those cards
+are counted `reflect_no_column` and skipped, and the binding carries a
+`degraded_reason` NAMING the column — surfaced on
 `GET /api/teams/{id}/board-binding` and logged once, on the transition, not on
 every pass. It is a partial outage: every column that still resolves keeps
 syncing. It clears itself when the column reappears, and a re-bind clears it
 too — which is what makes "re-bind the board" a real remedy rather than the
 only one.
+
+**That readout is a LEVEL, re-derived from the binding's current shape on every
+pass — never an event.** "Lost" is defined as *the binding holds an option id
+for this state and the board answers to neither that id nor the mapped name*,
+which is re-computable from the same inputs indefinitely; only an EMPTY lost set
+clears the flag. Two consequences shape the code:
+
+- **the dead option id is KEPT.** Dropping it (the obvious "so nothing writes
+  it") destroys the only evidence the column ever resolved, and the very next
+  pass then reads a binding where nothing is wrong — so the first unrelated
+  adoption elsewhere on the board cleared a degradation that was still true,
+  while every reflect onto the missing column kept failing, counted and
+  invisible. What refuses the write is the pass's lost set, handed to the
+  reflect, not a hole in the binding;
+- **a column the binding NEVER resolved is not lost.** That is
+  `missing_statuses`, the partial coverage `BindBoard` accepts on purpose
+  ("the covered half works") — a three-column board bound with the five-column
+  default map is not a board that broke. Only something that worked can break.
 
 The repaired vocabulary is persisted through a store method narrow enough to
 touch nothing else (`SaveStatusVocabulary`): a reconciliation may correct what

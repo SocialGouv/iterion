@@ -160,10 +160,17 @@ the binding — `iterion remote board show`, or
 `GET /api/teams/{id}/board-binding` — and is logged **once**, when it starts,
 not on every pass.
 
-It clears by itself the moment the column exists again. Re-binding the board
-(`iterion remote board bind …`) also clears it, and is the way out when the
-column is gone for good: bind with a `--status-map` matching what the board
-actually carries.
+It stands for exactly as long as the column is missing: each pass re-asks the
+question, so nothing else happening on the board can clear it. It clears by
+itself the moment that column exists again. Re-binding the board (`iterion
+remote board bind …`) also clears it, and is the way out when the column is
+gone for good: bind with a `--status-map` matching what the board actually
+carries.
+
+Partial coverage is **not** a degradation. A column your map names and the
+board never had is reported as `missing_statuses` (a `!` in `board show`) and
+its cards count `reflect_no_column`, but the binding reads healthy — binding a
+three-column board with the five-column default map is a choice, not a break.
 
 ---
 
