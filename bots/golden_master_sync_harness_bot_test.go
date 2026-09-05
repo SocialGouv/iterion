@@ -108,7 +108,9 @@ func syncHarnessGitRepo(t *testing.T) (string, func(args ...string) string) {
 // runSyncNode executes one of the bot's tool nodes as the engine would: the
 // script body with its template refs bound, run by python3 from a scratch
 // file (the driver reads its OWN source, exactly as it does under the engine).
-func runSyncNode(t *testing.T, node, ws string, inputs map[string]string) ([]byte, int) {
+// Optional mutators run on the bound script, for the refusals that are about
+// the node's OWN source being mangled.
+func runSyncNode(t *testing.T, node, ws string, inputs map[string]string, mutate ...func(string) string) ([]byte, int) {
 	t.Helper()
 	body := toolScript(t, "golden-master/sync-harness.bot", node)
 	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
@@ -124,6 +126,9 @@ func runSyncNode(t *testing.T, node, ws string, inputs map[string]string) ([]byt
 	}
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in %s near %q", node, body[i:min(i+40, len(body))])
+	}
+	for _, m := range mutate {
+		body = m(body)
 	}
 	scriptPath := filepath.Join(t.TempDir(), node+".py")
 	if err := os.WriteFile(scriptPath, []byte(body), 0o644); err != nil {
@@ -278,6 +283,23 @@ func TestGoldenMasterSyncHarnessBotRefusals(t *testing.T) {
 		}
 		if got, _ := os.ReadFile(hp); !strings.Contains(string(got), "# untracked") {
 			t.Fatalf("the untracked harness was overwritten — git checkout could never put it back: %q", got)
+		}
+	})
+
+	// The node reads its OWN source to compose the canonical copy, so a
+	// half-applied sync-harness.py is a shape it must NAME, not die on: the
+	// marker kept over a stripped body used to reach str.index and raise,
+	// leaving the run with a traceback instead of any of the typed refusals.
+	t.Run("the node's own source, marker over a stripped body, is refused not raised", func(t *testing.T) {
+		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		strip := func(s string) string { return s[:strings.Index(s, "\nimport hashlib")] + "\n" }
+		out, exit := runSyncNode(t, "sync_harness", ws, nil, strip)
+		var res syncHarnessOut
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("no typed refusal on stdout (%v) — the node died instead of refusing: %q", err, out)
+		}
+		if exit != 1 || !strings.Contains(res.Notice, "expected shape") {
+			t.Fatalf("exit %d notice=%q, want the mangled-source refusal", exit, res.Notice)
 		}
 	})
 
