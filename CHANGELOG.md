@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.108.3](https://github.com/SocialGouv/iterion/compare/v3.108.2...v3.108.3) (2026-09-05)
+
+### Bug Fixes
+
+* **forge:** the GitHub-App client serves the issue API on scoped tokens — the forge→board issue sync works on App connections ([#776](https://github.com/SocialGouv/iterion/issues/776)) ([0025229](https://github.com/SocialGouv/iterion/commit/0025229fd36219a92b095ff0fa6680718969b109)), closes [#781](https://github.com/SocialGouv/iterion/issues/781)
+
+    <details><summary>why</summary>
+
+    forgeAdminFor returns a *github.AppClient for a github_app connection and that type carried only CommentIssue, so `admin.(forge.IssueClient)` failed on the connection shape the studio's connect wizard creates by default. The forge->board sync answered 502 "provider github has no issue client" on demand and warned it every 5 minutes in the worker, so a bound team's cards were never hydrated and the ADR-097 project pass read skipped_no_card for every item, pass after pass. The autofix lane's…
+
+    </details>
+
 ## [3.108.2](https://github.com/SocialGouv/iterion/compare/v3.108.1...v3.108.2) (2026-09-05)
 
 ### Bug Fixes
