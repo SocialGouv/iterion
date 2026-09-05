@@ -591,21 +591,14 @@ func fanOutRouterFor(wf *ir.Workflow, nodeID string) string {
 // the body, since it runs once rather than per-branch.
 func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 	adj := adjacency(wf, false)
-	// DISTINCT sources, not edge count — the engine's own convergence
-	// detection counts distinct predecessors. Two edges from the SAME
-	// node (a when/else pair, or sibling `with` mappings) are routine
-	// inside a fan-out branch and are not a convergence there; counting
-	// them as one truncates the body and skips the router promotion.
-	inSources := map[string]map[string]bool{}
-	for _, e := range wf.Edges {
-		if e == nil || e.IsBoundedIteration() {
-			continue
-		}
-		if inSources[e.To] == nil {
-			inSources[e.To] = map[string]bool{}
-		}
-		inSources[e.To][e.From] = true
-	}
+	// DISTINCT sources inside the fan-out region, not edge count — the
+	// engine's own convergence election counts distinct predecessors that
+	// belong to the fan-out. Two edges from the SAME node (a when/else pair,
+	// or sibling `with` mappings) are routine inside a branch and are not a
+	// convergence there; a predecessor from OUTSIDE the fan-out (a condition
+	// router that also reaches a target directly) is not one either. Either
+	// miscount truncates the body and skips the router promotion.
+	inSources := ir.FanOutInSources(wf, routerID)
 	body := map[string]bool{}
 	queue := append([]string(nil), adj[routerID]...)
 	for len(queue) > 0 {
@@ -634,13 +627,13 @@ func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 // isFanOutBoundary reports whether a node ends a fan-out region.
 //
 // A declared `await:` is the explicit form, but the engine also treats
-// more than one DISTINCT incoming source as a convergence point
-// (pkg/runtime/convergence.go), and nothing in the DSL requires the
-// annotation. Distinct sources, not edge count: a when/else pair from one
-// predecessor is two edges and no convergence. Relying on `await:` alone happens to work for every bot
-// shipped today and silently over-promotes for any graph that converges
-// implicitly. Terminals end the region too — nothing runs per-branch
-// after them.
+// more than one DISTINCT incoming source from inside the fan-out as a
+// convergence point (ir.ExecBranchConvergencePoint), and nothing in the
+// DSL requires the annotation. Distinct sources, not edge count: a
+// when/else pair from one predecessor is two edges and no convergence.
+// Relying on `await:` alone happens to work for every bot shipped today
+// and silently over-promotes for any graph that converges implicitly.
+// Terminals end the region too — nothing runs per-branch after them.
 func isFanOutBoundary(wf *ir.Workflow, node ir.Node, id string, inSources map[string]map[string]bool) bool {
 	if ir.NodeAwaitMode(node) != ir.AwaitNone {
 		return true

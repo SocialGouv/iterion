@@ -273,6 +273,91 @@ func TestFindConvergencePoint_NoConvergenceReturnsEmpty(t *testing.T) {
 	}
 }
 
+// A fan-out target that is ALSO fed from outside the fan-out — the mono/dual
+// topology review-pr and evolve ship, where a condition router reaches the
+// same reviewer directly or through the fan_out_all — is not where the
+// branches reconverge. Only predecessors inside the fan-out count.
+func TestFindConvergencePoint_TargetFedFromOutsideTheFanOutIsNotTheCollector(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "t",
+		Nodes: map[string]ir.Node{
+			"topology": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "topology"}, RouterMode: ir.RouterCondition},
+			"fan":      &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fan"}, RouterMode: ir.RouterFanOutAll},
+			"a":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"merge":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "merge"}, AwaitMode: ir.AwaitBestEffort},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "topology", To: "fan", ExpressionSrc: "vars.dual"},
+			{From: "topology", To: "a", IsElse: true},
+			{From: "fan", To: "a"},
+			{From: "fan", To: "b"},
+			{From: "a", To: "merge"},
+			{From: "b", To: "merge"},
+			{From: "merge", To: "done"},
+		},
+	}
+	e := &Engine{workflow: wf}
+	got := e.findConvergencePoint("fan", []*ir.Edge{
+		{From: "fan", To: "a"},
+		{From: "fan", To: "b"},
+	})
+	if got != "merge" {
+		t.Errorf("expected convergence=merge, got %q", got)
+	}
+}
+
+// Same class, fan_out_each: a template head reachable from the trunk as
+// well must not be elected — every item replay would stop before running.
+func TestFindConvergencePoint_TemplateHeadFedFromOutsideTheFanOutIsNotTheCollector(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "t",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach},
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "dispatch", Condition: "many"},
+			{From: "entry", To: "work", Condition: "many", Negated: true},
+			{From: "dispatch", To: "work"},
+			{From: "work", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+	}
+	e := &Engine{workflow: wf}
+	if got := e.findConvergencePoint("dispatch", []*ir.Edge{{From: "dispatch", To: "work"}}); got != "collect" {
+		t.Errorf("expected convergence=collect, got %q", got)
+	}
+}
+
+// A target fed by a SIBLING branch is a genuine reconvergence inside the
+// fan-out and stays the collector.
+func TestFindConvergencePoint_TargetFedBySiblingBranchStaysTheCollector(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "t",
+		Nodes: map[string]ir.Node{
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "b", To: "a"},
+			{From: "a", To: "done"},
+		},
+	}
+	e := &Engine{workflow: wf}
+	if got := e.findConvergencePoint("router", []*ir.Edge{{From: "router", To: "a"}, {From: "router", To: "b"}}); got != "a" {
+		t.Errorf("expected convergence=a, got %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // branchContainsMutation — uses findConvergencePoint and isMutatingNode
 // ---------------------------------------------------------------------------

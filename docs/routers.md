@@ -52,7 +52,7 @@ router uses its built-in fallback model.
 
 ## `fan_out_all` — parallel dispatch
 
-This is the default mode. The router sends execution to **every** outgoing edge simultaneously. Each target runs in its own branch, and branches converge at a downstream node that declares `await: wait_all` or `await: best_effort`.
+This is the default mode. The router sends execution to **every** outgoing edge simultaneously. Each target runs in its own branch, and branches converge at a downstream node that declares `await: wait_all` or `await: best_effort` — executed once, after every branch has settled (see [Convergence with `await`](#convergence-with-await)).
 
 ```iter
 router review_fanout:
@@ -255,6 +255,15 @@ credentials. `codex` is also available as an explicit CLI backend.
 ## Convergence with `await`
 
 Parallel branches — whether from `fan_out_all`, `fan_out_each`, or `llm` multi-mode — converge at a real downstream node (agent, judge, human, tool, or compute) with multiple incoming edges. That target node declares `await: wait_all` to require every branch, or `await: best_effort` to continue with successful branches while tolerating failures.
+
+**The collector fires exactly once, after every branch has settled** (finished, failed, or was cancelled) — under both modes. Neither mode fires on the first arrival, and no branch runs anything past the collector: the trunk executes the collector and everything downstream of it once, with every branch's outputs merged. The two modes differ only in what a failed branch means:
+
+- `wait_all` — any failed branch fails the run (`failed_resumable`, with the failing branch's error); the collector never runs.
+- `best_effort` — the collector runs with the successful branches' outputs. The failures are listed on the `join_ready` event (`failed_branches`) and exposed as `_failed_branches` on the collector's own output, so a `with` mapping or a downstream gate can fail closed on a missing branch.
+
+One `join_ready` event is emitted per convergence, on the collector, naming the strategy — a second `join_ready`, or a second execution of the collector, is an engine defect, never a mode.
+
+**Which node is the collector.** A node that declares `await:` is the collector for the branches that reach it. Without the annotation, the engine elects the first node (breadth-first from the router's targets) that has more than one distinct predecessor **inside the fan-out** — the router itself or a node reachable from it, bounded back-edges excluded. A predecessor from outside the fan-out does not count: the mono/dual topology, where a `condition` router reaches the same reviewer directly *or* through a `fan_out_all` router, gives that reviewer two predecessors, and it is still an ordinary branch head, not the collector. Declare `await:` on the intended collector rather than relying on the implicit election.
 
 Routers are fan-out sources and do not declare `await:` themselves.
 

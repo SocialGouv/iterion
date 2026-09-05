@@ -521,7 +521,7 @@ func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
 				fanEdges = append(fanEdges, edge)
 			}
 		}
-		convergence := execBranchConvergencePoint(w, fanEdges)
+		convergence := ExecBranchConvergencePoint(w, router.ID, fanEdges)
 		// fan_out_all takes every outgoing edge without evaluating its
 		// condition and fan_out_each takes its single template edge, so their
 		// run-time edge set is exactly the declared one and the collector
@@ -539,7 +539,7 @@ func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
 			}
 			boundary := convergence
 			if perEdgeBoundary {
-				boundary = execBranchConvergencePoint(w, []*Edge{edge})
+				boundary = ExecBranchConvergencePoint(w, router.ID, []*Edge{edge})
 			}
 			owner := router.ID + "/" + edge.To
 			seen := make(map[string]bool)
@@ -607,56 +607,13 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 				fan = append(fan, e)
 			}
 		}
-		convergence := execBranchConvergencePoint(w, fan)
+		convergence := ExecBranchConvergencePoint(w, r.ID, fan)
 		seen := map[string]bool{}
 		for _, e := range fan {
 			walk(e.To, convergence, seen)
 		}
 	}
 	return body
-}
-
-// execBranchConvergencePoint mirrors runtime.findConvergencePoint so compile
-// time ownership stops at the same node as execBranch. The first explicit
-// await or multi-source node found by a breadth-first walk from the router's
-// ordered targets is elected; bounded back-edges are local control flow and
-// do not contribute to the multi-source test.
-func execBranchConvergencePoint(w *Workflow, fanEdges []*Edge) string {
-	inSources := make(map[string]map[string]bool)
-	for _, edge := range w.Edges {
-		if edge.IsBoundedIteration() {
-			continue
-		}
-		if inSources[edge.To] == nil {
-			inSources[edge.To] = make(map[string]bool)
-		}
-		inSources[edge.To][edge.From] = true
-	}
-	for _, startEdge := range fanEdges {
-		visited := make(map[string]bool)
-		queue := []string{startEdge.To}
-		for len(queue) > 0 {
-			id := queue[0]
-			queue = queue[1:]
-			if visited[id] {
-				continue
-			}
-			visited[id] = true
-			node := w.Nodes[id]
-			if node == nil {
-				continue
-			}
-			if NodeAwaitMode(node) != AwaitNone || len(inSources[id]) > 1 {
-				return id
-			}
-			for _, edge := range w.Edges {
-				if edge.From == id {
-					queue = append(queue, edge.To)
-				}
-			}
-		}
-	}
-	return ""
 }
 
 func routerSpawnsExecBranch(r *RouterNode) bool {

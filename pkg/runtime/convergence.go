@@ -187,68 +187,16 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 	return terminal, nil
 }
 
-// findConvergencePoint walks outgoing edges from the router's targets to
-// find a downstream convergence point (a node with AwaitMode != AwaitNone,
-// or a node that receives edges from multiple distinct sources).
-// Terminal nodes (done/fail) can be convergence points when multiple
-// branches target them directly.
-// This is also called pre-emptively before branches start so that each
-// branch knows where to stop.
+// findConvergencePoint elects the downstream node where the router's branches
+// reconverge — a node declaring `await:`, or one reached by several distinct
+// predecessors INSIDE the fan-out (a predecessor outside it, such as a
+// condition router that also reaches a fan-out target directly, is not a
+// reconvergence). Terminal nodes (done/fail) can be convergence points when
+// multiple branches target them directly. Computed before branches start so
+// that each branch knows where to stop; the election is shared with the
+// compiler (ir.ExecBranchConvergencePoint) so C243/C244 see the same node.
 func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) string {
-	// Build in-degree map: count distinct sources per target.
-	inSources := make(map[string]map[string]bool)
-	for _, edge := range e.workflow.Edges {
-		// A branch-local loop back-edge is control flow inside one branch,
-		// never evidence that its head is a cross-branch collector.
-		if edge.IsBoundedIteration() {
-			continue
-		}
-		if _, ok := inSources[edge.To]; !ok {
-			inSources[edge.To] = make(map[string]bool)
-		}
-		inSources[edge.To][edge.From] = true
-	}
-
-	// BFS from each fan-out target to find a convergence point.
-	// maxVisits guards against a malformed graph where a cycle slipped
-	// past compile-time validation (C012/C013): without it the queue
-	// could grow without bound. Cap at the workflow's node count —
-	// any honest BFS visits each node at most once.
-	maxVisits := len(e.workflow.Nodes) + 1
-	for _, startEdge := range fanEdges {
-		visited := map[string]bool{}
-		queue := []string{startEdge.To}
-		for len(queue) > 0 {
-			if len(visited) > maxVisits {
-				if e.logger != nil {
-					e.logger.Warn("findConvergencePoint: BFS exceeded %d visits — likely an undetected graph cycle, aborting search", maxVisits)
-				}
-				break
-			}
-			nodeID := queue[0]
-			queue = queue[1:]
-			if visited[nodeID] {
-				continue
-			}
-			visited[nodeID] = true
-
-			node, ok := e.workflow.Nodes[nodeID]
-			if !ok {
-				continue
-			}
-			// Convergence point: explicitly marked OR has multiple distinct incoming sources.
-			if nodeAwaitMode(node) != ir.AwaitNone || len(inSources[nodeID]) > 1 {
-				return nodeID
-			}
-			// Follow outgoing edges.
-			for _, edge := range e.workflow.Edges {
-				if edge.From == nodeID {
-					queue = append(queue, edge.To)
-				}
-			}
-		}
-	}
-	return ""
+	return ir.ExecBranchConvergencePoint(e.workflow, routerNodeID, fanEdges)
 }
 
 // ---------------------------------------------------------------------------
