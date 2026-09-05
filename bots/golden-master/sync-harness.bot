@@ -3929,15 +3929,16 @@ tool gate_replay:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        # The output read so far is already carried by the exception. Reading
-        # the pipe a second time would block for as long as ANY descendant that
-        # escaped the group kill keeps its write end open — an unbounded wait,
-        # immediately after the node enforced its own wall, and past the run's
-        # max_duration. The reap is bounded for the same reason.
-        # ...and it carries the RAW chunks: subprocess decodes on the normal
-        # return path only, so text=True does not reach the exception. Rendered
-        # as-is, the gate's last words — the operator's only window into an
-        # expiry — would be a bytes repr with the newlines escaped.
+        # The output read so far is already carried by the exception — as RAW
+        # chunks: subprocess decodes on the normal return path only, so
+        # text=True does not reach here, and rendering as-is would put a bytes
+        # repr in log_tail with the gate's last lines escaped into one.
+        #
+        # Reading the pipe a second time instead would block for as long as ANY
+        # descendant that escaped the group kill keeps its write end open — an
+        # unbounded wait, immediately after the node enforced its own wall, and
+        # past the run's max_duration. The reap below is bounded for the same
+        # reason.
         log_all = expired.output or ""
         if isinstance(log_all, bytes):
             log_all = log_all.decode("utf-8", "replace")
