@@ -232,31 +232,38 @@ lookup runs under differs:
 | Local studio / API (no team) | the operator's local `forge_token` secret | refused, `422` | `502` — retry the call |
 | Board card (dispatcher) | the tenant's forge connection | card filed `blocked` | card returned to `ready`, retried |
 
-The last column is a real distinction, not a nicety. A **refusal** is a decision
-about the pull request or the configuration — a fork, an unparsable URL, no
-connection, a rejected credential — and re-asking changes nothing. A forge that
-could not be *asked* (5xx, a timeout, a network blip) says nothing about the
-card: a board card is put back in the pool and retried on a later pass, up to a
-bounded number of attempts with a backoff, and only then filed `blocked`.
-Filing it immediately would write an operator-facing terminal flag — one the
-reconcilers deliberately refuse to reclassify — for a thirty-second hiccup.
-
-Two classification limits worth knowing: GitHub answers `403` for both a
-permission denial and a secondary rate limit, so a rate-limited card is treated
-as a decision and filed; and the attempt counter is per-replica, so a fleet of
-N replicas grants up to N× the attempts before escalating.
+#### The local lane
 
 A local `iterion studio` has no team and no forge connections, so it reads the
 `forge_token` secret instead (`iterion secret set forge_token`, the same name
 the catalog bots bind). The secret's own `allowed_hosts` pin is honoured: a
 token scoped to one forge is never sent to another because a launch named a PR
-there. With no usable credential the launch is **refused**, not admitted — the
-message names the secret and the alternative. `iterion run` does not go through
-this surface: it executes the checkout you already have, so a local CLI run of
-a PR bot is unaffected.
+there — pin yours with `--hosts <forge>` if that matters on your machine. With
+no usable credential the launch is **refused**, not admitted: the message names
+the secret and the alternative. `iterion run` does not go through this surface
+at all — it executes the checkout you already have — so a local CLI run of a PR
+bot is unaffected.
 
-Two limitations worth knowing. The guard proves a fact about the PR *on the
-forge*; it does not prove that a local studio's own checkout corresponds to
-`pr_url` — that needs remote/HEAD-SHA validation and is not implemented. And a
-`pr_url` outside the connection's App installation resolves as not-found, which
-refuses the launch.
+#### Refused vs. could-not-ask
+
+That last column is a real distinction, not a nicety. A **refusal** is a
+decision about the pull request or the configuration — a fork, an unparsable
+URL, no connection, a rejected credential — and re-asking changes nothing. A
+forge that could not be *asked* (5xx, a timeout, a network blip) says nothing
+about the card: a board card goes back in the pool and is retried on a later
+pass, up to a bounded number of attempts with a backoff, and only then filed
+`blocked`. Filing it immediately would write an operator-facing terminal flag —
+one the reconcilers deliberately refuse to reclassify — for a thirty-second
+hiccup.
+
+#### What this does not cover
+
+- GitHub answers `403` for both a permission denial and a secondary rate limit,
+  so a rate-limited card is read as a decision and filed.
+- The attempt counter is per-replica, so a fleet of N replicas grants up to N×
+  the attempts before escalating.
+- The guard proves a fact about the PR *on the forge*. It does not prove that a
+  local studio's own checkout corresponds to `pr_url` — that needs remote +
+  HEAD-SHA validation, which is not implemented.
+- A `pr_url` outside the connection's App installation resolves as not-found,
+  which refuses the launch.
