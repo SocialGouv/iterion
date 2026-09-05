@@ -5369,6 +5369,8 @@ export interface components {
             };
             sync_every: number;
             sync_every_seconds: number;
+            /** Format: date-time */
+            sync_lease_until?: string;
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
@@ -5687,6 +5689,8 @@ export interface components {
             priority?: number;
             runs?: components["schemas"]["RunRef"][];
             state: string;
+            /** Format: date-time */
+            state_at?: string;
             title: string;
             /** Format: date-time */
             updated_at: string;

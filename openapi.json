@@ -172,6 +172,10 @@
           "sync_every_seconds": {
             "type": "integer"
           },
+          "sync_lease_until": {
+            "format": "date-time",
+            "type": "string"
+          },
           "tenant_id": {
             "type": "string"
           },
@@ -1079,6 +1083,10 @@
             "type": "array"
           },
           "state": {
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
             "type": "string"
           },
           "title": {

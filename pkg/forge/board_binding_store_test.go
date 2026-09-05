@@ -174,6 +174,76 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 	})
 
+	t.Run("a claimed pass holds a bounded lease", func(t *testing.T) {
+		// The watermark CAS alone only elects one replica per TICK. A pass
+		// slower than the binding's interval (floor 1 min) makes the binding
+		// due again while it is still running, and the next tick's claim
+		// presents the watermark THIS pass wrote — so it matches, and two
+		// replicas reconcile the same board at once, issuing duplicate board
+		// writes on the same cards. The lease is what makes the claim mean
+		// "and nobody else is inside it".
+		if err := store.Upsert(ctx, binding("team-lease", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		at := base.Add(time.Hour)
+		won, err := store.ClaimSync(ctx, "team-lease", time.Time{}, at)
+		if err != nil || !won {
+			t.Fatalf("ClaimSync: won=%v err=%v", won, err)
+		}
+		// One interval later the binding is due again and the pass is still
+		// running. The presented watermark MATCHES — only the lease refuses.
+		overrun := at.Add(90 * time.Second)
+		won2, err := store.ClaimSync(ctx, "team-lease", at, overrun)
+		if err != nil {
+			t.Fatalf("ClaimSync (overlapping): %v", err)
+		}
+		if won2 {
+			t.Fatal("a second replica claimed a board whose pass is still running — that is the overlap the lease exists to refuse")
+		}
+		// The refusal must not have advanced the watermark: the running pass
+		// still owns it, and a bumped watermark would hide the overrun.
+		held, err := store.GetByTenant(ctx, "team-lease")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if !held.LastSyncedAt.Equal(at) {
+			t.Errorf("LastSyncedAt = %v, want the running pass's %v", held.LastSyncedAt, at)
+		}
+		// A re-bind while a pass runs must not release it (the Mongo twin
+		// never names the field in its $set; the memory twin must agree).
+		if err := store.Upsert(ctx, binding("team-lease", time.Minute)); err != nil {
+			t.Fatalf("Upsert during a pass: %v", err)
+		}
+		if wonRebind, err := store.ClaimSync(ctx, "team-lease", at, overrun); err != nil || wonRebind {
+			t.Fatalf("a re-bind released a running pass's lease: won=%v err=%v", wonRebind, err)
+		}
+		// Releasing at pass end hands the board back immediately — the TTL is
+		// only ever reached by a replica that died mid-pass.
+		if err := store.ReleaseSync(ctx, "team-lease"); err != nil {
+			t.Fatalf("ReleaseSync: %v", err)
+		}
+		won3, err := store.ClaimSync(ctx, "team-lease", at, overrun)
+		if err != nil || !won3 {
+			t.Fatalf("after ReleaseSync the next pass must claim: won=%v err=%v", won3, err)
+		}
+		// And a lease nobody released expires, so a dead replica costs one
+		// TTL of staleness rather than the board forever.
+		expired := overrun.Add(forge.BoardSyncLeaseTTL).Add(time.Second)
+		won4, err := store.ClaimSync(ctx, "team-lease", overrun, expired)
+		if err != nil || !won4 {
+			t.Fatalf("an expired lease must be reclaimable: won=%v err=%v", won4, err)
+		}
+		if err := store.ReleaseSync(ctx, "team-lease"); err != nil {
+			t.Fatalf("ReleaseSync (cleanup): %v", err)
+		}
+	})
+
+	t.Run("ReleaseSync on a missing binding is a typed error", func(t *testing.T) {
+		if err := store.ReleaseSync(ctx, "nobody"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Fatalf("want ErrBoardBindingNotFound, got %v", err)
+		}
+	})
+
 	t.Run("ClaimSync on a missing binding is a typed error", func(t *testing.T) {
 		_, err := store.ClaimSync(ctx, "nobody", time.Time{}, base)
 		if !errors.Is(err, forge.ErrBoardBindingNotFound) {

@@ -20,9 +20,15 @@ import (
 // here instead of a sentence in a doc.
 //
 // It is safe on N replicas because the run is ELECTED, not coordinated: each
-// replica CAS-advances the binding's own watermark and only the winner
-// executes. No in-process global is the authority, and a replica dying
-// mid-pass costs one interval, not a stuck board.
+// replica CAS-advances the binding's own watermark AND takes a bounded lease
+// on it, and only the winner executes. No in-process global is the authority,
+// and a replica dying mid-pass costs one lease TTL, not a stuck board.
+//
+// The lease is what the watermark alone cannot give: a pass slower than the
+// binding's interval (floor 1m) makes the board due again while it is still
+// running, and the next tick presents exactly the watermark that pass wrote —
+// so it matches. Without the lease, two replicas then reconcile the same board
+// at once and issue duplicate writes on the same cards.
 
 // BoardSyncWorker reconciles every bound team's project board on its own
 // interval.
@@ -145,6 +151,20 @@ func (w *BoardSyncWorker) Tick(ctx context.Context) (int, error) {
 // revoked token is not a reconciliation, and counting it as one would make
 // Tick's return value useless as a health signal.
 func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding) bool {
+	// Hand the board back however this ends, so the next tick may claim
+	// immediately and the lease TTL is only ever reached by a replica that
+	// died. Released on a context that may already be cancelled — a shutdown
+	// must not leave the board held for the whole TTL — so the release gets
+	// its own short-lived context.
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := w.Bindings.ReleaseSync(rctx, b.TenantID); err != nil && !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			// Not fatal: the lease expires on its own. Visible, though — a
+			// board that keeps needing its TTL to come free is a symptom.
+			w.warn("board sync: team=%s: release lease: %v", b.TenantID, err)
+		}
+	}()
 	started := w.now()
 	bc, err := w.BoardClientFor(ctx, b)
 	if err != nil {
@@ -164,8 +184,9 @@ func (w *BoardSyncWorker) runPass(ctx context.Context, b forge.BoardBinding) boo
 	took := w.now().Sub(started)
 	if err != nil {
 		// Warn, and DO NOT block the next tick: the watermark already
-		// advanced, so a persistently failing board retries on its own
-		// interval instead of pinning the sweep on one bad tenant.
+		// advanced and the deferred release hands the lease back, so a
+		// persistently failing board retries on its own interval instead of
+		// pinning the sweep on one bad tenant.
 		w.warn("board sync: team=%s board=%s failed after %s: %v", b.TenantID, b.Ref(), took.Round(time.Millisecond), err)
 		return false
 	}

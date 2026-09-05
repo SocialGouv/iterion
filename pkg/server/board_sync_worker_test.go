@@ -173,3 +173,82 @@ func TestBoardSyncWorkerNeedsItsCollaborators(t *testing.T) {
 		t.Fatal("a worker with no binding store must report it, not tick silently forever")
 	}
 }
+
+// TestBoardSyncWorkerRefusesAnOverlappingPass proves the whole point of the
+// lease at the level an operator sees it: a pass that outlives the binding's
+// interval must not be joined by a second replica.
+//
+// It uses a board client that BLOCKS inside the pass, so the overlapping tick
+// happens while the first pass genuinely holds the board — the shape a
+// watermark CAS alone cannot refuse, since an overrunning pass leaves exactly
+// the watermark the next tick presents.
+func TestBoardSyncWorkerRefusesAnOverlappingPass(t *testing.T) {
+	bindings, board, bc := syncWorkerFixture(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	seedCard(t, board, 613, native.StateInbox)
+	bc.pages = [][]forge.ProjectItem{{item("PVTI_1", 613, statusValue("Planned", at))}}
+
+	inPass, release := make(chan struct{}), make(chan struct{})
+	slow := &blockingBoardClient{fakeBoardClient: bc, entered: inPass, release: release}
+	slowWorker := newTestSyncWorker(bindings, board, slow, func() time.Time { return at })
+
+	done := make(chan int, 1)
+	go func() {
+		n, err := slowWorker.Tick(context.Background())
+		if err != nil {
+			t.Errorf("slow Tick: %v", err)
+		}
+		done <- n
+	}()
+	<-inPass // the first pass owns the board and has not finished
+
+	// A second replica, one interval later: the binding is due again and the
+	// watermark it presents is the one the running pass wrote.
+	held, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("GetByTenant: %v", err)
+	}
+	second := newTestSyncWorker(bindings, board, bc, func() time.Time { return at.Add(90 * time.Second) })
+	n2, err := second.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("second Tick: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("passes = %d, want 0 — a board whose pass is still running must not be claimed again", n2)
+	}
+	after, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("GetByTenant: %v", err)
+	}
+	if !after.LastSyncedAt.Equal(held.LastSyncedAt) {
+		t.Errorf("LastSyncedAt = %v, want the running pass's %v", after.LastSyncedAt, held.LastSyncedAt)
+	}
+
+	close(release)
+	if n := <-done; n != 1 {
+		t.Errorf("the first pass = %d, want 1", n)
+	}
+	// The lease is handed back at pass end, so the next tick claims at once
+	// rather than sitting out the TTL.
+	third := newTestSyncWorker(bindings, board, bc, func() time.Time { return at.Add(2 * time.Minute) })
+	if n, err := third.Tick(context.Background()); err != nil || n != 1 {
+		t.Errorf("after the pass ended: passes = %d err = %v, want 1", n, err)
+	}
+}
+
+// blockingBoardClient parks inside ListProjectItems until released, so a test
+// can observe the board WHILE a pass holds it.
+type blockingBoardClient struct {
+	*fakeBoardClient
+	entered  chan struct{}
+	release  chan struct{}
+	oncePark sync.Once
+}
+
+func (b *blockingBoardClient) ListProjectItems(ctx context.Context, ref forge.ProjectRef, opts forge.ProjectItemListOptions) (forge.ProjectItemPage, error) {
+	b.oncePark.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return b.fakeBoardClient.ListProjectItems(ctx, ref, opts)
+}

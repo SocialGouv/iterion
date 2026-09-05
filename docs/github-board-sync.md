@@ -146,8 +146,11 @@ permanent divergence.
 
 - **Interval**: `--sync-every` on the binding. Default **2m**, floor **1m**,
   `0`/`off` disables it. Below the floor is *refused*, not clamped.
-- **Election**: each replica CAS-advances the binding's watermark and only the
-  winner runs the pass, so N replicas cost one pass, not N.
+- **Election**: each replica CAS-advances the binding's watermark *and takes a
+  5-minute lease on it*; only the winner runs the pass, so N replicas cost one
+  pass, not N — including when a pass outlives the interval, where the
+  watermark alone would let a second replica join it. The lease is handed back
+  at pass end, so it only ever expires for a replica that died mid-pass.
 - **Cost**: one project read per bound team per interval. GitHub prices a
   Projects v2 page at a handful of points against a 5000/hour budget.
 - **Logs**: one line per pass.

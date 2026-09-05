@@ -46,6 +46,23 @@ const DefaultBoardSyncEvery = 2 * time.Minute
 // board nothing changed on.
 const MinBoardSyncEvery = time.Minute
 
+// BoardSyncLeaseTTL bounds how long one claimed pass may hold a board.
+//
+// The watermark CAS alone elects one replica per TICK, not one pass at a time:
+// a pass slower than the binding's interval (floor 1m) makes the binding due
+// again while it is still running, and the next tick presents exactly the
+// watermark that pass wrote — so it matches, and two replicas reconcile the
+// same board at once, issuing duplicate writes on the same cards. The lease is
+// the second half of the claim: "and nobody else is inside it".
+//
+// The TTL is a backstop, not the normal release: a pass hands the board back
+// when it ends (ReleaseSync), so the TTL is only ever reached by a replica that
+// DIED mid-pass — and it is what bounds the damage of that death to one TTL of
+// staleness instead of a board nobody may claim again. Deliberately not
+// heartbeated: a reconciliation net is not a run, and a lease it has to refresh
+// is machinery a five-minute ceiling buys nothing over.
+const BoardSyncLeaseTTL = 5 * time.Minute
+
 // BoundLabelField is one board single-select field imported onto cards as a
 // namespaced label.
 type BoundLabelField struct {
@@ -102,6 +119,10 @@ type BoardBinding struct {
 	// LastSyncedAt is the periodic pass's watermark AND its CAS token: a
 	// replica claims the next pass by presenting the value it read.
 	LastSyncedAt time.Time `bson:"last_synced_at,omitempty" json:"last_synced_at,omitempty"`
+	// SyncLeaseUntil is when the CURRENT pass's hold on this board expires.
+	// Stamped by ClaimSync, cleared by ReleaseSync at pass end; a value in the
+	// future refuses a second replica's claim. Zero = no pass running.
+	SyncLeaseUntil time.Time `bson:"sync_lease_until,omitempty" json:"sync_lease_until,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -213,11 +234,18 @@ type BoardBindingStore interface {
 	// DueBindings returns the bindings whose periodic pass is due at now.
 	// SyncEvery == 0 is never due.
 	DueBindings(ctx context.Context, now time.Time) ([]BoardBinding, error)
-	// ClaimSync atomically advances a binding's watermark from `seen` to `at`,
-	// returning whether THIS caller won. It is what makes the periodic pass
-	// safe on N replicas: a replica presenting a stale watermark loses and
-	// skips the pass, rather than running it a second time.
+	// ClaimSync atomically advances a binding's watermark from `seen` to `at`
+	// AND takes a BoardSyncLeaseTTL lease on the board, returning whether THIS
+	// caller won. It is what makes the periodic pass safe on N replicas: a
+	// replica presenting a stale watermark loses, and so does one whose tick
+	// finds a pass still running (the watermark alone cannot tell them apart —
+	// an overrunning pass leaves a watermark that matches).
 	ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error)
+	// ReleaseSync clears the lease at pass end, whatever the pass's outcome,
+	// so the next tick may claim immediately. Without it a board would sit out
+	// the whole TTL after every pass; with it the TTL only ever fires for a
+	// replica that died mid-pass.
+	ReleaseSync(ctx context.Context, tenantID string) error
 }
 
 // ---- in-memory store (tests / local) ----
@@ -246,6 +274,10 @@ func (m *MemoryBoardBindingStore) Upsert(_ context.Context, b BoardBinding) erro
 		if b.LastSyncedAt.IsZero() {
 			b.LastSyncedAt = prev.LastSyncedAt
 		}
+		// A re-bind must not release a pass that is running: the Mongo twin
+		// never names the field in its $set, so dropping it here would make
+		// the two twins disagree on whether the board is held.
+		b.SyncLeaseUntil = prev.SyncLeaseUntil
 	}
 	m.items[b.TenantID] = b
 	return nil
@@ -311,10 +343,30 @@ func (m *MemoryBoardBindingStore) ClaimSync(_ context.Context, tenantID string, 
 	if !b.LastSyncedAt.Equal(seen) {
 		return false, nil
 	}
+	// A live lease refuses the claim, and refuses it WITHOUT advancing the
+	// watermark: the running pass still owns it, and bumping it here would
+	// hide the overrun from the pass that is actually in flight.
+	if b.SyncLeaseUntil.After(at) {
+		return false, nil
+	}
 	b.LastSyncedAt = at
+	b.SyncLeaseUntil = at.Add(BoardSyncLeaseTTL)
 	b.UpdatedAt = time.Now().UTC()
 	m.items[tenantID] = b
 	return true, nil
+}
+
+func (m *MemoryBoardBindingStore) ReleaseSync(_ context.Context, tenantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	b.SyncLeaseUntil = time.Time{}
+	b.UpdatedAt = time.Now().UTC()
+	m.items[tenantID] = b
+	return nil
 }
 
 // ---- Mongo store ----
@@ -420,6 +472,14 @@ func (s *MongoBoardBindingStore) DueBindings(ctx context.Context, now time.Time)
 // which the follow-up read distinguishes).
 func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string, seen, at time.Time) (bool, error) {
 	filter := bson.M{"_id": tenantID}
+	// The lease half of the claim: no pass may be running. An absent field is
+	// a binding that never ran (or was released), so the predicate has to
+	// accept all three shapes the field takes, exactly like the watermark.
+	filter["$and"] = []bson.M{{"$or": []bson.M{
+		{"sync_lease_until": bson.M{"$exists": false}},
+		{"sync_lease_until": nil},
+		{"sync_lease_until": bson.M{"$lte": at}},
+	}}}
 	if seen.IsZero() {
 		// "never synced" is stored as an ABSENT field, so the CAS predicate
 		// must accept both shapes — a missing field and an explicit zero.
@@ -432,20 +492,40 @@ func (s *MongoBoardBindingStore) ClaimSync(ctx context.Context, tenantID string,
 		filter["last_synced_at"] = seen
 	}
 	res, err := s.coll.UpdateOne(ctx, filter,
-		bson.M{"$set": bson.M{"last_synced_at": at, "updated_at": time.Now().UTC()}})
+		bson.M{"$set": bson.M{
+			"last_synced_at":   at,
+			"sync_lease_until": at.Add(BoardSyncLeaseTTL),
+			"updated_at":       time.Now().UTC(),
+		}})
 	if err != nil {
 		return false, fmt.Errorf("forge: claim board sync: %w", err)
 	}
 	if res.ModifiedCount == 1 {
 		return true, nil
 	}
-	// Nothing matched: either a racing replica won, or there is no binding at
-	// all. Those are different answers to the caller, so distinguish them
-	// rather than reporting "lost" for a missing row.
+	// Nothing matched: a racing replica won, a pass is still running, or there
+	// is no binding at all. The last one is a different answer to the caller,
+	// so distinguish it rather than reporting "lost" for a missing row.
 	if _, err := s.GetByTenant(ctx, tenantID); err != nil {
 		return false, err
 	}
 	return false, nil
+}
+
+// ReleaseSync clears the lease. It is deliberately NOT conditional on who
+// holds it: the only caller is the pass that just claimed, and a release that
+// could fail on a lease already expired-and-retaken would leave the board held
+// by a pass that ended.
+func (s *MongoBoardBindingStore) ReleaseSync(ctx context.Context, tenantID string) error {
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": tenantID},
+		bson.M{"$unset": bson.M{"sync_lease_until": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}})
+	if err != nil {
+		return fmt.Errorf("forge: release board sync: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
 }
 
 func (s *MongoBoardBindingStore) find(ctx context.Context, filter bson.M) ([]BoardBinding, error) {

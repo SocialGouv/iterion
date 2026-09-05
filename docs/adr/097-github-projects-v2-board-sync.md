@@ -273,10 +273,24 @@ stamping a fresh `updatedAt` that would then win every conflict against the
 operator.
 
 **Owner and election.** `BoardSyncWorker` ticks every 30s, takes each binding
-whose own `sync_every` is due, and **CAS-advances that binding's watermark**;
-only the winner runs the pass. No in-process global is the authority, N
-replicas are correct, and a replica dying mid-pass costs one interval rather
-than a stuck board. Each pass logs exactly one line: an `Info` with the
+whose own `sync_every` is due, and **CAS-advances that binding's watermark
+while taking a lease on it** (`sync_lease_until`, TTL
+`forge.BoardSyncLeaseTTL` = 5 min); only the winner runs the pass. No
+in-process global is the authority and N replicas are correct.
+
+The lease is the half the watermark cannot give. A pass slower than the
+binding's interval (floor 1m) makes the board due again *while it is still
+running*, and the next tick presents exactly the watermark that pass wrote — so
+the CAS matches, and two replicas reconcile the same board at once, issuing
+duplicate `SetSingleSelect` calls and duplicate `External` writes on the same
+cards. With the lease, the second one loses without advancing the watermark.
+
+The TTL is a backstop, not the normal release: `runPass` hands the board back
+when it ends, whatever the outcome, so the TTL only ever fires for a replica
+that **died** mid-pass — bounding that death to one TTL of staleness rather
+than a board nobody may claim again. Deliberately not heartbeated (unlike
+ADR-096's per-card claim lease): a reconciliation net is not a run, and a lease
+it must refresh is machinery a five-minute ceiling buys nothing over. Each pass logs exactly one line: an `Info` with the
 counters (`items`, `moved`, `reflected`, `labelled`, `conflicts`,
 `refused_terminal`, `reflect_failed`, `skipped_no_card`) and its duration, or a
 `Warn` naming the failure — which never blocks the next tick, since a
