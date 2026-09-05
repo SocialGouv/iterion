@@ -23,6 +23,11 @@ func newBoardBindingTestServer(t *testing.T, bc forge.BoardClient) *Server {
 	s := newOrgTestServer(t)
 	s.boardBindings = forge.NewMemoryBoardBindingStore()
 	s.forgeConnections = forge.NewMemoryConnectionStore()
+	// conn-1 belongs to t1; conn-other belongs to a DIFFERENT tenant. Both are
+	// resolvable by id — the store's Get is global by design — which is exactly
+	// what makes the ownership check the binding's own responsibility.
+	seedConn(t, s, "conn-1", "t1")
+	seedConn(t, s, "conn-other", "team-other")
 	s.boardClientForBinding = func(context.Context, forge.BoardBinding) (forge.BoardClient, error) {
 		return bc, nil
 	}
@@ -30,6 +35,15 @@ func newBoardBindingTestServer(t *testing.T, bc forge.BoardClient) *Server {
 		return bc, forge.ProviderGitHub, nil
 	}
 	return s
+}
+
+func seedConn(t *testing.T, s *Server, id, tenant string) {
+	t.Helper()
+	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
+		ID: id, TenantID: tenant, Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
+	}); err != nil {
+		t.Fatalf("seed connection %s: %v", id, err)
+	}
 }
 
 func bindingReq(ctx context.Context, method, path, body, teamID string) *http.Request {
@@ -197,6 +211,83 @@ func TestBoardBindingIsTenantScoped(t *testing.T) {
 	}
 	if b.Owner != "SocialGouv" {
 		t.Errorf("an outsider rewrote the binding: %+v", b)
+	}
+}
+
+// TestBoardBindingRefusesAnotherTenantsConnection is the credential boundary.
+// The team id comes from the PATH (and is authorized), but the connection id
+// comes from the BODY — and forge.ConnectionStore.Get is keyed on the id
+// alone, with no tenant filter, so an id from another team resolves fine.
+//
+// Without the ownership check, an admin of team A names team B's connection
+// and gets a PERSISTED binding on B's credential: the sync worker then keeps
+// reading B's org project and, worse, calls SetSingleSelect on it — writing
+// Status fields on another organisation's board, indefinitely.
+func TestBoardBindingRefusesAnotherTenantsConnection(t *testing.T) {
+	s := newBoardBindingTestServer(t, &bindRouteFake{project: routeBoardProject()})
+
+	w := httptest.NewRecorder()
+	s.handlePutBoardBinding(w, bindingReq(superAdminCtx(), "PUT", "/api/teams/t1/board-binding",
+		`{"owner":"SocialGouv","number":203,"connection_id":"conn-other"}`, "t1"))
+	if w.Code == http.StatusOK {
+		t.Fatalf("bound another tenant's connection: %s", w.Body.String())
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+	// Non-enumerating, like the peer routes: "not found", never "not yours".
+	if body := w.Body.String(); !strings.Contains(body, "not found") {
+		t.Errorf("the refusal must not confirm the connection exists, got %q", body)
+	}
+	// And nothing was persisted — a stored binding is what the worker would
+	// keep using.
+	if _, err := s.boardBindings.GetByTenant(context.Background(), "t1"); err == nil {
+		t.Fatal("a refused bind must persist nothing")
+	}
+}
+
+// TestBoardBindingRefusesAnUnknownConnection keeps the same shape for an id
+// that exists nowhere, so the two cases are indistinguishable to a caller.
+func TestBoardBindingRefusesAnUnknownConnection(t *testing.T) {
+	s := newBoardBindingTestServer(t, &bindRouteFake{project: routeBoardProject()})
+	w := httptest.NewRecorder()
+	s.handlePutBoardBinding(w, bindingReq(superAdminCtx(), "PUT", "/api/teams/t1/board-binding",
+		`{"owner":"SocialGouv","number":203,"connection_id":"conn-nope"}`, "t1"))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "not found") {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// TestBoardClientForBoundBindingRechecksOwnership covers what happens AFTER a
+// legitimate bind: the connection is deleted, or re-created under another
+// tenant. The stored binding still names it, and the sync worker writes
+// through it — so ownership is re-asserted at use time, not only at write.
+func TestBoardClientForBoundBindingRechecksOwnership(t *testing.T) {
+	s := newBoardBindingTestServer(t, &bindRouteFake{project: routeBoardProject()})
+	ctx := context.Background()
+
+	// A binding the bind path would have accepted.
+	ok := forge.BoardBinding{TenantID: "t1", ConnectionID: "conn-1"}
+	if _, err := s.boardClientForBoundBinding(ctx, ok); err != nil {
+		t.Fatalf("an owned connection must resolve: %v", err)
+	}
+
+	// The same binding after the connection moved to another tenant.
+	foreign := forge.BoardBinding{TenantID: "t1", ConnectionID: "conn-other"}
+	if _, err := s.boardClientForBoundBinding(ctx, foreign); err == nil {
+		t.Fatal("the worker must refuse a credential the team does not own")
+	}
+
+	// And after it is deleted outright — a dangling credential is not a
+	// licence to keep writing.
+	if err := s.forgeConnections.Delete(ctx, "conn-1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.boardClientForBoundBinding(ctx, ok); err == nil {
+		t.Fatal("a deleted connection must refuse, not resolve")
 	}
 }
 

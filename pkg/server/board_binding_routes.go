@@ -120,6 +120,21 @@ func (s *Server) handleDeleteBoardBinding(w http.ResponseWriter, r *http.Request
 // the connection's credential. It is the shared body behind the HTTP handler
 // and any other caller (the remote CLI goes through the HTTP one).
 func (s *Server) bindTeamBoard(ctx context.Context, teamID string, req boardBindingReq) (forge.BoardBinding, error) {
+	// The team id is authorized from the PATH; the connection id arrives in the
+	// BODY, and ConnectionStore.Get is keyed on the id alone with no tenant
+	// filter — so an id belonging to another team resolves perfectly well.
+	// Checking ownership here is therefore this route's own responsibility, as
+	// it is for every peer forge route (connAdminFor, the launch path, the
+	// approval routes).
+	//
+	// Skipping it is not a read leak that ends with the response: the binding
+	// is PERSISTED with that connection, so the sync worker keeps using another
+	// org's credential indefinitely — and it WRITES, calling SetSingleSelect on
+	// that org's board. The refusal is non-enumerating: "not found" for both a
+	// foreign connection and a nonexistent one, so a caller cannot probe which.
+	if err := s.assertConnectionOwnedBy(ctx, teamID, req.ConnectionID); err != nil {
+		return forge.BoardBinding{}, err
+	}
 	bc, provider, err := s.boardClientFor(ctx, req.ConnectionID)
 	if err != nil {
 		return forge.BoardBinding{}, err
@@ -140,6 +155,26 @@ func (s *Server) bindTeamBoard(ctx context.Context, teamID string, req boardBind
 		bind.SyncEvery = &d
 	}
 	return forge.BindBoard(ctx, bc, bind)
+}
+
+// errConnectionNotOwned is the single non-enumerating refusal both the
+// foreign-connection and the unknown-connection cases return.
+var errConnectionNotOwned = errors.New("connection not found")
+
+// assertConnectionOwnedBy refuses a connection that does not belong to teamID.
+//
+// It fails CLOSED when the connection store is absent: a deployment with no
+// connection store cannot prove ownership, and a credential boundary that
+// degrades to "allow" when its evidence is missing is not a boundary.
+func (s *Server) assertConnectionOwnedBy(ctx context.Context, teamID, connID string) error {
+	if s.forgeConnections == nil {
+		return errors.New("forge connections are not configured on this instance")
+	}
+	conn, err := s.forgeConnections.Get(ctx, connID)
+	if err != nil || conn.TenantID != teamID {
+		return errConnectionNotOwned
+	}
+	return nil
 }
 
 // boardClientFor resolves a forge connection into a project-board client. The
@@ -169,7 +204,19 @@ func (s *Server) boardClientFor(ctx context.Context, connID string) (forge.Board
 
 // boardClientForBoundBinding resolves the board client a bound team's sync
 // pass writes through — the worker's BoardClientFor.
+//
+// It re-asserts ownership at USE time, not only at write time. The bind path
+// guarantees the stored connection belonged to the team when it was written;
+// this covers what happens afterwards — a connection deleted, or re-created
+// under another tenant — so a pass that WRITES to a forge can never ride a
+// credential the team no longer owns. The worker turns the refusal into its
+// per-tenant warning and skips that team.
 func (s *Server) boardClientForBoundBinding(ctx context.Context, b forge.BoardBinding) (forge.BoardClient, error) {
+	if s.forgeConnections != nil {
+		if err := s.assertConnectionOwnedBy(ctx, b.TenantID, b.ConnectionID); err != nil {
+			return nil, err
+		}
+	}
 	if s.boardClientForBinding != nil {
 		return s.boardClientForBinding(ctx, b)
 	}
