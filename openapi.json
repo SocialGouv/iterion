@@ -1597,6 +1597,12 @@
             "format": "date-time",
             "type": "string"
           },
+          "cred_fingerprints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "current_run_start": {
             "format": "date-time",
             "type": "string"
@@ -1638,6 +1644,10 @@
           "inputs": {
             "additionalProperties": {},
             "type": "object"
+          },
+          "llm_idle_since": {
+            "format": "date-time",
+            "type": "string"
           },
           "loc_added": {
             "type": "integer"
@@ -1706,6 +1716,10 @@
             "type": "integer"
           },
           "shard_label": {
+            "type": "string"
+          },
+          "skipped_cred_reopens_at": {
+            "format": "date-time",
             "type": "string"
           },
           "source": {
@@ -2173,6 +2187,9 @@
       },
       "apiKeyView": {
         "properties": {
+          "alive_runs": {
+            "type": "integer"
+          },
           "created_at": {
             "type": "string"
           },
@@ -3031,6 +3048,21 @@
           }
         },
         "type": "object"
+      },
+      "usageReadingsClearedView": {
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "deleted"
+        ],
+        "type": "object"
       }
     }
   },
@@ -3881,6 +3913,37 @@
           "admin"
         ]
       }
+    },
+    "/api/admin/usage-readings/{fingerprint}": {
+      "delete": {
+        "operationId": "deleteAdminUsageReadingsByFingerprint",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/usageReadingsClearedView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/admin/usage-readings/{fingerprint}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "fingerprint",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/admin/users": {
       "get": {

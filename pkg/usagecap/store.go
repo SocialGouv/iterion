@@ -25,6 +25,23 @@ type Store interface {
 	// An unknown key is not an error: it means "nothing learned yet",
 	// which must read as "not blocked".
 	Latest(ctx context.Context, key string) ([]Reading, error)
+	// DeleteByFingerprint forgets every reading recorded for ONE
+	// credential, under every key its meter was composed with (any
+	// backend, any scope — a lent or platform credential is metered under
+	// several). It is the operator's escape hatch when a reset is known
+	// to have happened that the ledger cannot see (the provider reset the
+	// window early): the credential reads "nothing learned yet" until the
+	// next session re-measures it. Fingerprint-less legacy keys name a
+	// slot, not a credential, and are never matched. Returns how many
+	// readings were dropped; an unknown fingerprint drops zero and is not
+	// an error.
+	DeleteByFingerprint(ctx context.Context, fingerprint string) (int, error)
+}
+
+// keyFingerprintSuffix is the exact tail Key appends for a credential
+// fingerprint — the segment DeleteByFingerprint matches on.
+func keyFingerprintSuffix(credFP string) string {
+	return "|fp:" + strings.TrimSpace(credFP)
 }
 
 // Key identifies the credential whose windows a reading describes.
@@ -54,7 +71,7 @@ func Key(backend, scope, credFP string) string {
 	}
 	k := backend + "|" + scope
 	if fp := strings.TrimSpace(credFP); fp != "" {
-		k += "|fp:" + fp
+		k += keyFingerprintSuffix(fp)
 	}
 	return k
 }
@@ -116,4 +133,22 @@ func (s *MemStore) Latest(_ context.Context, key string) ([]Reading, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// DeleteByFingerprint drops every key carrying the credential's fp segment.
+func (s *MemStore) DeleteByFingerprint(_ context.Context, fingerprint string) (int, error) {
+	if strings.TrimSpace(fingerprint) == "" {
+		return 0, nil
+	}
+	suffix := keyFingerprintSuffix(fingerprint)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for key, byWindow := range s.data {
+		if strings.HasSuffix(key, suffix) {
+			n += len(byWindow)
+			delete(s.data, key)
+		}
+	}
+	return n, nil
 }

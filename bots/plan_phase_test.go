@@ -3,6 +3,7 @@ package bots
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -177,28 +178,54 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 
 			// Declaration-order invariant: an UNTRAVERSED forward edge still
 			// contributes its mappings (every edge whose source has output
-			// applies, later declaration winning), so EVERY forward edge into
-			// campaign that maps a plan field — plan_topology's and
-			// plan_gate's blanks both qualify when the phase is on — must be
-			// declared BEFORE plan_revise's edge, or its blanks clobber the
-			// revised plan on pass 1.
-			planFields := map[string]bool{"plan": true, "plan_critique": true, "plan_responses": true}
-			reviseIdx := -1
-			for i, e := range wf.Edges {
-				if e.To == "campaign" && e.From == "plan_revise" {
-					reviseIdx = i
-				}
+			// applies, later declaration winning), so every forward edge into
+			// campaign that maps a plan field to a LITERAL BLANK (the
+			// phase-off / no-prior-content fallback: plan_topology's and
+			// plan_gate's) must be declared BEFORE every forward edge that
+			// maps it to REAL content, or the blank's untraversed
+			// contribution clobbers the real value on pass 1.
+			//
+			// Expressed on the VALUE (blank vs. non-blank), not on a
+			// hardcoded source node id: most bots hand the revised plan to
+			// campaign directly from plan_revise, but a bot may route it
+			// through an extra deterministic hop first (branch-improve-loop's
+			// plan_budget_gate, native:695) — the invariant is the same
+			// either way, and pinning the literal source name here would
+			// make this shared test bot-specific.
+			planFields := []string{"plan", "plan_critique", "plan_responses"}
+			type fieldMapping struct {
+				idx   int
+				from  string
+				blank bool
 			}
-			if reviseIdx < 0 {
-				t.Fatalf("%s: plan_revise -> campaign edge missing", bot)
-			}
+			byField := map[string][]fieldMapping{}
 			for i, e := range wf.Edges {
-				if e.To != "campaign" || e.From == "plan_revise" || e.IsBoundedIteration() {
+				if e.To != "campaign" || e.IsBoundedIteration() {
 					continue
 				}
 				for _, m := range e.With {
-					if planFields[m.Key] && i > reviseIdx {
-						t.Errorf("%s: forward edge %s -> campaign (idx %d) maps %q but is declared AFTER plan_revise -> campaign (idx %d) — its untraversed contribution would clobber the revised plan", bot, e.From, i, m.Key, reviseIdx)
+					if !slices.Contains(planFields, m.Key) {
+						continue
+					}
+					blank := len(m.Refs) == 0 && m.Raw == ""
+					byField[m.Key] = append(byField[m.Key], fieldMapping{idx: i, from: e.From, blank: blank})
+				}
+			}
+			for _, f := range planFields {
+				mappings := byField[f]
+				firstReal := -1
+				for _, fm := range mappings {
+					if !fm.blank && (firstReal == -1 || fm.idx < firstReal) {
+						firstReal = fm.idx
+					}
+				}
+				if firstReal == -1 {
+					t.Errorf("%s: no forward edge into campaign maps %q to real content — the plan phase's output never reaches campaign", bot, f)
+					continue
+				}
+				for _, fm := range mappings {
+					if fm.blank && fm.idx > firstReal {
+						t.Errorf("%s: %s -> campaign (idx %d) maps %q BLANK but is declared AFTER the real mapping (idx %d) — its untraversed contribution would clobber the real value", bot, fm.from, fm.idx, f, firstReal)
 					}
 				}
 			}

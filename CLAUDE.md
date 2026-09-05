@@ -210,7 +210,13 @@ the hours this one spent.
   --five-hour 80 --week 70`, super-admin; DB record over the env
   defaults, ≤30s propagation to both deployments, `/healthz` echoes the
   effective values — ADR-090). Read it when bots are eating the forfait
-  an operator also works on.
+  an operator also works on — and when every claude_code run is refused
+  at admission on a window the provider's own dashboard shows near 0%: a
+  stored reading is trusted for `ITERION_USAGE_CAP_TRUST_WINDOW` (3h)
+  after it was observed, not until its reset instant, and `iterion
+  remote admin usage-readings clear <fingerprint>` forgets one
+  credential's readings on the spot (a run refused pre-flight never
+  refreshes them by itself).
 - [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).

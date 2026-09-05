@@ -65,9 +65,9 @@ type Decision struct {
 	Usage *Usage
 }
 
-// httpDoer is the minimal HTTP surface, satisfied by *http.Client. Injectable
+// Doer is the minimal HTTP surface, satisfied by *http.Client. Injectable
 // so tests can stub the transport.
-type httpDoer interface {
+type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
@@ -113,7 +113,7 @@ func Check(ctx context.Context, capPct float64) Decision {
 }
 
 // check is the injectable core of Check.
-func check(ctx context.Context, capPct float64, configDir func() string, anthropicAPIKey string, doer httpDoer) Decision {
+func check(ctx context.Context, capPct float64, configDir func() string, anthropicAPIKey string, doer Doer) Decision {
 	if capPct <= 0 {
 		return Decision{Skipped: true, Reason: "forfait cap check disabled (cap <= 0)"}
 	}
@@ -136,10 +136,32 @@ func check(ctx context.Context, capPct float64, configDir func() string, anthrop
 	return Decide(*u, capPct)
 }
 
-// fetchUsage GETs the OAuth usage endpoint with the given bearer token and
-// parses the utilization percentages. The token is used only as the
-// Authorization header — it is never included in a returned error.
-func fetchUsage(ctx context.Context, token string, doer httpDoer) (*Usage, error) {
+// WindowUsage is one provider window as the OAuth usage endpoint reports
+// it — the same vocabulary as the CLI's rate_limit_event, so a caller can
+// record it where session telemetry lands.
+type WindowUsage struct {
+	// Window is the provider's window name: five_hour, seven_day,
+	// seven_day_opus, seven_day_sonnet.
+	Window string
+	// Utilization is the FRACTION consumed, 0..1 (the endpoint reports a
+	// percentage; converted here so it matches the session telemetry).
+	Utilization float64
+	// ResetsAt is when the window rolls over; zero when the endpoint did
+	// not say.
+	ResetsAt time.Time
+}
+
+// usageWindows are the endpoint's per-window objects, in the order they
+// are reported.
+var usageWindows = []string{"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"}
+
+// FetchWindows GETs the OAuth usage endpoint with the given bearer token
+// and returns every window it reports. The token is used only as the
+// Authorization header — it is never included in a returned error. A
+// non-200 is an error the caller degrades on: a `claude setup-token`
+// credential lacks the user:profile scope the endpoint requires and is
+// answered 403.
+func FetchWindows(ctx context.Context, token string, doer Doer) ([]WindowUsage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, usageEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build usage request: %w", err)
@@ -157,18 +179,56 @@ func fetchUsage(ctx context.Context, token string, doer httpDoer) (*Usage, error
 		return nil, fmt.Errorf("usage endpoint returned HTTP %d", resp.StatusCode)
 	}
 
-	var body struct {
-		FiveHour struct {
-			Utilization float64 `json:"utilization"`
-		} `json:"five_hour"`
-		SevenDay struct {
-			Utilization float64 `json:"utilization"`
-		} `json:"seven_day"`
-	}
+	var body map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode usage body: %w", err)
 	}
-	return &Usage{FiveHour: body.FiveHour.Utilization, SevenDay: body.SevenDay.Utilization}, nil
+	out := make([]WindowUsage, 0, len(usageWindows))
+	for _, name := range usageWindows {
+		raw, ok := body[name]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		var w struct {
+			Utilization *float64 `json:"utilization"`
+			ResetsAt    string   `json:"resets_at"`
+		}
+		if err := json.Unmarshal(raw, &w); err != nil {
+			return nil, fmt.Errorf("decode usage window %s: %w", name, err)
+		}
+		if w.Utilization == nil {
+			continue
+		}
+		wu := WindowUsage{Window: name, Utilization: *w.Utilization / 100}
+		if w.ResetsAt != "" {
+			t, err := time.Parse(time.RFC3339Nano, w.ResetsAt)
+			if err != nil {
+				return nil, fmt.Errorf("decode usage window %s: resets_at %q: %w", name, w.ResetsAt, err)
+			}
+			wu.ResetsAt = t.UTC()
+		}
+		out = append(out, wu)
+	}
+	return out, nil
+}
+
+// fetchUsage is the two-window percentage view the auto-resume cap check
+// decides on, over FetchWindows.
+func fetchUsage(ctx context.Context, token string, doer Doer) (*Usage, error) {
+	windows, err := FetchWindows(ctx, token, doer)
+	if err != nil {
+		return nil, err
+	}
+	u := &Usage{}
+	for _, w := range windows {
+		switch w.Window {
+		case "five_hour":
+			u.FiveHour = w.Utilization * 100
+		case "seven_day":
+			u.SevenDay = w.Utilization * 100
+		}
+	}
+	return u, nil
 }
 
 // readAccessToken reads the Claude Code OAuth access token from
@@ -178,6 +238,26 @@ func fetchUsage(ctx context.Context, token string, doer httpDoer) (*Usage, error
 func readAccessToken(configDir func() string) (string, bool) {
 	tok := secrets.AnthropicForfaitAccessToken(configDir())
 	return tok, tok != ""
+}
+
+// AccessTokenFromCredentialsJSON extracts the Claude Code OAuth access
+// token from a credentials.json payload — the shape on disk under
+// ~/.claude and the blob a cloud forfait is uploaded as. ("", false) on any
+// problem; the token is never logged.
+func AccessTokenFromCredentialsJSON(data []byte) (string, bool) {
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "", false
+	}
+	tok := strings.TrimSpace(creds.ClaudeAiOauth.AccessToken)
+	if tok == "" {
+		return "", false
+	}
+	return tok, true
 }
 
 // claudeConfigDir is the shared resolver: CLAUDE_CONFIG_DIR, else ~/.claude.

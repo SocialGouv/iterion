@@ -24,6 +24,13 @@ export interface ApiKeyView {
   scope_user_id?: string;
   created_at: string;
   last_used_at?: string;
+  /** Ceiling on alive runs holding this key at once; absent/0 = uncapped. */
+  max_concurrent_runs?: number;
+  /**
+   * Runs counting against the ceiling right now (alive, stamped with this
+   * key, executing a model node). Absent when the server could not count.
+   */
+  alive_runs?: number;
 }
 
 export type OAuthKind = "claude_code" | "codex";

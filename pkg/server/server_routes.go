@@ -284,6 +284,10 @@ func (s *Server) routes() {
 	// operational env vars — first family: the usage-cap percentages.
 	s.registerAdminSettingsRoutes()
 
+	// Usage-window readings (super-admin): clear one credential's stored
+	// readings after a provider reset the ledger cannot see.
+	s.registerAdminUsageReadingsRoutes()
+
 	// Platform bot overrides (super-admin): the DB-backed form of the baked
 	// bot catalog, so iterating on a native bot needs no image rollout.
 	s.registerAdminBotRoutes()

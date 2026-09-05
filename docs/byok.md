@@ -49,7 +49,9 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `last4` / `fingerprint` | shown in UI; the key itself is never returned. `fingerprint` is `FingerprintSHA256(plaintext)` — the audit identity the run document, the GRANTED log line and the metering bump all key on; indexed (sparse) by `EnsureSchema` |
 | `sealed_secret` | the ciphertext (`SealAPIKey(sealer, keyID, plaintext)`); JSON-hidden (`json:"-"`) |
 | `is_default` | the default for its `(team, user, provider)` tuple — `ClearDefault` keeps it unique |
-| `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`, no tenant filter — a lent or platform key moves on its own row). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends |
+| `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends. **Scope follows the key's tier**: a tenant's own key is bumped under the run's tenant only, so a different tenant that stored the byte-identical secret never reads its own key as "in use" (the studio shows this field as exactly that, before a rotate or delete); a platform-tier or pool-lent key (`RunBundle.PlatformSourced` / `PoolSourced`) is bumped across tenants, because its row lives under the platform sentinel or in the donor's tenant and it serves every tenant |
+| `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
+| `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
 | `expires_at` | optional |
 
 - Interface: `ApiKeyStore` (Create/Get/GetOwned/Update/Delete/ListByTeam/ListByUser/MarkUsed/MarkFingerprintUsed/ClearDefault) — [pkg/secrets/byok.go](../pkg/secrets/byok.go). `GetOwned` is the credential pool's cross-tenant read, bounded by ownership; `MarkFingerprintUsed` the runner's metering bump.
@@ -61,6 +63,38 @@ The plaintext is sealed with the server's `Sealer` before it touches
 Mongo, and is only unsealed transiently inside `resolveAndSealCredentials`
 to be re-sealed into the per-run bundle. It is never written to logs,
 events, artifacts, or returned by the API.
+
+## Concurrency ceiling — what counts
+
+`max_concurrent_runs` is enforced at resolution
+(`cloudpublisher.apiKeyUsable`): a key at its ceiling is passed over like a
+refused one and the walk hands the next key of that provider over (or the
+next tier). The count is `CountAliveRunsWithCredFingerprint` on the run
+store — both twins, one conformance row — and a run counts against a key
+only when **all three** hold:
+
+1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
+   A parked or paused run spends nothing while it waits, and its resume
+   re-resolves against the ceiling like any claim.
+2. **Its stamp names the key.** The stamp (`run.cred_fingerprints`, written
+   at launch and re-written at every resume) is narrowed to the credentials
+   the run's **resolved routes can spend** — the same walk and vocabulary
+   the credential pool's wants derivation uses (`model.EffectiveProviders`).
+   The sealed bundle keeps every credential; the stamp does not: a run
+   whose every node pins `provider: anthropic` executes on the forfait and
+   holds no slot on the z.ai facade key it also carries. A run with an
+   unpinned or unresolvable route keeps every fingerprint (it takes
+   whatever the process holds — fail open toward protection).
+3. **It is not model-idle.** The runner sets `run.llm_idle_since` the moment
+   the run's last model-calling node finishes and clears it the moment one
+   starts (concurrent branches are counted, not flipped), so a
+   sixty-minute tool-only verify gate between two agent passes holds a slot
+   for nobody. A run counts from claim until it proves idle, and every
+   re-stamp starts it over. Explicit toggles, not a lease: a pod that dies
+   mid-node leaves a run the orphan sweeper parks, and rule 1 releases it.
+
+Everything uncertain counts (over-protection), never the reverse: a count
+error leaves the ceiling unapplied for that resolution and is logged.
 
 ## Resolution — `secrets.Resolve`
 

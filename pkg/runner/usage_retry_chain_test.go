@@ -44,7 +44,7 @@ func TestUsageWindowRetry_TypedErrorSurvivesTheProductionChain(t *testing.T) {
 	}
 	execErr := wrapLikeProduction(inner, runtime.ErrCodeExecutionFailed)
 
-	at, source, ok := usageWindowRetryAt(execErr, retrypolicy.Normalize(retrypolicy.Policy{}), now)
+	at, source, ok := usageWindowRetryAt(execErr, retrypolicy.Normalize(retrypolicy.Policy{}), now, time.Time{})
 	if !ok {
 		t.Fatalf("no retry armed for a weekly cap — the run parks forever and its PR waits on a check nobody answers")
 	}
@@ -76,7 +76,7 @@ func TestUsageWindowRetry_FallsBackToTheProvidersOwnWords(t *testing.T) {
 		Message: "node \"reviewer_claude\" execution failed: model: node \"reviewer_claude\": backend \"claude_code\" failed: delegate: claude-code failed: rate_limited (claude_code): " + prodWeeklyLimitText,
 	}
 
-	at, source, ok := usageWindowRetryAt(flattened, retrypolicy.Normalize(retrypolicy.Policy{}), now)
+	at, source, ok := usageWindowRetryAt(flattened, retrypolicy.Normalize(retrypolicy.Policy{}), now, time.Time{})
 	if !ok {
 		t.Fatalf("the provider said the window is shut and when it reopens, and the run parked with nothing coming back for it")
 	}
@@ -108,7 +108,7 @@ func TestUsageWindowRetry_DoesNotArmOnUnrelatedFailures(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := &runtime.RuntimeError{Code: runtime.ErrCodeExecutionFailed, Message: msg}
-			if _, _, ok := usageWindowRetryAt(err, pol, now); ok {
+			if _, _, ok := usageWindowRetryAt(err, pol, now, time.Time{}); ok {
 				t.Fatalf("armed a usage-window park for %q — a plain failure now waits hours instead of being redelivered", msg)
 			}
 		})

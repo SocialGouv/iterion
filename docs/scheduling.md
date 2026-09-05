@@ -313,12 +313,26 @@ means "wake no later than 36 hours from now and check again";
 
 **What you see.** The run stays `failed_resumable` while it waits, with a
 `run_retry_scheduled` event naming the instant, the attempt number and how
-the instant was derived. When the window reopens the run emits
-`run_auto_resumed` and continues from its checkpoint — the same pair the
-CLI's in-process `--auto-resume` loop writes, so the timeline reads
+the instant was derived (`reset_source`). When the window reopens the run
+emits `run_auto_resumed` and continues from its checkpoint — the same pair
+the CLI's in-process `--auto-resume` loop writes, so the timeline reads
 identically local and cloud. A run that stops retrying records **why**
 (budget spent, admission denied, source no longer resolvable) rather than
 going quiet.
+
+**Which reset the wait is armed on (cloud).** The credential a run fails on
+is the one the launch's credential walk fell *through* to — and the one it
+passed over often reopens first: a team key refused on its five-hour window
+reopens the same afternoon, while the platform forfait the run landed on is
+walled until Monday. The publisher therefore stamps the run with the
+earliest reopening among the credentials it skipped
+(`skipped_cred_reopens_at`, re-stamped on every resume), and the retry arms
+on the **earlier** of that and the failed credential's own reset — the
+event then reads `reset_source: skipped_credential` and carries
+`skipped_cred_reopens_at`. The resume re-resolves the whole chain, so coming
+back at that instant lands on the reopened key. A skipped credential that
+has already reopened by the time the run parks means "re-resolve now": the
+retry lands at the five-minute floor.
 
 Not covered by this: a budget cap (`max_cost_usd` and friends) still needs
 a human to raise the cap and resume — retrying the same cap would re-fail
