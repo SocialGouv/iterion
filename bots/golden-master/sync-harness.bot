@@ -3908,14 +3908,23 @@ tool gate_replay:
     try:
         log_all, _ = proc.communicate(timeout=wall)
         code, log = proc.returncode, (log_all or "")[-4000:]
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as expired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        log_all, _ = proc.communicate()
+        # The output read so far is already carried by the exception. Reading
+        # the pipe a second time would block for as long as ANY descendant that
+        # escaped the group kill keeps its write end open — an unbounded wait,
+        # immediately after the node enforced its own wall, and past the run's
+        # max_duration. The reap is bounded for the same reason.
+        log_all = expired.output or ""
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
         code = None
-        log = "gate exceeded gate_timeout_s=%d; last output:\n%s" % (wall, (log_all or "")[-3000:])
+        log = "gate exceeded gate_timeout_s=%d; last output:\n%s" % (wall, log_all[-3000:])
     out["minutes"] = int((time.monotonic() - started) // 60)
     out["log_tail"] = log
     if code == 0:
