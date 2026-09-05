@@ -439,7 +439,10 @@ Three ways, in order of preference:
    may question a bot — and an operator who lowers it so reporters can ask
    the converse bot must not lower the merge-queue bypass with it. Role
    only, for the same reason: the webhook's `AuthorizedRepliers` allowlist
-   (who may talk back to the bot) does not apply to a force-green. Two additional guards close self-approve
+   (who may talk back to the bot) does not apply to a force-green. On
+   Forgejo/Gitea, whose collaborator vocabulary is `owner | admin | write |
+   read` (there is no `maintain`), the `maintainer` floor resolves to **owner
+   or admin** — deliberately narrower than on GitHub, never wider. Two additional guards close self-approve
    loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
    the PR author cannot approve their own PR (a maintainer must). The status
    carries "approved by @user: reason" and links to the comment as the audit
