@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -284,7 +285,13 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		Author:       is.Author,
 	}
 	existing, gerr := board.Get(cardID)
-	if gerr != nil {
+	if gerr != nil && !errors.Is(gerr, tracker.ErrNotFound) {
+		// Only the not-found sentinel means "no card yet" — both twins answer
+		// a missing card with it and wrap everything else. Creating on any
+		// error would have this import write blind through a store outage.
+		return 0, 0, fmt.Errorf("board sync: read card %s: %w", cardID, gerr)
+	}
+	if gerr != nil || existing == nil {
 		col := openCol
 		labels := is.Labels
 		if is.State == "closed" && doneCol != "" {

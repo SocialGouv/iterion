@@ -167,7 +167,10 @@ func ImportProjectBoard(
 			return res, fmt.Errorf("project import: list items of %s: %w", ref, err)
 		}
 		for _, it := range page.Items {
-			applyProjectItem(ctx, bc, project, ref, provider, board, it, opts, &res, missing)
+			if err := applyProjectItem(ctx, bc, project, ref, provider, board, it, opts, &res, missing); err != nil {
+				res.MissingRepos = rankMissingRepos(missing)
+				return res, err
+			}
 		}
 		if !page.HasNext || page.NextCursor == "" || page.NextCursor == cursor {
 			break
@@ -200,6 +203,11 @@ func rankMissingRepos(missing map[string]int) []MissingRepo {
 // applyProjectItem reconciles ONE card with ONE project item, in both
 // directions, accumulating into res. An item that cannot be joined is counted,
 // never guessed at.
+//
+// It returns an error only for a failure of the CARD STORE itself, which is
+// not this item's problem but the whole pass's: reading a store outage as
+// per-item noise would report a board of hundreds of items as "never imported"
+// and hide the database. Per-item forge failures stay counted and logged.
 func applyProjectItem(
 	ctx context.Context,
 	bc forge.BoardClient,
@@ -211,20 +219,26 @@ func applyProjectItem(
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
 	missing map[string]int,
-) {
+) error {
 	res.Items++
 	if it.Content.Kind != forge.ProjectContentIssue || it.Content.Repo == "" || it.Content.Number <= 0 {
 		// A draft has no issue; a pull request surfaces through the card's PR
 		// panel, not as a card of its own.
 		res.Skipped++
-		return
+		return nil
 	}
 	cardID := forgeCardID(provider, it.Content.Repo, it.Content.Number)
 	card, err := board.Get(cardID)
-	if err != nil || card == nil {
+	switch {
+	case errors.Is(err, tracker.ErrNotFound) || (err == nil && card == nil):
+		// The item's issue has no card yet — the ONE reading that means "run
+		// the issue import for this repo". Both store twins answer a missing
+		// card with this sentinel; the Mongo one wraps everything else.
 		res.SkippedNoCard++
 		missing[it.Content.Repo]++
-		return
+		return nil
+	case err != nil:
+		return fmt.Errorf("project import: read card %s: %w", cardID, err)
 	}
 
 	sync := projectSyncState(card, ref, it)
@@ -319,11 +333,12 @@ func applyProjectItem(
 		patch.External = ext
 	}
 	if patch.Labels == nil && patch.External == nil {
-		return
+		return nil
 	}
 	if _, err := board.Update(cardID, patch); err != nil {
 		logProjectWarn(opts, "project import: card update failed", "card", cardID, "error", err.Error())
 	}
+	return nil
 }
 
 // reflectNativeState pushes a native move onto the board (ADR-097 §2, the

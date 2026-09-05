@@ -490,3 +490,64 @@ func TestProjectLabelPrefixesAreBoardLocal(t *testing.T) {
 		}
 	}
 }
+
+// flakyBoard is a card store whose Get fails the way a Mongo blip does:
+// a wrapped transient error, never the tracker.ErrNotFound sentinel. Every
+// other method is the real store's (interface embedding).
+type flakyBoard struct {
+	native.BoardStore
+	err error
+}
+
+func (f *flakyBoard) Get(id string) (*native.Issue, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.BoardStore.Get(id)
+}
+
+// TestImportProjectBoardPropagatesAStoreFailure pins that a store that is
+// UNREACHABLE is not reported as a board whose issues were never imported.
+//
+// "No card for this item" is a specific fact — tracker.ErrNotFound on both
+// twins — with a specific remedy the result spells out ("run the issue import
+// for these repos first"). The Mongo twin also returns wrapped transient
+// errors (mongoutil.FindOne wraps anything that is not ErrNoDocuments), and
+// reading those as "no card" tells an operator to re-run an import that is
+// already done while the real failure — the database — goes unmentioned.
+func TestImportProjectBoardPropagatesAStoreFailure(t *testing.T) {
+	board := newTestBoard(t)
+	seedCard(t, board, 613, native.StateInbox)
+	flaky := &flakyBoard{BoardStore: board, err: errors.New("boardmongo: get issue: connection reset by peer")}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", time.Now().UTC())),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, flaky, nil)
+	if err == nil {
+		t.Fatalf("a store failure must surface, got nil (%+v)", res)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Errorf("error = %v, want the store's own cause named", err)
+	}
+	if res.SkippedNoCard != 0 || len(res.MissingRepos) != 0 {
+		t.Errorf("res = %+v, want no missing-import report — the import is not what failed", res)
+	}
+}
+
+// And the sentinel keeps its meaning: a genuinely absent card is still
+// counted and its repository named, not turned into a failed pass.
+func TestImportProjectBoardStillReportsAMissingCard(t *testing.T) {
+	board := newTestBoard(t)
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", time.Now().UTC())),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, nil)
+	if err != nil {
+		t.Fatalf("a card that was never imported is not a failure: %v", err)
+	}
+	if res.SkippedNoCard != 1 || len(res.MissingRepos) != 1 || res.MissingRepos[0].Repo != "SocialGouv/iterion" {
+		t.Errorf("res = %+v, want one skipped item naming its repo", res)
+	}
+}
