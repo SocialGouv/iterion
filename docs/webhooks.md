@@ -186,11 +186,12 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
   (the `draft` flag is honoured on every action — the trigger is
   `ready_for_review`, which clears it). A **fork PR** (head branch in a
-  different repo) is likewise never auto-launched: it is untrusted, so a repo
-  collaborator must trigger a bot manually via the `/command` path — the anti
-  budget-exhaustion boundary
+  different repo, or one the payload does not name) is likewise never
+  auto-launched, and the `/command` lanes refuse it too — same-repo only,
+  silently: the fork's work needs a branch in the base repo before any bot
+  runs on it — the anti budget-exhaustion boundary
   ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
-  `IsCrossRepo`). A PR opened by iterion's **own forge bot** (another iterion
+  `SameRepoAsBase` behind `forkGuardRefusal`). A PR opened by iterion's **own forge bot** (another iterion
   bot's PR — see below) is also skipped.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —

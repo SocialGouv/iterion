@@ -128,7 +128,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// and aimed the bot at repoURL=<base> repoRef=<fork-controlled branch> —
 	// a reviewer grounded in the wrong code, and for the auto-heal lane below
 	// a fixer pushing LLM commits onto the base repo's branch of that name.
-	if reason := forkGuardRefusal(p.HeadRepoFullName, p.ProjectPath, p.HeadRepoWithheld()); reason != "" {
+	if reason := forkGuardRefusal(p.SameRepoAsBase(), p.HeadRepoWithheld(), p.HeadRepoFullName); reason != "" {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return

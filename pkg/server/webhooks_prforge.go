@@ -258,11 +258,12 @@ func prforgeNoteMeta(p prforge.ParsedNote) webhookEventMeta {
 type prforgeGateOutcome int
 
 const (
+	// gateRefused: the commenter was evaluated and does not clear the route's
+	// floor — a role below it, or the bot's own comment (loop-guard). The
+	// ZERO VALUE deliberately: an outcome nobody set must never authorize.
+	gateRefused prforgeGateOutcome = iota
 	// gateAuthorized: the commenter cleared the route's floor.
-	gateAuthorized prforgeGateOutcome = iota
-	// gateRefused: the commenter was evaluated and does not clear it — a
-	// role below the floor, or the bot's own comment (loop-guard).
-	gateRefused
+	gateAuthorized
 	// gateUnevaluable: nothing to read the commenter's standing with — no
 	// usable forge host, no credential that serves — so nothing was decided
 	// about them.
@@ -479,7 +480,7 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	// checkout would miss, or silently hit a same-named BASE branch and the
 	// bot would answer grounded in the wrong code. Same posture as the PR
 	// auto lane: filtered.
-	if reason := forkGuardRefusal(p.HeadRepoFullName, p.ProjectPath, p.HeadRepoWithheld()); reason != "" {
+	if reason := forkGuardRefusal(p.SameRepoAsBase(), p.HeadRepoWithheld(), p.HeadRepoFullName); reason != "" {
 		filtered(reason)
 		return
 	}

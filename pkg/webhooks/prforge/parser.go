@@ -168,8 +168,9 @@ func labelNames(labels []Label) []string {
 // forge.PullRef.SameRepoAs.
 //
 // Every unattended lane that launches with the pair `<base>.CloneURL +
-// p.SourceBranch` must clear THIS. The predicate is deliberately
-// fail-CLOSED, and there is no fail-open twin to reach for by mistake: an
+// p.SourceBranch` clears THIS, through forkGuardRefusal (which only adds the
+// wording). The predicate is deliberately fail-CLOSED, and there is no
+// fail-open twin to reach for by mistake: an
 // empty head repo means the payload omitted the field OR the head repo was
 // deleted/blocked, and `head.repo: null` is exactly the shape a fork takes
 // once deleted. A "not a proven fork" test answers "same repo" for the one

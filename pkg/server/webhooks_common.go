@@ -1219,38 +1219,26 @@ func (s *Server) launchWebhookTarget(
 // the webhook layer, so the vocabulary lives in the store, not here.
 const prClosedRunReason = store.RunEndReasonPRClosed
 
-// forkGuardRefusal is the SINGLE decision the unattended lanes share:
-// given a PR's head-repo identity, may a lane launch on the pair
-// `<base>.CloneURL + <head branch>`? It returns "" to allow, or the reason
-// to record on the filtered delivery.
-//
-// Three states, deliberately not two:
-//
-//   - PROVEN same repo → allow.
-//   - A DIFFERENT repo → refuse: an ordinary fork, untrusted.
-//   - WITHHELD (the forge declared head.repo and gave it no value) →
-//     refuse. This is what a fork looks like once its head repo is deleted
-//     or blocked, and it is the state the old guard admitted: reading it as
-//     "not a proven fork" aimed the bot at repoURL=<base> with a branch name
-//     the fork author chose, so a fixer would push LLM commits onto the base
-//     repo's branch of that name.
-//
-// A payload that never carried the key at all is a legacy/minimal sender,
-// not a fork whose identity was removed, and is allowed — refusing it would
-// silently disable auto-review for such a forge, and the failure would look
-// like nothing happening. The distinction is only decidable because the
-// decoder records key presence (see prforge.Ref.RepoDeclared); collapsing
-// the two is what made this guard fail open.
-func forkGuardRefusal(headRepo, baseRepo string, withheld bool) string {
+// forkGuardRefusal is the fork guard of the unattended payload-side lanes
+// (PR auto lane, review-thread reply lane). The decision is the payload's
+// own SameRepoAsBase predicate — the contract of forge.PullRef.SameRepoAs on
+// the API side: a head repo is admitted only when it is PROVEN to be the
+// base repo. What this helper adds is the wording for the delivery row, by
+// the state it refused, since three states collapse into one decision. The
+// /command lanes refuse the same states (same-repo only, silently), so no
+// refusal may advertise them as an escape hatch: fork work needs a branch in
+// the base repo before any bot runs on it.
+func forkGuardRefusal(sameRepoProven, withheld bool, headRepo string) string {
 	switch {
+	case sameRepoProven:
+		return ""
 	case withheld:
-		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name"
+		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name; the /command lanes refuse it too (same-repo only)"
 	case headRepo == "":
-		return "head repo not named by the payload — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere; the command lanes stay open to collaborators)"
-	case !forge.SameRepo(headRepo, baseRepo):
-		return "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)"
+		return "head repo not named by the payload — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere); the /command lanes refuse it too (same-repo only)"
+	default:
+		return "fork PR — auto-launch blocked (untrusted; the /command lanes are same-repo only too, so the fork's work needs a branch in this repo before any bot runs on it)"
 	}
-	return ""
 }
 
 // prRequeuedRunReason names the auto-heal cancel for the same reason: a

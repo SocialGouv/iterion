@@ -109,9 +109,9 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > **Forgejo** the guard is unconditional and needs no configuration: an
 > inbound PR event whose head is a fork is filtered before the sync lane
 > is even considered, so the fork re-review exposure above cannot occur
-> there. A repo collaborator can still launch a bot on fork code
-> deliberately with a `/command`, which gates on the commenter's
-> permission. On **GitLab** the inbound MR lane has no fork/cross-project
+> there. The `/command` lanes refuse a fork (or an unnamed head repo) too —
+> same-repo only, silently: the fork's work needs a branch in the base repo
+> before any bot runs on it. On **GitLab** the inbound MR lane has no fork/cross-project
 > guard, so a forked-MR auto-review *is* reachable — bound that lane with
 > an `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
 > The two lanes that resolve the MR through the API instead — auto-fix and
