@@ -438,6 +438,40 @@ func (s *Store) SetStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 	return s.setStateReasonLocked(iss, newState, "", reason)
 }
 
+// SetStateOwnedFrom is SetStateOwned with a source-state precondition —
+// ownership, the drift check and the move share ONE critical section
+// (see BoardStore). Ownership is judged first: a stolen claim reported
+// as "drifted" would be swallowed by the caller as an ordinary operator
+// move, losing the one signal the fence exists to surface.
+func (s *Store) SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (updated *Issue, changed bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateOwnedFrom", &err)
+	if s.board.StateByName(to) == nil {
+		return nil, false, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, to)
+	}
+	// Guard BEFORE the drift check (the SetStateFrom contract): an
+	// automated writer declaring a terminal source is a programming error
+	// and is refused loudly whatever the card currently reads.
+	if from != to {
+		if err := ValidateStateExit(s.board, from, to); err != nil {
+			return nil, false, err
+		}
+	}
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return nil, false, err
+	}
+	if iss.State != from || from == to {
+		return cloneIssue(iss), false, nil
+	}
+	out, err := s.setStateLocked(iss, to, tok.Marker)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
 // Reopen is the ONE sanctioned exit from a terminal state — an
 // operator-surface op, refused when dependents were already promoted on
 // this card's completion (deterministic v1). It emits the ordinary

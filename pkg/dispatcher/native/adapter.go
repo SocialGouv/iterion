@@ -172,6 +172,19 @@ func (a *Adapter) UpdateStateOwned(ctx context.Context, id, newState string, tok
 	return err
 }
 
+// UpdateStateOwnedFrom is the fenced CAS move with a source-state
+// precondition (BoardStore.SetStateOwnedFrom): the finish worker's
+// auto-transition is ONE write through it, never a state probe followed
+// by a fenced overwrite. changed=false means the card drifted and nothing
+// was written.
+func (a *Adapter) UpdateStateOwnedFrom(ctx context.Context, id, from, to string, tok tracker.ClaimToken) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	_, changed, err := a.store.SetStateOwnedFrom(id, from, to, tok)
+	return changed, err
+}
+
 // UpdateStateOwnedReason is the fenced state write carrying an explicit
 // provenance (the watchdog's terminal verdicts) — see
 // native.SetStateOwnedReason.

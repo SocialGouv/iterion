@@ -246,6 +246,19 @@ describe("normalizePipelineBoard", () => {
           title: "Unattributable",
           gave_up: { state: "blocked", attempts: 2 },
         },
+        {
+          // The watchdog's own verdict carries a reason instead of an
+          // attempt count — it must survive normalisation, it is what the
+          // operator reads.
+          id: "run:c",
+          column_id: "needs_attention",
+          title: "Pruned pointer",
+          gave_up: {
+            run_id: "run-pruned",
+            state: "blocked",
+            reason: "recorded run run-pruned is gone (pruned or deleted)",
+          },
+        },
       ],
     });
     expect(board.cards[0]?.gave_up).toEqual({
@@ -255,6 +268,11 @@ describe("normalizePipelineBoard", () => {
       at: "2026-08-23T09:00:00Z",
     });
     expect(board.cards[1]?.gave_up).toBeUndefined();
+    expect(board.cards[2]?.gave_up).toEqual({
+      run_id: "run-pruned",
+      state: "blocked",
+      reason: "recorded run run-pruned is gone (pruned or deleted)",
+    });
   });
 
   it("omits planner provenance when the server sends none", () => {
