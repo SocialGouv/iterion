@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.108.0](https://github.com/SocialGouv/iterion/compare/v3.107.0...v3.108.0) (2026-09-05)
+
+### Features
+
+* **dsl:** a node reads the run's budget through run.*, and a fail node carries a typed code, message and resumability ([#764](https://github.com/SocialGouv/iterion/issues/764)) ([34a6850](https://github.com/SocialGouv/iterion/commit/34a6850df9ef5007281f9bd287a89ba3f7b25dde)), closes [#738](https://github.com/SocialGouv/iterion/issues/738) [#739](https://github.com/SocialGouv/iterion/issues/739), references [#737](https://github.com/SocialGouv/iterion/issues/737) [#695](https://github.com/SocialGouv/iterion/issues/695) [#670](https://github.com/SocialGouv/iterion/issues/670) [#760](https://github.com/SocialGouv/iterion/issues/760)
+
+    <details><summary>why</summary>
+
+    A node that wants to reason about the run's budget -- "planning has used a third of max_duration, stop planning" -- had nothing to read: the `run` namespace resolved only `run.id`, and the `budget:` block's caps were compile-time literals. PR #737 had to self-measure wall-clock in a tool node and mirror the budget through two hand-maintained vars that drift from the block in silence; every phase-budget guard would have repeated it.
+
+    </details>
+
 ## [3.107.0](https://github.com/SocialGouv/iterion/compare/v3.106.1...v3.107.0) (2026-09-05)
 
 ### Features
