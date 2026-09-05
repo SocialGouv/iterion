@@ -169,6 +169,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureDLQParked,
 	FailureLaunchFailed,
 	FailureSandboxSetupTimeout,
+	FailureSandboxCapacity,
 }
 
 // reservedFailureCodes indexes ReservedFailureCodes for lookup. Built
