@@ -1354,3 +1354,85 @@ func TestGitHubWebhook_UnnamedHeadRepoIsNotAutoLaunched(t *testing.T) {
 		t.Fatalf("the refusal must name the state it refused (an unnamed head), got %q", ds[0].Error)
 	}
 }
+
+// ghEnqueuedPR: the same pull request entering (or re-entering) the merge
+// queue, at the head sha given. `enqueued` is the queue's own event, and
+// the closing half of the auto-heal loop.
+func ghEnqueuedPR(headSHA string) string {
+	return fmt.Sprintf(`{
+  "action": "enqueued", "number": 9,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 9, "title": "Add subtract", "body": "Implements subtraction.",
+    "html_url": "https://github.com/acme/widgets/pull/9", "state": "open",
+    "head": {"ref": "feat/subtract", "sha": %q, "repo": {"full_name": "acme/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+  "sender": {"login": "alice"}
+}`, headSHA)
+}
+
+// A heal exists only to carry an ejected PR back into the merge queue. Once
+// the queue has taken it back the heal has nothing left to do, and letting
+// it finish is actively harmful: its delivery tail force-pushes the branch,
+// which cancels the queue build in flight and ejects the PR a second time.
+// Observed in production on iterion#682 (2026-09-04), where a flaky test
+// ejected a green PR and only a manual cancel kept the fixer's push from
+// killing the queue run that went on to merge it.
+func TestGitHubWebhook_RequeuedPRStopsTheHeal(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "run-heal", nil
+	}
+	var cancelled []string
+	s.webhookCancelRun = func(runID string) error { cancelled = append(cancelled, runID); return nil }
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	// The ejection launches the heal.
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghDequeuedPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("dequeue: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// The queue takes the PR back at the SAME head — the heal never pushed,
+	// so nothing it could still do is wanted.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghEnqueuedPR("aaa111"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("enqueue: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(cancelled) != 1 || cancelled[0] != "run-heal" {
+		t.Fatalf("a PR back in the merge queue must stop its auto-heal run before that run force-pushes over the queue build; cancelled=%v", cancelled)
+	}
+}
+
+// The stop is keyed on the HEAD, not on the pull request. A heal that has
+// already pushed advanced the head — and that push is what re-enqueued the
+// PR. Killing it on the enqueue it caused would abort the run at its
+// delivery tail, exactly when it is doing the thing this lane wants.
+func TestGitHubWebhook_RequeuedAtANewHeadSparesTheHeal(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "run-heal", nil
+	}
+	var cancelled []string
+	s.webhookCancelRun = func(runID string) error { cancelled = append(cancelled, runID); return nil }
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghDequeuedPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("dequeue: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Re-queued at the head the heal's own push produced.
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghEnqueuedPR("bbb222"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("enqueue: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(cancelled) != 0 {
+		t.Fatalf("an enqueue at a NEW head is the heal's own push landing — it must not cancel the run that produced it; cancelled=%v", cancelled)
+	}
+}

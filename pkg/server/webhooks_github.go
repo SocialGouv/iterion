@@ -194,7 +194,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 			writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 			return
 		}
-		healIdem := knowledge.ChecksumHex([]byte(fmt.Sprintf("heal|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+		healIdem := healIdempotencyKey(cfg, p)
 		mission := fmt.Sprintf(
 			"This PR was ejected from the merge queue (reason: %s). Rebase the branch on `%s`, "+
 				"resolve any conflicts, and fix whatever breaks the build when the branch is combined "+
@@ -204,6 +204,25 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+		return
+	}
+
+	// The closing half of the auto-heal loop. A heal is a means to ONE end:
+	// carry an ejected pull request back into the merge queue. Once the PR
+	// is queued again — by GitHub itself, by another PR merging ahead, or by
+	// an operator re-enqueuing it — the heal has no end left to serve, and
+	// its own delivery tail becomes destructive: it force-pushes the branch,
+	// which cancels the queue build in flight and ejects the PR a second
+	// time. So the heal is stopped the moment the queue takes the PR back.
+	//
+	// The trigger is the queue's own `enqueued` event rather than a poll, so
+	// the window between "queued again" and "the heal pushes" is closed by
+	// the same authority that opened the heal.
+	if p.IsRequeued() {
+		stopped := s.stopHealRunForRequeuedPR(ctx, cfg, p)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			fmt.Sprintf("pull request re-entered the merge queue; auto-heal runs stopped: %d", stopped))
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
