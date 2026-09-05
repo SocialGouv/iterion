@@ -235,6 +235,16 @@ func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImpo
 	if binding == nil {
 		return bindingRepair{} // read-only pass: nothing is cached, so nothing is stale
 	}
+	if binding.StatusFieldID == "" {
+		// A labels-only binding has no status vocabulary, so this pass
+		// re-derived NOTHING about it. `ReconcileStatusOptions` would hand back
+		// the zero repair, whose empty `Reason()` is indistinguishable from
+		// "every column resolves" — and the clear arm below would act on it.
+		// Nothing reaches here degraded today, but the switch must never be
+		// able to clear a flag on the absence of the evidence that would have
+		// kept it: that is the whole thesis of the level-triggered readout.
+		return bindingRepair{}
+	}
 	was := binding.DegradedReason
 	rep := binding.ReconcileStatusOptions(project)
 	store := opts.bindingStore()

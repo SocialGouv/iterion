@@ -607,6 +607,47 @@ func TestSyncProjectBoardDegradesOnAColumnItAdoptedAfterTheBind(t *testing.T) {
 	}
 }
 
+// TestRepairBindingDoesNotClearADegradationItNeverRederived pins the guard on
+// the level-triggered readout's own failure mode.
+//
+// The clear arm now fires on ANY pass whose `Reason()` is empty — which is what
+// makes the readout a level rather than an edge. But a labels-only binding
+// re-derives nothing at all, and its zero repair's empty reason is
+// indistinguishable from "every column resolves". Nothing reaches here degraded
+// today; the point is that the switch must not be ABLE to clear a flag on the
+// absence of the evidence that would have kept it.
+func TestRepairBindingDoesNotClearADegradationItNeverRederived(t *testing.T) {
+	bindings := forge.NewMemoryBoardBindingStore()
+	binding := boundBinding(t, testProject())
+	binding.StatusFieldID = "" // labels-only: no status vocabulary to reconcile
+	if err := bindings.Upsert(context.Background(), *binding); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	const reason = `the Status field no longer carries "In progress" (in_progress)`
+	if err := bindings.MarkDegraded(context.Background(), "team-a", reason); err != nil {
+		t.Fatalf("seed degradation: %v", err)
+	}
+	stored, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+
+	repairBinding(context.Background(), testProject(),
+		&ProjectImportOptions{Binding: &stored, Bindings: bindings})
+
+	after, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if !after.Degraded() {
+		t.Errorf("a pass that re-derived nothing cleared the flag: %+v", after)
+	}
+	if stored.Degraded() != after.Degraded() {
+		t.Errorf("the in-memory binding disagrees with the store: %q vs %q",
+			stored.DegradedReason, after.DegradedReason)
+	}
+}
+
 // TestSyncProjectBoardNeverRewritesTheOptionItAlreadyCarries pins the guard
 // under the repair: the reflect must compare the OPTION ID it is about to
 // write against the one the item carries, not only the names.
