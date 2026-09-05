@@ -147,6 +147,13 @@ func TestReconcileStatusOptionsKeepsReportingALostColumn(t *testing.T) {
 		if !strings.Contains(rep.Reason(), "In progress") {
 			t.Fatalf("pass %d: reason = %q, want it to keep naming the column", pass, rep.Reason())
 		}
+		// Re-derived is not re-written: `Changed()` answers "does the caller owe
+		// the store a write", which a standing loss does not. Without this,
+		// every bound team pays a store write per reconciliation interval,
+		// forever, for a fact that has not moved.
+		if pass > 1 && rep.Changed() {
+			t.Fatalf("pass %d: a standing loss re-reports identically; it must not re-write the store: %+v", pass, rep)
+		}
 	}
 	// The cached id is what makes it re-derivable, so it is kept — the reflect
 	// is stopped by the LostStates set, not by a hole in the binding.
