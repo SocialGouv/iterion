@@ -598,7 +598,7 @@ func TestReviewApprove_ConcurrentTwinLosingTheClaimDoesNotWrite(t *testing.T) {
 	}
 	if err := inner.Insert(context.Background(), webhooks.Delivery{
 		ID: "twin", TenantID: cfg.TenantID, WebhookID: cfg.ID, Status: webhooks.StatusAccepted,
-		IdempotencyKey: approveIdempotencyKey(cfg, p), ReceivedAt: time.Now().UTC(),
+		IdempotencyKey: approveIdempotencyKey(cfg, p.ProjectPath, p.SubjectID()), ReceivedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1135,7 +1135,7 @@ func seedAcceptedApproveClaim(t *testing.T, s *Server, cfg webhooks.Config, id s
 	}
 	if err := s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
 		ID: id, TenantID: cfg.TenantID, WebhookID: cfg.ID, Status: webhooks.StatusAccepted,
-		IdempotencyKey: approveIdempotencyKey(cfg, p), ReceivedAt: time.Now().UTC().Add(-age),
+		IdempotencyKey: approveIdempotencyKey(cfg, p.ProjectPath, p.SubjectID()), ReceivedAt: time.Now().UTC().Add(-age),
 	}); err != nil {
 		t.Fatal(err)
 	}
