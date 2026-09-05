@@ -435,11 +435,32 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// publish node posts through the server's live forge client instead of a
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
+	//
+	// Team-scoped, as the composition has always been — and the fork guard it
+	// now carries loses nothing by it. A request with no team identity is the
+	// local studio (DisableAuth synthesizes an identity with an empty TeamID,
+	// pkg/server/middleware.go), and such a request CANNOT reach the hazard the
+	// guard exists for: a repo-targeted launch — the only one that clones
+	// <base>.CloneURL and checks out the PR's head branch — is refused outside
+	// cloud mode and, in cloud, requires conn.TenantID == the caller's TeamID
+	// (above). So an empty-team launch always executes in the server's own
+	// already-open checkout, where pr_url is a PUBLISH target and not a
+	// checkout instruction (bots/review-pr/README.md). There is no <base>+head
+	// pair to refuse, no connection store to verify against (a local studio
+	// never wires ForgeConnections) and no grant to mint — the guard would only
+	// 422 every local `--var pr_url=…` launch without closing anything.
 	launchID, _ := auth.FromContext(r.Context())
-	req.Vars, err = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", err)
-		return
+	if launchID.TeamID != "" {
+		req.Vars, err = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", err)
+			span.SetStatus(codes.Error, "PR launch context refused")
+			return
+		}
+	} else if strings.TrimSpace(req.Vars["pr_url"]) != "" && s.logger != nil {
+		// Never a SILENT skip: an operator has to be able to read that the
+		// head-repository verification did not run on this launch.
+		s.logger.Debug("PR launch: no team identity on the request — skipping head-repository verification and the publish grant; the run reviews this server's own checkout, whose correspondence to %s is not verified", req.Vars["pr_url"])
 	}
 
 	// Detach lifecycle from the HTTP request context so a client

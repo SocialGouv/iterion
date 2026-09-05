@@ -86,3 +86,34 @@ func TestHTTPPRLaunchRejectsForkBeforeCreatingRun(t *testing.T) {
 		t.Fatalf("fork launch created a run: %v", err)
 	}
 }
+
+// The guard is TEAM-SCOPED, and this is the regression that scoping exists
+// for. A local studio runs with DisableAuth, whose synthesized identity has an
+// EMPTY TeamID, and never wires ForgeConnections — so an unconditional guard
+// resolves no connection and 422s EVERY local `--var pr_url=…` launch (Revi,
+// Billy, any PR-scoped bot). Nothing is closed by refusing them: a
+// repo-targeted launch, the only one that pairs <base>.CloneURL with the PR's
+// head branch, is refused outside cloud mode, so a no-team launch always
+// reviews this server's own already-open checkout.
+func TestHTTPPRLaunchWithoutTeamSkipsTheForgeLookup(t *testing.T) {
+	s := newQueueOutageHTTPTestServer(t)
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+		t.Error("a no-team launch must not reach the forge")
+		return nil, errors.New("unreachable")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{
+		"file_path":"guard.bot", "source":"workflow guard:\n  entry: done\n",
+		"run_id":"local-pr-launch", "vars":{"pr_url":"https://github.com/o/r/pull/7"}
+	}`))
+	// Exactly what requireAuth synthesizes under DisableAuth: an identity with
+	// no team. Not "no identity at all" — that shape never reaches the handler.
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{UserID: "dev", IsSuperAdmin: true}))
+	rec := httptest.NewRecorder()
+	s.handleLaunchRun(rec, req)
+	if rec.Code/100 != 2 {
+		t.Fatalf("local pr_url launch refused: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := s.runs.RunStore().LoadRun(context.Background(), "local-pr-launch"); err != nil {
+		t.Fatalf("local pr_url launch created no run: %v", err)
+	}
+}
