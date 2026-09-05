@@ -46,13 +46,18 @@ func (r *avatarRefusal) Error() string { return r.msg }
 // an operator has to do by hand.
 func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
 
-// avatarApplyTimeout bounds one apply — the forge round-trips (a WhoAmI for a
-// connection older than AccountKind, then the upload) and the record. The
-// apply rides its own context, detached from the caller's: the connection
-// exists, so a caller that gives up must not leave its avatar state
-// half-written, and a hanging forge must not hold a connect or a click for
-// longer than this.
-const avatarApplyTimeout = 20 * time.Second
+// avatarApplyTimeout bounds one apply's forge round-trips (a WhoAmI for a
+// connection older than AccountKind, then the upload). The apply rides its
+// own context, detached from the caller's: the connection exists, so a caller
+// that gives up must not leave its avatar state half-written, and a hanging
+// forge must not hold a connect or a click for longer than this. A variable
+// so a test can shorten it against a forge that hangs.
+var avatarApplyTimeout = 20 * time.Second
+
+// avatarRecordTimeout bounds one write of the outcome onto the connection —
+// on a budget of its OWN: the failure worth recording is a slow forge, i.e.
+// exactly when the round-trips' deadline has expired.
+const avatarRecordTimeout = 10 * time.Second
 
 // applyBotAvatar uploads the iterion-bot avatar onto the account behind conn
 // and records the outcome on the connection. The policy is the point:
@@ -108,38 +113,49 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s connections cannot set an avatar through iterion", conn.Provider)}
 	}
-	tctx := store.WithTenant(ctx, conn.TenantID)
 	// The upload is a forge round-trip, and another writer (the orchestrator
 	// stamping ManagedSecretID on a provision) may touch the document
-	// meanwhile — so every outcome is written onto a FRESH read, carrying only
-	// the avatar fields (and a kind just learned), never the copy read before
-	// the round-trip.
+	// meanwhile — so every outcome is written onto a FRESH read, on a record
+	// budget independent of the round-trips' deadline, carrying only what this
+	// apply learned: the account kind, and — when asked — the avatar fields.
 	learned := ""
-	persist := func(appliedAt *time.Time, avatarErr string) (forge.Connection, error) {
-		fresh, err := s.forgeConnections.Get(tctx, conn.ID)
+	record := func(mutate func(*forge.Connection)) (forge.Connection, error) {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(parent), avatarRecordTimeout)
+		defer cancel()
+		rctx = store.WithTenant(rctx, conn.TenantID)
+		fresh, err := s.forgeConnections.Get(rctx, conn.ID)
 		if err != nil {
 			return conn, err
 		}
 		if learned != "" && fresh.AccountKind == "" {
 			fresh.AccountKind = learned
 		}
-		fresh.AvatarAppliedAt, fresh.AvatarError, fresh.UpdatedAt = appliedAt, avatarErr, time.Now().UTC()
-		if err := s.forgeConnections.Update(tctx, fresh); err != nil {
+		mutate(&fresh)
+		fresh.UpdatedAt = time.Now().UTC()
+		if err := s.forgeConnections.Update(rctx, fresh); err != nil {
 			return conn, err
 		}
 		return fresh, nil
 	}
+	persist := func(appliedAt *time.Time, avatarErr string) (forge.Connection, error) {
+		return record(func(c *forge.Connection) { c.AvatarAppliedAt, c.AvatarError = appliedAt, avatarErr })
+	}
 	if conn.AccountKind == "" {
 		// Older than the field: ask the forge who the token is, and remember.
+		// A forced apply is the operator vouching for the account — it does
+		// not hang on /user being readable.
 		ident, err := admin.WhoAmI(ctx)
-		if err != nil {
+		switch {
+		case err == nil:
+			conn.AccountKind, learned = ident.Kind, ident.Kind
+		case !force:
 			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
 		}
-		conn.AccountKind, learned = ident.Kind, ident.Kind
 	}
 	if conn.AccountKind != forge.AccountKindBot && !force {
 		if learned != "" {
-			if updated, err := persist(conn.AvatarAppliedAt, conn.AvatarError); err == nil {
+			// Remember the kind only; the avatar fields are the fresh document's.
+			if updated, err := record(func(*forge.Connection) {}); err == nil {
 				conn = updated
 			}
 		}
