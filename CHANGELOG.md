@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.108.1](https://github.com/SocialGouv/iterion/compare/v3.108.0...v3.108.1) (2026-09-05)
+
+### Bug Fixes
+
+* **cli:** a subbot child on the CLI host executes in the parent's sandbox and in the parent's workdir ([#778](https://github.com/SocialGouv/iterion/issues/778)) ([1a781bb](https://github.com/SocialGouv/iterion/commit/1a781bbb05035a9a4be88f27184ebc3c1db0585e)), references [#766](https://github.com/SocialGouv/iterion/issues/766)
+
+    <details><summary>why</summary>
+
+    #766 made a child execute in its parent's sandbox on the cloud runner and in the studio's in-process service — and left the third host out: the CLI's subbot runner built the child engine without the parent's sandbox facts and without a workdir, so the child defaulted to the process cwd (engine.go: workDir defaults to os.Getwd() at Run time). A parent that swapped to a per-run worktree therefore handed its child the BASE tree: whatever the child committed landed in a tree the parent's gate never…
+
+    </details>
+
 ## [3.108.0](https://github.com/SocialGouv/iterion/compare/v3.107.0...v3.108.0) (2026-09-05)
 
 ### Features
