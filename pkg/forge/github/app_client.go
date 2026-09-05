@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -444,7 +445,22 @@ type AppClient struct {
 	// and only a caller that needs one of these would fail — at the write,
 	// unless it asked PreflightFor first.
 	denied map[string]bool
+	// scoped caches the tokens minted for a NARROWER, opt-in grant than the
+	// runtime baseline (the board profile), keyed by the permission set so a
+	// broad grant can never be handed to a differently-scoped call.
+	scoped map[string]scopedToken
 }
+
+// scopedToken is one cached installation token and when it stops being usable.
+type scopedToken struct {
+	token string
+	exp   time.Time
+}
+
+// scopedTokenLeeway is how much of a token's life is left unused, so a long
+// pass started just under the wire cannot have its token die mid-way. GitHub
+// issues installation tokens for ~1h, so reuse covers many passes.
+const scopedTokenLeeway = 5 * time.Minute
 
 // PermissionStatuses is the OPTIONAL commit-status permission the management
 // token asks for on top of the runtime baseline — what the merge gate posts
@@ -493,6 +509,60 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 		a.token, a.exp, a.denied = tok, exp, denied
 	}
 	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: a.token}, nil
+}
+
+// scopedREST returns an AdminClient backed by a token minted for exactly perms,
+// cached until it nears expiry.
+//
+// Minting per CALL is what this replaces: every board method went through its
+// own mint, so one reconciliation pass cost a token round trip per project
+// read, per item page and per reflected card — each an RS256-signed App JWT
+// against an endpoint GitHub rate-limits for abuse — repeated on the binding's
+// interval forever, and widening the pass duration the sync lease has to cover.
+//
+// Caching does not widen the leak window it was avoided for: GitHub's minimum
+// token life is ~1h whatever the caller does, so a per-call mint bought a
+// shorter blast radius only in theory. What DOES matter is the key: a token is
+// only ever served back to a call asking for the same permission set, so the
+// org-wide board grant cannot ride an ordinary push.
+//
+// The mint happens under the same lock as rest()'s, which makes concurrent
+// callers wait for one mint instead of racing N.
+func (a *AppClient) scopedREST(ctx context.Context, perms map[string]string) (*AdminClient, error) {
+	key := permissionSetKey(perms)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if t, ok := a.scoped[key]; ok && a.clock().Before(t.exp.Add(-scopedTokenLeeway)) {
+		return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: t.token}, nil
+	}
+	tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
+		&InstallationTokenOptions{Permissions: perms})
+	if err != nil {
+		return nil, err
+	}
+	if a.scoped == nil {
+		a.scoped = map[string]scopedToken{}
+	}
+	a.scoped[key] = scopedToken{token: tok, exp: exp}
+	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: tok}, nil
+}
+
+// permissionSetKey renders a grant set as a stable string, so two calls asking
+// for the same permissions share a token and no others do.
+func permissionSetKey(perms map[string]string) string {
+	names := make([]string, 0, len(perms))
+	for name := range perms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, name := range names {
+		b.WriteString(name)
+		b.WriteByte('=')
+		b.WriteString(perms[name])
+		b.WriteByte(';')
+	}
+	return b.String()
 }
 
 // PreflightFor mints (or reuses) the installation token and nothing else,

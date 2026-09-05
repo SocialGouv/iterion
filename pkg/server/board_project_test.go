@@ -575,7 +575,7 @@ type projectDriftingBoard struct {
 func (d *projectDriftingBoard) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
 	if !d.once {
 		d.once = true
-		if _, err := d.BoardStore.SetState(id, d.driftTo); err != nil {
+		if _, err := d.SetState(id, d.driftTo); err != nil {
 			return nil, false, err
 		}
 	}
