@@ -150,8 +150,15 @@ tool sync_harness:
     # net below the root (monorepo package, run started from a subdirectory) or
     # a non-canonical `--var oracle_dir=./gm`.
     rel = entry[0].split("\t", 1)[1]
-    with open(target, encoding="utf-8") as f:
-        old = f.read()
+    # A file this bot did not write need not even be UTF-8 — and the header
+    # guard below, whose whole job is to refuse a foreign one, would never run:
+    # the decode raises first, and the node dies with a traceback instead of the
+    # typed refusal on stdout the graph reads.
+    try:
+        with open(target, encoding="utf-8") as f:
+            old = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        refuse("the harness at %s/harness.py cannot be read as the materialised copy (%s) — not a file this bot overwrites" % (gm_rel, e))
     if not old.startswith(HEADER):
         refuse("the harness at %s/harness.py does not carry the materialised header — not a file this bot overwrites" % gm_rel)
     if old == canon:
