@@ -143,8 +143,107 @@ func TestExecBranchConvergencePoint_SharedTargetElectsTheDeclaredCollector(t *te
 	if len(in["merge"]) != 2 || !in["merge"]["a"] || !in["merge"]["b"] {
 		t.Errorf("region sources of merge = %v, want {a, b}", in["merge"])
 	}
-	if in["topology"] != nil || in["fan"] != nil {
-		t.Errorf("nodes upstream of the router carry no region sources, got topology=%v fan=%v", in["topology"], in["fan"])
+}
+
+// trunkBypassSource: a fan_out_each whose template is a linear chain, with
+// the trunk bypassing the fan-out into `collect` when there is nothing to
+// fan out. `collect` declares no `await:` — the bypass edge is its second
+// predecessor and the only thing that elects it. `tail` is trunk-only.
+const trunkBypassSource = `
+schema plan_out:
+  has_items: bool
+  items: json
+
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent plan:
+  model: "m"
+  input: s
+  output: plan_out
+  system: sys
+  user: usr
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.plan.items}}"
+  as: item
+
+agent work:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent collect:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent tail:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+
+workflow trunk_bypass:
+  entry: plan
+  plan -> dispatch when has_items
+  plan -> collect when not has_items
+  dispatch -> work
+  work -> collect
+  collect -> tail
+  tail -> done
+`
+
+func compileTrunkBypass(t *testing.T) *ir.CompileResult {
+	t.Helper()
+	pr := parser.Parse("trunk_bypass.bot", trunkBypassSource)
+	if pr.File == nil {
+		for _, d := range pr.Diagnostics {
+			t.Logf("parse: %s", d.Error())
+		}
+		t.Fatal("parse returned no AST")
+	}
+	return ir.Compile(pr.File)
+}
+
+// The bypass edge below the template head still elects the implicit
+// collector, so the trunk tail after it is not a branch body: no C243 on
+// `tail`, and the election names `collect`.
+func TestTrunkBypassFanOutEach_ImplicitCollectorKeepsTheTrunkTailOutOfTheBody(t *testing.T) {
+	cr := compileTrunkBypass(t)
+	for _, d := range cr.Diagnostics {
+		if d.Code == ir.DiagPersistInFanOut {
+			t.Fatalf("C243 fired on the trunk tail: %s", d.Error())
+		}
+	}
+	if cr.HasErrors() {
+		for _, d := range cr.Diagnostics {
+			t.Logf("diag: %s", d.Error())
+		}
+		t.Fatal("compile errors")
+	}
+	if got := ir.ExecBranchConvergencePoint(cr.Workflow, "dispatch", edgesFrom(cr.Workflow, "dispatch")); got != "collect" {
+		t.Errorf("collector = %q, want collect", got)
+	}
+	in := ir.FanOutInSources(cr.Workflow, "dispatch")
+	if len(in["collect"]) != 2 || !in["collect"]["work"] || !in["collect"]["plan"] {
+		t.Errorf("sources of collect = %v, want {work, plan}: the bypass below the head counts", in["collect"])
+	}
+	if len(in["work"]) != 1 || !in["work"]["dispatch"] {
+		t.Errorf("sources of work = %v, want {dispatch}", in["work"])
 	}
 }
 

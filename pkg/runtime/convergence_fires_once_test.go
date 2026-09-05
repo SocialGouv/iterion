@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -355,6 +356,138 @@ func TestSharedTargetFanOut_ResumeAfterTailFailureDoesNotRefireCollector(t *test
 	started, joins := nodeStartedCounts(t, s, runID)
 	assertCounts(t, exec, started, map[string]int{"a": 1, "b": 1, "merge": 1, "tail": 2})
 	assertSingleJoin(t, joins, "merge", ir.AwaitBestEffort)
+}
+
+// The mirror image: a trunk edge that BYPASSES the fan-out into the node
+// BELOW the template head (`plan -> collect else`, the no-items case) is the
+// second predecessor that makes `collect` the implicit collector — with no
+// `await:` declared, it is the only thing that does on a linear template.
+// Every item replay stops there and the trunk runs it once; losing that
+// election runs `collect` and the whole tail once per item.
+func TestTrunkBypassFanOutEach_ImplicitCollectorFiresOnce(t *testing.T) {
+	dispatch := &ir.RouterNode{
+		BaseNode:    ir.BaseNode{ID: "dispatch"},
+		RouterMode:  ir.RouterFanOutEach,
+		Over:        "{{outputs.plan.items}}",
+		OverRefs:    []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"plan", "items"}, Raw: "{{outputs.plan.items}}"}},
+		ItemBinding: "item",
+	}
+	wf := &ir.Workflow{
+		Name:  "trunk_bypass_each",
+		Entry: "plan",
+		Nodes: map[string]ir.Node{
+			"plan":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "plan"}},
+			"dispatch": dispatch,
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}},
+			"tail":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "plan", To: "dispatch", Condition: "has_items"},
+			{From: "plan", To: "collect", Condition: "has_items", Negated: true},
+			{From: "dispatch", To: "work", With: []*ir.DataMapping{{
+				Key:  "id",
+				Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"dispatch", "item", "id"}, Raw: "{{outputs.dispatch.item.id}}"}},
+				Raw:  "{{outputs.dispatch.item.id}}",
+			}}},
+			{From: "work", To: "collect"},
+			{From: "collect", To: "tail"},
+			{From: "tail", To: "done"},
+		},
+		Schemas:   map[string]*ir.Schema{},
+		Prompts:   map[string]*ir.Prompt{},
+		Vars:      map[string]*ir.Var{},
+		Loops:     map[string]*ir.Loop{},
+		Foreaches: map[string]*ir.Foreach{},
+	}
+	t.Run("items replay work and collect once", func(t *testing.T) {
+		exec := newCountingExecutor()
+		exec.on("plan", func(map[string]any) (map[string]any, error) {
+			return map[string]any{"has_items": true, "items": []any{map[string]any{"id": "one"}, map[string]any{"id": "two"}}}, nil
+		})
+		s := tmpStore(t)
+		if err := New(wf, s, exec).Run(context.Background(), "trunk-bypass-each", nil); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		assertRunStatus(t, s, "trunk-bypass-each", store.RunStatusFinished)
+		started, joins := nodeStartedCounts(t, s, "trunk-bypass-each")
+		assertCounts(t, exec, started, map[string]int{"plan": 1, "work": 2, "collect": 1, "tail": 1})
+		assertSingleJoin(t, joins, "collect", ir.AwaitWaitAll)
+	})
+	t.Run("no items take the bypass straight to collect", func(t *testing.T) {
+		exec := newCountingExecutor()
+		exec.on("plan", func(map[string]any) (map[string]any, error) {
+			return map[string]any{"has_items": false, "items": []any{}}, nil
+		})
+		s := tmpStore(t)
+		if err := New(wf, s, exec).Run(context.Background(), "trunk-bypass-each-empty", nil); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		assertRunStatus(t, s, "trunk-bypass-each-empty", store.RunStatusFinished)
+		started, joins := nodeStartedCounts(t, s, "trunk-bypass-each-empty")
+		assertCounts(t, exec, started, map[string]int{"work": 0, "collect": 1, "tail": 1})
+		if len(joins) != 0 {
+			t.Errorf("join_ready events = %d, want none on the bypass", len(joins))
+		}
+	})
+}
+
+// The same bypass on fan_out_all, with one and with two targets: the
+// implicit collector below the branch heads keeps its election, so the
+// trunk — not a branch — runs it, exactly once.
+func TestTrunkBypassFanOutAll_ImplicitCollectorFiresOnce(t *testing.T) {
+	for _, targets := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d-target", targets), func(t *testing.T) {
+			wf := &ir.Workflow{
+				Name:  "trunk_bypass_all",
+				Entry: "entry",
+				Nodes: map[string]ir.Node{
+					"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+					"fan":     &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fan"}, RouterMode: ir.RouterFanOutAll},
+					"a":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+					"collect": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}},
+					"tail":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+					"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+					"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+				},
+				Edges: []*ir.Edge{
+					{From: "entry", To: "fan", Condition: "dual"},
+					{From: "entry", To: "collect", Condition: "dual", Negated: true},
+					{From: "fan", To: "a"},
+					{From: "a", To: "collect"},
+					{From: "collect", To: "tail"},
+					{From: "tail", To: "done"},
+				},
+				Schemas:   map[string]*ir.Schema{},
+				Prompts:   map[string]*ir.Prompt{},
+				Vars:      map[string]*ir.Var{},
+				Loops:     map[string]*ir.Loop{},
+				Foreaches: map[string]*ir.Foreach{},
+			}
+			want := map[string]int{"a": 1, "collect": 1, "tail": 1}
+			if targets == 2 {
+				wf.Nodes["b"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}}
+				wf.Edges = append(wf.Edges, &ir.Edge{From: "fan", To: "b"}, &ir.Edge{From: "b", To: "collect"})
+				want["b"] = 1
+			}
+			exec := newCountingExecutor()
+			exec.on("entry", dualEntry(true))
+			s := tmpStore(t)
+			runID := fmt.Sprintf("trunk-bypass-all-%d", targets)
+			if err := New(wf, s, exec).Run(context.Background(), runID, nil); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			assertRunStatus(t, s, runID, store.RunStatusFinished)
+			started, joins := nodeStartedCounts(t, s, runID)
+			assertCounts(t, exec, started, want)
+			assertSingleJoin(t, joins, "collect", ir.AwaitWaitAll)
+			if got := joins[0].Data["terminal_join"]; got != nil {
+				t.Errorf("join_ready terminal_join = %v: the collector ran inside a branch instead of on the trunk", got)
+			}
+		})
+	}
 }
 
 // The same class on fan_out_each: a template head that is ALSO reachable

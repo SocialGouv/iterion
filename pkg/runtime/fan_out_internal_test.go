@@ -334,6 +334,34 @@ func TestFindConvergencePoint_TemplateHeadFedFromOutsideTheFanOutIsNotTheCollect
 	}
 }
 
+// A trunk edge bypassing the fan-out into the node BELOW the template head
+// (`plan -> collect else`, the no-items case) is what makes `collect` the
+// implicit collector of a linear template: the exemption for outside
+// predecessors applies to branch heads only.
+func TestFindConvergencePoint_TrunkBypassBelowTheHeadElectsTheImplicitCollector(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "t",
+		Nodes: map[string]ir.Node{
+			"plan":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "plan"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach},
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "plan", To: "dispatch", Condition: "has_items"},
+			{From: "plan", To: "collect", Condition: "has_items", Negated: true},
+			{From: "dispatch", To: "work"},
+			{From: "work", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+	}
+	e := &Engine{workflow: wf}
+	if got := e.findConvergencePoint("dispatch", []*ir.Edge{{From: "dispatch", To: "work"}}); got != "collect" {
+		t.Errorf("expected convergence=collect, got %q", got)
+	}
+}
+
 // A target fed by a SIBLING branch is a genuine reconvergence inside the
 // fan-out and stays the collector.
 func TestFindConvergencePoint_TargetFedBySiblingBranchStaysTheCollector(t *testing.T) {

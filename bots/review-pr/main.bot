@@ -1132,7 +1132,10 @@ compute merge_reviews:
   ## so it has to be persisted too.
   publish: family_findings
   output: family_reviews
-  ## best_effort, not wait_all: in mono only one branch ever arrives.
+  ## Mono reaches this node as an ordinary trunk step, where the await mode
+  ## is irrelevant. Dual fires it ONCE, after both reviewers have settled;
+  ## best_effort keeps that firing when one reviewer fails and lists the
+  ## failure in `_failed_branches` instead of failing the run.
   await: best_effort
   expr:
     claude_ran:       "outputs.reviewer_claude.family == 'claude' || outputs.reviewer_claude_glance.family == 'claude'"
