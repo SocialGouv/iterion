@@ -73,3 +73,28 @@ func TestTrimBody_CutsOnARuneBoundary(t *testing.T) {
 		t.Errorf("TrimBody(short) = %q", got)
 	}
 }
+
+// A success is read whole: a GitLab whose answer outgrows a cap must not turn
+// an upload that landed into a decode error stamped on the connection.
+func TestDoMultipartFile_LargeSuccessBodyDecodes(t *testing.T) {
+	pad := strings.Repeat("x", 20<<10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"avatar_url":"https://gl/u.png","padding":"` + pad + `"}`))
+	}))
+	defer srv.Close()
+	var out struct {
+		AvatarURL string `json:"avatar_url"`
+	}
+	code, _, err := DoMultipartFile(context.Background(), srv.Client(), http.MethodPut, srv.URL, "t", nil, "avatar", "a.png", "image/png", []byte("png"), &out)
+	if err != nil || code != http.StatusOK || out.AvatarURL != "https://gl/u.png" {
+		t.Fatalf("code=%d err=%v out=%+v", code, err, out)
+	}
+	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(pad))
+	}))
+	defer refused.Close()
+	if _, body, err := DoMultipartFile(context.Background(), refused.Client(), http.MethodPut, refused.URL, "t", nil, "avatar", "a.png", "image/png", []byte("png"), nil); err != nil || len(body) != 8<<10 {
+		t.Fatalf("a refusal's body is capped at 8 KiB: len=%d err=%v", len(body), err)
+	}
+}

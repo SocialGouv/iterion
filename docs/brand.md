@@ -28,7 +28,10 @@ task brand:check   # regenerates into a temp dir and cmp's each copy (part of `t
 task brand:og      # docs/scripts/og-card.html → docs/public/og.png (needs `task test:e2e:ui:install`)
 ```
 
-Change the mascot = replace a master, run `brand:gen` **then `brand:og`**
+`brand:check` runs in `task check`, not in CI (it needs the devbox toolchain,
+like `pi-ext:check`); a toolchain bump (`devbox update`) can change the
+bytes, and the answer is the same as for a master change: regenerate and
+commit. Change the mascot = replace a master, run `brand:gen` **then `brand:og`**
 (the OG card embeds the regenerated docs logo and has no guard of its own),
 commit everything they touched. Never edit a generated copy: `brand:check`
 fails on it, and on a committed copy the script no longer produces. The
@@ -80,9 +83,10 @@ App iterion created there, and the `iterion` OAuth App used for SSO.
 
 ### GitLab group bot accounts already connected (the PIC)
 
-Connections created before this feature carry no `account_kind`. Apply once
-per connection — the server re-reads nothing, it uploads through the sealed
-token:
+A connection created before this feature carries no `account_kind`: the
+first apply asks the forge who the token is (`WhoAmI`), records what it
+learns, and judges the account — a group-token bot user needs no `--force`.
+Apply once per connection; the upload goes through the sealed token:
 
 ```sh
 iterion remote forge connections avatar <conn-id>          # bot user of the GAT

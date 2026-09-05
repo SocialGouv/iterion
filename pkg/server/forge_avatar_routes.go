@@ -46,6 +46,14 @@ func (r *avatarRefusal) Error() string { return r.msg }
 // an operator has to do by hand.
 func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
 
+// avatarApplyTimeout bounds one apply — the forge round-trips (a WhoAmI for a
+// connection older than AccountKind, then the upload) and the record. The
+// apply rides its own context, detached from the caller's: the connection
+// exists, so a caller that gives up must not leave its avatar state
+// half-written, and a hanging forge must not hold a connect or a click for
+// longer than this.
+const avatarApplyTimeout = 20 * time.Second
+
 // applyBotAvatar uploads the iterion-bot avatar onto the account behind conn
 // and records the outcome on the connection. The policy is the point:
 //   - an OAuth connection is a person's authorization → refused, no override;
@@ -55,10 +63,12 @@ func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
 //     (GitLab group/project tokens, service accounts), or when the operator
 //     forces it for a dedicated account the forge cannot flag (Forgejo).
 //
-// A refusal comes back as *avatarRefusal and persists nothing. A forge-side
-// failure is persisted on AvatarError — so the card can name it and offer a
-// retry — and returned as-is.
-func (s *Server) applyBotAvatar(ctx context.Context, conn forge.Connection, variant brand.Variant, force bool) (forge.Connection, string, error) {
+// A connection older than AccountKind learns it here, from the forge, so the
+// bot gate judges the account and not the field's absence — the kind is
+// recorded either way. A refusal comes back as *avatarRefusal and persists
+// nothing else. A forge-side failure is persisted on AvatarError — so the card
+// can name it and offer a retry — and returned as-is.
+func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, variant brand.Variant, force bool) (forge.Connection, string, error) {
 	switch {
 	case conn.Kind == forge.KindOAuthApp:
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
@@ -70,7 +80,7 @@ func (s *Server) applyBotAvatar(ctx context.Context, conn forge.Connection, vari
 		}
 		msg := "GitHub exposes no API for an account's avatar or an App's logo"
 		if conn.Kind == forge.KindGitHubApp {
-			if u := s.githubAppLogoUploadURL(ctx, conn); u != "" {
+			if u := s.githubAppLogoUploadURL(parent, conn); u != "" {
 				fields["manage_url"] = u
 			}
 			msg += " — upload the logo on the App's settings page (Display information)"
@@ -86,11 +96,9 @@ func (s *Server) applyBotAvatar(ctx context.Context, conn forge.Connection, vari
 		// dressing a reconnect problem as an avatar one.
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s rejected this connection's token (status %s) — reconnect it first", conn.Host(), conn.Status)}
-	case conn.AccountKind != forge.AccountKindBot && !force:
-		return conn, "", &avatarRefusal{status: http.StatusConflict,
-			msg:    fmt.Sprintf("%s does not flag @%s as a bot account; if it is a dedicated account for iterion (not a person's), apply with force", conn.Host(), conn.AccountLogin),
-			fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), avatarApplyTimeout)
+	defer cancel()
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
 		return conn, "", err
@@ -100,23 +108,44 @@ func (s *Server) applyBotAvatar(ctx context.Context, conn forge.Connection, vari
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s connections cannot set an avatar through iterion", conn.Provider)}
 	}
-	// The record must outlive the request: the failure worth recording is a
-	// slow forge, i.e. exactly when the caller has already gone away.
-	tctx := store.WithTenant(context.WithoutCancel(ctx), conn.TenantID)
+	tctx := store.WithTenant(ctx, conn.TenantID)
 	// The upload is a forge round-trip, and another writer (the orchestrator
 	// stamping ManagedSecretID on a provision) may touch the document
-	// meanwhile — so the outcome is written onto a FRESH read, carrying only
-	// the avatar fields, never the copy read before the upload.
+	// meanwhile — so every outcome is written onto a FRESH read, carrying only
+	// the avatar fields (and a kind just learned), never the copy read before
+	// the round-trip.
+	learned := ""
 	persist := func(appliedAt *time.Time, avatarErr string) (forge.Connection, error) {
 		fresh, err := s.forgeConnections.Get(tctx, conn.ID)
 		if err != nil {
 			return conn, err
+		}
+		if learned != "" && fresh.AccountKind == "" {
+			fresh.AccountKind = learned
 		}
 		fresh.AvatarAppliedAt, fresh.AvatarError, fresh.UpdatedAt = appliedAt, avatarErr, time.Now().UTC()
 		if err := s.forgeConnections.Update(tctx, fresh); err != nil {
 			return conn, err
 		}
 		return fresh, nil
+	}
+	if conn.AccountKind == "" {
+		// Older than the field: ask the forge who the token is, and remember.
+		ident, err := admin.WhoAmI(ctx)
+		if err != nil {
+			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
+		}
+		conn.AccountKind, learned = ident.Kind, ident.Kind
+	}
+	if conn.AccountKind != forge.AccountKindBot && !force {
+		if learned != "" {
+			if updated, err := persist(conn.AvatarAppliedAt, conn.AvatarError); err == nil {
+				conn = updated
+			}
+		}
+		return conn, "", &avatarRefusal{status: http.StatusConflict,
+			msg:    fmt.Sprintf("%s does not flag @%s as a bot account; if it is a dedicated account for iterion (not a person's), apply with force", conn.Host(), conn.AccountLogin),
+			fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
 	}
 	avatarURL, err := setter.SetAvatar(ctx, brand.BotAvatar(variant))
 	if err != nil {
