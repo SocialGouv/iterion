@@ -85,4 +85,7 @@ by the server callbacks): provider → GitHub App manifest creation
 repository pick + bot enable (the shared EnableRepoPanel). A GitHub App
 installation whose scope misses the wanted repo no longer dead-ends:
 the panel surfaces the installation's live scope with the exact GitHub
-settings URL to widen it (`GET .../connections/{id}/health`).
+settings URL to widen it (`GET .../connections/{id}/health`). A
+manifest-created App comes back with the one thing the manifest cannot
+carry — its logo — as a hand-off: the iterion-bot mascot to download and
+the App's *Display information* page ([brand.md](brand.md)).

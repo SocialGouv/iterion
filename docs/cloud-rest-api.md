@@ -205,6 +205,7 @@ requires membership. Sources:
 | `DELETE` | `/api/teams/{id}/forge/connections/{conn_id}` | team admin | Remove a connection |
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/health` | team member | Connection health / token probe |
 | `POST` | `/api/teams/{id}/forge/connections/{conn_id}/refresh` | team member | GitHub App only: re-probe live installation grants, persist them, and force a fresh token mint |
+| `POST` | `/api/teams/{id}/forge/connections/{conn_id}/avatar` | team admin | Upload the iterion-bot avatar onto the account behind a PAT connection (`{variant?, force?}`); 422 on OAuth (a person) and GitHub (no API — names the App's settings page), 409 `needs_force` on an account the forge does not flag as a bot. See [brand.md](brand.md) |
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team member | Repos visible to the connection |
 | `GET` | `/api/teams/{id}/forge/repos` | team member | Team's forge-linked repos |
 | `POST` | `/api/teams/{id}/forge/repos` | team admin | Create a repo (opt-in `RepoCreator` capability) |
