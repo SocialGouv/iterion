@@ -308,6 +308,10 @@ func TestProviderForPullURL(t *testing.T) {
 		{raw: "https://ghe.example.com/o/r/pull/7", want: forge.ProviderGitHub, wantBase: "https://ghe.example.com", wantResolved: true},
 		{raw: "https://gl.example.com/g/o/r/-/merge_requests/7", want: forge.ProviderGitLab, wantBase: "https://gl.example.com", wantResolved: true},
 		{raw: "https://git.example.com/o/r/pulls/7", want: forge.ProviderForgejo, wantBase: "https://git.example.com", wantResolved: true},
+		// The host is canonicalised: url.Parse lowercases the scheme and not
+		// the host, and github.APIBaseFor's switch is exact — an uncanonical
+		// base is read as a GitHub Enterprise host and sent to /api/v3.
+		{raw: "https://GitHub.com/o/r/pull/7", want: forge.ProviderGitHub, wantBase: "https://github.com", wantResolved: true},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			host, _, _, err := forge.ParsePullURL(tc.raw)

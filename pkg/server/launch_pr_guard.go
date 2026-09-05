@@ -270,14 +270,23 @@ func hostMatchesPin(allowed []string, host string) bool {
 // names every self-hosted instance: GitLab's "/-/merge_requests/<n>",
 // Forgejo/Gitea's "/pulls/<n>", GitHub Enterprise's "/pull/<n>". Those are the
 // same three shapes forge.ParsePullURL accepts, so a URL that parsed there
-// always lands on one of them. Also returns the forge's WEB base URL, which is
-// what every provider constructor takes.
+// always lands on one of them. The path shape only ever serves a PINNED
+// credential now: an unpinned one reaches the canonical SaaS origins alone
+// (localTokenPermittedAt), which the host switch below already covers.
+//
+// Also returns the forge's WEB base URL, which is what every provider
+// constructor takes. The host is CANONICALISED to lower case there: url.Parse
+// lowercases the scheme but not the host, and a mixed-case one falls off
+// github.APIBaseFor's exact switch — "https://GitHub.com" would be read as a
+// GitHub Enterprise host and the lookup sent to /api/v3, refusing a perfectly
+// good PR URL with the wrong cause. Hosts are case-insensitive (RFC 3986), so
+// this is a canonicalisation, not a policy.
 func providerForPullURL(raw, host string) (forge.Provider, string, bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
 		return "", "", false
 	}
-	base := u.Scheme + "://" + u.Host
+	base := u.Scheme + "://" + strings.ToLower(u.Host)
 	switch strings.ToLower(host) {
 	case "github.com", "www.github.com":
 		return forge.ProviderGitHub, base, true
