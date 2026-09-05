@@ -37,6 +37,9 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "iterion.serviceAccountName" . }}
+      {{- with .Values.server.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       {{- with .Values.imagePullSecrets }}
