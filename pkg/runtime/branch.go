@@ -175,12 +175,28 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		case *ir.FailNode:
 			// A branch cannot end the run by itself — the collector
 			// decides — so the node's diagnosis travels as the branch
-			// error rather than as a run status. Carrying it is what
-			// keeps a typed refusal legible when it happens to be
-			// declared inside a fan-out.
+			// error rather than as a run status. It must be a TYPED
+			// error: the collector's commonBranchFailureCode is what
+			// carries a code onto the run, and a plain fmt.Errorf here
+			// laundered every declared code into the EXECUTION_FAILED
+			// catch-all, so an alert sink or a merge-gate notice keyed on
+			// failure_code saw nothing for a bot whose typed fail happens
+			// to sit in a branch.
 			outcome := e.failOutcome(branchRS, n)
-			result.err = fmt.Errorf("branch %s reached fail node %q [%s]: %s",
-				branchID, currentNodeID, outcome.code, outcome.reason)
+			if outcome.resumable {
+				// The trunk anchors a resumable fail on the guard that
+				// routed in; a branch has no such authority — the
+				// collector decides the run's fate, and the branch
+				// checkpoint is not a run restart point. Say so rather
+				// than dropping the declaration in silence, exactly as
+				// the trunk does when it cannot honour it either.
+				e.logger.Warn("runtime: fail node %q declares `resumable: true` but was reached inside fan-out branch %s — a branch cannot park the run, so the collector decides its fate; move the guard to the trunk if the run must stay resumable", currentNodeID, branchID)
+			}
+			result.err = &RuntimeError{
+				Code:    outcome.code,
+				NodeID:  currentNodeID,
+				Message: fmt.Sprintf("branch %s reached fail node %q: %s", branchID, currentNodeID, outcome.reason),
+			}
 			return result
 		}
 

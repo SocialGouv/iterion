@@ -450,6 +450,16 @@ workflow `entry:`, degrades to terminal with a WARN. Neither auto-resume
 nor the cloud retry will ever pick a typed refusal up by itself. See
 [resume](resume.md#resumable-states).
 
+**Inside a fan-out branch, both fields are bounded.** A branch cannot end
+the run by itself — the collector decides — so a fail node reached inside a
+`fan_out_all` / `fan_out_each` body reports its diagnosis as a typed BRANCH
+error. The `code:` still reaches the run's `failure_code` when every failed
+branch agrees on it (the collector keeps a common code rather than
+laundering it into `EXECUTION_FAILED`); when branches disagree, the
+aggregate is untyped. `resumable: true` cannot be honoured there at all —
+the branch has no authority to park the run — and the engine logs a WARN
+naming the node. Put a guard whose refusal must be resumable on the trunk.
+
 ## Reuse and nested execution
 
 ### `group` / `use`
