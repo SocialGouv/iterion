@@ -273,6 +273,23 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               </span>
             </Tooltip>
           )}
+          {run.cred_fingerprints && run.cred_fingerprints.length > 0 && (
+            <Tooltip
+              content={
+                `Credential fingerprint${run.cred_fingerprints.length > 1 ? "s" : ""} this run can spend — the audit identity shown on the API-key and connection views.` +
+                (run.llm_idle_since
+                  ? " No model node is running: the run currently holds none of these keys' concurrency slots."
+                  : "")
+              }
+            >
+              <span
+                className="inline-flex items-center gap-1 rounded border border-border-default px-1.5 py-0.5 text-micro font-mono text-fg-subtle"
+                data-testid="run-cred-fingerprints"
+              >
+                fp {run.cred_fingerprints.map((f) => f.slice(0, 8)).join(" · ")}
+              </span>
+            </Tooltip>
+          )}
           {active && (
             <LiveDot
               tone="live"

@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.6](https://github.com/SocialGouv/iterion/compare/v3.102.5...v3.102.6) (2026-09-05)
+
+### Bug Fixes
+
+* **bots:** the plan phase can no longer eat the delivery budget; only_lot on a non-actionable lot fails typed ([#737](https://github.com/SocialGouv/iterion/issues/737)) ([b2b3616](https://github.com/SocialGouv/iterion/commit/b2b3616b03b67c6d9e30f47646cce35b5dcfb882)), references [iterion#683](https://github.com/iterion/issues/683)
+
+    <details><summary>why</summary>
+
+    Two production runs on iterion#683 spent the whole planning chain (plan -> plan_review -> plan_revise) for 150 min / $8.59 combined and never reached campaign, the node that writes code (native:695). The chain had no ceiling of its own, so it could freely spend the entire run's max_duration / max_cost_usd budget on an optional enrichment (ADR-091) before the actual delivery work ever started.
+
+    </details>
+* **golden-master:** an extension act already present at base is not re-judged ([#735](https://github.com/SocialGouv/iterion/issues/735)) ([292e3f6](https://github.com/SocialGouv/iterion/commit/292e3f65a577a46b05096ebc7f14aa02e1950726))
+
+    <details><summary>why</summary>
+
+    extension_verdict judged EVERY act in the ledger at HEAD against the run's base. An act introduced before that base has, by construction, its added references in the base tree — so every one of them read as "existed at base — a rewrite wearing an addition's name", and the certifier refused a net that had done nothing wrong.
+
+    </details>
+* **quota:** a reading is trusted for a bounded time, the retry waits for the nearest key, the ceiling counts spenders, the stamp is visible ([#730](https://github.com/SocialGouv/iterion/issues/730)) ([f25d224](https://github.com/SocialGouv/iterion/commit/f25d2240408b0f96a41988adf8032977aa89ec81)), references [#690](https://github.com/SocialGouv/iterion/issues/690) [#684](https://github.com/SocialGouv/iterion/issues/684) [#661](https://github.com/SocialGouv/iterion/issues/661) [#659](https://github.com/SocialGouv/iterion/issues/659) [#659](https://github.com/SocialGouv/iterion/issues/659) [#690](https://github.com/SocialGouv/iterion/issues/690) [#690](https://github.com/SocialGouv/iterion/issues/690) [#684](https://github.com/SocialGouv/iterion/issues/684) [#661](https://github.com/SocialGouv/iterion/issues/661) [#659](https://github.com/SocialGouv/iterion/issues/659) [#690](https://github.com/SocialGouv/iterion/issues/690)
+
+    <details><summary>why</summary>
+
+    A reading carrying a reset instant was trusted until that instant, however old. The provider resets windows early: on 2026-09-04 the ledger held 93-99% seven_day readings taken before such a reset, every credential walk skipped both forfaits on them and every claude_code run was refused at admission — the revi/review gate of two PRs with them — for a reset four days out. The lock was self-sustaining: the only writer of a fresh reading is a live session's rate_limit_event, and the refusal is…
+
+    </details>
+
 ## [3.102.5](https://github.com/SocialGouv/iterion/compare/v3.102.4...v3.102.5) (2026-09-05)
 
 ### Bug Fixes

@@ -147,7 +147,7 @@ func TestUsageWindowRetryAt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			at, source, ok := usageWindowRetryAt(tt.err, tt.pol, retryNow)
+			at, source, ok := usageWindowRetryAt(tt.err, tt.pol, retryNow, time.Time{})
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -174,7 +174,7 @@ func TestUsageWindowRetryAt_JitterStaysInBand(t *testing.T) {
 
 	seen := map[time.Time]bool{}
 	for i := 0; i < 200; i++ {
-		at, _, ok := usageWindowRetryAt(weeklyWindowErr(reset), pol, retryNow)
+		at, _, ok := usageWindowRetryAt(weeklyWindowErr(reset), pol, retryNow, time.Time{})
 		if !ok {
 			t.Fatal("ok = false")
 		}
@@ -195,7 +195,7 @@ func TestUsageWindowRetryAt_JitterNeverPushesPastMaxWait(t *testing.T) {
 	pol := retrypolicy.Normalize(retrypolicy.Policy{MaxWait: "2h", Jitter: "30m"})
 	ceiling := retryNow.Add(2 * time.Hour)
 	for i := 0; i < 100; i++ {
-		at, _, ok := usageWindowRetryAt(weeklyWindowErr(retryNow.Add(90*time.Minute)), pol, retryNow)
+		at, _, ok := usageWindowRetryAt(weeklyWindowErr(retryNow.Add(90*time.Minute)), pol, retryNow, time.Time{})
 		if !ok {
 			t.Fatal("ok = false")
 		}

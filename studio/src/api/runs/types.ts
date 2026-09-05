@@ -263,6 +263,16 @@ export interface RunHeader {
   // Workflow-declared tool-permission gate mode ("off" | "ask" | "deny").
   // Empty/off = no gate. The header badges ask/deny. See docs/permissions.md.
   permission_mode?: string;
+  // Audit fingerprints of the credentials the run can spend (the same
+  // identities the key/connection views show — never secrets); what the
+  // per-key concurrency ceiling counts. Absent for local runs.
+  cred_fingerprints?: string[];
+  // Set while the run executes no model-calling node: it then holds none
+  // of its credentials' concurrency slots.
+  llm_idle_since?: string;
+  // When the earliest credential the launch passed over reopens — the
+  // instant a usage-window retry may arm on.
+  skipped_cred_reopens_at?: string;
   // Launch-time per-node/-group model/backend pins captured on the run
   // (studio dropdowns / CLI --model/--backend / HTTP model_overrides).
   // Display-only, surfaced in the Overview's "Launched with". Empty when

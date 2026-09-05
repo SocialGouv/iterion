@@ -257,29 +257,85 @@ const (
 // Percent is the utilization on the 0–100 scale operators configure in.
 func (r Reading) Percent() float64 { return r.Utilization * 100 }
 
-// Fresh reports whether a reading still describes the current window.
+// Trust bounds how long a reading is BELIEVED, on two axes.
 //
-// A reading dies at its own reset instant: past it the window has rolled
-// over and the old number describes a window that no longer exists. That is
-// what keeps a stale reading from blocking a deployment forever — the guard
-// forgets by itself, with no sweeper and no TTL to tune.
-//
-// A reading with no reset instant cannot expire that way, so it falls back
-// to maxAge. Without that fallback an undated reading would be immortal.
-func (r Reading) Fresh(now time.Time, maxAge time.Duration) bool {
-	if r.ObservedAt.IsZero() {
-		return false
-	}
-	if !r.ResetsAt.IsZero() {
-		return now.Before(r.ResetsAt)
-	}
-	return now.Sub(r.ObservedAt) < maxAge
+// A reading is a measurement of a window at one instant, and the premise
+// "a window's utilization cannot drop before its reset" is FALSE for the
+// provider: it has reset every window early, out of cycle. A reading
+// trusted for its whole window then locks the credential out until a
+// reset that already happened — and nothing can correct it, because the
+// only writer of a fresh reading is a live session, which the lock itself
+// prevents (measured: two forfaits at 0% skipped for four days, the merge
+// gate blocked behind them). So a reading is authoritative only for a
+// bounded time after it was observed; past that it is suggestive, the
+// gate lets the credential through, and the next session's own
+// rate_limit_event re-establishes the truth within one call.
+type Trust struct {
+	// MaxAge bounds a reading that carries no reset instant (a refusal
+	// relayed as text, a dead credential): with no window end to expire
+	// at, this is the only thing that stops it from being immortal.
+	MaxAge time.Duration
+	// Window bounds EVERY reading, dated or not — the trust window. Past
+	// it the number is a memory of the window, not a measurement of it.
+	Window time.Duration
 }
 
 // DefaultMaxAge bounds how long a reading with no reset instant is trusted.
 // Short enough that a wrong block heals within one five-hour window, long
 // enough to cover the gap between two runs on a quiet deployment.
 const DefaultMaxAge = time.Hour
+
+// DefaultTrustWindow bounds how long any reading is trusted after it was
+// observed (ITERION_USAGE_CAP_TRUST_WINDOW overrides it). Long enough that
+// a deployment running a session every few hours never re-probes a window
+// it just measured; short enough that an early provider reset costs hours
+// of idle subscription, not days.
+const DefaultTrustWindow = 3 * time.Hour
+
+// DefaultTrust is the bound every enforcement point applies when the
+// operator set nothing.
+func DefaultTrust() Trust {
+	return Trust{MaxAge: DefaultMaxAge, Window: DefaultTrustWindow}
+}
+
+// Normalized fills the zero value with the defaults, so a caller holding
+// no operator value (a test, an unset config) still applies a bound.
+func (t Trust) Normalized() Trust {
+	if t.MaxAge <= 0 {
+		t.MaxAge = DefaultMaxAge
+	}
+	if t.Window <= 0 {
+		t.Window = DefaultTrustWindow
+	}
+	return t
+}
+
+// Fresh reports whether a reading still describes the current window AND
+// is recent enough to be believed (see Trust).
+//
+// A reading dies at its own reset instant: past it the window has rolled
+// over and the old number describes a window that no longer exists. It
+// also dies at the end of the trust window, however far its reset is:
+// that is what keeps a pre-reset reading from locking a credential out
+// through a reset the provider made early.
+//
+// A reading with no reset instant cannot expire at a rollover, so it falls
+// back to MaxAge. Without that fallback an undated reading would be
+// immortal.
+func (r Reading) Fresh(now time.Time, t Trust) bool {
+	if r.ObservedAt.IsZero() {
+		return false
+	}
+	t = t.Normalized()
+	age := now.Sub(r.ObservedAt)
+	if age >= t.Window {
+		return false
+	}
+	if !r.ResetsAt.IsZero() {
+		return now.Before(r.ResetsAt)
+	}
+	return age < t.MaxAge
+}
 
 // Decision is what a policy says about a reading (or a set of them).
 type Decision struct {
@@ -439,21 +495,19 @@ func (g *Guard) Latest() []Reading {
 
 // Preflight answers "may new work start against this credential" from
 // previously stored readings. It is the cheap gate: no pod, no clone, no
-// call. Stale readings are ignored (see Reading.Fresh), so a deployment
-// that has not run in days is never blocked by what it learned then.
+// call. Stale readings are ignored (see Reading.Fresh and Trust), so a
+// deployment that has not run in hours is never blocked by what it learned
+// then — the next session re-measures.
 //
 // When several windows block, the one that reopens LAST wins: coming back
 // before every blocking window has reopened would just park the run again.
-func Preflight(readings []Reading, pol Policy, now time.Time, maxAge time.Duration) Decision {
+func Preflight(readings []Reading, pol Policy, now time.Time, trust Trust) Decision {
 	if !pol.Enabled() {
 		return Decision{}
 	}
-	if maxAge <= 0 {
-		maxAge = DefaultMaxAge
-	}
 	var worst Decision
 	for _, r := range readings {
-		if !r.Fresh(now, maxAge) {
+		if !r.Fresh(now, trust) {
 			continue
 		}
 		d := evaluate(r, pol)

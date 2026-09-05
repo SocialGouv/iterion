@@ -356,6 +356,19 @@ type RunRetryState struct {
 	ClaimedAt *time.Time `json:"claimed_at,omitempty" bson:"claimed_at,omitempty"`
 }
 
+// RunCredStamp is what one credential resolution leaves on the run
+// document: the audit identities of the credentials it sealed, and when the
+// earliest credential it passed over reopens. Written as a unit — at launch
+// on the in-memory document, at resume through RunStore.SetRunCredStamp —
+// so the two facts always describe the same resolution.
+type RunCredStamp struct {
+	// Fingerprints replaces Run.CredFingerprints wholesale; nil or empty
+	// clears it (a re-resolution that sealed nothing holds no slot).
+	Fingerprints []string
+	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
+	SkippedReopensAt *time.Time
+}
+
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
@@ -379,6 +392,24 @@ type Run struct {
 	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
 	// runs through this field.
 	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
+	// SkippedCredReopensAt is the earliest instant a credential the
+	// resolution PASSED OVER reopens — a refused window's reset, a reached
+	// cap's reset — or nil when nothing usable was skipped. Stamped with
+	// CredFingerprints at launch and re-stamped at every resume. The
+	// usage-window retry arms on the earlier of the failed credential's
+	// reset and this: a run that parked on the platform forfait's Monday
+	// reset comes back the same afternoon, when the team key it was
+	// refused only on the five-hour window reopens.
+	SkippedCredReopensAt *time.Time `json:"skipped_cred_reopens_at,omitempty" bson:"skipped_cred_reopens_at,omitempty"`
+	// LLMIdleSince is set while the run executes NO model-calling node —
+	// the last one finished at this instant and none has started since —
+	// and nil while one is running, while the run is queued, or before its
+	// first model call (a run about to spend counts). The per-key
+	// concurrency ceiling counts alive runs whose marker is nil: a run in a
+	// sixty-minute tool-only verify gate holds its key's slot for nobody.
+	// Cleared by every credential re-stamp (a resumed attempt starts over)
+	// and toggled by the runner at each model node's start and finish.
+	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty" bson:"llm_idle_since,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and
 	// non-subbot children.

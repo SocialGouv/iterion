@@ -967,16 +967,33 @@ func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID stri
 	})
 }
 
-// SetRunCredFingerprints stamps the sealed credentials' audit identities
-// on the run document (see RunStore). Load-modify-save, like the other
-// fs-side patches: the filesystem store has no partial update.
-func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error {
+// SetRunCredStamp writes a credential resolution's stamp on the run
+// document (see RunStore). Load-modify-save, like the other fs-side
+// patches: the filesystem store has no partial update.
+func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error {
 	r, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		return err
 	}
-	r.CredFingerprints = fingerprints
+	r.CredFingerprints = stamp.Fingerprints
+	r.SkippedCredReopensAt = stamp.SkippedReopensAt
+	r.LLMIdleSince = nil
 	return s.SaveRun(ctx, r)
+}
+
+// SetRunLLMIdle toggles the model-idle marker (see RunStore). Load-modify-
+// save under the store mutex, like the budget patches, so a status
+// transition racing this write is never reverted.
+func (s *FilesystemRunStore) SetRunLLMIdle(_ context.Context, runID string, idleSince *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.LLMIdleSince = idleSince
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
 }
 
 // SetRunBudgetOverrides persists the operator's launch-time budget ask
@@ -1013,15 +1030,15 @@ func (s *FilesystemRunStore) SetRunBudgetSnapshot(_ context.Context, runID strin
 	return s.writeRun(r)
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running runs stamped
-// with fingerprint (see RunStore). Scan-and-filter like the other
+// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
+// stamped with fingerprint (see RunStore). Scan-and-filter like the other
 // fs-side reverse queries — local scale, no secondary index.
 func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
 	ids, err := s.filterRunsSorted(ctx, func(r *Run) bool {
-		if r.ID == excludeRunID || !r.Status.HoldsCredentialSlot() {
+		if r.ID == excludeRunID || !r.Status.HoldsCredentialSlot() || r.LLMIdleSince != nil {
 			return false
 		}
 		for _, fp := range r.CredFingerprints {

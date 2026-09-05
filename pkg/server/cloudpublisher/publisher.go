@@ -114,6 +114,16 @@ type Config struct {
 	// passed over like a refused one, so the tiers stay a fallback chain.
 	// Nil keeps the walk refusal-evidence-only.
 	CapPolicy usagecap.PolicySource
+	// UsageCapTrust bounds how long a stored reading is believed by the
+	// credential walk — the refusal evidence and the cap mirror alike
+	// (usagecap.TrustFromEnv). The zero value applies the package
+	// defaults.
+	UsageCapTrust usagecap.Trust
+	// UsageProbe, when non-nil, refreshes a forfait's readings from the
+	// provider before the walk decides on stale-but-suggestive ones (see
+	// UsageProbe). Nil keeps the walk on the ledger alone: past the trust
+	// window a stale reading is simply not believed.
+	UsageProbe UsageProbe
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -161,6 +171,8 @@ type Publisher struct {
 	credPool       *credpool.Broker
 	usageCaps      usagecap.Store
 	capPolicy      usagecap.PolicySource
+	trust          usagecap.Trust
+	usageProbe     UsageProbe
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -255,6 +267,8 @@ func New(cfg Config) (*Publisher, error) {
 		credPool:       cfg.CredPool,
 		usageCaps:      cfg.UsageCaps,
 		capPolicy:      cfg.CapPolicy,
+		trust:          cfg.UsageCapTrust.Normalized(),
+		usageProbe:     cfg.UsageProbe,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -366,11 +380,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
 		PlatformSourced:    map[string]bool{},
+		PoolSourced:        map[string]bool{},
 	}
 
 	// Refused-but-only keys, per provider, remembered across the tiers for
 	// the restore step — the api-key twin of skippedForfaits below.
 	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
+	// When the earliest credential passed over by any tier reopens — the
+	// instant the run's usage-window retry may arm on (see credResolution).
+	skips := &skipTracker{}
 	// Audit identity of the API key that filled each provider slot, for
 	// the run-document stamp (the OAuth side rides bundle.OAuthFingerprints).
 	apiKeyFPs := map[secrets.Provider]string{}
@@ -390,7 +408,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		// passed over so the priority walk yields the next key of that
 		// provider — the BYOK tier becomes an ordered fallback chain.
 		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer,
-			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID))
+			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips))
 		if err != nil {
 			return credResolution{}, fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
@@ -550,9 +568,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// tier (a second forfait, the pool) could have served it
 				// immediately. Skipping it here is what makes the tiers a
 				// FALLBACK CHAIN rather than a fixed first choice.
-				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec); !until.IsZero() {
+				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec, payload); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+					skips.note(until)
 					// Remembered: if the end of the resolution finds the
 					// wire still empty, this forfait is restored — a
 					// parked run with a durable retry beats a stuck one.
@@ -588,6 +607,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// it landed in: a donor who reconnects a fresh one is not
 				// parked by the readings of the account it replaced.
 				setOAuthFingerprint(&bundle, grant.Ref, grant.Fingerprint)
+				bundle.PoolSourced[grant.Ref] = true
 			case credpool.SourceAPIKey:
 				prov := secrets.Provider(grant.Ref)
 				bundle.APIKeys[prov] = string(grant.Payload)
@@ -597,6 +617,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// last_used_at bump all name the donor's key, not an
 				// unstamped slot.
 				apiKeyFPs[prov] = secrets.FingerprintSHA256(string(grant.Payload))
+				// The lent key's row lives in the DONOR's tenant: the
+				// runner's metering bump must reach it without the run's
+				// tenant filter.
+				bundle.PoolSourced[string(prov)] = true
 			}
 			res.grant = grant
 		}
@@ -612,8 +636,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs)
+		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
 	}
+	res.skippedReopensAt = skips.earliest
 
 	// A skipped credential is only an improvement when some other tier
 	// could actually serve its wire. If nothing did — no second key, no
@@ -671,18 +696,27 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		oauthKinds = append(oauthKinds, kind)
 	}
 	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
-	// Harvest every sealed credential's audit identity for the run-doc
-	// stamp: API keys from the slot records above, OAuth from the bundle's
-	// own fingerprint map (each fill site stamps it there).
+	// Harvest the audit identity of every sealed credential the run can
+	// actually SPEND, for the run-doc stamp: API keys from the slot records
+	// above, OAuth from the bundle's own fingerprint map (each fill site
+	// stamps it there). The bundle keeps every credential; the stamp — what
+	// the per-key concurrency ceiling counts — keeps only those some
+	// resolved route of the run targets. A rite whose every node pins the
+	// OAuth-backed model held one of the facade key's two slots for its
+	// whole life without ever spending it, and the next launch pinned to
+	// the facade was refused the only credential its model could use.
+	// Unpinned or unresolvable routes keep everything (fail open toward
+	// protection: that run takes whatever the process holds).
+	spend := spendableProviders(wf, modelOverrides, runFallbacks)
 	seen := map[string]bool{}
-	for _, fp := range apiKeyFPs {
-		if fp != "" && !seen[fp] {
+	for prov, fp := range apiKeyFPs {
+		if fp != "" && !seen[fp] && spend.allows(strings.ToLower(string(prov))) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
 		}
 	}
-	for _, fp := range bundle.OAuthFingerprints {
-		if fp != "" && !seen[fp] {
+	for kind, fp := range bundle.OAuthFingerprints {
+		if fp != "" && !seen[fp] && spend.allows(providerOfOAuthKind(kind)) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
 		}
@@ -757,6 +791,77 @@ type credResolution struct {
 	// The caller stamps them on the run document so the per-key
 	// concurrency meter can count alive runs by credential.
 	fingerprints []string
+	// skippedReopensAt is when the earliest credential the walk passed
+	// over (refused window, reached cap) reopens; zero when none was.
+	// Stamped on the run document next to the fingerprints, so a run that
+	// parks on the credential it fell THROUGH to retries when the one it
+	// was refused reopens, not when the fallback does.
+	skippedReopensAt time.Time
+}
+
+// stamp is the run-document form of the resolution.
+func (c credResolution) stamp() store.RunCredStamp {
+	s := store.RunCredStamp{Fingerprints: c.fingerprints}
+	if !c.skippedReopensAt.IsZero() {
+		at := c.skippedReopensAt.UTC()
+		s.SkippedReopensAt = &at
+	}
+	return s
+}
+
+// spendable answers "may a run with these routes spend a credential of
+// this provider?" — the narrowing the run-doc stamp applies. A nil set
+// means every provider: the run has a route the walk could not resolve
+// (no pin, an explicit auto, a hint nobody knows, a model-answering node
+// with no LLMFields), and such a route takes whatever the process holds.
+type spendable struct{ pinned map[string]bool }
+
+func (s spendable) allows(provider string) bool {
+	if s.pinned == nil || provider == "" {
+		return true
+	}
+	return s.pinned[provider]
+}
+
+// spendableProviders reads the run's resolved routes through the same
+// walk and vocabulary the pool's wants derivation uses (wantsFor), so the
+// two surfaces can never disagree on what a run may spend.
+func spendableProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) spendable {
+	res := model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders)
+	if !res.NarrowSafe || len(res.Providers) == 0 {
+		return spendable{}
+	}
+	pinned := make(map[string]bool, len(res.Providers))
+	for _, p := range res.Providers {
+		pinned[p] = true
+	}
+	return spendable{pinned: pinned}
+}
+
+// providerOfOAuthKind maps an OAuth slot to the provider its credential
+// authenticates against; "" for a kind the stamp does not know (kept).
+func providerOfOAuthKind(kind string) string {
+	switch secrets.OAuthKind(kind) {
+	case secrets.OAuthKindClaudeCode:
+		return string(secrets.ProviderAnthropic)
+	case secrets.OAuthKindCodex:
+		return string(secrets.ProviderOpenAI)
+	}
+	return ""
+}
+
+// skipTracker remembers the earliest reopening among the credentials one
+// resolution passed over. Nil-safe, so a caller with no resolution to
+// report into (a unit test of the predicate) passes nil.
+type skipTracker struct{ earliest time.Time }
+
+func (s *skipTracker) note(until time.Time) {
+	if s == nil || until.IsZero() {
+		return
+	}
+	if s.earliest.IsZero() || until.Before(s.earliest) {
+		s.earliest = until
+	}
 }
 
 // setOAuthFingerprint stamps the audit identity of the credential that
@@ -790,7 +895,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
 	if p.sealer == nil {
 		return
 	}
@@ -815,7 +920,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
 			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer,
-				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID))
+				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 			} else {
@@ -994,13 +1099,80 @@ const usageCapLookupTimeout = 5 * time.Second
 //   - a STALE reading ⇒ usable (Fresh already encodes "past its own
 //     reset", so a window that reopened stops blocking by itself);
 //   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
-func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord) (time.Time, string) {
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
 	backend := usageBackendForKind(rec.Kind)
 	scope := usagecap.ScopePlatform
 	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
 		scope = usagecap.TenantScope(tenantID)
 	}
+	until, why := p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+	if !until.IsZero() || p.usageProbe == nil || backend == "" || rec.Fingerprint == "" || len(payload) == 0 {
+		return until, why
+	}
+	// Nothing fresh closes the window — but a STALE reading may say it
+	// was closed when it was taken. Past the trust window that reading is
+	// suggestive, not binding; rather than either believing it (the lock
+	// through an early reset) or ignoring it (one wasted pod when the
+	// wall is real), ask the provider, record the answer where the
+	// session telemetry lands, and decide on that.
+	key := usagecap.Key(backend, scope, rec.Fingerprint)
+	if !p.staleSuggestsClosed(ctx, key) {
+		return time.Time{}, ""
+	}
+	pctx, cancel := context.WithTimeout(ctx, usageProbeTimeout)
+	defer cancel()
+	readings, err := p.usageProbe(pctx, payload)
+	if err != nil {
+		p.logger.Info("cloudpublisher: oauth-forfait fp=%s: a stale reading suggests a closed window, and the provider could not be asked (%v) — trusting the credential", rec.Fingerprint, err)
+		return time.Time{}, ""
+	}
+	for _, r := range readings {
+		if rerr := p.usageCaps.Record(ctx, key, r); rerr != nil {
+			p.logger.Warn("cloudpublisher: oauth-forfait fp=%s: record refreshed %s reading: %v", rec.Fingerprint, r.Window, rerr)
+		}
+	}
+	p.logger.Info("cloudpublisher: oauth-forfait fp=%s: %d window reading(s) refreshed from the provider on a stale ledger", rec.Fingerprint, len(readings))
 	return p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+}
+
+// staleSuggestsClosed reports whether the credential's ledger holds a
+// reading the trust window no longer believes, whose window has NOT rolled
+// over, and which would have closed the window had it been fresh — a
+// provider refusal, or the operator's cap reached. A rolled-over reading is
+// dead, not stale, and a low reading suggests nothing: neither is worth a
+// round trip.
+func (p *Publisher) staleSuggestsClosed(ctx context.Context, key string) bool {
+	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
+	defer cancel()
+	readings, err := p.usageCaps.Latest(lctx, key)
+	if err != nil || len(readings) == 0 {
+		return false
+	}
+	now := time.Now()
+	trust := p.trust.Normalized()
+	// Trusted "forever": only the reset instant can end a reading, which
+	// is exactly the pre-trust-window notion of fresh.
+	const forever = 100 * 365 * 24 * time.Hour
+	unbounded := usagecap.Trust{MaxAge: forever, Window: forever}
+	var stale []usagecap.Reading
+	for _, r := range readings {
+		if r.Fresh(now, trust) || !r.Fresh(now, unbounded) {
+			continue
+		}
+		stale = append(stale, r)
+	}
+	if len(stale) == 0 {
+		return false
+	}
+	for _, r := range stale {
+		if r.Status == usagecap.StatusRejected && usagecap.FamilyOf(r.Window) != usagecap.FamilyNone {
+			return true
+		}
+	}
+	if p.capPolicy != nil && usagecap.Preflight(stale, p.capPolicy.Effective(ctx), now, unbounded).Blocked {
+		return true
+	}
+	return false
 }
 
 // refusedUntil is the ONE evidence reading shared by every credential-skip
@@ -1021,12 +1193,13 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		return time.Time{}, ""
 	}
 	now := time.Now()
+	trust := p.trust.Normalized()
 	// When several windows are refused, the one that reopens LAST rules:
 	// the credential stays unusable until every refusal has lapsed.
 	var until time.Time
 	var why string
 	for _, r := range readings {
-		if r.Status != usagecap.StatusRejected || !r.Fresh(now, usagecap.DefaultMaxAge) {
+		if r.Status != usagecap.StatusRejected || !r.Fresh(now, trust) {
 			continue
 		}
 		// Windows usagecap itself never blocks on are no evidence here
@@ -1042,7 +1215,7 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		if reopen.IsZero() {
 			// A refusal with no reset instant is trusted only for the
 			// reading's own staleness bound.
-			reopen = r.ObservedAt.Add(usagecap.DefaultMaxAge)
+			reopen = r.ObservedAt.Add(trust.MaxAge)
 		}
 		if reopen.After(until) {
 			until = reopen
@@ -1079,10 +1252,10 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		// A blocked window with no reset instant is trusted for the
 		// reading's own staleness bound, the same synthesis the refusal
 		// branch above applies: bounded, self-healing, and symmetric.
-		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, usagecap.DefaultMaxAge); d.Blocked {
+		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, trust); d.Blocked {
 			reopen := d.ResetsAt
 			if reopen.IsZero() {
-				reopen = now.Add(usagecap.DefaultMaxAge)
+				reopen = now.Add(trust.MaxAge)
 			}
 			until = reopen
 			why = fmt.Sprintf("the operator's cap on the %s window is reached (%.0f%% ≥ %.0f%%)", d.Window, d.Percent, d.Cap)
@@ -1117,8 +1290,10 @@ func usageBackendForProvider(prov secrets.Provider) string {
 // fresh provider-refusal evidence under its fingerprint is skipped, and the
 // priority walk hands the NEXT key of that provider over — the ordered
 // fallback the 2026-09-02 fair-usage freeze was routed around by hand.
-// Everything uncertain means "usable", same contract as refusedUntil.
-func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string) func(secrets.ApiKey) bool {
+// Everything uncertain means "usable", same contract as refusedUntil. A
+// skipped key's reopening is reported into skips (nil-safe) so the run can
+// retry when THAT key reopens rather than when its fallback does.
+func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string, skips *skipTracker) func(secrets.ApiKey) bool {
 	return func(k secrets.ApiKey) bool {
 		// Concurrency ceiling first — cheaper than the meter read, and a
 		// key at its ceiling must rest whatever its refusal history says.
@@ -1144,6 +1319,7 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string
 		}
 		p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
 			k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
+		skips.note(until)
 		return false
 	}
 }
@@ -1560,6 +1736,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// would be a warn-and-lose no-op that leaves the ceiling blind to
 	// every launched run.
 	r.CredFingerprints = creds.fingerprints
+	r.SkippedCredReopensAt = creds.stamp().SkippedReopensAt
 
 	// A run served by the pool may not spend more than what remains of its
 	// donor's allowance. This is the enforcement: the engine stops the run
@@ -1900,7 +2077,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// no longer carries, for its whole remaining alive life. An empty
 	// re-resolution therefore CLEARS the stamp. Best-effort: a failed
 	// write degrades the ceiling toward uncapped, never the resume.
-	if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
+	if serr := p.store.SetRunCredStamp(secretsCtx, spec.RunID, creds.stamp()); serr != nil {
 		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,

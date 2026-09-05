@@ -50,10 +50,13 @@ path wholesale rather than inventing a recovery of its own.
 | `ITERION_USAGE_CAP_WEEK_PCT` | `0`–`100` (`0`/unset = no cap) | unset |
 | `ITERION_USAGE_CAP_WEEK_MODE` | `off` \| `soft` \| `hard` | `hard` |
 | `ITERION_USAGE_CAP` | `off` disarms both caps | unset |
+| `ITERION_USAGE_CAP_TRUST_WINDOW` | a Go duration (`3h`, `90m`) — how long a stored reading is believed, see [A reading is trusted for a bounded time](#a-reading-is-trusted-for-a-bounded-time) | `3h` |
 
 A malformed value **refuses to start** rather than falling back to no cap:
 every wrong answer here fails open, and a guard silently disabled by a typo
-is the failure the feature exists to prevent.
+is the failure the feature exists to prevent. That includes the trust
+window, and it holds under `ITERION_USAGE_CAP=off` too: the window also
+bounds the credential-skip evidence, which the kill switch does not disarm.
 
 There is deliberately **no per-run flag and no DSL field**. The cap protects
 a credential and the deployment that owns it, not a run — a bot able to lift
@@ -158,9 +161,79 @@ Consequences worth knowing:
 
 - The cap is **claude_code-shaped today**. Other backends have no equivalent
   telemetry surface; a run on `claw` or `pi` is not capped.
+- **One event names one window.** A `rate_limit_event` carries a single
+  `rateLimitType`, emitted when that window's numbers move — so a session
+  refreshes the windows the CLI happens to report, not all of them, and a
+  run refused *before* its first call (the pre-flights below) refreshes
+  nothing at all.
 - A reading **expires at its own reset instant**. Past it the window has
   rolled over and the number describes a window that no longer exists, so a
-  stale reading stops blocking by itself — no sweeper, no TTL to tune.
+  stale reading stops blocking by itself — no sweeper.
+- A reading is also **trusted for a bounded time** after it was observed —
+  the next section.
+
+### A reading is trusted for a bounded time
+
+The premise "a window's utilization cannot drop before its reset" is
+**false** for this provider: it has reset every window early, out of cycle.
+On 2026-09-04 the seven-day windows of the deployment's forfaits went to 0%
+at the provider while the ledger still held 93–99% readings taken hours
+earlier, each carrying a reset instant three to four days out. Every
+credential walk skipped both forfaits on them, and every claude_code run
+was refused at admission — including the `revi/review` merge gate of two
+PRs, which then read as "review in progress" forever. The lock was
+self-sustaining: the only writer of a fresh reading is a live session, and
+the refusal is what prevented one. Nothing could recover on its own before
+the recorded reset, four days later.
+
+So a reading is **authoritative only for `ITERION_USAGE_CAP_TRUST_WINDOW`
+(default 3h) after it was observed**, whatever its reset instant says. Past
+that it is suggestive, not binding: the walk lets the credential through,
+the pre-flight admits the run, and the run's own session re-measures the
+window within one call. If the wall is really still there, that costs one
+call and one park — the ordinary wait, with the retry armed for the reset —
+which is the price of never locking a credential out through a reset the
+ledger cannot see. Readings with no reset instant (a relayed refusal, a dead
+credential) keep their shorter 1h bound.
+
+The same bound governs **both** consumers of the ledger — the cap
+pre-flights and the credential-skip evidence — because both read the same
+readings and must forget a pre-reset one at the same moment.
+
+**The launch walk asks the provider instead of guessing.** When a forfait's
+stored readings are stale-but-suggestive — past the trust window, window not
+rolled over, and saying "closed" when they were taken — the cloud publisher
+re-measures the credential at Anthropic's OAuth usage endpoint with the
+forfait's own token (`pkg/backend/forfait.FetchWindows`), records every
+window it reports under the same key the runner meters, and decides on
+that: the forfait is skipped when the wall is real and granted when the
+window reset early, with no pod spent either way. Best effort and bounded
+(5s): a credential the endpoint refuses (a `claude setup-token` lacks the
+`user:profile` scope and gets `403`), a network error or a malformed body
+each cost one Info line and fall back to trusting the credential — the
+trust-window behaviour. Fresh readings and low stale readings never trigger
+a round trip.
+
+### Forgetting a credential's readings by hand
+
+An operator who *knows* a reset happened does not have to wait out the
+trust window, and should not raise the global cap to unstick one
+fingerprint (that lifts the guard for every tenant and every bot). The
+scalpel clears **one credential's** readings, under every key it was
+metered with, and leaves the caps alone:
+
+```sh
+iterion remote admin usage-readings clear e4ecd2283afb305f
+# → {"fingerprint":"e4ecd2283afb305f","deleted":2}
+```
+
+The fingerprint is the credential's audit identity — shown on the key and
+connection views, and in the server's `SKIPPED … fp=` / `AT ITS CEILING`
+lines. Raw surface: `DELETE /api/admin/usage-readings/{fingerprint}`
+(super-admin). Every call lands in the platform audit log
+(`platform.usage_readings.cleared`, with the count). Afterwards the
+credential reads "nothing learned yet": the next run is admitted and
+re-measures.
 
 ## What it looks like when it fires
 

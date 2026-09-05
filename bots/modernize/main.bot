@@ -126,6 +126,17 @@ schema plan_state:
   base_sha: string
   refs_dir: string
   notice: string
+  ## True ONLY when only_lot named a lot the reader resolved as
+  ## non-actionable (done / blocked / absent from the contract) -- NEVER
+  ## true at the same time as nothing_to_do (native:670). An unfiltered
+  ## "pick next" scan that finds nothing ready is a legitimate no-op
+  ## (nothing_to_do, silent green); an EXPLICIT only_lot request that
+  ## cannot be honoured is not the same outcome and must not exit the
+  ## same way -- work_gate routes it to a typed fail instead.
+  lot_not_actionable: bool
+  ## The named lot's actual status when lot_not_actionable: "done",
+  ## "blocked", or "absent" (no lot with that id in the contract).
+  lot_status: string
 
 ## The deterministic verdict. Not one field here is an opinion.
 schema lot_report:
@@ -187,10 +198,30 @@ tool plan_read:
     only = {{vars.only_lot}}
 
     out = {"nothing_to_do": True, "lot_id": "", "lot_title": "", "lot_intent": "",
-           "exit_gate": "", "base_sha": "", "refs_dir": "", "notice": ""}
+           "exit_gate": "", "base_sha": "", "refs_dir": "", "notice": "",
+           "lot_not_actionable": False, "lot_status": ""}
 
     def emit(notice):
         """A legitimate no-op: there is genuinely nothing to carry out."""
+        out["notice"] = notice
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def not_actionable(status, notice):
+        """only_lot named a lot that cannot be actioned: done, blocked, or
+        absent from the contract entirely.
+
+        NOT the same outcome as emit()'s legitimate nothing_to_do, and must
+        not exit the same way: an unfiltered "pick next" scan finding
+        nothing ready is silent-green by design, but the operator here
+        asked for THIS lot specifically. Reporting it the same way a
+        finished programme reports "every lot is done" hid the real
+        answer -- exit 0, JSON printed, so work_gate (which reads this
+        field) routes to a typed fail instead of straight to done.
+        """
+        out["nothing_to_do"] = False
+        out["lot_not_actionable"] = True
+        out["lot_status"] = status
         out["notice"] = notice
         print(json.dumps(out))
         raise SystemExit(0)
@@ -278,6 +309,27 @@ tool plan_read:
     out["base_sha"] = rev.stdout.strip()
 
     lots = plan.get("lots") or []
+
+    # only_lot is an EXPLICIT request for one lot, not a scope filter over
+    # an otherwise-normal scan. Resolve its actual status FIRST: a lot
+    # that is already done, already blocked, or not in the contract at
+    # all is not a legitimate nothing_to_do (that outcome is reserved for
+    # the unfiltered "pick next" scan below finding nothing ready) --
+    # collapsing the two hid a bad run behind a green one (native:670: a
+    # request for a blocked lot silently reported "every lot is done").
+    if only:
+        named = next((l for l in lots if l.get("id") == only), None)
+        if named is None:
+            not_actionable("absent",
+                "only_lot %r names a lot that does not exist in %s. Check "
+                "the lot id against the contract's lots: list." % (only, plan_path))
+        if named.get("status") in ("done", "blocked"):
+            not_actionable(named.get("status"),
+                "only_lot %r is not actionable: its status is %r. A done "
+                "lot has nothing left to do; a blocked lot needs a human "
+                "to act on its committed report before it can be "
+                "re-attempted." % (only, named.get("status")))
+
     # UN LOT BLOQUE NE SE RE-TENTE PAS A CHAQUE RUN.
     #
     # `blocked` ne veut pas dire « ce lot n'a rien fait » : il veut dire « il n'a
@@ -383,6 +435,8 @@ compute work_gate:
     base_sha: "outputs.plan_read.base_sha"
     refs_dir: "outputs.plan_read.refs_dir"
     notice: "outputs.plan_read.notice"
+    lot_not_actionable: "outputs.plan_read.lot_not_actionable"
+    lot_status: "outputs.plan_read.lot_status"
 
 agent upgrade_campaign:
   backend: "claude_code"
@@ -752,6 +806,13 @@ workflow modernize:
     preserve_recent: 8
 
   plan_read -> work_gate
+
+  ## lot_not_actionable is checked FIRST and is never true alongside
+  ## nothing_to_do (plan_read's not_actionable() sets nothing_to_do=False,
+  ## native:670) — an explicit only_lot request naming a done/blocked/
+  ## absent lot fails loud instead of falling into the done/campaign pair
+  ## below, which is exhaustive only over the unfiltered "pick next" scan.
+  work_gate -> fail when lot_not_actionable
 
   ## Exhaustive pair on one bool (C012): an already-finished programme is a
   ## clean no-op, not an error — running a done programme must cost nothing and

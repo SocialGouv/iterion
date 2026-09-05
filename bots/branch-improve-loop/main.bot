@@ -230,6 +230,44 @@ vars:
   ## local --auto-resume) — the deliberate-spend posture.
   plan_review_policy: string [enum: "wait", "skip"] = "skip"
 
+  ## Plan-phase budget guard (native:695). A production run on a
+  ## +3870/-273 diff spent the planning chain (plan -> plan_review ->
+  ## plan_revise) for 150 min / $8.59 and never reached `campaign` — the
+  ## whole run's budget died on the enrichment before a single commit.
+  ## plan_budget_ratio caps the FRACTION of the run's own ceilings
+  ## (mirrored below) the planning chain may spend; plan_budget_gate
+  ## (after the chain) fails the run before campaign starts the moment
+  ## planning crosses its share, guaranteeing campaign at least
+  ## (1-ratio) of the budget. Overridable per run
+  ## (--var plan_budget_ratio=0.5). See docs/bot-runs/branch-improve-loop.md.
+  plan_budget_ratio: float = 0.3
+
+  ## Mirrors of the budget: block below, in units a compute/tool node can
+  ## read. NOT auto-derived: max_cost_usd is a compile-time typed numeric
+  ## literal (C046) and max_duration only takes an OS-env ${VAR:-default}
+  ## substitution (docs/dsl.md "Budget fields") -- neither reads a
+  ## workflow vars: value, and the expr `run` namespace exposes only
+  ## run.id (pkg/runtime/expr_eval.go) -- there is no DSL primitive today
+  ## for a node to read the run's own effective caps or elapsed
+  ## spend/duration. Keep these two vars numerically in sync with the
+  ## budget: block by hand; a CLI --max-cost-usd/--max-duration override
+  ## on this run will NOT reach them automatically (a follow-up: the expr
+  ## `run` namespace could grow run.max_cost_usd / run.elapsed_seconds /
+  ## run.spent_cost_usd) -- pass the matching --var alongside a budget
+  ## override to keep the guard's math honest.
+  budget_max_duration_minutes: int = 150
+  budget_max_cost_usd: float = 75
+
+  ## Above this many added lines in the branch diff (git diff --shortstat
+  ## insertions), the plan phase reads a git diff --stat footprint +
+  ## per-file hunks instead of the full unified diff, and the
+  ## author-revise turn (plan_revise) is skipped -- the peer's critique
+  ## reaches the campaign UNREVISED rather than paying a second full-diff
+  ## read. Both cuts keep the plan phase itself inside plan_budget_ratio
+  ## on a large PR (repo-agnostic: pure line-count over git diff, no
+  ## language/package-manager assumption).
+  plan_large_diff_lines: int = 1500
+
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted as a
   ## read-only file the gh/glab CLI authenticates from; never read into a
@@ -765,6 +803,15 @@ prompt plan_system:
   code the branch didn't touch. Then write the plan as a MAP, not a
   contract — the implementer may diverge where reality disagrees.
 
+  ON A LARGE DIFF (`input.large` true in your task below): do NOT read the
+  full unified diff — it is large enough that doing so would itself spend
+  the plan phase's own time/cost budget (a deterministic gate fails the
+  run before the campaign starts if planning overspends its share). The
+  diff stat below already gives you the footprint; pull ONLY the per-file
+  hunks you need to triage (`git diff $(git merge-base <base_ref> HEAD) --
+  <file> | head -n 200`), file by file, prioritizing the files with the
+  largest change count first. Triage from that instead of the whole diff.
+
   Structured output:
     - plan: the triage — the issues you found in the diff worth fixing,
       in fix order, each naming the file/hunk and the intended fix.
@@ -776,6 +823,12 @@ prompt plan_user:
 
   BRANCH BASE (triage the diff THIS branch introduces on top of it):
   {{vars.base_ref}}
+
+  Diff footprint (git diff --stat, capped):
+  {{input.diff_stat}}
+
+  Large diff: {{input.large}} — see the system prompt's large-diff
+  instruction when true.
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
@@ -795,6 +848,12 @@ prompt plan_review_system:
   "issue" that is not one (false positive); a fix direction that would
   be wrong or heavier than the diff warrants; an understated risk.
 
+  ON A LARGE DIFF (`input.large` true below): do NOT re-read the full
+  unified diff — use the diff stat you are given and pull only the
+  per-file hunks relevant to the claims you are checking. The plan phase
+  as a whole is budget-guarded; a second full-diff read here is exactly
+  the cost this adaptation exists to avoid.
+
   Structured output:
     - concerns: the defects you can GROUND in the diff (name the
       file/hunk per claim). Empty when the triage holds — do not
@@ -808,7 +867,13 @@ prompt plan_review_user:
 
   BRANCH BASE: {{vars.base_ref}}
   Read the diff yourself: `git add -N .` then
-  `git diff $(git merge-base {{vars.base_ref}} HEAD)`.
+  `git diff $(git merge-base {{vars.base_ref}} HEAD)` — or, on a large
+  diff (see below), the stat + targeted per-file hunks instead.
+
+  Diff footprint (git diff --stat, capped):
+  {{input.diff_stat}}
+
+  Large diff: {{input.large}}
 
   THE TRIAGE PLAN under review:
   {{input.plan}}
@@ -846,6 +911,20 @@ prompt plan_revise_user:
 schema plan_topology_state:
   do_plan: bool
 
+## plan_scope_state is plan_scope_probe's contract: the diff footprint +
+## size classification (drives the large-diff adaptation in plan_system/
+## plan_review_system) and the wall-clock start of the planning chain
+## (plan_budget_gate's only way to measure elapsed time -- see the
+## plan_budget_ratio var comment).
+schema plan_scope_state:
+  diff_stat: string
+  large: bool
+  started_epoch: int
+
+schema plan_input:
+  diff_stat: string
+  large: bool
+
 schema plan_output:
   plan: string
   assumptions: string
@@ -855,14 +934,23 @@ schema plan_review_input:
   plan: string
   assumptions: string
   risks: string
+  diff_stat: string
+  large: bool
 
 schema plan_review_output:
   concerns: string
   suggestions: string
   blocking: bool
 
+## skipped: the peer literally did not serve (skip route fired -- credential
+## dead, policy=skip). skip_revise: skip the author-revise turn regardless
+## of why -- either the peer never served (nothing to revise against) OR
+## the diff is large enough that a second full read would itself blow the
+## plan phase's own budget share. The two stay distinct because they are
+## different operational stories even though both bypass plan_revise.
 schema plan_gate_state:
   skipped: bool
+  skip_revise: bool
 
 schema plan_revise_input:
   plan: string
@@ -876,6 +964,48 @@ schema plan_revised_output:
   plan: string
   review_responses: string
 
+## plan_cost_probe's contract: a nil-safe sum of the plan phase's own LLM
+## spend (a skipped/never-run node's _cost_usd is absent, not zero -- the
+## sum must not choke on that) plus a pass-through of the plan/critique/
+## responses text so plan_budget_gate -- the single choke point before
+## campaign -- receives everything it needs to either proceed or fail from
+## ONE input, regardless of which of the two upstream routes (skip_revise
+## vs plan_revise) produced it.
+schema plan_cost_probe_input:
+  plan: string
+  plan_critique: string
+  plan_responses: string
+
+schema plan_cost_probe_state:
+  plan: string
+  plan_critique: string
+  plan_responses: string
+  plan_cost_usd: float
+
+## plan_budget_gate's contract. exhausted is the deterministic verdict
+## (real wall-clock elapsed + the nil-safe cost sum vs. plan_budget_ratio
+## of the mirrored ceilings); reason is a human-readable comparison for the
+## run's own record (events.jsonl / iterion report) -- the DSL's `-> fail`
+## terminal has no mechanism to carry a custom RuntimeError code/message
+## (pkg/runtime/engine_exec.go hardcodes "workflow reached fail node" +
+## a fixed FailureFailNode code), so `code`/`reason` here are the typed,
+## greppable record of WHY, persisted on this node's own output even
+## though the run's top-level failure message stays generic.
+schema plan_budget_gate_input:
+  plan: string
+  plan_critique: string
+  plan_responses: string
+  plan_cost_usd: float
+  started_epoch: int
+
+schema plan_budget_gate_state:
+  exhausted: bool
+  code: string
+  reason: string
+  plan: string
+  plan_critique: string
+  plan_responses: string
+
 ## plan_topology lifts the launch-resolved plan_review var into a bool
 ## so the entry edges use the C012-exhaustive simple form. No LLM.
 compute plan_topology:
@@ -883,6 +1013,42 @@ compute plan_topology:
   output: plan_topology_state
   expr:
     do_plan: "vars.plan_review == 'on'"
+
+## plan_scope_probe — DETERMINISTIC pre-flight for the plan phase: the diff
+## footprint (git diff --stat, capped) + a large-diff classification (drives
+## the adaptation in plan_system/plan_review_system) + the wall-clock start
+## of the chain (plan_budget_gate's only way to measure elapsed time --
+## see the plan_budget_ratio var comment: no DSL primitive exposes the
+## run's elapsed duration to a node). Pure git plumbing -- no language /
+## package-manager assumption, stack- and repo-agnostic. python3 for safe
+## JSON (mirrors verify_probe/verify_run); read-only, idempotent.
+tool plan_scope_probe:
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} THRESH={{vars.plan_large_diff_lines}} python3 -c "
+import os, re, subprocess, time, json
+ws = os.environ.get('WS', '.')
+base = os.environ.get('BASE', 'main')
+try:
+    threshold = int(os.environ.get('THRESH', '1500') or '1500')
+except ValueError:
+    threshold = 1500
+def run(*a):
+    return subprocess.run(list(a), cwd=ws, capture_output=True, text=True, timeout=60)
+mb = run('git', 'merge-base', base, 'HEAD')
+base_sha = (mb.stdout or '').strip() or base
+stat = run('git', 'diff', '--stat', base_sha)
+shortstat = run('git', 'diff', '--shortstat', base_sha)
+added = 0
+m = re.search(r'(\d+) insertion', shortstat.stdout or '')
+if m:
+    added = int(m.group(1))
+diff_stat = (stat.stdout or '')[:8000]
+print(json.dumps({
+    'diff_stat': diff_stat,
+    'large': added >= threshold,
+    'started_epoch': int(time.time()),
+}))
+"`
+  output: plan_scope_state
 
 ## plan — the AUTHOR. Same family/model as the campaign (the peer is the
 ## cross-check). readonly is enforced on codex/pi only — on claude_code
@@ -893,6 +1059,7 @@ agent plan:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: plan_input
   output: plan_output
   system: plan_system
   user: plan_user
@@ -933,13 +1100,18 @@ judge plan_review:
       when: "vars.plan_review_policy == 'skip'"
       on: [any]
 
-## plan_gate — did the peer actually serve, or did the skip route fire?
-## Deterministic: reads the _skipped stamp, never an LLM judgment.
+## plan_gate — did the peer actually serve, or did the skip route fire? And
+## should the author-revise turn run at all? Deterministic: reads the
+## _skipped stamp + plan_scope_probe's large flag, never an LLM judgment.
+## skip_revise bypasses plan_revise on EITHER signal: nothing to revise
+## against (peer skipped) or revising would itself blow the plan phase's
+## budget share (large diff, native:695).
 compute plan_gate:
-  description: "Peer review served or skipped?"
+  description: "Peer review served or skipped? Large-diff revise bypass?"
   output: plan_gate_state
   expr:
     skipped: "outputs.plan_review._skipped == true"
+    skip_revise: "outputs.plan_review._skipped == true || outputs.plan_scope_probe.large"
 
 ## plan_revise — the AUTHOR again, SAME session (the `_session_id`
 ## carried on the edge), challenging the peer's critique. Read-only.
@@ -954,6 +1126,71 @@ agent plan_revise:
   user: plan_revise_user
   session: inherit_if_available
   readonly: true
+
+## plan_cost_probe — nil-safe sum of the plan phase's own LLM spend, and
+## the pass-through relay for plan/critique/responses. A node that never
+## ran this pass (plan_revise on the skip_revise route) is ABSENT from
+## outputs, not zero -- outputs.plan_revise._cost_usd resolves to nil and
+## a raw `nil + nil` in a tool's shell substitution leaves the literal
+## `{{...}}` text in the command (resolveTemplateWith skips nil refs for
+## shell contexts) instead of erroring loud. `if(x, x, 0)` is nil-safe by
+## construction (truthy(nil) == false), so this MUST run as compute (expr),
+## not a tool -- the single choke point that turns "maybe absent" into a
+## guaranteed float before plan_budget_gate's shell arithmetic ever sees it.
+compute plan_cost_probe:
+  description: "Nil-safe plan-phase cost sum + pass-through"
+  input: plan_cost_probe_input
+  output: plan_cost_probe_state
+  expr:
+    plan: "input.plan"
+    plan_critique: "input.plan_critique"
+    plan_responses: "input.plan_responses"
+    plan_cost_usd: "if(outputs.plan._cost_usd, outputs.plan._cost_usd, 0) + if(outputs.plan_review._cost_usd, outputs.plan_review._cost_usd, 0) + if(outputs.plan_revise._cost_usd, outputs.plan_revise._cost_usd, 0)"
+
+## plan_budget_gate — the SOLE choke point before campaign (native:695).
+## Deterministic: real wall-clock elapsed (now - plan_scope_probe's
+## started_epoch) + plan_cost_probe's nil-safe cost sum, each compared
+## against plan_budget_ratio of the mirrored ceiling vars. exhausted=true
+## routes to a typed fail instead of letting campaign start on whatever
+## budget the plan phase left behind -- GUARANTEEING campaign at least
+## (1-ratio) of the run's budget whenever it does start. python3 for safe
+## JSON (mirrors verify_run/publish_verdict); read-only, idempotent.
+tool plan_budget_gate:
+  input: plan_budget_gate_input
+  command: `STARTED={{input.started_epoch}} COST={{input.plan_cost_usd}} RATIO={{vars.plan_budget_ratio}} MAXMIN={{vars.budget_max_duration_minutes}} MAXCOST={{vars.budget_max_cost_usd}} PLAN={{input.plan}} CRITIQUE={{input.plan_critique}} RESPONSES={{input.plan_responses}} python3 -c "
+import os, time, json
+def as_float(name, default):
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except ValueError:
+        return default
+started = int(as_float('STARTED', 0))
+now = int(time.time())
+elapsed_min = (now - started) / 60.0 if started > 0 else 0.0
+cost = as_float('COST', 0.0)
+ratio = as_float('RATIO', 0.3)
+max_minutes = as_float('MAXMIN', 150.0)
+max_cost = as_float('MAXCOST', 75.0)
+duration_share = ratio * max_minutes
+cost_share = ratio * max_cost
+over_duration = elapsed_min > duration_share
+over_cost = cost > cost_share
+bits = []
+if over_duration:
+    bits.append('planning spent %.1fmin, over its %.1fmin share (%.0f%% of the %.0fmin budget)' % (elapsed_min, duration_share, ratio * 100, max_minutes))
+if over_cost:
+    bits.append('planning spent USD %.2f, over its USD %.2f share (%.0f%% of the USD %.0f budget)' % (cost, cost_share, ratio * 100, max_cost))
+exhausted = bool(bits)
+print(json.dumps({
+    'exhausted': exhausted,
+    'code': 'PLAN_BUDGET_EXHAUSTED' if exhausted else '',
+    'reason': '; '.join(bits),
+    'plan': os.environ.get('PLAN', ''),
+    'plan_critique': os.environ.get('CRITIQUE', ''),
+    'plan_responses': os.environ.get('RESPONSES', ''),
+}))
+"`
+  output: plan_budget_gate_state
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native Claude
@@ -1520,7 +1757,7 @@ workflow branch_improve_loop:
     preserve_recent: 8
 
   ## Plan phase (skipped whole when plan_review resolved off).
-  plan_topology -> plan when do_plan
+  plan_topology -> plan_scope_probe when do_plan
   ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
@@ -1528,16 +1765,23 @@ workflow branch_improve_loop:
     fail_log: "", plan: "", plan_critique: "", plan_responses: ""
   }
 
+  plan_scope_probe -> plan with {
+    diff_stat: "{{outputs.plan_scope_probe.diff_stat}}",
+    large:     "{{outputs.plan_scope_probe.large}}"
+  }
   plan -> plan_review with {
     plan:        "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
-    risks:       "{{outputs.plan.risks}}"
+    risks:       "{{outputs.plan.risks}}",
+    diff_stat:   "{{outputs.plan_scope_probe.diff_stat}}",
+    large:       "{{outputs.plan_scope_probe.large}}"
   }
   plan_review -> plan_gate
-  ## Peer served → the plan AUTHOR (same session) challenges the
-  ## critique and integrates what holds; skipped (policy skip + peer
-  ## unavailable) → the unreviewed plan proceeds, loudly.
-  plan_gate -> plan_revise when not skipped with {
+  ## Peer served AND the diff is small enough to be worth a second read →
+  ## the plan AUTHOR (same session) challenges the critique and integrates
+  ## what holds. skip_revise (peer unavailable OR large diff, native:695)
+  ## → the plan/critique pass straight to the budget gate unrevised.
+  plan_gate -> plan_revise when not skip_revise with {
     plan:        "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
     risks:       "{{outputs.plan.risks}}",
@@ -1547,16 +1791,39 @@ workflow branch_improve_loop:
     _session_id: "{{outputs.plan._session_id}}",
     _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
   }
-  plan_gate -> campaign when skipped with {
-    fail_log: "", plan: "{{outputs.plan.plan}}",
-    plan_critique: "", plan_responses: ""
+  plan_gate -> plan_cost_probe when skip_revise with {
+    plan: "{{outputs.plan.plan}}",
+    plan_critique: "{{outputs.plan_review.concerns}}",
+    plan_responses: ""
   }
-  plan_revise -> campaign with {
-    fail_log:       "",
+  plan_revise -> plan_cost_probe with {
     plan:           "{{outputs.plan_revise.plan}}",
     plan_critique:  "{{outputs.plan_review.concerns}}",
     plan_responses: "{{outputs.plan_revise.review_responses}}"
   }
+
+  ## plan_cost_probe is a nil-safe relay (see its own comment): it always
+  ## produces a real float even when plan_revise never ran this pass.
+  plan_cost_probe -> plan_budget_gate with {
+    plan:           "{{outputs.plan_cost_probe.plan}}",
+    plan_critique:  "{{outputs.plan_cost_probe.plan_critique}}",
+    plan_responses: "{{outputs.plan_cost_probe.plan_responses}}",
+    plan_cost_usd:  "{{outputs.plan_cost_probe.plan_cost_usd}}",
+    started_epoch:  "{{outputs.plan_scope_probe.started_epoch}}"
+  }
+  ## Within its share → the campaign starts, carrying the (possibly
+  ## unrevised) plan forward exactly as the pre-guard edges did. Over its
+  ## share → a typed, early failure instead of spending campaign's reserve
+  ## (native:695) — see plan_budget_gate_state's schema comment for why
+  ## the run's OWN failure message stays the engine's generic one while
+  ## this node's output carries the typed code + reason.
+  plan_budget_gate -> campaign when not exhausted with {
+    fail_log:       "",
+    plan:           "{{outputs.plan_budget_gate.plan}}",
+    plan_critique:  "{{outputs.plan_budget_gate.plan_critique}}",
+    plan_responses: "{{outputs.plan_budget_gate.plan_responses}}"
+  }
+  plan_budget_gate -> fail when exhausted
 
   ## Each pass: the campaign reviews+improves the branch diff (committing each
   ## fix in stride), then the deterministic build/test gate re-checks the tree.

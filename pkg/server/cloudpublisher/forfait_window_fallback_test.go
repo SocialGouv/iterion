@@ -192,7 +192,7 @@ func TestForfaitWindowClosed_meterFailureIsNeutral(t *testing.T) {
 	}
 }
 
-type failingUsageStore struct{}
+type failingUsageStore struct{ usagecap.Store }
 
 func (failingUsageStore) Record(context.Context, string, usagecap.Reading) error { return nil }
 func (failingUsageStore) Latest(context.Context, string) ([]usagecap.Reading, error) {

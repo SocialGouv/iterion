@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
@@ -67,9 +68,14 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 // Best-effort: a missing store, empty fingerprints, or a store failure
 // all quietly leave the observation on the floor rather than fail the
 // run. Detached context (5s bound) so the metering path is unaffected by
-// cancellation. Cross-tenant by design: the store matches on the
-// fingerprint alone, so a lent or platform key moves on ITS row, and an
-// operator who saved one secret on two tenants sees both move.
+// cancellation.
+//
+// Scope follows the key's TIER. A tenant's own key is bumped under the
+// run's tenant, so another tenant that stored the byte-identical secret
+// never sees its own key read as "in use" (the studio shows last_used_at
+// as exactly that, before a rotate or delete). A platform-tier or
+// pool-lent key is bumped WITHOUT a tenant filter: its row lives under the
+// platform sentinel or in the donor's tenant, and it serves every tenant.
 func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
 	if r.cfg.ApiKeys == nil {
 		return
@@ -82,17 +88,18 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 	// connect-time identity) lives in the OAuth store and would only
 	// cost the api_keys collection a lookup that matches nothing.
 	// Deduplicated: the update is idempotent, the round-trips are not
-	// free.
-	seen := map[string]bool{}
+	// free. A fingerprint any slot holds from another tier is bumped
+	// cross-tenant.
+	crossTenant := map[string]bool{}
 	fps := make([]string, 0, len(creds.Fingerprints))
 	for slot, fp := range creds.Fingerprints {
-		if secrets.OAuthKind(slot).Valid() {
+		if secrets.OAuthKind(slot).Valid() || fp == "" {
 			continue
 		}
-		if fp != "" && !seen[fp] {
-			seen[fp] = true
+		if _, seen := crossTenant[fp]; !seen {
 			fps = append(fps, fp)
 		}
+		crossTenant[fp] = crossTenant[fp] || creds.IsPlatformSourced(slot) || creds.IsPoolSourced(slot)
 	}
 	if len(fps) == 0 {
 		return
@@ -100,7 +107,11 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, fp := range fps {
-		if err := r.cfg.ApiKeys.MarkFingerprintUsed(bg, fp, at); err != nil {
+		bctx := bg
+		if !crossTenant[fp] && msg.TenantID != "" {
+			bctx = store.WithTenant(bg, msg.TenantID)
+		}
+		if err := r.cfg.ApiKeys.MarkFingerprintUsed(bctx, fp, at); err != nil {
 			r.cfg.Logger.Warn("runner: mark api-key fingerprint used (run %s fp=%s): %v", msg.RunID, fp, err)
 		}
 	}

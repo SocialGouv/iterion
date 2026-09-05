@@ -1,7 +1,23 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.2.1
+version: 1.3.0
+## 1.3.0 — plan-phase budget guard (native:695): a production run on a
+## +3870/-273 diff spent the planning chain (plan -> plan_review ->
+## plan_revise) for 150 min / $8.59 and never reached `campaign`. New
+## `plan_scope_probe` (deterministic) captures the diff footprint + a
+## large-diff classification + the chain's wall-clock start; `plan_gate`
+## now also bypasses `plan_revise` on a large diff (not just a skipped
+## peer); `plan_cost_probe` (nil-safe compute) sums the phase's own LLM
+## spend; `plan_budget_gate` (deterministic, the sole choke point before
+## `campaign`) compares real elapsed time + spend against
+## `plan_budget_ratio` (default 0.3) of the run's ceilings and routes to a
+## typed, early failure instead of letting `campaign` start on whatever
+## budget the plan phase left behind — guaranteeing `campaign` at least
+## (1-ratio) of the run's budget whenever it does start. `plan`/
+## `plan_review` read a `git diff --stat` footprint instead of the full
+## diff above `plan_large_diff_lines` (default 1500 added lines). See
+## docs/bot-runs/branch-improve-loop.md.
 ## 1.2.1 — plan_review_policy defaults to "skip": the cross-model plan peer
 ## is an optional enrichment, and the Anthropic family alone must always
 ## suffice to fix a branch. A dead/parked peer (401 credential, shut forfait

@@ -418,6 +418,37 @@ advertised propagation bound (no restart). Enforcement postures
 	}),
 }
 
+var remoteAdminUsageReadingsCmd = &cobra.Command{
+	Use:   "usage-readings clear <fingerprint>",
+	Short: "Forget one credential's stored usage-window readings (after a provider reset the ledger cannot see)",
+	Long: `Usage-window readings — the fleet's shared ledger of what each
+credential's provider windows last reported.
+
+A reading normally expires on its own (its reset instant, the trust
+window). When the provider resets a window EARLY, the stored reading
+still says 99% and every run of that credential is refused pre-flight,
+which is exactly what keeps it from being refreshed. This clears ONE
+credential's readings, by fingerprint (as shown on the key/connection
+views and in the "SKIPPED … fp=" server lines), without touching the
+caps:
+
+  iterion remote admin usage-readings clear e4ecd2283afb305f
+
+The credential then reads "nothing learned yet": the next run is
+admitted and its own session re-measures the windows. Audited.`,
+	Args: cobra.ExactArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if args[0] != "clear" {
+			return fmt.Errorf("unknown usage-readings action %q (want clear)", args[0])
+		}
+		fp := strings.TrimSpace(args[1])
+		if fp == "" {
+			return fmt.Errorf("usage: admin usage-readings clear <fingerprint>")
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/usage-readings/"+url.PathEscape(fp), nil)
+	}),
+}
+
 // --- platform settings: webhook role bots + sandbox image ---
 
 var (
@@ -693,7 +724,7 @@ func init() {
 	remoteAdminSandboxCmd.Flags().StringVar(&remoteSandboxImage, "default-image", "", "`sandbox: auto` fallback image ref (prefer an @sha256 digest)")
 	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
 
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd)
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")

@@ -213,7 +213,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		}
 		return nil
 	}
-	d := usagecap.Preflight(readings, pol, time.Now().UTC(), usagecap.DefaultMaxAge)
+	d := usagecap.Preflight(readings, pol, time.Now().UTC(), r.cfg.UsageCapTrust)
 	if !d.Blocked {
 		return nil
 	}
