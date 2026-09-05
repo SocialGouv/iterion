@@ -146,6 +146,27 @@ func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetV
 	return nil
 }
 
+// eventData is the budget_warning payload of a declined back-edge, every
+// figure in the axis's operator units (seconds on the duration axis, the
+// axis's own unit elsewhere) — used/limit as every other budget_warning
+// carries them, and the rule itself: the next iteration would reach
+// would_reach, at or past threshold (the hard-limit share of the limit),
+// which is where the engine refuses to start any node. A reader with more
+// remaining than needed is not left guessing why the loop stopped.
+func (v loopBudgetVerdict) eventData(loopName string) map[string]any {
+	spent, remaining, used, limit, unit := v.display()
+	data := map[string]any{
+		"loop": loopName, "reason": "loop_budget_guard",
+		"dimension": v.dimension, "remaining": remaining, "needed": spent,
+		"used": used, "limit": limit,
+		"threshold": budgetHardThreshold * limit, "would_reach": used + spent,
+	}
+	if unit != "" {
+		data["unit"] = unit
+	}
+	return data
+}
+
 // markLoopBudget re-bases a loop's price on the run's consumption right
 // now. Called when the loop is ENTERED from outside (so its first
 // crossing prices its first iteration, not the whole run that preceded

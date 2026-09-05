@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -649,5 +650,63 @@ func TestRestoreCheckpointBudget_LegacyMarksOfALateLoopAreDropped(t *testing.T) 
 				t.Fatal("a kept zero is a price: act_loop's first crossing after the resume costs the whole spend and must be declined at 8000 + 8000 ≥ 90%% of 12000")
 			}
 		})
+	}
+}
+
+// TestLoopBudgetGuard_EventSaysItsRule: the budget_warning a declined
+// back-edge emits carries the threshold and the consumption the next
+// iteration would reach, so a reader with more remaining than needed is
+// not left guessing why the loop stopped.
+func TestLoopBudgetGuard_EventSaysItsRule(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	exec, _, _ := costingExecutor(3_000)
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "rule", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	evs, err := st.LoadEvents(context.Background(), "rule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Type != store.EventBudgetWarning || ev.Data["reason"] != "loop_budget_guard" {
+			continue
+		}
+		thr, _ := ev.Data["threshold"].(float64)
+		reach, _ := ev.Data["would_reach"].(float64)
+		if thr != 9_000 || reach < thr {
+			t.Fatalf("event = %v: want threshold 9000 (90%% of 10000) and would_reach ≥ threshold", ev.Data)
+		}
+		return
+	}
+	t.Fatal("no loop_budget_guard warning was emitted")
+}
+
+// TestLoopBudgetVerdict_EventDataInOperatorUnits: the rule the event states
+// is in the same units as the figures it compares — seconds on the
+// duration axis, where the verdict itself is in nanoseconds. Measured on a
+// production run: used 13 156 s + needed 13 154 s = 26 310 s ≥ 25 920 s
+// (90 % of 28 800 s), with 15 644 s remaining.
+func TestLoopBudgetVerdict_EventDataInOperatorUnits(t *testing.T) {
+	s := float64(time.Second)
+	v := loopBudgetVerdict{dimension: "duration", spent: 13153.7 * s, remaining: 15644.2 * s, used: 13155.8 * s, limit: 28800 * s}
+	data := v.eventData("repair_loop")
+	if data["unit"] != "seconds" || data["limit"] != 28800.0 {
+		t.Fatalf("event = %v: want limit 28800 seconds", data)
+	}
+	if thr := data["threshold"].(float64); thr != 25920 {
+		t.Fatalf("threshold = %v, want 25920 (90%% of 28800 s, in seconds)", thr)
+	}
+	if reach := data["would_reach"].(float64); reach < 26309 || reach > 26310 {
+		t.Fatalf("would_reach = %v, want 13155.8 + 13153.7 = 26309.5 s", reach)
+	}
+	if data["would_reach"].(float64) < data["threshold"].(float64) {
+		t.Fatal("the declined edge's event must show would_reach ≥ threshold")
+	}
+	plain := loopBudgetVerdict{dimension: "tokens", spent: 3000, remaining: 2000, used: 8000, limit: 10000}
+	pd := plain.eventData("continuation")
+	if _, hasUnit := pd["unit"]; hasUnit || pd["threshold"] != 9000.0 || pd["would_reach"] != 11000.0 {
+		t.Fatalf("tokens event = %v: want threshold 9000, would_reach 11000, no unit", pd)
 	}
 }
