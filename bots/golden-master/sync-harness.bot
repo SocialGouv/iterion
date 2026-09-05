@@ -21,7 +21,9 @@
 ##   gate_replay    the target's full gate on the committed tree — the half
 ##                  that COMPARES. Red drops that commit and ends at `fail`:
 ##                  a judge that decides well and compares wrongly must not
-##                  land.
+##                  land. When it cannot drop it — HEAD moved, so the reset
+##                  would take another hand's work — it says so in log_tail
+##                  rather than let `fail` read as "nothing landed".
 ##   seal_commit    the gate's verdict and minutes written into the commit.
 ##
 ## Not a re-baseline: nothing compared changes, only the comparator. The
