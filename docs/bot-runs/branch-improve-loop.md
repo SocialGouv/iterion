@@ -1,5 +1,52 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — PR-launch guard: local credentials and bounded board retry (#769 / #702)
+
+- Status: **completed and delivered**; independent Revi re-review and GitHub
+  CI remain pending at this entry. Auto-merge stays off until those checks
+  validate the final branch.
+- Run: `01a0723b-acfb-71a9-9ae1-0d9b217e6cbb`, 15:41:48–17:23:49Z,
+  1 h 40 m 31 s active. Target: [PR #769](https://github.com/SocialGouv/iterion/pull/769),
+  [issue #702](https://github.com/SocialGouv/iterion/issues/702).
+- Method: the red-gate lane launched Billy against Revi's R57f074 (local
+  studio launches refused) and R48e8f3 (transient forge failures permanently
+  block board cards). The interactive session monitored the run and sent
+  two scope corrections; it did not edit the branch while Billy ran.
+- Result: seven commits pushed, head
+  `6acd74d17da6934730b882db307bbd243880dcdb`, also banked on
+  `iterion/run-01a0723b-acfb-71a9-9ae1-0d9b217e6cbb`. The publisher's PR
+  review records both finding IDs as fixed and reports the seven-commit push.
+  The post-campaign `verify_run` returned exit code 0 (whole-module build,
+  formatting, vet and the touched server package tests), followed by
+  publication and the terminal `finished` state.
+- Value: the local and team launch paths now share `verifyPRHeadInBaseRepo`.
+  Local studio resolves `forge_token` from its layered store, respects its
+  host pin, refuses when verification is unavailable, and explains the
+  missing credential. A fork or unnamed head creates no run. The board
+  returns a failed pre-launch lookup to the eligible state under the claim
+  token, waits 30 seconds, and escalates after five attempts. This retry
+  marker is attached before launch, so a later run failure cannot relaunch
+  the card through this arm.
+- Validation: the campaign reports lint with zero issues, 135 unit-test
+  packages, the e2e suite, coverage-matrix gate, and the new tests under
+  `-race` passing. Both headline regressions were observed red before green.
+  The session inspected the published code and tests: local same-repo
+  success, fork/unnamed-head refusal, absent/off-host credentials, recovery
+  after an outage, retry backoff/budget, and the real board-path marker.
+- Friction: the first fix reinstated a team-only bypass from Revi's proposed
+  replacement. That contradicts #702: a base-repository checkout plus a
+  fork's head branch is unsafe even without a publish grant. Steering
+  corrected it in `e86bccaecea1`; accepting a suggested patch mechanically
+  would have reintroduced the defect. The proposed `errCardContinuable`
+  also would have stranded a never-launched card in `in_progress`; the
+  implemented return-to-ready path addresses that instead.
+- Limits and lessons: retry counters are per replica, and the current forge
+  client does not distinguish a permission-denied 403 from a secondary
+  rate-limit 403. The guard proves the PR's head repository, not the local
+  checkout's remote or HEAD SHA. Keep those limits explicit, verify the
+  original issue against the final diff, and wait for independent Revi
+  rather than treating the fixer's own green gate as the final review.
+
 ## 2026-09-05 — plan-budget guard dogfooded on prod: the gate fires typed, before `campaign`, for $0.67–$1.80 (runs 01a0714a, 01a07156)
 
 - Status: **validated** (the guard itself; the entry below, written before
