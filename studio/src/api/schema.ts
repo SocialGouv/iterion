@@ -5328,6 +5328,37 @@ export interface components {
             id: string;
             title?: string;
         };
+        BoardBinding: {
+            connection_id: string;
+            /** Format: date-time */
+            created_at: string;
+            label_fields?: components["schemas"]["BoundLabelField"][];
+            /** Format: date-time */
+            last_synced_at?: string;
+            missing_statuses?: string[];
+            number: number;
+            owner: string;
+            owner_kind: string;
+            project_id: string;
+            project_title?: string;
+            project_url?: string;
+            provider: string;
+            status_field_id?: string;
+            status_mapping?: components["schemas"]["StatusMapping"][];
+            status_options?: {
+                [key: string]: string;
+            };
+            sync_every: number;
+            sync_every_seconds: number;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        BoundLabelField: {
+            field_id: string;
+            name: string;
+            prefix: string;
+        };
         BranchCheckpoint: {
             artifact_versions?: {
                 [key: string]: number;
@@ -5950,6 +5981,10 @@ export interface components {
             work_dir?: string;
             workflow_name: string;
         };
+        StatusMapping: {
+            state: string;
+            status: string;
+        };
         Token: {
             /** Format: date-time */
             created_at: string;
@@ -6018,6 +6053,16 @@ export interface components {
             name: string;
             provider: string;
             scope_user_id?: string;
+        };
+        boardBindingReq: {
+            connection_id: string;
+            number: number;
+            owner: string;
+            owner_kind?: string;
+            status_map?: {
+                [key: string]: string;
+            };
+            sync_every_seconds?: number;
         };
         botSourceForkReq: {
             from: string;
@@ -10692,12 +10737,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["BoardBinding"];
+                };
             };
         };
     };
@@ -10710,14 +10757,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["boardBindingReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["BoardBinding"];
+                };
             };
         };
     };

@@ -90,6 +90,13 @@ func routeSchemas() map[string]routeOp {
 				Repos []forge.RepoSummary `json:"repos"`
 			}{},
 		},
+		// The team ⇄ project-board binding (ADR-097). Typed so the generated
+		// client sees the effective status map and the coverage report, which
+		// the settings card renders rather than re-deriving.
+		"GET /api/teams/{id}/board-binding":    {response: forge.BoardBinding{}},
+		"PUT /api/teams/{id}/board-binding":    {request: boardBindingReq{}, response: forge.BoardBinding{}},
+		"DELETE /api/teams/{id}/board-binding": {},
+
 		"GET /api/teams/{id}/forge/oauth-apps": {
 			response: struct {
 				Apps []forge.ForgeOAuthApp `json:"apps"`
