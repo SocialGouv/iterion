@@ -97,21 +97,35 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   button; see <a href="#re-request-review">below</a>.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
-  /revi" mid-text never triggers (anti-oscillation guard;
-  [pkg/webhooks/gitlab/note.go:IsReviewCommand](../pkg/webhooks/gitlab/note.go)).
+  /revi" mid-text never triggers (anti-oscillation guard —
+  `ParseSlashCommand` requires the first non-blank, non-quote line to
+  *start with* `/`; [pkg/webhooks/gitlab/note.go](../pkg/webhooks/gitlab/note.go)).
   Four routes, in the order the handler tries them
-  ([pkg/server/webhooks_gitlab.go:259-345](../pkg/server/webhooks_gitlab.go)):
+  ([pkg/server/webhooks_gitlab.go](../pkg/server/webhooks_gitlab.go)):
   1. a `/command` on an **open issue** → the generic command handler
      with `surface="issue"`, so the bot opens an MR back-linking the
      issue. A non-command issue note is filtered.
-  2. any command **other than** `/revi` on an open MR → resolved through
-     the command registry to a bot + execution mode; an unknown command
-     is filtered.
-  3. `/revi` on an open MR → on-demand re-review. `/revi <question>`
-     routes to the conversation bot instead.
-  4. a plain reply **in a thread Revi is part of**, with no command at
+  2. **every** command on an open MR — `/revi` included, no bot-specific
+     branch — resolved through the SAME generic command registry as the
+     GitHub/Forgejo `issue_comment` lane: `review-pr`'s
+     `when_args_empty` route claims a bare `/revi` (on-demand
+     re-review), `revi-converse`'s `when_args_present` route claims
+     `/revi <question>`; an unknown command is filtered. This surface
+     also resolves the MR via the forge API to prove the fork guard
+     (`forge.PullRef.SameRepoAs` — the note payload carries neither
+     `source_project_id` nor `target_project_id`, so same-project can
+     only be proven, never assumed from the payload) and carries the
+     note's own conversational plumbing (`discussion_id`,
+     `trigger_note`/`trigger_command`/`trigger_args`, `replier`) plus a
+     best-effort `thread_context` for any command that carries args. A
+     dedicated `/revi approve [reason]` override is intercepted before
+     this routing — see [merge-gate.md](merge-gate.md).
+  3. a plain reply **in a thread Revi is part of**, with no command at
      all, when `revi-converse` is enabled — so "just replying" to Revi
-     works.
+     works. This is the ONLY bespoke lane left: a reply carries no
+     command for the registry to resolve, so classifying "is this a
+     Revi thread" stays a dedicated gate
+     (`realWebhookNoteGate`/`gitlabNoteGateWithAPI`).
 - **`Issue Hook`** — adding a trigger label (e.g. `implement`) launches the
   webhook's bot, same as GitHub `issues` (below). GitLab has no `labeled`
   action, so the parser diffs `changes.labels` (previous→current) and fires
@@ -125,8 +139,11 @@ Operators who want only the auto-review path list `["merge_request"]`
 explicitly; that disables `/revi` while keeping open/reopen.
 
 Vars stamped on the run: `pr_url`, `base_ref`, `scope_notes`,
-`post_to_board=false`, `pr_review_mode=inline`, plus `re_review=true`
-for the note path. The webhook's `LaunchVars` override these.
+`post_to_board=false`, `pr_review_mode=inline`, plus `re_review=true` for a
+`when_args_empty`-routed command (bare `/revi`; a `when_args_present`
+sibling sharing the same command, e.g. `/revi <question>`, does not get it —
+answering a question is not a re-review). The webhook's `LaunchVars`
+override these.
 
 ### GitHub (`POST /api/webhooks/github/{id}`)
 
