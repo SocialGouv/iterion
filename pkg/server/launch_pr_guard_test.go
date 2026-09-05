@@ -260,6 +260,45 @@ func TestHTTPLocalPRLaunchUnpinnedTrustIsExact(t *testing.T) {
 	}
 }
 
+// forge.ParsePullURL takes the repo out of the caller's own URL and url.Parse
+// percent-decodes, so "/%2e%2e/%2e%2e/user/pull/7" arrives as "../../user" —
+// which the provider clients concatenate into their API path with no cleaning.
+// The host here is PINNED, so the egress rule admits it and the zero below is
+// attributable to the repo-shape check alone.
+func TestHTTPLocalPRLaunchRefusesATraversalRepoPath(t *testing.T) {
+	s, forgeURL, reqs := newLocalForgeEgressProbe(t, "PIN")
+	rec := localPRLaunchAt(t, s, "traversal-repo", forgeURL+"/%2e%2e/%2e%2e/user/pull/7")
+	if n := reqs.Load(); n != 0 {
+		t.Fatalf("a traversing repo path reached the forge (%d call(s)) — it would have moved the GET off /repos/<o>/<r>", n)
+	}
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a traversing repo path was admitted: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertNoRunPersisted(t, s, "traversal-repo")
+}
+
+func TestPullRepoPathSafe(t *testing.T) {
+	for repo, want := range map[string]bool{
+		"o/r":            true,
+		"group/sub/proj": true, // a nested GitLab path
+		"o/my.repo":      true, // a dot INSIDE a segment is ordinary
+		"o/..r":          true,
+		"":               false,
+		"../../user":     false,
+		"o/../../user":   false,
+		"o/./r":          false,
+		"o//r":           false,
+		"..":             false,
+		"o/r/..":         false,
+	} {
+		t.Run(repo, func(t *testing.T) {
+			if got := pullRepoPathSafe(repo); got != want {
+				t.Fatalf("pullRepoPathSafe(%q) = %v, want %v", repo, got, want)
+			}
+		})
+	}
+}
+
 func TestLocalTokenPermittedAt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

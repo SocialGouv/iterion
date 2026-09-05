@@ -83,6 +83,9 @@ func prLaunchRefusal(format string, args ...any) error {
 // webhook lanes route through (#683); only the credential the lookup runs
 // under differs by surface, which is why the client arrives as a parameter.
 func verifyPRHeadInBaseRepo(ctx context.Context, gc forgeGateClient, repo string, number int) error {
+	if !pullRepoPathSafe(repo) {
+		return prLaunchRefusal("PR launch: %q is not a repository path — refusing to build a forge request from it", repo)
+	}
 	pr, err := gc.GetPullRequest(ctx, repo, number)
 	if err != nil {
 		return classifyPRLookupError("resolve head repository", err)
@@ -91,6 +94,33 @@ func verifyPRHeadInBaseRepo(ctx context.Context, gc forgeGateClient, repo string
 		return prLaunchRefusal("PR launch: %s", refusal)
 	}
 	return nil
+}
+
+// pullRepoPathSafe rejects a repo slug that would traverse out of the endpoint
+// the provider client means to call. `repo` comes from the CALLER's pr_url —
+// forge.ParsePullURL's lazy `(.+?)` group accepts any path text, and url.Parse
+// percent-decodes, so "/%2e%2e/%2e%2e/user/pull/7" yields "../../user". Every
+// provider client then builds its URL by concatenation ("/repos/"+repo+
+// "/pulls/"+n and the GitLab/Forgejo equivalents) with no cleaning, so those
+// segments move the GET to another endpoint on that forge under the operator's
+// own token. Read-only and same-host, but not a request this guard should be
+// able to be talked into making — and the publish endpoint, the only lane that
+// fed a pr_url-derived repo to the forge before this branch, was fenced by its
+// grant's repo instead.
+//
+// Whole-segment "." / ".." / "" only: no forge accepts them as a path segment,
+// so nothing legitimate is refused — a dot INSIDE a name ("o/my.repo") passes,
+// and so does a nested GitLab group path.
+func pullRepoPathSafe(repo string) bool {
+	if repo == "" {
+		return false
+	}
+	for _, seg := range strings.Split(repo, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // verifyLocalPRHead applies that same guard on a launch carrying NO team
