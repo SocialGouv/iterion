@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.109.0](https://github.com/SocialGouv/iterion/compare/v3.108.3...v3.109.0) (2026-09-05)
+
+### Features
+
+* **bots:** the plan-budget guard reads the run, and every coded refusal reaches the run as a typed fail ([#790](https://github.com/SocialGouv/iterion/issues/790)) ([044904c](https://github.com/SocialGouv/iterion/commit/044904c33422f37ac1f401a200d6fa7bca5237b4))
+
+    <details><summary>why</summary>
+
+    branch-improve-loop's plan-phase guard measured its own wall clock in `plan_scope_probe` (a `started_epoch` stamp) and compared spend against two vars mirroring the `budget:` block by hand. Both were workarounds for primitives that did not exist; both are now defects. A mirror var is not reached by `iterion run --max-cost-usd 200`, so a re-budgeted run kept refusing against the literal 75 nobody had updated — the guard's arithmetic silently disagreeing with the budget the run was actually under.
+
+    </details>
+
+### Bug Fixes
+
+* **engine,bots:** the engine's script and the judge's report stay out of the judged tree ([#795](https://github.com/SocialGouv/iterion/issues/795)) ([7a792ac](https://github.com/SocialGouv/iterion/commit/7a792ac4d8ac4da173d10eaa640e17c8a693cec4))
+
+    <details><summary>why</summary>
+
+    An extension act by pure addition, correct in content, was refused by the net's verify for three untracked paths the acting agent never wrote: `.iterion-script-*.py` — the tool node's own script, created by the executor at the workspace root so a bind-mount sandbox can see it — and `.golden-master/.last-report.json` — the gate wrapper's report, defaulting inside the net — beside the skills the engine mirrors. The gate that judges the tree's cleanliness read the engine's instrument and the…
+
+    </details>
+
 ## [3.108.3](https://github.com/SocialGouv/iterion/compare/v3.108.2...v3.108.3) (2026-09-05)
 
 ### Bug Fixes
