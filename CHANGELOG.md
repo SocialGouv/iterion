@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.111.0](https://github.com/SocialGouv/iterion/compare/v3.110.0...v3.111.0) (2026-09-05)
+
+### Features
+
+* **brand:** the iterion-bot mascot everywhere — forge bot avatars, favicons, app icon, docs logo ([#794](https://github.com/SocialGouv/iterion/issues/794)) ([1d0661d](https://github.com/SocialGouv/iterion/commit/1d0661d74da8953ac2ec4f0ce78988c62c515772))
+
+    <details><summary>why</summary>
+
+    The official iterion-bot GitHub account wears the mascot; the product still wore the hexagon, and every favicon/app-icon/logo copy was a hand-dropped file with no source of truth.
+
+    </details>
+
 ## [3.110.0](https://github.com/SocialGouv/iterion/compare/v3.109.0...v3.110.0) (2026-09-05)
 
 ### Features
