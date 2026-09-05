@@ -435,8 +435,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// publish node posts through the server's live forge client instead of a
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
-	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		req.Vars = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+	launchID, _ := auth.FromContext(r.Context())
+	req.Vars, err = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", err)
+		return
 	}
 
 	// Detach lifecycle from the HTTP request context so a client

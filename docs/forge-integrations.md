@@ -211,3 +211,12 @@ and the token is what acts.
 Adding a provider = implement the `forge.Admin` interface (+ an
 `OAuthExchanger`/`TokenRefresher` for OAuth) and register it in the server's
 provider dispatch; the orchestrator + studio are provider-agnostic.
+
+### Launching a bot on a pull request
+
+Studio/API launches and dispatched board cards carrying `pr_url` verify the
+head repository through the team's forge connection before granting publish
+access or launching the bot. Forks and an unknown head repository are refused,
+as on the webhook entry points. An unavailable connection also refuses the
+launch with an explicit error. Bring the fork's changes onto a branch in the
+base repository before launching through these surfaces.

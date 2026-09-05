@@ -674,21 +674,38 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 // authenticated team surfaces, and the grant is scoped to the (team,
 // connection, repo) the team is provisioned on and re-enforced at the publish
 // endpoint.
-func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars
+		return vars, nil
 	}
-	if host, repo, _, err := forge.ParsePullURL(prURL); err == nil {
-		if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
-			if preferredConnID == "" {
-				// Pin the grant to the connection the policy came from.
-				preferredConnID = ri.ConnectionID
-			}
-			fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
-		}
+	host, repo, number, err := forge.ParsePullURL(prURL)
+	if err != nil {
+		return nil, fmt.Errorf("PR launch: %w", err)
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
+	if !ok {
+		return nil, fmt.Errorf("PR launch: no forge connection can verify the head repository for %s", prURL)
+	}
+	client, err := s.gateClientFor(ctx, conn)
+	if err != nil {
+		return nil, fmt.Errorf("PR launch: resolve forge client: %w", err)
+	}
+	if client == nil {
+		return nil, fmt.Errorf("PR launch: provider %s cannot resolve pull requests", conn.Provider)
+	}
+	pr, err := client.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("PR launch: resolve head repository: %w", err)
+	}
+	if refusal := forkGuardRefusal(pr.SameRepoAs(repo), false, pr.HeadRepoFullName); refusal != "" {
+		return nil, fmt.Errorf("PR launch: %s", refusal)
+	}
+	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
+		fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
+	}
+	preferredConnID = conn.ID
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r), nil
 }
 
 // repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the

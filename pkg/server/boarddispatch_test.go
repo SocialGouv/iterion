@@ -647,6 +647,7 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 // correct composition is worthless if the launch path never calls it.
 func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
+	allowSameRepoLaunch(s)
 	s.cfg.PublicURL = "https://iterion.example"
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
@@ -762,6 +763,7 @@ func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 // pull request gets nothing: neither the grant nor the gate has any meaning.
 func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
+	allowSameRepoLaunch(s)
 	s.cfg.PublicURL = "https://iterion.example"
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
@@ -791,7 +793,10 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		"gate_severity": "medium", // pinned on the launch — must survive
 		"gate_context":  "",       // cleared field: absent, not a decision
 	}
-	out := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if out["gate_severity"] != "medium" {
 		t.Errorf("repo policy overwrote a launch pin: %q", out["gate_severity"])
 	}
@@ -819,8 +824,11 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/7"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if g, ok := s.forgePublishTokens.lookup(out[forgePublishVarToken]); !ok || g.ConnectionID != "conn1" {
 		t.Errorf("the stale provisioning won the grant: ok=%v g=%+v", ok, g)
 	}
@@ -829,8 +837,11 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}
 
 	// Same slug on another forge is a different repo: no policy, no grant.
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://gitlab.example/o/r/-/merge_requests/7"}, nil)
+	if err == nil {
+		t.Fatal("unconnected forge was admitted")
+	}
 	if _, ok := out["gate_context"]; ok {
 		t.Errorf("policy applied across forge hosts: %v", out)
 	}
@@ -838,7 +849,10 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Error("grant minted for a repo on a host no connection covers")
 	}
 
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := out[forgePublishVarToken]; ok {
 		t.Error("no pr_url: nothing to grant")
 	}
