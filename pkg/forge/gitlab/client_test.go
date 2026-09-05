@@ -241,6 +241,41 @@ func TestGitLabCommentIssue_PostsNote(t *testing.T) {
 	}
 }
 
+// TestGitLabCommentPullRequest_PostsNote pins CommentPullRequest onto the
+// merge_requests notes endpoint — SEPARATE from CommentIssue's
+// /issues/:iid/notes, since GitLab addresses an MR and an issue as distinct
+// resources that can share the same iid in one project. A caller that knows
+// its subject is an MR (the /revi approve reply lane) must not go through
+// CommentIssue and land on — or 404 against — the wrong resource.
+func TestGitLabCommentPullRequest_PostsNote(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if got := r.URL.EscapedPath(); !strings.HasSuffix(got, "/projects/group%2Fapi/merge_requests/7/notes") {
+			t.Errorf("escaped path = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 56, "body": body["body"], "author": map[string]any{"username": "bot"},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.Client(), srv.URL, "tok").CommentPullRequest(context.Background(), "group/api", 7, "cannot approve: no gate context pinned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["body"] != "cannot approve: no gate context pinned" {
+		t.Errorf("request body = %v", body)
+	}
+	if got.ID != "56" || got.Author != "bot" {
+		t.Errorf("note = %+v", got)
+	}
+}
+
 func TestGitLabCreatePull_MapsBranchesAndDraft(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

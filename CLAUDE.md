@@ -1425,9 +1425,7 @@ ids are no longer read as constants — they resolve through
 roles set --reviewer …`), the constants remaining only as the DEFAULTS
 (enforced by the symbol-sweep test in
 [bot_resolver_sweep_test.go](pkg/server/bot_resolver_sweep_test.go)). What
-remains hardcoded: the `cmd == "revi"` special-casing
-([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)), the
-Billy merge-queue auto-heal mission prompt
+remains hardcoded: the Billy merge-queue auto-heal mission prompt
 ([pkg/server/webhooks_github.go](pkg/server/webhooks_github.go)), the
 `botRosterOrder` display list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
 and the dispatcher's `ImplementBotOrDefault → "feature-dev"`

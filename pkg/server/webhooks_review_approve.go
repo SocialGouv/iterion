@@ -148,7 +148,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// outcome; both rows are reused by the claim below. Refusals are audited
 	// under their own keys (recordTerminalWebhookDelivery) so a redelivery
 	// after the operator fixes the setup re-evaluates.
-	idemKey := approveIdempotencyKey(cfg, p)
+	idemKey := approveIdempotencyKey(cfg, p.ProjectPath, p.SubjectID())
 	var priorRow *webhooks.Delivery
 	if s.webhookDeliveries != nil {
 		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
@@ -189,7 +189,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		// commenter is still unverified here, so nothing is said on the PR;
 		// the delivery audit carries the reason.
 		why := "authz check: " + aerr.Error()
-		s.warnApproveDidNotLand(provider, p, why)
+		s.warnApproveDidNotLand(provider, p.ProjectPath, int(p.IssueNumber), p.AuthorLogin, why)
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
 		return
@@ -266,7 +266,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	}
 	// The PR author cannot approve their own PR — a self-approve is a
 	// merge-queue bypass in another shape.
-	if isSelfApprove(pr, p) {
+	if isSelfApprove(pr, p.AuthorLogin) {
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, sameRefusal("this is your own pull request — a maintainer must run /revi approve here"), payloadHash, srcIP)
 		return
 	}
@@ -331,7 +331,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		// The claim turns launch_error under its stable key: the replay
 		// check reads that as retryable, never as a duplicate.
 		why := "set commit status: " + err.Error()
-		s.warnApproveDidNotLand(provider, p, why)
+		s.warnApproveDidNotLand(provider, p.ProjectPath, int(p.IssueNumber), p.AuthorLogin, why)
 		claim.Status, claim.Error = webhooks.StatusLaunchError, why
 		s.updateApproveDelivery(ctx, claim)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
@@ -351,15 +351,18 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 
 // approveIdempotencyKey is the per-comment dedupe key of an approve: the same
 // shape the command lane keys its launches on, so both replicas of one
-// forge delivery collide on one row.
-func approveIdempotencyKey(cfg webhooks.Config, p prforge.ParsedNote) string {
-	return knowledge.ChecksumHex([]byte("approve|" + cfg.TenantID + "|" + cfg.ID + "|" + p.ProjectPath + "|" + p.SubjectID()))
+// forge delivery collide on one row. Takes plain values (not a
+// provider-typed payload) so the GitLab lane shares it verbatim instead of
+// forking an identical GitLab-shaped twin.
+func approveIdempotencyKey(cfg webhooks.Config, projectPath, subjectID string) string {
+	return knowledge.ChecksumHex([]byte("approve|" + cfg.TenantID + "|" + cfg.ID + "|" + projectPath + "|" + subjectID))
 }
 
 // isSelfApprove reports whether the commenter is the PR's own author. An
-// empty author (a provider that omits it) proves nothing and passes.
-func isSelfApprove(pr forge.PullRef, p prforge.ParsedNote) bool {
-	return strings.TrimSpace(pr.Author) != "" && strings.EqualFold(pr.Author, p.AuthorLogin)
+// empty author (a provider that omits it) proves nothing and passes. Takes
+// the commenter's login directly so every provider's approve lane shares it.
+func isSelfApprove(pr forge.PullRef, authorLogin string) bool {
+	return strings.TrimSpace(pr.Author) != "" && strings.EqualFold(pr.Author, authorLogin)
 }
 
 // approveRefusal is one refusal or failure of the approve lane in the two
@@ -482,15 +485,18 @@ func (s *Server) approveFilteredWithReply(ctx context.Context, w http.ResponseWr
 // disabling the hook. The response body carries the detail: a forge's
 // delivery log is the repo admin's surface, not the PR's.
 func (s *Server) approveFailWithReply(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, provider webhooks.Provider, p prforge.ParsedNote, conn forge.Connection, connOK bool, r approveRefusal, payloadHash, srcIP string) {
-	s.warnApproveDidNotLand(provider, p, r.detail)
+	s.warnApproveDidNotLand(provider, p.ProjectPath, int(p.IssueNumber), p.AuthorLogin, r.detail)
 	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, r.detail)
 	s.postApproveReply(ctx, cfg, provider, p, conn, connOK, "@"+p.AuthorLogin+" I can't approve: "+r.reply)
 	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": r.detail})
 }
 
-func (s *Server) warnApproveDidNotLand(provider webhooks.Provider, p prforge.ParsedNote, why string) {
+// warnApproveDidNotLand logs an approve that did not land, in the shape
+// every provider's approve lane shares. Takes plain values (not a
+// provider-typed payload) so the GitLab lane logs through the same line.
+func (s *Server) warnApproveDidNotLand(provider webhooks.Provider, projectPath string, issueNumber int, authorLogin, why string) {
 	if s.logger != nil {
-		s.logger.Warn("webhooks: %s %s#%d /revi approve by @%s did not land: %s", provider, p.ProjectPath, p.IssueNumber, p.AuthorLogin, why)
+		s.logger.Warn("webhooks: %s %s#%d /revi approve by @%s did not land: %s", provider, projectPath, issueNumber, authorLogin, why)
 	}
 }
 
