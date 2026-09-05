@@ -31,7 +31,11 @@ import (
 // no error diagnostics. Warnings are out of scope (the typing/consistency tests
 // own those).
 func TestCatalogBotsParseAndCompileClean(t *testing.T) {
-	teamBots, _ := filepath.Glob("*/main.bot")
+	// Every workflow in a bundle, not just its entry point: a bundle's SIBLING
+	// workflows (golden-master's extend/reanchor/sync-harness, smoke's) are
+	// launched by the same path and reach prod the same way, so `*/main.bot`
+	// left them with no parse/compile gate at all.
+	teamBots, _ := filepath.Glob("*/*.bot")
 	demoMain, _ := filepath.Glob("../examples/*/main.bot")
 	demoLoose, _ := filepath.Glob("../examples/*.bot")
 	targets := append(append(teamBots, demoMain...), demoLoose...)
