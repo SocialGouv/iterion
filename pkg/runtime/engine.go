@@ -51,6 +51,22 @@ var ErrRunCancelled = errors.New("runtime: run cancelled")
 // Canceled-vs-DeadlineExceeded split in handleContextDoneWithCheckpoint.
 var ErrRunInterrupted = errors.New("runtime: run interrupted (resumable)")
 
+// ErrDeliberateFailure marks a run that the WORKFLOW ended on purpose —
+// it reached a `fail` node. It rides as the Cause of the RuntimeError
+// failRunDeliberate returns, so a caller tests it with errors.Is, the
+// shape every other stop-reason carve-out already uses.
+//
+// It exists for the cloud runner. A refusal is the one failure an
+// automatic retry can never fix: the graph re-executes the same guard
+// against the same inputs and refuses identically, so a redelivery is a
+// pod and a sandbox spent to reach the same verdict — the pathology
+// ErrBudgetExceeded's carve-out was added for. This one is worse, because
+// a `resumable: true` refusal parks failed_resumable, which the runner's
+// redelivery path otherwise reads as "synthesise a resume". Only a HUMAN
+// changing something (a raised cap, a different --var) can change the
+// verdict, so the delivery is ACKed and the run waits.
+var ErrDeliberateFailure = errors.New("runtime: workflow refused deliberately (fail node)")
+
 // ErrRunPausedOperator is returned when execution is suspended in
 // response to a POST /api/runs/{id}/pause request — the operator
 // asked for a soft pause (no cancellation) that resumes via the

@@ -234,6 +234,12 @@ func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNode
 		Code:    outcome.code,
 		Message: outcome.reason,
 		NodeID:  nodeID,
+		// The sentinel is what tells a CLOUD runner this failure is a
+		// decision, not a fault: the code alone is bot-defined, so no
+		// allow-list can recognise it, and a redelivery re-runs the same
+		// guard against the same inputs to the same verdict. See
+		// ErrDeliberateFailure.
+		Cause: ErrDeliberateFailure,
 	}
 }
 

@@ -446,8 +446,15 @@ follows is **re-executed** on the resume, so it has to be re-runnable
 (deterministic gates are — a `compute` or a `tool` reading `run.*` is the
 shape this is built for); and the promise is only kept when ONE predecessor
 routed in, so a fail node used as a fan-out convergence, or declared as the
-workflow `entry:`, degrades to terminal with a WARN. Neither auto-resume
-nor the cloud retry will ever pick a typed refusal up by itself. See
+workflow `entry:`, degrades to terminal with a WARN.
+
+**Nothing picks a refusal up by itself** — not `--auto-resume`, not the
+cloud runner's redelivery. Reaching a `fail` node is a decision, and the
+one failure an automatic retry can never fix: the graph would re-execute
+the same guard against the same inputs and refuse identically, burning a
+pod and a sandbox per turn. The engine's error carries a sentinel the
+runner ACKs on, and the runner separately refuses to resume a run parked on
+a bot-defined code. Only a human with changed inputs moves it. See
 [resume](resume.md#resumable-states).
 
 **Inside a fan-out branch, both fields are bounded.** A branch cannot end

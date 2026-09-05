@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -148,6 +150,62 @@ func TestResumableFailAnchorRefusals(t *testing.T) {
 		got, why := eng.resumableFailAnchor(rs, "refuse")
 		if got != "guard" || why != "" {
 			t.Errorf("anchor = %q reason = %q, want guard with no reason", got, why)
+		}
+	})
+}
+
+// The sentinel is what a CLOUD runner tests with errors.Is, so it must
+// ride BOTH deliberate shapes — and the untyped `-> fail` must otherwise
+// classify exactly as before: terminal `failed`, the FAIL_NODE code, the
+// historical wording that operator greps key on (R66c44b).
+func TestDeliberateFailCarriesItsSentinel(t *testing.T) {
+	t.Run("typed resumable", func(t *testing.T) {
+		s := tmpStore(t)
+		eng := New(resumableFailWorkflow(t, "guard"), s, newStubExecutor())
+		err := eng.Run(context.Background(), "run-sentinel-typed", nil)
+		if !errors.Is(err, ErrDeliberateFailure) {
+			t.Fatalf("the run error carries no ErrDeliberateFailure, so a cloud runner NAKs it into a redelivery loop: %v", err)
+		}
+		// The sentinel must not displace the diagnosis.
+		var rtErr *RuntimeError
+		if !errors.As(err, &rtErr) || rtErr.Code != "PLAN_BUDGET_EXHAUSTED" {
+			t.Errorf("code = %v, want PLAN_BUDGET_EXHAUSTED", err)
+		}
+		run, loadErr := s.LoadRun(context.Background(), "run-sentinel-typed")
+		if loadErr != nil {
+			t.Fatalf("load run: %v", loadErr)
+		}
+		if run.Status != store.RunStatusFailedResumable || run.FailureCode != "PLAN_BUDGET_EXHAUSTED" {
+			t.Errorf("run = {%s %s}, want {failed_resumable PLAN_BUDGET_EXHAUSTED}", run.Status, run.FailureCode)
+		}
+	})
+
+	t.Run("untyped fail node is otherwise unchanged", func(t *testing.T) {
+		wf := resumableFailWorkflow(t, "guard")
+		// The bare `-> fail` shape: the implicit terminal, no code, no
+		// message, not resumable.
+		wf.Nodes["refuse"] = &ir.FailNode{BaseNode: ir.BaseNode{ID: "refuse"}}
+		s := tmpStore(t)
+		eng := New(wf, s, newStubExecutor())
+		err := eng.Run(context.Background(), "run-sentinel-bare", nil)
+		if !errors.Is(err, ErrDeliberateFailure) {
+			t.Errorf("the untyped fail carries no sentinel; its redelivery is a pod spent to read a stale status: %v", err)
+		}
+		if !strings.Contains(err.Error(), deliberateFailReason) {
+			t.Errorf("error = %v, want the historical wording", err)
+		}
+		run, loadErr := s.LoadRun(context.Background(), "run-sentinel-bare")
+		if loadErr != nil {
+			t.Fatalf("load run: %v", loadErr)
+		}
+		if run.Status != store.RunStatusFailed {
+			t.Errorf("status = %s, want failed — an untyped fail is intentional termination", run.Status)
+		}
+		if run.FailureCode != store.FailureFailNode {
+			t.Errorf("failure_code = %q, want %s", run.FailureCode, store.FailureFailNode)
+		}
+		if run.Error != deliberateFailReason {
+			t.Errorf("run.Error = %q, want the historical wording", run.Error)
 		}
 	})
 }

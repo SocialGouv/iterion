@@ -12,9 +12,14 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
-// branchTypedFailWorkflow: a fan_out_all router spawns two branches; one of
-// them routes into a typed `resumable: true` fail node. The branch arm is a
+// branchTypedFailWorkflow: a fan_out_all router spawns ONE branch, which
+// routes into a typed `resumable: true` fail node. The branch arm is a
 // different code path from the trunk's failRunDeliberate.
+//
+// One branch on purpose: a sibling retired by the first failure contributes
+// its own context.Canceled error, and commonBranchFailureCode only keeps a
+// code every failed branch agrees on — so a second branch would make the
+// aggregate code a race between the two goroutines.
 func branchTypedFailWorkflow(t *testing.T) *ir.Workflow {
 	t.Helper()
 	stopExpr, err := expr.Parse("true")
@@ -28,10 +33,6 @@ func branchTypedFailWorkflow(t *testing.T) *ir.Workflow {
 			"fork": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fork"}, RouterMode: ir.RouterFanOutAll},
 			"guard": &ir.ComputeNode{
 				BaseNode: ir.BaseNode{ID: "guard"},
-				Exprs:    []*ir.ComputeExpr{{Key: "stop", AST: stopExpr, Raw: "true"}},
-			},
-			"sibling": &ir.ComputeNode{
-				BaseNode: ir.BaseNode{ID: "sibling"},
 				Exprs:    []*ir.ComputeExpr{{Key: "stop", AST: stopExpr, Raw: "true"}},
 			},
 			"collect": &ir.ComputeNode{
@@ -48,10 +49,8 @@ func branchTypedFailWorkflow(t *testing.T) *ir.Workflow {
 		},
 		Edges: []*ir.Edge{
 			{From: "fork", To: "guard"},
-			{From: "fork", To: "sibling"},
 			{From: "guard", To: "refuse", Condition: "stop"},
 			{From: "guard", To: "collect", IsElse: true},
-			{From: "sibling", To: "collect"},
 			{From: "collect", To: "done"},
 		},
 		Schemas: map[string]*ir.Schema{},

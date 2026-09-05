@@ -74,6 +74,27 @@ it collides with one of the engine's own `store.FailureCode` values
 The reserved set is derived from `store.ReservedFailureCodes` — one list,
 guarded against drift by a test that parses the constant block.
 
+**On a cloud runner the same rule holds, and by two independent barriers.**
+The CLI gate above is one process's decision; a queued run is redelivered
+by JetStream, which knows nothing about it. So:
+
+- The engine's refusal carries `runtime.ErrDeliberateFailure` as the cause
+  of its error. The runner **ACKs** it (`ack-deliberate-failure`) instead
+  of NAKing — the shape the `BUDGET_EXCEEDED` carve-out beside it already
+  uses. It is matched by SENTINEL, not by code: the code is bot-defined,
+  so no allow-list could recognise it.
+- A redelivery that arrives anyway (an older engine, a re-publish) is
+  refused a second time: the runner will not synthesise a resume for a run
+  whose `failure_code` is **not** `Reserved()`. Only an engine code is
+  auto-resumable.
+
+Without them, a `resumable: true` refusal looped: NAK → redeliver → the
+runner synthesises a resume → the guard refuses identically → repeat to
+`MaxDeliver`, where the DLQ park overwrites the bot's typed code with
+`DLQ_PARKED` — a pod and a sandbox per turn, and the diagnosis destroyed at
+the end of it. The run now stays `failed_resumable` with its own code,
+waiting for a human who changed something.
+
 ## CLI
 
 The source path is optional when it was persisted at launch:
