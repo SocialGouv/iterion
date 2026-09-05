@@ -255,6 +255,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		_ = traceShutdown(shutCtx)
 	}()
 
+	// Keep in sync with the natsq.Connect literal in runner.go: a field only
+	// one side passes is silently defaulted for the other, and the two then
+	// disagree about the same broker. LockTTL is what just drifted.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:                 cfg.NATS.URL,
 		StreamName:          cfg.NATS.Stream,
@@ -270,6 +273,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
 		MaxPayload:          cfg.NATS.MaxPayload,
+		LockTTL:             cfg.Runner.LockTTL,
 		Logger:              logger,
 	})
 	if err != nil {

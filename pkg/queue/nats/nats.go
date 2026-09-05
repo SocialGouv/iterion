@@ -149,12 +149,6 @@ type Conn struct {
 	epochClaimed   bool
 }
 
-// RedeliveryWindow is the worst-case time a healthy queued message can
-// spend bouncing through redeliveries before parking in the DLQ. Ordinary
-// retries are bounded by AckWait; schema mismatches use an explicit delayed
-// Nak, which an operator may configure above AckWait. The server's orphan
-// sweeper derives its queued-staleness cutoff from the larger interval so it
-// never flips a message that is still legitimately waiting for redelivery.
 // QueueBacklog reports how many messages wait on the durable consumer —
 // work that exists and nobody has fetched. The server's orphan sweeper
 // reads it to tell "the message is gone" (a real orphan) from "every
@@ -174,6 +168,17 @@ func (c *Conn) QueueBacklog(ctx context.Context) (uint64, error) {
 	return info.NumPending, nil
 }
 
+// RedeliveryWindow is the worst-case time a healthy queued message can
+// spend bouncing through redeliveries before parking in the DLQ. Ordinary
+// retries are bounded by AckWait; three admission paths instead Nak with an
+// explicit delay an operator may configure ABOVE AckWait — a schema
+// mismatch, an epoch mismatch, and a delivery that could not take the run
+// lock (which waits one lease interval, LockTTL, for a lease that is not
+// being refreshed to evaporate). The server's orphan sweeper derives its
+// queued-staleness cutoff from the largest of them, so it never flips a
+// message that is still legitimately waiting for redelivery. Every delay
+// must therefore be registered here: one that is not makes the sweeper
+// under-report the worst case by up to MaxDeliver × that delay.
 func (c *Conn) RedeliveryWindow() time.Duration {
 	interval := c.cfg.AckWait
 	if c.cfg.SchemaMismatchDelay > interval {
@@ -181,6 +186,9 @@ func (c *Conn) RedeliveryWindow() time.Duration {
 	}
 	if c.cfg.EpochMismatchDelay > interval {
 		interval = c.cfg.EpochMismatchDelay
+	}
+	if c.cfg.LockTTL > interval {
+		interval = c.cfg.LockTTL
 	}
 	return time.Duration(c.cfg.MaxDeliver) * interval
 }

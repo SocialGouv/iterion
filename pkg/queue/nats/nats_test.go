@@ -168,15 +168,22 @@ func TestRedeliveryWindowAccountsForAdmissionDelays(t *testing.T) {
 		ack    time.Duration
 		schema time.Duration
 		epoch  time.Duration
+		lock   time.Duration
 		want   time.Duration
 	}{
-		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 2 * time.Minute, 80 * time.Minute},
-		{"schema delay is larger", time.Minute, 3 * time.Minute, 2 * time.Minute, 24 * time.Minute},
-		{"epoch delay is larger", time.Minute, 30 * time.Second, 4 * time.Minute, 32 * time.Minute},
+		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 2 * time.Minute, 0, 80 * time.Minute},
+		{"schema delay is larger", time.Minute, 3 * time.Minute, 2 * time.Minute, 0, 24 * time.Minute},
+		{"epoch delay is larger", time.Minute, 30 * time.Second, 4 * time.Minute, 0, 32 * time.Minute},
+		// A lock-blocked delivery Naks with a LockTTL delay, so an operator
+		// who raises ITERION_LOCK_TTL above AckWait stretches the worst case
+		// the same way the schema/epoch delays do. Left unregistered, the
+		// sweeper's cutoff (window + 10m) would sit 30 minutes BELOW the true
+		// 120m and could flip a queued run that still has retries scheduled.
+		{"lock ttl is larger", 10 * time.Minute, 30 * time.Second, 2 * time.Minute, 15 * time.Minute, 120 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.schema, EpochMismatchDelay: tc.epoch}}
+			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.schema, EpochMismatchDelay: tc.epoch, LockTTL: tc.lock}}
 			if got := c.RedeliveryWindow(); got != tc.want {
 				t.Errorf("RedeliveryWindow() = %v, want %v", got, tc.want)
 			}
