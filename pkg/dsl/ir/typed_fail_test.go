@@ -142,3 +142,48 @@ func TestTypedFailCannotUseAReservedName(t *testing.T) {
 		t.Error("`fail` is no longer a reserved target")
 	}
 }
+
+// C247 refuses a MALFORMED code; a well-formed one that COLLIDES with the
+// engine's own control-flow vocabulary is a different, worse failure. The
+// value is stamped verbatim as the run's failure_code AND as the
+// RuntimeError.Code the auto-resume gate and the cloud usage-window retry
+// key on, so `code: USAGE_LIMIT_BLOCKED` on a deliberate refusal would be
+// treated as a transient provider block and retried until the attempt
+// budget is gone — each attempt refusing identically (R8cb55e).
+func TestReservedFailCodeIsRefused(t *testing.T) {
+	for _, reserved := range []string{"BUDGET_EXCEEDED", "TIMEOUT", "RATE_LIMITED", "USAGE_LIMIT_BLOCKED", "FAIL_NODE"} {
+		src := "compute gate:\n  expr:\n    pct: \"42\"\n\nfail collide:\n  code: " + reserved + "\n\nworkflow reserved_code:\n  entry: gate\n  gate -> collide\n"
+		res := compileFile(t, src)
+		found := false
+		for _, d := range res.Diagnostics {
+			if d.Code == DiagReservedFailCode {
+				found = true
+				if d.Severity != SeverityError {
+					t.Errorf("%s: severity = %s, want error", reserved, d.Severity)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("code %q collides with an engine code but produced no diagnostic: %v", reserved, res.Diagnostics)
+		}
+		node, ok := res.Workflow.Nodes["collide"].(*FailNode)
+		if !ok {
+			t.Fatalf("collide is %T, want *FailNode", res.Workflow.Nodes["collide"])
+		}
+		if node.Code != "" {
+			t.Errorf("%s: a refused code was kept: %q", reserved, node.Code)
+		}
+	}
+
+	// A bot's own vocabulary is untouched.
+	src := "compute gate:\n  expr:\n    pct: \"42\"\n\nfail fine:\n  code: PLAN_BUDGET_EXHAUSTED\n\nworkflow ok_code:\n  entry: gate\n  gate -> fine\n"
+	res := compileFile(t, src)
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagReservedFailCode {
+			t.Errorf("PLAN_BUDGET_EXHAUSTED was refused as reserved: %s", d.Message)
+		}
+	}
+	if node := res.Workflow.Nodes["fine"].(*FailNode); node.Code != "PLAN_BUDGET_EXHAUSTED" {
+		t.Errorf("code = %q, want PLAN_BUDGET_EXHAUSTED", node.Code)
+	}
+}

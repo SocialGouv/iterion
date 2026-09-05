@@ -430,7 +430,7 @@ fail not_actionable:
 
 | Field | Meaning |
 |---|---|
-| `code:` | UPPER_SNAKE identifier stamped on the run's `failure_code`. [C247](references/diagnostics.md) refuses any other shape — the value is persisted and read by machines (`iterion runs list`, the studio, the merge-gate notice, the alert sinks). |
+| `code:` | UPPER_SNAKE identifier stamped on the run's `failure_code`. [C247](references/diagnostics.md) refuses any other shape — the value is persisted and read by machines (`iterion runs list`, the studio, the merge-gate notice, the alert sinks) — and [C248](references/diagnostics.md) refuses one that collides with an ENGINE code (`BUDGET_EXCEEDED`, `TIMEOUT`, `USAGE_LIMIT_BLOCKED`, …), which the retry machinery reads as control flow. |
 | `message:` | The operator-facing reason, stamped on the run's `error`. Templated with the usual `{{...}}` references and resolved **at fail time**, so the figure that caused the refusal is the one reported. |
 | `resumable:` | `true` parks the run `failed_resumable` instead of terminal `failed`, with its checkpoint anchored on the GUARD that routed in — so the resume re-evaluates that guard, not the fail node. Off by default: a fail node is intentional termination. |
 | `description:` | Human-readable node label, as on every other node kind. |

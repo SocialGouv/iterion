@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -1397,11 +1398,23 @@ func (c *compiler) compileFails() {
 			Resumable: fd.Resumable,
 		}
 		if fd.Code != "" {
-			if !failCodePattern.MatchString(fd.Code) {
+			switch {
+			case !failCodePattern.MatchString(fd.Code):
 				c.errorfAt(DiagInvalidFailCode, fd.Name, "",
 					"fail %q has `code: %s` — a failure code must be UPPER_SNAKE (e.g. PLAN_BUDGET_EXHAUSTED): it is persisted as the run's failure_code and read by machines",
 					fd.Name, fd.Code)
-			} else {
+			case store.FailureCode(fd.Code).Reserved():
+				// The vocabulary is open-world for readers but not for
+				// writers: the engine reads its OWN codes as control flow
+				// (the auto-resume allow-list, the cloud usage-window
+				// retry). A deliberate refusal wearing one of those names
+				// is auto-retried as a transient fault, and a resumable
+				// fail re-runs the same guard — so every attempt burns
+				// for nothing.
+				c.errorfAt(DiagReservedFailCode, fd.Name, "",
+					"fail %q has `code: %s` — that code belongs to the engine and is read as control flow (auto-resume, usage-window retry); pick a name of the bot's own, e.g. PLAN_BUDGET_EXHAUSTED",
+					fd.Name, fd.Code)
+			default:
 				node.Code = fd.Code
 			}
 		}

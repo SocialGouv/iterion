@@ -61,11 +61,18 @@ node's diagnosis as its error and the collector decides the run's fate.)
 runner's retry both gate on a closed allow-list of engine codes
 (`EXECUTION_FAILED`, `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`,
 `NETWORK_TRANSIENT`, `TOOL_FAILED_TRANSIENT`, and `BUDGET_EXCEEDED` with a
-raised cap). A bot-defined code is outside it by construction, and
-deliberately so: the run refused on purpose, and nothing an unattended
-retry can do changes the verdict — only an operator can (a raised cap, a
-different `--var`). The run stays parked at `failed_resumable` for a
-human, and the log says "not auto-recoverable (code &lt;YOURS&gt;)".
+raised cap). A bot-defined code is outside it, and deliberately so: the run
+refused on purpose, and nothing an unattended retry can do changes the
+verdict — only an operator can (a raised cap, a different `--var`). The run
+stays parked at `failed_resumable` for a human, and the log says "not
+auto-recoverable (code &lt;YOURS&gt;)".
+
+That is **enforced, not assumed**: `code:` is refused at compile time when
+it collides with one of the engine's own `store.FailureCode` values
+([C248](references/diagnostics.md)), so a `fail` node cannot mint
+`USAGE_LIMIT_BLOCKED` and be auto-retried as a transient provider block.
+The reserved set is derived from `store.ReservedFailureCodes` — one list,
+guarded against drift by a test that parses the constant block.
 
 ## CLI
 

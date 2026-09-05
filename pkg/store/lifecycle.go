@@ -127,6 +127,65 @@ const (
 	FailureSandboxCapacity FailureCode = "SANDBOX_CAPACITY"
 )
 
+// ReservedFailureCodes is the exhaustive set of codes the ENGINE itself
+// emits — the const block above, enumerated. It exists because the
+// vocabulary is open-world for READERS but not for WRITERS: a workflow's
+// own `fail <name>:` may mint any code it likes EXCEPT one of these,
+// since every one of them is control flow somewhere. `BUDGET_EXCEEDED`,
+// `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`, `NETWORK_TRANSIENT`,
+// `EXECUTION_FAILED` and `TOOL_FAILED_TRANSIENT` are the auto-resume
+// allow-list; the cloud runner's usage-window retry keys on the same
+// values. A deliberate refusal wearing one of those names would be
+// auto-retried as a transient provider fault, and — because a resumable
+// fail re-executes the same guard, which refuses identically — every
+// attempt would burn for nothing.
+//
+// The compiler reads THIS list (C248); the drift guard in
+// lifecycle_reserved_test.go parses the const block and fails when a new
+// constant is not listed here, so the two cannot separate.
+var ReservedFailureCodes = []FailureCode{
+	FailureNodeNotFound,
+	FailureNoOutgoingEdge,
+	FailureLoopExhausted,
+	FailureBudgetExceeded,
+	FailureExecutionFailed,
+	FailureWorkspaceSafety,
+	FailureTimeout,
+	FailureCancelled,
+	FailureJoinFailed,
+	FailureResumeInvalid,
+	FailureSchemaValidation,
+	FailureRateLimited,
+	FailureUsageLimitBlocked,
+	FailureContextLengthExceeded,
+	FailureToolFailedTransient,
+	FailureToolFailedPermanent,
+	FailureNetworkTransient,
+	FailureAuthFailed,
+	FailureInterrupted,
+	FailureFailNode,
+	FailureProcessOrphaned,
+	FailureQueueSchemaMismatch,
+	FailureDLQParked,
+	FailureLaunchFailed,
+	FailureSandboxSetupTimeout,
+}
+
+// reservedFailureCodes indexes ReservedFailureCodes for lookup. Built
+// once at init from the slice, so the slice stays the single declaration.
+var reservedFailureCodes = func() map[FailureCode]bool {
+	m := make(map[FailureCode]bool, len(ReservedFailureCodes))
+	for _, c := range ReservedFailureCodes {
+		m[c] = true
+	}
+	return m
+}()
+
+// Reserved reports whether c is one of the engine's own codes — i.e. a
+// value a workflow must not mint for itself, because the engine reads it
+// as control flow. The empty code is not reserved: it means UNKNOWN.
+func (c FailureCode) Reserved() bool { return reservedFailureCodes[c] }
+
 // AllRunStatuses is the exhaustive status vocabulary, for callers that
 // derive a policy set from a predicate (and for the truth-table tests).
 // Order matches the declaration block above.
