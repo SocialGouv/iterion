@@ -118,6 +118,11 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 						// carries — the run report and the alert manager
 						// render the axis from them.
 						"used": used, "limit": limit,
+						// The rule itself, so a reader with more remaining than
+						// needed is not left guessing why the edge was declined:
+						// the next iteration would land at or past the threshold
+						// where the engine refuses to start any node.
+						"threshold": v.threshold(), "would_reach": used + spent,
 					}
 					if unit != "" {
 						data["unit"] = unit

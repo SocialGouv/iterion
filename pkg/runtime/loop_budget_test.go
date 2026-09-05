@@ -651,3 +651,33 @@ func TestRestoreCheckpointBudget_LegacyMarksOfALateLoopAreDropped(t *testing.T) 
 		})
 	}
 }
+
+// TestLoopBudgetGuard_EventSaysItsRule: the budget_warning a declined
+// back-edge emits carries the threshold and the consumption the next
+// iteration would reach, so a reader with more remaining than needed is
+// not left guessing why the loop stopped.
+func TestLoopBudgetGuard_EventSaysItsRule(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	exec, _, _ := costingExecutor(3_000)
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "rule", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	evs, err := st.LoadEvents(context.Background(), "rule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Type != store.EventBudgetWarning || ev.Data["reason"] != "loop_budget_guard" {
+			continue
+		}
+		thr, _ := ev.Data["threshold"].(float64)
+		reach, _ := ev.Data["would_reach"].(float64)
+		if thr != 9_000 || reach < thr {
+			t.Fatalf("event = %v: want threshold 9000 (90%% of 10000) and would_reach ≥ threshold", ev.Data)
+		}
+		return
+	}
+	t.Fatal("no loop_budget_guard warning was emitted")
+}

@@ -146,6 +146,12 @@ func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetV
 	return nil
 }
 
+// threshold is the consumption at which the engine refuses to start a node
+// on this dimension — the line the next iteration must not reach.
+func (v *loopBudgetVerdict) threshold() float64 {
+	return budgetHardThreshold * v.limit
+}
+
 // markLoopBudget re-bases a loop's price on the run's consumption right
 // now. Called when the loop is ENTERED from outside (so its first
 // crossing prices its first iteration, not the whole run that preceded
