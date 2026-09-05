@@ -1988,18 +1988,23 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// cannot honor fails the attempt loudly (nak → redelivery → DLQ with an
 	// actionable status) rather than running the run against stale
 	// resources; a resume re-resolves the ref fresh and self-heals.
+	// The parent bundle's directory, for `subbot` nodes to resolve their
+	// children beside it (see subbotRunnerFor).
+	parentBundleDir := ""
 	if msg.BotBundle != nil {
 		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
 		if berr != nil {
 			return fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr)
 		}
 		defer cleanupBundle()
+		parentBundleDir = b.Dir
 		engineOpts = append(engineOpts, runtime.WithBundle(b))
 	} else if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
 		// Best-effort: an unresolvable bot id or a loose .bot just skips the
 		// bundle with a warning — the run proceeds without skills or devbox
 		// tools.
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
+			parentBundleDir = filepath.Dir(mainFile)
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
 			} else {
@@ -2042,6 +2047,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
 		defer stopSup()
 	}
+	// `subbot` nodes: the closure that compiles and runs a child bot on
+	// this pod. Every other launch surface wired one; without it a subbot
+	// node dies at dispatch with "no SubbotRunner is wired" — and a
+	// deterministic node failure under the usage-window retry is a
+	// resume loop that recreates the sandbox pod on every attempt.
+	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger)))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
