@@ -520,6 +520,84 @@ unreadable) it does not launch: an unevaluable bound is not a cleared one. Omitt
 `auto_fix_on_gate_failure` on a later call leaves the repo's current choice
 alone — enabling one more bot never switches automation on or off by itself.
 
+## <a name="three-roles"></a>Revi / Billy / Vetty — one gate, three roles
+
+The close collaboration between the reviewer (Revi), the fixer
+(Billy/`branch-improve-loop`) and the dependency guard (Vetty/
+`dep-update-guard`) on a **shared gate** is a design point, not an
+accident — but until it is written down in one place, the next agent
+re-derives it from three scattered sections. This is that place
+([SocialGouv/iterion#650](https://github.com/SocialGouv/iterion/issues/650)).
+
+**What IS wired today:**
+
+- **Disjoint ownership, one context.** Revi and Vetty share `gate_context`
+  by owning disjoint PRs (`author_scope: exclusive` routes the dependency
+  bot's own PRs to Vetty, everyone else's to Revi — [above](#one-gate)), so
+  they never write the same status. A fixer is different: it acts
+  SEQUENTIALLY on a PR a reviewer already reviewed, and [the ordering that
+  keeps them from fighting](#two-bots-on-the-same-pull-request) is what
+  "Two bots on the SAME pull request" describes — the fixer posts its own
+  verdict on the head it pushed, then the reviewer's re-review supersedes
+  minutes later.
+- **The blind window is short, not zero.** A push is followed by nothing on
+  the required check until `review_on_sync`'s re-review launch claims
+  `pending` on the new head — measured on PR #646 (2026-09-03): the claim
+  landed **4 seconds** after the push, twice in the same PR's lifecycle.
+  `review_on_sync` derives ON automatically whenever a bot on the webhook
+  gates merges ([`pkg/forge/orchestrator.go`](../pkg/forge/orchestrator.go)),
+  so this is the default posture, not something each repo has to remember
+  to enable for the loop to close.
+- **Hand-off by KIND, never by bot id.** A reviewer's `produces: kind:
+  review` and a fixer's `consumes: kind: review_ledger` are what let Billy
+  start from Revi's findings and answer them back, with neither manifest
+  naming the other bot — the generic mechanism documented in CLAUDE.md's
+  "The ENGINE stays bot-agnostic" section and exercised end to end in
+  [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
+  Adding a second reviewer or a second fixer is a bundle, never an engine
+  PR.
+
+**What is NOT wired (yet):**
+
+- **The pause notice does not know the parked run's ROLE.** A run that
+  parks on a provider quota gets [a comment naming when it resumes](#a-paused-review-says-so-on-the-pr)
+  — but that comment's wording is the REVIEWER's ("the verdict lands here
+  … a new push restarts it sooner"), unconditionally, even when the parked
+  run is a FIXER (observed live on PR #646, 2026-09-03, 16:48:44Z: a
+  parked Billy read as a parked Revi while `revi/review` sat green and
+  untouched). For a fixer, "a new push restarts it sooner" is exactly the
+  wrong advice — a push mid-run is the collision the session discipline
+  below exists to prevent. Deriving the role from the run's own
+  `consumes:`/`produces:` kinds (reviewer vs fixer vs other), the same way
+  the hand-off itself is resolved, is the fix in flight
+  ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683)) — never a
+  bot-id branch in the engine.
+- **No "fixer in flight" signal exists BEFORE its first push.** From the
+  moment `/billy` (or the zero-touch lane) launches to its first commit,
+  `revi/review` stays green on the OLD head and nothing on the PR says a
+  fixer is working — the only signals are the run console itself and,
+  once it parks, the pause notice above. This is the phase the operator
+  rules below are written for; see
+  [revi-billy-loop.md's "What to expect on the PR"](revi-billy-loop.md#what-to-expect-on-the-pr)
+  for the exact wording and (SocialGouv/iterion#664) for the tracking card.
+
+**Operator rules, one line each:**
+
+1. **Don't push to a PR while its fixer runs** — his commits land on that
+   branch; a manual push mid-run recreates the exact collision the "no
+   in-flight signal" gap above cannot warn you about. `git pull` after his
+   push before resuming any local work on the branch.
+2. **`/billy` is the escalation from a review, not a replacement for one.**
+   Comment it once Revi has left findings — never hand-fix them in a
+   session on this repo (the dogfood habit in
+   [revi-billy-loop.md](revi-billy-loop.md)).
+3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes step 2
+   automatic** on repos that opt in — a red `revi/review` launches the
+   fixer with no comment, bounded by [its own brakes](#autofix). Check
+   `iterion remote runs list` (or the gate's `pending` link) before
+   hand-fixing a red PR: a manual fix racing an already-launched fixer is
+   the same collision as rule 1.
+
 ## Overriding a finding
 
 Three ways, in order of preference:

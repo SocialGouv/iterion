@@ -10,7 +10,14 @@ frictions it surfaces (bot or engine), and write the bilan.
 This runbook is the *habit*; the mechanics live in
 [merge-gate.md](merge-gate.md) (gate, reconciler, two-bots-one-context) and
 [bots/branch-improve-loop/README.md](../bots/branch-improve-loop/README.md)
-(the campaign shape).
+(the campaign shape). For the three-way picture — Revi, Billy, **and**
+Vetty (`dep-update-guard`) sharing one gate — see
+[merge-gate.md's "Revi / Billy / Vetty — one gate, three roles"](merge-gate.md#three-roles):
+what is wired (disjoint ownership, the ~4s claim window, the
+`produces:`/`consumes:` hand-off), what is not yet (the pause notice
+naming a parked run's role, a "fixer in flight" signal before its first
+push), and the operator rules this file's session-discipline section below
+also lives by.
 
 ## The command
 
@@ -42,7 +49,7 @@ already in flight on it (`iterion remote runs list` or the gate's `pending`
 link) — a manual push while the fixer works recreates the mid-run-push
 collision the session discipline below warns about.
 
-## What the command seeds — you type nothing else
+## <a name="what-the-command-seeds"></a>What the command seeds — you type nothing else
 
 The webhook tail resolves everything from the PR and the repo integration:
 
@@ -59,7 +66,7 @@ The webhook tail resolves everything from the PR and the repo integration:
   (`revi/review` here), so he can post his own gate count on the head he
   pushed.
 
-## What to expect on the PR
+## <a name="what-to-expect-on-the-pr"></a>What to expect on the PR
 
 1. Billy verifies each prior finding, fixes the real ones **one commit per
    fix** (build+test before each commit), and pushes onto the PR branch.
