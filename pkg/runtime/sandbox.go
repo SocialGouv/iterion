@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1775,17 +1776,17 @@ func workflowHasPausingNode(wf *ir.Workflow) bool {
 func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, map[string]any) error) (bool, error) {
 	shared := e.sharedSandbox
 	copyBased := sharedSandboxIsCopyBased(shared.Run)
-	explicitNone := e.workflow != nil && e.workflow.Sandbox != nil && e.workflow.Sandbox.Mode == "none"
-	if explicitNone {
+	if declared := declaredSandboxFields(e.workflow); len(declared) > 0 {
+		what := strings.Join(declared, ", ")
 		if copyBased {
-			return false, fmt.Errorf("subbot child declares `sandbox: none` under a parent sandboxed by a copy-based driver (%s): its work would land on the host, outside the tree the parent judges — drop the declaration, or run the parent unsandboxed", shared.Run.Driver())
+			return false, fmt.Errorf("subbot child declares a sandbox of its own (%s) under a parent sandboxed by a copy-based driver (%s): a sandbox of its own is a separate copy of the workspace, and its work would never reach the tree the parent judges — drop the declaration, declare it on the parent, or run the parent unsandboxed", what, shared.Run.Driver())
 		}
 		if e.logger != nil {
-			e.logger.Warn("runtime: child declares `sandbox: none`; honoured — the parent's sandbox (driver=%s, bind-mounted) is not adopted", shared.Run.Driver())
+			e.logger.Warn("runtime: child declares a sandbox of its own (%s); honoured — the parent's sandbox (driver=%s, bind-mounted) is not adopted, the child resolves its own on the same tree", what, shared.Run.Driver())
 		}
 		if err := emitForSandbox(store.EventSandboxShared, map[string]any{
-			"adopted": false, "driver": shared.Run.Driver(), "parent_run": e.parentRunID,
-			"reason": "the child declares sandbox: none; honoured on a bind-mount parent",
+			"adopted": false, "driver": shared.Run.Driver(), "parent_run": e.parentRunID, "declared": declared,
+			"reason": "the child declares a sandbox of its own (" + what + "); honoured on a bind-mount parent",
 		}); err != nil && e.logger != nil {
 			e.logger.Warn("runtime: emit sandbox_shared: %v", err)
 		}
@@ -1795,6 +1796,75 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 		return false, fmt.Errorf("subbot child with a human gate or an interactive node cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
 	}
 	return true, nil
+}
+
+// declaredSandboxFields lists what a workflow declares about its own
+// sandbox — at workflow level and on its nodes — as the fields it sets.
+// Empty when the workflow inherits (no spec, or `sandbox: auto` alone). A
+// declaration is the operator's choice: honoured where a sandbox of its own
+// can share the parent's tree, refused where it cannot, never replaced in
+// silence.
+func declaredSandboxFields(wf *ir.Workflow) []string {
+	if wf == nil {
+		return nil
+	}
+	out := sandboxSpecFields(wf.Sandbox, "")
+	ids := make([]string, 0, len(wf.Nodes))
+	for id := range wf.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		var spec *ir.SandboxSpec
+		switch nn := wf.Nodes[id].(type) {
+		case *ir.AgentNode:
+			spec = nn.Sandbox
+		case *ir.JudgeNode:
+			spec = nn.Sandbox
+		}
+		out = append(out, sandboxSpecFields(spec, id+".")...)
+	}
+	return out
+}
+
+func sandboxSpecFields(s *ir.SandboxSpec, prefix string) []string {
+	if s == nil {
+		return nil
+	}
+	var f []string
+	add := func(name string) { f = append(f, prefix+name) }
+	switch s.Mode {
+	case "none", "inline":
+		add("mode=" + s.Mode)
+	}
+	if s.Image != "" {
+		add("image")
+	}
+	if s.Build != nil {
+		add("build")
+	}
+	if len(s.Mounts) > 0 {
+		add("mounts")
+	}
+	if len(s.Env) > 0 {
+		add("env")
+	}
+	if s.User != "" {
+		add("user")
+	}
+	if s.PostCreate != "" {
+		add("post_create")
+	}
+	if s.WorkspaceFolder != "" {
+		add("workspace_folder")
+	}
+	if s.HostState != "" && s.HostState != "auto" {
+		add("host_state")
+	}
+	if n := s.Network; n != nil && (n.Mode != "" || n.Preset != "" || len(n.Rules) > 0) {
+		add("network")
+	}
+	return f
 }
 
 // refuseResumeOfSharedChild refuses to resume, outside its parent, a child
@@ -1820,10 +1890,22 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 			return nil
 		}
 		if cb, _ := ev.Data["copy_based"].(bool); cb {
+			if e.forceResume {
+				if e.logger != nil {
+					e.logger.Warn("runtime: run %s executed in its parent run %s's copy-based sandbox; resumed with --force it starts a sandbox of its own — a fresh copy of the workspace — and its later commits will not reach the parent's tree", r.ID, r.ParentRunID)
+				}
+				if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
+					"adopted": false, "forced": true, "parent_run": r.ParentRunID,
+					"reason": "resumed with --force outside the parent: a sandbox of its own, whose later commits do not reach the parent's tree",
+				}); err != nil && e.logger != nil {
+					e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+				}
+				return nil
+			}
 			return &RuntimeError{
 				Code:    ErrCodeResumeInvalid,
-				Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree — resume it through the parent", r.ID, r.ParentRunID),
-				Hint:    "resume the parent run; it re-attaches to this child",
+				Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree", r.ID, r.ParentRunID),
+				Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
 			}
 		}
 		return nil
@@ -1877,13 +1959,34 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	if fileSecrets && e.logger != nil {
 		e.logger.Warn("runtime: child declares file secrets; in the parent's sandbox they are not materialised at start (the refresh loop writes them through on its first tick, on drivers that refresh)")
 	}
+	// The parent's listeners are the child's: the board handler is
+	// service-wide and the ask-user listener serves only the tool surface
+	// (interaction semantics stay host-side, per run). A listener the parent
+	// never started is one the child does not get — the delegate falls back
+	// per node, loudly, and the event says so.
+	wantsBoard := workflowHasBoardCapability(e.workflow)
+	wantsAskUser := workflowHasInteractiveNode(e.workflow)
+	if e.logger != nil {
+		if wantsBoard && shared.BoardEndpoint == "" {
+			e.logger.Warn("runtime: child declares board.* capabilities but the parent's sandbox has no board MCP listener (the parent declares none): board-emit is disabled for the child's nodes")
+		}
+		if wantsAskUser && shared.AskUserEndpoint == "" {
+			e.logger.Warn("runtime: child has interactive nodes but the parent's sandbox has no ask-user MCP listener (the parent has no interactive node): native ask_user is disabled, the JSON protocol fallback applies")
+		}
+	}
+	devboxDeclared := fileExists(filepath.Join(bundleResourceDir(e.bundle, e.filePath), "devbox.json"))
+	if devboxDeclared && e.logger != nil {
+		e.logger.Warn("runtime: child bundle ships a devbox.json; in the parent's sandbox it is not provisioned — its packages are the parent's provisioning or nothing")
+	}
 	if e.logger != nil {
 		e.logger.Info("runtime: executing in the parent run's sandbox (driver=%s, workspace=%s, copy_based=%v, files written through=%d)", shared.Run.Driver(), shared.WorkspaceFolder, copyBased, pushed)
 	}
 	if err := emitForSandbox(store.EventSandboxShared, map[string]any{
 		"adopted": true, "driver": shared.Run.Driver(), "workspace": shared.WorkspaceFolder,
 		"parent_run": e.parentRunID, "copy_based": copyBased, "skills_written_through": pushed,
-		"file_secrets_declared": fileSecrets,
+		"file_secrets_declared": fileSecrets, "devbox_declared": devboxDeclared,
+		"board_endpoint_inherited": shared.BoardEndpoint != "", "ask_user_inherited": shared.AskUserEndpoint != "",
+		"attachments_mounted": false,
 	}); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
 	}

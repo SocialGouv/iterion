@@ -12,6 +12,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -347,7 +349,7 @@ func TestRefuseResumeOfSharedChild(t *testing.T) {
 		e, r := mk(t, "run-c1", map[string]any{"adopted": true, "copy_based": true}, nil)
 		err := e.refuseResumeOfSharedChild(ctx, r)
 		var rt *RuntimeError
-		if !errors.As(err, &rt) || rt.Code != ErrCodeResumeInvalid || !strings.Contains(rt.Message, "through the parent") {
+		if !errors.As(err, &rt) || rt.Code != ErrCodeResumeInvalid || !strings.Contains(rt.Hint, "resume the parent") {
 			t.Fatalf("err = %v, want RESUME_INVALID naming the parent", err)
 		}
 	})
@@ -405,6 +407,46 @@ workflow child:
 		r, _ := st.LoadRun(ctx, "run-c5")
 		if r.Status != store.RunStatusFailedResumable {
 			t.Fatalf("status = %q, want the run left failed_resumable for its parent to resume", r.Status)
+		}
+	})
+	t.Run("force resume bypasses in words", func(t *testing.T) {
+		wf := compileBot(t, `
+schema out:
+  ok: bool
+
+compute step:
+  output: out
+  expr:
+    ok: "true"
+
+workflow child:
+  entry: step
+  step -> done
+`).Workflow
+		st := tmpStore(t)
+		pc := store.AsParentedRunCreator(st)
+		if _, err := pc.CreateChildRun(ctx, "run-c7", "child", "run-parent", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FailRunResumable(ctx, "run-c7", &store.Checkpoint{NodeID: "step"}, "boom", ""); err != nil {
+			t.Fatal(err)
+		}
+		e := New(wf, st, newStubExecutor(), WithWorkDir(t.TempDir()), WithSandboxOverride("none"), WithForceResume(true))
+		if err := e.emit(ctx, "run-c7", store.EventSandboxShared, "", map[string]any{"adopted": true, "copy_based": true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Resume(ctx, "run-c7", nil); err != nil {
+			t.Fatalf("Resume with --force = %v, want the child resumed in a sandbox of its own", err)
+		}
+		evs, _ := st.LoadEvents(ctx, "run-c7")
+		var said bool
+		for _, ev := range evs {
+			if ev.Type == store.EventSandboxShared && ev.Data["forced"] == true && ev.Data["adopted"] == false {
+				said = true
+			}
+		}
+		if !said {
+			t.Fatal("a forced resume outside the parent must be said in the events (sandbox_shared forced=true)")
 		}
 	})
 	t.Run("wired: Resume of a parked child", func(t *testing.T) {
@@ -490,5 +532,86 @@ workflow child:
 	r, _ := st.LoadRun(context.Background(), "run-inplace")
 	if r.WorkDir != "" && r.WorkDir != workDir {
 		t.Fatalf("run.WorkDir = %q, want the parent's tree %q", r.WorkDir, workDir)
+	}
+}
+
+// TestStartSandboxShared_OwnDeclarationIsHonouredOrRefused: every field a
+// child declares about its own sandbox — not only `none` — is the
+// operator's choice: honoured under a bind-mount parent (a sandbox of its
+// own on the same tree), refused typed under a copy-based one, and named
+// either way.
+func TestStartSandboxShared_OwnDeclarationIsHonouredOrRefused(t *testing.T) {
+	ctx := context.Background()
+	wf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}, Sandbox: &ir.SandboxSpec{Mode: "inline", Image: "iterion-sandbox-sec"}}
+
+	t.Run("bind-mount parent: honoured, declaration named", func(t *testing.T) {
+		fake := &sharedFakeRun{}
+		e, exec, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{fake}, WorkspaceFolder: "/workspace"})
+		_, _ = st.CreateRun(ctx, "run-own-bind", "child", nil)
+		if _, err := e.startSandbox(ctx, "run-own-bind", e.workDir, "", nil); err != nil {
+			t.Fatalf("startSandbox: %v", err)
+		}
+		if exec.sandbox != nil {
+			t.Fatalf("the child's own image declaration was overridden by the parent's sandbox (%v)", exec.sandbox)
+		}
+		evs, _ := st.LoadEvents(ctx, "run-own-bind")
+		var named bool
+		for _, ev := range evs {
+			if ev.Type == store.EventSandboxShared && ev.Data["adopted"] == false {
+				if d, ok := ev.Data["declared"].([]any); ok {
+					for _, f := range d {
+						if f == "image" {
+							named = true
+						}
+					}
+				}
+			}
+		}
+		if !named {
+			t.Fatalf("the honoured declaration must be named in the event: %+v", evs)
+		}
+	})
+	t.Run("copy-based parent: refused, declaration named", func(t *testing.T) {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: "/workspace"})
+		_, _ = st.CreateRun(ctx, "run-own-copy", "child", nil)
+		_, err := e.startSandbox(ctx, "run-own-copy", e.workDir, "", nil)
+		if err == nil || !strings.Contains(err.Error(), "image") || !strings.Contains(err.Error(), "copy-based") {
+			t.Fatalf("err = %v, want the typed refusal naming the declared image and the copy-based parent", err)
+		}
+	})
+	t.Run("node-level network declaration counts", func(t *testing.T) {
+		nwf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{Sandbox: &ir.SandboxSpec{Network: &ir.SandboxNetwork{Mode: "allowlist"}}},
+		}}
+		got := declaredSandboxFields(nwf)
+		if len(got) != 1 || got[0] != "step.network" {
+			t.Fatalf("declaredSandboxFields = %v, want [step.network]", got)
+		}
+		e, _, st := sharedTestEngine(t, nwf, t.TempDir(), &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: "/workspace"})
+		_, _ = st.CreateRun(ctx, "run-own-node", "child", nil)
+		if _, err := e.startSandbox(ctx, "run-own-node", e.workDir, "", nil); err == nil || !strings.Contains(err.Error(), "step.network") {
+			t.Fatalf("err = %v, want the refusal naming the node's network declaration", err)
+		}
+	})
+	t.Run("inherit and auto are not declarations", func(t *testing.T) {
+		if got := declaredSandboxFields(&ir.Workflow{Nodes: map[string]ir.Node{}, Sandbox: &ir.SandboxSpec{Mode: "auto", HostState: "auto"}}); len(got) != 0 {
+			t.Fatalf("declaredSandboxFields = %v, want none", got)
+		}
+		if got := declaredSandboxFields(&ir.Workflow{Nodes: map[string]ir.Node{}}); len(got) != 0 {
+			t.Fatalf("declaredSandboxFields = %v, want none", got)
+		}
+	})
+}
+
+// TestSharedSandboxCopyBasedClassificationPinsEachDriver: "copy-based" is
+// read off the write-through seam the driver implements. This table is
+// where a future driver that copies the workspace without a refresher
+// turns red before it can lose a child's work in silence.
+func TestSharedSandboxCopyBasedClassificationPinsEachDriver(t *testing.T) {
+	if !sharedSandboxIsCopyBased((*kubernetes.Run)(nil)) {
+		t.Fatal("the kubernetes driver copies the workspace into the pod: copy-based")
+	}
+	if sharedSandboxIsCopyBased((*docker.Run)(nil)) {
+		t.Fatal("the docker driver bind-mounts the workspace: not copy-based")
 	}
 }
