@@ -602,7 +602,12 @@ statuses ([pkg/webhooks/types.go status constants](../pkg/webhooks/types.go)):
 Delivery rows never carry the raw payload — only a SHA-256 hash, the
 selected fields (`event_kind`, `event_action`, `project_path`,
 `subject_id`, `subject_sha`), the source IP, and (for launched rows)
-the resulting `run_id`. Read them at
+the resulting `run_id`. A row under a real idempotency key also counts
+its launch `attempts` (1 on the first, +1 each time a `launch_error` row
+is retried under the same key) and stamps `failed_at` on a failed one —
+the unattended gate lanes read those two as their failure budget (see
+[merge-gate.md](merge-gate.md#autofix)); a forge redelivery is never
+refused on their account. Read them at
 `GET /api/teams/{id}/webhooks/{webhook_id}/deliveries` (last 100 by
 default).
 
