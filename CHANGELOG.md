@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.4](https://github.com/SocialGouv/iterion/compare/v3.102.3...v3.102.4) (2026-09-05)
+
+### Bug Fixes
+
+* **claw:** an Anthropic forfait authenticates claw, on the pod and on disk ([#698](https://github.com/SocialGouv/iterion/issues/698)) ([7d8d81c](https://github.com/SocialGouv/iterion/commit/7d8d81cd502b583c2237ebe041c649dbd983294b)), references [#687](https://github.com/SocialGouv/iterion/issues/687) [#687](https://github.com/SocialGouv/iterion/issues/687) [#687](https://github.com/SocialGouv/iterion/issues/687) [#687](https://github.com/SocialGouv/iterion/issues/687) [#687](https://github.com/SocialGouv/iterion/issues/687)
+
+    <details><summary>why</summary>
+
+    A run whose only anthropic credential is a Claude Code OAuth forfait resolved an UNAUTHENTICATED claw client: non-nil, so callers proceeded, and every call answered 401 "x-api-key header is required". Revi's pacer supervisor died this way in prod for a full day (#687) while its unit tests stayed green — a clean failure is a feature you believe you shipped.
+
+    </details>
+
 ## [3.102.3](https://github.com/SocialGouv/iterion/compare/v3.102.2...v3.102.3) (2026-09-05)
 
 ### Bug Fixes
