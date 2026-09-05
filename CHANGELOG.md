@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.5](https://github.com/SocialGouv/iterion/compare/v3.102.4...v3.102.5) (2026-09-05)
+
+### Bug Fixes
+
+* **webhooks:** the gate lanes answer, refuse and stay same-repo ([#683](https://github.com/SocialGouv/iterion/issues/683)) ([c0a55fc](https://github.com/SocialGouv/iterion/commit/c0a55fc5c4216a56083555f2e6b2c7f312fb81bf)), closes [#663](https://github.com/SocialGouv/iterion/issues/663) [#639](https://github.com/SocialGouv/iterion/issues/639) [#662](https://github.com/SocialGouv/iterion/issues/662), references [#642](https://github.com/SocialGouv/iterion/issues/642) [#642](https://github.com/SocialGouv/iterion/issues/642) [#646](https://github.com/SocialGouv/iterion/issues/646) [#663](https://github.com/SocialGouv/iterion/issues/663) [#650](https://github.com/SocialGouv/iterion/issues/650) [#646](https://github.com/SocialGouv/iterion/issues/646) [#650](https://github.com/SocialGouv/iterion/issues/650) [#650](https://github.com/SocialGouv/iterion/issues/650) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#663](https://github.com/SocialGouv/iterion/issues/663) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#650](https://github.com/SocialGouv/iterion/issues/650) [#652](https://github.com/SocialGouv/iterion/issues/652) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#663](https://github.com/SocialGouv/iterion/issues/663) [#650](https://github.com/SocialGouv/iterion/issues/650) [#650](https://github.com/SocialGouv/iterion/issues/650) [#662](https://github.com/SocialGouv/iterion/issues/662) [#663](https://github.com/SocialGouv/iterion/issues/663) [#663](https://github.com/SocialGouv/iterion/issues/663) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662) [#662](https://github.com/SocialGouv/iterion/issues/662)
+
+    <details><summary>why</summary>
+
+    Class surfaced by Revi on #626, fixed there for the review-thread reply lane only. handlePRForgeComment resolves the PR through GetPullRequest → forge.PullRef, then launches with the base repo's CloneURL + the PR head ref — a ref that lives in the head repo on a fork. The checkout misses, or hits a same-named branch on the base and the bot answers grounded in the wrong code, under the bot identity.
+
+    </details>
+
 ## [3.102.4](https://github.com/SocialGouv/iterion/compare/v3.102.3...v3.102.4) (2026-09-05)
 
 ### Bug Fixes
