@@ -265,6 +265,11 @@ Without it the launch is refused and the message names that exact command.
 A forge on a non-default port is pinned as `forge.example.com:8443` — the pin
 is compared against the host as it appears in `pr_url`, port included.
 
+The repository slug is taken from `pr_url` too, so it is checked before any
+request is built: a path segment of `.` or `..` is refused rather than
+concatenated into the forge's API URL. Ordinary names are unaffected — a dot
+inside a segment (`o/my.repo`) and a nested GitLab group path both pass.
+
 #### Refused vs. could-not-ask
 
 That last column is a real distinction, not a nicety. A **refusal** is a
