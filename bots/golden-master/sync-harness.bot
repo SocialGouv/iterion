@@ -114,7 +114,10 @@ tool sync_harness:
     with open(__file__, encoding="utf-8") as f:
         src = f.read()
     MARK = "# ---- inlined harness " + "below"  # built, so this line is not the marker
-    if MARK not in src or src.index("\nimport hashlib") < src.index(MARK):
+    # Both substrings before either index(): a marker kept over a stripped body
+    # is exactly the mangling this guard exists to name, and str.index would
+    # raise there instead of refusing.
+    if MARK not in src or "\nimport hashlib" not in src or src.index("\nimport hashlib") < src.index(MARK):
         refuse("this node's own source is not in the expected shape (driver, marker, then the harness body) — regenerate it with sync-harness.py")
     body = src[src.index("\nimport hashlib"):]
     canon = HEADER + body
