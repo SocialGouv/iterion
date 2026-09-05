@@ -38,6 +38,13 @@ type apiKeyView struct {
 	LastUsedAt  *string `json:"last_used_at,omitempty"`
 	// 0 = uncapped; see secrets.ApiKey.MaxConcurrentRuns.
 	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
+	// AliveRuns is how many runs currently count against this key's
+	// ceiling — alive, stamped with its fingerprint, and executing a model
+	// node (docs/byok.md, "what counts"). Reported whatever the ceiling
+	// is, so "is this key in use right now?" has an answer. Absent when
+	// the count is unavailable (no fingerprint on a legacy row, no run
+	// store, a store error — logged), never a silent zero.
+	AliveRuns *int `json:"alive_runs,omitempty"`
 }
 
 type createApiKeyReq struct {
@@ -58,7 +65,7 @@ type updateApiKeyReq struct {
 	MaxConcurrentRuns *int    `json:"max_concurrent_runs,omitempty"`
 }
 
-func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
+func (s *Server) toApiKeyView(ctx context.Context, k secrets.ApiKey) apiKeyView {
 	return apiKeyView{
 		ID:          k.ID,
 		Provider:    string(k.Provider),
@@ -71,21 +78,39 @@ func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
 		LastUsedAt:  optRFC3339(k.LastUsedAt),
 
 		MaxConcurrentRuns: k.MaxConcurrentRuns,
+		AliveRuns:         s.aliveRunsFor(ctx, k),
 	}
+}
+
+// aliveRunsFor counts the runs holding k's concurrency slot right now —
+// the same query the launch walk's ceiling asks, so the view and the gate
+// can never disagree. nil when there is nothing to count with.
+func (s *Server) aliveRunsFor(ctx context.Context, k secrets.ApiKey) *int {
+	if s.cfg.Store == nil || k.Fingerprint == "" {
+		return nil
+	}
+	n, err := s.cfg.Store.CountAliveRunsWithCredFingerprint(ctx, k.Fingerprint, "")
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("byok: alive-run count for key %s: %v", k.ID, err)
+		}
+		return nil
+	}
+	return &n
 }
 
 // writeApiKeyList serialises a slice of ApiKey records into the
 // {"keys":[...]} envelope shared by the team and user-scoped list
 // endpoints. On error it writes a 500 and returns false so the
 // caller can early-out.
-func (s *Server) writeApiKeyList(w http.ResponseWriter, keys []secrets.ApiKey, err error) bool {
+func (s *Server) writeApiKeyList(w http.ResponseWriter, r *http.Request, keys []secrets.ApiKey, err error) bool {
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return false
 	}
 	views := make([]apiKeyView, 0, len(keys))
 	for _, k := range keys {
-		views = append(views, s.toApiKeyView(k))
+		views = append(views, s.toApiKeyView(r.Context(), k))
 	}
 	writeJSON(w, struct {
 		Keys []apiKeyView `json:"keys"`
@@ -136,7 +161,7 @@ func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	// Team admins see all team-wide keys + their own user-scoped
 	// keys (matches BYOK plan). Members only see what's visible.
 	keys, err := s.apiKeys.ListByTeam(apiKeyTenantCtx(r), teamID, id.UserID)
-	s.writeApiKeyList(w, keys, err)
+	s.writeApiKeyList(w, r, keys, err)
 }
 
 func (s *Server) handleCreateTeamApiKey(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +181,7 @@ func (s *Server) handleListMyApiKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	keys, err := s.apiKeys.ListByUser(r.Context(), id.TeamID, id.UserID)
-	s.writeApiKeyList(w, keys, err)
+	s.writeApiKeyList(w, r, keys, err)
 }
 
 func (s *Server) handleCreateMyApiKey(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +257,7 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		}
 	}
 	s.auditApiKey(r, teamID, "created", keyID, map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""})
-	writeJSON(w, s.toApiKeyView(key))
+	writeJSON(w, s.toApiKeyView(r.Context(), key))
 }
 
 // refuseApiKey answers a BYOK shape refusal (create or rotate): 400 with
@@ -315,7 +340,7 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.auditApiKey(r, key.ScopeTeamID, "updated", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
-	writeJSON(w, s.toApiKeyView(key))
+	writeJSON(w, s.toApiKeyView(r.Context(), key))
 }
 
 func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {

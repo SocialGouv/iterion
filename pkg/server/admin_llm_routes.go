@@ -62,7 +62,7 @@ func (s *Server) handleAdminListPlatformApiKeys(w http.ResponseWriter, r *http.R
 	// Platform keys are always team-wide rows ("" requesting user →
 	// user-scoped rows excluded, which the create path never writes).
 	keys, err := s.apiKeys.ListByTeam(r.Context(), secrets.PlatformTenantID, "")
-	s.writeApiKeyList(w, keys, err)
+	s.writeApiKeyList(w, r, keys, err)
 }
 
 func (s *Server) handleAdminCreatePlatformApiKey(w http.ResponseWriter, r *http.Request) {

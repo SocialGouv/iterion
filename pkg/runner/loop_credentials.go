@@ -90,6 +90,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		// usage-cap scope check reads them to meter platform-tier
 		// credentials on the shared platform key.
 		PlatformSourced: bundle.PlatformSourced,
+		PoolSourced:     bundle.PoolSourced,
 		Fingerprints:    fingerprints,
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))

@@ -373,6 +373,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
 		PlatformSourced:    map[string]bool{},
+		PoolSourced:        map[string]bool{},
 	}
 
 	// Refused-but-only keys, per provider, remembered across the tiers for
@@ -599,6 +600,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// it landed in: a donor who reconnects a fresh one is not
 				// parked by the readings of the account it replaced.
 				setOAuthFingerprint(&bundle, grant.Ref, grant.Fingerprint)
+				bundle.PoolSourced[grant.Ref] = true
 			case credpool.SourceAPIKey:
 				prov := secrets.Provider(grant.Ref)
 				bundle.APIKeys[prov] = string(grant.Payload)
@@ -608,6 +610,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// last_used_at bump all name the donor's key, not an
 				// unstamped slot.
 				apiKeyFPs[prov] = secrets.FingerprintSHA256(string(grant.Payload))
+				// The lent key's row lives in the DONOR's tenant: the
+				// runner's metering bump must reach it without the run's
+				// tenant filter.
+				bundle.PoolSourced[string(prov)] = true
 			}
 			res.grant = grant
 		}
