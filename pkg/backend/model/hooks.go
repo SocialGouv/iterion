@@ -674,6 +674,29 @@ func (h *storeHooks) onUsageCap(nodeID string, info UsageCapInfo) {
 	h.emit(nodeID, store.EventUsageCap, data)
 }
 
+// onOrchestrationStall persists a classified orchestration deadlock and
+// how it ended, so the failure class is countable per backend and model
+// instead of living only in a process log line.
+func (h *storeHooks) onOrchestrationStall(nodeID string, info OrchestrationStallInfo) {
+	outcome := "aborted"
+	if info.Recovered {
+		outcome = "recovered"
+	}
+	data := map[string]any{
+		"backend":   info.Backend,
+		"tool":      info.Tool,
+		"idle_ms":   info.IdleFor.Milliseconds(),
+		"outcome":   outcome,
+		"recovered": info.Recovered,
+	}
+	if info.Model != "" {
+		data["model"] = info.Model
+	}
+	h.emit(nodeID, store.EventDelegateStall, data)
+	h.logger.Warn("Delegation stall [%s]: %s blocked on %s with no background work to wait on for %s — %s",
+		nodeID, info.Backend, info.Tool, info.IdleFor.Round(time.Second), outcome)
+}
+
 // isLikelyStructuredPayload reports whether text is a bare JSON object
 // or array — the shape of a structured-output answer rather than
 // human-facing narration.
@@ -1337,22 +1360,23 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnLLMRequest: h.onLLMRequest,
 		// OnLLMResponse is intentionally nil: response data surfaces through
 		// llm_step_finished events with richer per-step detail.
-		OnLLMRetry:          h.onLLMRetry,
-		OnLLMStepFinish:     h.onLLMStepFinish,
-		OnAssistantText:     h.onAssistantText,
-		OnUsageCap:          h.onUsageCap,
-		OnUsageProgress:     h.onUsageProgress,
-		OnLLMTurnCapture:    h.onLLMTurnCapture,
-		OnLLMCompacted:      h.onLLMCompacted,
-		OnToolStarted:       h.onToolStarted,
-		OnToolCall:          h.onToolCall,
-		OnDelegateStarted:   h.onDelegateStarted,
-		OnDelegateFinished:  h.onDelegateFinished,
-		OnDelegateError:     h.onDelegateError,
-		OnDelegateRetry:     h.onDelegateRetry,
-		OnProviderFallback:  h.onProviderFallback,
-		OnSessionDegraded:   h.onSessionDegraded,
-		OnMCPServerDegraded: h.onMCPServerDegraded,
+		OnLLMRetry:           h.onLLMRetry,
+		OnLLMStepFinish:      h.onLLMStepFinish,
+		OnAssistantText:      h.onAssistantText,
+		OnUsageCap:           h.onUsageCap,
+		OnUsageProgress:      h.onUsageProgress,
+		OnOrchestrationStall: h.onOrchestrationStall,
+		OnLLMTurnCapture:     h.onLLMTurnCapture,
+		OnLLMCompacted:       h.onLLMCompacted,
+		OnToolStarted:        h.onToolStarted,
+		OnToolCall:           h.onToolCall,
+		OnDelegateStarted:    h.onDelegateStarted,
+		OnDelegateFinished:   h.onDelegateFinished,
+		OnDelegateError:      h.onDelegateError,
+		OnDelegateRetry:      h.onDelegateRetry,
+		OnProviderFallback:   h.onProviderFallback,
+		OnSessionDegraded:    h.onSessionDegraded,
+		OnMCPServerDegraded:  h.onMCPServerDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 	}

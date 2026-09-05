@@ -985,6 +985,21 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 			})
 		}
 	}
+	// Orchestration-stall classification (claude_code's TaskOutput/Monitor
+	// deadlock guard): persisted as a delegate_stall event, metered by the
+	// runner per backend/model/outcome.
+	if e.hooks.OnOrchestrationStall != nil {
+		fn := e.hooks.OnOrchestrationStall
+		h.OnOrchestrationStall = func(st delegate.OrchestrationStall) {
+			fn(nodeID, OrchestrationStallInfo{
+				Backend:   st.Backend,
+				Tool:      st.Tool,
+				Model:     st.Model,
+				IdleFor:   st.IdleFor,
+				Recovered: st.Recovered,
+			})
+		}
+	}
 	// Usage cap: the backend reports the provider's own window telemetry,
 	// the guard decides. A hard cap answers with the same usage-window
 	// error a real refusal produces, so the run parks and a durable retry

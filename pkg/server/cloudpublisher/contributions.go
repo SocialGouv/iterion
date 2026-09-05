@@ -41,12 +41,14 @@ const maxContributionsBytes = 256 * 1024
 // what make an ORG-PRIVATE plugin work: sources are team-scoped git-hosted
 // plugins (pkg/pluginsource) whose authority is the durable store, not this
 // pod's filesystem — so they survive a restart, unlike a plugin installed into
-// the pod's iterion home. A nil resolver keeps the local-only behaviour.
+// the pod's iterion home. A nil resolver keeps the local-only behaviour. runID
+// names the launch in the log line a skipped source produces.
 func resolveContributionsFor(
 	ctx context.Context,
 	wf *ir.Workflow,
 	projectStoreDir string,
 	tenantID string,
+	runID string,
 	sources *pluginsource.Resolver,
 	logger *iterlog.Logger,
 ) (*queue.Contributions, error) {
@@ -55,13 +57,25 @@ func resolveContributionsFor(
 	// 0. Team-scoped git-hosted plugins. Resolved FIRST so a locally installed
 	// plugin of the same name shadows it deterministically below.
 	if sources != nil && tenantID != "" {
-		files, err := sources.Resolve(ctx, tenantID)
+		files, skipped, err := sources.Resolve(ctx, tenantID)
 		if err != nil {
-			// Deliberate: a source the operator explicitly enabled that cannot
-			// be resolved fails the launch. Shipping the run without its
-			// platform skill is the silent-wrong-result failure this exists to
-			// prevent.
+			// The team's source LIST could not be read: nothing here can tell
+			// a healthy team from one whose sources are all lost, so the
+			// launch fails with the cause rather than shipping a run that may
+			// lack the platform skill it was given.
 			return nil, err
+		}
+		// A source that failed to materialise is skipped for THIS launch and
+		// flagged degraded on its record (the resolver did that); the run
+		// proceeds without its contributions. One team's broken plugin.yaml
+		// must not take every launch of the team down with it — but the skip
+		// is never quiet: here against the run, on the record for the studio
+		// and the API.
+		for _, sk := range skipped {
+			if logger != nil {
+				logger.Warn("cloudpublisher: run %s launches WITHOUT plugin source %q (team %s): %v — the source is flagged degraded; fix it and re-register it, or disable it",
+					runID, sk.Source.Name, tenantID, sk.Err)
+			}
 		}
 		for _, f := range files {
 			out.Plugin = append(out.Plugin, queue.ContributionFile{

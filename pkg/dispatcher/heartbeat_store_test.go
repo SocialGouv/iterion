@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -63,5 +64,38 @@ func TestHeartbeatStoreTurnWriteNoopWithoutCapability(t *testing.T) {
 	// a panic or error.
 	if err := hb.WriteTurn(context.Background(), &store.TurnCheckpoint{RunID: "r"}); err != nil {
 		t.Fatalf("WriteTurn no-op should not error, got %v", err)
+	}
+}
+
+// TestHeartbeatStoreForwardsCreateChildRun: the engine probes the store it
+// is handed with store.AsParentedRunCreator to create a subbot child WITH
+// its parent link in the create write. An embedded interface promotes only
+// the RunStore methods, so without an explicit forward the wrapper hides
+// the capability and every dispatched child is created parentless, linked
+// only by the engine's later stamping write.
+func TestHeartbeatStoreForwardsCreateChildRun(t *testing.T) {
+	fs, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	hb := newHeartbeatStore(fs, func(string) {})
+	pc := store.AsParentedRunCreator(hb)
+	if pc == nil {
+		t.Fatal("*heartbeatStore hides CreateChildRun; a dispatched subbot child is created with no ParentRunID")
+	}
+	ctx := context.Background()
+	r, err := pc.CreateChildRun(ctx, "child", "wf", "parent", nil)
+	if err != nil {
+		t.Fatalf("CreateChildRun: %v", err)
+	}
+	if r.ParentRunID != "parent" {
+		t.Fatalf("returned run parent = %q, want parent", r.ParentRunID)
+	}
+	loaded, err := fs.LoadRun(ctx, "child")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if loaded.ParentRunID != "parent" {
+		t.Fatalf("persisted parent = %q, want parent in the create write", loaded.ParentRunID)
 	}
 }

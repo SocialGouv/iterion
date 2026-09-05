@@ -1301,11 +1301,16 @@ function ClosedStatus({ card }: { card: PipelineBoardCardDTO }) {
 function giveUpTitle(
   giveUp: NonNullable<PipelineBoardCardDTO["gave_up"]>,
 ): string {
+  const filed = giveUp.state ? ` and filed the ticket as "${giveUp.state}"` : "";
+  // A reasoned give-up is the watchdog's own verdict (a recorded run that
+  // is gone), not a retry budget: say the reason, not an attempt count.
+  if (giveUp.reason) {
+    return `The dispatcher gave up${filed}: ${giveUp.reason} Nobody decided this — retry it, or close the card to acknowledge it.`;
+  }
   const attempts =
     giveUp.attempts && giveUp.attempts > 0
       ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
       : "after exhausting its attempts";
-  const filed = giveUp.state ? ` and filed the ticket as "${giveUp.state}"` : "";
   return `The dispatcher gave up ${attempts}${filed}. Nobody decided this — retry it, or close the card to acknowledge it.`;
 }
 

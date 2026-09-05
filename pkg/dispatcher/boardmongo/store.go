@@ -858,6 +858,9 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 		// record exists to reconstruct what actually happened.
 		payload["state"] = stamped.State
 		payload["attempts"] = stamped.Attempts
+		if stamped.Reason != "" {
+			payload["reason"] = stamped.Reason
+		}
 	}
 	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
 }

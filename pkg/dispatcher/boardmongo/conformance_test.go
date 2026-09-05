@@ -232,11 +232,19 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if err != nil {
 		t.Fatalf("Claim give-up probe: %v", err)
 	}
-	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3}, guTok); err != nil {
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3, Reason: "recorded run gone"}, guTok); err != nil {
 		t.Fatalf("SetGaveUpOwned: %v", err)
 	}
-	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil {
-		t.Fatalf("the give-up stamp must land: %+v", cur)
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil || cur.GaveUp.Reason != "recorded run gone" {
+		t.Fatalf("the give-up stamp must land with its reason: %+v", cur.GaveUp)
+	}
+	// A re-stamp that only changes the REASON is a real change, not a
+	// no-op: the reason is what the operator reads.
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3, Reason: "still gone"}, guTok); err != nil {
+		t.Fatalf("SetGaveUpOwned (reason change): %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil || cur.GaveUp.Reason != "still gone" {
+		t.Fatalf("a changed reason must be written: %+v", cur.GaveUp)
 	}
 	if _, err := store.SetStateOwned(gu.ID, native.StateInProgress, guTok); err != nil {
 		t.Fatalf("SetStateOwned after give-up: %v", err)
@@ -1068,6 +1076,30 @@ func TestNativeStore_Conformance(t *testing.T) {
 		t.Fatalf("native.NewStore (admin): %v", err)
 	}
 	runBoardAdminSuite(t, admin, admin)
+
+	launch, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (launch): %v", err)
+	}
+	runLaunchClaimSuite(t, launch)
+
+	ownedFrom, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (owned-from): %v", err)
+	}
+	runOwnedFromSuite(t, ownedFrom)
+
+	lateRenew, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (late-renew): %v", err)
+	}
+	runRenewAfterReleaseSuite(t, lateRenew)
+
+	adjust, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (adjust-labels): %v", err)
+	}
+	runAdjustLabelsSuite(t, adjust)
 }
 
 // TestMongoStore_Conformance runs the same suite against the Mongo store.
@@ -1109,6 +1141,14 @@ func TestMongoStore_Conformance(t *testing.T) {
 	// The Mongo store must also drive the dispatcher as a tracker.Tracker via
 	// the shared native.Adapter (eligible + unclaimed + blocker-free filtering).
 	runTrackerSuite(t, boardmongo.New(db, "tracker-tenant"))
+
+	// The admission loop's atomic launch claim must exist on the cloud
+	// twin too — its own tenant, so the ready/held cards it seeds never
+	// enter the coordinator listing below.
+	runLaunchClaimSuite(t, boardmongo.New(db, "launch-tenant"))
+	runOwnedFromSuite(t, boardmongo.New(db, "owned-from-tenant"))
+	runRenewAfterReleaseSuite(t, boardmongo.New(db, "late-renew-tenant"))
+	runAdjustLabelsSuite(t, boardmongo.New(db, "adjust-labels-tenant"))
 
 	// The Coordinator's cross-tenant ListEligible must find ready+unclaimed
 	// cards across tenants (verifies the issue.state / issue.claim BSON paths).

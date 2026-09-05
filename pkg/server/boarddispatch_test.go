@@ -44,6 +44,15 @@ type fakeBoardCoord struct {
 	recoveryListErr error
 	// reasons records the explicit provenance of reasoned owned writes.
 	reasons map[string]string
+	// gaveUps records the fenced give-up stamps, keyed by issue id.
+	gaveUps map[string]*native.GiveUp
+	// renewHook, when set, runs at the start of RenewClaim OUTSIDE the
+	// lock — a test parks a heartbeat in flight with it while the owner's
+	// own release lands.
+	renewHook func(id string)
+	// releaseHook, when set, runs after a successful Release, outside the
+	// lock — the signal that the owner's release has landed.
+	releaseHook func(id string)
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -156,7 +165,17 @@ func (f *fakeBoardCoord) SetStateFromReason(ctx context.Context, tenant, id, fro
 	return true, nil
 }
 
-func (f *fakeBoardCoord) Release(ctx context.Context, _, id, _ string) error {
+func (f *fakeBoardCoord) Release(ctx context.Context, tenant, id, marker string) error {
+	if err := f.release(ctx, tenant, id, marker); err != nil {
+		return err
+	}
+	if f.releaseHook != nil {
+		f.releaseHook(id)
+	}
+	return nil
+}
+
+func (f *fakeBoardCoord) release(ctx context.Context, _, id, _ string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -171,6 +190,9 @@ func (f *fakeBoardCoord) Release(ctx context.Context, _, id, _ string) error {
 // gets tracker.ErrClaimConflict. renews counts heartbeats for the
 // heartbeat test.
 func (f *fakeBoardCoord) RenewClaim(_ context.Context, _, id string, tok tracker.ClaimToken) error {
+	if f.renewHook != nil {
+		f.renewHook(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.renews[id]++
@@ -207,6 +229,28 @@ func (f *fakeBoardCoord) SetStateOwnedReason(ctx context.Context, tenant, id, st
 	}
 	f.reasons[id] = reason
 	f.mu.Unlock()
+	return nil
+}
+
+// SetGaveUpOwned honours the fence like the real coordinator and, like the
+// twins' GiveUpToRecord, only lands when the card sits in the stamped
+// state — a stamp naming a state the card left is superseded, not written.
+func (f *fakeBoardCoord) SetGaveUpOwned(ctx context.Context, _, id string, g *native.GiveUp, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claimed[id] != tok.Marker {
+		return tracker.ErrClaimConflict
+	}
+	if g != nil && g.State != "" && f.states[id] != g.State {
+		return nil
+	}
+	if f.gaveUps == nil {
+		f.gaveUps = map[string]*native.GiveUp{}
+	}
+	f.gaveUps[id] = g
 	return nil
 }
 
@@ -1394,9 +1438,8 @@ func TestCloudReaper_CeilingSparesAHealthyCard(t *testing.T) {
 }
 
 // TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed: a release-only card
-// failed at nothing — its claimant died before recording a run, or the
-// run was removed by the documented retention command. Filing it as
-// failed reports a failure that never happened.
+// failed at nothing — its claimant died before recording any run. Filing
+// it as failed (the ceiling arm) reports a failure that never happened.
 func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
 	f := newFakeBoardCoord()
 	f.claimed["c-nofail"] = "dead-owner"
@@ -1405,7 +1448,76 @@ func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
 	f.expired = []boardmongo.ExpiredCandidate{{
 		Tenant: "t1",
 		Claim: tracker.ExpiredClaim{
-			IssueID: "c-nofail", LastRunID: "run-pruned", LifetimeRuns: watchdogRunCeiling + 5,
+			IssueID: "c-nofail", LifetimeRuns: watchdogRunCeiling + 5,
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.Nop())
+
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+
+	if got := f.states["c-nofail"]; got == native.StateBlocked {
+		t.Fatalf("a card whose claimant never recorded a run failed at nothing — it must not be filed as %q", got)
+	}
+	if _, still := f.claimed["c-nofail"]; still {
+		t.Fatal("a release-only card must be released")
+	}
+}
+
+// TestCloudReaper_ReparkFailsClosedWithoutAnEligibleColumn: the repark
+// arm's own comment says the return to the pool must be WRITTEN before
+// the release — a card released in in_progress is reachable by no cloud
+// net. With no eligible column configured there is nowhere to write it,
+// and the arm must keep the recovery claim (retried, loudly, next lease)
+// rather than fall through to a bare release with `filed` still true.
+func TestCloudReaper_ReparkFailsClosedWithoutAnEligibleColumn(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-noeligible"] = "dead-owner"
+	f.epochs["c-noeligible"] = 1
+	f.states["c-noeligible"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-noeligible", LastRunID: "run-resumable",
+			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
+		},
+	}}
+	var buf bytes.Buffer
+	d := newBoardDispatcher(f, nil, "replica-A", 1, iterlog.New(iterlog.LevelWarn, &buf))
+	d.eligible = nil
+	d.runFor = func(_ context.Context, _, id string) (*store.Run, error) {
+		return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
+	}
+
+	d.reapExpiredClaims(context.Background(), time.Now(), nil)
+
+	if _, still := f.claimed["c-noeligible"]; !still {
+		t.Fatalf("REPRODUCED: with no eligible column the repark released the card UNFILED in %q — unclaimed, "+
+			"listed by nothing, reachable by no cloud sweep", f.states["c-noeligible"])
+	}
+	if got := f.states["c-noeligible"]; got != native.StateInProgress {
+		t.Fatalf("state = %q, want untouched in_progress", got)
+	}
+	if !strings.Contains(buf.String(), "no eligible column") {
+		t.Fatalf("the refusal must be said out loud, log:\n%s", buf.String())
+	}
+}
+
+// TestCloudReaper_PrunedRunIsAGiveUp: the cloud twin of the local
+// give-up. A card whose RECORDED run is gone is not release-only: the
+// repark arm wrote it back into the pool, and the pool launched a fresh
+// run for work that may already be delivered. It is filed as failed with
+// a give-up stamp naming why — under MACHINE provenance, since the
+// watchdog decided this by itself and no downstream chain may fire.
+func TestCloudReaper_PrunedRunIsAGiveUp(t *testing.T) {
+	f := newFakeBoardCoord()
+	f.claimed["c-pruned"] = "dead-owner"
+	f.epochs["c-pruned"] = 1
+	f.states["c-pruned"] = native.StateInProgress
+	f.expired = []boardmongo.ExpiredCandidate{{
+		Tenant: "t1",
+		Claim: tracker.ExpiredClaim{
+			IssueID: "c-pruned", LastRunID: "run-pruned",
 			Prev: tracker.ClaimToken{Marker: "dead-owner", Epoch: 1},
 		},
 	}}
@@ -1416,8 +1528,19 @@ func TestCloudReaper_ReleaseOnlyIsNeverFiledAsFailed(t *testing.T) {
 
 	d.reapExpiredClaims(context.Background(), time.Now(), nil)
 
-	if got := f.states["c-nofail"]; got == native.StateBlocked {
-		t.Fatalf("a card whose run was pruned failed at nothing — it must not be filed as %q", got)
+	if got := f.states["c-pruned"]; got != native.StateBlocked {
+		t.Fatalf("REPRODUCED: a pruned pointer left the card in %q — returned to the pool, a fresh run is minted for "+
+			"work that may already be delivered; want %q with a give-up stamp", got, native.StateBlocked)
+	}
+	g := f.gaveUps["c-pruned"]
+	if g == nil || g.RunID != "run-pruned" || g.State != native.StateBlocked || g.Reason == "" {
+		t.Fatalf("give-up stamp = %+v, want the pruned run named, the filed state, and a reason", g)
+	}
+	if reason := f.reasons["c-pruned"]; reason != "" {
+		t.Fatalf("a give-up filing must stay under machine provenance (no downstream chain), got reason %q", reason)
+	}
+	if _, still := f.claimed["c-pruned"]; still {
+		t.Fatal("the recovery claim must come off once the disposition landed")
 	}
 }
 

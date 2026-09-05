@@ -43,6 +43,9 @@ type boardCoordinator interface {
 	SetStateOwned(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken) error
 	SetStateOwnedReason(ctx context.Context, tenant, id, state string, tok tracker.ClaimToken, reason string) error
 	ReleaseOwned(ctx context.Context, tenant, id string, tok tracker.ClaimToken) error
+	// SetGaveUpOwned stamps the watchdog's give-up on a card it filed on
+	// its own authority (a pruned pointer) — fenced like every owner write.
+	SetGaveUpOwned(ctx context.Context, tenant, id string, g *native.GiveUp, tok tracker.ClaimToken) error
 	// The reaper pair (the cloud half of the claim watchdog — the hole
 	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
@@ -142,9 +145,14 @@ type boardDispatcher struct {
 	// sweeps) inside the run loop; injectable so the periodicity is
 	// provable without waiting a real minute.
 	reapEvery time.Duration
-	sem       chan struct{}
-	logger    *iterlog.Logger
-	wg        sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
+	// sessionInterval is the claim heartbeat cadence processCard runs;
+	// zero = the production third-of-a-lease. Injectable so a beat can be
+	// driven into the release window and the announce/release order
+	// proven, rather than waited five minutes for.
+	sessionInterval time.Duration
+	sem             chan struct{}
+	logger          *iterlog.Logger
+	wg              sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
 	// clockFallbackReason latches WHICH degradation was last reported, so
 	// the notice stays edge-triggered (a per-pass warn is a log storm at
 	// the watchdog's cadence) without a change of cause going unsaid —
@@ -217,9 +225,9 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	// poll, since the fenced writes below are refused already and the
 	// cancel just stops this replica working a card it no longer owns.
 	cardCtx, cancelCard := context.WithCancel(ctx)
-	sess := dispatcher.StartClaimSession(
+	sess := dispatcher.StartClaimSessionEvery(
 		coordLeaser{coord: d.coord, tenant: c.Tenant},
-		c.Issue.ID, tok, d.warn, func(error) { cancelCard() })
+		c.Issue.ID, tok, d.warn, func(error) { cancelCard() }, d.sessionInterval)
 	defer func() { cancelCard(); sess.Stop() }()
 
 	// Move to in-progress for board visibility (best-effort, fenced) —
@@ -281,6 +289,12 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
 		}
 	}
+	// Announce the release BEFORE it lands (the local twin's rule, see
+	// releaseClaimSess): a heartbeat already in flight reads our OWN
+	// release as ErrClaimConflict, which without this latches `lost`,
+	// warns "claim lost — stopping the worker" on an ordinary finish, and
+	// fires the cancel path for a card whose work is already over.
+	sess.Releasing()
 	if err := d.coord.ReleaseOwned(finCtx, c.Tenant, c.Issue.ID, tok); err != nil {
 		d.warn("card %s/%s release: %v", c.Tenant, c.Issue.ID, err)
 	}
@@ -716,6 +730,7 @@ func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time
 		card := dispatcher.StuckCard{
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+			RecordedRunID:   cand.Claim.LastRunID,
 		}
 		// Release for every disposition the RECONCILER can then file, not
 		// only finished: a released card is exactly what the
@@ -724,9 +739,10 @@ func (d *boardDispatcher) sweepUnleasedClaims(ctx context.Context, now time.Time
 		// ListEligible and therefore from that reconciler, for ever,
 		// under a disabled gate. Still conserved: StuckKeep (paused
 		// parking brake, operator cancel, armed continuation — those
-		// claims are load-bearing or owned) and StuckReleaseOnly (a
-		// PRUNED pointer the reconciler cannot read — released bare it
-		// would sit unclaimed and unfiled in the running column).
+		// claims are load-bearing or owned), StuckReleaseOnly (no run
+		// was ever recorded) and StuckGiveUp (a PRUNED pointer — a
+		// decision, which waits for the gate; released bare it would sit
+		// unclaimed and unfiled in the running column).
 		switch dec := dispatcher.DecideStuckCard(run, runErr, card); dec.Action {
 		case dispatcher.StuckComplete, dispatcher.StuckFail, dispatcher.StuckRepark:
 		default:
@@ -829,6 +845,7 @@ func (d *boardDispatcher) sweepClaims(ctx context.Context, label string, cands [
 		card := dispatcher.StuckCard{
 			State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 			StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+			RecordedRunID:   cand.Claim.LastRunID,
 		}
 		if pre := dispatcher.DecideTransfer(run, runErr, card); pre.Action == dispatcher.StuckKeep &&
 			!dispatcher.RecoveryHoldExpired(run, runErr, card, cand.Claim.Prev) {
@@ -1088,6 +1105,7 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 	card := dispatcher.StuckCard{
 		State: cand.Claim.State, RunningState: d.inProgressState, LaunchStates: d.eligible,
 		StampWindowOpen: dispatcher.StampWindowOpen(cand.Claim.ClaimedAt, now),
+		RecordedRunID:   cand.Claim.LastRunID,
 	}
 	// PRE-transfer: only the rows that protect a live owner (see
 	// DecideTransfer). Refusing the transfer on the parked row would make
@@ -1138,6 +1156,8 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		filed = d.fileReapedCard(ctx, cand, card, d.doneState, tok, tracker.ReasonRunFinished)
 	case dispatcher.StuckFail:
 		filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, tracker.ReasonRunFailed)
+	case dispatcher.StuckGiveUp:
+		filed = d.giveUpReapedCard(ctx, cand, card, tok, dec.Reason)
 	case dispatcher.StuckRepark, dispatcher.StuckReleaseOnly:
 		// Unlike the local dispatcher — where the running column is itself
 		// eligible, so a bare release re-arms the card — this tick only
@@ -1156,9 +1176,9 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		switch {
 		case dec.Action == dispatcher.StuckRepark && cand.Claim.LifetimeRuns >= watchdogRunCeiling:
 			// Only a REPARK spends a fresh run here. A release-only card
-			// (the claimant died before recording anything, or its run was
-			// pruned by the documented retention command) has failed at
-			// nothing and must never be filed as failed.
+			// (the claimant died before recording anything) has failed at
+			// nothing and must never be filed as failed; a PRUNED pointer
+			// is its own row (StuckGiveUp) and never reaches this arm.
 			d.warn("claim watchdog stops returning %s/%s to the pool: it has already carried %d runs — "+
 				"filing it as %s rather than paying for another",
 				cand.Tenant, cand.Claim.IssueID, cand.Claim.LifetimeRuns, d.blockedState)
@@ -1171,6 +1191,15 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 			filed = d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "")
 		case len(d.eligible) > 0:
 			filed = d.fileReapedCard(ctx, cand, card, d.eligible[0], tok, "")
+		default:
+			// No eligible column: there is nowhere to WRITE the return to
+			// the pool, and a bare release would strand the card exactly
+			// as the arm's contract forbids. Keep the recovery claim
+			// (retried, loudly, at the next lease) rather than free it
+			// unfiled.
+			d.warn("claim watchdog cannot return %s/%s to the pool: no eligible column is configured — keeping the recovery claim",
+				cand.Tenant, cand.Claim.IssueID)
+			filed = false
 		}
 	}
 	if !filed {
@@ -1194,6 +1223,28 @@ func (d *boardDispatcher) reapOne(ctx context.Context, cand boardmongo.ExpiredCa
 		cand.Tenant, cand.Claim.IssueID, cand.Claim.Prev.Marker, cand.Claim.State, dec.Action, dec.Reason)
 	acted = true
 	return
+}
+
+// giveUpReapedCard performs the StuckGiveUp disposition (the cloud twin of
+// the local giveUpStuckCard): file the card as failed under MACHINE
+// provenance — the watchdog decided this by itself, so no downstream chain
+// may fire as if a run had failed — then stamp the give-up naming the gone
+// run and why, so the Needs-attention lane shows it as the watchdog's own
+// filing rather than a human's. Both halves are the disposition: a failed
+// stamp keeps the recovery claim and the next lease retries, loudly.
+func (d *boardDispatcher) giveUpReapedCard(ctx context.Context, cand boardmongo.ExpiredCandidate, card dispatcher.StuckCard, tok tracker.ClaimToken, reason string) bool {
+	if !d.fileReapedCard(ctx, cand, card, d.blockedState, tok, "") {
+		return false
+	}
+	// The store's GiveUpToRecord makes the stamp a no-op when the card is
+	// not in the stamped state (the guard declined the filing because an
+	// operator moved the card first — their intent stands unannotated).
+	g := &native.GiveUp{RunID: cand.Claim.LastRunID, State: d.blockedState, Reason: reason}
+	if err := d.coord.SetGaveUpOwned(ctx, cand.Tenant, cand.Claim.IssueID, g, tok); err != nil {
+		d.warn("claim watchdog give-up stamp on %s/%s: %v", cand.Tenant, cand.Claim.IssueID, err)
+		return false
+	}
+	return true
 }
 
 // fileReapedCard writes a reaped card's disposition under the recovery

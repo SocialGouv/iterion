@@ -387,13 +387,18 @@ function SpawnTreeSection({ card }: { card: PipelineBoardCard }) {
 function giveUpSentence(
   giveUp: NonNullable<PipelineBoardCard["gave_up"]>,
 ): string {
+  const filed = giveUp.state
+    ? ` and filed this ticket as "${giveUp.state}"`
+    : "";
+  // A reasoned give-up is the watchdog's own verdict (a recorded run that
+  // is gone), not a retry budget: the reason replaces the attempt count.
+  if (giveUp.reason) {
+    return `The dispatcher gave up${filed}: ${giveUp.reason}`;
+  }
   const attempts =
     giveUp.attempts && giveUp.attempts > 0
       ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
       : "after exhausting its attempts";
-  const filed = giveUp.state
-    ? ` and filed this ticket as "${giveUp.state}"`
-    : "";
   return `The dispatcher gave up ${attempts}${filed}.`;
 }
 

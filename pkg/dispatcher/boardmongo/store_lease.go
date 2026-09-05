@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -259,6 +261,75 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 	return &updated, nil
 }
 
+// SetStateOwnedFrom is SetStateOwned with a source-state precondition
+// (see native.BoardStore): the fencing filter and `issue.state == from`
+// ride in ONE FindOneAndUpdate. On a zero match ownership is qualified
+// FIRST (the FS twin's order) — a stolen claim reported as "drifted"
+// would be swallowed by the caller as an ordinary operator move.
+func (s *Store) SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (*native.Issue, bool, error) {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	board := s.Board()
+	if board.StateByName(to) == nil {
+		return nil, false, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, to)
+	}
+	if from != to {
+		if err := native.ValidateStateExit(board, from, to); err != nil {
+			return nil, false, err
+		}
+	}
+	if from == to {
+		// Nothing to perform, so nothing is CHANGED (the FS twin's answer)
+		// — but an idempotent no-op must not mask a stolen claim from a
+		// caller about to keep writing.
+		n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
+		if cerr != nil {
+			return nil, false, fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
+		}
+		if n == 0 {
+			return nil, false, s.ownedRefused(ctx, id, tok)
+		}
+		iss, err := s.get(ctx, id)
+		return iss, false, err
+	}
+	filter := s.ownedFilter(id, tok)
+	filter["issue.state"] = from
+	writtenAt := time.Now().UTC()
+	res := s.issues.FindOneAndUpdate(ctx, filter,
+		bson.M{"$set": stateSetAt(to, writtenAt)},
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if res.Err() != nil {
+		if !isNoDocuments(res.Err()) {
+			return nil, false, fmt.Errorf("boardmongo: set state owned from: %w", res.Err())
+		}
+		n, cerr := s.issues.CountDocuments(ctx, s.ownedFilter(id, tok))
+		if cerr != nil {
+			return nil, false, fmt.Errorf("boardmongo: verify claim ownership: %w", cerr)
+		}
+		if n == 0 {
+			return nil, false, s.ownedRefused(ctx, id, tok)
+		}
+		iss, gerr := s.get(ctx, id)
+		if gerr != nil {
+			return nil, false, gerr
+		}
+		return iss, false, nil
+	}
+	var doc issueDoc
+	if err := res.Decode(&doc); err != nil {
+		return nil, false, fmt.Errorf("boardmongo: set state owned from decode: %w", err)
+	}
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
+		Payload: native.StateChangePayload(from, to, tok.Marker)}); err != nil {
+		return nil, false, err
+	}
+	if to == native.StateDone {
+		// Best-effort: do not roll back a successful done transition.
+		_ = native.PromoteUnblockedDependents(s, id)
+	}
+	return &doc.Issue, true, nil
+}
+
 // SetLastRunOwned is SetLastRun fenced on the claim token. The run-ref
 // history merge needs the current value, so this is read-then-CAS: the
 // write still only lands while the token owns the claim.
@@ -375,6 +446,9 @@ func (s *Store) SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimTok
 		payload["run_id"] = stamped.RunID
 		payload["state"] = stamped.State
 		payload["attempts"] = stamped.Attempts
+		if stamped.Reason != "" {
+			payload["reason"] = stamped.Reason
+		}
 	}
 	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
 }
@@ -386,8 +460,56 @@ func isNoDocuments(err error) bool { return errors.Is(err, mongo.ErrNoDocuments)
 // lease: an expired lease is positive evidence a heartbeat stopped,
 // while a missing one is only an absence — so the bar is "nothing has
 // touched this card in a very long time" rather than "a beat was
-// missed".
-const unleasedClaimHorizon = 24 * time.Hour
+// missed". The default is the trade-off for a mixed fleet: during a
+// rolling deploy an OLD binary strips leases as it writes and does not
+// heartbeat, so a short horizon would release a card its old-binary
+// holder is still working. Tunable per deployment through
+// UnleasedClaimHorizonEnv (see SetUnleasedClaimHorizon) — set BEFORE the
+// coordinator runs; the queries read it unguarded.
+var unleasedClaimHorizon = DefaultUnleasedClaimHorizon
+
+// DefaultUnleasedClaimHorizon is the shipped horizon.
+const DefaultUnleasedClaimHorizon = 24 * time.Hour
+
+// UnleasedClaimHorizonEnv overrides the un-leased horizon (a Go duration,
+// e.g. "2h"). It must be at least one claim lease: below that, a claim
+// with NO lease would be reclaimable sooner than one whose lease merely
+// expired, inverting the evidence ordering the arms are built on.
+const UnleasedClaimHorizonEnv = "ITERION_BOARD_UNLEASED_CLAIM_HORIZON"
+
+// UnleasedClaimHorizon reports the horizon in force.
+func UnleasedClaimHorizon() time.Duration { return unleasedClaimHorizon }
+
+// SetUnleasedClaimHorizon installs the horizon. Refused loudly below one
+// lease (see UnleasedClaimHorizonEnv) — never silently clamped.
+func SetUnleasedClaimHorizon(d time.Duration) error {
+	if d < native.ClaimLeaseDuration {
+		return fmt.Errorf("%s: %s is below one claim lease (%s) — an un-leased claim would be reclaimable sooner than an expired one",
+			UnleasedClaimHorizonEnv, d, native.ClaimLeaseDuration)
+	}
+	unleasedClaimHorizon = d
+	return nil
+}
+
+// ConfigureUnleasedClaimHorizonFromEnv applies UnleasedClaimHorizonEnv
+// when set and reports the horizon in force. An unparsable or too-short
+// value is an error the caller surfaces at startup: a watchdog measuring
+// against a horizon nobody intended is worse than one that refuses to
+// start.
+func ConfigureUnleasedClaimHorizonFromEnv() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(UnleasedClaimHorizonEnv))
+	if raw == "" {
+		return unleasedClaimHorizon, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q: %w", UnleasedClaimHorizonEnv, raw, err)
+	}
+	if err := SetUnleasedClaimHorizon(d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
 
 // reclaimableLease is the ONE definition of "this claim may be taken":
 // an expired lease, or none at all past a much longer horizon. The

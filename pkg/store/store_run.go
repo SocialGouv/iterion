@@ -279,11 +279,6 @@ func healRun(r *Run) bool {
 	return changed
 }
 
-// loadRunHealBeforeLockHook is a test hook used to deterministically
-// exercise the stale-read window before LoadRun's heal persistence enters the
-// run-mutation critical section. Nil in production.
-var loadRunHealBeforeLockHook func()
-
 // LoadRun reads run.json for the given run ID.
 //
 // The run ID is sanitised before path-joining so a hostile or
@@ -291,50 +286,31 @@ var loadRunHealBeforeLockHook func()
 // (CreateRun/WriteArtifact/WriteInteraction) already sanitises its inputs;
 // the read paths must do the same so the defence is symmetric.
 //
-// As a one-shot migration step, a legacy run with empty Name gets a
-// deterministic friendly label generated and persisted on read. After
-// the first call the field is on disk; subsequent LoadRuns skip the
-// fixup. The seed mirrors the CLI/launch path (file_path:run_id) so the
-// backfill produces the exact name a new launch would have produced.
+// A legacy or in-flight shape is healed IN MEMORY only (healRun): a
+// deterministic friendly Name for a run persisted without one, a
+// FinishedAt cleared on a running run, a failure code dropped off a
+// non-failure status. The read never writes the healed copy back. A
+// reader is not the run's owner: the engine executing the run holds the
+// per-run lock and writes run.json from a different store instance —
+// often a different process (studio, `iterion inspect`, the dispatcher's
+// poll) — and no lock covers the read-modify-write a persisting heal
+// would perform against it. Every freshly created run passes through
+// exactly that window (CreateRun writes no Name; the engine's first
+// SaveRun stamps Name, FilePath, WorkflowHash, ParentRunID…), so a
+// concurrent heal write could land on top of the engine's stamp and
+// erase it for good: the engine's later writes are load-patch-write on
+// the disk copy, and the run would read as a nameless top-level run with
+// no source path for the rest of its life. The next legitimate write
+// (any status transition or checkpoint) normalises the on-disk copy.
 //
-// Callers that already hold s.mu and intend to write the run
-// themselves should use loadRunRaw to avoid the embedded writeRun
+// Callers that already hold s.mu should use loadRunRaw
 // from the heal path interleaving with their own write.
 func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error) {
 	r, err := s.loadRunRaw(id)
 	if err != nil {
 		return nil, err
 	}
-	if healRun(r) {
-		if loadRunHealBeforeLockHook != nil {
-			loadRunHealBeforeLockHook()
-		}
-		// Persist heal-on-read under the same mutex as every other run.json
-		// read-modify-write. The first load above may have observed a legacy
-		// stale copy; before writing the heal, re-read the current on-disk run
-		// while holding s.mu so a concurrent SaveCheckpoint/UpdateRunStatus/
-		// SaveRun cannot have its authoritative fields clobbered by this
-		// best-effort migration write.
-		s.mu.Lock()
-		fresh, reloadErr := s.loadRunRaw(id)
-		if reloadErr == nil {
-			if healRun(fresh) {
-				if writeErr := s.writeRun(fresh); writeErr != nil && s.logger != nil {
-					s.logger.Warn("store: heal-on-read for run %s failed: %v", id, writeErr)
-				}
-			}
-			s.mu.Unlock()
-			return fresh, nil
-		}
-		s.mu.Unlock()
-
-		// Best-effort persist; a write/reload failure (read-only fs, racing
-		// process, deleted run) leaves the in-memory heal applied and lets the
-		// next successful write fix it up. Never fail LoadRun on this path.
-		if s.logger != nil {
-			s.logger.Warn("store: reload for heal-on-read for run %s failed: %v", id, reloadErr)
-		}
-	}
+	healRun(r)
 	return r, nil
 }
 

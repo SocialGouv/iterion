@@ -149,7 +149,7 @@ func TestFormatOutput_SandboxExecParity(t *testing.T) {
 	t.Run("materialised ctx forfait (sealed-bundle shape)", func(t *testing.T) {
 		resetClaudeCredEnv(t)
 		dir := t.TempDir()
-		blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-BUNDLE","refreshToken":"r","expiresAt":1}}`
+		blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-BUNDLE","refreshToken":"r","expiresAt":4102444800000}}`
 		if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 			t.Fatal(err)
 		}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -40,10 +41,35 @@ type pluginSourceView struct {
 	// PinnedRef surfaces the drift risk in the UI: a moving ref means the
 	// plugin can change under a run with no operator action.
 	PinnedRef bool `json:"pinned_ref"`
+	// Degraded says the last launch that needed this source could not
+	// materialise it and proceeded without it; degraded_reason carries the
+	// failure and degraded_at when it was recorded. A PATCH that re-verifies
+	// the source clears it.
+	Degraded bool `json:"degraded"`
 }
 
 func toPluginSourceView(p pluginsource.PluginSource) pluginSourceView {
-	return pluginSourceView{PluginSource: p, PinnedRef: p.PinnedRef()}
+	return pluginSourceView{PluginSource: p, PinnedRef: p.PinnedRef(), Degraded: p.Degraded()}
+}
+
+// verifyPluginSource materialises the source exactly as a launch will — clone,
+// parse the manifest, read every contribution — so a source that registers is
+// a source a launch can use. A launch is where this used to be discovered,
+// one delivery at a time, with the operator long gone. Reported as 422 with
+// the underlying error (the YAML parser's line, git's refusal) verbatim.
+//
+// Without a fetcher wired the registration proceeds unverified, and says so:
+// the source will then only be found broken by the launches that skip it.
+func (s *Server) verifyPluginSource(ctx context.Context, w http.ResponseWriter, r *http.Request, ps pluginsource.PluginSource) bool {
+	if s.pluginSourceFetcher == nil {
+		s.logWarn("plugin source %q (team %s) registered UNVERIFIED: no fetcher is wired on this server, so a broken manifest is only found by the launches that skip it", ps.Name, ps.TenantID)
+		return true
+	}
+	if _, err := pluginsource.Materialize(ctx, s.pluginSourceFetcher, ps); err != nil {
+		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "plugin source %q cannot be used by a launch and was not saved — %v", ps.Name, err)
+		return false
+	}
+	return true
 }
 
 // pluginSourceCtx authorises the request and returns a tenant-scoped context.
@@ -97,6 +123,15 @@ func (s *Server) handleCreatePluginSource(w http.ResponseWriter, r *http.Request
 		ps.CreatedBy = id.UserID
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
+	// Shape first (cheap, and a local path must be refused before anything
+	// is cloned), then the materialisation a launch will perform.
+	if err := ps.Validate(); err != nil {
+		s.pluginSourceError(w, r, err)
+		return
+	}
+	if !s.verifyPluginSource(ctx, w, r, ps) {
+		return
+	}
 	if err := s.pluginSources.Create(ctx, ps); err != nil {
 		s.pluginSourceError(w, r, err)
 		return
@@ -128,9 +163,32 @@ func (s *Server) handleUpdatePluginSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	applyPluginSourceReq(&ps, req)
+	// Re-verify whenever what a launch fetches changed, whenever the source
+	// is being switched on, and whenever it currently reads degraded — a
+	// PATCH is the operator's way of saying "I fixed it", and the flag must
+	// answer with a real check, not a toggle. A rename or a disable of a
+	// healthy source costs no clone.
+	reverify := req.GitURL != nil || req.Ref != nil || req.SecretID != nil ||
+		(req.Enabled != nil && *req.Enabled) || ps.Degraded()
+	if reverify {
+		if err := ps.Validate(); err != nil {
+			s.pluginSourceError(w, r, err)
+			return
+		}
+		if !s.verifyPluginSource(ctx, w, r, ps) {
+			return
+		}
+	}
 	if err := s.pluginSources.Update(ctx, ps); err != nil {
 		s.pluginSourceError(w, r, err)
 		return
+	}
+	if reverify && ps.Degraded() {
+		if err := s.pluginSources.ClearDegraded(ctx, teamID, ps.ID); err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "plugin source %q verified but its degraded flag could not be cleared: %v", ps.Name, err)
+			return
+		}
+		ps.DegradedReason, ps.DegradedAt = "", nil
 	}
 	s.writeJSONFor(w, r, toPluginSourceView(ps))
 }

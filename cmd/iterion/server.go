@@ -348,6 +348,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		v, ok := rec.Vars[name]
 		return v, ok
 	})
+	// One fetcher for both halves of the plugin-source contract: the
+	// publisher materialises a team's sources at launch, the server verifies
+	// a source the same way at registration.
+	pluginFetcher := newPluginSourceFetcher(stores, sealer)
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -362,7 +366,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		OAuthForfait:     stores.oauth,
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
-		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
+		PluginSources:    newPluginSourceResolver(stores, pluginFetcher, logger),
 		CredPool:         credBroker,
 		// The fleet's shared meter: a forfait the provider has refused is
 		// skipped at launch so the run falls through to the next
@@ -527,6 +531,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// The un-leased claim horizon is a startup dial: read it before the
+	// coordinator's sweeps run, refuse a bad value rather than start a
+	// watchdog measuring against a horizon nobody intended.
+	if horizon, err := boardmongo.ConfigureUnleasedClaimHorizonFromEnv(); err != nil {
+		return err
+	} else if horizon != boardmongo.DefaultUnleasedClaimHorizon {
+		logger.Info("board watchdog: un-leased claim horizon set to %s (%s)", horizon, boardmongo.UnleasedClaimHorizonEnv)
+	}
+
 	srv := server.New(server.Config{
 		Port:        serverOpts.port,
 		Bind:        serverOpts.bind,
@@ -593,6 +606,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeOAuthApps:         stores.forgeOAuthApp,
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
 		PluginSources:          stores.pluginSources,
+		PluginSourceFetcher:    pluginFetcher,
 		BotSources:             stores.botSources,
 		BotRolesSettings:       stores.botRoles,
 		BotVarsSettings:        stores.botVars,
@@ -807,38 +821,50 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 	return s, nil
 }
 
-// newPluginSourceResolver builds the launch-time resolver for team-scoped,
-// git-hosted plugins (ADR-080). The cache dir is deliberately ephemeral: the
-// durable authority is the Mongo record, so a cold pod re-derives its checkouts
-// instead of depending on pod-local state that a restart would silently lose.
+// newPluginSourceFetcher builds the fetcher for team-scoped, git-hosted
+// plugins (ADR-080), shared by the launch-time resolver and the registration
+// endpoint's verification so both materialise a source the same way. The
+// cache dir is deliberately ephemeral: the durable authority is the Mongo
+// record, so a cold pod re-derives its checkouts instead of depending on
+// pod-local state that a restart would silently lose.
 //
 // The read credential is used strictly BY REFERENCE — the secret id travels on
 // the source record, the value is unsealed here and handed to the fetcher,
 // which passes it to git via an askpass helper (never argv, never a log line).
-func newPluginSourceResolver(stores *cloudStores, sealer secrets.Sealer, logger *iterlog.Logger) *pluginsource.Resolver {
+func newPluginSourceFetcher(stores *cloudStores, sealer secrets.Sealer) *pluginsource.Fetcher {
 	if stores == nil || stores.pluginSources == nil || sealer == nil {
 		return nil
 	}
-	return &pluginsource.Resolver{
-		Store: stores.pluginSources,
-		Fetcher: &pluginsource.Fetcher{
-			CacheDir: filepath.Join(os.TempDir(), "iterion-plugin-sources"),
-			CredentialFor: func(ctx context.Context, s pluginsource.PluginSource) (string, error) {
-				if s.SecretID == "" {
-					return "", nil // public repository
-				}
-				gs, err := stores.genericSecrets.Get(store.WithTenant(ctx, s.TenantID), s.SecretID)
-				if err != nil {
-					return "", err
-				}
-				plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
-				if err != nil {
-					return "", err
-				}
-				return string(plain), nil
-			},
+	return &pluginsource.Fetcher{
+		CacheDir: filepath.Join(os.TempDir(), "iterion-plugin-sources"),
+		CredentialFor: func(ctx context.Context, s pluginsource.PluginSource) (string, error) {
+			if s.SecretID == "" {
+				return "", nil // public repository
+			}
+			gs, err := stores.genericSecrets.Get(store.WithTenant(ctx, s.TenantID), s.SecretID)
+			if err != nil {
+				return "", err
+			}
+			plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
+			if err != nil {
+				return "", err
+			}
+			return string(plain), nil
 		},
-		Warnf: logger.Warn,
+	}
+}
+
+// newPluginSourceResolver is the launch-time half: the store plus the shared
+// fetcher. Nil when plugin sources are not wired, which keeps the publisher on
+// its local-only behaviour.
+func newPluginSourceResolver(stores *cloudStores, fetcher *pluginsource.Fetcher, logger *iterlog.Logger) *pluginsource.Resolver {
+	if stores == nil || stores.pluginSources == nil || fetcher == nil {
+		return nil
+	}
+	return &pluginsource.Resolver{
+		Store:   stores.pluginSources,
+		Fetcher: fetcher,
+		Warnf:   logger.Warn,
 	}
 }
 

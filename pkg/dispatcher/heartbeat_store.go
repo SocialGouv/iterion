@@ -38,6 +38,29 @@ func (h *heartbeatStore) AppendEvent(ctx context.Context, runID string, evt stor
 	return persisted, err
 }
 
+// CreateChildRun forwards to the wrapped store IF it implements the
+// optional store.ParentedRunCreator capability. The engine probes the
+// store it is handed with store.AsParentedRunCreator, and an embedded
+// interface promotes only the RunStore methods — so without this
+// forward every subbot child a dispatched bot spawns is created by
+// CreateRun with no ParentRunID, and only the engine's later stamping
+// write links it to its parent. In that window the child reads as a
+// top-level run to the orphan reconciler and to any run listing.
+func (h *heartbeatStore) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*store.Run, error) {
+	if pc := store.AsParentedRunCreator(h.RunStore); pc != nil {
+		return pc.CreateChildRun(ctx, id, workflowName, parentRunID, inputs)
+	}
+	r, err := h.CreateRun(ctx, id, workflowName, inputs)
+	if err != nil {
+		return nil, err
+	}
+	r.ParentRunID = parentRunID
+	if err := h.SaveRun(ctx, r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // WriteAttachment forwards to the wrapped store IF it implements the
 // optional capability, so hooks.go's type assertion still picks it up.
 // Returns nil error / zero values when the underlying store doesn't
