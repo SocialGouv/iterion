@@ -184,7 +184,8 @@ it — the deliberate-spend posture).
 
 The run's entry is a deterministic tool node (~100ms, no LLM): a launch
 whose `workspace_dir` is absent or not a git repository fails typed
-(`WORKSPACE_NOT_A_REPO` on the node's output and in the tool log) before
+(`WORKSPACE_NOT_A_REPO` — on the run's own `failure_code`/`error` through
+the `workspace_not_a_repo` fail node, and on the probe's output) before
 any LLM node spends.
 
 ## Persy (perseverance coach)

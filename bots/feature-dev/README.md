@@ -26,7 +26,7 @@ on GitLab — the issue-label → PR lineage).
 ## Shape (v2 — one agent, minimal framing)
 
 ```
-workspace_probe → fail                    when not ok (WORKSPACE_NOT_A_REPO, no LLM spent)
+workspace_probe → workspace_not_a_repo                    when not ok (WORKSPACE_NOT_A_REPO, no LLM spent)
 workspace_probe → plan_topology           when ok
 plan_topology → plan → plan_review_topology ─┬─ plan_review → plan_gate → plan_revise ┐ (peer only when
 plan_topology ──────────────── (plan_phase off) ┴──── (plan_review off: unreviewed) ──┤  plan_review
@@ -45,8 +45,9 @@ mr_gate → done         when not open_mr
 
 **Precondition.** `workspace_probe` (a tool node, ~100ms, no LLM) is the
 entry: a launch whose `workspace_dir` is absent or not a git repository
-fails typed (`WORKSPACE_NOT_A_REPO` on the node's output and in the tool
-log) before any LLM node spends — a `--bot` launch carrying only `pr_url`
+fails typed (`WORKSPACE_NOT_A_REPO` — on the run's own
+`failure_code`/`error` through the `workspace_not_a_repo` fail node, and on
+the probe's output) before any LLM node spends — a `--bot` launch carrying only `pr_url`
 attaches no repository.
 
 **Plan phase (ADR-091).** The plan is AUTHORED by default on every
