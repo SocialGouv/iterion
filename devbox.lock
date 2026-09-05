@@ -626,6 +626,54 @@
         }
       }
     },
+    "oxipng@latest": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#oxipng",
+      "source": "devbox-search",
+      "version": "10.1.1",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/4pi9bhq1hl22md1zmw7dijnran6f6xvh-oxipng-10.1.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/4pi9bhq1hl22md1zmw7dijnran6f6xvh-oxipng-10.1.1"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/kjhgmaqz0rpjwi5avgbd8zks6qqyq2vm-oxipng-10.1.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/kjhgmaqz0rpjwi5avgbd8zks6qqyq2vm-oxipng-10.1.1"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/hibbbxf3gvaqxv9j7xz1lf57nrmd4ki9-oxipng-10.1.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/hibbbxf3gvaqxv9j7xz1lf57nrmd4ki9-oxipng-10.1.1"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/nbdjr0iri8j25xakm8m90jwla4y666rx-oxipng-10.1.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/nbdjr0iri8j25xakm8m90jwla4y666rx-oxipng-10.1.1"
+        }
+      }
+    },
     "pkg-config@latest": {
       "last_modified": "2025-11-23T21:50:36Z",
       "resolved": "github:NixOS/nixpkgs/ee09932cedcef15aaf476f9343d1dea2cb77e261#pkg-config",
@@ -707,6 +755,74 @@
             }
           ],
           "store_path": "/nix/store/8vdiwpbh0g4avsd6x5v4s0di32vcl3dp-pkg-config-wrapper-0.29.2"
+        }
+      }
+    },
+    "pngquant@latest": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#pngquant",
+      "source": "devbox-search",
+      "version": "3.0.3",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/d2h8fcj471n1hhfxl02rkpv2c7d5sqg6-pngquant-3.0.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/yw2vmp1jdfk3pg82id2jfs329wabvp5n-pngquant-3.0.3-man",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/d2h8fcj471n1hhfxl02rkpv2c7d5sqg6-pngquant-3.0.3"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/yk0zcd6yq14pw6l8khxfcmmkdh6h9vp6-pngquant-3.0.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/4xpif6mnm4n7scdlagsybqlkffij3rjn-pngquant-3.0.3-man",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/yk0zcd6yq14pw6l8khxfcmmkdh6h9vp6-pngquant-3.0.3"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/70n726z722i3hc83svrb8i5h96l9q9wm-pngquant-3.0.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/x7iz02g6wh6y9fch80h339v0rr1xzwsj-pngquant-3.0.3-man",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/70n726z722i3hc83svrb8i5h96l9q9wm-pngquant-3.0.3"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/ixxpi3rz4ms6nvmw3jvly2h536x0jdpb-pngquant-3.0.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/6bv903y47saqizlq5r8rs03dkzh5ic2v-pngquant-3.0.3-man",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/ixxpi3rz4ms6nvmw3jvly2h536x0jdpb-pngquant-3.0.3"
         }
       }
     },
