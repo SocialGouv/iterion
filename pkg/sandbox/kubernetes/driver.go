@@ -806,7 +806,14 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		r.networkPolicyApplied = true
 	}
 
-	if err := waitForPodRunning(ctx, d.namespace, podName, int(d.sched.readyTimeout/time.Second)); err != nil {
+	// The policy is parsed by New(); a Driver built any other way has no
+	// timeout, and `kubectl wait --timeout=0s` would kill the pod at once.
+	if d.sched.readyTimeout < time.Second {
+		_ = r.Cleanup(ctx)
+		return nil, fmt.Errorf("kubernetes: pod ready timeout is unset (%s) — the driver was not built by New()", d.sched.readyTimeout)
+	}
+	readySecs := int((d.sched.readyTimeout + time.Second - 1) / time.Second) // rounded up: never shorter than configured
+	if err := waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
 	}
