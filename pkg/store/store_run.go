@@ -143,9 +143,8 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	// Best-effort guard: a copy whose STATUS is already non-failure
 	// must not resurrect its failure code through this full-document
 	// write. A copy stale on the status itself still rewrites
-	// status+code together (the inherent SaveRun read-modify-write
-	// hazard — a version CAS is the real fix, follow-up); callers on
-	// that path re-stamp the fields by hand (see rewind.go).
+	// status+code together only if its loaded version still matches.
+	// A concurrent write is refused at writeRun, before replacing the file.
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
 	}
@@ -204,7 +203,11 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 			}
 			rr.ContinuationState = ""
 		}
-		return s.writeRun(&rr)
+		if err := s.writeRun(&rr); err != nil {
+			return err
+		}
+		r.CASVersion = rr.CASVersion
+		return nil
 	}
 	// Create branch (no persisted document): mirror the Mongo upsert —
 	// the store owns the outcome bookkeeping even on first write, so a
@@ -216,7 +219,11 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	rr := *r
 	rr.OutcomeSeq = 0
 	rr.ContinuationState = ""
-	return s.writeRun(&rr)
+	if err := s.writeRun(&rr); err != nil {
+		return err
+	}
+	r.CASVersion = rr.CASVersion
+	return nil
 }
 
 // loadRunRaw is the pure-read variant of LoadRun: it parses run.json
@@ -1105,7 +1112,18 @@ func (s *FilesystemRunStore) writeRunNew(r *Run) error {
 	if err := os.Chmod(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: chmod run: %w", err)
 	}
-	data, err := json.MarshalIndent(r, "", "  ")
+	writeLock, err := acquireFileLockRetry(filepath.Join(dir, ".write.lock"), "run document write", 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = writeLock.Unlock() }()
+	if err := s.guardNotDeleted(r.ID); err != nil {
+		return err
+	}
+	next := *r
+	next.CASVersion = 1
+
+	data, err := json.MarshalIndent(&next, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
@@ -1115,6 +1133,7 @@ func (s *FilesystemRunStore) writeRunNew(r *Run) error {
 		}
 		return err
 	}
+	r.CASVersion = next.CASVersion
 	return nil
 }
 
@@ -1134,7 +1153,25 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	if err := os.Chmod(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: chmod run: %w", err)
 	}
-	data, err := json.MarshalIndent(r, "", "  ")
+	writeLock, err := acquireFileLockRetry(filepath.Join(dir, ".write.lock"), "run document write", 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = writeLock.Unlock() }()
+	if err := s.guardNotDeleted(r.ID); err != nil {
+		return err
+	}
+	current, loadErr := s.loadRunRaw(r.ID)
+	if loadErr != nil && !errors.Is(loadErr, ErrRunNotFound) {
+		return loadErr
+	}
+	if current != nil && current.CASVersion != r.CASVersion || current == nil && r.CASVersion != 0 {
+		return fmt.Errorf("store: run %s: %w", r.ID, ErrRunConflict)
+	}
+	next := *r
+	next.CASVersion++
+
+	data, err := json.MarshalIndent(&next, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
@@ -1152,5 +1189,9 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	}
 	// Atomic write: run.json is the authoritative resume checkpoint
 	// (per CLAUDE.md). A torn write would lose all prior checkpoint state.
-	return writeFileAtomic(s.runJSONPath(r.ID), data, filePerm)
+	if err := writeFileAtomic(s.runJSONPath(r.ID), data, filePerm); err != nil {
+		return err
+	}
+	r.CASVersion = next.CASVersion
+	return nil
 }

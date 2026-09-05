@@ -2,20 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
-// TestStaleSaveRunRevertsATransition pins the hazard the granular
-// setters exist to avoid, so the reason for their shape is executable
-// rather than only written down. SaveRun replaces the whole document
-// from the caller's copy; when a status transition lands between the
-// load and the save, that copy is stale and the transition is undone.
-//
-// This is the documented, deliberate SaveRun read-modify-write hazard
-// (a version CAS is the real fix — follow-up), NOT a defect of this
-// test's subject: it is the baseline that makes
-// TestSetRunBudgetOverridesDoesNotReplaceTheDocument meaningful.
-func TestStaleSaveRunRevertsATransition(t *testing.T) {
+// A stale full-document save must not undo a concurrent operator cancel.
+func TestStaleSaveRunRejectsATransition(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
 
@@ -38,21 +30,18 @@ func TestStaleSaveRunRevertsATransition(t *testing.T) {
 	}
 
 	stale.BudgetOverrides = &RunBudgetOverrides{MaxCostUSD: 120}
-	if err := s.SaveRun(ctx, stale); err != nil {
-		t.Fatalf("SaveRun: %v", err)
+	if err := s.SaveRun(ctx, stale); !errors.Is(err, ErrRunConflict) {
+		t.Fatalf("stale SaveRun: %v", err)
 	}
 
 	got, err := s.LoadRun(ctx, "r")
 	if err != nil {
 		t.Fatalf("LoadRun after: %v", err)
 	}
-	if got.Status != RunStatusCancelled {
-		t.Logf("whole-doc SaveRun from a stale copy reverted %s -> %s (error %q lost)",
-			RunStatusCancelled, got.Status, "operator cancel")
-	} else {
-		t.Fatal("SaveRun no longer replaces the whole document from the caller's copy — " +
-			"the granular setters' rationale changed; revisit them and this test")
+	if got.Status != RunStatusCancelled || got.Error != "operator cancel" {
+		t.Fatalf("concurrent cancel overwritten: %+v", got)
 	}
+
 }
 
 // TestSetRunBudgetOverridesDoesNotReplaceTheDocument asserts the
@@ -69,7 +58,7 @@ func TestStaleSaveRunRevertsATransition(t *testing.T) {
 // bookkeeping regressed. The half no in-process test can schedule
 // reliably is the timed one: a transition landing inside the
 // load-save window, whose consequence is pinned by
-// TestStaleSaveRunRevertsATransition above.
+// TestStaleSaveRunRejectsATransition above.
 func TestSetRunBudgetOverridesDoesNotReplaceTheDocument(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()

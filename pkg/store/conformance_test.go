@@ -363,6 +363,7 @@ func testSaveRunHostileValues(t *testing.T, s RunStore) {
 	// cancelled children through SaveRun on a run that does not exist).
 	born := *got
 	born.ID = "run-born-terminal"
+	born.CASVersion = 0
 	born.Status = RunStatusCancelled
 	born.OutcomeSeq = 0
 	if err := s.SaveRun(ctx, &born); err != nil {

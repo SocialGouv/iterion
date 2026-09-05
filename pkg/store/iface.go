@@ -44,6 +44,9 @@ type RunStore interface {
 	Root() string
 	CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*Run, error)
 	LoadRun(ctx context.Context, id string) (*Run, error)
+	// SaveRun creates a version-zero document or replaces the loaded version.
+	// A successful save advances r.CASVersion. ErrRunConflict means another
+	// writer won; reload and reapply the edit rather than retrying the copy.
 	SaveRun(ctx context.Context, r *Run) error
 	ListRuns(ctx context.Context) ([]string, error)
 

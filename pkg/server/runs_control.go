@@ -327,7 +327,7 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, runview.ErrRewindNotRewindable):
+		case errors.Is(err, runview.ErrRewindNotRewindable), errors.Is(err, store.ErrRunConflict):
 			// 409: the run is running or terminal — a state conflict the
 			// caller resolves by cancelling/pausing first, not a bad request.
 			s.httpErrorFor(w, r, http.StatusConflict, "rewind: %v", err)
