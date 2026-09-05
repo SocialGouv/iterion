@@ -597,12 +597,22 @@ func coerceToInt(v any) (int, bool) {
 	return 0, false
 }
 
-// buildTemplateData assembles a model.TemplateData snapshot from the
-// current run state. It is attached to ctx before each node execution
-// so the executor can resolve `outputs.*`, `loop.*`, `artifacts.*`,
-// and `run.*` refs in prompt bodies. Maps are passed by reference —
-// the executor must treat them as read-only.
+// buildTemplateData assembles a model.TemplateData snapshot against the
+// run's trunk scope. For a node running inside a fan-out branch — which
+// must see branch-local outputs not yet merged into rs — use
+// buildTemplateDataScoped with the branch's merged scope, exactly as the
+// expr path splits exprContext / exprContextScoped.
 func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
+	return e.buildTemplateDataScoped(rs, rs.scope())
+}
+
+// buildTemplateDataScoped assembles a model.TemplateData snapshot from an
+// explicit resolveScope for `outputs.*` / `artifacts.*` and from rs for the
+// `loop.*` and `run.*` namespaces. It is attached to ctx before each node
+// execution so the executor can resolve those refs in prompt bodies, tool
+// commands, scripts and postconditions. Maps are passed by reference — the
+// executor must treat them as read-only.
+func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.TemplateData {
 	loopMax := make(map[string]int, len(e.workflow.Loops))
 	for name, l := range e.workflow.Loops {
 		if l != nil {
@@ -610,15 +620,39 @@ func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
 		}
 	}
 	return &model.TemplateData{
-		Outputs:            rs.outputs,
+		Outputs:            sc.outputs,
 		LoopCounters:       runStateIterationCounters(rs),
 		LoopMaxIterations:  loopMax,
 		LoopPreviousOutput: loopPreviousOutputView(rs),
-		Artifacts:          rs.artifacts,
+		Artifacts:          sc.artifacts,
 		RunID:              rs.runID,
 		Run:                runNamespace(rs),
 		Attachments:        rs.attachments,
 	}
+}
+
+// execContext is the SINGLE wiring point for the per-execution context
+// every executor.Execute call must carry: the run and node identity, plus
+// the template snapshot that turns `{{run.*}}`, `{{outputs.*}}`,
+// `{{loop.*}}`, `{{artifacts.*}}` and `{{attachments.*}}` into values
+// instead of literals.
+//
+// Every dispatch site goes through it — the trunk, both fan-out kinds, the
+// llm router and the two resume re-invocations — so a namespace added to
+// TemplateData reaches all of them at once. A site that skips it renders a
+// literal `{{…}}` into a shell command, which is a silent constant.
+func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
+	return e.execContextScoped(ctx, rs, nodeID, rs.scope())
+}
+
+// execContextScoped is execContext against an explicit outputs/artifacts
+// view. Fan-out branches pass the SAME merged scope the expr path resolves
+// `outputs.*` against, so a prompt and a `when` condition inside one branch
+// read one set of upstream outputs, not two.
+func (e *Engine) execContextScoped(ctx context.Context, rs *runState, nodeID string, sc resolveScope) context.Context {
+	ctx = model.WithRunID(ctx, rs.runID)
+	ctx = model.WithNodeID(ctx, nodeID)
+	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 
 // loadAttachmentInfos populates the per-run attachment view consumed

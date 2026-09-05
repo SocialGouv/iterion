@@ -455,6 +455,13 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 | `{{run.elapsed_seconds}}` `{{run.cost_usd}}` `{{run.tokens}}` `{{run.iterations}}` | the run's own consumption so far |
 | `{{run.max_duration_seconds}}` `{{run.max_cost_usd}}` `{{run.max_tokens}}` `{{run.max_iterations}}` | the caps IN FORCE (after `--max-*` flags, recipe, platform ceiling, `raise_budget`). `0` = unbounded on that axis. No `budget:` block ⇒ no tracker: consumption and caps read `0`, only `elapsed_seconds` advances |
 
+Inside a fan-out branch every form resolves as on the trunk;
+`{{outputs.*}}` reads the branch's own view (its upstream trunk
+outputs + what this branch produced + a `fan_out_each` item),
+never a sibling's. `{{outputs.*}}` stays prompt-side: a tool
+`command:`/`script:` resolves `input`/`vars`/`secrets`/`run`
+only — thread an output through an edge `with` mapping instead.
+
 `{{...}}` is parsed in every prompt block. Even literal examples
 inside markdown code-fences trigger validation. Avoid example
 strings like `{{vars.x}}` in prompts — describe them in prose

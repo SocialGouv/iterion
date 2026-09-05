@@ -139,7 +139,8 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	}
 
 	// Execute LLM call via the executor.
-	execCtx := model.WithLoopIteration(ctx, iter)
+	execCtx := e.execContext(ctx, rs, routerNodeID)
+	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, routerInput)
 	stampNodeDuration(output, execStart)

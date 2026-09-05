@@ -686,7 +686,12 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		nodeInput[leaseInputKey] = leases // surface leased instance ids to the branch node
 	}
 
-	execCtx := model.WithLoopIteration(ctx, iter)
+	// Same identity + template snapshot the trunk attaches, against this
+	// branch's merged scope: a per-item tool command or prompt resolves
+	// `{{run.*}}` and reads `{{outputs.*}}` from the branch's own upstream
+	// view (the item a fan_out_each stamped included), not the trunk's.
+	execCtx := e.execContextScoped(ctx, rs, currentNodeID, branchScope)
+	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)

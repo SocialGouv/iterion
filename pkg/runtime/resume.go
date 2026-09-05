@@ -1154,7 +1154,8 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 
 	// Build input and execute LLM.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
-	execCtx := model.WithLoopIteration(ctx, iter)
+	execCtx := e.execContext(ctx, rs, nodeID)
+	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
@@ -1806,8 +1807,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Re-execute the node. The executor will use the session ID for
 	// delegate re-invocation if the backend supports it.
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
-	execCtx = model.WithRunID(execCtx, rs.runID)
-	execCtx = model.WithNodeID(execCtx, nodeID)
+	execCtx = e.execContext(execCtx, rs, nodeID)
 	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
