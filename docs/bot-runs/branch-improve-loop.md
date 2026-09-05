@@ -790,3 +790,5 @@ drop, ChatGPT-forfait cap, and an intermittent sandbox bootstrap flake — via
 delegate-level network retries and an auto-resume loop that relaunches from
 the checkpoint (no progress lost) until convergence. None were the
 context-overflow bug; all were absorbed without operator intervention.
+
+<!-- dogfood #695: throwaway PR to exercise branch-improve-loop 1.3.0 plan-phase budget guard on prod; safe to close -->
