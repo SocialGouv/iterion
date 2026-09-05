@@ -464,7 +464,7 @@ func (s *Server) pullRequestHoldLabel(ctx context.Context, conn forge.Connection
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return "", fmt.Errorf("provider %s cannot read issue labels", conn.Provider)
+		return "", fmt.Errorf("cannot read issue labels: %w", forgeCapabilityErr(conn, admin, "IssueClient"))
 	}
 	iss, err := ic.GetIssue(ctx, repo, number)
 	if err != nil {

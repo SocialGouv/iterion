@@ -106,6 +106,81 @@ func ProjectsInstallationPermissions() map[string]string {
 	}
 }
 
+// IssuesReadInstallationPermissions is the grant set minted for READING issues
+// (the forge→board sync's ListIssues/GetIssue) — the issues read permission
+// plus the mandatory metadata baseline.
+//
+// It is its own profile rather than a reuse of the cached runtime token
+// because that token carries issues:WRITE (finalize_mr posts back on the
+// source issue): letting a listing ride it would hand a read the permission to
+// rewrite every issue in the installation, and a sync pass reads far more
+// often than anything writes.
+func IssuesReadInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":   "read",
+		"metadata": "read",
+	}
+}
+
+// IssuesWriteInstallationPermissions is the grant set minted for WRITING
+// issues (board→forge push, a bot's reply on the source issue): the issues
+// write permission plus the mandatory metadata baseline. Narrower than the
+// runtime token, which also carries contents/pull_requests/hooks writes.
+func IssuesWriteInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":   "write",
+		"metadata": "read",
+	}
+}
+
+// IssueCommentInstallationPermissions is the grant set minted for POSTing a
+// comment: issues write, pull_requests write, and the mandatory metadata
+// baseline.
+//
+// It carries BOTH writes because the endpoint is shared and the permission is
+// not: GitHub serves a pull request's comments from
+// /repos/{owner}/{repo}/issues/{number}/comments — the same path as an
+// issue's — but gates the call on `pull_requests` when that number is a pull
+// request, and on `issues` when it is an issue. One call, two grants, decided
+// by a number the client cannot classify without an extra round trip.
+//
+// Answering 403 "Resource not accessible by integration" is what a token
+// short of either grant gets, and every caller posts a courtesy notice it
+// logs at Debug and drops — so the gap would be invisible.
+func IssueCommentInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":        "write",
+		"pull_requests": "write",
+		"metadata":      "read",
+	}
+}
+
+// IssueReadOrPullInstallationPermissions is the grant set minted for a read
+// whose target may be either: issues read, pull_requests read, and the
+// mandatory metadata baseline.
+//
+// It is the read counterpart of IssueCommentInstallationPermissions, and it
+// exists for the same reason: GET /repos/{owner}/{repo}/issues/{number} serves
+// a pull request too, and GitHub gates the call on the RESOURCE, not the path
+// — `pull_requests` for a PR, `issues` for an issue. A number the client
+// cannot classify without an extra round trip needs both.
+//
+// GitHub hides what a token cannot see, so the refusal is a 404, not a 403 —
+// indistinguishable from a deleted PR at the call site. The hold-label veto
+// reads through here and fails closed, which stops the autofix and
+// gate-relaunch lanes launching at all; that is why the grant is not optional.
+//
+// ListIssues deliberately does NOT use this profile: it reads the issues
+// COLLECTION, which is gated on `issues` alone, and the board-sync pass runs
+// often enough that keeping its token narrow is worth a fourth cached set.
+func IssueReadOrPullInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":        "read",
+		"pull_requests": "read",
+		"metadata":      "read",
+	}
+}
+
 // MissingProjectPermissions lists the project-board grants an installation does
 // NOT have, so a board binding fails at BIND time naming the missing permission
 // rather than hours later on the first status write. Empty when nothing is
@@ -445,9 +520,10 @@ type AppClient struct {
 	// and only a caller that needs one of these would fail — at the write,
 	// unless it asked PreflightFor first.
 	denied map[string]bool
-	// scoped caches the tokens minted for a NARROWER, opt-in grant than the
-	// runtime baseline (the board profile), keyed by the permission set so a
-	// broad grant can never be handed to a differently-scoped call.
+	// scoped caches the tokens minted for a grant OTHER than the runtime
+	// baseline — the board profile, the issue profiles — keyed by the
+	// permission set so one call family's grant can never be handed to a
+	// differently-scoped call.
 	scoped map[string]scopedToken
 }
 
@@ -512,7 +588,9 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 }
 
 // scopedREST returns an AdminClient backed by a token minted for exactly perms,
-// cached until it nears expiry.
+// cached until it nears expiry. It is the ONE mint-and-cache for every call
+// family that must not ride the runtime baseline — the board profile and the
+// issue profiles alike.
 //
 // Minting per CALL is what this replaces: every board method went through its
 // own mint, so one reconciliation pass cost a token round trip per project

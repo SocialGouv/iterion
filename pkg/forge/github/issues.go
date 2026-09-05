@@ -205,16 +205,70 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 	}, nil
 }
 
-// CommentIssue on an App connection delegates to a management-token
-// AdminClient minted on demand — the same shape CreatePullReview uses, and
-// for the same reason: an App connection resolves to *AppClient, so a
-// capability implemented only on *AdminClient is INVISIBLE to every type
-// assertion the server does. That is not a fringe shape: the studio's
-// GitHub connect wizard creates App connections by default.
+// AppClient's half of forge.IssueClient — the one an App connection resolves
+// to, so a capability implemented only on *AdminClient is INVISIBLE to every
+// `admin.(forge.IssueClient)` the server does. That is not a fringe shape: the
+// studio's GitHub connect wizard creates App connections by default, and the
+// forge→board sync, the board's push-to-forge routes and the autofix lane's
+// hold-label veto all read the issue API through that assertion.
+var _ forge.IssueClient = (*AppClient)(nil)
+
+// Each method names the permission profile its own call needs, and reaches it
+// through the one scopedREST chokepoint (minting + per-set caching). None of
+// them rides the cached management token, which additionally carries
+// contents/repository_hooks writes an issue call has no use for.
+//
+// Two of the five need `pull_requests` as well, because the issues endpoint
+// serves pull requests too and GitHub gates the call on the RESOURCE, not the
+// path: a comment (write) and a single read (read). The collection read does
+// not — see IssueReadOrPullInstallationPermissions.
+
+// ListIssues reads the issues COLLECTION, gated on `issues` alone. It keeps
+// the narrow token: this is the board-sync pass, the most frequent caller.
+func (a *AppClient) ListIssues(ctx context.Context, repo string, opts forge.IssueListOptions) ([]forge.IssueRef, error) {
+	c, err := a.scopedREST(ctx, IssuesReadInstallationPermissions())
+	if err != nil {
+		return nil, err
+	}
+	return c.ListIssues(ctx, repo, opts)
+}
+
+// GetIssue may be handed a pull request's number — its only production caller,
+// the hold-label veto, always is — so it reads under both read grants.
+func (a *AppClient) GetIssue(ctx context.Context, repo string, number int) (forge.IssueRef, error) {
+	c, err := a.scopedREST(ctx, IssueReadOrPullInstallationPermissions())
+	if err != nil {
+		return forge.IssueRef{}, err
+	}
+	return c.GetIssue(ctx, repo, number)
+}
+
+// CreateIssue opens a real issue; `pull_requests` cannot apply.
+func (a *AppClient) CreateIssue(ctx context.Context, repo string, in forge.NewIssue) (forge.IssueRef, error) {
+	c, err := a.scopedREST(ctx, IssuesWriteInstallationPermissions())
+	if err != nil {
+		return forge.IssueRef{}, err
+	}
+	return c.CreateIssue(ctx, repo, in)
+}
+
+// UpdateIssue writes a board card back onto its linked forge issue. The
+// linkage is seeded by the issue sync, which drops pull requests, so the
+// number here is always an issue.
+func (a *AppClient) UpdateIssue(ctx context.Context, repo string, number int, patch forge.IssuePatch) (forge.IssueRef, error) {
+	c, err := a.scopedREST(ctx, IssuesWriteInstallationPermissions())
+	if err != nil {
+		return forge.IssueRef{}, err
+	}
+	return c.UpdateIssue(ctx, repo, number, patch)
+}
+
+// CommentIssue may be handed a pull request's number — every one of its
+// production callers is — so it writes under both write grants.
 func (a *AppClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
-	rest, err := a.rest(ctx)
+	c, err := a.scopedREST(ctx, IssueCommentInstallationPermissions())
 	if err != nil {
 		return forge.CommentRef{}, err
 	}
-	return rest.CommentIssue(ctx, repo, number, body)
+	return c.CommentIssue(ctx, repo, number, body)
 }

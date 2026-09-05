@@ -136,6 +136,22 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 	return s.forgeAdminForToken(conn.Provider, conn.BaseURL(), token)
 }
 
+// forgeCapabilityErr explains a failed capability assertion on a client
+// forgeAdminFor built. The client a connection resolves to depends on its
+// KIND — a github_app connection yields an installation-token client, a
+// pat/oauth one a bearer client — and the capabilities differ between them,
+// so naming only the provider ("provider github has no issue client") names
+// neither the thing that lacks the capability nor anything the operator can
+// act on. The kind and the concrete type are what turn the message into a
+// starting point.
+//
+// Kept for the providers that genuinely cannot serve a capability: the point
+// is to say so precisely, not to make the assertion optional.
+func forgeCapabilityErr(conn forge.Connection, client any, capability string) error {
+	return fmt.Errorf("provider %s: the %s connection's client (%T) does not implement forge.%s",
+		conn.Provider, conn.Kind, client, capability)
+}
+
 // forgePreflighter is the optional capability of a forge client whose
 // construction is lazy: a GitHub App client mints its installation token on
 // its first call, so a client forgeAdminFor built without error can still be
