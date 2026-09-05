@@ -27,7 +27,7 @@ entries there:
   comments from the payload alone (`in_reply_to` empty ⇒ nobody is in
   that thread yet — every inline comment of a bot review echoes back
   as one, so this spares the whole fetch), drops fork PRs the same
-  payload-only way (`IsCrossRepo` — the base clone URL and the head
+  payload-only way (`SameRepoAsBase` — the base clone URL and the head
   ref would not name one repository), runs the loop-guard next,
   still without forge I/O (`isIterionForgeBotAuthor` — the bot's
   own answer echoes back as this very event), requires the converse

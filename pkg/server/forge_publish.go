@@ -722,7 +722,12 @@ func (s *Server) repoLaunchPolicy(ctx context.Context, ri forge.RepoIntegration,
 // repoIntegrationFor finds a team's integration for a repo on a given forge
 // host. The host is part of the identity: the same slug on another forge is a
 // different repo, and applying its policy — or minting a grant on its
-// connection — would cross two unrelated projects.
+// connection — would cross two unrelated projects. A watch-only
+// connection's row is not a candidate either: the security-read App is
+// provisioned on the repos it watches, and its row carries neither a launch
+// policy nor a connection that can post — selecting it would hand
+// forgeConnectionForPR a connection it must reject, and the host-wide
+// fallback then lands on a connection that does not cover the repo at all.
 func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo string) (forge.RepoIntegration, bool) {
 	if s.forgeIntegrations == nil || s.forgeConnections == nil || strings.TrimSpace(repo) == "" {
 		return forge.RepoIntegration{}, false
@@ -738,7 +743,7 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 			continue
 		}
 		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
-		if cerr != nil || conn.TenantID != teamID || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+		if cerr != nil || conn.TenantID != teamID || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
 			continue
 		}
 		// One repo provisioned twice on the same host — through two connections,
@@ -756,10 +761,15 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 }
 
 // forgeConnectionForPR picks the team connection to publish through:
-// the pinned connection when given, else the connection of a repo
-// integration matching the repo slug, else the first team connection on the
-// PR's forge host.
+// the pinned connection when given, else the connection of the repo's
+// LATEST integration on the PR's forge host, else the LATEST team
+// connection on that host. A nil forgeConnections store yields (empty, false):
+// every caller (approve, publish, pending, reconcile) inherits the guard
+// here instead of repeating it.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
+	if s == nil || s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
 	matches := func(c forge.Connection) bool {
 		// A watch-only connection sits on the same host and would be picked by
 		// the "first connection on this host" fallback below — then every
@@ -779,26 +789,37 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 			s.logger.Warn("forge: pinned connection %s is not usable for %s on %s — resolving another", preferredConnID, repo, host)
 		}
 	}
-	if s.forgeIntegrations != nil {
-		if ris, err := s.forgeIntegrations.ListByTenant(ctx, teamID); err == nil {
-			for _, ri := range ris {
-				if !strings.EqualFold(ri.RepoFullName, repo) {
-					continue
-				}
-				if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
-					return c, true
-				}
-			}
+	// The repo's integration, LATEST provisioning first — the same choice
+	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
+	// a newer connection posts under that one and not the row left behind.
+	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
+		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
+			return c, true
 		}
 	}
 	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)
 	if err != nil {
 		return forge.Connection{}, false
 	}
+	// The LATEST matching connection wins, not the first: ListByTenant sorts
+	// created_at ascending on both stores, so a repo re-provisioned onto a
+	// newer connection would otherwise inherit the stale one — the rule
+	// repoIntegrationForRepo applies to the integration lookup. Id breaks an
+	// exact created_at tie. Publish, pending and reconcile all read through
+	// this helper.
+	var best forge.Connection
+	found := false
 	for _, c := range conns {
-		if matches(c) {
-			return c, true
+		if !matches(c) {
+			continue
 		}
+		if !found || c.CreatedAt.After(best.CreatedAt) ||
+			(c.CreatedAt.Equal(best.CreatedAt) && c.ID < best.ID) {
+			best, found = c, true
+		}
+	}
+	if found {
+		return best, true
 	}
 	return forge.Connection{}, false
 }

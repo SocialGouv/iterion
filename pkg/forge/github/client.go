@@ -106,6 +106,19 @@ func (c *AdminClient) CollaboratorPermission(ctx context.Context, repo, user str
 	return "none", nil
 }
 
+// CollaboratorPermission on an App connection delegates to a management-token
+// AdminClient minted on demand — the webhook command gates read a commenter's
+// role through the connection covering the repo, and the studio's connect
+// wizard creates App connections by default, so a capability implemented only
+// on *AdminClient would be invisible to that path.
+func (a *AppClient) CollaboratorPermission(ctx context.Context, repo, user string) (string, error) {
+	rest, err := a.rest(ctx)
+	if err != nil {
+		return "", err
+	}
+	return rest.CollaboratorPermission(ctx, repo, user)
+}
+
 // OrgMembershipRole reports the caller's role ("admin" | "member") in org and
 // whether the membership is active, via GET /user/memberships/orgs/{org}.
 // A 404/403 (not a member, or no visibility) returns ("", false, nil) — the

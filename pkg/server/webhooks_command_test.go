@@ -137,11 +137,11 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 	var calls int
 	var gotBot, gotRef string
 	var gotVars map[string]string
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
 	}
 	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
 		calls++
@@ -181,11 +181,11 @@ func TestGitHubIssueComment_BillyPushBackStamped(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
 	}
 	var gotVars map[string]string
 	var gotRef string
@@ -220,11 +220,11 @@ func TestGitHubIssueComment_BillyPushBackAsPR(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/x", TargetBranch: "main"}, nil
 	}
 	var gotVars map[string]string
 	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
@@ -261,11 +261,11 @@ func TestGitHubIssueComment_BillyBoardCardCarriesPRContext(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", Mode: "board", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
 	}
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 		return "run-board-billy", nil
@@ -309,8 +309,8 @@ func TestGitHubIssueComment_PRResolutionFailureIsVisible(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{}, fmt.Errorf("forge unreachable")
@@ -340,8 +340,8 @@ func TestGitHubIssueComment_ClosedPRFiltered(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
 		return forge.PullRef{Number: 7, State: "merged", SourceBranch: "feat/export", TargetBranch: "main"}, nil
@@ -537,8 +537,8 @@ func TestGitHubIssueComment_BillyUnauthorizedRejected(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return false, "replier not authorized: mallory", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateRefused, "replier not authorized: mallory", nil
 	}
 	launched := 0
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -572,11 +572,11 @@ func TestGitHubIssueComment_SeedsDeclaredReviewConsumer(t *testing.T) {
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
 		"fixit": {{BotID: "fixer-bot", ArgsVar: "scope_notes", Scope: "any"}},
 	}
-	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
-		return true, "authorized", nil
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
+		return forge.PullRef{Number: 7, State: "open", HeadRepoFullName: "acme/widgets", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
 	}
 	var gotPRURL string
 	s.webhookHandoff = func(_ context.Context, _ webhooks.Config, _ bundle.HandoffKind, q handoffQuery) string {
@@ -646,4 +646,118 @@ func writeConsumerBotFixture(t *testing.T, name, varName string) string {
 		t.Fatal(err)
 	}
 	return workDir
+}
+
+// TestGitHubIssueComment_ForkPRFiltered pins the fork guard on the /command
+// lane (#642). Class surfaced by Revi on #626 (finding R0b5042, fixed there
+// for the reply-in-thread lane only). The gap: handlePRForgeComment resolves
+// the PR via GetPullRequest → forge.PullRef, and the launch pair (base repo
+// CloneURL + PR head ref) does NOT name one repository on a fork PR — the
+// head ref lives in the head repo, so the checkout misses (or, worse, hits
+// a same-named branch on the base and the bot answers grounded in the wrong
+// code, under the bot identity). Reachable by any repo collaborator
+// commenting `/revi` or `/billy` on a fork PR.
+//
+// The PR auto-review lane has an unconditional fork guard (webhooks_github.go
+// IsCrossRepo on the parsed payload), the review-thread reply lane got one in
+// #626 — this test locks the command lane down the same way.
+func TestGitHubIssueComment_ForkPRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
+	}
+	// The resolver returns a fork PR: HeadRepoFullName differs from the
+	// base repo. The command handler must filter it as a fork (200) and
+	// launch nothing.
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{
+			Number: 7, State: "open",
+			SourceBranch: "feat/x", TargetBranch: "main",
+			HeadRepoFullName: "mallory/widgets", // fork of acme/widgets
+		}, nil
+	}
+	var launched int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-forbidden", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("fork PR command must filter 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if launched != 0 {
+		t.Fatalf("fork PR must NOT launch (launched=%d — a bot answering fork code under the bot identity)", launched)
+	}
+}
+
+// A same-repo PR must STILL launch (regression guard: the fork check must not
+// filter internal-branch PRs whose head lives in the base repo).
+func TestGitHubIssueComment_SameRepoStillLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{
+			Number: 7, State: "open",
+			SourceBranch: "feat/x", TargetBranch: "main",
+			HeadRepoFullName: "acme/widgets", // same repo (owner/repo matches base)
+		}, nil
+	}
+	var launched int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-ok", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("same-repo command must launch (202), got %d body=%s", w.Code, w.Body.String())
+	}
+	if launched != 1 {
+		t.Fatalf("same-repo command must launch exactly once, got %d", launched)
+	}
+}
+
+// TestGitHubIssueComment_EmptyHeadRepoFailsClosed pins the deleted-fork /
+// legacy-payload fail-CLOSED semantics (B1): both GitHub and Forgejo emit
+// `head.repo: null` when the head repo no longer exists, which is ALWAYS a
+// fork. An earlier IsCrossRepo-only guard treated empty HeadRepoFullName as
+// safe, letting the fixer launch with repoURL=<base> repoRef=main and push
+// LLM commits to the BASE repo's main. SameRepoAs is false on empty head,
+// so the command lane now refuses.
+func TestGitHubIssueComment_EmptyHeadRepoFailsClosed(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+	}
+	var launched int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-forbidden", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if launched != 0 {
+		t.Fatalf("empty HeadRepoFullName is a deleted-fork signal — MUST NOT launch (launched=%d)", launched)
+	}
 }

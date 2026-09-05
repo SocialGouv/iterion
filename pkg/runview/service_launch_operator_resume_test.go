@@ -32,8 +32,24 @@ func (p *operatorResumePublisher) SubmitResume(context.Context, ResumeSpec, *ir.
 
 func TestValidateResumable_AcceptsPausedOperatorWithoutAnswers(t *testing.T) {
 	r := &store.Run{ID: "run-operator-paused", Status: store.RunStatusPausedOperator}
-	if err := validateResumable(r, nil); err != nil {
-		t.Fatalf("validateResumable(paused_operator, nil) = %v, want nil", err)
+	if err := validateResumable(r, nil, false); err != nil {
+		t.Fatalf("validateResumable(paused_operator, nil, false) = %v, want nil", err)
+	}
+}
+
+// #663: validateResumable(automatic=true) uses CanAutoResume() — cancelled
+// is refused there (an operator's cancel is a decision automation must never
+// override). An in-flight sweeper resume that raced a stop-on-close cancel
+// must not flip the doc back into a resumable shape.
+func TestValidateResumable_AutomaticRefusesCancelled(t *testing.T) {
+	r := &store.Run{ID: "run-cancelled", Status: store.RunStatusCancelled}
+	if err := validateResumable(r, nil, true); err == nil {
+		t.Fatal("validateResumable(cancelled, automatic=true) = nil, want refusal — the sweeper must never override an operator's cancel")
+	}
+	// Same doc, operator-initiated → still accepted (paused/cancelled are
+	// resumable when the operator explicitly asks).
+	if err := validateResumable(r, nil, false); err != nil {
+		t.Fatalf("validateResumable(cancelled, automatic=false) = %v, want nil — operator resume of a cancelled run is a supported path", err)
 	}
 }
 

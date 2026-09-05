@@ -57,7 +57,8 @@ func (c *AdminClient) WhoAmI(ctx context.Context) (forge.Identity, error) {
 
 // CollaboratorPermission returns user's permission on repo ("owner/repo") via
 // GET /repos/{repo}/collaborators/{user}/permission — one of
-// admin|write|read|none on Forgejo/Gitea. A 404 (not a collaborator) is
+// owner|admin|write|read|none on Forgejo/Gitea ("owner" for the repository
+// owner). A 404 (not a collaborator) is
 // "none", not an error. Used by the inbound-webhook command gate to authorize
 // a commenter against a bot's MinReplierRole.
 func (c *AdminClient) CollaboratorPermission(ctx context.Context, repo, user string) (string, error) {

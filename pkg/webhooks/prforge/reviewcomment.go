@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // EventHeaderReviewComment is the X-GitHub-Event value for a comment in a
@@ -32,14 +34,8 @@ type ReviewCommentEvent struct {
 		Title   string `json:"title"`
 		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
-		Head    struct {
-			SHA  string `json:"sha"`
-			Ref  string `json:"ref"`
-			Repo struct {
-				FullName string `json:"full_name"`
-			} `json:"repo"`
-		} `json:"head"`
-		Base struct {
+		Head    Ref    `json:"head"`
+		Base    struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
 	} `json:"pull_request"`
@@ -76,19 +72,23 @@ type ParsedReviewComment struct {
 	Action       string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in —
 	// differs from ProjectPath on a fork PR; empty when the payload omits
-	// head.repo. Read by IsCrossRepo for the fork guard.
+	// head.repo OR the head repo was deleted/blocked. Read by
+	// SameRepoAsBase, which treats empty as NOT proven same-repo.
 	HeadRepoFullName string
+	// HeadRepoDeclared — see Parsed.HeadRepoDeclared.
+	HeadRepoDeclared bool
 }
 
-// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
-// than its base — i.e. the PR comes from a fork. Same semantics as
-// Parsed.IsCrossRepo: on a fork, CloneURL (the BASE repo) and SourceBranch
-// (a HEAD-repo ref) do not name the same repository, so a launch would check
-// out a missing — or worse, a same-named base — branch. An empty head repo
-// (minimal/legacy payloads) is treated as same-repo to avoid falsely gating
-// a trusted internal PR.
-func (p ParsedReviewComment) IsCrossRepo() bool {
-	return p.HeadRepoFullName != "" && p.HeadRepoFullName != p.ProjectPath
+// SameRepoAsBase reports whether the head branch is PROVEN to live in the
+// base repo. Same contract, and same reason, as Parsed.SameRepoAsBase: the
+// reply lane launches on `<base>.CloneURL + p.SourceBranch` too.
+func (p ParsedReviewComment) SameRepoAsBase() bool {
+	return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath)
+}
+
+// HeadRepoWithheld — see Parsed.HeadRepoWithheld.
+func (p ParsedReviewComment) HeadRepoWithheld() bool {
+	return p.HeadRepoDeclared && p.HeadRepoFullName == ""
 }
 
 // ParseReviewComment decodes a pull_request_review_comment webhook body
@@ -119,6 +119,7 @@ func ParseReviewComment(body []byte) (ParsedReviewComment, error) {
 		Action:       e.Action,
 
 		HeadRepoFullName: e.PullRequest.Head.Repo.FullName,
+		HeadRepoDeclared: e.PullRequest.Head.RepoDeclared,
 	}
 	if p.ThreadRootID == 0 {
 		p.ThreadRootID = p.CommentID

@@ -294,8 +294,10 @@ func (c *Dispatcher) loadRunForDecision(s *store.FilesystemRunStore, runID, what
 	case err == nil:
 		c.clearDegraded(key)
 		return r, nil
-	case errors.Is(err, store.ErrRunNotFound):
-		c.logger.Debug("dispatcher: run %s not found (%s)", runID, what)
+	case store.RunAbsent(err):
+		// Never existed, or deleted and tombstoned: gone either way, and a
+		// tombstone must not open an "unreadable" episode.
+		c.logger.Debug("dispatcher: run %s absent (%s): %v", runID, what, err)
 		return nil, err
 	default:
 		c.warnDegraded(key, "dispatcher: cannot read run %s (%s): %v — deciding as if it held no information", runID, what, err)
@@ -342,9 +344,9 @@ func (c *Dispatcher) runStatusFrom(s *store.FilesystemRunStore, runID string) st
 // One-shot callers only; sweeps open the store once and use runStatusFrom.
 // known=false means the record EXISTS-OR-MAY-EXIST but could not be read
 // (store unreachable, truncated run.json) — the caller must fail CLOSED on
-// a mint decision: "no information" is not "no run". A missing record
-// (ErrRunNotFound — a pruned run) reads as ("", true): the documented
-// legitimate fresh-start case.
+// a mint decision: "no information" is not "no run". A provably absent
+// record (store.RunAbsent — a pruned run, or one deleted and tombstoned)
+// reads as ("", true): the documented legitimate fresh-start case.
 func (c *Dispatcher) runStatusOnDisk(runID string) (status store.RunStatus, known bool) {
 	if runID == "" || c.storeDir == "" {
 		return "", true
@@ -357,7 +359,7 @@ func (c *Dispatcher) runStatusOnDisk(runID string) (status store.RunStatus, know
 	switch {
 	case err == nil:
 		return r.Status, true
-	case errors.Is(err, store.ErrRunNotFound):
+	case store.RunAbsent(err):
 		return "", true
 	default:
 		return "", false

@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +216,41 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Error("launched a fixer on a review that never happened")
+		}
+	})
+
+	// Fork guard — the autofix push pair (base CloneURL + pr.SourceBranch)
+	// does not name one repository on a fork. #642 class fix (B2): the
+	// autofix lane resolves the same forge.PullRef the command lane does,
+	// so it inherits the SameRepoAs check. Empty HeadRepoFullName
+	// (deleted-fork payloads) MUST refuse too.
+	t.Run("a fork PR never gets an unattended fix", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm,
+				headRepo: "mallory/widgets"}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Fatal("autofix launched on a fork PR — the fixer would push LLM commits to the base repo")
+		}
+	})
+	t.Run("an empty head repo fails closed too", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return emptyHeadGateClient{stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Fatal("autofix launched with an empty HeadRepoFullName — deleted-fork payloads must fail closed")
 		}
 	})
 
@@ -556,6 +594,136 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 	}
 }
 
+// TestAutofixOnGitLabResolvesTheHeadRepo drives the lane through the REAL
+// GitLab client — no gate-client stub. The fail-closed fork guard reads
+// forge.PullRef.HeadRepoFullName, which only the provider adapter can supply,
+// so a stub that fills it in certifies nothing about GitLab. A same-project MR
+// must launch the fixer on the MR's source branch; a fork MR must be refused —
+// the MR payload names no source project path, so its head is unproven, which
+// is the right answer for a lane that pushes to the base repo.
+func TestAutofixOnGitLabResolvesTheHeadRepo(t *testing.T) {
+	const (
+		team   = "t1"
+		repo   = "acme/widgets"
+		head   = "cafe1234cafe1234cafe1234cafe1234cafe1234"
+		gateNm = "iterion/review"
+	)
+	cases := []struct {
+		name          string
+		sourceProject int
+		wantLaunch    bool
+	}{
+		{"a same-project MR launches the fixer", 3, true},
+		{"a fork MR is refused — its head repo cannot be proven", 5, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch p := r.URL.EscapedPath(); {
+				case strings.HasSuffix(p, "/projects/acme%2Fwidgets/merge_requests/7"):
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"iid": 7, "title": "feat: x", "state": "opened", "sha": head,
+						"source_branch": "feat/x", "target_branch": "main",
+						"source_project_id": c.sourceProject, "target_project_id": 3,
+						"web_url": "https://gl/acme/widgets/-/merge_requests/7",
+						"author":  map[string]any{"username": "alice"},
+					})
+				case strings.HasSuffix(p, "/projects/acme%2Fwidgets/repository/commits/"+head+"/statuses"):
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"id": 1, "status": "failed", "name": gateNm, "description": "2 findings"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(gl.Close)
+			prURL := gl.URL + "/acme/widgets/-/merge_requests/7"
+
+			s := newWebhookTestServer(t)
+			s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.Store = rs
+			conn := forge.Connection{
+				ID: "c-gl", TenantID: team, Provider: forge.ProviderGitLab, Kind: forge.KindPAT,
+				Status: forge.StatusActive, ForgeBaseURL: gl.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
+			}
+			sealed, err := forge.SealPAT(s.sealer, conn.ID, "glpat-connection")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.SealedPayload = sealed
+			conns := forge.NewMemoryConnectionStore()
+			if err := conns.Create(context.Background(), conn); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeConnections = conns
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
+			s.forgePublishTokens.Register("run-token", ForgePublishGrant{TeamID: team, ConnectionID: conn.ID, Repo: repo})
+			ints := forge.NewMemoryRepoIntegrationStore()
+			if err := ints.Create(context.Background(), forge.RepoIntegration{
+				ID: "i1", TenantID: team, ConnectionID: conn.ID, RepoFullName: repo,
+				BotIDs: []string{"fixer-bot"}, WebhookID: "w1", AutoFixOnGateFailure: true,
+				LaunchVars: map[string]string{gateContextVar: gateNm},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeIntegrations = ints
+			if err := s.webhookConfigs.Create(context.Background(), webhooks.Config{
+				ID: "w1", TenantID: team, BotIDs: []string{"fixer-bot"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var launches int
+			var gotBot, gotRepoURL, gotRef string
+			s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, repoURL, repoRef, _ string, _, _ map[string]string) (string, error) {
+				launches++
+				gotBot, gotRepoURL, gotRef = botID, repoURL, repoRef
+				return "run-fixer", nil
+			}
+
+			id, err := store.GenerateRunID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := rs.CreateRun(context.Background(), id, "reviewer-bot", map[string]any{
+				"pr_url": prURL, "gate_context": gateNm, "head_sha": head,
+				forgePublishVarToken: "run-token",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.BotID = "reviewer-bot"
+			run.Status = store.RunStatusFinished
+			if err := rs.SaveRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.autofixForRun(context.Background(), trigger.Event{
+				Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+				Subject: trigger.Subject{ID: run.ID},
+			}); err != nil {
+				t.Fatalf("handler returned %v", err)
+			}
+			if !c.wantLaunch {
+				if launches != 0 {
+					t.Fatalf("launched %s on a fork MR — the fixer would push to a base-repo ref", gotBot)
+				}
+				return
+			}
+			if launches != 1 {
+				t.Fatalf("a same-project GitLab MR with a red gate must launch the fixer once, got %d launches — the head repo the fork guard reads was not resolved by the adapter", launches)
+			}
+			if gotBot != "fixer-bot" || gotRepoURL != forge.CloneURLFor(gl.URL, repo) || gotRef != "feat/x" {
+				t.Fatalf("launched %s on %s@%s, want fixer-bot on %s@feat/x", gotBot, gotRepoURL, gotRef, forge.CloneURLFor(gl.URL, repo))
+			}
+		})
+	}
+}
+
 // stubGateClient answers with one commit status on one head.
 // countingGateClient counts forge round-trips (the early-claim probe's
 // whole point is that a settled head makes none).
@@ -582,16 +750,41 @@ type stubGateClient struct {
 	state   forge.CommitState
 	ctxName string
 	desc    string
+	// headRepo overrides the PullRef.HeadRepoFullName the stub returns.
+	// Empty defaults to the base repo the endpoint was called with (i.e. a
+	// same-repo PR), so pre-B2 fixtures stay same-repo without edits.
+	headRepo string
 }
 
-func (c stubGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
-	return forge.PullRef{Number: number, State: "open", HeadSHA: c.head, SourceBranch: "feat/x", TargetBranch: "main"}, nil
+func (c stubGateClient) GetPullRequest(_ context.Context, base string, number int) (forge.PullRef, error) {
+	head := c.headRepo
+	if head == "" {
+		head = base
+	}
+	return forge.PullRef{
+		Number: number, State: "open", HeadSHA: c.head,
+		SourceBranch: "feat/x", TargetBranch: "main",
+		HeadRepoFullName: head,
+	}, nil
 }
 func (c stubGateClient) SetCommitStatus(context.Context, string, string, forge.CommitStatus) error {
 	return nil
 }
 func (c stubGateClient) ListCommitStatuses(context.Context, string, string) ([]forge.CommitStatus, error) {
 	return []forge.CommitStatus{{Context: c.ctxName, State: c.state, Description: c.desc}}, nil
+}
+
+// emptyHeadGateClient answers GetPullRequest with HeadRepoFullName="" — the
+// deleted-fork payload shape (both GitHub and Forgejo emit `head.repo: null`
+// when the head repo no longer exists, and the parser leaves it empty).
+type emptyHeadGateClient struct{ stubGateClient }
+
+func (c emptyHeadGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
+	return forge.PullRef{
+		Number: number, State: "open", HeadSHA: c.head,
+		SourceBranch: "feat/x", TargetBranch: "main",
+		// HeadRepoFullName deliberately empty.
+	}, nil
 }
 
 // TestReviewFixerIsDerivedNotNamed: the lane must pick the fixer from what a bot

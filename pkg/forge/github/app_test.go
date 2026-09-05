@@ -186,6 +186,45 @@ func TestMintInstallationToken_422OtherStaysPlain(t *testing.T) {
 	}
 }
 
+// An installation that withholds statuses:write is served by the baseline
+// re-mint: the token works for every read and the mint reports no error, so
+// the withheld permission would only surface on the one write that needs
+// it. PreflightFor is how a caller learns it before that write — and a
+// preflight with no needs stays clean, as every read is served.
+func TestAppClient_PreflightForNamesTheWithheldStatuses(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	var mintsFull, mintsBase int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/app/installations/99/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if _, ok := req.Permissions[PermissionStatuses]; ok {
+			mintsFull++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "The permissions requested are not granted to this installation."})
+			return
+		}
+		mintsBase++
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_nostatus", "expires_at": "2099-01-01T00:00:00Z"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	app := &AppClient{HTTP: srv.Client(), WebBaseURL: srv.URL, Cfg: AppConfig{AppID: 42, PrivateKeyPEM: pemStr}, InstallationID: 99}
+
+	if err := app.PreflightFor(context.Background()); err != nil {
+		t.Fatalf("a baseline-served installation must preflight clean with no needs, got %v", err)
+	}
+	err := app.PreflightFor(context.Background(), PermissionStatuses)
+	if !errors.Is(err, forge.ErrPermissionsNotGranted) || !strings.Contains(err.Error(), PermissionStatuses) {
+		t.Fatalf("a preflight needing the withheld permission must name it under ErrPermissionsNotGranted, got %v", err)
+	}
+	if mintsFull != 1 || mintsBase != 1 {
+		t.Fatalf("the cached token must serve both preflights (full=%d baseline=%d mints)", mintsFull, mintsBase)
+	}
+}
+
 func TestAppClient_CreateHookUsesInstallationToken(t *testing.T) {
 	pemStr, _ := testKeyPEM(t)
 	var hookAuth string

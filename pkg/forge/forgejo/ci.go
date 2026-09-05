@@ -20,8 +20,11 @@ import (
 var _ forge.PullClient = (*AdminClient)(nil)
 
 type forgejoBranchInfo struct {
-	Ref string `json:"ref"`
-	Sha string `json:"sha"`
+	Ref  string `json:"ref"`
+	Sha  string `json:"sha"`
+	Repo *struct {
+		FullName string `json:"full_name"`
+	} `json:"repo,omitempty"`
 }
 
 // forgejoPull mirrors the Gitea API PullRequest shape (subset we normalize).
@@ -58,6 +61,9 @@ func (p forgejoPull) toRef() forge.PullRef {
 	if p.Head != nil {
 		ref.SourceBranch = p.Head.Ref
 		ref.HeadSHA = p.Head.Sha
+		if p.Head.Repo != nil {
+			ref.HeadRepoFullName = p.Head.Repo.FullName
+		}
 	}
 	if p.Base != nil {
 		ref.TargetBranch = p.Base.Ref

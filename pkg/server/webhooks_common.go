@@ -1223,7 +1223,33 @@ func (s *Server) launchWebhookTarget(
 // prClosedRunReason names the cancel so the run list, and the merge-gate
 // synthetic status that quotes run.Error, say WHY. "cancelled by user"
 // there once sent operators hunting for a human who did nothing.
-const prClosedRunReason = "pull request closed or merged — nothing left to review"
+// The exact text is store.RunEndReasonPRClosed so the runner admission can
+// detect it in preRun.Error (via store.IsPRClosedCancel) and drop a redelivered
+// message even when it carries an explicit resume — the runner never imports
+// the webhook layer, so the vocabulary lives in the store, not here.
+const prClosedRunReason = store.RunEndReasonPRClosed
+
+// forkGuardRefusal is the fork guard of the unattended payload-side lanes
+// (PR auto lane, review-thread reply lane). The decision is the payload's
+// own SameRepoAsBase predicate — the contract of forge.PullRef.SameRepoAs on
+// the API side: a head repo is admitted only when it is PROVEN to be the
+// base repo. What this helper adds is the wording for the delivery row, by
+// the state it refused, since three states collapse into one decision. The
+// /command lanes refuse the same states (same-repo only, silently), so no
+// refusal may advertise them as an escape hatch: fork work needs a branch in
+// the base repo before any bot runs on it.
+func forkGuardRefusal(sameRepoProven, withheld bool, headRepo string) string {
+	switch {
+	case sameRepoProven:
+		return ""
+	case withheld:
+		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name; the /command lanes refuse it too (same-repo only)"
+	case headRepo == "":
+		return "head repo not named by the payload — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere); the /command lanes refuse it too (same-repo only)"
+	default:
+		return "fork PR — auto-launch blocked (untrusted; the /command lanes are same-repo only too, so the fork's work needs a branch in this repo before any bot runs on it)"
+	}
+}
 
 // prRequeuedRunReason names the auto-heal cancel for the same reason: a
 // reader finding a stopped fixer run has to learn that the queue took the

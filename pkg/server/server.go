@@ -272,7 +272,7 @@ type Server struct {
 	// webhookPRForgeCommandGate overrides the GitHub/Forgejo issue_comment
 	// command replier gate (forge token + loop-guard + allowlist/role authz —
 	// test seam). nil → realWebhookPRForgeCommandGate.
-	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
+	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (outcome prforgeGateOutcome, reason string, err error)
 	// webhookPRForgePRResolver overrides the PR head/base resolution for a
 	// PR-surface command comment (the issue_comment payload carries no head
 	// branch — test seam). nil → realWebhookPRForgePRResolver.

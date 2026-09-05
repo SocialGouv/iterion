@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"os"
 	"time"
 
@@ -160,8 +159,9 @@ func (r *Runner) sandboxResourceReapable(ctx context.Context, runID string) bool
 //     is NOT proof of death — a store outage / decode failure / context
 //     deadline must never be read as "the run is gone", or a live run's
 //     sandbox + credential Secret would be force-deleted mid-flight on a
-//     store blip. Only a provable not-found — store.ErrRunNotFound — is
-//     absence; every other error fails safe like the lease check does).
+//     store blip. Only a provable absence — store.RunAbsent: never
+//     existed, or deleted and tombstoned — is absence; every other error
+//     fails safe like the lease check does).
 func sandboxResourceReapable(ctx context.Context, leases runLeaseChecker, loader runLoader, runID string) bool {
 	if runID == "" {
 		return true // managed resource with no run owner → orphan
@@ -175,8 +175,8 @@ func sandboxResourceReapable(ctx context.Context, leases runLeaseChecker, loader
 	}
 	run, err := loader.LoadRun(ctx, runID)
 	if err != nil {
-		if errors.Is(err, store.ErrRunNotFound) {
-			return true // no lease + provably gone from store → orphan, reap
+		if store.RunAbsent(err) {
+			return true // no lease + provably gone from store (never existed, or deleted and tombstoned) → orphan, reap
 		}
 		return false // transient store error → unknown status → fail safe, keep
 	}

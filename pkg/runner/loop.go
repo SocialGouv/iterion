@@ -267,24 +267,44 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
 	switch run.Status {
 	case store.RunStatusCancelled:
-		// Cancelled is terminal for a REDELIVERED launch message,
-		// checkpoint or not: auto-resuming here turned any lost ack of
-		// an operator cancel into a resurrection loop (run 019f8ba3
-		// came back three times, incl. via plain JetStream redelivery
-		// with the runner up, and after every pod roll). The checkpoint
-		// stays on the run doc — an explicit resume (msg.Resume set, or
-		// the resume API) is the only way to continue. A shutdown-drain
-		// whose nak beat the checkpoint write lands here too and now
-		// waits for that explicit resume instead of self-restarting.
-		if msg.Resume == nil {
+		// Cancelled is terminal for a redelivery — checkpoint or not, resume
+		// or not. Every cloud resume CASes the doc to queued BEFORE it
+		// publishes, so a doc that reads cancelled here was cancelled AFTER
+		// the publish: by an operator, or by stop-on-close. That decision
+		// wins over the message (the runner itself never writes cancelled —
+		// a drain or a lost lease parks failed_resumable), and this read is
+		// the only barrier: the per-run NATS cancel is core NATS, lost when
+		// no runner is subscribed yet. The checkpoint stays on the doc; an
+		// operator's explicit resume re-queues it.
+		//
+		// A PR-closed cancel keeps its own line: the redelivered message
+		// does not carry the cancel, and the reason on the doc (via
+		// store.IsPRClosedCancel, which survives CancelRunWithReason's
+		// "(was <status>: <prior>)" wrapping) is the only signal that the PR
+		// is gone.
+		if store.IsPRClosedCancel(run.Error) {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
-				op:          "ack-already-cancelled",
+				op:          "ack-pr-closed-cancel",
 				action:      actionAck,
-				level:       logInfo,
-				logFmt:      "runner: run %s is cancelled — dropping redelivery (explicit resume required to continue)",
-				logArgs:     []any{msg.RunID},
+				level:       logWarn,
+				logFmt:      "runner: run %s is cancelled because its pull request closed or merged — dropping redelivery (resume=%v; nothing the review would say can matter now)",
+				logArgs:     []any{msg.RunID, msg.Resume != nil},
 			}
+		}
+		level := logInfo
+		if msg.Resume != nil {
+			// A queued resume overridden by a cancel is an operator-visible
+			// decision, not routine housekeeping.
+			level = logWarn
+		}
+		return preconditionOutcome{
+			finalStatus: "cancelled",
+			op:          "ack-cancelled",
+			action:      actionAck,
+			level:       level,
+			logFmt:      "runner: run %s is cancelled (%q) — dropping delivery (resume=%v; an explicit operator resume re-queues it)",
+			logArgs:     []any{msg.RunID, strings.TrimSpace(run.Error), msg.Resume != nil},
 		}
 	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
 		if msg.Resume == nil {
@@ -765,6 +785,20 @@ const bankBudget = 10 * time.Minute
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
+// withDeliveryAttempt suffixes a precondition log line with the JetStream
+// attempt count and stream sequence, so a drop reads on its own line as a
+// first-delivery pre-cancel arrival (delivery=1) or a redelivery
+// (delivery>=2) of one identifiable message. An outcome that logs nothing
+// stays silent.
+func withDeliveryAttempt(format string, args []any, numDelivered int, streamSeq uint64) (string, []any) {
+	if format == "" {
+		return "", nil
+	}
+	out := make([]any, 0, len(args)+2)
+	out = append(out, args...)
+	return format + " (delivery=%d seq=%d)", append(out, numDelivered, streamSeq)
+}
+
 func logAt(logger *iterlog.Logger, level logLevel, format string, args ...any) {
 	if format == "" {
 		return
@@ -1327,7 +1361,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}
 
 	logger := r.cfg.Logger
-	logger.Info("runner: processing run %s (workflow=%s)", msg.RunID, msg.WorkflowName)
+	// The attempt count on the opening line pairs the run with its JetStream
+	// delivery for every line that follows.
+	logger.Info("runner: processing run %s (workflow=%s delivery=%d)", msg.RunID, msg.WorkflowName, delivery.NumDelivered())
 
 	// runs_active{status=running}: incremented as soon as the runner
 	// commits to executing this delivery (post-decode), decremented in
@@ -1406,7 +1442,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// cancelled before we picked it up (T-32 cancel-queued path),
 	// ack the JetStream delivery without doing any work.
 	pre := r.resolveDeliveryPreconditions(msg)
-	logAt(logger, pre.level, pre.logFmt, pre.logArgs...)
+	preFmt, preArgs := withDeliveryAttempt(pre.logFmt, pre.logArgs, delivery.NumDelivered(), delivery.StreamSeq())
+	logAt(logger, pre.level, preFmt, preArgs...)
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
 		dispatchPrecondition(logger, delivery, pre, msg.RunID)

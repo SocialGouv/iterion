@@ -115,6 +115,18 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	if d.pr.State != "" && d.pr.State != "open" {
 		return
 	}
+	// Fork guard, fail-CLOSED. The relaunch pair — CloneURLFor(base) +
+	// d.pr.SourceBranch — is the same fork-unsafe pair the auto-launch and
+	// autofix lanes guard against: on a fork PR the source branch lives in
+	// the head repo, so the checkout misses (or hits a same-named branch on
+	// the base). SameRepoAs is false on empty HeadRepoFullName too, refusing
+	// deleted-fork payloads.
+	if !d.pr.SameRepoAs(d.repo) {
+		if s.logger != nil {
+			s.logger.Warn("gate relaunch: refusing %s#%d — fork PR or unverifiable head repo (head=%q base=%q)", d.repo, d.number, d.pr.HeadRepoFullName, d.repo)
+		}
+		return
+	}
 	botID := gateRelaunchBotID(d)
 	if botID == "" {
 		return // cannot name the bot to re-run

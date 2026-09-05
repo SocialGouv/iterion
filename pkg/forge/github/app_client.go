@@ -407,7 +407,19 @@ type AppClient struct {
 	mu    sync.Mutex
 	token string
 	exp   time.Time
+	// denied names the permissions the cached token LACKS relative to the
+	// full request: rest() re-mints without the optional ones an
+	// installation withholds, so the token is healthy for every other call
+	// and only a caller that needs one of these would fail — at the write,
+	// unless it asked PreflightFor first.
+	denied map[string]bool
 }
+
+// PermissionStatuses is the OPTIONAL commit-status permission the management
+// token asks for on top of the runtime baseline — what the merge gate posts
+// its verdict with — and the one permission rest() re-mints without when an
+// installation withholds it.
+const PermissionStatuses = "statuses"
 
 func (a *AppClient) clock() time.Time {
 	if a.Now != nil {
@@ -427,26 +439,55 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 		// permission set (webhook + metadata + code + PR), never the
 		// installation's full grant — plus the OPTIONAL statuses:write the
 		// merge gate needs to post its revi/review commit status.
-		perms := map[string]string{"statuses": "write"}
+		perms := map[string]string{PermissionStatuses: "write"}
 		for k, v := range RuntimeInstallationPermissions() {
 			perms[k] = v
 		}
 		tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
 			&InstallationTokenOptions{Permissions: perms})
+		var denied map[string]bool
 		if errors.Is(err, forge.ErrPermissionsNotGranted) {
 			// An installation created before the merge gate (or one that
 			// declined statuses:write) still works — the gate then advises
 			// instead of blocking (SetCommitStatus 403s, non-fatal). Retry with
-			// the core baseline so every other capability keeps functioning.
+			// the core baseline so every other capability keeps functioning,
+			// and remember what this token cannot do.
 			tok, exp, err = MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
 				&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
+			denied = map[string]bool{PermissionStatuses: true}
 		}
 		if err != nil {
 			return nil, err
 		}
-		a.token, a.exp = tok, exp
+		a.token, a.exp, a.denied = tok, exp, denied
 	}
 	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: a.token}, nil
+}
+
+// PreflightFor mints (or reuses) the installation token and nothing else,
+// then reports whether that token carries every permission in need. A caller
+// learns BEFORE acting whether the installation can serve: the client is
+// lazy — construction never touches the network — so a mint that fails (a
+// grant narrower than the requested set, a rotated App key, a suspended
+// installation) otherwise surfaces on the first real call, and a permission
+// the installation withholds — rest() re-mints without it — surfaces only
+// on the one call that needs it, both past the point where a caller holding
+// another credential could still switch. A withheld need is an error
+// wrapping forge.ErrPermissionsNotGranted that names the permission. The
+// token is cached, so a successful preflight costs the calls that follow
+// nothing.
+func (a *AppClient) PreflightFor(ctx context.Context, need ...string) error {
+	if _, err := a.rest(ctx); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range need {
+		if a.denied[p] {
+			return fmt.Errorf("%w: the installation withholds %s (its token is minted without it)", forge.ErrPermissionsNotGranted, p)
+		}
+	}
+	return nil
 }
 
 func (a *AppClient) Provider() forge.Provider { return forge.ProviderGitHub }
