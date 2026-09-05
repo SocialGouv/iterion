@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.107.0](https://github.com/SocialGouv/iterion/compare/v3.106.1...v3.107.0) (2026-09-05)
+
+### Features
+
+* **golden-master:** sync-harness.bot — the judge's code reaches a target tree without a rite ([#750](https://github.com/SocialGouv/iterion/issues/750)) ([12e35c6](https://github.com/SocialGouv/iterion/commit/12e35c6731d26a2b0802d643027e392d7f311ce1)), references [#765](https://github.com/SocialGouv/iterion/issues/765) [#765](https://github.com/SocialGouv/iterion/issues/765)
+
+    <details><summary>why</summary>
+
+    The harness is the net's decision procedure. Its content belongs to the net's owner and changes through a rite; its code is this bundle's and is repaired upstream — and until now the only path for a repaired judge into a tree that judges with it was a full rite: hours of agent work and a fresh held-out cycle for a one-line fix in a file no agent may edit. Measured on a live campaign: a rite re-materialised the harness with the bug still in it, and every lot on that tree was refused on the same…
+
+    </details>
+
 ## [3.106.1](https://github.com/SocialGouv/iterion/compare/v3.106.0...v3.106.1) (2026-09-05)
 
 ### Bug Fixes
