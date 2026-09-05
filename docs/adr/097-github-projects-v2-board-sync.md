@@ -428,6 +428,52 @@ path is an **effect-kind on `EffectRow`** (expand/contract) with the projection
 as a first-class effect — not a pseudo-subscription. The pass stays the net
 underneath it either way.
 
+#### Addendum (issue #746) — the follow-up shipped; the pass stays the net
+
+The effect kind is in: `EffectRow.Kind` is `launch` (the zero value, so every
+row written before it — and by every replica mid-rollout — reads as one) or
+`projection`. A `card.moved` event on a tenant that has a `BoardBinding`
+materializes ONE projection row, and `Evaluator.applyEffect` gained the arm
+that executes it through `reflectNativeState` — the same reflect, one
+implementation, two callers. **Reflect latency is now the outbox's (seconds),
+not `sync_every`'s.**
+
+Each of the three objections above was answered rather than waived:
+
+1. *No effect kind* — added, expand/contract, both twins, conformance covering
+   a RAW pre-discriminator document. No version integer: the outbox is a store,
+   not a negotiated wire, and the rollout doc's own test — "what does a replica
+   that never sees the field do instead, and is that safe?" — answers *treats
+   it as a launch, finds no subscription, retires it*, i.e. degrades to
+   yesterday's latency with the pass still underneath. It cannot fail open.
+2. *Would have to BE a subscription* — it is not one. No `ExecutionMode`, an
+   EMPTY `sub_id`, and a row key using a separator `EffectID` does not, so
+   `/api/v1/triggers` cannot list it and no operator DELETE can kill the
+   reflect. Tested: materializing one creates no subscription, and the worker
+   reaches the arm through a subscription store that fails on `Get`.
+3. *The machine-caused decline* — the admission path was not edited. The
+   projection is computed **before** `matchingSubscriptions` and dispatched
+   **before** the decline in `applyEffect`, at one line each, with the reason
+   stated there. Launch admission is untouched, and a watchdog filing a card in
+   `blocked` reaches the roadmap in seconds instead of two minutes.
+
+What the fast path cannot do is verify the reflect's precondition ("the board
+still says what iterion last recorded") — it issues no board read. So it checks
+the only thing it can: the column the card **left**. Mapping to the recorded
+status means the two sides agreed right up to this move, and the divergence is
+the move. Not mapping means somebody moved the card on the board since the last
+pass; the projection declines and leaves the record stale, which is exactly
+what makes the pass re-derive and arbitrate §9's conflict with real timestamps.
+A previous state the map does not carry is inert (§2), so it is not a
+divergence and the reflect proceeds.
+
+The pass is unchanged and remains the net. Both orders are idempotent and
+tested as such: after a projection the next pass writes nothing (to the forge
+or to the card — a gratuitous `External` write is a `card.updated` that
+relaunches every label-matching subscription), and after a pass a projection
+row writes nothing. `sync_every: 0` is now a real choice rather than a
+degradation: the fast path runs with no net under it.
+
 Everything else follows the shipped doctrine:
 
 - Every native write is a CAS; every GitHub write is idempotent by construction
@@ -442,7 +488,9 @@ Everything else follows the shipped doctrine:
   *launches*, because they must not spend budget. The pass form needs no
   exemption for that gate: it reads the card's CURRENT column, so a watchdog
   filing a card in `blocked` is reflected like any other move — which is
-  precisely what the roadmap must show.
+  precisely what the roadmap must show. The projection arm added by the
+  addendum below states that exemption explicitly instead of inheriting it,
+  since it *does* ride the shared admission prelude.
 
 ### 11. Permissions, stated up front
 

@@ -14,6 +14,9 @@ Methodology this serves: [AGENTS.md](../AGENTS.md).
 |---|---|---|
 | Title, body, labels, assignees, open/closed | GitHub issue → card | the **issue sync**: `iterion remote forge integrations sync <id>` on cloud, `iterion issue import` on a local store |
 | **`Status`** | **both ways** | the project pass |
+
+| Title, body, labels, assignees, open/closed | GitHub issue → card | `iterion issue import` |
+| **`Status`** | **both ways** | the project pass, plus the per-move [projection effect](#how-fast-a-native-move-reaches-the-board) on the native → board side |
 | `Area` / `Mode` / `Priority` | board → card labels | the project pass |
 | everything else on the board | — | nothing |
 
@@ -176,6 +179,53 @@ actually carries.
 
 ---
 
+## How fast a native move reaches the board
+
+Two paths push a native card's column onto the bound board, and they run the
+**same reflect** — the fast one just gets there first.
+
+| path | latency | what drives it |
+|---|---|---|
+| **projection effect** | seconds | the card move itself, through the durable effect outbox |
+| **reconciliation pass** | up to `sync_every` (default 2m) | the periodic board read |
+
+A `card.moved` on a bound team writes a `projection` row into the same outbox
+the board triggers use, and a worker executes it on the next drain — so the
+roadmap follows a bot within seconds instead of trailing it by up to two
+minutes. The row inherits the outbox's guarantees for free: a leased claim (two
+replicas cannot both push), bounded retries with backoff, and a **visible
+dead-letter** carrying the forge's refusal when the write keeps failing.
+
+Nothing about it is operator-configurable, and nothing needs to be: the row
+exists iff the team has a binding, and it is not a subscription — it carries no
+bot, appears in no `/api/v1/triggers` listing, and cannot be deleted.
+
+Two cases where the fast path deliberately does nothing and lets the pass
+settle it:
+
+- **The board had already moved.** The fast path issues no board read, so it
+  cannot arbitrate "who moved last". It infers the board's state from the
+  column the card *left*: when that column no longer matches what iterion
+  recorded, somebody dragged the card on GitHub since the last pass, and
+  pushing would silently overwrite them. It defers; the pass reads both
+  timestamps and applies the [conflict rule](#conflicts).
+- **The card is not joined to the board yet**, or was last synced against a
+  different one. The import owns the join (it hydrates cards, it never creates
+  them from items), so the reflect waits for it.
+
+A **machine-caused** move — a claim watchdog filing a card in `blocked`, a
+column rename — is reflected like any other. The trigger spine declines those
+events for *launches* (they must not spend LLM budget); a projection starts no
+run, so it is explicitly exempt. Your roadmap shows what actually happened to
+the card.
+
+> Setting `--sync-every 0` leaves the fast path running with **no net under
+> it**: a move the outbox dead-letters, or one made while the binding was
+> misconfigured, then stays diverged until something moves that card again.
+> Keep the pass on unless you have a reason not to.
+
+---
+
 ## Reconciliation
 
 The board pass IS the convergence: it recomputes the truth from the board and
@@ -301,6 +351,14 @@ bound board's columns](#editing-a-bound-boards-columns)); or the credential
 lacks the write grant — `reflect_failed > 0` with a `403 Resource not
 accessible by integration` in the log means the App's *Projects: Read and
 write* is not approved.
+
+**A card moved in iterion and reached GitHub, but only minutes later.**
+The [projection effect](#how-fast-a-native-move-reaches-the-board) declined and
+the pass did the work. The two reasons it declines are both deliberate: the
+board had already moved (the pass arbitrates that with real timestamps), or the
+card is not joined to this board yet. A third possibility is that the fast path
+*failed*: look for the row parked in the effect outbox with the forge's refusal
+on it — the same `403` / permission causes as `reflect_failed` above.
 
 **A card stopped following, and the item is not on the board any more.**
 It is archived. `skipped_archived > 0` in the pass line; un-archive it to put
