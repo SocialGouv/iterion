@@ -1,5 +1,78 @@
 # Billy — branch-improvement validation
 
+## 2026-09-04/05 — three zero-touch launches on the wave-1 PRs: two deaths at the duration cap, one correct refusal we had to cancel (runs 01a06d80, 01a06e72, 01a06e45)
+
+- Status: **failed** on the two fixer runs; the third produced a correct
+  diagnosis and had to be cancelled to protect the merge it was about to break.
+- Versions: bot `branch-improve-loop` 1.2.1 · iterion cloud prod (server
+  v3.101.x) · PRs SocialGouv/iterion#682 and #683.
+- Method: the zero-touch `auto_fix_on_gate_failure` lane and the merge-queue
+  auto-heal lane, both firing by themselves. Bot budget `max_duration 2h30m`
+  / `max_cost_usd 75`, `plan_review on`, `post_to_board false`.
+
+### The two deaths, at the same cap, seconds over
+
+| run | launched | died | over by | pushed |
+|---|---|---|---|---|
+| `01a06d80` (#683 red gate) | 04/09 17:38Z | `budget exceeded: duration (2h30m01s / 2h30m)` | **4 s** | nothing |
+| `01a06e72` (#683 red gate again) | 04/09 22:03Z | `budget exceeded: duration (9001.86s / 9000s)` | **1.86 s** | nothing |
+
+Two runs, the same PR, ~5 h of forfait, **zero commits**. Both died inside the
+last two seconds of their window, which is the shape that matters: this is not
+a bot that ran out of room to finish, it is a bot whose delivery tail never got
+scheduled. The work it had done existed only in its own context and died with
+the run — nothing was banked, so nothing survived to be fast-forwarded by hand
+the way the 2026-09-03 run's chain was.
+
+Resuming with a raised cap was impossible at the time: the deployed binary had
+no budget flags on `remote runs resume`. That is exactly the re-budget half of
+#652 — which was sitting unreviewed in PR #689 while the run that would have
+used it died. It merged at 22:32Z, so the next occurrence is recoverable.
+
+### The third run: right diagnosis, wrong mission
+
+`01a06e45` was launched by the **merge-queue auto-heal** lane 3 seconds after a
+flaky test (#692) ejected the green PR #682. Its plan node (opus-5, $4.53)
+concluded, unprompted:
+
+> Verdict: no code issue in the diff. This is a re-queue, not a fix.
+
+and even noted in its own step 0 that a queue build was already in flight and
+that pushing would cancel it. Its mission then told it to rebase and
+`git push --force-with-lease` — step 1. We cancelled it; the queue run finished
+and #682 merged.
+
+The bot was right and its instructions were wrong. Worth keeping as the
+reference case for "let the fixer refuse the task": the reasoning to decline
+was already there, the contract had no way to express it.
+
+### Engine hardening this produced
+
+- **PR #693** (merged) — the auto-heal now stands down when the queue takes the
+  PR back, so a heal can no longer force-push over the build that would have
+  merged it. Keyed on the heal's own idempotency key at the current head, so a
+  human's `/billy` survives and a heal that already pushed is not killed by the
+  enqueue its own push caused.
+- **#692** — the flaky `TestEngineRunner_SubbotChildHoldsRunLock` that caused
+  the ejection: a stall (26.9 s package → 300 s timeout), not slowness, and
+  widening its budget was already tried once in #658.
+- **#690** — corroborated with production evidence: a stale usage-window
+  reading blocked every LLM run for ~50 min, including the merge gate itself,
+  with no path to recover on its own.
+
+### Lessons for next run
+
+1. **The 2h30 default is the finding, not the accident.** Two independent runs
+   landing 4 s and 1.86 s over is not bad luck; it is a cap sized below the work
+   being asked. Either raise the bot's `max_duration`, or give the campaign a
+   delivery reserve it cannot spend on analysis.
+2. **A fixer with nothing banked has nothing to salvage.** The 2026-09-03 run
+   died three times but banked 17 commits, which the operator fast-forwarded by
+   hand. These two banked nothing — commit-in-stride is what makes a death
+   survivable.
+3. **The auto-heal lane cannot tell a flake from a real break** and should not
+   try to; #693 bounds the damage, the flake itself belongs to #692.
+
 ## 2026-09-03 — `/billy` on the watchdog PR: three deaths, the banked chain delivered by hand (run 01a06728)
 
 - Status: **partial.** The fixer's work landed (17 commits on
