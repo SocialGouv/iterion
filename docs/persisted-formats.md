@@ -160,6 +160,8 @@ parent's).
   },
   "backend_session_state_ref": "",
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
+  "recovery_pause": true,
+  "recovery_code": "AUTH_FAILED",
   "budget_tokens_used": 42000,
   "budget_cost_usd": 1.25,
   "budget_iterations_used": 7,
@@ -171,6 +173,12 @@ parent's).
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+`recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
+for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
+the node still owes its work, so the answer that resumes the run is an
+acknowledgement, never the node's output, and resume re-executes the node
+(the interaction is written with `kind: "recovery"`). Both are cleared with
+the pause pointer once a resume claims the run.
 `selected_incoming` is the set of incoming edges routing actually fired
 into each node for its current visit, so a resume of that node applies
 the same with-mappings (issue #484). Missing fields on historical

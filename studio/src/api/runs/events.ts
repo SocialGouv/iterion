@@ -212,6 +212,10 @@ export interface RunPausedEvent extends RunEventBase {
 
 export interface RunResumedEvent extends RunEventBase {
   type: "run_resumed";
+  // A plain human-pause resume carries no data. The failure path stamps
+  // {resumed_from: "failed", restart_node, from_entry?}; a recovery-pause
+  // resume (a FAILED node acknowledged by the operator, re-executed) stamps
+  // {resumed_from: "recovery_pause", restart_node, recovery_code}.
   data?: Record<string, unknown>;
 }
 

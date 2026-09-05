@@ -184,6 +184,14 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		return e.resumeReviewGate(ctx, r, cp, hn, answers)
 	}
 
+	// A recovery pause (the dispatcher parked a FAILED node for a human)
+	// resumes by re-executing that node. It must leave before the
+	// human-output path below, which would record the acknowledgement as
+	// the node's output and walk on to its successors.
+	if cp.RecoveryPause {
+		return e.resumeFromRecoveryPause(ctx, r, cp, answers)
+	}
+
 	// Coerce string-typed answers (from `iterion resume --answer key=value`,
 	// which can only carry strings) into the human node's output-schema
 	// types, so a `when <bool>` edge sees true, not "true", and a typed
@@ -351,6 +359,71 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	return loopErr
 }
 
+// resumeFromRecoveryPause continues a run the recovery dispatcher parked on a
+// FAILED node (RecoveryPauseForHuman: an auth rotation, a budget bump, a
+// rate-limit reset). The operator's answer is an acknowledgement that the
+// cause is addressed — it is recorded on the interaction for the audit
+// trail, then the node RE-EXECUTES from its own dispatch, exactly as a
+// failed_resumable resume would restart it. It never becomes the node's
+// output: the pause's question promises a retry, and a gate downstream
+// cannot tell "the agent changed nothing" from "the agent never ran".
+//
+// The restored NodeAttempts keep the dispatcher's per-(node, code) budget
+// counting across the pause, so a second identical failure is judged as
+// the second attempt, not a fresh first one.
+func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any) error {
+	runID := r.ID
+	nodeID := cp.NodeID
+	if _, ok := e.workflow.Nodes[nodeID]; !ok {
+		return &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: nodeID, Message: fmt.Sprintf("runtime: recovery-paused node %q not found in workflow", nodeID)}
+	}
+	if err := e.recordHumanAnswers(ctx, r, cp, answers); err != nil {
+		return err
+	}
+	resumeData := map[string]any{
+		"resumed_from": "recovery_pause",
+		"restart_node": nodeID,
+	}
+	if cp.RecoveryCode != "" {
+		resumeData["recovery_code"] = cp.RecoveryCode
+	}
+	if err := e.claimForResumeWithData(ctx, r, cp, resumeData, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+		return err
+	}
+	// A budget pause resumed without a raised cap would re-run the node
+	// straight into the same wall; the same pre-flight the failure path
+	// applies refuses it with the real cause instead.
+	if err := e.failSpentBudgetBeforeResume(ctx, r); err != nil {
+		return err
+	}
+	// The node's own output slot stays empty: it produced nothing.
+	outputs := copyOutputs(cp.Outputs)
+	if outputs == nil {
+		outputs = make(map[string]map[string]any)
+	}
+	artifactVersions := cloneMap(cp.ArtifactVersions)
+	if artifactVersions == nil {
+		artifactVersions = make(map[string]int)
+	}
+	e.restampWorkflowSource(ctx, r)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
+	if rbErr != nil {
+		return rbErr
+	}
+	defer sandboxCleanup()
+	rs.ctx = ctx
+	if e.logger != nil {
+		e.logger.Info("resume %s: recovery pause on node %q (%s) acknowledged — re-executing the node", runID, nodeID, cp.RecoveryCode)
+	}
+
+	loopErr := e.execLoop(ctx, rs, nodeID)
+	e.evictRunSessions(runID, loopErr)
+	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
+		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
+	}
+	return loopErr
+}
+
 // resumeParallelPause answers a human node owned by one fan-out branch, then
 // restarts at the router. The durable branch cursors make completed siblings
 // return immediately and the answered branch consumes ResumeAnswers exactly
@@ -497,6 +570,15 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 // emit (its checkpoint holds no pause pointer: failure boundaries never
 // set one, and a pause's pointer was consumed by the resume that used it).
 func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, allowed ...store.RunStatus) error {
+	return e.claimForResumeWithData(ctx, r, cp, nil, allowed...)
+}
+
+// claimForResumeWithData is claimForResume carrying a run_resumed payload
+// — the recovery-pause resume stamps {resumed_from, restart_node,
+// recovery_code} the way the failure path stamps {resumed_from,
+// restart_node}, so the trace names the retry. nil data keeps the plain
+// human-pause shape.
+func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any, allowed ...store.RunStatus) error {
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
@@ -505,7 +587,7 @@ func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Che
 		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", r.ID)
 	}
 	e.consumePausePointer(ctx, r, cp)
-	return e.emit(ctx, r.ID, store.EventRunResumed, "", nil)
+	return e.emit(ctx, r.ID, store.EventRunResumed, "", data)
 }
 
 // consumePausePointer clears the interaction evidence off the persisted
@@ -527,6 +609,8 @@ func (e *Engine) consumePausePointer(ctx context.Context, r *store.Run, cp *stor
 	consumed := *cp
 	consumed.InteractionID = ""
 	consumed.InteractionQuestions = nil
+	consumed.RecoveryPause = false
+	consumed.RecoveryCode = ""
 	err := e.store.SaveCheckpoint(ctx, r.ID, &consumed)
 	if err != nil {
 		// One retry: a failed consumption reopens the human-gate window,
@@ -1866,6 +1950,12 @@ type pauseInfo struct {
 	// Interaction so the whole thread re-renders on resume. Nil for
 	// ordinary single-shot human pauses.
 	Turns []store.InteractionTurn
+	// RecoveryPause marks a pause the recovery dispatcher wrote for a node
+	// whose execution failed (RecoveryPauseForHuman). The node still owes
+	// its work, so resume re-executes it instead of taking the answers as
+	// its output. RecoveryCode is the classified failure (AUTH_FAILED, …).
+	RecoveryPause bool
+	RecoveryCode  ErrorCode
 }
 
 // drainOperatorMessagesForPause empties the run's operator-queued
@@ -1974,6 +2064,8 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
 	cp.BackendSessionStateRef = info.BackendSessionStateRef
+	cp.RecoveryPause = info.RecoveryPause
+	cp.RecoveryCode = string(info.RecoveryCode)
 	if err := e.store.PauseRun(rs.ctx, rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}
