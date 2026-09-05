@@ -487,9 +487,25 @@ type DoneNode struct {
 func (n *DoneNode) NodeKind() NodeKind { return NodeDone }
 
 // FailNode is a terminal failure node.
+//
+// The implicit `fail` target carries none of the fields below and keeps
+// the engine's generic outcome. A `fail <name>:` declaration fills them,
+// which is what puts the bot's own diagnosis on the RUN — its
+// `failure_code` and `error` — instead of leaving every deliberate
+// refusal indistinguishable from every other.
 type FailNode struct {
 	BaseNode
 	AwaitMode AwaitMode // convergence strategy when multiple branches arrive
+	// Code is the UPPER_SNAKE failure code stamped on the run
+	// (store.FailureCode). Empty = the generic FAIL_NODE.
+	Code string
+	// Message is the operator-facing reason, resolved against the run's
+	// namespaces at fail time. Empty = the generic wording.
+	Message *DataMapping
+	// Resumable parks the run failed_resumable (checkpoint kept, the
+	// retry machinery may pick it up) instead of terminal failed. Opt-in:
+	// a fail node is intentional termination by default.
+	Resumable bool
 }
 
 // NodeKind implements Node.

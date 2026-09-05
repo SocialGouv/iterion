@@ -162,7 +162,7 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
 			return true, true, "", emErr
 		}
-		return true, true, "", e.failRunDeliberate(rs, currentNodeID, "workflow reached fail node")
+		return true, true, "", e.failRunDeliberate(rs, currentNodeID, e.failOutcome(rs, n))
 
 	case *ir.HumanNode:
 		switch n.Interaction {
@@ -426,7 +426,9 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		defer cancel()
 	}
 
+	execStart := time.Now()
 	output, execErr := e.executor.Execute(spanCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if execErr != nil {
 		span.RecordError(execErr)
 		span.SetStatus(codes.Error, execErr.Error())

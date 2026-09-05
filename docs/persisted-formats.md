@@ -73,7 +73,15 @@ on a failure status (`failed` / `failed_resumable` / `cancelled`), written
 atomically with the status and cleared by every transition to a non-failure
 status. Absent/empty means UNKNOWN (legacy rows, unclassified writers) —
 never "no failure". The vocabulary is open-world: readers must accept codes
-they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)).
+they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)) —
+and it is open in practice, not just in principle: a workflow's own
+`fail <name>:` declaration supplies the code and the `error` text
+([DSL](dsl.md#typed-terminal-failure--fail-name)), so a deployment sees
+whatever vocabulary its bots define. The engine's constants remain the
+fallback: an untyped `-> fail` still writes `FAIL_NODE` /
+"workflow reached fail node". A `fail` node that declares
+`resumable: true` writes its code on `failed_resumable` instead of
+`failed`; the code says WHY, never whether the run may continue.
 
 `outcome_seq` counts the run's terminal EPISODES: it increments on every
 TRANSITION into `finished` / `failed` / `failed_resumable` / `cancelled`

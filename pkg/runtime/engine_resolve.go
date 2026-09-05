@@ -616,6 +616,7 @@ func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
 		LoopPreviousOutput: loopPreviousOutputView(rs),
 		Artifacts:          rs.artifacts,
 		RunID:              rs.runID,
+		Run:                runNamespace(rs),
 		Attachments:        rs.attachments,
 	}
 }

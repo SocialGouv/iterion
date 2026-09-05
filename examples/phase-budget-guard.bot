@@ -1,0 +1,58 @@
+## phase-budget-guard.bot — the two halves of a self-limiting phase.
+##
+## 1. The `run.*` namespace lets a deterministic compute read the run's own
+##    consumption and its EFFECTIVE caps (after `--max-*`, the recipe, the
+##    platform ceiling and any live raise_budget). No mirror var to keep in
+##    sync with the `budget:` block, no self-measured wall clock.
+##
+## 2. A named `fail` node carries the diagnosis onto the RUN — its
+##    `failure_code` and `error` — so `iterion runs list`, the studio, the
+##    merge-gate notice and the alert sinks can act on WHY the bot stopped.
+##    `resumable: true` because the cure here is "raise the cap and carry
+##    on", not "start the plan phase over".
+
+schema note:
+  value: string
+
+schema gauge:
+  used_pct: int
+  exhausted: bool
+
+prompt plan_task:
+  Draft the implementation plan. Keep it short.
+
+agent plan:
+  model: "anthropic/claude-sonnet-4-6"
+  user: plan_task
+  output: note
+
+compute plan_budget_gate:
+  output: gauge
+  expr:
+    ## A cap of 0 means UNBOUNDED, so the guard checks for one first —
+    ## without that, an unbudgeted run divides by zero and reads +Inf.
+    used_pct: "if(run.max_duration_seconds > 0, run.elapsed_seconds * 100 / run.max_duration_seconds, 0)"
+    exhausted: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.33"
+
+agent implement:
+  model: "anthropic/claude-sonnet-4-6"
+  user: plan_task
+  output: note
+
+fail plan_exhausted:
+  description: "the plan phase outgrew its share of the budget"
+  code: PLAN_BUDGET_EXHAUSTED
+  message: "planning used {{outputs.plan_budget_gate.used_pct}}% of max_duration — raise --max-duration and resume"
+  resumable: true
+
+workflow phase_budget_guard:
+  entry: plan
+
+  budget:
+    max_duration: "30m"
+    max_cost_usd: 5
+
+  plan -> plan_budget_gate
+  plan_budget_gate -> plan_exhausted when exhausted
+  plan_budget_gate -> implement else
+  implement -> done

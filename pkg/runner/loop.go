@@ -316,6 +316,24 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			logArgs:     []any{msg.RunID, strings.TrimSpace(run.Error), msg.Resume != nil},
 		}
 	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
+		// A run parked on a BOT-defined code refused deliberately: only an
+		// operator changing something (a raised cap, a different --var)
+		// can change the verdict, so synthesising a resume here re-runs
+		// the guard against identical inputs, forever. The runner holds no
+		// allow-list of its own — the ENGINE's vocabulary is the boundary,
+		// so only a reserved (engine) code may be auto-resumed. An empty
+		// code means UNKNOWN (legacy rows, paused_operator, which never
+		// carries one) and keeps resuming, as it always has.
+		if run.FailureCode != "" && !run.FailureCode.Reserved() {
+			return preconditionOutcome{
+				finalStatus: string(run.Status),
+				op:          "ack-deliberate-failure",
+				action:      actionAck,
+				level:       logWarn,
+				logFmt:      "runner: run %s is parked on the bot-defined code %q — dropping the redelivery, NOT auto-resuming (the same guard would refuse identically; an operator resume with changed inputs re-queues it)",
+				logArgs:     []any{msg.RunID, run.FailureCode},
+			}
+		}
 		if msg.Resume == nil {
 			msg.Resume = &queue.ResumeSpec{}
 			return preconditionOutcome{
@@ -600,6 +618,32 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			action:      actionAck,
 			level:       logWarn,
 			logFmt:      "runner: run %s hit a budget cap — failed_resumable, NOT auto-resuming (resume manually with a raised cap): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
+	// The WORKFLOW refused on purpose — it reached a `fail` node. This is
+	// the one failure an automatic retry can never fix: the graph
+	// re-executes the same guard against the same inputs and refuses
+	// identically, so every redelivery is a pod and a sandbox spent to
+	// reach the same verdict. Worse than the budget case it sits beside,
+	// because a `resumable: true` fail parks failed_resumable, which
+	// dispositionForStatus otherwise reads as "synthesise a resume" — the
+	// loop then runs to MaxDeliver, where the DLQ park overwrites the
+	// bot's typed code with DLQ_PARKED, destroying the diagnosis the
+	// typed fail existed to publish.
+	//
+	// Matched by SENTINEL, not by code: the code is bot-defined
+	// (PLAN_BUDGET_EXHAUSTED, LOT_NOT_ACTIONABLE, …), so no allow-list the
+	// runner could hold would recognise it. Ack; the run stays exactly as
+	// the engine left it (failed_resumable or failed, with its own code)
+	// and waits for a HUMAN who changed something.
+	if errors.Is(execErr, runtime.ErrDeliberateFailure) {
+		return execOutcome{
+			finalStatus: "deliberate_failure",
+			op:          "ack-deliberate-failure",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s refused deliberately at a fail node — NOT auto-resuming (only changed inputs can change the verdict): %v",
 			logArgs:     []any{runID, execErr},
 		}
 	}

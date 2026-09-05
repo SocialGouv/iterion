@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -139,7 +140,9 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 
 	// Execute LLM call via the executor.
 	execCtx := model.WithLoopIteration(ctx, iter)
+	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, routerInput)
+	stampNodeDuration(output, execStart)
 	if err != nil {
 		return "", fmt.Errorf("llm router %q: %w", routerNodeID, err)
 	}

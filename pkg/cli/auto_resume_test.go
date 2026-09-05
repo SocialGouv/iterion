@@ -66,6 +66,15 @@ func TestGateAutoResume(t *testing.T) {
 		{"loop exhausted", runtime.ErrCodeLoopExhausted, notRaised, false, false, false},
 		{"tool permanent", runtime.ErrCodeToolFailedPermanent, notRaised, false, false, false},
 		{"unclassified", runtime.ErrorCode(""), notRaised, false, false, false},
+		// A bot-defined code from a `resumable: true` fail node. The
+		// allow-list is closed, so it lands here by construction — and
+		// that is the RIGHT default: the run refused deliberately, and the
+		// only thing that can change the verdict is an operator changing
+		// something (a raised cap, a `--var`). Auto-resuming would replay
+		// the same refusal on a loop.
+		{"typed fail node code", runtime.ErrorCode("PLAN_BUDGET_EXHAUSTED"), notRaised, false, false, false},
+		{"typed fail node code, cap raised", runtime.ErrorCode("PLAN_BUDGET_EXHAUSTED"), raised, false, false, false},
+		{"engine fail-node constant", runtime.ErrorCode("FAIL_NODE"), notRaised, false, false, false},
 		// budget special-casing
 		{"budget without raised cap → stop", runtime.ErrCodeBudgetExceeded, notRaised, false, false, false},
 		{"budget with raised cap → proceed once", runtime.ErrCodeBudgetExceeded, raised, false, true, true},

@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -329,6 +331,9 @@ func (c *compiler) validateNodeNames() {
 	for _, d := range c.file.Subbots {
 		all = append(all, decl{"subbot", d.Name})
 	}
+	for _, d := range c.file.Fails {
+		all = append(all, decl{"fail", d.Name})
+	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
 	for _, d := range all {
@@ -425,6 +430,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileWaits()
 	c.compileAwaitAnswers()
 	c.compileSubbots()
+	c.compileFails()
 
 	// Add terminal nodes. Safe by construction now: validateNodeNames
 	// above rejects any user node named "done"/"fail" before this point.
@@ -1364,6 +1370,63 @@ func (c *compiler) compileAwaitAnswers() {
 			From:     ad.From,
 			Timeout:  timeout,
 		}
+	}
+}
+
+// failCodePattern is the shape a `code:` must have to be a machine-readable
+// failure code: UPPER_SNAKE, letters first. It is the alphabet the engine's
+// own store.FailureCode constants use (FAIL_NODE, BUDGET_EXCEEDED, …), and
+// the value is persisted on the run and read by the CLI, the studio, the
+// merge-gate notice and the alert sinks — so a lowercase or spaced code is
+// refused at compile time rather than shipped to every one of them.
+var failCodePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// compileFails turns `fail <name>:` declarations into named terminal
+// failure nodes. The implicit `fail` target is added later by Compile and
+// stays untyped: this is the opt-in form, and a workflow may declare one
+// per reason it refuses.
+func (c *compiler) compileFails() {
+	for _, fd := range c.file.Fails {
+		if _, exists := c.nodes[fd.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[fd.Name] {
+			continue
+		}
+		node := &FailNode{
+			BaseNode:  BaseNode{ID: fd.Name, Description: fd.Description},
+			Resumable: fd.Resumable,
+		}
+		if fd.Code != "" {
+			switch {
+			case !failCodePattern.MatchString(fd.Code):
+				c.errorfAt(DiagInvalidFailCode, fd.Name, "",
+					"fail %q has `code: %s` — a failure code must be UPPER_SNAKE (e.g. PLAN_BUDGET_EXHAUSTED): it is persisted as the run's failure_code and read by machines",
+					fd.Name, fd.Code)
+			case store.FailureCode(fd.Code).Reserved():
+				// The vocabulary is open-world for readers but not for
+				// writers: the engine reads its OWN codes as control flow
+				// (the auto-resume allow-list, the cloud usage-window
+				// retry). A deliberate refusal wearing one of those names
+				// is auto-retried as a transient fault, and a resumable
+				// fail re-runs the same guard — so every attempt burns
+				// for nothing.
+				c.errorfAt(DiagReservedFailCode, fd.Name, "",
+					"fail %q has `code: %s` — that code belongs to the engine and is read as control flow (auto-resume, usage-window retry); pick a name of the bot's own, e.g. PLAN_BUDGET_EXHAUSTED",
+					fd.Name, fd.Code)
+			default:
+				node.Code = fd.Code
+			}
+		}
+		if fd.Message != "" {
+			refs, err := ParseRefs(fd.Message)
+			if err != nil {
+				c.errorfAt(DiagBadTemplateRef, fd.Name, "", "fail %q message: %v", fd.Name, err)
+			} else {
+				node.Message = &DataMapping{Key: "message", Refs: refs, Raw: fd.Message}
+			}
+		}
+		c.nodes[fd.Name] = node
 	}
 }
 

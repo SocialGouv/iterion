@@ -174,7 +174,7 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
 	resolve := func() string {
 		expanded := expandBracedEnv(node.Postcondition)
-		expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), node.PostcondRefs, shellEscapeValue)
+		expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), TemplateDataFromContext(ctx), node.PostcondRefs, shellEscapeValue)
 		// A postcondition is the node's second shell command body, resolved
 		// with the same escaper, and its refs are validated against the same
 		// input schema — so a `json`-declared field holding a list breaks out

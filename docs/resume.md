@@ -21,6 +21,80 @@ Reaching the reserved `fail` node intentionally produces `failed`. Compile or
 bootstrap errors can happen before a resumable run exists, and a store failure
 that prevents checkpoint persistence may also fall back to `failed`.
 
+A **named** fail node (`fail <name>:`, see [the DSL reference](dsl.md#typed-terminal-failure--fail-name))
+may opt out of that with `resumable: true`, which parks the run
+`failed_resumable` — the ordinary resumable status above, resumable by the
+CLI and by HTTP. Declare it only when continuing is genuinely the cure. The
+reference case is a phase-budget guard whose remedy is "raise the cap and
+carry on": leaving that terminal makes the operator re-pay a phase the run
+already completed, which is the very cost the guard exists to avoid. A
+refusal that a resume could only repeat — "this lot is not actionable" —
+stays terminal, the default.
+
+Either way the node's `code:` lands on the run's `failure_code` and its
+rendered `message:` on `error`, so what the resume is recovering FROM is
+legible without opening the run's artifacts.
+
+**The checkpoint anchors on the GUARD, not on the fail node.** A resume
+starts execution at the checkpoint's node, so anchoring on the fail node
+would re-dispatch the fail node and reproduce the identical outcome — the
+guard that refused would never be re-evaluated and the raised cap would
+change nothing. The engine therefore anchors a resumable fail on the
+PREDECESSOR whose outgoing edge routed into it: the resume re-executes that
+guard against the new caps and takes the other edge. Concretely:
+
+```bash
+iterion resume --run-id RUN_ID --max-cost-usd 10
+```
+
+**Fallback, stated out loud.** When no single predecessor can be named —
+the fail node IS the workflow `entry:`, or several branches converged on
+it, so no one guard owns the refusal — the promise cannot be kept. The run
+then ends **terminal `failed`** and the engine logs a WARN naming the node
+and the reason, rather than offering a resume that would silently do
+nothing. The `code:` and `message:` still land on the run; only the
+resumability degrades. (A fail node reached inside a `fan_out_all` /
+`fan_out_each` branch never takes this path at all: the branch reports the
+node's diagnosis as its error and the collector decides the run's fate.)
+
+**A typed failure is NOT auto-resumed.** `--auto-resume` and the cloud
+runner's retry both gate on a closed allow-list of engine codes
+(`EXECUTION_FAILED`, `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`,
+`NETWORK_TRANSIENT`, `TOOL_FAILED_TRANSIENT`, and `BUDGET_EXCEEDED` with a
+raised cap). A bot-defined code is outside it, and deliberately so: the run
+refused on purpose, and nothing an unattended retry can do changes the
+verdict — only an operator can (a raised cap, a different `--var`). The run
+stays parked at `failed_resumable` for a human, and the log says "not
+auto-recoverable (code &lt;YOURS&gt;)".
+
+That is **enforced, not assumed**: `code:` is refused at compile time when
+it collides with one of the engine's own `store.FailureCode` values
+([C248](references/diagnostics.md)), so a `fail` node cannot mint
+`USAGE_LIMIT_BLOCKED` and be auto-retried as a transient provider block.
+The reserved set is derived from `store.ReservedFailureCodes` — one list,
+guarded against drift by a test that parses the constant block.
+
+**On a cloud runner the same rule holds, and by two independent barriers.**
+The CLI gate above is one process's decision; a queued run is redelivered
+by JetStream, which knows nothing about it. So:
+
+- The engine's refusal carries `runtime.ErrDeliberateFailure` as the cause
+  of its error. The runner **ACKs** it (`ack-deliberate-failure`) instead
+  of NAKing — the shape the `BUDGET_EXCEEDED` carve-out beside it already
+  uses. It is matched by SENTINEL, not by code: the code is bot-defined,
+  so no allow-list could recognise it.
+- A redelivery that arrives anyway (an older engine, a re-publish) is
+  refused a second time: the runner will not synthesise a resume for a run
+  whose `failure_code` is **not** `Reserved()`. Only an engine code is
+  auto-resumable.
+
+Without them, a `resumable: true` refusal looped: NAK → redeliver → the
+runner synthesises a resume → the guard refuses identically → repeat to
+`MaxDeliver`, where the DLQ park overwrites the bot's typed code with
+`DLQ_PARKED` — a pod and a sandbox per turn, and the diagnosis destroyed at
+the end of it. The run now stays `failed_resumable` with its own code,
+waiting for a human who changed something.
+
 ## CLI
 
 The source path is optional when it was persisted at launch:

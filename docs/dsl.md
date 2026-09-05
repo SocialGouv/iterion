@@ -132,6 +132,8 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 | `{{loop.name.iteration}}` / `.max` / `.previous_output` | Declared-loop state. |
 | `{{each.name.item}}` / `.index` / `.count` / `.first` / `.last` / `.empty` | Sequential edge-`foreach` state. |
 | `{{run.id}}` | Current run id. |
+| `{{run.elapsed_seconds}}` / `.cost_usd` / `.tokens` / `.iterations` | What the run has consumed so far — see [the run namespace](#the-run-namespace). |
+| `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
 
 `fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution. In a tool `command` or `script`, `{{!input.field}}` is the explicit raw-substitution form; ordinary `{{input.field}}` is shell-escaped. Use the raw form only when the value is intentionally executable shell syntax, because it crosses the command-injection boundary.
@@ -325,6 +327,66 @@ compute summarize:
 
 Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, and `flatten`. They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
 
+### The `run` namespace
+
+A node can read the run's own consumption and the caps it is running
+under. This is what a **phase-budget guard** is built from — "the plan
+phase has used a third of `max_duration`, stop planning" — without
+self-measuring wall-clock in a tool node or mirroring the `budget:`
+block through vars that drift from it in silence.
+
+| Member | Type | Meaning |
+|---|---|---|
+| `run.id` | string | The run id. |
+| `run.elapsed_seconds` | float | Active time consumed. Monotonic, so an OS suspend does not count; prior active time is preserved across a resume. |
+| `run.cost_usd` | float | LLM spend booked so far. A call whose price could not be resolved is NOT in it — see [budget](#budget-and-loop-back-edges). |
+| `run.tokens` | int | Tokens consumed so far. |
+| `run.iterations` | int | Node executions recorded so far. |
+| `run.max_duration_seconds` | float | The **effective** duration cap. |
+| `run.max_cost_usd` | float | The effective cost cap. |
+| `run.max_tokens` | int | The effective token cap. |
+| `run.max_iterations` | int | The effective iteration cap. |
+
+The four `max_*` members are the caps **in force right now**: the
+`budget:` block after the `iterion run --max-*` flags, the recipe/preset,
+the cloud platform ceiling and any live `raise_budget` have been applied.
+That is the point — a guard written against the DSL literal would be
+wrong on every run that re-budgeted.
+
+Two conventions:
+
+- **A `max_*` of `0` means UNBOUNDED** on that axis — the run declared no
+  cap there — never "no allowance left". Divide by one without checking
+  and a guard reads `+Inf`.
+- **A workflow with no `budget:` block has no tracker at all**, so
+  `cost_usd` / `tokens` / `iterations` read `0` (nothing meters them) and
+  every cap reads `0`. `elapsed_seconds` still advances — it is the one
+  figure a bot cannot reconstruct for itself. A guard that compares
+  against a cap therefore needs the `budget:` block that declares it.
+
+An unknown member (`run.no_such_thing`) resolves to nothing — the same
+silence as `vars.<unknown>` — rather than raising. Comparing it in an
+expression is what fails, loudly, at the node.
+
+The members are available in `compute` expressions and quoted `when`
+conditions, in prompt bodies, and in tool `command:` / `script:` /
+`postcondition:` templates. An expression resolves them at **evaluation**
+time; a prompt or a command is rendered once at node dispatch, so those
+read the run as it was when the node started.
+
+Alongside them, every executed node's output carries `_duration_ms` next
+to the `_tokens` / `_cost_usd` keys the backends write — the per-node
+timing counterpart, stamped by the engine so tool and compute nodes get
+it too.
+
+```iter
+compute plan_budget_gate:
+  output: gauge
+  expr:
+    used_ratio: "run.elapsed_seconds / run.max_duration_seconds"
+    exhausted: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.33"
+```
+
 ### `emit` and `wait`
 
 These nodes coordinate concurrent branches through immutable run-scoped events:
@@ -343,6 +405,67 @@ wait await_ready:
 ```
 
 `wait.timeout` is mandatory: the language does not permit an unbounded silent wait.
+
+### Typed terminal failure — `fail <name>:`
+
+`done` and the bare `fail` are reserved edge targets, not declarations.
+Routing to `fail` ends the run as `failed` with the engine's own generic
+outcome — `FAIL_NODE`, "workflow reached fail node" — which is all an
+operator sees whichever of a bot's refusals fired.
+
+A workflow that refuses for a **reason** declares a named fail node
+instead. One per reason; the bare `fail` keeps its untyped behaviour.
+
+```iter
+fail plan_exhausted:
+  description: "the plan phase outgrew its share of the budget"
+  code: PLAN_BUDGET_EXHAUSTED
+  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
+  resumable: true
+
+fail not_actionable:
+  code: LOT_NOT_ACTIONABLE
+  message: "nothing in this lot is actionable"
+```
+
+| Field | Meaning |
+|---|---|
+| `code:` | UPPER_SNAKE identifier stamped on the run's `failure_code`. [C247](references/diagnostics.md) refuses any other shape — the value is persisted and read by machines (`iterion runs list`, the studio, the merge-gate notice, the alert sinks) — and [C248](references/diagnostics.md) refuses one that collides with an ENGINE code (`BUDGET_EXCEEDED`, `TIMEOUT`, `USAGE_LIMIT_BLOCKED`, …), which the retry machinery reads as control flow. |
+| `message:` | The operator-facing reason, stamped on the run's `error`. Templated with the usual `{{...}}` references and resolved **at fail time**, so the figure that caused the refusal is the one reported. |
+| `resumable:` | `true` parks the run `failed_resumable` instead of terminal `failed`, with its checkpoint anchored on the GUARD that routed in — so the resume re-evaluates that guard, not the fail node. Off by default: a fail node is intentional termination. |
+| `description:` | Human-readable node label, as on every other node kind. |
+
+The default stays terminal because that is what a deliberate refusal
+usually means. Declare `resumable: true` when continuing is genuinely the
+cure — a phase-budget guard whose remedy is "raise the cap and carry on"
+would otherwise make the operator re-pay the phase the run already
+completed, the exact cost the guard exists to avoid.
+
+Two things a `resumable: true` node must be authored against: the guard it
+follows is **re-executed** on the resume, so it has to be re-runnable
+(deterministic gates are — a `compute` or a `tool` reading `run.*` is the
+shape this is built for); and the promise is only kept when ONE predecessor
+routed in, so a fail node used as a fan-out convergence, or declared as the
+workflow `entry:`, degrades to terminal with a WARN.
+
+**Nothing picks a refusal up by itself** — not `--auto-resume`, not the
+cloud runner's redelivery. Reaching a `fail` node is a decision, and the
+one failure an automatic retry can never fix: the graph would re-execute
+the same guard against the same inputs and refuse identically, burning a
+pod and a sandbox per turn. The engine's error carries a sentinel the
+runner ACKs on, and the runner separately refuses to resume a run parked on
+a bot-defined code. Only a human with changed inputs moves it. See
+[resume](resume.md#resumable-states).
+
+**Inside a fan-out branch, both fields are bounded.** A branch cannot end
+the run by itself — the collector decides — so a fail node reached inside a
+`fan_out_all` / `fan_out_each` body reports its diagnosis as a typed BRANCH
+error. The `code:` still reaches the run's `failure_code` when every failed
+branch agrees on it (the collector keeps a common code rather than
+laundering it into `EXECUTION_FAILED`); when branches disagree, the
+aggregate is untyped. `resumable: true` cannot be honoured there at all —
+the branch has no authority to park the run — and the engine logs a WARN
+naming the node. Put a guard whose refusal must be resumable on the trunk.
 
 ## Reuse and nested execution
 
