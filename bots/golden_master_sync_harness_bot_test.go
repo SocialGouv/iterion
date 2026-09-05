@@ -743,7 +743,7 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		c := syncCommitNode(t, ws, res)
 		// setsid() from a child of the gate shell: outside the killed group,
 		// stdout still the pipe the node reads.
-		escapee := `python3 -c "import os,time; os.setsid(); time.sleep(45)" & sleep 45`
+		escapee := `echo reached the wall still talking; python3 -c "import os,time; os.setsid(); time.sleep(45)" & sleep 45`
 
 		started := time.Now()
 		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{
@@ -757,6 +757,13 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		}
 		if g.Passed || !strings.Contains(g.LogTail, "exceeded gate_timeout_s") {
 			t.Fatalf("gate = %+v, want the expired-wall verdict", g)
+		}
+		// An expiry's log_tail is the operator's only window into what the gate
+		// was doing. TimeoutExpired carries the raw chunks — text=True decodes
+		// on the normal return path only — so what it says has to be the gate's
+		// lines, not a bytes repr of them.
+		if !strings.Contains(g.LogTail, "reached the wall still talking") || strings.Contains(g.LogTail, `\n`) {
+			t.Fatalf("the gate's own words must reach log_tail decoded:\n%s", g.LogTail)
 		}
 		if elapsed > 20*time.Second {
 			t.Fatalf("the node took %s on a 1 s wall — it waited on the escaped descendant's pipe", elapsed)
