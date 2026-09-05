@@ -172,13 +172,32 @@ The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
 `IterionDLQNotEmpty` alert in the starter pack fires on.
 
-A delivery refused because another runner holds the run lock is retried after
-one lease interval (60 seconds). On its last allowed attempt, the original
-message is archived on the DLQ and `run_delivery_exhausted` records whether
-that archive succeeded. This is a delivery failure: the live owner's run
-status and continuation stay unchanged. Inspect the owner and the run's
-outcome before replaying; discard the duplicate if the owner completed it.
-If the archive failed, the event names the error and no queue copy remains.
+A delivery that cannot take the run lock is retried after one lease interval
+(60 seconds). On its last allowed attempt the original message is archived on
+the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
+the run itself is untouched — without the lock no writer may change its
+outcome or its continuation — so this records a *delivery* failure, never an
+execution one.
+
+Two different failures reach that path, and the DLQ reason names which:
+
+- **`run lock held by another runner`** — confirmed contention
+  (`jetstream.ErrKeyExists` on the lease). A sibling owns the run; inspect
+  that owner's outcome, and discarding the duplicate is safe once it
+  completed.
+- **`run lock acquisition failed`** — every other lock error (KV bucket
+  missing, a broker blip on the create). Ownership **could not be
+  confirmed**, which is not the same as no owner: a sibling may hold the
+  lease and its collision simply never got reported. Replay only after
+  checking the run itself *and* a healthy lock service — a blind replay
+  duplicates a live run. A run left `queued`/`running` with no lease is the
+  orphan sweeper's, above.
+
+`parked: false` on the event means the archive was **not acknowledged**, not
+that no copy exists: the publish waits for a JetStream ack, so a lost ack can
+hide a copy that landed. Read the DLQ before either replaying (which may
+duplicate the run) or discarding (which may destroy its last copy) — neither
+is safe blind.
 
 ## Multitenancy enforcement layers
 
