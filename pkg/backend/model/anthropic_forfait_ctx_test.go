@@ -352,3 +352,28 @@ func TestAnthropicFromCtxForfait_AbsentStillDegradesQuietly(t *testing.T) {
 		t.Errorf("an absent blob must degrade quietly, got ok=%v err=%v", ok, err)
 	}
 }
+
+// Rb29324: expired + an ambient key present is the case where the two branches
+// could plausibly disagree, so it is pinned rather than left implicit. EXPIRED
+// refuses even here — degrading would silently move a broken tenant's spend
+// onto whoever owns the ambient key — while FORBID deliberately degrades,
+// because there the operator configured that arrangement.
+func TestAnthropicFromCtxForfait_ExpiredRefusesEvenWithAmbientKey(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-stale","expiresAt":1000000000000}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		return func(string) string { return dir }, true
+	})
+	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-ambient")
+
+	_, ok, err := NewRegistry().anthropicFromCtxForfait(context.Background(), "claude-haiku-4-5")
+	if !ok || !errors.Is(err, secrets.ErrAnthropicForfaitExpired) {
+		t.Fatalf("a lapsed forfait must not borrow the ambient key, got ok=%v err=%v", ok, err)
+	}
+}

@@ -1047,11 +1047,21 @@ var providerCredentialEnvVars = []string{
 	"ANTHROPIC_API_KEY",
 	// z.ai (GLM) drives claw's Anthropic provider through an
 	// Anthropic-compatible endpoint, so a sandboxed claw reviewer (e.g.
-	// anthropic/glm-5.2 — the forfait-friendly reviewer model, since claw
-	// can't use the Claude Code OAuth forfait) needs the z.ai creds inside
-	// the container. registry.go synthesises the bearer + ZAIDefaultBaseURL
-	// from ZAI_API_KEY when no other anthropic auth is present;
+	// anthropic/glm-5.2) needs the z.ai creds inside the container.
+	// registry.go synthesises the bearer + ZAIDefaultBaseURL from
+	// ZAI_API_KEY when no other anthropic auth is present;
 	// ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL cover the explicit BYOK path.
+	//
+	// claw CAN use a Claude Code OAuth forfait — its anthropic provider takes
+	// the token as an OAuth bearer, and registry.go feeds it one from the env
+	// (desktop) or from the run's materialised OAuthDir (pod). What is missing
+	// is a channel to carry it ACROSS this boundary: the in-container
+	// __claw-runner rebuilds its registry from env alone, and this list is the
+	// only credential channel, so a sandboxed claw anthropic node still falls
+	// back to the ambient ANTHROPIC_API_KEY. Tracked as the sandbox seam of
+	// the forfait work; seeding an in-container CLAUDE_CONFIG_DIR from the
+	// existing ClaudeCodeSandboxConfigDir mount (mirroring CODEX_HOME) is the
+	// shape that closes it.
 	"ZAI_API_KEY",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
