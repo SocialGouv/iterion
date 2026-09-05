@@ -105,3 +105,66 @@ func TestForwardableProviderEnv_forwardsHostProbedCodexVersion(t *testing.T) {
 		t.Errorf("ITERION_CODEX_VERSION = %q set with nothing to forward — an empty value must not cross", v)
 	}
 }
+
+// #736: a sandboxed claw anthropic node for a forfait-only tenant must not
+// authenticate as the pod. The in-container runner rebuilds its registry from
+// env alone, so the run's forfait reaches it only as CLAUDE_CONFIG_DIR (the
+// dir runtime.seedClaudeConfigDir populates) — and only if the ambient
+// anthropic-wire vars, which are the PLATFORM's, stop shadowing it. Leaving
+// them in place is invisible precisely because the platform key works.
+func TestForwardableProviderEnv_ForfaitOnlyTenantDoesNotInheritPlatformKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/tmp/run-forfait"},
+	})
+	env := forwardableProviderEnv(ctx)
+
+	if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q", got, secrets.ClaudeCodeSandboxConfigDir)
+	}
+	for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+		if v, present := env[shadow]; present {
+			t.Errorf("%s=%q still forwarded — the platform credential would win over the run's forfait", shadow, v)
+		}
+	}
+}
+
+// The tenant's OWN key is an explicit choice and keeps precedence: holding a
+// forfait as well must not silently switch the run onto the subscription.
+func TestForwardableProviderEnv_TenantKeyBeatsItsOwnForfait(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-TENANT"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/tmp/run-forfait"},
+	})
+	env := forwardableProviderEnv(ctx)
+
+	if env["ANTHROPIC_API_KEY"] != "sk-ant-TENANT" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want the tenant's own key", env["ANTHROPIC_API_KEY"])
+	}
+	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("CLAUDE_CONFIG_DIR set even though the tenant's own key serves — the run would switch instrument when sandboxed")
+	}
+}
+
+// A gateway base URL is a destination the operator chose; a subscription bearer
+// carries the whole Claude account and must not travel there implicitly.
+func TestForwardableProviderEnv_ForfaitNotPointedAtRedirectedWire(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gateway.corp.example")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/tmp/run-forfait"},
+	})
+	if _, present := forwardableProviderEnv(ctx)["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("forfait pointed into the container while the wire is redirected at a gateway")
+	}
+}

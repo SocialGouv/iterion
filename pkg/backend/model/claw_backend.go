@@ -1171,6 +1171,36 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
+	// The Anthropic twin (#736). A resolved Claude Code forfait is mounted by
+	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
+	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
+	// populated for a claw node too. Pointing CLAUDE_CONFIG_DIR at it is what
+	// lets the in-container registry find it: its desktop path reads exactly
+	// that variable.
+	//
+	// Clearing the ambient anthropic-wire vars is not a detail, it is the fix.
+	// The registry reads the disk forfait only when no env credential precedes
+	// it, and the ambient ANTHROPIC_API_KEY forwarded above is the POD's — the
+	// platform's — a machine default rather than a credential resolved FOR THIS
+	// RUN, which is the distinction this function exists to enforce. Left in
+	// place, a forfait-only tenant's sandboxed node authenticates and bills
+	// against the platform account, and does so invisibly, because the ambient
+	// key works.
+	//
+	// Two limits, both deliberate: a BYOK anthropic or z.ai key is the tenant's
+	// own explicit instrument and keeps precedence (otherwise the same run
+	// would spend a different one depending on whether it happened to be
+	// sandboxed); and a redirected wire is a destination the operator chose, so
+	// a bearer carrying the whole Claude account does not travel there.
+	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
+		creds.APIKeys[secrets.ProviderAnthropic] == "" &&
+		creds.APIKeys[secrets.ProviderZAI] == "" &&
+		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+			delete(env, shadow)
+		}
+	}
 	return env
 }
 
