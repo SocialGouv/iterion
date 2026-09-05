@@ -528,6 +528,12 @@ tasks:
             stale=1
           fi
         done < <(find "$tmp" -type f)
+        # The reverse direction: a committed copy the script no longer produces
+        # would otherwise stay in the tree, unchecked and hand-editable.
+        while IFS= read -r rel; do
+          [ -f "$tmp/$rel" ] || { echo "::error::brand asset $rel is committed but no longer generated — delete it or restore its generator"; stale=1; }
+        done < <(git ls-files 'pkg/brand/*.png' 'studio/src/assets/*.png' 'studio/public/*.png' studio/public/favicon.ico \
+                   docs/public/favicon.ico docs/public/iterion-logo.png docs/images/iterion-logo.png build/appicon.png cmd/iterion-desktop/appicon.png)
         exit $stale
 
   brand:og:

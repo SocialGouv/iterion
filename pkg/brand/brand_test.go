@@ -21,11 +21,13 @@ func TestBotAvatar_DecodesSquare(t *testing.T) {
 	}
 }
 
-// GitLab refuses anything above 200 KiB on PUT /user/avatar; the plain variant
-// is what that endpoint receives.
-func TestBotAvatar_PlainFitsGitLabLimit(t *testing.T) {
-	if n := len(BotAvatar(VariantPlain)); n > GitLabAvatarMaxBytes {
-		t.Fatalf("plain avatar is %d bytes, above GitLab's %d-byte limit — regenerate with a stronger quantisation", n, GitLabAvatarMaxBytes)
+// GitLab refuses anything above 200 KiB on PUT /user/avatar, and the apply
+// endpoint uploads whichever variant the operator asks for.
+func TestBotAvatar_FitsGitLabLimit(t *testing.T) {
+	for _, v := range []Variant{VariantPlain, VariantCircle} {
+		if n := len(BotAvatar(v)); n > GitLabAvatarMaxBytes {
+			t.Fatalf("%s avatar is %d bytes, above GitLab's %d-byte limit — regenerate smaller", v, n, GitLabAvatarMaxBytes)
+		}
 	}
 }
 

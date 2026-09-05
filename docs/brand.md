@@ -28,10 +28,12 @@ task brand:check   # regenerates into a temp dir and cmp's each copy (part of `t
 task brand:og      # docs/scripts/og-card.html → docs/public/og.png (needs `task test:e2e:ui:install`)
 ```
 
-Change the mascot = replace a master, run `brand:gen`, commit everything it
-touched. Never edit a generated copy: `brand:check` fails on it. The output is
-deterministic (stripped metadata, fixed quantiser), which is what makes the
-check a byte comparison.
+Change the mascot = replace a master, run `brand:gen` **then `brand:og`**
+(the OG card embeds the regenerated docs logo and has no guard of its own),
+commit everything they touched. Never edit a generated copy: `brand:check`
+fails on it, and on a committed copy the script no longer produces. The
+output is deterministic (stripped metadata, fixed quantiser), which is what
+makes the check a byte comparison.
 
 ## Forge identities — who gets the face, and how
 
@@ -50,9 +52,12 @@ avatar on it depends on the forge:
 Apply state on a connection: `account_kind`, `avatar_applied_at`, `avatar_error`
 (`GET /api/teams/{id}/forge/connections`). The action:
 `POST /api/teams/{id}/forge/connections/{conn_id}/avatar` `{variant?: plain|circle, force?}`
-— 422 with `manage_url` + `logo_url` on GitHub, 409 `needs_force` on an
-unflagged account, 502 with the forge's reason when the upload is refused.
-Audit event: `forge.connection.avatar_applied`.
+— 422 with `logo_url` + `logo_circle_url` on GitHub (plus `manage_url` when
+the App is one iterion created), 422 on a revoked connection (reconnect
+first), 409 `needs_force` on an unflagged account, 502 with the forge's
+reason when the upload is refused. Audit event on both the automatic and
+the explicit path: `forge.connection.avatar_applied` (`automatic: true` at
+connect time).
 
 **Escape hatch:** `ITERION_FORGE_BRAND_AVATAR=off` on the server disables the
 connect-time upload deployment-wide; the explicit action stays.

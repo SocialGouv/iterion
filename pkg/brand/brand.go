@@ -34,8 +34,8 @@ var plainPNG []byte
 var circlePNG []byte
 
 // GitLabAvatarMaxBytes is GitLab's hard limit on `PUT /user/avatar` (200 KiB).
-// The plain variant is what that endpoint receives, so it must stay under it;
-// brand_test.go pins the invariant against a regenerated master.
+// Either variant can be asked for on that endpoint, so both must stay under
+// it; brand_test.go pins the invariant against a regenerated master.
 const GitLabAvatarMaxBytes = 200 * 1024
 
 // ParseVariant reads an operator-supplied variant name; "" is the plain one.

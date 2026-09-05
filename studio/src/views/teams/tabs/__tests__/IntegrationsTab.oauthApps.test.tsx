@@ -141,6 +141,20 @@ describe("ConnectionCard — iterion-bot avatar", () => {
     await screen.findByRole("button", { name: "Re-apply the avatar" });
   });
 
+  it("keeps an earlier success visible when a later re-apply failed", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
+      conn({
+        account_kind: "bot",
+        avatar_applied_at: "2026-09-05T10:00:00Z",
+        avatar_error: "gitlab: avatar rejected (HTTP 400)",
+      }),
+    ]);
+    renderTab();
+    await screen.findByText(/Last avatar upload failed: gitlab: avatar rejected/);
+    await screen.findByText(/iterion-bot avatar ·/);
+    expect(screen.queryByText(/avatar not applied/)).toBeNull();
+  });
+
   it("names a forge refusal on the card", async () => {
     vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
       conn({ account_kind: "bot", avatar_error: "gitlab: avatar rejected (HTTP 400)" }),

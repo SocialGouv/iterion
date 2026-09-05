@@ -264,8 +264,11 @@ function AvatarRow({
   return (
     <div className="space-y-1">
       {conn.avatar_error && (
-        <InlineBanner tone="danger" layout="inline">
-          iterion-bot avatar not applied: {conn.avatar_error}
+        // A failed re-apply does not undo an earlier success: the account
+        // still wears the avatar it got, and the badge below says so.
+        <InlineBanner tone={applied ? "warning" : "danger"} layout="inline">
+          {applied ? "Last avatar upload failed" : "iterion-bot avatar not applied"}:{" "}
+          {conn.avatar_error}
         </InlineBanner>
       )}
       <div className="flex flex-wrap items-center gap-2 text-caption text-fg-muted">
