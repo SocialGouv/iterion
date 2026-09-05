@@ -145,6 +145,11 @@ type boardDispatcher struct {
 	// sweeps) inside the run loop; injectable so the periodicity is
 	// provable without waiting a real minute.
 	reapEvery time.Duration
+	// sessionInterval is the claim heartbeat cadence processCard runs;
+	// zero = the production third-of-a-lease. Injectable so a beat can be
+	// driven into the release window and the announce/release order
+	// proven, rather than waited five minutes for.
+	sessionInterval time.Duration
 	sem       chan struct{}
 	logger    *iterlog.Logger
 	wg        sync.WaitGroup // tracks in-flight processCard goroutines (for tests + drain)
@@ -220,9 +225,9 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	// poll, since the fenced writes below are refused already and the
 	// cancel just stops this replica working a card it no longer owns.
 	cardCtx, cancelCard := context.WithCancel(ctx)
-	sess := dispatcher.StartClaimSession(
+	sess := dispatcher.StartClaimSessionEvery(
 		coordLeaser{coord: d.coord, tenant: c.Tenant},
-		c.Issue.ID, tok, d.warn, func(error) { cancelCard() })
+		c.Issue.ID, tok, d.warn, func(error) { cancelCard() }, d.sessionInterval)
 	defer func() { cancelCard(); sess.Stop() }()
 
 	// Move to in-progress for board visibility (best-effort, fenced) —
@@ -284,6 +289,12 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
 		}
 	}
+	// Announce the release BEFORE it lands (the local twin's rule, see
+	// releaseClaimSess): a heartbeat already in flight reads our OWN
+	// release as ErrClaimConflict, which without this latches `lost`,
+	// warns "claim lost — stopping the worker" on an ordinary finish, and
+	// fires the cancel path for a card whose work is already over.
+	sess.Releasing()
 	if err := d.coord.ReleaseOwned(finCtx, c.Tenant, c.Issue.ID, tok); err != nil {
 		d.warn("card %s/%s release: %v", c.Tenant, c.Issue.ID, err)
 	}

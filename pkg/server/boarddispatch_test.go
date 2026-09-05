@@ -46,6 +46,13 @@ type fakeBoardCoord struct {
 	reasons map[string]string
 	// gaveUps records the fenced give-up stamps, keyed by issue id.
 	gaveUps map[string]*native.GiveUp
+	// renewHook, when set, runs at the start of RenewClaim OUTSIDE the
+	// lock — a test parks a heartbeat in flight with it while the owner's
+	// own release lands.
+	renewHook func(id string)
+	// releaseHook, when set, runs after a successful Release, outside the
+	// lock — the signal that the owner's release has landed.
+	releaseHook func(id string)
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
@@ -158,7 +165,17 @@ func (f *fakeBoardCoord) SetStateFromReason(ctx context.Context, tenant, id, fro
 	return true, nil
 }
 
-func (f *fakeBoardCoord) Release(ctx context.Context, _, id, _ string) error {
+func (f *fakeBoardCoord) Release(ctx context.Context, tenant, id, marker string) error {
+	if err := f.release(ctx, tenant, id, marker); err != nil {
+		return err
+	}
+	if f.releaseHook != nil {
+		f.releaseHook(id)
+	}
+	return nil
+}
+
+func (f *fakeBoardCoord) release(ctx context.Context, _, id, _ string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -173,6 +190,9 @@ func (f *fakeBoardCoord) Release(ctx context.Context, _, id, _ string) error {
 // gets tracker.ErrClaimConflict. renews counts heartbeats for the
 // heartbeat test.
 func (f *fakeBoardCoord) RenewClaim(_ context.Context, _, id string, tok tracker.ClaimToken) error {
+	if f.renewHook != nil {
+		f.renewHook(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.renews[id]++
