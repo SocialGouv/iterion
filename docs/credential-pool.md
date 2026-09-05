@@ -332,6 +332,15 @@ A donor's credential is never returned by any of these — it stays sealed in
   a key can be re-scoped afterwards.
 - **A metered pledge must carry a spend ceiling.** Refused otherwise: it
   would be an open invoice on the lender's own account.
+- **A lent credential is metered under the SHARED scope, not the
+  borrower's.** The grant carries the donor's fingerprint (a subscription's
+  connect-time stamp, a key's own hash), and the run marks the slot
+  `pool_sourced`, so the usage ledger keys the readings on the donor's
+  credential in the cross-tenant scope — the same treatment as a
+  platform-tier one, and for the same reason: it is one account serving
+  several tenants. Metering it per borrower would open one ledger per
+  borrower of the same subscription, and a window at 95% measured by the
+  first would reach none of the others.
 - **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1` does not disable the pool.** That
   guard only covers `claw`/`pi` (`secrets.GuardSubscriptionOAuth`); a lent
   Claude forfait still works on `claude_code`, which is its native path.

@@ -210,13 +210,14 @@ type Grant struct {
 	// must never be logged, persisted in the clear, or returned over an
 	// API.
 	Payload []byte
-	// Fingerprint is the donor credential's stable audit identity — not
-	// the payload's, which token refresh rewrites every few hours for the
-	// same subscription. It is what the borrower's usage-cap meter keys
-	// on, so a donor who reconnects a FRESH subscription opens a fresh
-	// meter instead of inheriting the exhausted readings of the one it
-	// replaced. Empty for a lent API key (the runner hashes the plaintext
-	// it holds) and for donor records that predate stamping.
+	// Fingerprint is the donor credential's stable audit identity — for a
+	// subscription, NOT the payload's, which token refresh rewrites every
+	// few hours for the same account; for a key, the record's own stamp,
+	// which is the hash of the plaintext. It is what the borrower's
+	// usage-cap meter keys on, so a donor who reconnects a FRESH
+	// subscription opens a fresh meter instead of inheriting the exhausted
+	// readings of the one it replaced. Empty only for donor records that
+	// predate stamping.
 	Fingerprint string
 	// RemainingUSD is what was left of the donor's tightest spend cap.
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
@@ -634,9 +635,11 @@ func meteredNote(src CredentialSource) string {
 //
 // fingerprint is the donor record's stable audit identity, which the
 // borrower's usage-cap meter keys on so a donor who reconnects a fresh
-// subscription is not metered against the one it replaced. Only the OAuth
-// case carries one: an API key IS its own identity, so the runner hashes
-// the plaintext it already holds rather than being told.
+// subscription is not metered against the one it replaced. Both sources
+// carry one: an OAuth record's connect-time stamp, and an API key's own
+// (the hash of the plaintext the runner would derive anyway — carried so
+// the grant NAMES the account instead of leaving every consumer to
+// re-derive it or report nothing).
 func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (payload []byte, fingerprint, gone string, err error) {
 	switch p.Source {
 	case SourceOAuth:
@@ -690,7 +693,13 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		if oerr != nil {
 			return nil, "", "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
 		}
-		return pt, "", "", nil
+		// The donor record's own stamp. A key IS its own identity, so a
+		// borrower could re-derive this from the plaintext — but only if
+		// it thinks to, and an empty grant fingerprint is what left the
+		// GRANTED line and the run-doc stamp naming a slot instead of the
+		// account paying for it. Empty on keys stored before stamping;
+		// the derivation from the plaintext stays the fallback.
+		return pt, k.Fingerprint, "", nil
 	}
 	return nil, "", "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }

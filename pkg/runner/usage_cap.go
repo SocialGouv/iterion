@@ -49,9 +49,14 @@ type runCredKeys struct {
 
 // usageCapCredKeys reads the run's resolved credentials once. Scope: a
 // bundle carrying any credential the TENANT resolved is the tenant's own;
-// anything else — including a slot the publisher filled from the DB-backed
-// platform tier, which rides the bundle exactly like a tenant credential
-// but is the deployment's single meter — is the platform's.
+// anything else shares the cross-tenant meter — a slot the publisher
+// filled from the DB-backed platform tier (the deployment's single
+// subscription) and a slot the credential POOL filled with a contributor's
+// lent one (the donor's single subscription, borrowed by several tenants
+// in turn). Both ride the bundle exactly like a tenant credential and
+// neither is one; metering a lent credential per borrower would open one
+// ledger per borrower of the SAME account, so what one of them measured —
+// a refusal, a window at 95% — would reach none of the others.
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k := runCredKeys{scope: usagecap.ScopePlatform}
 	creds, ok := secrets.CredentialsFromContext(ctx)
@@ -59,11 +64,11 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 		return k
 	}
 	tenantOwnZai := creds.APIKey(secrets.ProviderZAI) != "" &&
-		!creds.IsPlatformSourced(string(secrets.ProviderZAI))
+		creds.IsTenantOwned(string(secrets.ProviderZAI))
 	tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
-		!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
+		creds.IsTenantOwned(string(secrets.ProviderAnthropic))
 	tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
-		!creds.IsPlatformSourced(delegate.BackendClaudeCode)
+		creds.IsTenantOwned(delegate.BackendClaudeCode)
 	if tenantOwnZai || tenantOwnKey || tenantOwnOAuth {
 		k.scope = usagecap.TenantScope(msg.TenantID)
 	}

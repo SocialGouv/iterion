@@ -89,6 +89,20 @@ func (c Credentials) IsPoolSourced(slot string) bool {
 	return c.PoolSourced[slot]
 }
 
+// IsTenantOwned reports whether the slot was filled from the RUN'S OWN
+// tenant stores — i.e. by neither the platform tier nor the pool.
+//
+// Every decision that scopes something per tenant reads this question, and
+// the two negatives are what it is made of: a platform credential is the
+// deployment's, a lent one is the donor's, and both serve several tenants.
+// It lives here as one predicate because the alternative — each site
+// spelling out its own conjunction — is how the pool tier came to be
+// honoured by the metering bump and missed by the usage meter, which then
+// opened one ledger per borrower of the same subscription.
+func (c Credentials) IsTenantOwned(slot string) bool {
+	return !c.IsPlatformSourced(slot) && !c.IsPoolSourced(slot)
+}
+
 // WireFamily groups credential slots (Provider names and OAuthKinds) that
 // authenticate the same wire. Two slots in one family are alternative
 // shapes of the same access — an API key and an OAuth blob the delegates

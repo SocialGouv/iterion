@@ -99,7 +99,7 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 		if _, seen := crossTenant[fp]; !seen {
 			fps = append(fps, fp)
 		}
-		crossTenant[fp] = crossTenant[fp] || creds.IsPlatformSourced(slot) || creds.IsPoolSourced(slot)
+		crossTenant[fp] = crossTenant[fp] || !creds.IsTenantOwned(slot)
 	}
 	if len(fps) == 0 {
 		return

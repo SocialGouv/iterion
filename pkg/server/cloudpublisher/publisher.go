@@ -611,12 +611,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			case credpool.SourceAPIKey:
 				prov := secrets.Provider(grant.Ref)
 				bundle.APIKeys[prov] = string(grant.Payload)
-				// The lent key's own audit identity — the same hash the
-				// BYOK record carries and the runner derives, so the
-				// GRANTED line, the run-document stamp and the metering-time
-				// last_used_at bump all name the donor's key, not an
-				// unstamped slot.
-				apiKeyFPs[prov] = secrets.FingerprintSHA256(string(grant.Payload))
+				// The lent key's own audit identity — the donor record's
+				// stamp, falling back to the hash the runner derives for a
+				// record stored before stamping — so the GRANTED line, the
+				// run-document stamp and the metering-time last_used_at
+				// bump all name the donor's key, not an unstamped slot.
+				fp := grant.Fingerprint
+				if fp == "" {
+					fp = secrets.FingerprintSHA256(string(grant.Payload))
+				}
+				apiKeyFPs[prov] = fp
 				// The lent key's row lives in the DONOR's tenant: the
 				// runner's metering bump must reach it without the run's
 				// tenant filter.
