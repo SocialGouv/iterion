@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.106.1](https://github.com/SocialGouv/iterion/compare/v3.106.0...v3.106.1) (2026-09-05)
+
+### Bug Fixes
+
+* **board:** re-land [#745](https://github.com/SocialGouv/iterion/issues/745)'s round-4 fixes the merge queue dropped, plus the round-5 findings and [#759](https://github.com/SocialGouv/iterion/issues/759) ([#772](https://github.com/SocialGouv/iterion/issues/772)) ([ef7b8c1](https://github.com/SocialGouv/iterion/commit/ef7b8c1758a3e4e0a03ef169d71aaf1cec3ad1da))
+
+    <details><summary>why</summary>
+
+    SetStateFrom answers a card that drifted between the read and the write with (issue, changed=false, nil) — the operator got there first, which is not an error. The project import discarded that flag and read the nil error as success: it counted a transition the store never made, skipped the reflect, and recorded the board's status as synchronized, which makes decideProjectStatus a no-op from then on. The periodic worker repairs that on a later pass; the one-shot `iterion issue import --project`…
+
+    </details>
+* **runtime,runner:** a subbot child executes in its parent's sandbox — a pod of its own lost its commits ([#766](https://github.com/SocialGouv/iterion/issues/766)) ([b272045](https://github.com/SocialGouv/iterion/commit/b272045cfb5a13730098360c3c81dbf8003cf4e8))
+
+    <details><summary>why</summary>
+
+    Measured on the first subbot to run on a cloud pod: under the kubernetes driver the child engine started a sandbox of its own, the driver copies the workspace into a pod, so the child's commits lived in its copy and died with it (final_branch null, the commit unreachable from anywhere) while the parent, parked on the subbot node, resumed and re-judged an unchanged tree. A net's extension loop cannot converge that way. On the docker driver the same code happened to work: a second container…
+
+    </details>
+* **store:** protect run saves with document version checks ([#771](https://github.com/SocialGouv/iterion/issues/771)) ([09fe07f](https://github.com/SocialGouv/iterion/commit/09fe07f354d10763720f4d142338230dbb772ad6)), closes [#701](https://github.com/SocialGouv/iterion/issues/701)
+
+    <details><summary>why</summary>
+
+    Advance versions on partial writes in both stores; protect rename and rewind, and reload queued transitions before saving metadata. Preserve legacy documents and destination versions during migration. Closes #701.
+
+    </details>
+* **webhooks:** acknowledge authorization outages without launching work ([#768](https://github.com/SocialGouv/iterion/issues/768)) ([d2d0def](https://github.com/SocialGouv/iterion/commit/d2d0defdf8f074e6f43f1cd57e99d6bc4c61a486)), closes [#704](https://github.com/SocialGouv/iterion/issues/704)
+
+    <details><summary>why</summary>
+
+    Retain the forge failure in the delivery audit and return HTTP 200 across the command, conversation and review request lanes. Closes #704.
+
+    </details>
+
 ## [3.106.0](https://github.com/SocialGouv/iterion/compare/v3.105.0...v3.106.0) (2026-09-05)
 
 ### Features
