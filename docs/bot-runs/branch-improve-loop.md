@@ -41,8 +41,17 @@
   out of scope — this one was a real defect whose fix needed a second edit in
   a file the reviewer never named. And a comment citing a precedent deserves
   the same grep a code reference gets; a phantom name reads as authority.
-- Left deliberately: `MaxAckPending` headroom during a lock outage, whether
-  a foreign `run_delivery_exhausted` disturbs any timeline consumer, and
+- One open question answered with evidence rather than left open: a foreign
+  `run_delivery_exhausted` does NOT disturb a live run's observers, and the
+  reason is narrow enough to be worth a comment at the emission site.
+  `alert.Manager` treats **any** event as liveness (it clears `stallAlerted`
+  and can fire a spurious `stall_recovered`) — but it is fed only by the
+  local `events.jsonl` tailer and in-process run observers, never by the
+  Mongo store this path writes to; and the cloud twin `alert.OpsDispatcher`
+  filters the bus to `KindRunFailed`, which a store event never becomes.
+  Wiring a cloud event source into the Manager would turn this row into a
+  false liveness signal.
+- Left deliberately: `MaxAckPending` headroom during a lock outage and
   sweeper-vs-operator DLQ-replay ownership — genuine open questions, not
   findings. `parkOnDLQOnFinalDelivery`'s inherited publish context is a real
   smell but pre-existing and outside this branch.

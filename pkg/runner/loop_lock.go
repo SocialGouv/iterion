@@ -159,6 +159,16 @@ func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, 
 	// sibling park path (parkOnDLQOnFinalDelivery, loop_nats.go) hands its
 	// spent publish context straight to the status flip; the fresh deadline
 	// here is a deliberate divergence, not an oversight.
+	// On the CONFIRMED-contention branch this row lands mid-timeline of a run
+	// another pod is actively executing, so it must not read as that run's
+	// own activity. Neither observer sees it, for different reasons worth
+	// keeping true: alert.Manager treats ANY event as liveness (it clears
+	// stallAlerted and can fire a spurious stall_recovered), but it is fed
+	// only by the local events.jsonl tailer and in-process run observers —
+	// never by the Mongo store this path writes to; and its cloud twin
+	// alert.OpsDispatcher consumes trigger.Events off the bus, filtered to
+	// KindRunFailed, which a store event never becomes. Wiring a cloud event
+	// source into the Manager would make this row a false liveness signal.
 	auditCtx, auditCancel := context.WithTimeout(context.Background(), archiveWriteTimeout)
 	defer auditCancel()
 	if _, auditErr := r.cfg.Store.AppendEvent(store.WithIdentity(auditCtx, msg.TenantID, msg.OwnerID), msg.RunID,
