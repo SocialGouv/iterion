@@ -117,10 +117,23 @@ type BoardBinding struct {
 	// five, or the operator's own. Stored so what a deployment actually runs
 	// is readable, not inferred.
 	StatusMapping []StatusMapping `bson:"status_mapping,omitempty" json:"status_mapping,omitempty"`
-	// MissingStatuses are mapped columns the board does not carry. A binding
-	// is not refused over them — it is REPORTED, so a half-covered board is a
-	// visible fact rather than a silently inert half of the sync.
+	// MissingStatuses are mapped columns the board does not carry RIGHT NOW. A
+	// binding is not refused over them — it is REPORTED, so a half-covered
+	// board is a visible fact rather than a silently inert half of the sync.
+	// Recomputed by every reconciliation.
 	MissingStatuses []string `bson:"missing_statuses,omitempty" json:"missing_statuses,omitempty"`
+	// UnresolvedAtBind is the partial coverage the OPERATOR accepted when the
+	// board was bound: the mapped columns BindBoard could not resolve and did
+	// not refuse the bind over. It is written by the BIND, never by a
+	// reconciliation — that is the whole point, since a column outside it that
+	// stops resolving is a column that BROKE, which is what `DegradedReason`
+	// reports.
+	//
+	// NOT `omitempty` in BSON: an empty set and a never-recorded one are
+	// different answers, and only the stored shape can tell them apart (see
+	// ReconcileStatusOptions, which reconstructs the set for a binding written
+	// before this field existed).
+	UnresolvedAtBind []string `bson:"unresolved_at_bind" json:"unresolved_at_bind,omitempty"`
 
 	// SyncEvery is the reconciliation interval. Zero = OFF (no periodic pass;
 	// the reflect's fast path still runs, with no net under it).
@@ -520,6 +533,7 @@ func (s *MongoBoardBindingStore) Upsert(ctx context.Context, b BoardBinding) err
 		"status_field_id": b.StatusFieldID, "status_options": b.StatusOptions,
 		"label_fields": b.LabelFields, "status_mapping": b.StatusMapping,
 		"missing_statuses":   b.MissingStatuses,
+		"unresolved_at_bind": b.UnresolvedAtBind,
 		"sync_every_seconds": b.SyncEverySeconds, "updated_at": b.UpdatedAt,
 	}
 	if !b.LastSyncedAt.IsZero() {
@@ -556,7 +570,12 @@ func (s *MongoBoardBindingStore) SaveStatusVocabulary(ctx context.Context, tenan
 			"status_options":   v.Options,
 			"status_field_id":  v.StatusFieldID,
 			"missing_statuses": v.MissingStatuses,
-			"updated_at":       time.Now().UTC(),
+			// Written unconditionally, INCLUDING an empty slice: a
+			// reconstructed-as-empty set and a never-recorded one are
+			// different answers, and only the stored shape can tell them
+			// apart on the next pass.
+			"unresolved_at_bind": v.UnresolvedAtBind,
+			"updated_at":         time.Now().UTC(),
 		}})
 	if err != nil {
 		return fmt.Errorf("forge: save board status vocabulary: %w", err)

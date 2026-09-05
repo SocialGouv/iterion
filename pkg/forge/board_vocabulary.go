@@ -37,6 +37,10 @@ type StatusVocabulary struct {
 	Options         map[string]string `bson:"status_options,omitempty" json:"status_options,omitempty"`
 	StatusFieldID   string            `bson:"status_field_id,omitempty" json:"status_field_id,omitempty"`
 	MissingStatuses []string          `bson:"missing_statuses,omitempty" json:"missing_statuses,omitempty"`
+	// UnresolvedAtBind travels with the rest so a reconciliation can persist
+	// the set it RECONSTRUCTED for a binding stored before the field existed.
+	// A reconciliation never otherwise writes it — see BoardBinding's own doc.
+	UnresolvedAtBind []string `bson:"unresolved_at_bind" json:"unresolved_at_bind,omitempty"`
 }
 
 // Vocabulary reads the binding's cached status vocabulary.
@@ -44,6 +48,7 @@ func (b BoardBinding) Vocabulary() StatusVocabulary {
 	return StatusVocabulary{
 		Mapping: b.StatusMapping, Options: b.StatusOptions,
 		StatusFieldID: b.StatusFieldID, MissingStatuses: b.MissingStatuses,
+		UnresolvedAtBind: b.UnresolvedAtBind,
 	}
 }
 
@@ -51,6 +56,7 @@ func (b BoardBinding) Vocabulary() StatusVocabulary {
 func (b *BoardBinding) SetVocabulary(v StatusVocabulary) {
 	b.StatusMapping, b.StatusOptions = v.Mapping, v.Options
 	b.StatusFieldID, b.MissingStatuses = v.StatusFieldID, v.MissingStatuses
+	b.UnresolvedAtBind = v.UnresolvedAtBind
 }
 
 // StatusRename is one column the board renamed under a stable option id.
@@ -83,12 +89,13 @@ type StatusVocabularyRepair struct {
 	// FieldRebound reports that the Status FIELD itself was re-created and its
 	// id re-resolved by name.
 	FieldRebound bool
-	// Lost are the columns the binding HAS an option id for that the board
-	// answers to under neither that id nor their name. Nothing here can repair
-	// that, so it is what marks the binding degraded — and it is re-derived on
-	// EVERY pass, for as long as it stays true.
+	// Lost are the mapped columns the board answers to under neither their
+	// cached option id nor their name, and that the BIND did not accept as
+	// absent. Nothing here can repair that, so it is what marks the binding
+	// degraded — and it is re-derived on EVERY pass, for as long as it stays
+	// true.
 	//
-	// A column the binding never resolved (`MissingStatuses`, the ordinary
+	// A column the bind accepted as absent (`UnresolvedAtBind`, the ordinary
 	// partial-coverage bind) is NOT lost: nothing broke, the map simply names
 	// more than the board carries.
 	Lost []LostColumn
@@ -161,19 +168,24 @@ func (r StatusVocabularyRepair) Reason() string {
 //     board's current NAME for it (this is the rename repair);
 //  2. else the mapped NAME still on the field ⇒ the column was re-created, or
 //     added since the bind; adopt its id;
-//  3. else, and only if the binding HAD an id for it ⇒ LOST.
+//  3. else, and only if the BIND did not accept it as absent ⇒ LOST.
 //
 // Rule 3 is a property of the binding's CURRENT shape, not an event: it is
 // re-derived identically on every pass, which is what lets a caller treat
-// "degraded" as a level rather than an edge. The cached id is deliberately
-// KEPT — dropping it destroys the evidence, and the very next pass then
-// reports nothing lost while every write onto that column still fails. What
-// keeps the dead id from being written is LostStates, which the pass hands to
-// the reflect.
+// "degraded" as a level rather than an edge. The oracle is `UnresolvedAtBind`
+// — what the operator accepted when they bound the board — and NOT the cached
+// option id, deliberately: an earlier release deleted that id on the pass that
+// observed the loss, so a rule reading "the binding HAS an id" finds nothing
+// lost on a binding that release degraded, and a readout that clears when it
+// finds nothing lost would clear a still-true degradation permanently. The
+// same two shapes meet during a rolling deploy, in either order.
 //
-// A column the binding never resolved is NOT lost — it is `MissingStatuses`,
-// the partial coverage BindBoard accepts on purpose ("the covered half
-// works"). Only something that worked can break.
+// The cached id is nevertheless KEPT on a loss: it is what `LostStates` gates
+// the reflect with, and a second, independent way to re-derive the loss.
+//
+// A column the bind accepted as absent is NOT lost — it is the partial
+// coverage BindBoard admits on purpose ("the covered half works"). Only
+// something that worked can break.
 //
 // The Status FIELD's own id is refreshed the same way — it is resolved by
 // name, so a field deleted and re-created is repaired rather than fatal.
@@ -186,17 +198,9 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 	if b == nil || b.StatusFieldID == "" {
 		return rep
 	}
-	field, ok := project.Field(ProjectStatusFieldName)
-	if !ok || !field.SingleSelect() {
-		// The field itself is gone: every cached id is unwritable. Reported
-		// the same way as a single lost column — from the binding's current
-		// shape, so it keeps being reported for as long as it stays true.
-		for _, m := range b.Mapping() {
-			if b.StatusOptions[m.State] != "" {
-				rep.Lost = append(rep.Lost, LostColumn{State: m.State, Status: m.Status})
-			}
-		}
-		return rep
+	field, hasField := project.Field(ProjectStatusFieldName)
+	if hasField && !field.SingleSelect() {
+		hasField = false // a Status field with no options can serve no column
 	}
 
 	mapping := append([]StatusMapping(nil), b.Mapping()...)
@@ -204,10 +208,19 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 	for state, id := range b.StatusOptions {
 		options[state] = id
 	}
+
+	// 1. Resolve every mapped column against the live field — by cached id
+	// first (a rename keeps it), then by name (a re-created column keeps that).
+	resolved := make(map[string]bool, len(mapping))
 	var missing []string
 	for i, m := range mapping {
+		if !hasField {
+			missing = append(missing, m.Status)
+			continue
+		}
 		id := options[m.State]
 		if opt, ok := field.OptionByID(id); id != "" && ok {
+			resolved[m.State] = true
 			if !strings.EqualFold(strings.TrimSpace(opt.Name), strings.TrimSpace(m.Status)) {
 				rep.Renamed = append(rep.Renamed, StatusRename{State: m.State, From: m.Status, To: opt.Name})
 				mapping[i].Status = opt.Name
@@ -216,34 +229,46 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 			continue
 		}
 		opt, ok := field.Option(m.Status)
-		switch {
-		case !ok:
+		if !ok {
 			missing = append(missing, m.Status)
-			if id != "" {
-				// The binding HAD resolved a column here and the board now
-				// answers to neither its id nor its name. The cached id is
-				// KEPT: it is the evidence that this column once worked, and
-				// so the only thing that makes the loss re-derivable on the
-				// next pass instead of being a one-shot observation. What
-				// stops the reflect from writing it is LostStates, not a hole
-				// in the binding.
-				rep.Lost = append(rep.Lost, LostColumn{State: m.State, Status: m.Status})
-			}
-		case id == "":
-			options[m.State] = opt.ID
-			rep.Adopted = append(rep.Adopted, m.State)
-			rep.changed = true
-		default:
-			options[m.State] = opt.ID
-			rep.Rebound = append(rep.Rebound, m.State)
-			rep.changed = true
+			continue
 		}
+		resolved[m.State] = true
+		options[m.State] = opt.ID
+		if id == "" {
+			rep.Adopted = append(rep.Adopted, m.State)
+		} else {
+			rep.Rebound = append(rep.Rebound, m.State)
+		}
+		rep.changed = true
 	}
 	sort.Strings(missing) // stable report, like the bind's own
+
+	// 2. Recover the bind-time accepted set for a binding written before it
+	// was recorded, so step 3 can tell "never had one" from "lost one".
+	if b.UnresolvedAtBind == nil {
+		b.UnresolvedAtBind = reconstructUnresolvedAtBind(b, missing)
+		rep.changed = true
+	}
+	accepted := make(map[string]bool, len(b.UnresolvedAtBind))
+	for _, s := range b.UnresolvedAtBind {
+		accepted[foldName(s)] = true
+	}
+
+	// 3. LOST: a mapped column the board serves under NEITHER its cached id
+	// nor its name, that the bind did not accept as absent. Deliberately not a
+	// question about the cached id — see the doc comment.
+	for _, m := range mapping {
+		if resolved[m.State] || accepted[foldName(m.Status)] {
+			continue
+		}
+		rep.Lost = append(rep.Lost, LostColumn{State: m.State, Status: m.Status})
+	}
+
 	if !sameStringSet(missing, b.MissingStatuses) {
 		rep.changed = true
 	}
-	if field.ID != "" && field.ID != b.StatusFieldID {
+	if hasField && field.ID != "" && field.ID != b.StatusFieldID {
 		// The field was re-created. Its NAME is what resolves it, exactly as
 		// at bind time, so this is repairable rather than fatal.
 		rep.FieldRebound = true
@@ -255,6 +280,29 @@ func (b *BoardBinding) ReconcileStatusOptions(project Project) StatusVocabularyR
 	}
 	b.StatusMapping, b.StatusOptions, b.MissingStatuses = mapping, options, missing
 	return rep
+}
+
+// reconstructUnresolvedAtBind recovers the bind-time accepted set for a binding
+// stored before it was recorded, and the reconstruction is deliberately
+// ASYMMETRIC on the binding's own health:
+//
+//   - a HEALTHY legacy binding: whatever it cannot resolve now is what it has
+//     always run with, so it was accepted. A three-column board bound with the
+//     five-column default map must not start reading as broken on an upgrade;
+//   - a DEGRADED one: NOTHING was accepted. Its record already says a column
+//     broke, and the release that flagged it also deleted that column's cached
+//     id — so from the outside "accepted at bind" and "lost last week" are the
+//     same shape, and the only safe reading of "I cannot tell" is to keep the
+//     degradation the binding itself declared.
+//
+// That is the rule in one line: a health flag is never cleared by the absence
+// of the evidence that would have kept it.
+func reconstructUnresolvedAtBind(b *BoardBinding, unresolvedNow []string) []string {
+	if b.Degraded() {
+		return []string{} // non-nil: reconstructed-as-empty, not un-recorded
+	}
+	out := make([]string, 0, len(unresolvedNow))
+	return append(out, unresolvedNow...)
 }
 
 // sameStringSet compares two already-sorted name lists.

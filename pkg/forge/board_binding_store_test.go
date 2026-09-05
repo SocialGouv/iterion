@@ -380,6 +380,56 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 	})
 
+	t.Run("an unrecorded bind-time set is distinguishable from an empty one", func(t *testing.T) {
+		// The load-bearing property of UnresolvedAtBind: "the bind accepted
+		// nothing as absent" and "no release ever recorded this" are different
+		// answers, and only the STORED shape can tell them apart. A store that
+		// collapsed the two would make every upgraded binding look like a
+		// board that never had a missing column.
+		legacy := binding("team-legacy", time.Minute)
+		legacy.UnresolvedAtBind = nil // written before the field existed
+		if err := store.Upsert(ctx, legacy); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-legacy")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if got.UnresolvedAtBind != nil {
+			t.Errorf("an unrecorded set must read back as nil, got %#v", got.UnresolvedAtBind)
+		}
+
+		bound := binding("team-bound", time.Minute)
+		bound.UnresolvedAtBind = []string{}
+		if err := store.Upsert(ctx, bound); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		got, err = store.GetByTenant(ctx, "team-bound")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if got.UnresolvedAtBind == nil {
+			t.Error("a recorded-but-empty set must read back non-nil, or an upgraded binding cannot be told from a fresh one")
+		}
+		if len(got.UnresolvedAtBind) != 0 {
+			t.Errorf("UnresolvedAtBind = %v, want empty", got.UnresolvedAtBind)
+		}
+
+		// And a reconciliation may persist the set it reconstructed.
+		v := got.Vocabulary()
+		v.UnresolvedAtBind = []string{"Blocked"}
+		if err := store.SaveStatusVocabulary(ctx, "team-bound", v); err != nil {
+			t.Fatalf("SaveStatusVocabulary: %v", err)
+		}
+		got, err = store.GetByTenant(ctx, "team-bound")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if len(got.UnresolvedAtBind) != 1 || got.UnresolvedAtBind[0] != "Blocked" {
+			t.Errorf("UnresolvedAtBind = %v, want the reconstructed set", got.UnresolvedAtBind)
+		}
+	})
+
 	t.Run("the degraded readout has exactly two writers", func(t *testing.T) {
 		if err := store.Upsert(ctx, binding("team-deg", time.Minute)); err != nil {
 			t.Fatalf("Upsert: %v", err)

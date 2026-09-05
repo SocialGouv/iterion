@@ -5432,6 +5432,7 @@ export interface components {
             /** Format: date-time */
             sync_lease_until?: string;
             tenant_id: string;
+            unresolved_at_bind?: string[];
             /** Format: date-time */
             updated_at: string;
         };
