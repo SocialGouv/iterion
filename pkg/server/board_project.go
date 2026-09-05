@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +79,10 @@ type ProjectImportResult struct {
 	// SkippedNoCard is items backed by an issue with no native card yet: run
 	// the issue import for that repo first.
 	SkippedNoCard int `json:"skipped_no_card"`
+	// MissingRepos breaks SkippedNoCard down by repository, most-missing
+	// first. A bare count tells an operator nothing they can act on; the
+	// repository names ARE the next command they have to run.
+	MissingRepos []MissingRepo `json:"missing_repos,omitempty"`
 	// RefusedTerminal is the moves the native board's terminal-state sink
 	// refused. Leaving done/blocked is a REOPEN — an operator gesture with its
 	// own audit trail and dependents check — and automation never reopens. The
@@ -85,6 +90,13 @@ type ProjectImportResult struct {
 	RefusedTerminal int `json:"refused_terminal,omitempty"`
 	// Skipped is items with nothing to join on — drafts and pull requests.
 	Skipped int `json:"skipped"`
+}
+
+// MissingRepo is one repository the board references and the native board has
+// no cards for, with how many of its items were skipped.
+type MissingRepo struct {
+	Repo  string `json:"repo"`
+	Count int    `json:"count"`
 }
 
 // ImportProjectBoard mirrors a forge project board's Status and label fields
@@ -113,6 +125,7 @@ func ImportProjectBoard(
 		return res, fmt.Errorf("project import: get project %s: %w", ref, err)
 	}
 
+	missing := map[string]int{}
 	cursor := ""
 	for {
 		page, err := bc.ListProjectItems(ctx, ref, forge.ProjectItemListOptions{Cursor: cursor})
@@ -120,14 +133,34 @@ func ImportProjectBoard(
 			return res, fmt.Errorf("project import: list items of %s: %w", ref, err)
 		}
 		for _, it := range page.Items {
-			applyProjectItem(project, ref, provider, board, it, opts, &res)
+			applyProjectItem(project, ref, provider, board, it, opts, &res, missing)
 		}
 		if !page.HasNext || page.NextCursor == "" || page.NextCursor == cursor {
 			break
 		}
 		cursor = page.NextCursor
 	}
+	res.MissingRepos = rankMissingRepos(missing)
 	return res, nil
+}
+
+// rankMissingRepos orders the skipped repositories most-missing first, ties
+// broken by name, so the operator's first move is the first line.
+func rankMissingRepos(missing map[string]int) []MissingRepo {
+	if len(missing) == 0 {
+		return nil
+	}
+	out := make([]MissingRepo, 0, len(missing))
+	for repo, n := range missing {
+		out = append(out, MissingRepo{Repo: repo, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Repo < out[j].Repo
+	})
+	return out
 }
 
 // applyProjectItem hydrates ONE card from ONE project item, accumulating into
@@ -140,6 +173,7 @@ func applyProjectItem(
 	it forge.ProjectItem,
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
+	missing map[string]int,
 ) {
 	res.Items++
 	if it.Content.Kind != forge.ProjectContentIssue || it.Content.Repo == "" || it.Content.Number <= 0 {
@@ -152,6 +186,7 @@ func applyProjectItem(
 	card, err := board.Get(cardID)
 	if err != nil || card == nil {
 		res.SkippedNoCard++
+		missing[it.Content.Repo]++
 		return
 	}
 

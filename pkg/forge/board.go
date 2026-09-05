@@ -3,6 +3,8 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -295,6 +297,45 @@ func DefaultStatusMapping() []StatusMapping {
 		{Status: "Blocked", State: "blocked"},
 		{Status: "Done", State: "done"},
 	}
+}
+
+// StatusMappingFromMap builds a mapping from an operator's `column → state`
+// map — the escape hatch that keeps the five shipped names a DEFAULT and not a
+// fence: a board whose columns read "Todo"/"Doing"/"Shipped" binds by naming
+// them, with no code change.
+//
+// It REFUSES a non-injective map, naming the collision. Two columns pointing
+// at one state would make the reverse direction ambiguous: the reflect would
+// have to pick one, and the next import would read the other back and undo the
+// transition — the oscillation the injectivity rule exists to prevent.
+//
+// The result is sorted by state so a binding's stored map, and anything
+// rendered from it, is stable across runs.
+func StatusMappingFromMap(m map[string]string) ([]StatusMapping, error) {
+	if len(m) == 0 {
+		return nil, errors.New("forge: status map is empty")
+	}
+	byState := map[string]string{}
+	bySameStatus := map[string]bool{}
+	out := make([]StatusMapping, 0, len(m))
+	for status, state := range m {
+		s := strings.TrimSpace(status)
+		st := strings.TrimSpace(state)
+		if s == "" || st == "" {
+			return nil, fmt.Errorf("forge: status map has an empty entry (%q → %q)", status, state)
+		}
+		if bySameStatus[foldName(s)] {
+			return nil, fmt.Errorf("forge: status map names column %q twice", s)
+		}
+		bySameStatus[foldName(s)] = true
+		if prev, dup := byState[foldName(st)]; dup {
+			return nil, fmt.Errorf("forge: status map is not injective: columns %q and %q both map to state %q", prev, s, st)
+		}
+		byState[foldName(st)] = s
+		out = append(out, StatusMapping{Status: s, State: st})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].State < out[j].State })
+	return out, nil
 }
 
 // StatusForState returns the board status name mapped to a native state, and

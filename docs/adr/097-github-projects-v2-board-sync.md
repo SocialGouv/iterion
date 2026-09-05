@@ -54,7 +54,10 @@ a mutable per-bot projection for the same reason. Push-to-forge for a card
 authored on the native side stays what it is today — an explicit, operator-
 triggered gesture (`POST /api/v1/native/issues/{id}/push`), not a sync.
 
-### 2. Status is TWO-way, over a fixed injective map
+### 2. Status is TWO-way, over an injective map the operator can replace
+
+The **default** vocabulary, which is what board 203 and the shipped native
+board already agree on:
 
 | Projects v2 `Status` | native state |
 |---|---|
@@ -65,10 +68,24 @@ triggered gesture (`POST /api/v1/native/issues/{id}/push`), not a sync.
 | `Done` | `done` |
 
 A native transition into a mapped state writes the item's `Status` field; a
-`Status` change on GitHub moves the card. The map is **injective in both
-directions**, and native states outside it (`backlog`, `waiting_deps`,
-`awaiting_input`, `review`) are **inert**: the reflect logs the skip once and
-writes nothing.
+`Status` change on GitHub moves the card.
+
+**Those five names are a default, not a fence.** A board whose columns read
+*Todo* / *Doing* / *Shipped* binds by naming them — `iterion remote board bind
+… --status-map "Todo=ready,Doing=in_progress,Shipped=done"`, the same field on
+the binding API, `tracker.github.project.status_map` in a dispatcher config.
+The effective map is stored on the binding and rendered by `board show`, so
+what a deployment actually runs is always readable. One builder
+(`forge.StatusMappingFromMap`) serves every entry point, because three copies
+of a validation rule is how the third one drifts.
+
+The map must stay **injective in both directions**, and a bind that maps two
+columns onto one state is refused, naming the collision: the reverse direction
+would otherwise be ambiguous — the reflect would pick one name and the next
+import would read the other back and undo the transition.
+
+Native states outside the map (`backlog`, `waiting_deps`, `awaiting_input`,
+`review`) are **inert**: the reflect logs the skip once and writes nothing.
 
 *Rejected: collapsing the unmapped states onto their nearest neighbour*
 (`review` → *In progress*). It makes the round trip lossy — the next import
@@ -78,8 +95,8 @@ GitHub board showing the last true thing it was told.
 
 Status option names are matched **case-insensitively on the trimmed name**, so a
 board that writes *In Progress* binds the same as one that writes *In progress*.
-A board missing one of the five is bound anyway: the missing rows are dropped
-from the map and named in the bind result, rather than refusing the binding.
+A board missing one of the mapped columns is bound anyway: the missing rows are
+dropped and named in the bind result, rather than refusing the binding.
 
 ### 3. Area / Mode / Priority are read into labels, written back never
 
@@ -106,10 +123,13 @@ One document, `forge.BoardBinding`, keyed on the team (the resource tenant,
 ADR-048):
 
 ```
-TeamID, Provider, Owner, OwnerType (org|user), ProjectNumber,
-ConnectionID  (the forge.Connection supplying the token)
-ProjectID, StatusFieldID, StatusOptions map[nativeState]optionID,
-ExtraFields []BoundField{FieldID, Name, LabelPrefix, Options map[optionID]string}
+TeamID, Provider, Owner, OwnerKind (org|user), ProjectNumber,
+ConnectionID   (the forge.Connection supplying the token)
+StatusMapping  []{Status, State}      the EFFECTIVE map (§2), stored so what
+                                      a deployment runs is always readable
+SyncEvery      the reconciliation interval (0 = off, default 10m — §10)
+ProjectID, ProjectTitle, StatusFieldID, StatusOptions map[state]optionID,
+LabelFields []BoundField{FieldID, Name, Prefix}
 BoundAt, UpdatedAt
 ```
 
@@ -151,6 +171,12 @@ them.
 Consequence for the operator: run the issue import for each repo the board
 spans, then the project pass. `iterion issue import --project` does both in one
 command for one repo.
+
+**The skip is actionable, not a number.** The result carries `missing_repos` —
+the distinct `owner/repo` of the skipped items with a count each, most-missing
+first — on the CLI output and the API response. "12 skipped" tells an operator
+nothing they can act on; "8 in SocialGouv/iterion, 4 in SocialGouv/infra" *is*
+the next two commands.
 
 ### 7. A terminal card is never reopened by the import
 
@@ -247,6 +273,16 @@ Everything else follows the shipped doctrine:
   the cloud tail can step over a gap loudly, so convergence may not be assumed
   from event delivery: a dropped event costs a delay, never a divergence,
   because the next import recomputes the truth from both timestamps.
+
+  **That net has a named owner**, because a reconciliation net nobody runs is a
+  comment. In cloud, a **project sync worker** ticks each bound team on the
+  binding's own `sync_every` (default 10m; `0` = off), **elected per tenant**
+  with the same leased-claim shape as the board tail — never an in-process
+  global — and logs one Info line per pass carrying the counters (`hydrated`,
+  `conflicts`, `refused_terminal`, `skipped_no_card`), so a board drifting
+  quietly is visible in the logs rather than in someone's confusion. Locally
+  the net is the operator's: `iterion issue import --project` by hand, or wired
+  into `iterion schedule` — documented as such, not implied.
 - Machine-caused events (`tracker.IsMachineReason` — watchdog, state/field
   rename or delete) are declined for *launches* because they must not spend
   budget. A projection is not a launch: a watchdog that files a card in

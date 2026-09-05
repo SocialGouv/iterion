@@ -712,6 +712,68 @@ file via `gh auth login --with-token`. If your threat model includes
 co-located untrusted same-uid processes, prefer pre-authenticating
 `gh` interactively and leaving `tracker.github.token` empty.
 
+#### Board mode — states from a Projects v2 board (ADR-097)
+
+Add a `project:` block and the workflow state stops coming from labels: it is
+read from — and written to — the board's `Status` field, so a card a human
+dragged on the roadmap is a card the dispatcher sees, with no parallel label
+convention to maintain.
+
+```yaml
+tracker:
+  kind: github
+  github:
+    repo: SocialGouv/iterion
+    token: $GITHUB_TOKEN                # REQUIRED in board mode
+    claimed_label: iterion-claimed      # the claim is still a label
+    project:
+      owner: SocialGouv
+      number: 203
+      # owner_kind: org                 # or "user"; default org
+      # candidate_statuses: [Planned]   # the columns eligible for dispatch
+      # status_map:                     # override the shipped vocabulary
+      #   Todo: ready
+      #   Doing: in_progress
+      #   Shipped: done
+```
+
+What changes, and what deliberately does not:
+
+- **`state_mapping` is unused.** The board column *is* the state; a second
+  answer to the same question is how the two drift.
+- **`ListCandidates`** returns the issues whose card sits in a
+  `candidate_statuses` column (default `[Planned]`, which the shipped map
+  sends to `ready`). Content still comes from the issue list — a project item
+  carries no body, labels or assignee — so `include_labels` /
+  `exclude_labels` / `author_allowlist` keep applying.
+- **`UpdateState`** writes the `Status` field. An issue the board does not
+  carry yet is *added* to it: a dispatcher that could not record "In progress"
+  because nobody had dragged the card on would leave the roadmap permanently
+  behind.
+- **`RefreshStates`** reads the board once for the whole running set, instead
+  of one REST call per issue.
+- **The claim stays `claimed_label`.** A Projects v2 item carries no marker
+  and no fencing epoch, so there is nothing to build a lease on — this adapter
+  keeps declining `ClaimLeaser` exactly as it does in label mode, and the boot
+  journal stays its only claim-recovery path.
+- **A board it cannot read fails the poll**, loudly. There is no fallback to
+  label-derived states: dispatching on a state nobody configured is worse than
+  not dispatching.
+- **`token` is required.** Board mode does not ride `gh` — Projects v2 is
+  GraphQL, reached with a real API credential, and `gh` authenticates itself
+  from its own config, which a cloud pod does not have. The token needs the
+  `project` scope (classic PAT) or organization *Projects: Read and write*
+  (fine-grained); a GitHub App needs `organization_projects: write`.
+
+A status a `status_map` does not cover is **inert** — the card is not a
+candidate and `RefreshStates` omits it — and a state with no column makes
+`UpdateState` return `ErrTransitionRejected`. The map must stay injective
+(two columns on one state is refused at construction, naming the collision):
+the reverse direction would otherwise be ambiguous.
+
+See [docs/github-board-sync.md](github-board-sync.md) for the board↔native
+card sync that pairs with this.
+
 ### `tracker.kind: forgejo`
 
 Direct REST client against the Forgejo (Gitea-compatible) API. Auth

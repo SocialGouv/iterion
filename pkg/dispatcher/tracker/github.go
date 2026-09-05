@@ -41,7 +41,17 @@ type GitHubOptions struct {
 	// the issue's WorkflowState. Map iteration order is unspecified
 	// in Go, so callers should treat ordering as best-effort and
 	// design label predicates so at most one matches per issue.
+	//
+	// Ignored in BOARD MODE (see Project): a bound project's Status
+	// field is the state, and a parallel label convention would be a
+	// second answer to the same question.
 	StateMapping map[string]LabelSelector
+
+	// Project, when non-nil, puts the adapter in BOARD MODE: the workflow
+	// state is read from (and written to) a Projects v2 board's Status
+	// field instead of labels (ADR-097). The claim stays a label either
+	// way — a project item has nothing to fence a lease with.
+	Project *GitHubProjectOptions
 
 	// ClaimedLabel is added by Claim and removed by Release. Issues
 	// carrying this label are filtered out of ListCandidates.
@@ -77,6 +87,11 @@ type GitHubAdapter struct {
 func NewGitHub(opts GitHubOptions) (*GitHubAdapter, error) {
 	if err := ValidateRepoPath(opts.Repo); err != nil {
 		return nil, fmt.Errorf("github tracker: %w", err)
+	}
+	if opts.Project != nil {
+		if err := opts.Project.validate(); err != nil {
+			return nil, err
+		}
 	}
 	opts.ClaimedLabel = defaultClaimedLabel(opts.ClaimedLabel)
 	if opts.Command == nil {
@@ -121,6 +136,11 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	if len(raw) >= ghCandidateListLimit && a.opts.Logger != nil {
 		a.opts.Logger.Warn("github tracker: ListCandidates hit the %d-issue cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters",
 			ghCandidateListLimit, a.opts.Repo)
+	}
+	if a.boardMode() {
+		// The issue list stays the source of CONTENT; the board decides the
+		// state and the eligibility.
+		return a.listCandidatesFromBoard(ctx, raw)
 	}
 	// Open-issue set for fail-open blocker resolution (all open issues this
 	// list returned, before eligibility filtering).
@@ -171,6 +191,10 @@ func (a *GitHubAdapter) authorAllowed(login string) bool {
 func (a *GitHubAdapter) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
 	if len(ids) == 0 {
 		return map[string]string{}, nil
+	}
+	if a.boardMode() {
+		// One board read answers the whole set — no per-issue REST call.
+		return a.refreshStatesFromBoard(ctx, ids)
 	}
 	wanted := make(map[int]string, len(ids))
 	for _, id := range ids {
@@ -254,9 +278,13 @@ func (a apiIssue) toGhIssue() ghIssue {
 }
 
 // UpdateState transitions an issue by adjusting labels per the
-// matching state mapping. Best-effort: if newState has no label
-// mapping configured, returns ErrTransitionRejected.
+// matching state mapping — or, in board mode, by writing the project's
+// Status field. Best-effort: if newState maps to neither, returns
+// ErrTransitionRejected.
 func (a *GitHubAdapter) UpdateState(ctx context.Context, id, newState string) error {
+	if a.boardMode() {
+		return a.updateStateOnBoard(ctx, id, newState)
+	}
 	sel, err := resolveLabelSelector(a.opts.StateMapping, newState)
 	if err != nil {
 		return err

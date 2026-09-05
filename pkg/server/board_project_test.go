@@ -208,6 +208,43 @@ func TestImportProjectBoardLeavesUnmappedStatusInert(t *testing.T) {
 	}
 }
 
+// TestImportProjectBoardSkippedNoCardNamesTheRepos makes the skip
+// ACTIONABLE: "12 skipped" tells an operator nothing, "8 in SocialGouv/iterion,
+// 4 in SocialGouv/infra" tells them exactly which issue imports to run.
+func TestImportProjectBoardSkippedNoCardNamesTheRepos(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Now().UTC()
+	other := func(id, repo string, n int) forge.ProjectItem {
+		it := item(id, n, statusValue("Planned", at))
+		it.Content.Repo = repo
+		return it
+	}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		other("PVTI_1", "SocialGouv/iterion", 901),
+		other("PVTI_2", "SocialGouv/iterion", 902),
+		other("PVTI_3", "SocialGouv/infra", 903),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, nil)
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.SkippedNoCard != 3 {
+		t.Fatalf("SkippedNoCard = %d, want 3", res.SkippedNoCard)
+	}
+	if len(res.MissingRepos) != 2 {
+		t.Fatalf("MissingRepos = %+v, want one entry per distinct repo", res.MissingRepos)
+	}
+	// Sorted: most-missing first, then by name, so the operator's first move is
+	// the first line.
+	if res.MissingRepos[0].Repo != "SocialGouv/iterion" || res.MissingRepos[0].Count != 2 {
+		t.Errorf("MissingRepos[0] = %+v, want SocialGouv/iterion×2 first", res.MissingRepos[0])
+	}
+	if res.MissingRepos[1].Repo != "SocialGouv/infra" || res.MissingRepos[1].Count != 1 {
+		t.Errorf("MissingRepos[1] = %+v", res.MissingRepos[1])
+	}
+}
+
 func TestImportProjectBoardNeverCreatesCards(t *testing.T) {
 	board := newTestBoard(t)
 	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{

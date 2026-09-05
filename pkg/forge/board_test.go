@@ -2,6 +2,7 @@ package forge
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +96,51 @@ func TestStatusMappingLookupsAreFolded(t *testing.T) {
 	}
 	if _, ok := StatusForState(m, "review"); ok {
 		t.Error("an unmapped native state must be inert, not collapsed onto a neighbour")
+	}
+}
+
+// TestStatusMappingFromMap covers the operator escape hatch: the five shipped
+// column names are a DEFAULT, so a board reading "Todo"/"Doing" binds by
+// naming them. The one thing it refuses is a non-injective map — two columns
+// on one state make the reverse direction ambiguous, so the reflect would pick
+// one and the next import would read the other back and undo it.
+func TestStatusMappingFromMap(t *testing.T) {
+	got, err := StatusMappingFromMap(map[string]string{
+		"Todo": "ready", "Doing": "in_progress", "Shipped": "done",
+	})
+	if err != nil {
+		t.Fatalf("StatusMappingFromMap: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d pairs, want 3: %+v", len(got), got)
+	}
+	// Sorted by state, so a stored map is stable across runs.
+	if got[0].State != "done" || got[1].State != "in_progress" || got[2].State != "ready" {
+		t.Errorf("mapping is not sorted by state: %+v", got)
+	}
+	if s, ok := StateForStatus(got, "todo"); !ok || s != "ready" {
+		t.Errorf("StateForStatus(todo) = %q,%v", s, ok)
+	}
+	if s, ok := StatusForState(got, "done"); !ok || s != "Shipped" {
+		t.Errorf("StatusForState(done) = %q,%v", s, ok)
+	}
+}
+
+func TestStatusMappingFromMapRefusesAmbiguity(t *testing.T) {
+	_, err := StatusMappingFromMap(map[string]string{"Todo": "ready", "Next": "ready"})
+	if err == nil {
+		t.Fatal("want an error: two columns on one state make the reverse direction ambiguous")
+	}
+	for _, want := range []string{"injective", "ready"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must name the collision (%q missing): %q", want, err)
+		}
+	}
+	if _, err := StatusMappingFromMap(nil); err == nil {
+		t.Error("an empty map must be an error, not a silent fallback to the default")
+	}
+	if _, err := StatusMappingFromMap(map[string]string{"Todo": "  "}); err == nil {
+		t.Error("an empty state must be an error")
 	}
 }
 

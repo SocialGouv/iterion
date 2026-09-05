@@ -522,6 +522,12 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 		}
 		if projectRes.SkippedNoCard > 0 {
 			p.KV("Skipped (no card yet)", strconv.Itoa(projectRes.SkippedNoCard))
+			// Name the repos: the operator's next command is one issue import
+			// per line, and a bare count would not say which.
+			p.Line("  Run the issue import for these repos first:")
+			for _, m := range projectRes.MissingRepos {
+				p.Line("    %s (%d item(s))", m.Repo, m.Count)
+			}
 		}
 	}
 	return nil
