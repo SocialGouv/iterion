@@ -55,3 +55,21 @@ func TestBrandAsset_UnknownFileIs404(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9110 §13.1.2: a list, `*`, and the weak form all validate — an ingress
+// that gzips rewrites the strong tag to W/"…", and an exact compare would
+// make every revalidation download the asset again.
+func TestBrandAsset_ConditionalRequestForms(t *testing.T) {
+	name := brand.VariantPlain.Filename()
+	etag := brandGet(name, "").Header().Get("ETag")
+	for _, inm := range []string{etag, "*", `"other", ` + etag, "W/" + etag, "  " + etag + "  ", `"a", "b", *`} {
+		if w := brandGet(name, inm); w.Code != http.StatusNotModified {
+			t.Errorf("If-None-Match %q: code=%d, want 304", inm, w.Code)
+		}
+	}
+	for _, inm := range []string{`"other"`, `W/"other"`} {
+		if w := brandGet(name, inm); w.Code != http.StatusOK {
+			t.Errorf("If-None-Match %q: code=%d, want 200", inm, w.Code)
+		}
+	}
+}

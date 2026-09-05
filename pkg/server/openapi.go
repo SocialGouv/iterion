@@ -65,7 +65,7 @@ func (s *Server) buildOpenAPI() map[string]any {
 			if rs, ok := schemas[m+" "+rt.Pattern]; ok {
 				if rs.request != nil {
 					op["requestBody"] = map[string]any{
-						"required": true,
+						"required": !rs.requestOptional,
 						"content": map[string]any{
 							"application/json": map[string]any{"schema": gen.schema(rs.request)},
 						},

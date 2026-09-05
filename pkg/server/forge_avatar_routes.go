@@ -81,6 +81,11 @@ func (s *Server) applyBotAvatar(ctx context.Context, conn forge.Connection, vari
 	case conn.Kind != forge.KindPAT:
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("connection kind %q cannot carry an avatar", conn.Kind)}
+	case conn.Status == forge.StatusRevoked:
+		// A dead credential would come back as a 401 recorded on AvatarError,
+		// dressing a reconnect problem as an avatar one.
+		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+			msg: fmt.Sprintf("%s rejected this connection's token (status %s) — reconnect it first", conn.Host(), conn.Status)}
 	case conn.AccountKind != forge.AccountKindBot && !force:
 		return conn, "", &avatarRefusal{status: http.StatusConflict,
 			msg:    fmt.Sprintf("%s does not flag @%s as a bot account; if it is a dedicated account for iterion (not a person's), apply with force", conn.Host(), conn.AccountLogin),
@@ -95,24 +100,38 @@ func (s *Server) applyBotAvatar(ctx context.Context, conn forge.Connection, vari
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s connections cannot set an avatar through iterion", conn.Provider)}
 	}
-	now := time.Now().UTC()
-	tctx := store.WithTenant(ctx, conn.TenantID)
+	// The record must outlive the request: the failure worth recording is a
+	// slow forge, i.e. exactly when the caller has already gone away.
+	tctx := store.WithTenant(context.WithoutCancel(ctx), conn.TenantID)
+	// The upload is a forge round-trip, and another writer (the orchestrator
+	// stamping ManagedSecretID on a provision) may touch the document
+	// meanwhile — so the outcome is written onto a FRESH read, carrying only
+	// the avatar fields, never the copy read before the upload.
+	persist := func(appliedAt *time.Time, avatarErr string) (forge.Connection, error) {
+		fresh, err := s.forgeConnections.Get(tctx, conn.ID)
+		if err != nil {
+			return conn, err
+		}
+		fresh.AvatarAppliedAt, fresh.AvatarError, fresh.UpdatedAt = appliedAt, avatarErr, time.Now().UTC()
+		if err := s.forgeConnections.Update(tctx, fresh); err != nil {
+			return conn, err
+		}
+		return fresh, nil
+	}
 	avatarURL, err := setter.SetAvatar(ctx, brand.BotAvatar(variant))
 	if err != nil {
-		conn.AvatarError = err.Error()
-		conn.UpdatedAt = now
-		if uerr := s.forgeConnections.Update(tctx, conn); uerr != nil && s.logger != nil {
-			s.logger.Error("forge avatar: record the failure on connection %s: %v", conn.ID, uerr)
+		recorded, perr := persist(conn.AvatarAppliedAt, err.Error())
+		if perr != nil && s.logger != nil {
+			s.logger.Error("forge avatar: record the failure on connection %s: %v", conn.ID, perr)
 		}
-		return conn, "", err
+		return recorded, "", err
 	}
-	conn.AvatarAppliedAt = &now
-	conn.AvatarError = ""
-	conn.UpdatedAt = now
-	if err := s.forgeConnections.Update(tctx, conn); err != nil {
+	now := time.Now().UTC()
+	recorded, err := persist(&now, "")
+	if err != nil {
 		return conn, avatarURL, fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err)
 	}
-	return conn, avatarURL, nil
+	return recorded, avatarURL, nil
 }
 
 // githubAppLogoUploadURL resolves the settings page of the App behind a
@@ -124,7 +143,7 @@ func (s *Server) githubAppLogoUploadURL(ctx context.Context, conn forge.Connecti
 		return ""
 	}
 	app, err := s.forgeOAuthApps.Get(ctx, conn.OAuthAppID)
-	if err != nil {
+	if err != nil || app.TenantID != conn.TenantID {
 		return ""
 	}
 	return app.DeriveLogoUploadURL()

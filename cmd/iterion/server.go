@@ -166,13 +166,13 @@ func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 // installation-token connect mode. The PEM private key is loaded from a file
 // (the canonical k8s-secret mount), falling back to an inline env value.
 // Empty AppID → the App mode is unavailable (OAuth/PAT still work).
-// forgeBrandAvatarDisabled reads ITERION_FORGE_BRAND_AVATAR: "off", "0" or
-// "false" keeps iterion from uploading the iterion-bot avatar onto a bot
-// identity at connect time (docs/brand.md). Anything else — including unset —
-// leaves it on.
+// forgeBrandAvatarDisabled reads ITERION_FORGE_BRAND_AVATAR: "off", "0",
+// "false" or "no" (the values every other falsy switch in the repo takes)
+// keeps iterion from uploading the iterion-bot avatar onto a bot identity at
+// connect time (docs/brand.md). Anything else — including unset — leaves it on.
 func forgeBrandAvatarDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_FORGE_BRAND_AVATAR"))) {
-	case "off", "0", "false":
+	case "off", "0", "false", "no":
 		return true
 	}
 	return false

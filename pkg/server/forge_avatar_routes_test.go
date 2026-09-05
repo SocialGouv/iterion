@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -307,5 +308,119 @@ func TestForgeConnectionAvatar_RequiresManager(t *testing.T) {
 	s.handleForgeConnectionAvatar(w, r)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("a plain member could rebrand: code=%d", w.Code)
+	}
+}
+
+// The upload is a forge round-trip; a provision stamping ManagedSecretID on
+// the same document during it must survive the apply's write.
+func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
+	s := newForgeTestServer(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		// The concurrent writer, replayed verbatim from the orchestrator: a
+		// full-document update carrying the managed secret id.
+		c, err := s.forgeConnections.Get(context.Background(), "c-race")
+		if err != nil {
+			t.Errorf("get during upload: %v", err)
+		}
+		c.ManagedSecretID = "sec-managed-forge-token"
+		if err := s.forgeConnections.Update(context.Background(), c); err != nil {
+			t.Errorf("concurrent update: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/uploads/avatar.png"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-race", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+
+	if w := avatarReq(s, "c-race", ""); w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-race")
+	if stored.ManagedSecretID != "sec-managed-forge-token" {
+		t.Fatalf("the avatar apply lost a concurrent write: managed_secret_id=%q", stored.ManagedSecretID)
+	}
+	if stored.AvatarAppliedAt == nil {
+		t.Error("the apply itself was not recorded")
+	}
+}
+
+// cancelAwareStore is the memory store with the one behaviour Mongo has and
+// the memory store lacks: a write on a dead context fails.
+type cancelAwareStore struct {
+	forge.ConnectionStore
+	updates int
+}
+
+func (c *cancelAwareStore) Update(ctx context.Context, conn forge.Connection) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.updates++
+	return c.ConnectionStore.Update(ctx, conn)
+}
+
+// The failure worth recording is a slow forge — exactly when the caller has
+// already gone away. The record must not ride the request context.
+func TestForgeConnectionAvatar_RecordsOnACancelledRequest(t *testing.T) {
+	s := newForgeTestServer(t)
+	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
+	s.forgeConnections = cs
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-cancel", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+
+	ctx, cancel := context.WithCancel(superAdminCtx())
+	cancel() // the client is gone before the upload starts
+	r := forgeReq(ctx, "POST", "/api/teams/t1/forge/connections/c-cancel/avatar", "", "t1")
+	r.SetPathValue("conn_id", "c-cancel")
+	w := httptest.NewRecorder()
+	s.handleForgeConnectionAvatar(w, r)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-cancel")
+	if !strings.Contains(stored.AvatarError, "context canceled") || cs.updates != 1 {
+		t.Fatalf("the failure was not recorded: avatar_error=%q updates=%d", stored.AvatarError, cs.updates)
+	}
+}
+
+func TestForgeConnectionAvatar_RevokedConnectionIsRefused(t *testing.T) {
+	s := newForgeTestServer(t)
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	c := seedAvatarConn(t, s, forge.Connection{ID: "c-revoked", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+	c.Status = forge.StatusRevoked
+	if err := s.forgeConnections.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	w := avatarReq(s, "c-revoked", `{"force":true}`)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect") || gl.count() != 0 {
+		t.Errorf("code=%d body=%s uploads=%d", w.Code, w.Body.String(), gl.count())
+	}
+}
+
+// The rebrand nobody asked for is the one that must leave a trace.
+func TestForgeConnect_AutoApplyIsAudited(t *testing.T) {
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	s := newForgeTestServer(t)
+	store := audit.NewMemoryStore()
+	s.auditStore = store
+
+	conn := connectGitLabPAT(t, s, srv.URL)
+	// Audit writes are detached (goSafe); poll briefly for the row to land.
+	var events []audit.Event
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		events, _ = store.ListByTenant(context.Background(), "t1", audit.Page{Action: "forge.connection.avatar_applied"})
+		if len(events) > 0 || time.Now().After(deadline) {
+			break
+		}
+	}
+	if len(events) != 1 || events[0].TargetID != conn.ID || events[0].Meta["automatic"] != true {
+		t.Fatalf("audit trail = %+v", events)
 	}
 }

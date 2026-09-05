@@ -137,6 +137,9 @@ var remoteForgeConnectionsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if (cmd.Flags().Changed("force") || cmd.Flags().Changed("variant")) && (len(args) == 0 || args[0] != "avatar") {
+			return fmt.Errorf("--force and --variant only apply to `connections avatar <conn-id>`")
+		}
 		switch {
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)

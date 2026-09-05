@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -32,6 +33,10 @@ type forgeConnectReq struct {
 	// team's single app for that host.
 	OAuthAppID string `json:"oauth_app_id,omitempty"`
 }
+
+// connectAvatarTimeout bounds the connect-time avatar upload onto a bot
+// identity: the connect must answer even when the forge crawls.
+const connectAvatarTimeout = 20 * time.Second
 
 type forgeConnectResp struct {
 	Connection   *forge.Connection `json:"connection,omitempty"`
@@ -152,10 +157,21 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 		// account exists for iterion (a group/project token created for it),
 		// and every comment it will post is signed by that avatar. A failure
 		// is recorded on the connection (AvatarError) and never fails the
-		// connect — the studio names it and offers a retry.
-		updated, _, err := s.applyBotAvatar(r.Context(), conn, brand.VariantPlain, false)
+		// connect — the studio names it and offers a retry. The upload rides
+		// its own bounded context: the connection already exists, so a client
+		// that gives up must not leave its avatar state half-written, and a
+		// hanging forge must not hold the connect for the HTTP client's full
+		// timeout.
+		actx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), connectAvatarTimeout)
+		updated, _, err := s.applyBotAvatar(actx, conn, brand.VariantPlain, false)
+		cancel()
 		if err != nil && s.logger != nil {
 			s.logger.Warn("forge connect: iterion-bot avatar not applied on @%s (%s): %v", conn.AccountLogin, conn.Host(), err)
+		}
+		if err == nil {
+			// The rebrand nobody asked for is the one that must leave a trace.
+			s.auditTenant(r, teamID, "forge.connection.avatar_applied", "forge_connection", connID,
+				map[string]any{"provider": provider, "variant": string(brand.VariantPlain), "automatic": true})
 		}
 		conn = updated
 	}
