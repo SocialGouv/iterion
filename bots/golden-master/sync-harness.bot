@@ -101,12 +101,6 @@ tool sync_harness:
     def git(*args):
         return subprocess.run(["git", "-C", ws] + list(args), capture_output=True, text=True, timeout=120)
 
-    # `git status --porcelain` prints paths relative to the REPOSITORY root,
-    # whatever directory git runs from: a net below the root (a monorepo
-    # package, a run started from a subdirectory) shows as <prefix><net>.
-    prefix = git("rev-parse", "--show-prefix").stdout.strip()
-    harness_status_line = " M %s%s/harness.py" % (prefix, os.path.normpath(gm_rel))
-
     # Same canonical form as the gate's own materialisation, byte for byte.
     HEADER = (
         "#!/usr/bin/env python3\n"
@@ -131,6 +125,26 @@ tool sync_harness:
     if not os.path.isfile(target):
         refuse("no materialised harness at %s/harness.py — a net the golden-master bot built carries one; "
                "run the net's owner bot first" % gm_rel)
+    # The write below is in place and its only undo is git's. A path git cannot
+    # put back must be refused BEFORE it is clobbered, not restored after: an
+    # untracked harness is invisible to `--untracked-files=no` and survives no
+    # `checkout -- .`, and a symlink would carry the write to a referent outside
+    # the tree while git reports the tree clean throughout.
+    ls = git("ls-files", "--stage", "--full-name", "-z", "--", "%s/harness.py" % gm_rel)
+    if ls.returncode != 0:
+        refuse("git ls-files failed in %s: %s" % (ws, ls.stderr[-300:]))
+    entry = [e for e in ls.stdout.split("\0") if e.strip()]
+    if len(entry) != 1 or not entry[0].startswith("100"):
+        refuse("%s/harness.py is not a tracked regular file (%s) — the sync overwrites it in place and undoes with "
+               "git; an untracked file or a symlink has no undo"
+               % (gm_rel, entry[0].split("\t")[0] if entry else "untracked"))
+    # Porcelain paths are relative to the REPOSITORY root, never to
+    # workspace_dir, and `-z` spares us git's C-quoting. `ls-files --full-name`
+    # prints that same form and canonicalises the pathspec, so `rel` is what
+    # porcelain will print for this file whatever the shape of the target: a
+    # net below the root (monorepo package, run started from a subdirectory) or
+    # a non-canonical `--var oracle_dir=./gm`.
+    rel = entry[0].split("\t", 1)[1]
     with open(target, encoding="utf-8") as f:
         old = f.read()
     if not old.startswith(HEADER):
@@ -167,9 +181,9 @@ tool sync_harness:
     lines = [l for l in (p.stdout + p.stderr).splitlines() if l.strip()]
     out["selftest"] = lines[-1] if lines else "(selftest printed nothing)"
 
-    st = git("status", "--porcelain", "--untracked-files=no")
-    moved = [l for l in st.stdout.splitlines() if l.strip()]
-    if moved != [harness_status_line]:
+    st = git("status", "--porcelain", "-z", "--untracked-files=no")
+    moved = [e for e in st.stdout.split("\0") if e.strip()]
+    if moved != [" M " + rel]:
         git("checkout", "-q", "--", ".")
         refuse("more than the harness moved after the sync: %s" % ", ".join(moved))
     out["changed"] = True
