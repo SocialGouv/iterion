@@ -463,8 +463,11 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 	// would take another hand's work. Declining must cost the tree NOTHING:
 	// the window it opens is the whole gate (hours, on a live checkout), and a
 	// blanket `checkout -- .` ahead of the HEAD check discarded every unstaged
-	// tracked edit made in it while dropping no commit at all.
-	t.Run("a declined drop leaves the working tree alone", func(t *testing.T) {
+	// tracked edit made in it while dropping no commit at all. And it must SAY
+	// so: a red gate ends the run at `fail` whether or not the drop succeeded,
+	// so a silent decline reads as "nothing landed" while the sync commit is
+	// still in the branch's history for whoever owns landings.
+	t.Run("a declined drop leaves the working tree alone, and says so", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
 		res, _ := syncHarness(t, ws)
 		c := syncCommitNode(t, ws, res)
@@ -492,6 +495,15 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		}
 		if got, _ := os.ReadFile(filepath.Join(ws, "README.md")); string(got) != "work in progress\n" {
 			t.Fatalf("README.md = %q: a declined drop discarded an unstaged edit it never had to touch", got)
+		}
+		if !strings.Contains(gate.LogTail, "NOT dropped") || !strings.Contains(gate.LogTail, c.Commit[:12]) {
+			t.Fatalf("log_tail must name the sync commit it left behind:\n%s", gate.LogTail)
+		}
+		if !strings.Contains(gate.LogTail, "divergence") {
+			t.Fatalf("the gate's own words must survive the notice:\n%s", gate.LogTail)
+		}
+		if !strings.Contains(git("log", "--format=%H"), c.Commit) {
+			t.Fatal("the sync commit is gone from history — then the notice is the lie")
 		}
 	})
 
