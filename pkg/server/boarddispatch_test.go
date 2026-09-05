@@ -32,10 +32,15 @@ type fakeBoardCoord struct {
 	states   map[string]string
 	claimErr map[string]error
 	stateErr map[string]error
-	renews   map[string]int
-	epochs   map[string]int64
-	expired  []boardmongo.ExpiredCandidate
-	unleased []boardmongo.ExpiredCandidate
+	// stateErrTo fault-injects ONE target transition (keyed "id|state"),
+	// where stateErr fails every write for a card. The distinction matters
+	// whenever the first write (→ in_progress) must land and only a later
+	// one fails, which is the whole shape of a final-write fault.
+	stateErrTo map[string]error
+	renews     map[string]int
+	epochs     map[string]int64
+	expired    []boardmongo.ExpiredCandidate
+	unleased   []boardmongo.ExpiredCandidate
 	// recoveryLists counts ListAbandonedRecoveryClaims calls — the
 	// periodicity oracle for the repair-sweep cadence.
 	recoveryLists int
@@ -123,6 +128,9 @@ func (f *fakeBoardCoord) SetState(ctx context.Context, _, id, state string) erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.stateErr[id]; err != nil {
+		return err
+	}
+	if err := f.stateErrTo[id+"|"+state]; err != nil {
 		return err
 	}
 	f.states[id] = state
@@ -647,6 +655,7 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 // correct composition is worthless if the launch path never calls it.
 func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
+	allowSameRepoLaunch(s)
 	s.cfg.PublicURL = "https://iterion.example"
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
@@ -762,6 +771,7 @@ func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 // pull request gets nothing: neither the grant nor the gate has any meaning.
 func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
+	allowSameRepoLaunch(s)
 	s.cfg.PublicURL = "https://iterion.example"
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
@@ -791,7 +801,10 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		"gate_severity": "medium", // pinned on the launch — must survive
 		"gate_context":  "",       // cleared field: absent, not a decision
 	}
-	out := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if out["gate_severity"] != "medium" {
 		t.Errorf("repo policy overwrote a launch pin: %q", out["gate_severity"])
 	}
@@ -819,8 +832,11 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/7"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if g, ok := s.forgePublishTokens.lookup(out[forgePublishVarToken]); !ok || g.ConnectionID != "conn1" {
 		t.Errorf("the stale provisioning won the grant: ok=%v g=%+v", ok, g)
 	}
@@ -828,17 +844,30 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Errorf("the stale provisioning won the policy: %q", out["gate_context"])
 	}
 
-	// Same slug on another forge is a different repo: no policy, no grant.
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	grantsBefore := len(s.forgePublishTokens.(*ForgePublishTokenRegistry).tokens)
+	// Same slug on another forge is a different repo — and since no connection
+	// covers that host, nothing can verify the PR's head there either, so the
+	// launch is now REFUSED rather than merely left ungranted. The vars come
+	// back untouched: no policy, no grant.
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://gitlab.example/o/r/-/merge_requests/7"}, nil)
+	if err == nil {
+		t.Fatal("unconnected forge was admitted")
+	}
 	if _, ok := out["gate_context"]; ok {
 		t.Errorf("policy applied across forge hosts: %v", out)
 	}
-	if _, ok := out[forgePublishVarToken]; ok {
-		t.Error("grant minted for a repo on a host no connection covers")
+	// Assert the SIDE EFFECT, not the returned map: a refusal used to return a
+	// NIL map, on which "no token key present" holds whether or not the guard
+	// ran. The registry's own size cannot be faked that way.
+	if got := len(s.forgePublishTokens.(*ForgePublishTokenRegistry).tokens); got != grantsBefore {
+		t.Errorf("grant minted for a repo on a host no connection covers: registry grew %d → %d", grantsBefore, got)
 	}
 
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := out[forgePublishVarToken]; ok {
 		t.Error("no pr_url: nothing to grant")
 	}
@@ -2712,5 +2741,275 @@ func TestCloudSweep_GateOffReleasesAnAbandonedRecoveryHold(t *testing.T) {
 	}
 	if state != native.StateInProgress {
 		t.Fatalf("state = %q — a release restores the card, it must never ROUTE an operator-cancelled run", state)
+	}
+}
+
+// A card whose PR-head lookup could not be ANSWERED (forge 5xx, timeout,
+// network blip) must not be filed blocked: nothing launched, and blocked is an
+// operator-facing terminal flag reconcileDeadPointer refuses to reclassify.
+// The card goes back to the eligible pool and launches on the next pass — the
+// property the whole retry arm exists for, proven end-to-end rather than by an
+// errors.Is assertion.
+func TestBoardDispatcher_ForgeOutageReturnsTheCardAndRetries(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	outage := true
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		if outage {
+			return prePreLaunchOutage("github: GET pull: HTTP 503")
+		}
+		return nil
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0 // the wait itself is not what this proves
+
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateReady {
+		t.Fatalf("an unanswerable lookup must return the card to the pool, got %q", got)
+	}
+	if len(f.claimed) != 0 {
+		t.Fatalf("the card must be released so the next pass can claim it: %v", f.claimed)
+	}
+
+	outage = false
+	if claimed := d.tick(context.Background()); claimed != 1 {
+		t.Fatalf("the recovered card was not re-claimed: claimed=%d", claimed)
+	}
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateDone {
+		t.Fatalf("the card did not launch once the forge recovered, got %q", got)
+	}
+}
+
+// The retry is BOUNDED: an outage that outlives the budget escalates to
+// blocked rather than looping forever against the forge it cannot reach.
+func TestBoardDispatcher_ForgeOutageEscalatesAfterTheBudget(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return prePreLaunchOutage("github: GET pull: HTTP 502")
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0
+	d.retryLimit = 3
+	for i := 0; i < d.retryLimit; i++ {
+		d.tick(context.Background())
+		d.wg.Wait()
+	}
+	if got := f.states["native:1"]; got != native.StateBlocked {
+		t.Fatalf("a lookup failing past the budget must escalate to blocked, got %q after %d passes", got, d.retryLimit)
+	}
+	if len(f.claimed) != 0 {
+		t.Fatalf("the escalated card must still be released: %v", f.claimed)
+	}
+}
+
+// A PROVEN fork is a decision, not an outage: it is filed blocked on the FIRST
+// pass. Retrying it would re-ask a question the forge already answered.
+func TestBoardDispatcher_ForkRefusalIsTerminalOnTheFirstPass(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return prLaunchRefusal("PR launch: %s", forkGuardRefusal(false, false, "contributor/r"))
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateBlocked {
+		t.Fatalf("a proven fork must be filed blocked immediately, got %q", got)
+	}
+}
+
+// The backoff is enforced at CLAIM time: a card returned to the pool is not
+// re-claimed on the very next 5s tick, or the retry hammers the forge during
+// the outage it is reacting to.
+func TestBoardDispatcher_ReturnedCardWaitsOutItsBackoff(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	passes := 0
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		passes++
+		return prePreLaunchOutage("dial tcp: i/o timeout")
+	}, "replica-A", 4, nil)
+	d.retryBackoff = time.Hour
+	d.tick(context.Background())
+	d.wg.Wait()
+	if claimed := d.tick(context.Background()); claimed != 0 || passes != 1 {
+		t.Fatalf("a card inside its backoff window was re-claimed: claimed=%d passes=%d", claimed, passes)
+	}
+}
+
+// The permanent/transient split is an explicit allowlist in the PERMANENT
+// direction: the typed forge sentinels are decisions, everything else is a
+// failure to ask. "Untyped ⇒ transient" would retry a config defect forever.
+func TestClassifyPRLookupError_PermanentAllowlist(t *testing.T) {
+	for _, permanent := range []error{
+		forge.ErrUnauthorized, forge.ErrForbidden, forge.ErrHookNotFound, forge.ErrPermissionsNotGranted,
+	} {
+		if err := classifyPRLookupError("resolve head repository", permanent); prLaunchUnavailable(err) {
+			t.Errorf("%v must be terminal, not retried", permanent)
+		}
+	}
+	for _, transient := range []error{
+		errors.New("github: GET pull: HTTP 503"),
+		errors.New("github: GET pull: HTTP 429"),
+		context.DeadlineExceeded,
+	} {
+		if err := classifyPRLookupError("resolve head repository", transient); !prLaunchUnavailable(err) {
+			t.Errorf("%v must be retryable — it says nothing about the card", transient)
+		}
+	}
+	// A refusal is never retryable, whatever it wraps.
+	if prLaunchUnavailable(prLaunchRefusal("PR launch: fork PR")) {
+		t.Error("a refusal must never be retried")
+	}
+}
+
+// prePreLaunchOutage reproduces EXACTLY what processBoardCard returns when the
+// forge could not answer the PR-head lookup — the classified error plus the
+// errCardRetryable marker it applies at the one site that knows no run exists.
+// TestProcessBoardCardMarksAnUnanswerableLookupRetryable pins that shape to the
+// real code path, so these dispatcher-level tests cannot drift from it.
+func prePreLaunchOutage(msg string) error { return prePreLaunchOutageFrom(errors.New(msg)) }
+
+// prePreLaunchOutageFrom is the same shape over an EXISTING error, which the
+// drain case needs: there the cause is context.Canceled itself, handed to the
+// guard's lookup by the cardCtx the drain cancelled.
+func prePreLaunchOutageFrom(cause error) error {
+	return fmt.Errorf("card native:1: %w: %w",
+		classifyPRLookupError("resolve head repository", cause), errCardRetryable)
+}
+
+// The pre-launch return-to-pool is the ONE disposition whose card carries no
+// run pointer, so a refused final write cannot just be logged past: releasing
+// the claim there leaves an unclaimed card in the running column with an empty
+// LastRunID, and no path picks that up. The claim is retained instead — the
+// shape the claim watchdog can still write back to the pool.
+func TestBoardDispatcher_UnlandedReturnToPoolKeepsTheClaim(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	// Only the RETURN write fails; the → in_progress one must land, or the
+	// card never reaches the disposition under test.
+	f.stateErrTo = map[string]error{"native:1|" + native.StateReady: errors.New("board store unavailable")}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return prePreLaunchOutage("github: GET pull: HTTP 503")
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0
+
+	d.tick(context.Background())
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateInProgress {
+		t.Fatalf("state = %q — the premise is a REFUSED return write, so the card must still sit in %q", got, native.StateInProgress)
+	}
+	if _, held := f.claimed["native:1"]; !held {
+		t.Fatal("the claim was released over a card that never launched and never returned to the pool: " +
+			"unclaimed, in the running column, with no run pointer is the one shape nothing recovers")
+	}
+}
+
+// The brake is scoped to that disposition: a card that DID launch and failed
+// still releases its claim even when its filing is refused, because the run
+// pointer it leaves behind is what the reconcilers act on.
+func TestBoardDispatcher_UnlandedFilingStillReleasesAfterALaunch(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	f.stateErrTo = map[string]error{"native:1|" + native.StateBlocked: errors.New("board store unavailable")}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return errors.New("the run failed after launching")
+	}, "replica-A", 4, nil)
+
+	d.tick(context.Background())
+	d.wg.Wait()
+	if _, held := f.claimed["native:1"]; held {
+		t.Fatal("a post-launch filing failure must still release: the card keeps its run pointer, which the reconcilers read")
+	}
+}
+
+// A drain that lands BEFORE anything launched is not the draining arm's case.
+// The cancelled cardCtx is precisely what made the guard's own forge lookup
+// fail (context.Canceled is untyped, so classifyPRLookupError calls it
+// retryable), so the card never got past the pre-launch gate. Evaluated in the
+// wrong order the draining arm wins, leaves `final = ""`, and strands the card
+// in_progress with the empty LastRunID no reconciler acts on — tick lists
+// `ready` only, sweepParked lists awaiting_input only, and reconcileDeadPointer
+// returns immediately on an empty pointer. Ordering regression test.
+func TestBoardDispatcher_DrainBeforeLaunchReturnsTheCardToThePool(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "review-pr"))
+	ctx, cancel := context.WithCancel(context.Background())
+	draining := true
+	d := newBoardDispatcher(f, func(c context.Context, _ string, _ native.Issue) error {
+		if !draining {
+			return nil
+		}
+		cancel()   // the replica begins draining while the guard is still asking
+		<-c.Done() // ... which is what kills the lookup
+		return prePreLaunchOutageFrom(c.Err())
+	}, "replica-A", 4, nil)
+	d.retryBackoff = 0 // the wait itself is not what this proves
+
+	d.tick(ctx)
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateReady {
+		t.Fatalf("a card drained BEFORE launch was left in %q — nothing launched, and nothing recovers that shape; want it back in %q", got, native.StateReady)
+	}
+	if len(f.claimed) != 0 {
+		t.Fatalf("the returned card must be released so another replica can claim it: %v", f.claimed)
+	}
+
+	// ... and it is genuinely launchable again once a live replica picks it up.
+	draining = false
+	if claimed := d.tick(context.Background()); claimed != 1 {
+		t.Fatalf("the card returned by the drain was not re-claimed: claimed=%d", claimed)
+	}
+	d.wg.Wait()
+	if got := f.states["native:1"]; got != native.StateDone {
+		t.Fatalf("the recovered card did not launch, got %q", got)
+	}
+}
+
+// The linkage the dispatcher-level retry tests assume: the REAL processBoardCard
+// marks an unanswerable lookup retryable, and a refusal not. Without this the
+// retry arm could be unreachable in production while its own tests stayed green.
+func TestProcessBoardCardMarksAnUnanswerableLookupRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		lookupErr     error
+		head          string
+		wantRetryable bool
+	}{
+		{name: "forge-5xx", lookupErr: errors.New("github: GET pull: HTTP 503"), wantRetryable: true},
+		{name: "credential-rejected", lookupErr: forge.ErrUnauthorized},
+		{name: "fork", head: "contributor/r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			s.cfg.PublicURL = "https://iterion.example"
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+				return launchPullClient{
+					pr:  forge.PullRef{State: "open", HeadRepoFullName: tc.head, SourceBranch: "topic"},
+					err: tc.lookupErr,
+				}, nil
+			}
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc, err := runview.NewService("", runview.WithStore(rs))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.runs = svc
+			botsDir := t.TempDir()
+			if werr := os.WriteFile(filepath.Join(botsDir, "fixer.bot"), []byte(
+				"schema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"yes\"}'`\n  output: probe_out\n\nworkflow board_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n",
+			), 0o600); werr != nil {
+				t.Fatal(werr)
+			}
+			s.cfg.Bots.Paths = []string{botsDir}
+
+			err = s.processBoardCard(context.Background(), "team1", native.Issue{
+				ID: "native:1", Bot: "fixer",
+				BotArgs: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
+			})
+			if err == nil {
+				t.Fatal("an unproven head was admitted onto the board lane")
+			}
+			if got := errors.Is(err, errCardRetryable); got != tc.wantRetryable {
+				t.Fatalf("errCardRetryable = %v, want %v (err: %v)", got, tc.wantRetryable, err)
+			}
+		})
 	}
 }

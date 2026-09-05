@@ -211,3 +211,90 @@ and the token is what acts.
 Adding a provider = implement the `forge.Admin` interface (+ an
 `OAuthExchanger`/`TokenRefresher` for OAuth) and register it in the server's
 provider dispatch; the orchestrator + studio are provider-agnostic.
+
+### Launching a bot on a pull request
+
+Studio/API launches and dispatched board cards carrying `pr_url` verify the
+PR's **head repository** before launching the bot. A head branch that does not
+live in the base repository is refused — as on the webhook entry points, and
+through the same predicate: the launch pair is `<base>.CloneURL` + the head
+branch name, so a fork's branch either misses or silently resolves to a
+same-named branch **in the base repo**, which a code-pushing bot would then
+commit onto. Same-repo is proven, never assumed. Bring the fork's changes onto
+a branch in the base repository before launching through these surfaces.
+
+The guard applies to every launch carrying `pr_url`; only the credential the
+lookup runs under differs:
+
+| Surface | Credential | Head proven elsewhere | Forge could not be asked |
+|---|---|---|---|
+| Cloud studio / API (team identity) | the team's forge connection | refused, `422` | `502` — retry the call |
+| Local studio / API (no team) | the operator's local `forge_token` secret | refused, `422` | `502` — retry the call |
+| Board card (dispatcher) | the tenant's forge connection | card filed `blocked` | card returned to `ready`, retried |
+
+#### The local lane
+
+A local `iterion studio` has no team and no forge connections, so it reads the
+`forge_token` secret instead (`iterion secret set forge_token`, the same name
+the catalog bots bind). With no usable credential the launch is **refused**,
+not admitted: the message names the secret and the alternative. `iterion run`
+does not go through this surface at all — it executes the checkout you already
+have — so a local CLI run of a PR bot is unaffected.
+
+**The destination host is named by the request, so the token's reach is
+bounded, and for a self-hosted forge the pin is required.** `pr_url` decides
+which origin the lookup authenticates against, so:
+
+- A token with `allowed_hosts` set is bounded by it, exactly as when
+  `secretguard` materialises a placeholder: a token scoped to one forge is
+  never sent to another because a launch named a PR there.
+- A token with **no** pin — what `iterion secret set` produces unless you pass
+  `--hosts` — reaches only the three canonical origins iterion recognises on
+  its own: `https://github.com`, `https://gitlab.com`, `https://codeberg.org`.
+  Exact origins: a lookalike such as `github.com.evil.io`, a `www.` alias, a
+  port, and `http://` are all *not* on the list.
+
+So a **self-hosted GitHub Enterprise / GitLab / Forgejo** needs an explicit
+pin:
+
+```sh
+iterion secret set forge_token --hosts forge.example.com
+```
+
+Without it the launch is refused and the message names that exact command.
+A forge on a non-default port is pinned as `forge.example.com:8443` — the pin
+is compared against the host as it appears in `pr_url`, port included.
+
+The repository slug is taken from `pr_url` too, so it is checked before any
+request is built: a path segment of `.` or `..` is refused rather than
+concatenated into the forge's API URL. Ordinary names are unaffected — a dot
+inside a segment (`o/my.repo`) and a nested GitLab group path both pass.
+
+#### Refused vs. could-not-ask
+
+That last column is a real distinction, not a nicety. A **refusal** is a
+decision about the pull request or the configuration — a fork, an unparsable
+URL, no connection, a rejected credential — and re-asking changes nothing. A
+forge that could not be *asked* (5xx, a timeout, a network blip) says nothing
+about the card: a board card goes back in the pool and is retried on a later
+pass, up to a bounded number of attempts with a backoff, and only then filed
+`blocked`. Filing it immediately would write an operator-facing terminal flag —
+one the reconcilers deliberately refuse to reclassify — for a thirty-second
+hiccup.
+
+#### What this does not cover
+
+- GitHub answers `403` for both a permission denial and a secondary rate limit,
+  so a rate-limited card is read as a decision and filed.
+- The attempt counter is per-replica, so a fleet of N replicas grants up to N×
+  the attempts before escalating.
+- The guard proves a fact about the PR *on the forge*. It does not prove that a
+  local studio's own checkout corresponds to `pr_url` — that needs remote +
+  HEAD-SHA validation, which is not implemented.
+- A `pr_url` outside the connection's App installation resolves as not-found,
+  which refuses the launch.
+- On the board lane, a card whose return to `ready` cannot be written (the
+  board store is failing) keeps its claim rather than being released unfiled —
+  otherwise nothing would ever pick it up again. Recovering it needs the claim
+  watchdog (`ITERION_BOARD_CLAIM_REAPER`, off by default), which writes a
+  no-run card back to the pool at the next lease.

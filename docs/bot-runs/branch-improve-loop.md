@@ -1,5 +1,54 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — PR #769 follow-up: drain recovery and local credential destinations
+
+- Status: **fixes delivered; independent validation pending**. Run
+  [01a072b5-6010-70b2-8df0-3e78458c92ef](https://iterion.fabrique.social.gouv.fr/runs/01a072b5-6010-70b2-8df0-3e78458c92ef)
+  finished at 19:51:47Z after 1 h 55 m 23 s active. Target:
+  [PR #769](https://github.com/SocialGouv/iterion/pull/769) /
+  [issue #702](https://github.com/SocialGouv/iterion/issues/702).
+- Method: a focused `/billy` follow-up named Revi findings `Rbdd8d5` and
+  `R47ce28`, requiring the local/team fork guard to remain intact. The
+  interactive session reviewed the published diff after the run stopped;
+  no interactive push overlapped the fixer.
+- Result: eight commits, `76fcea019` through `78358ec2460c`, pushed and
+  banked on `iterion/run-01a072b5-6010-70b2-8df0-3e78458c92ef`. Both finding
+  IDs are recorded as fixed in the publisher's PR review. A pre-launch
+  retry now outranks replica draining, while a post-launch drain still
+  leaves the live run alone. Unpinned local tokens reach only the exact
+  canonical HTTPS origins of GitHub, GitLab and Codeberg; other origins
+  require the operator's host pin.
+- Additional value: a refused return-to-ready write retains the claim,
+  rather than releasing an unfiled card with no run pointer; the local
+  forge base canonicalises host case; and the shared head-verification
+  function rejects repository path traversal before building a request.
+  Tests include actual authenticated TLS requests, their zero-request
+  negative control, recovery after draining, and failed final-state writes.
+- Verification: the campaign reports `devbox run -- task check` passing
+  (136 packages, zero failures) and focused race tests passing. One earlier
+  concurrent suite reported a failure, followed by three clean reruns;
+  resource contention was the bot's inference, not a reproduced cause.
+  The final `verify_run` **returned 3**: build, vet, server tests and OpenAPI
+  generation succeeded, but the deterministic tail rejected the script's
+  quiet-diff check as a missing drift gate. This is not a green bot gate.
+  The detector only recognises a quiet diff when a failing exit appears
+  on the same line; the repository itself also uses a multiline failing
+  conditional. The friction is tracked in
+  [#789](https://github.com/SocialGouv/iterion/issues/789).
+- Delivery follow-up: merging current `main` conflicted only in this
+  bilan file. Both histories were retained verbatim, and this second-run
+  record was added. The merged tree passed whole-module build and the
+  server PR-guard/dispatcher regressions under `-race`, the full server
+  and dispatcher package suites, and the actual `task openapi:check`
+  with no generated-file drift. Required GitHub
+  checks and independent Revi must validate the updated branch before
+  protected merging; no status override is used.
+- Lessons: test the outbound request count, not only the HTTP refusal;
+  preserve the stronger pre-launch fact during draining; and distinguish
+  a test failure from a verifier that rejects the shape of its own script.
+  Claim-retention recovery still needs the opt-in claim watchdog, as the
+  forge integration documentation explicitly records.
+
 ## 2026-09-05 — lock-delivery follow-up on PR #770: an "open question" was a two-part defect, and one comment cited a function that never existed
 
 - Status: **delivered**. Run
@@ -66,6 +115,53 @@
   sweeper-vs-operator DLQ-replay ownership — genuine open questions, not
   findings. `parkOnDLQOnFinalDelivery`'s inherited publish context is a real
   smell but pre-existing and outside this branch.
+
+## 2026-09-05 — PR-launch guard: local credentials and bounded board retry (#769 / #702)
+
+- Status: **completed and delivered**; independent Revi re-review and GitHub
+  CI remain pending at this entry. Auto-merge stays off until those checks
+  validate the final branch.
+- Run: `01a0723b-acfb-71a9-9ae1-0d9b217e6cbb`, 15:41:48–17:23:49Z,
+  1 h 40 m 31 s active. Target: [PR #769](https://github.com/SocialGouv/iterion/pull/769),
+  [issue #702](https://github.com/SocialGouv/iterion/issues/702).
+- Method: the red-gate lane launched Billy against Revi's R57f074 (local
+  studio launches refused) and R48e8f3 (transient forge failures permanently
+  block board cards). The interactive session monitored the run and sent
+  two scope corrections; it did not edit the branch while Billy ran.
+- Result: seven commits pushed, head
+  `6acd74d17da6934730b882db307bbd243880dcdb`, also banked on
+  `iterion/run-01a0723b-acfb-71a9-9ae1-0d9b217e6cbb`. The publisher's PR
+  review records both finding IDs as fixed and reports the seven-commit push.
+  The post-campaign `verify_run` returned exit code 0 (whole-module build,
+  formatting, vet and the touched server package tests), followed by
+  publication and the terminal `finished` state.
+- Value: the local and team launch paths now share `verifyPRHeadInBaseRepo`.
+  Local studio resolves `forge_token` from its layered store, respects its
+  host pin, refuses when verification is unavailable, and explains the
+  missing credential. A fork or unnamed head creates no run. The board
+  returns a failed pre-launch lookup to the eligible state under the claim
+  token, waits 30 seconds, and escalates after five attempts. This retry
+  marker is attached before launch, so a later run failure cannot relaunch
+  the card through this arm.
+- Validation: the campaign reports lint with zero issues, 135 unit-test
+  packages, the e2e suite, coverage-matrix gate, and the new tests under
+  `-race` passing. Both headline regressions were observed red before green.
+  The session inspected the published code and tests: local same-repo
+  success, fork/unnamed-head refusal, absent/off-host credentials, recovery
+  after an outage, retry backoff/budget, and the real board-path marker.
+- Friction: the first fix reinstated a team-only bypass from Revi's proposed
+  replacement. That contradicts #702: a base-repository checkout plus a
+  fork's head branch is unsafe even without a publish grant. Steering
+  corrected it in `e86bccaecea1`; accepting a suggested patch mechanically
+  would have reintroduced the defect. The proposed `errCardContinuable`
+  also would have stranded a never-launched card in `in_progress`; the
+  implemented return-to-ready path addresses that instead.
+- Limits and lessons: retry counters are per replica, and the current forge
+  client does not distinguish a permission-denied 403 from a secondary
+  rate-limit 403. The guard proves the PR's head repository, not the local
+  checkout's remote or HEAD SHA. Keep those limits explicit, verify the
+  original issue against the final diff, and wait for independent Revi
+  rather than treating the fixer's own green gate as the final review.
 
 ## 2026-09-05 — lock-delivery hardening on PR #770: seven commits delivered; the publisher still says nothing was pushed
 

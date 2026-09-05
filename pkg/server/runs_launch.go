@@ -435,8 +435,40 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// publish node posts through the server's live forge client instead of a
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
-	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		req.Vars = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+	//
+	// The fork guard (#702) applies to BOTH shapes of this surface, because the
+	// hazard does not depend on a team: the launch pair is <base>.CloneURL + the
+	// PR's head branch either way, and a head branch that does not live in the
+	// base repo silently resolves to a SAME-NAMED branch there, which a
+	// code-pushing bot then commits onto. What differs is only the credential
+	// the head lookup runs under — a team Connection, or (local studio, whose
+	// DisableAuth identity carries an empty TeamID) the operator's own
+	// `forge_token` secret. Policy and the publish grant stay team-only:
+	// neither exists without a Connection.
+	launchID, _ := auth.FromContext(r.Context())
+	// Its OWN error variable, not the handler-wide `err`: that one is nil here
+	// only because every assignment between belongs to an inner scope, which is
+	// an invariant a later edit ninety lines up would silently break.
+	var prErr error
+	if launchID.TeamID != "" {
+		req.Vars, prErr = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+	} else if prURL := strings.TrimSpace(req.Vars["pr_url"]); prURL != "" {
+		prErr = s.verifyLocalPRHead(r.Context(), prURL)
+	}
+	if prErr != nil {
+		// A refusal is about the request (422); a forge that could not be asked
+		// is a dependency failure the same call survives on retry (502, the
+		// status this handler already uses for a forge-side failure above).
+		// Answering 422 there tells the operator to change a request that was
+		// fine.
+		if prLaunchUnavailable(prErr) {
+			s.httpErrorFor(w, r, http.StatusBadGateway, "%v", prErr)
+			span.SetStatus(codes.Error, "PR head repository unverifiable")
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", prErr)
+		span.SetStatus(codes.Error, "PR launch head repository refused")
+		return
 	}
 
 	// Detach lifecycle from the HTTP request context so a client

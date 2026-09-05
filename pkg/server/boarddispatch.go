@@ -67,6 +67,37 @@ var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
 // blocked, the flag no reconciler lifts.
 var errCardContinuable = errors.New("board dispatcher: run continuable")
 
+// errCardRetryable marks a failure that happened BEFORE anything was launched
+// and that says nothing about the card — the forge could not be asked whether
+// the PR's head lives in the base repo. Wrapped at the ONE site that knows no
+// run exists yet (processBoardCard's pre-launch guard), never inferred
+// downstream: processCard's arm returns the card to the eligible pool, and a
+// card returned there after a run HAD started would be launched twice.
+var errCardRetryable = errors.New("board dispatcher: nothing launched, retry the card")
+
+// cardRetryLimit / cardRetryBackoff bound the PRE-LAUNCH retry of a card whose
+// forge lookup could not be answered. The bound is mandatory, not decorative:
+// the poll interval is 5s, so an unbounded return-to-ready hammers the forge
+// during the very outage it reacts to — and LifetimeRuns, the watchdog's own
+// ceiling, cannot advance before a run exists, so nothing else stops the loop.
+// Both are the DEFAULTS behind injectable fields, so the escalation is provable
+// without waiting a real half-minute (the sessionInterval precedent).
+const (
+	cardRetryLimit   = 5
+	cardRetryBackoff = 30 * time.Second
+)
+
+// cardRetryTTL forgets a card's attempt counter once it has stopped failing
+// for long enough that the next failure is a NEW incident, not the old one.
+const cardRetryTTL = 10 * time.Minute
+
+// cardRetry is one card's pre-launch attempt budget.
+type cardRetry struct {
+	attempts  int
+	notBefore time.Time
+	seen      time.Time
+}
+
 // pollDisposition maps a TERMINAL polled status to the poll's verdict:
 // finished = clean; failed = the one filing-worthy failure; everything
 // else terminal (failed_resumable, cancelled) is continuable — the retry
@@ -128,6 +159,19 @@ type boardDispatcher struct {
 	reconcileMemoMu sync.Mutex
 	reconcileMemo   map[string]time.Time
 
+	// retryMemo bounds the PRE-LAUNCH retry of a card whose forge lookup could
+	// not be answered (keyed tenant|issueID). Same shape as reconcileMemo, and
+	// the same honest caveat as every in-memory bound here: it is PER-REPLICA,
+	// so a fleet of N grants up to N× the attempts. Acceptable for a bound
+	// whose job is "stop hammering, then become visible" — persisting the
+	// counter on the card is a schema change this does not need.
+	retryMemoMu sync.Mutex
+	retryMemo   map[string]cardRetry
+	// retryLimit / retryBackoff default to cardRetryLimit / cardRetryBackoff;
+	// injectable so a test can drive the escalation edge in real time.
+	retryLimit   int
+	retryBackoff time.Duration
+
 	// sweepKeepWarned / sweepListFailed / sweepBatchFull dedup the repair
 	// sweeps' per-pass warns on their edges (the sweeps run every
 	// watchdog pass; their populations are self-sustaining under a
@@ -180,6 +224,8 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		awaitingState:   native.StateAwaitingInput,
 		interval:        5 * time.Second,
 		reapEvery:       dispatcher.ClaimReaperInterval(),
+		retryLimit:      cardRetryLimit,
+		retryBackoff:    cardRetryBackoff,
 		sem:             make(chan struct{}, concurrency),
 		logger:          logger,
 	}
@@ -195,6 +241,18 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 	}
 	claimed := 0
 	for _, c := range cands {
+		// A card returned to the pool by the pre-launch retry arm waits out its
+		// backoff HERE rather than being re-claimed on the next 5s tick — which
+		// would re-ask the forge twelve times a minute during the outage the
+		// backoff exists for, and churn the card's state each time.
+		//
+		// Backed-off cards still occupy this listing page (they are unclaimed
+		// and eligible), so a forge outage can crowd out healthy cards for up
+		// to one backoff window. Bounded and self-clearing, which is why it is
+		// noted rather than paged around.
+		if !d.cardRetryDue(c.Tenant, c.Issue.ID) {
+			continue
+		}
 		select {
 		case d.sem <- struct{}{}: // acquired a slot
 		default:
@@ -249,6 +307,7 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	}
 	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState
+	returnedToPool := false
 	switch {
 	case runErr != nil && errors.Is(runErr, errCardPaused):
 		// A pause is not a failure: route the card to the awaiting-input
@@ -260,6 +319,31 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// place, release the claim — the fork-adoption reconciler files it
 		// if the pointer later reaches a real terminal disposition.
 		final = ""
+	case runErr != nil && errors.Is(runErr, errCardRetryable):
+		// NOTHING launched: the forge could not be ASKED whether the PR's head
+		// lives in the base repo, which says nothing about the card. Filing it
+		// blocked would write an operator-facing terminal flag — one
+		// reconcileDeadPointer refuses to reclassify — for a 30-second hiccup,
+		// on a lane that made no forge call at all before this guard existed.
+		//
+		// Return it to the pool instead. NOT errCardContinuable's `final = ""`:
+		// that leaves the card in_progress, and nothing recovers that shape
+		// pre-launch — the poll claims `ready` only, and both reconcilers
+		// return immediately on the empty LastRunID a card that never launched
+		// still carries. The write below goes out under the claim token, so a
+		// superseded replica cannot resurrect it.
+		//
+		// THE POSITION IS LOAD-BEARING — this arm MUST precede the draining
+		// one below. A drain cancels cardCtx, which is exactly what makes the
+		// guard's own forge lookup fail with context.Canceled; that is untyped,
+		// so classifyPRLookupError calls it retryable and processBoardCard
+		// marks it here. Evaluated after the draining arm, this case is
+		// unreachable on a drain and the card strands in_progress with the
+		// empty LastRunID no reconciler acts on. The two are not in tension:
+		// the marker is applied at ONE site that provably precedes
+		// runview.LaunchSpec, so "nothing launched" is the stronger statement
+		// and the drain arm's no-double-launch premise is untouched.
+		final, returnedToPool = d.retryStateFor(c, runErr)
 	case runErr != nil && ctx.Err() != nil:
 		// THIS REPLICA is going away — that says nothing about the run,
 		// which keeps executing on its runner pod and will finish.
@@ -277,6 +361,11 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		final = d.blockedState
 		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
 	}
+	if !returnedToPool {
+		// Past the pre-launch gate (launched, filed, parked, draining — or
+		// escalated): this card's attempt budget belongs to a closed incident.
+		d.clearCardRetry(c.Tenant, c.Issue.ID)
+	}
 	// Final writes on a DETACHED ctx: a superseded claim cancelled
 	// cardCtx (the fenced writes must still run to be REFUSED loudly —
 	// typed conflict in the log — rather than die on a dead ctx reading
@@ -287,6 +376,33 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	if final != "" {
 		if err := d.coord.SetStateOwned(finCtx, c.Tenant, c.Issue.ID, final, tok); err != nil {
 			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
+			if returnedToPool {
+				// The return to the pool did not LAND, and this is the one
+				// disposition whose card carries no run pointer: releasing now
+				// leaves an unclaimed card in the running column with an empty
+				// LastRunID, which nothing picks up — tick lists d.eligible,
+				// sweepParked lists awaiting_input, and both reconcilers return
+				// immediately on an empty pointer. Every OTHER disposition here
+				// leaves a run pointer those reconcilers act on, so only this
+				// one needs the brake.
+				//
+				// Do not release: the same choice the claim watchdog's own
+				// `!filed` arm makes below, and the one shape a watchdog pass
+				// can still repair — its StuckReleaseOnly arm WRITES the card
+				// back to d.eligible[0] before releasing it.
+				//
+				// One rule covers both ways the write can be refused. A STORE
+				// failure means we still hold the claim, and holding it is the
+				// brake. A FENCE refusal (tracker.ErrClaimConflict, logged on
+				// its own line just above) means we never held it — the
+				// release would be refused too, so skipping it costs nothing
+				// and the live owner disposes of the card.
+				d.warn("card %s/%s: its return to %s did not land — not releasing the claim, rather than strand a card that "+
+					"never launched where no sweep reaches it; if the write was refused by the fence the card already has "+
+					"another owner, and if the board store failed the claim watchdog returns it to the pool at the next lease",
+					c.Tenant, c.Issue.ID, final)
+				return
+			}
 		}
 	}
 	// Announce the release BEFORE it lands (the local twin's rule, see
@@ -572,6 +688,74 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 			d.warn("fork-adoption revert %s/%s to %s: %v — card left half-adopted; an operator state move re-arms the sweep", c.Tenant, c.Issue.ID, runID, rerr)
 		}
 	}
+}
+
+// eligible0 is the state a card is returned to when nothing launched — the
+// first state the poll claims from. Empty when a hand-built dispatcher lists
+// none, which the retry arm reads as "there is no pool to return to".
+func (d *boardDispatcher) eligible0() string {
+	if len(d.eligible) == 0 {
+		return ""
+	}
+	return d.eligible[0]
+}
+
+// retryStateFor books one pre-launch attempt against a card and answers where
+// it goes: back to the eligible pool while its budget holds, else blocked —
+// escalating rather than looping, because an outage that outlives the budget
+// has become an operator's problem and a card nobody can see is worse than one
+// filed wrongly. Mirrors the watchdog's refusal to strand: with no eligible
+// state to return to, file rather than leave the card mid-flight.
+func (d *boardDispatcher) retryStateFor(c boardmongo.Candidate, runErr error) (string, bool) {
+	pool := d.eligible0()
+	attempts, mayRetry := d.noteCardRetry(c.Tenant, c.Issue.ID)
+	if pool == "" || !mayRetry {
+		d.warn("card %s/%s: the forge could not verify the pull request's head after %d attempts — filing %s: %v",
+			c.Tenant, c.Issue.ID, attempts, d.blockedState, runErr)
+		return d.blockedState, false
+	}
+	d.warn("card %s/%s: the forge could not verify the pull request's head (attempt %d/%d) — returning it to %s, retrying in %s: %v",
+		c.Tenant, c.Issue.ID, attempts, d.retryLimit, pool, d.retryBackoff, runErr)
+	return pool, true
+}
+
+// noteCardRetry records one failed pre-launch attempt, arms the backoff window
+// and reports (attempts so far, whether the card may go back to the pool).
+func (d *boardDispatcher) noteCardRetry(tenant, issueID string) (int, bool) {
+	d.retryMemoMu.Lock()
+	defer d.retryMemoMu.Unlock()
+	if d.retryMemo == nil {
+		d.retryMemo = map[string]cardRetry{}
+	}
+	now := time.Now()
+	for k, r := range d.retryMemo {
+		if now.Sub(r.seen) >= cardRetryTTL {
+			delete(d.retryMemo, k)
+		}
+	}
+	key := tenant + "|" + issueID
+	r := d.retryMemo[key]
+	r.attempts++
+	r.notBefore = now.Add(d.retryBackoff)
+	r.seen = now
+	d.retryMemo[key] = r
+	return r.attempts, r.attempts < d.retryLimit
+}
+
+// cardRetryDue reports whether a card's pre-launch backoff window has elapsed.
+// True for every card the retry arm never touched, which is nearly all of them.
+func (d *boardDispatcher) cardRetryDue(tenant, issueID string) bool {
+	d.retryMemoMu.Lock()
+	defer d.retryMemoMu.Unlock()
+	r, ok := d.retryMemo[tenant+"|"+issueID]
+	return !ok || !time.Now().Before(r.notBefore)
+}
+
+// clearCardRetry forgets a card's attempt budget.
+func (d *boardDispatcher) clearCardRetry(tenant, issueID string) {
+	d.retryMemoMu.Lock()
+	defer d.retryMemoMu.Unlock()
+	delete(d.retryMemo, tenant+"|"+issueID)
 }
 
 // reconcileDue reports whether the sweep's evaluation of a (tenant, issue)
@@ -1481,7 +1665,17 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	}
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself.
-	lc.Vars = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
+	lc.Vars, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
+	if err != nil {
+		// Nothing is launched yet, so a forge that could not be ASKED is
+		// retryable — unlike a refusal, which is a decision about this card.
+		// The marker is applied HERE because this is the only place that knows
+		// no run exists (see errCardRetryable).
+		if prLaunchUnavailable(err) {
+			return fmt.Errorf("card %s: %w: %w", iss.ID, err, errCardRetryable)
+		}
+		return fmt.Errorf("card %s: %w", iss.ID, err)
+	}
 	spec := runview.LaunchSpec{
 		Vars:            lc.Vars,
 		RepoURL:         lc.RepoURL,

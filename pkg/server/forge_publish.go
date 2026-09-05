@@ -674,21 +674,44 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 // authenticated team surfaces, and the grant is scoped to the (team,
 // connection, repo) the team is provisioned on and re-enforced at the publish
 // endpoint.
-func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars
+		return vars, nil
 	}
-	if host, repo, _, err := forge.ParsePullURL(prURL); err == nil {
-		if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
-			if preferredConnID == "" {
-				// Pin the grant to the connection the policy came from.
-				preferredConnID = ri.ConnectionID
-			}
-			fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
-		}
+	// Every refusal returns the caller's vars UNCHANGED beside the error, not
+	// nil: a caller that ever logs-and-continues must not silently lose the
+	// launch's own vars, and a nil map makes "no grant was minted" untestable
+	// (indexing nil yields "" whether or not the guard ran).
+	host, repo, number, err := forge.ParsePullURL(prURL)
+	if err != nil {
+		return vars, prLaunchRefusal("PR launch: %v", err)
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
+	if !ok {
+		return vars, prLaunchRefusal("PR launch: no forge connection can verify the head repository for %s", prURL)
+	}
+	client, err := s.gateClientFor(ctx, conn)
+	if err != nil {
+		return vars, classifyPRLookupError("resolve forge client", err)
+	}
+	if client == nil {
+		return vars, prLaunchRefusal("PR launch: provider %s cannot resolve pull requests", conn.Provider)
+	}
+	// The guard itself is verifyPRHeadInBaseRepo — shared with the no-team
+	// lane so both surfaces refuse the same three states (launch_pr_guard.go).
+	if err := verifyPRHeadInBaseRepo(ctx, client, repo, number); err != nil {
+		return vars, err
+	}
+	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
+		fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
+	}
+	// Pin the grant to the connection the head was VERIFIED through, so the
+	// verdict is posted under the identity that answered for the PR.
+	// forgeConnectionForPR already honoured (and warned about) an operator's
+	// pin, and injectForgePublishVars re-resolves through the same helper — so
+	// this names the choice rather than changing it.
+	return s.injectForgePublishVars(ctx, teamID, conn.ID, botID, vars, r), nil
 }
 
 // repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the
