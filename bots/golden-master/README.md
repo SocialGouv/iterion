@@ -132,7 +132,10 @@ verdict to read as "nothing landed". It never pushes: landing the commit on the 
 act of whoever owns landings. Not a re-baseline — nothing compared changes, only the comparator.
 
 The sync commits on whatever branch the target has checked out, so run it where you want that commit:
-a scratch branch if the checkout is a protected base.
+a scratch branch if the checkout is a protected base. Because the commit is made before the gate, a
+run that dies between the two — cancelled, out of budget, pod restarted — leaves it there reading
+`Full gate: pending`. That commit is unproven and must not land as it is: `iterion resume` finishes
+the gate and seals it, and dropping it by hand is the other answer.
 
 ```
 iterion run bots/golden-master/sync-harness.bot            # in the target tree

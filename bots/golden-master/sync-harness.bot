@@ -3955,7 +3955,16 @@ tool gate_replay:
         st = git("status", "--porcelain", "--untracked-files=no")
         moved = [l for l in st.stdout.splitlines() if l.strip()]
         if moved:
-            out["log_tail"] = "the gate left the tree changed (%s) — that is the gate's bug, not the sync's; the sync commit is dropped" % ", ".join(moved)
+            # Not necessarily the gate's bug, which this said before and cannot
+            # know: the harness moves a COMMITTED held-out set out of the tree
+            # when the net opts in (`seal_committed` in config.json, or
+            # GM_SEAL_COMMITTED=1 — inherited from the run, since the gate runs
+            # with this process's environment). That is a legitimate gate doing
+            # its job, and a sync still must not land on top of it.
+            out["log_tail"] = ("the gate left the tree changed (%s) — the sync commit is dropped: this bot lands a "
+                               "harness only on a tree its gate leaves as it found it. A gate that legitimately "
+                               "moves tracked files (a committed held-out set it is opted in to consume) has to be "
+                               "run once by hand first." % ", ".join(moved))
         else:
             out["passed"] = True
     if not out["passed"]:
