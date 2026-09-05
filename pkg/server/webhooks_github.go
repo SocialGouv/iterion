@@ -128,7 +128,12 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// post is grounded in whatever that branch name resolves to on the base.
 	// Filtered as a clean 200 so the forge keeps the hook enabled.
 	if !p.HeadIsSameRepo() {
-		reason := "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)"
+		// No escape hatch is named here: the `/command` lane refuses a fork
+		// too (webhooks_prforge.go, read-only `/revi` included), so pointing
+		// an operator at it would send them down a path that also refuses.
+		// docs/merge-gate.md says the same — this string is what they read
+		// first, on the delivery audit.
+		reason := "fork PR — auto-launch blocked (untrusted; a /command on a fork is refused too, so no bot runs on fork code — docs/merge-gate.md)"
 		if p.HeadRepoFullName == "" {
 			reason = "head repo not verifiable (payload omits head.repo) — auto-launch blocked"
 		}

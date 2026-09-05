@@ -139,8 +139,16 @@ func TestGitHubWebhook_ProvenForkKeepsItsOwnAuditReason(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	if reason := filteredReason(t, s, cfg); !strings.Contains(reason, "fork PR") {
+	reason := filteredReason(t, s, cfg)
+	if !strings.Contains(reason, "fork PR") {
 		t.Fatalf("audit reason = %q, want the fork explanation", reason)
+	}
+	// The reason must not name an escape hatch that also refuses: the
+	// `/command` lane is fork-guarded too (webhooks_prforge.go), and
+	// docs/merge-gate.md says there is no manual path for fork code. An
+	// operator reads this line on the delivery audit before the docs.
+	if strings.Contains(reason, "can trigger a bot manually") {
+		t.Fatalf("audit reason = %q advertises the /command escape hatch, which the command lane refuses on a fork", reason)
 	}
 }
 
