@@ -124,15 +124,24 @@ type BoardBinding struct {
 	MissingStatuses []string `bson:"missing_statuses,omitempty" json:"missing_statuses,omitempty"`
 	// UnresolvedAtBind is the partial coverage the OPERATOR accepted when the
 	// board was bound: the mapped columns BindBoard could not resolve and did
-	// not refuse the bind over. It is written by the BIND, never by a
-	// reconciliation — that is the whole point, since a column outside it that
-	// stops resolving is a column that BROKE, which is what `DegradedReason`
-	// reports.
+	// not refuse the bind over. It is written by the BIND — never by a
+	// reconciliation, save the one-off reconstruction below — because it is a
+	// statement about the PAST, and a column outside it that stops resolving is
+	// a column that BROKE, which is what `DegradedReason` reports.
+	//
+	// It is half of that test, not all of it: the exemption it grants holds
+	// only while the column has never resolved (no cached option id). A column
+	// absent at bind and ADOPTED later has worked, so its next disappearance is
+	// a break like any other — see ReconcileStatusOptions.
 	//
 	// NOT `omitempty` in BSON: an empty set and a never-recorded one are
 	// different answers, and only the stored shape can tell them apart (see
 	// ReconcileStatusOptions, which reconstructs the set for a binding written
-	// before this field existed).
+	// before this field existed). The JSON form DOES drop an empty set, which
+	// is safe only because nothing re-materialises a binding from it — the API
+	// and `iterion remote board show` decode to PRINT, never to re-`Upsert`.
+	// Wire a JSON round-trip back into the store and this asymmetry becomes a
+	// bug: an empty set would decode to nil and re-trigger the reconstruction.
 	UnresolvedAtBind []string `bson:"unresolved_at_bind" json:"unresolved_at_bind,omitempty"`
 
 	// SyncEvery is the reconciliation interval. Zero = OFF (no periodic pass;
