@@ -1,17 +1,27 @@
 ## branch_template_context_mini.bot — fixture for the template snapshot
-## inside a fan-out branch (#763).
+## on every dispatch path (#763).
 ##
-## The same two probes run on all three dispatch paths of one run:
+## One prompt body, `probe_prompt`, runs on EVERY site that calls
+## executor.Execute, so the test's claim is a single equality:
 ##
-##   - the TRUNK (`trunk_probe` / `trunk_agent`) — the reference rendering;
+##   - the TRUNK main loop (`trunk_probe` / `trunk_agent`) — the reference;
 ##   - a `fan_out_each` body (`each_probe` / `each_agent`), once per item;
-##   - a `fan_out_all` branch (`all_probe` / `all_agent`).
+##   - a `fan_out_all` branch (`all_probe` / `all_agent`);
+##   - the llm ROUTER (`route_probe`), which renders its own `user:` prompt;
+##   - `execAutoOrPauseHuman`, the llm half of a `llm_or_human` human node
+##     (`gate_probe`), which renders through its `system:` prompt;
+##   - `reInvokeBackend` (`reinvoke_probe`), the re-dispatch after an
+##     `interaction: llm` node's question was auto-answered.
 ##
-## A tool node renders `{{run.*}}` through its `command:`; an agent node
-## renders `{{run.*}}` and `{{outputs.*}}` through its `user:` prompt. The
-## per-item agent additionally reads `{{outputs.spread.it}}`, which exists
-## only in the BRANCH's own outputs view — so it is the one ref that also
-## proves whose view the snapshot was taken from.
+## The last three sit on hand-rolled context wiring rather than the main
+## loop's, which is exactly why they need their own assertion: a refactor
+## can drop one without any other test noticing.
+##
+## A tool node renders `{{run.*}}` through its `command:`; an LLM node
+## renders `{{run.*}}` and `{{outputs.*}}` through its prompt. The per-item
+## agent additionally reads `{{outputs.spread.it}}`, which exists only in
+## the BRANCH's own outputs view — so it is the one ref that also proves
+## whose view the snapshot was taken from.
 
 schema seed_out:
   value: string
@@ -26,6 +36,9 @@ schema note:
 
 schema tally:
   count: int
+
+schema probe_in:
+  seed: string
 
 ## ONE prompt for the trunk agent and the fan_out_all branch agent: the
 ## test's claim is that the same body renders the same on both paths, so
@@ -96,6 +109,46 @@ compute gather:
   expr:
     count: "2"
 
+## The llm router's own dispatch (routing.go). It carries the shared probe
+## as its `user:` prompt — its `system:` gets the routing instruction
+## appended, so only the user half is a clean comparison.
+router route_probe:
+  mode: llm
+  backend: "claude_code"
+  model: "stub-model"
+  user: probe_prompt
+
+## The llm half of `llm_or_human` (execAutoOrPauseHuman). This one renders
+## through `system:`: executeHumanLLM builds the user message from the node
+## INPUT — a human node has no `user:` — and refuses a system prompt alone as
+## "no message to send", which is why the incoming edge carries a mapping.
+## It is a direct-generation node, so it reaches the model registry rather
+## than the delegate backend.
+human gate_probe:
+  interaction: llm_or_human
+  model: "stub/gate"
+  input: probe_in
+  system: probe_prompt
+  output: note
+
+## reInvokeBackend: the fifth site. This agent's stub asks a question on its
+## first call, the `interaction: llm` model answers it, and the engine
+## re-dispatches the SAME node with the answer merged in — through wiring of
+## its own, next to ctxWithIteration rather than the main loop's.
+agent reinvoke_probe:
+  backend: "claude_code"
+  model: "stub-model"
+  readonly: true
+  interaction: llm
+  interaction_model: "stub/interaction"
+  user: probe_prompt
+  output: note
+
+compute skipped_route:
+  output: tally
+  expr:
+    count: "0"
+
 workflow branch_template_context_mini:
   worktree: none
   sandbox: none
@@ -116,4 +169,9 @@ workflow branch_template_context_mini:
   fork -> all_agent
   all_probe -> gather
   all_agent -> gather
-  gather -> done
+  gather -> route_probe
+  route_probe -> gate_probe with {seed: "{{outputs.seed.value}}"}
+  route_probe -> skipped_route
+  gate_probe -> reinvoke_probe
+  reinvoke_probe -> done
+  skipped_route -> done

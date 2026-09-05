@@ -2,10 +2,13 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -21,27 +24,63 @@ import (
 //
 // It also records the ctx run ID each dispatch carried, which is the other
 // half of the contract: see assertBranchDispatchHasNoRunID.
+//
+// outputs overrides the canned `{"text":"ok"}` for a node whose schema needs
+// something specific — an llm router will not accept anything but one of its
+// own candidates.
 type promptRecorder struct {
 	mu      sync.Mutex
 	prompts map[string][]string
 	ctxRuns map[string][]string
+	outputs map[string]map[string]any
+	asks    map[string]bool
 }
 
 func newPromptRecorder() *promptRecorder {
 	return &promptRecorder{
 		prompts: make(map[string][]string),
 		ctxRuns: make(map[string][]string),
+		outputs: make(map[string]map[string]any),
+		asks:    make(map[string]bool),
 	}
+}
+
+func (p *promptRecorder) answer(nodeID string, out map[string]any) *promptRecorder {
+	p.outputs[nodeID] = out
+	return p
+}
+
+// asksOnFirstCall makes a node request an interaction the first time it is
+// dispatched. A non-empty Backend marks it as a DELEGATE pause, which is what
+// routes the answer back through reInvokeBackend instead of treating it as
+// the node's output.
+func (p *promptRecorder) asksOnFirstCall(nodeID string) *promptRecorder {
+	p.asks[nodeID] = true
+	return p
 }
 
 func (p *promptRecorder) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
 	p.mu.Lock()
 	p.prompts[task.NodeID] = append(p.prompts[task.NodeID], task.UserPrompt)
 	p.ctxRuns[task.NodeID] = append(p.ctxRuns[task.NodeID], model.RunIDFromContext(ctx))
+	first := len(p.prompts[task.NodeID]) == 1
+	ask := p.asks[task.NodeID]
+	out, ok := p.outputs[task.NodeID]
 	p.mu.Unlock()
+	if ask && first {
+		return delegate.Result{}, &model.ErrNeedsInteraction{
+			NodeID:    task.NodeID,
+			Questions: map[string]any{delegate.AskUserQuestionKey: "proceed?"},
+			SessionID: "probe-session",
+			Backend:   "stub",
+		}
+	}
+	if !ok {
+		out = map[string]any{"text": "ok"}
+	}
 	return delegate.Result{
 		BackendName: delegate.BackendClaudeCode,
-		Output:      map[string]any{"text": "ok"},
+		Output:      out,
 	}, nil
 }
 
@@ -60,6 +99,54 @@ func (p *promptRecorder) ctxRunIDs(nodeID string) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.ctxRuns[nodeID]...)
+}
+
+// systemRecorder is the model-registry twin of promptRecorder. A human node
+// in `llm` / `llm_or_human` mode does NOT go through a delegate backend —
+// executeHumanLLM calls GenerateObjectDirect against an api.APIClient — so
+// covering that dispatch path needs a client, not a backend. It answers the
+// structured call with a fixed object and keeps every system prompt it was
+// sent.
+type systemRecorder struct {
+	mu      sync.Mutex
+	systems []string
+	object  string // JSON for the synthetic structured-output tool call
+}
+
+func (s *systemRecorder) StreamResponse(_ context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	s.mu.Lock()
+	s.systems = append(s.systems, req.System)
+	s.mu.Unlock()
+
+	name := "structured_output"
+	if len(req.Tools) > 0 {
+		name = req.Tools[0].Name
+	}
+	events := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 1},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "probe", Name: name}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: s.object}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 1}},
+		{Type: api.EventMessageStop},
+	}
+	ch := make(chan api.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (s *systemRecorder) rendered(t *testing.T, want int) []string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	got := append([]string(nil), s.systems...)
+	if len(got) != want {
+		t.Fatalf("systemRecorder saw %d calls, want %d: %q", len(got), want, got)
+	}
+	return got
 }
 
 // nodeOutputsFor returns every output a node published on a node_finished
@@ -83,21 +170,51 @@ func nodeOutputsFor(events []*store.Event, nodeID string) []map[string]any {
 // probe rendered a run id on the trunk and a silent empty constant one edge
 // later, inside a fan-out branch.
 //
-// The fixture runs one tool probe and one agent probe on all three dispatch
-// paths of a single run — trunk, `fan_out_each` body (twice, one per item),
-// `fan_out_all` branch — and this asserts they render IDENTICALLY. The
-// per-item agent additionally reads `{{outputs.spread.it}}`, which exists
-// only in the branch's own outputs view, so it also pins whose view the
-// snapshot was taken from.
+// The fixture runs ONE probe body through all five call sites of
+// executor.Execute in a single run — the trunk main loop (engine_exec), the
+// branch dispatch (branch, exercised by both fan-out kinds: `fan_out_each`
+// once per item and a `fan_out_all` branch), the llm router (routing), and
+// the two resume-file sites, `execAutoOrPauseHuman` and `reInvokeBackend`.
+// Each must render exactly what the trunk rendered, modulo the live elapsed
+// reading; the re-invocation is checked by containment because the engine
+// prepends a prior-interaction block to that one.
+//
+// The per-item agent additionally reads `{{outputs.spread.it}}`, which
+// exists only in the branch's own outputs view, so it also pins whose view
+// the snapshot was taken from.
 func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 	wf := compileFixture(t, "branch_template_context_mini.bot")
 	s := tmpStore(t)
 	const runID = "e2e-branch-template-ctx"
 
 	recorder := newPromptRecorder()
+	// The llm router validates its own output against a candidate enum, so
+	// its answer cannot be the canned {"text":"ok"}.
+	recorder.answer("route_probe", map[string]any{"selected_route": "gate_probe", "reasoning": "probe"})
+	recorder.asksOnFirstCall("reinvoke_probe")
 	backends := delegate.NewRegistry()
 	backends.Register(delegate.BackendClaudeCode, recorder)
-	exec := model.NewClawExecutor(model.NewRegistry(), wf,
+
+	// The two direct-generation clients. gate_probe is `llm_or_human`: its
+	// schema is the node's own, wrapped with needs_human_input, and
+	// answering false is what keeps the run walking forward instead of
+	// parking on a human. The interaction client answers reinvoke_probe's
+	// question under the synthetic schema built from the question keys.
+	// Separate model specs so each recorder counts only its own calls.
+	gate := &systemRecorder{object: `{"text":"ok","needs_human_input":false}`}
+	interaction := &systemRecorder{object: `{"` + delegate.AskUserQuestionKey + `":"yes"}`}
+	models := model.NewRegistry()
+	models.Register("stub", func(modelID string) (api.APIClient, error) {
+		switch modelID {
+		case "gate":
+			return gate, nil
+		case "interaction":
+			return interaction, nil
+		}
+		return nil, fmt.Errorf("unexpected stub model %q", modelID)
+	})
+
+	exec := model.NewClawExecutor(models, wf,
 		model.WithBackendRegistry(backends),
 		model.WithWorkDir(t.TempDir()),
 	)
@@ -183,6 +300,39 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Errorf("the two fan_out_each bodies rendered %v, want one prompt per item", items)
+	}
+
+	// --- the three hand-wired dispatch sites -----------------------------
+	//
+	// The llm router (routing.go) and the two resume.go sites build their
+	// context beside their own iteration wiring rather than through the main
+	// loop's, so nothing else in the suite would notice if a refactor
+	// dropped the snapshot from one of them. All three carry probe_prompt.
+	router := recorder.rendered(t, "route_probe", 1)[0]
+	assertPromptResolved(t, "route_probe", router, runID)
+	if dropElapsed(trunk) != dropElapsed(router) {
+		t.Errorf("the llm router rendered the shared body differently:\n  trunk:  %q\n  router: %q", trunk, router)
+	}
+
+	gated := gate.rendered(t, 1)[0]
+	assertPromptResolved(t, "gate_probe", gated, runID)
+	if dropElapsed(trunk) != dropElapsed(gated) {
+		t.Errorf("the llm_or_human gate rendered the shared body differently:\n  trunk: %q\n  gate:  %q", trunk, gated)
+	}
+
+	// reInvokeBackend: the node asked once, the interaction model answered,
+	// and the engine re-dispatched it. Both renderings must resolve — the
+	// re-invocation builds its own context and could silently lose the
+	// snapshot while the first dispatch stayed green. The engine prepends a
+	// prior-interaction block to the second user prompt, so the assertion is
+	// containment, not equality.
+	interaction.rendered(t, 1)
+	redispatch := recorder.rendered(t, "reinvoke_probe", 2)
+	for i, p := range redispatch {
+		assertPromptResolved(t, "reinvoke_probe", p, runID)
+		if !strings.Contains(p, "seed=SEEDED") {
+			t.Errorf("reinvoke_probe dispatch %d did not resolve {{outputs.seed.value}}: %q", i, p)
+		}
 	}
 
 	assertBranchDispatchHasNoRunID(t, recorder, runID)
