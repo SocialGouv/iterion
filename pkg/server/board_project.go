@@ -292,15 +292,26 @@ func applyProjectItem(
 	if !applied && (decision == projectStatusNoop || decision == projectStatusConflictNative) {
 		reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res)
 	}
-	ext := card.External.Clone()
-	if ext == nil {
-		ext = &native.ExternalRef{
-			Provider: string(provider), Repo: it.Content.Repo,
-			Number: it.Content.Number, URL: it.Content.URL, State: it.Content.State,
+	// Write ONLY what changed. This pass runs over every card on its interval,
+	// and native.Store.Update treats a non-nil Patch.External as a change with
+	// no equality check of its own: rewriting unconditionally bumped UpdatedAt
+	// on every card every tick and emitted an EvtIssueUpdated — which the
+	// trigger spine consumes as `card.updated`, relaunching every
+	// label-matching board subscription. A quiet pass has to be silent.
+	if card.External == nil || !card.External.Project.Equal(sync) {
+		ext := card.External.Clone()
+		if ext == nil {
+			ext = &native.ExternalRef{
+				Provider: string(provider), Repo: it.Content.Repo,
+				Number: it.Content.Number, URL: it.Content.URL, State: it.Content.State,
+			}
 		}
+		ext.Project = &sync
+		patch.External = ext
 	}
-	ext.Project = &sync
-	patch.External = ext
+	if patch.Labels == nil && patch.External == nil {
+		return
+	}
 	if _, err := board.Update(cardID, patch); err != nil {
 		logProjectWarn(opts, "project import: card update failed", "card", cardID, "error", err.Error())
 	}

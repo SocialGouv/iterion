@@ -201,6 +201,93 @@ func TestSyncProjectBoardReflectsWhenNativeWinsTheConflict(t *testing.T) {
 	}
 }
 
+// countCardEvents returns how many events the store holds that the TRIGGER
+// SPINE would consume (trigger.IsCardEvent's set). Those are the ones that
+// cost money: a `kind: board` subscription matching on labels relaunches its
+// bot on each one.
+func countCardEvents(t *testing.T, board *native.Store) int {
+	t.Helper()
+	n := 0
+	if err := board.ScanEvents(func(e *native.Event) bool {
+		switch e.Type {
+		case native.EvtIssueCreated, native.EvtIssueState, native.EvtIssueUpdated:
+			n++
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	return n
+}
+
+// TestSyncProjectBoardQuietPassWritesNothing is the cost guard. The pass runs
+// every 2 minutes over every card; if it rewrites each one unconditionally it
+// bumps UpdatedAt, rewrites the record, and emits EvtIssueUpdated — which the
+// trigger spine consumes as `card.updated`. A 200-item board would emit ~144k
+// card events a day and relaunch every label-matching board subscription every
+// two minutes, burning LLM budget for nothing.
+//
+// So: a pass that decides nothing must write nothing and emit nothing.
+func TestSyncProjectBoardQuietPassWritesNothing(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	// A card already fully in sync: recorded status == the board's, and the
+	// card's column agrees with it.
+	id := seedSynced(t, board, 613, native.StateReady, "Planned", at)
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", at)),
+	}}}
+	opts := &ProjectImportOptions{Binding: testBinding()}
+
+	before := mustGet(t, board, id)
+	eventsBefore := countCardEvents(t, board)
+
+	for pass := 1; pass <= 2; pass++ {
+		res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+		if err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		if res.Moved != 0 || res.Reflected != 0 || res.Labelled != 0 || res.Conflicts != 0 {
+			t.Fatalf("pass %d decided something it should not have: %+v", pass, res)
+		}
+	}
+
+	if got := countCardEvents(t, board); got != eventsBefore {
+		t.Errorf("card events = %d, want %d — a quiet pass must emit none (the trigger spine consumes them)",
+			got, eventsBefore)
+	}
+	after := mustGet(t, board, id)
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("UpdatedAt churned (%v → %v) on a pass that changed nothing", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+// TestSyncProjectBoardStillWritesWhenSomethingChanged is the other half: the
+// guard must not be so eager it stops recording real work.
+func TestSyncProjectBoardStillWritesWhenSomethingChanged(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	id := seedCard(t, board, 613, native.StateInbox)
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("In progress", at)),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, nil)
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Moved != 1 {
+		t.Fatalf("Moved = %d, want 1", res.Moved)
+	}
+	got := mustGet(t, board, id)
+	if got.External == nil || got.External.Project == nil {
+		t.Fatal("the sync state must still be recorded when the pass did something")
+	}
+	if got.External.Project.Status != "In progress" {
+		t.Errorf("recorded status = %q", got.External.Project.Status)
+	}
+}
+
 func TestSyncProjectBoardDoesNotReflectAnUnmappedState(t *testing.T) {
 	board := newTestBoard(t)
 	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)

@@ -235,6 +235,30 @@ type ExternalProject struct {
 	StateAt time.Time `json:"state_at,omitempty"`
 }
 
+// Equal reports whether two sync states carry the same information.
+//
+// It lives here, next to the struct, because it is what a periodic writer
+// checks before deciding to write at all: a card rewritten when nothing
+// changed bumps UpdatedAt and emits an EvtIssueUpdated the trigger spine
+// consumes as `card.updated`, which relaunches label-matching board
+// subscriptions. Keeping the comparison beside the fields is what stops it
+// silently going stale the day a field is added.
+//
+// The timestamps compare with Equal, never ==: a time.Time carries a monotonic
+// reading and a location, so two values denoting the same instant are routinely
+// unequal under ==.
+func (p *ExternalProject) Equal(o ExternalProject) bool {
+	if p == nil {
+		return false
+	}
+	return p.Owner == o.Owner &&
+		p.Number == o.Number &&
+		p.ItemID == o.ItemID &&
+		p.Status == o.Status &&
+		p.StatusAt.Equal(o.StatusAt) &&
+		p.StateAt.Equal(o.StateAt)
+}
+
 // Comment is a single append-only note on a native issue. Author is a
 // free-form display name ("operator", a bot persona, "system"); an empty
 // Author renders as "anonymous" downstream.
