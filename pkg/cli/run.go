@@ -607,12 +607,16 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			lastMu sync.Mutex
 			last   map[string]any
 		)
-		childEng := runtime.New(childWf, s, childExec,
+		childOpts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			// The child executes in the parent's sandbox when the parent has
+			// one — the same tree, on every driver, on this host as on the
+			// runner and the studio.
+			runtime.WithSharedSandbox(req.ParentSandbox),
 			// Wire the child engine with its own recursive runner so a child
 			// .bot that itself declares subbot nodes can run them (sources
 			// resolve relative to the CHILD's dir). Without this, nested
@@ -626,7 +630,14 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 					lastMu.Unlock()
 				}
 			}),
-		)
+		}
+		// The child works in the parent's EFFECTIVE workdir (its worktree when
+		// it swapped to one), not the process cwd: that is the tree the
+		// parent's sandbox mounts and the parent's gate judges.
+		if req.WorkDir != "" {
+			childOpts = append(childOpts, runtime.WithWorkDir(req.WorkDir))
+		}
+		childEng := runtime.New(childWf, s, childExec, childOpts...)
 		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
 		// registers the child with the run Manager for per-child studio
 		// Cancel/Pause), the CLI has no per-run control plane — no HTTP API and
