@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -146,7 +147,11 @@ func runSyncNode(t *testing.T, node, ws string, inputs map[string]string, mutate
 	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{vars.oracle_dir}}", strconv.Quote(".golden-master"))
 	body = strings.ReplaceAll(body, "{{vars.gate_cmd}}", strconv.Quote(inputs["gate_cmd"]))
-	body = strings.ReplaceAll(body, "{{vars.gate_timeout_s}}", "60")
+	wall := inputs["gate_timeout_s"]
+	if wall == "" {
+		wall = "60"
+	}
+	body = strings.ReplaceAll(body, "{{vars.gate_timeout_s}}", wall)
 	for k, v := range inputs {
 		if k == "gate_minutes" {
 			body = strings.ReplaceAll(body, "{{input."+k+"}}", v)
@@ -504,6 +509,72 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		}
 		if !strings.Contains(git("log", "--format=%H"), c.Commit) {
 			t.Fatal("the sync commit is gone from history — then the notice is the lie")
+		}
+	})
+
+	// An expired wall is a red gate, and a red gate hard-resets the tree. So
+	// the wall has to reach the whole gate: `shell=True` makes the direct child
+	// a shell, and subprocess's own timeout kill leaves its descendants — the
+	// gate itself, doing mutant reverts via `git checkout` — running on the
+	// tree drop_sync_commit is about to reset.
+	t.Run("a gate that outruns the wall is killed with its descendants", func(t *testing.T) {
+		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		res, _ := syncHarness(t, ws)
+		c := syncCommitNode(t, ws, res)
+		orphan := filepath.Join(ws, "orphan-outlived-the-wall")
+		// A descendant that would touch the tree well after the wall expires.
+		gate := "sh -c '(sleep 5; touch " + orphan + ") & sleep 120'"
+
+		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{
+			"gate_cmd": gate, "gate_timeout_s": "1",
+			"harness_sha256": res.HarnessSHA256, "sync_commit": c.Commit,
+		})
+		var g syncGateOut
+		if err := json.Unmarshal(out, &g); err != nil || exit != 0 {
+			t.Fatalf("gate_replay: exit %d, %v, out %q", exit, err, out)
+		}
+		if g.Passed || !strings.Contains(g.LogTail, "exceeded gate_timeout_s") {
+			t.Fatalf("gate = %+v, want the expired-wall verdict", g)
+		}
+		// Well past the descendant's own delay: if it survived the kill it has
+		// written by now, on a tree the drop already reset.
+		time.Sleep(7 * time.Second)
+		if _, err := os.Stat(orphan); err == nil {
+			t.Fatal("a gate descendant outlived the wall and touched the tree after the sync commit was dropped")
+		}
+		if head := git("rev-parse", "HEAD"); head == c.Commit {
+			t.Fatal("an expired wall is a red gate: the sync commit must be dropped")
+		}
+	})
+
+	// ...and the node must not then hang on the pipe. A descendant that put
+	// itself in its OWN session survives the group kill still holding the
+	// inherited write end, so a second unbounded read of it waits on a process
+	// the wall exists to have given up on — past the run's max_duration, with
+	// the sync commit neither dropped nor sealed.
+	t.Run("a descendant that escapes the group kill does not hold the node", func(t *testing.T) {
+		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		res, _ := syncHarness(t, ws)
+		c := syncCommitNode(t, ws, res)
+		// setsid() from a child of the gate shell: outside the killed group,
+		// stdout still the pipe the node reads.
+		escapee := `python3 -c "import os,time; os.setsid(); time.sleep(45)" & sleep 45`
+
+		started := time.Now()
+		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{
+			"gate_cmd": escapee, "gate_timeout_s": "1",
+			"harness_sha256": res.HarnessSHA256, "sync_commit": c.Commit,
+		})
+		elapsed := time.Since(started)
+		var g syncGateOut
+		if err := json.Unmarshal(out, &g); err != nil || exit != 0 {
+			t.Fatalf("gate_replay: exit %d, %v, out %q", exit, err, out)
+		}
+		if g.Passed || !strings.Contains(g.LogTail, "exceeded gate_timeout_s") {
+			t.Fatalf("gate = %+v, want the expired-wall verdict", g)
+		}
+		if elapsed > 20*time.Second {
+			t.Fatalf("the node took %s on a 1 s wall — it waited on the escaped descendant's pipe", elapsed)
 		}
 	})
 
