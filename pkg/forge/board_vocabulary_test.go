@@ -250,6 +250,27 @@ func TestReconcileStatusOptionsLosesALegacyBindingsColumnsWhenTheFieldIsGone(t *
 	}
 }
 
+// The reconstruction reads the BINDING's own shape, never this pass's board.
+//
+// A legacy binding whose Status field has just vanished lacks every column
+// right now — recording that as "what the operator accepted at bind" writes a
+// lie into the store, one an operator reads back on the binding API, and one
+// that exempts every column the moment its cached id goes. A mapped column with
+// no cached id is the honest answer: that is a column the bind never resolved.
+func TestReconcileStatusOptionsReconstructsTheAcceptedSetFromTheBinding(t *testing.T) {
+	b := vocabBinding()
+	b.UnresolvedAtBind = nil               // written before the field existed
+	delete(b.StatusOptions, "in_progress") // and never resolved at bind
+	b.MissingStatuses = []string{"In progress"}
+
+	// The field itself is gone, so the board answers for NOTHING.
+	b.ReconcileStatusOptions(forge.Project{ID: "PVT_p", Number: 203})
+
+	if len(b.UnresolvedAtBind) != 1 || b.UnresolvedAtBind[0] != "In progress" {
+		t.Fatalf("UnresolvedAtBind = %v, want only the column that never had an id", b.UnresolvedAtBind)
+	}
+}
+
 // The accepted set is keyed by the bind-time column NAME, while the rename
 // repair rewrites `mapping[i].Status` in place. Only the resolution ORDER keeps
 // the two apart — a renamed column short-circuits as resolved before the set is
