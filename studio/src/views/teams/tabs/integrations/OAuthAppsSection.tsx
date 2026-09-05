@@ -6,6 +6,7 @@ import {
 } from "@/api/forgeConnections";
 
 import type { ConfirmFn } from "./forgeShared";
+import { GitHubAppLogoHint } from "./GitHubAppLogoHint";
 import { RegisterOAuthAppForm } from "./RegisterOAuthAppForm";
 import { Button } from "@/components/ui/Button";
 
@@ -17,6 +18,7 @@ export function OAuthAppsSection({
   onChanged,
   onError,
   confirm,
+  justCreatedAppID,
 }: {
   teamID: string;
   apps: ForgeOAuthApp[];
@@ -25,7 +27,13 @@ export function OAuthAppsSection({
   onChanged: () => void;
   onError: (m: string) => void;
   confirm: ConfirmFn;
+  /** The App the manifest round-trip just created (?installed=): its logo
+   *  is the one thing that flow cannot set, so the hand-off shows here. */
+  justCreatedAppID?: string;
 }) {
+  const justCreated = justCreatedAppID
+    ? apps.find((a) => a.id === justCreatedAppID && a.provider === "github")
+    : undefined;
   const remove = async (a: ForgeOAuthApp) => {
     const ok = await confirm({
       title: "Delete OAuth app?",
@@ -93,6 +101,14 @@ export function OAuthAppsSection({
         Register an OAuth application per forge instance to connect over OAuth instead of a personal
         access token. Scoped to this team — each forge and self-hosted instance can have its own app.
       </p>
+      {justCreated && (
+        <div className="mb-3">
+          <GitHubAppLogoHint
+            logoUploadURL={justCreated.logo_upload_url}
+            appLabel={justCreated.owner_login ? `the ${justCreated.owner_login} App` : undefined}
+          />
+        </div>
+      )}
       {apps.length === 0 ? (
         <div className="text-fg-muted text-sm">No OAuth app registered yet.</div>
       ) : (
@@ -115,6 +131,17 @@ export function OAuthAppsSection({
               </div>
               {canManage && (
                 <div className="flex shrink-0 items-center gap-2">
+                  {a.logo_upload_url && (
+                    <a
+                      href={a.logo_upload_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-caption text-accent-text hover:underline"
+                      title="Upload the iterion-bot logo on GitHub — the manifest cannot set it and there is no API"
+                    >
+                      Logo ↗
+                    </a>
+                  )}
                   {a.installable && a.provider === "github" && (
                     <Button
                       variant="primary"

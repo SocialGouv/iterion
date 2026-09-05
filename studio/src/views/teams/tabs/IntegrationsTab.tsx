@@ -104,6 +104,10 @@ export default function IntegrationsTab({
     const q = new URLSearchParams(search);
     return q.has("connected") || q.has("installed");
   }, [search]);
+  const installedAppID = useMemo(
+    () => new URLSearchParams(search).get("installed") ?? "",
+    [search],
+  );
   const [manualOpen, setManualOpen] = useState(
     () => oauthReturn || window.location.hash === "#connect-forge-form",
   );
@@ -284,6 +288,11 @@ export default function IntegrationsTab({
                 confirm={confirm}
                 preselectBot={preselectBot}
                 autoOpenEnable={!!preselectBot && connections.length === 1}
+                logoUploadURL={
+                  c.kind === "github_app"
+                    ? oauthApps.find((a) => a.id === c.oauth_app_id)?.logo_upload_url
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -320,6 +329,7 @@ export default function IntegrationsTab({
               onChanged={reload}
               onError={setActionErr}
               confirm={confirm}
+              justCreatedAppID={installedAppID}
             />
             {canManage && (
               <ConnectForm

@@ -9,6 +9,7 @@ import {
   type ForgeHook,
   type ForgeIntegration,
   type ForgeSyncResult,
+  applyForgeConnectionAvatar,
   deleteForgeConnection,
   disableForgeIntegration,
   forgeTeamRepoKey,
@@ -21,11 +22,12 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { formatDate } from "@/lib/format";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
 import { connectionKindLabel, connectionStatusLabel } from "./connectionLabels";
-import { type ConfirmFn, statusTone } from "./forgeShared";
+import { BRAND_LOGO_URL, type ConfirmFn, statusTone } from "./forgeShared";
 import { EnableRepoPanel } from "./EnableRepoPanel";
 
 export function ConnectionCard({
@@ -39,6 +41,7 @@ export function ConnectionCard({
   confirm,
   preselectBot,
   autoOpenEnable,
+  logoUploadURL,
 }: {
   teamID: string;
   conn: ForgeConnection;
@@ -50,6 +53,9 @@ export function ConnectionCard({
   confirm: ConfirmFn;
   preselectBot?: string;
   autoOpenEnable?: boolean;
+  /** github_app only: the App's settings page where its logo is uploaded
+   *  by hand (GitHub has no API for it). */
+  logoUploadURL?: string;
 }) {
   const [enabling, setEnabling] = useState(!!autoOpenEnable);
 
@@ -118,6 +124,16 @@ export function ConnectionCard({
         )}
       </div>
 
+      <AvatarRow
+        teamID={teamID}
+        conn={conn}
+        canManage={canManage}
+        logoUploadURL={logoUploadURL}
+        onChanged={onChanged}
+        onError={onError}
+        confirm={confirm}
+      />
+
       <div>
         <div className="text-xs uppercase tracking-wider text-fg-muted mb-1">Enabled repos</div>
         {integrations.length === 0 ? (
@@ -163,6 +179,117 @@ export function ConnectionCard({
           </Button>
         ))}
     </section>
+  );
+}
+
+// AvatarRow is the connection's face: whether the account behind it wears the
+// iterion-bot avatar, and the action to give it one. Only a PAT connection on
+// GitLab/Forgejo can be branded through iterion — a bot identity gets it at
+// connect time; a dedicated account the forge does not flag as a bot needs the
+// operator's word, hence the confirmation before `force`. An OAuth connection
+// is a person's account and shows nothing; GitHub has no API, so a github_app
+// connection links to the manual upload instead.
+function AvatarRow({
+  teamID,
+  conn,
+  canManage,
+  logoUploadURL,
+  onChanged,
+  onError,
+  confirm,
+}: {
+  teamID: string;
+  conn: ForgeConnection;
+  canManage: boolean;
+  logoUploadURL?: string;
+  onChanged: () => void;
+  onError: (m: string) => void;
+  confirm: ConfirmFn;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (conn.kind === "oauth_app") return null;
+  if (conn.provider === "github") {
+    if (conn.kind !== "github_app") return null;
+    return (
+      <div className="flex flex-wrap items-center gap-3 text-caption text-fg-muted">
+        <span>App logo: a manual upload on GitHub (no API for it).</span>
+        {logoUploadURL && (
+          <a
+            href={logoUploadURL}
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent-text hover:underline"
+          >
+            Upload the iterion-bot logo ↗
+          </a>
+        )}
+        <a href={BRAND_LOGO_URL} download="iterion-bot.png" className="text-accent-text hover:underline">
+          Download the logo
+        </a>
+      </div>
+    );
+  }
+
+  const isBot = conn.account_kind === "bot";
+  const apply = async () => {
+    let force = false;
+    if (!isBot) {
+      const ok = await confirm({
+        title: "Rebrand this account?",
+        message: (
+          <span>
+            {conn.forge_base_url ?? conn.provider} does not flag{" "}
+            <span className="font-mono">@{conn.account_login}</span> as a bot. Apply the
+            iterion-bot avatar only if this is a dedicated account for iterion — never a
+            person&apos;s.
+          </span>
+        ),
+        confirmLabel: "Apply the avatar",
+      });
+      if (!ok) return;
+      force = true;
+    }
+    setBusy(true);
+    try {
+      await applyForgeConnectionAvatar(teamID, conn.id, { force });
+      onChanged();
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applied = conn.avatar_applied_at;
+  return (
+    <div className="space-y-1">
+      {conn.avatar_error && (
+        <InlineBanner tone="danger" layout="inline">
+          iterion-bot avatar not applied: {conn.avatar_error}
+        </InlineBanner>
+      )}
+      <div className="flex flex-wrap items-center gap-2 text-caption text-fg-muted">
+        {applied ? (
+          <Badge variant="success" size="sm">
+            iterion-bot avatar · {formatDate(applied)}
+          </Badge>
+        ) : (
+          <span>{isBot ? "Bot account" : "Account"} without the iterion-bot avatar.</span>
+        )}
+        {canManage && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void apply()}
+            loading={busy}
+            disabled={busy}
+            title="Upload the iterion-bot avatar onto this account"
+          >
+            {applied || conn.avatar_error ? "Re-apply the avatar" : "Apply iterion-bot avatar"}
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 
