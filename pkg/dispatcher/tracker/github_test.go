@@ -21,6 +21,14 @@ type fakeGH struct {
 	calls        [][]string
 	failNum      int
 	editErr      error
+	// labelListOut is the canned `gh label list --json name` answer
+	// (nil = an empty repository: no labels at all).
+	labelListOut []byte
+	// labelCreateErr fails `gh label create`.
+	labelCreateErr error
+	// editErrOnce fails the FIRST `issue edit` only, then clears — the
+	// shape of a label deleted behind the adapter's back.
+	editErrOnce error
 }
 
 func (f *fakeGH) cmd(_ context.Context, args []string, _ []string) ([]byte, error) {
@@ -47,7 +55,22 @@ func (f *fakeGH) cmd(_ context.Context, args []string, _ []string) ([]byte, erro
 			return nil, fmt.Errorf("no canned response for path %q", path)
 		}
 		return f.apiOut, nil
+	case args[0] == "label" && args[1] == "list":
+		if f.labelListOut == nil {
+			return []byte("[]"), nil
+		}
+		return f.labelListOut, nil
+	case args[0] == "label" && args[1] == "create":
+		if f.labelCreateErr != nil {
+			return nil, f.labelCreateErr
+		}
+		return nil, nil
 	case args[0] == "issue" && (args[1] == "edit" || args[1] == "comment"):
+		if f.editErrOnce != nil {
+			err := f.editErrOnce
+			f.editErrOnce = nil
+			return nil, err
+		}
 		if f.editErr != nil {
 			return nil, f.editErr
 		}
@@ -225,8 +248,15 @@ func TestGitHubClaimAndRelease(t *testing.T) {
 	if err := a.Release(context.Background(), "github:owner/repo#5", "h-1"); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	// Last two calls should be edit --add-label, edit --remove-label.
-	if !contains(fake.calls[0], "--add-label") || !contains(fake.calls[1], "--remove-label") {
+	// The last two ISSUE edits are --add-label then --remove-label (the
+	// claim may be preceded by the label bootstrap).
+	var edits [][]string
+	for _, c := range fake.calls {
+		if len(c) > 1 && c[0] == "issue" && c[1] == "edit" {
+			edits = append(edits, c)
+		}
+	}
+	if len(edits) != 2 || !contains(edits[0], "--add-label") || !contains(edits[1], "--remove-label") {
 		t.Fatalf("unexpected calls: %v", fake.calls)
 	}
 }

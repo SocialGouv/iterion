@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -70,6 +71,15 @@ type LabelSelector struct {
 // pagination come for free from gh; iterion only deals with JSON.
 type GitHubAdapter struct {
 	opts GitHubOptions
+
+	// claimedLabelEnsured memoises, per adapter, that the repository
+	// carries ClaimedLabel: `gh issue edit --add-label` refuses a label
+	// the repo does not have, so the first claim bootstraps it (the
+	// Forgejo twin's resolveLabelID). Dropped when a claim finds the
+	// label gone again, so an operator deleting it does not put the repo
+	// back into the every-tick claim failure.
+	labelMu             sync.Mutex
+	claimedLabelEnsured bool
 }
 
 // NewGitHub returns a configured adapter. Returns an error if the
@@ -295,16 +305,88 @@ func (a *GitHubAdapter) Comment(ctx context.Context, id, body string) error {
 // the issue (labels carry no host/pid — see the Tracker interface note),
 // which is why the boot journal is this adapter's only claim-recovery
 // path.
+//
+// The label is created on first use when the repository lacks it: `gh
+// issue edit --add-label` refuses an unknown label ('<label>' not
+// found), which on a fresh repo failed every issue's claim at every
+// tick, for ever. A refusal of that exact shape on a later claim means
+// the label was deleted behind the adapter's back: the memo is dropped,
+// the label re-created, the claim retried once.
 func (a *GitHubAdapter) Claim(ctx context.Context, id, marker string) error {
 	num, ok := parseGitHubID(a.opts.Repo, id)
 	if !ok {
 		return ErrNotFound
 	}
+	if err := a.ensureClaimedLabel(ctx); err != nil {
+		return err
+	}
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--add-label", a.opts.ClaimedLabel}
-	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
+	_, err := a.opts.Command(ctx, args, a.env())
+	if err != nil && a.ghClaimedLabelMissing(err) {
+		a.labelMu.Lock()
+		a.claimedLabelEnsured = false
+		a.labelMu.Unlock()
+		if err := a.ensureClaimedLabel(ctx); err != nil {
+			return err
+		}
+		_, err = a.opts.Command(ctx, args, a.env())
+	}
+	if err != nil {
 		return fmt.Errorf("gh issue edit (claim): %w", err)
 	}
 	return nil
+}
+
+// ensureClaimedLabel makes sure the repository carries ClaimedLabel,
+// creating it when absent — once per adapter. Listing first and creating
+// only on absence (never `--force`) keeps an operator's own colour and
+// description on a label that already exists; the created one takes the
+// neutral grey the Forgejo twin uses. A failure here is the claim's
+// failure: it surfaces with the label and the cause, and nothing is
+// memoised, so the next claim tries again.
+func (a *GitHubAdapter) ensureClaimedLabel(ctx context.Context) error {
+	a.labelMu.Lock()
+	defer a.labelMu.Unlock()
+	if a.claimedLabelEnsured {
+		return nil
+	}
+	list := []string{"label", "list", "--repo", a.opts.Repo, "--search", a.opts.ClaimedLabel, "--json", "name", "--limit", "100"}
+	out, err := a.opts.Command(ctx, list, a.env())
+	if err != nil {
+		return fmt.Errorf("gh label list (ensure claim label %q): %w", a.opts.ClaimedLabel, err)
+	}
+	var labels []struct {
+		Name string `json:"name"`
+	}
+	if len(bytes.TrimSpace(out)) > 0 {
+		if err := json.Unmarshal(out, &labels); err != nil {
+			return fmt.Errorf("gh label list (ensure claim label %q): decode: %w", a.opts.ClaimedLabel, err)
+		}
+	}
+	for _, l := range labels {
+		if l.Name == a.opts.ClaimedLabel {
+			a.claimedLabelEnsured = true
+			return nil
+		}
+	}
+	create := []string{"label", "create", a.opts.ClaimedLabel, "--repo", a.opts.Repo,
+		"--color", "888888", "--description", "Claimed by an iterion dispatcher"}
+	if _, err := a.opts.Command(ctx, create, a.env()); err != nil {
+		return fmt.Errorf("gh label create %q (the dispatcher's claim label is missing from %s and could not be created): %w",
+			a.opts.ClaimedLabel, a.opts.Repo, err)
+	}
+	a.claimedLabelEnsured = true
+	return nil
+}
+
+// ghClaimedLabelMissing recognises gh 2.x's refusal of an --add-label for
+// a label the repository does not carry, anchored on the exact configured
+// label name so an unrelated not-found cannot match.
+func (a *GitHubAdapter) ghClaimedLabelMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), strings.ToLower("'"+a.opts.ClaimedLabel+"' not found"))
 }
 
 // Release removes the ClaimedLabel. Idempotent — gh ignores
@@ -350,7 +432,7 @@ func (a *GitHubAdapter) ghReleaseGone(err error, num int) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "could not resolve to an issue") ||
 		ghIssueScoped404(msg, num) ||
-		strings.Contains(msg, strings.ToLower("'"+a.opts.ClaimedLabel+"' not found"))
+		a.ghClaimedLabelMissing(err)
 }
 
 // ghIssueScoped404 matches gh's REST failure form (`HTTP 404: Not Found

@@ -695,8 +695,14 @@ tracker:
 ```
 
 The dispatcher's `Claim` adds `iterion-claimed`; `Release` removes it.
-`ListCandidates` filters via `gh issue list --search` so pagination
-and rate-limit handling come for free.
+`gh issue edit --add-label` refuses a label the repository does not
+carry, so the first claim **creates the label** when it is missing
+(`gh label list` then `gh label create`, once per dispatcher process,
+neutral grey — an existing label keeps the colour and description you
+gave it). A label deleted later is re-created on the next claim. The
+token therefore needs write access to the repository's labels (it
+already needs it for issues). `ListCandidates` filters via `gh issue
+list --search` so pagination and rate-limit handling come for free.
 
 **Environment hygiene.** When `tracker.github.token` is set, iterion
 exports it as `GH_TOKEN` / `GITHUB_TOKEN` only to the `gh` subprocess,
