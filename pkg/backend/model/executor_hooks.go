@@ -190,9 +190,16 @@ type EventHooks struct {
 	// debounces it into usage_progress events so a supervisor's cost_gt
 	// monitor can fire while the node is still steerable.
 	OnUsageProgress func(nodeID string, info UsageProgressInfo)
-	OnLLMCompacted  func(nodeID string, info LLMCompactInfo)
-	OnToolStarted   func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall      func(nodeID string, info LLMToolCallInfo)
+	// OnOrchestrationStall fires when a delegate classifies its session as
+	// deadlocked on an orchestration tool and reports whether it recovered
+	// in place or was aborted for retry. The store hook persists it as a
+	// delegate_stall event, which the runner meters per backend/model/
+	// outcome — the number an admission decision about a provider can
+	// rest on.
+	OnOrchestrationStall func(nodeID string, info OrchestrationStallInfo)
+	OnLLMCompacted       func(nodeID string, info LLMCompactInfo)
+	OnToolStarted        func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall           func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)

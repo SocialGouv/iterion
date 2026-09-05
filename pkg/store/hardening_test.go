@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -157,66 +159,100 @@ func TestTeeRunLogHardening(t *testing.T) {
 	}
 }
 
-func TestLoadRunHealDoesNotClobberConcurrentMutation(t *testing.T) {
+// TestLoadRunDoesNotWriteBack: a read has no side effect on disk. LoadRun
+// heals a legacy or in-flight shape IN MEMORY (an empty Name gets its
+// deterministic label) and leaves run.json byte-identical. A read that wrote
+// would race the run's owner: the engine writes from another store instance
+// — usually another process — and no lock covers a reader's
+// read-modify-write against it. Every new run passes through the nameless
+// window between CreateRun and the engine's first stamping SaveRun, so a
+// reader landing there could erase the stamp (ParentRunID, FilePath,
+// WorkflowHash, Name…) for good — the engine's later writes are
+// load-patch-write on the disk copy. Observed on a dispatched subbot child:
+// listed with no parent link for the rest of its life, 3 of 120 dispatches.
+func TestLoadRunDoesNotWriteBack(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
-	const runID = "heal-race"
+	const runID = "read-only"
 
 	r, err := s.CreateRun(ctx, runID, "wf", nil)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	// Simulate a legacy run: Name was empty on disk, so LoadRun will heal and
-	// persist. Write directly so the setup itself does not trigger healing.
+	// The in-flight shape: a run persisted before its owner stamped a Name.
 	r.Name = ""
 	if err := s.writeRun(r); err != nil {
-		t.Fatalf("seed legacy run: %v", err)
+		t.Fatalf("seed nameless run: %v", err)
+	}
+	before, err := os.ReadFile(s.runJSONPath(runID))
+	if err != nil {
+		t.Fatalf("read run.json: %v", err)
 	}
 
-	started := make(chan struct{})
-	release := make(chan struct{})
-	loadRunHealBeforeLockHook = func() {
-		close(started)
-		<-release
-	}
-	defer func() { loadRunHealBeforeLockHook = nil }()
-
-	loadErr := make(chan error, 1)
-	go func() {
-		_, err := s.LoadRun(ctx, runID)
-		loadErr <- err
-	}()
-
-	<-started
-	cp := &Checkpoint{
-		NodeID:           "human_review",
-		InteractionID:    "int-1",
-		Outputs:          map[string]map[string]any{},
-		LoopCounters:     map[string]int{},
-		ArtifactVersions: map[string]int{},
-		Vars:             map[string]any{"k": "v"},
-	}
-	if err := s.PauseRun(ctx, runID, cp); err != nil {
-		close(release)
-		t.Fatalf("PauseRun: %v", err)
-	}
-	close(release)
-	if err := <-loadErr; err != nil {
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-
-	got, err := s.loadRunRaw(runID)
-	if err != nil {
-		t.Fatalf("loadRunRaw: %v", err)
-	}
 	if got.Name == "" {
-		t.Fatal("Name was not healed")
+		t.Fatal("LoadRun must heal the empty Name in memory")
 	}
-	if got.Status != RunStatusPausedWaitingHuman {
-		t.Fatalf("Status = %q, want %q (heal clobbered concurrent status update)", got.Status, RunStatusPausedWaitingHuman)
+	after, err := os.ReadFile(s.runJSONPath(runID))
+	if err != nil {
+		t.Fatalf("re-read run.json: %v", err)
 	}
-	if got.Checkpoint == nil || got.Checkpoint.NodeID != "human_review" || got.Checkpoint.InteractionID != "int-1" {
-		t.Fatalf("Checkpoint = %#v, want concurrent checkpoint preserved", got.Checkpoint)
+	if !bytes.Equal(before, after) {
+		t.Fatalf("LoadRun wrote run.json back — a read must not race the run's owner\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+// TestLoadRunNeverClobbersAnotherInstancesStamp is the production shape:
+// two store instances over one directory — the engine that owns the run
+// and a reader (studio, inspect, a dispatcher poll) — with the reader's
+// load landing inside the nameless window. The engine's stamp must be what
+// every later read, and the disk, report.
+func TestLoadRunNeverClobbersAnotherInstancesStamp(t *testing.T) {
+	dir := t.TempDir()
+	engine, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(engine): %v", err)
+	}
+	reader, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(reader): %v", err)
+	}
+	ctx := context.Background()
+	const runID = "child"
+
+	created, err := engine.CreateRun(ctx, runID, "wf", nil)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := reader.LoadRun(ctx, runID); err != nil {
+		t.Fatalf("reader LoadRun inside the window: %v", err)
+	}
+	created.ParentRunID = "parent"
+	created.Name = "engine-name"
+	if err := engine.SaveRun(ctx, created); err != nil {
+		t.Fatalf("engine SaveRun: %v", err)
+	}
+
+	got, err := reader.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("reader LoadRun after the stamp: %v", err)
+	}
+	if got.ParentRunID != "parent" || got.Name != "engine-name" {
+		t.Fatalf("reader sees parent=%q name=%q, want the engine's stamp", got.ParentRunID, got.Name)
+	}
+	raw, err := os.ReadFile(engine.runJSONPath(runID))
+	if err != nil {
+		t.Fatalf("read run.json: %v", err)
+	}
+	var onDisk Run
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("decode run.json: %v", err)
+	}
+	if onDisk.ParentRunID != "parent" {
+		t.Fatalf("disk has parent=%q, want the engine's stamp to survive the reader", onDisk.ParentRunID)
 	}
 }
 

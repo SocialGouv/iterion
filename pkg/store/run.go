@@ -1096,6 +1096,16 @@ type Checkpoint struct {
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).
 	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty" bson:"node_attempts,omitempty"`
+	// RecoveryPause marks a pause written by the recovery dispatcher
+	// (RecoveryPauseForHuman) for a node whose execution FAILED. The node
+	// still owes its work: the answer that resumes the run is the
+	// operator's acknowledgement that the cause is addressed, never the
+	// node's output, and resume re-executes the node. RecoveryCode is the
+	// classified failure the pause was written for (AUTH_FAILED,
+	// BUDGET_EXCEEDED, …). Both are cleared with the pause pointer once a
+	// resume claims the run.
+	RecoveryPause bool   `json:"recovery_pause,omitempty" bson:"recovery_pause,omitempty"`
+	RecoveryCode  string `json:"recovery_code,omitempty" bson:"recovery_code,omitempty"`
 
 	// BudgetTokensUsed / BudgetCostUSD / BudgetIterationsUsed / BudgetElapsedNS
 	// persist the run-scoped SharedBudget consumption so a resume continues
@@ -1286,6 +1296,11 @@ const (
 	// an agent calls the await_answers tool while async questions are
 	// still pending. Its Questions carry the pending async interaction IDs.
 	InteractionKindAwait = "await"
+	// InteractionKindRecovery is the synthetic pause interaction the
+	// recovery dispatcher writes for a FAILED node (Checkpoint.RecoveryPause).
+	// Its answer acknowledges that the cause is addressed; it is never the
+	// node's output — the node re-executes on resume.
+	InteractionKindRecovery = "recovery"
 )
 
 // Interaction records a human pause/resume exchange.
@@ -1293,7 +1308,7 @@ type Interaction struct {
 	ID          string         `json:"id" bson:"interaction_id"`
 	RunID       string         `json:"run_id" bson:"run_id"`
 	NodeID      string         `json:"node_id" bson:"node_id"`
-	Kind        string         `json:"kind,omitempty" bson:"kind,omitempty"` // "" (blocking pause) | InteractionKindAsync | InteractionKindAwait
+	Kind        string         `json:"kind,omitempty" bson:"kind,omitempty"` // "" (blocking pause) | InteractionKindAsync | InteractionKindAwait | InteractionKindRecovery
 	RequestedAt time.Time      `json:"requested_at" bson:"requested_at"`
 	AnsweredAt  *time.Time     `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
 	Questions   map[string]any `json:"questions,omitempty" bson:"questions,omitempty"`

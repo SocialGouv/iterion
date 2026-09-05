@@ -79,6 +79,22 @@ func (s *Session) Send(ctx context.Context, prompt string) error {
 	return s.proc.writeLine(msg)
 }
 
+// Interrupt asks the CLI to abort the turn in flight — the tool call it is
+// blocked on included — without ending the session. Wire form: a
+// control_request of subtype "interrupt" on stdin; the CLI's
+// control_response rides the stdout stream and is consumed by Stream. The
+// turn then closes with a ResultMessage and the session accepts a new Send.
+// ErrSessionClosed when the session is closed or was never started.
+func (s *Session) Interrupt() error {
+	s.mu.Lock()
+	closed, started := s.closed, s.started
+	s.mu.Unlock()
+	if closed || !started {
+		return ErrSessionClosed
+	}
+	return s.ctrl.sendRequestNoWait("interrupt", map[string]any{})
+}
+
 // Stream returns an iterator over messages from the CLI.
 // It yields messages until a result message is received or an error occurs.
 func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {

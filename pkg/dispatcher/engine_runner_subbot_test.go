@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,6 +210,13 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		t.Fatalf("GenerateRunID: %v", err)
 	}
 
+	// Every event the parent AND the child persist flows through the
+	// dispatcher's OnEvent seam (the heartbeat store wraps the one store both
+	// engines share). Recording the sequence costs nothing and, on a stall,
+	// says how far the run got — the difference between "the parent never
+	// reached the node" and "the child is alive and the probe cannot see it".
+	var seenMu sync.Mutex
+	var seen []string
 	done := make(chan error, 1)
 	go func() {
 		done <- runner.Dispatch(context.Background(), DispatchSpec{
@@ -215,42 +224,47 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 			WorkspacePath: workspace,
 			StoreDir:      storeDir,
 			Issue:         &IssueRef{ID: "native:" + runID, Identifier: runID, Title: "subbot lock"},
+			OnEvent: func(typ string) {
+				seenMu.Lock()
+				seen = append(seen, typ)
+				seenMu.Unlock()
+			},
 		})
 	}()
 
 	// Catch the child mid-pass and prove its lock is held. The child blocks
-	// until release-lock-probe exists, so there is no timing window to race —
-	// the deadline only bounds engine spawn on a loaded runner. Cleanup writes
-	// the release file even on a Fatal path, so the dispatch goroutine always
-	// drains instead of leaking a forever-polling child into the next test.
+	// until release-lock-probe exists, so there is no timing window to race.
+	// Cleanup writes the release file even on a Fatal path, so the dispatch
+	// goroutine always drains instead of leaking a forever-polling child into
+	// the next test.
 	release := filepath.Join(workspace, "release-lock-probe")
 	t.Cleanup(func() { _ = os.WriteFile(release, []byte("go"), 0o644) })
 	childID := ""
 	held := false
 	// Watch the dispatch goroutine while polling. The child blocks until the
 	// release file exists, so Dispatch returning here means it never reached
-	// the subbot node — and its error is the diagnosis. Without this the loop
-	// runs the deadline out and reports "no child appeared", which names the
-	// symptom while the cause sits unread in the channel (observed in CI:
-	// 60s burned, nothing actionable in the log).
+	// the subbot node — and its error is the diagnosis.
 	var dispatchErr error
 	dispatched := false
-	// Bound the probe by the TEST's own budget rather than a wall clock of its
-	// own. Nothing here is timing-sensitive any more — the child blocks on the
-	// release file — so this deadline bounds ONE thing: how long the parent run
-	// takes to reach the subbot node. A fixed 60s does not cover that under
-	// -race on a runner already busy with the rest of the suite, which is how
-	// this test ejected an unrelated PR from the merge queue. Reserve a margin
-	// so the failure is this test's own diagnosis, not the package timeout's
-	// goroutine dump.
+	// The wait is bounded by the HARNESS's budget, never by a clock of this
+	// test's own: nothing here is timing-sensitive (the child blocks on the
+	// release file), so a bound only covers the parent reaching the subbot
+	// node — and when it does not, the evidence that matters is WHERE the
+	// run sat, which the diagnosis below dumps while the binary is still
+	// alive. A test-local budget once ran out and reported "no child
+	// appeared" for a parent that was healthy and a child that was alive:
+	// the probe's own LoadRun had written the child's run.json back and
+	// erased its parent link (a store read that wrote — fixed in pkg/store,
+	// TestLoadRunDoesNotWriteBack), so the probe could never match it.
 	probeStart := time.Now()
-	deadline := probeStart.Add(5 * time.Minute)
-	if d, ok := t.Deadline(); ok {
-		if budgeted := d.Add(-30 * time.Second); budgeted.Before(deadline) {
-			deadline = budgeted
-		}
+	deadline, bounded := t.Deadline()
+	if bounded {
+		deadline = deadline.Add(-30 * time.Second)
 	}
-	for time.Now().Before(deadline) && !held {
+	for !held {
+		if bounded && !time.Now().Before(deadline) {
+			break
+		}
 		select {
 		case dispatchErr = <-done:
 			dispatched = true
@@ -306,15 +320,30 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		t.Fatalf("Dispatch returned before any child run appeared — the subbot node was never reached: %v", dispatchErr)
 	}
 	if childID == "" {
-		// Name WHICH of the two it is: a parent still running never reached the
-		// node (too slow for the budget), a terminal one reached the end
-		// without spawning (a real defect). Reporting only the symptom is what
-		// made the previous timeout unactionable.
+		// Name WHICH of the two it is: a parent still running never reached
+		// the node, a terminal one reached the end without spawning (a real
+		// defect) — and dump what the store and the scheduler hold, so a
+		// stall carries its own cause instead of only its symptom.
 		parentStatus := "unknown"
 		if p, perr := probe.LoadRun(context.Background(), runID); perr == nil {
 			parentStatus = string(p.Status)
 		}
-		t.Fatalf("never observed a child run — the subbot node did not spawn one (parent %s is %q after %s)",
+		seenMu.Lock()
+		trace := strings.Join(seen, " ")
+		seenMu.Unlock()
+		t.Logf("events persisted so far: %s", trace)
+		if ids, lerr := probe.ListRuns(context.Background()); lerr == nil {
+			for _, id := range ids {
+				r, rerr := probe.LoadRun(context.Background(), id)
+				if rerr != nil {
+					t.Logf("run %s: LoadRun: %v", id, rerr)
+					continue
+				}
+				t.Logf("run %s: status=%s parent=%q name=%q", id, r.Status, r.ParentRunID, r.Name)
+			}
+		}
+		_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+		t.Fatalf("never observed a child run linked to the parent (parent %s is %q after %s)",
 			runID, parentStatus, time.Since(probeStart).Truncate(time.Second))
 	}
 	if !held {
