@@ -64,3 +64,35 @@ func TestLocalUsagePreflight(t *testing.T) {
 		}
 	})
 }
+
+// Recording is not enforcing (issue #629 pt 1). An in-process run on a
+// host that configured no cap still has to put the provider's refusals on
+// the ledger — the credential-tier skips read nothing else — so the guard
+// exists whatever the policy says, and simply blocks nothing.
+func TestResolveUsageGuard_RecordsEvidenceWithNoCapConfigured(t *testing.T) {
+	g, err := resolveUsageGuard(ExecutorSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g == nil {
+		t.Fatal("want a guard with no cap configured: the ledger is what the credential skips read")
+	}
+	obs := time.Now().UTC()
+	if d := g.Observe(usagecap.Reading{
+		Window:     usagecap.WindowFrequency,
+		Status:     usagecap.StatusRejected,
+		ObservedAt: obs,
+	}); d.Blocked {
+		t.Fatal("an unconfigured cap must block nothing")
+	}
+	got, err := processUsageStore().Latest(t.Context(), usagecap.Key("", usagecap.ScopeLocal, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range got {
+		if r.Window == usagecap.WindowFrequency && r.Status == usagecap.StatusRejected {
+			return
+		}
+	}
+	t.Fatalf("ledger = %+v, want the frequency refusal recorded", got)
+}

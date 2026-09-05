@@ -30,6 +30,14 @@ func processUsageStore() *usagecap.MemStore {
 // draws on), else one over the caller's live PolicySource (the DB-backed
 // runtime settings), otherwise one built from the machine-wide env policy.
 //
+// A guard is ALWAYS returned, cap or no cap. Recording is not enforcing,
+// and the guard is the only path either travels: a host that configured no
+// ceiling still needs the provider's refusals on the process ledger — a
+// rejected credential, a fair-usage refusal — because that is what the
+// pre-flight and the credential-tier skips read. An unconfigured policy is
+// simply inert (evaluate returns no decision), so the guard observes,
+// publishes, and blocks nothing.
+//
 // A malformed policy is an error rather than an absent cap: every wrong
 // answer here fails open, and a guard silently disabled by a typo is the
 // failure the whole package exists to prevent.
@@ -72,10 +80,7 @@ func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("runview: usage cap: %w", err)
 	}
-	if !pol.Enabled() {
-		return nil, nil
-	}
-	if spec.Logger != nil {
+	if spec.Logger != nil && pol.Enabled() {
 		spec.Logger.Info("usage cap armed: %s", pol)
 	}
 	return usagecap.NewGuard(pol, sink), nil

@@ -171,6 +171,13 @@ Consequences worth knowing:
   stale reading stops blocking by itself — no sweeper.
 - A reading is also **trusted for a bounded time** after it was observed —
   the next section.
+- **Recording is not enforcing.** Readings are collected whether or not a
+  cap is configured. They are the only input the credential-tier skips have
+  (a fair-usage refusal, a rejected credential — `frequency` / `auth` /
+  `spend`, which no operator cap governs), so a deployment that never asked
+  for a ceiling would otherwise send every run into the same wall. A run
+  carries the observing guard as soon as there is a ledger to publish to;
+  with no cap configured it blocks nothing.
 
 ### A reading is trusted for a bounded time
 

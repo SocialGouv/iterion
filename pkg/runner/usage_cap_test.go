@@ -306,10 +306,21 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 	}
 }
 
-func TestUsageGuardFor_NilWithoutAPolicy(t *testing.T) {
+// A cap nobody configured enforces nothing — but it still records, so the
+// evidence-based credential skips are not inert on that deployment (#629
+// pt 1). The "no guard" case is now only the one with no ledger either,
+// covered in usage_cap_evidence_test.go.
+func TestUsageGuardFor_UnconfiguredPolicyObservesButBlocksNothing(t *testing.T) {
 	r := capRunner(usagecap.Policy{}, usagecap.NewMemStore(), nil)
-	if g := r.usageGuardFor(context.Background(), &queue.RunMessage{}, iterlog.Nop()); g != nil {
-		t.Fatal("a deployment that configured no cap must not carry a guard")
+	g := r.usageGuardFor(context.Background(), &queue.RunMessage{}, iterlog.Nop())
+	if g == nil {
+		t.Fatal("want a guard: the ledger is what the credential skips read")
+	}
+	if d := g.Observe(usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Utilization: 0.99,
+		Status: usagecap.StatusWarning, ObservedAt: time.Now().UTC(),
+	}); d.Blocked {
+		t.Fatal("a deployment that configured no cap must not be blocked by one")
 	}
 }
 
