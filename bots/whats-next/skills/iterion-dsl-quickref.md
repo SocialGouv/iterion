@@ -103,8 +103,11 @@ plan_budget_gate -> plan_exhausted when over_budget
 
 The engine stamps `code` as the run's `failure_code` and the rendered
 `message` as its `error`. Declare one `fail <name>:` per reason. `resumable:
-true` keeps the checkpoint so `iterion resume` (or the runner's auto-resume)
-can continue once the operator widened the budget or fixed the input.
+true` anchors the checkpoint on the GUARD that routed in (never on the fail
+node, which a resume would only re-enter), so `iterion resume --run-id ID
+--max-cost-usd 10` re-evaluates the guard against the new caps and takes the
+other edge. It is never picked up by auto-resume or the cloud retry: a
+deliberate refusal only changes verdict when an operator changes something.
 
 ## Reuse & iteration (see docs/groups-iteration-subbots.md)
 

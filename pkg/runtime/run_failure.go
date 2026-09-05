@@ -129,6 +129,58 @@ type failNodeOutcome struct {
 	resumable bool
 }
 
+// resumableFailAnchor returns the node a `resumable: true` fail node's
+// checkpoint must be anchored on: the PREDECESSOR whose outgoing edge
+// routed into it.
+//
+// Anchoring on the fail node itself would make the promise a lie.
+// resumeFromFailure starts execLoop at cp.NodeID, so a checkpoint on the
+// fail node re-dispatches the fail node, which fails again identically —
+// the guard that refused is never re-evaluated, and the operator's raised
+// cap changes nothing. The predecessor is the guard: re-executing it is
+// what lets the run take the other edge this time.
+//
+// Reported false (with a reason) when no single predecessor can be named:
+//
+//   - the fail node IS the workflow entry, so nothing routed into it;
+//   - several branches converged on it, so no ONE guard owns the refusal.
+//
+// The caller then keeps the run TERMINAL and says why, rather than
+// persisting a resumable checkpoint whose only possible resume is a
+// no-op. A fan-out branch that reaches a fail node never arrives here at
+// all — branch.go carries the outcome as a branch error and the collector
+// decides.
+func (e *Engine) resumableFailAnchor(rs *runState, failNodeID string) (anchor, reason string) {
+	if rs == nil {
+		return "", "no run state"
+	}
+	selected := rs.selectedIncoming[failNodeID]
+	switch len(selected) {
+	case 0:
+		return "", "nothing routed into it (it is the workflow entry, or its incoming edge was not recorded)"
+	case 1:
+	default:
+		return "", fmt.Sprintf("%d branches converged on it, so no single guard owns the refusal", len(selected))
+	}
+
+	from := selected[0].From
+	if from == "" {
+		return "", "the recorded incoming edge names no source"
+	}
+	node, ok := e.workflow.Nodes[from]
+	if !ok {
+		return "", fmt.Sprintf("its predecessor %q is not in the workflow", from)
+	}
+	// A terminal predecessor is impossible by construction (a terminal has
+	// no outgoing edges) — guarded because resuming INTO one would end the
+	// run without re-deciding anything, which is the same no-op by another
+	// route.
+	if ir.IsTerminalNode(node) {
+		return "", fmt.Sprintf("its predecessor %q is itself a terminal node", from)
+	}
+	return from, ""
+}
+
 // failRunDeliberate handles the DSL FailNode: the graph routed here on
 // purpose, so the run is terminal by default — status failed, no
 // auto-resume — but the checkpoint is preserved. The state on disk is
@@ -137,15 +189,28 @@ type failNodeOutcome struct {
 //
 // A node that declares `resumable: true` parks failed_resumable instead:
 // a budget guard whose cure is "raise the cap and continue" must not make
-// the operator re-pay the phase it already completed. Falls back to a
-// plain checkpoint-less failure if the write fails.
+// the operator re-pay the phase it already completed. Its checkpoint is
+// anchored on the GUARD, not on the fail node — see resumableFailAnchor.
+// Falls back to a plain checkpoint-less failure if the write fails.
 func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNodeOutcome) error {
-	cp := buildCheckpoint(rs, nodeID)
+	anchor := nodeID
 	persist := e.store.FailRunTerminal
 	if outcome.resumable {
-		e.captureFailureBoundary(rs, nodeID)
-		persist = e.store.FailRunResumable
+		guard, why := e.resumableFailAnchor(rs, nodeID)
+		if guard == "" {
+			// The declaration cannot be honoured. Say so at WARN and end
+			// the run terminal: a resumable checkpoint here would only
+			// ever replay this same refusal, which reads to the operator
+			// as a resume that silently does nothing.
+			e.logger.Warn("runtime: fail node %q declares `resumable: true` but the run cannot resume from it — %s; ending the run terminal (failed) instead", nodeID, why)
+			outcome.resumable = false
+		} else {
+			anchor = guard
+			e.captureFailureBoundary(rs, nodeID)
+			persist = e.store.FailRunResumable
+		}
 	}
+	cp := buildCheckpoint(rs, anchor)
 	if storeErr := persist(rs.ctx, rs.runID, cp, outcome.reason, outcome.code); storeErr != nil {
 		e.logger.Error("failed to persist deliberate failure: %v", storeErr)
 		return e.failRun(rs.ctx, rs.runID, nodeID, outcome.reason)

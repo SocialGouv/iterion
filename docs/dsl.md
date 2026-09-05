@@ -432,14 +432,22 @@ fail not_actionable:
 |---|---|
 | `code:` | UPPER_SNAKE identifier stamped on the run's `failure_code`. [C247](references/diagnostics.md) refuses any other shape — the value is persisted and read by machines (`iterion runs list`, the studio, the merge-gate notice, the alert sinks). |
 | `message:` | The operator-facing reason, stamped on the run's `error`. Templated with the usual `{{...}}` references and resolved **at fail time**, so the figure that caused the refusal is the one reported. |
-| `resumable:` | `true` parks the run `failed_resumable` instead of terminal `failed`. Off by default: a fail node is intentional termination. |
+| `resumable:` | `true` parks the run `failed_resumable` instead of terminal `failed`, with its checkpoint anchored on the GUARD that routed in — so the resume re-evaluates that guard, not the fail node. Off by default: a fail node is intentional termination. |
 | `description:` | Human-readable node label, as on every other node kind. |
 
 The default stays terminal because that is what a deliberate refusal
 usually means. Declare `resumable: true` when continuing is genuinely the
 cure — a phase-budget guard whose remedy is "raise the cap and carry on"
 would otherwise make the operator re-pay the phase the run already
-completed, the exact cost the guard exists to avoid. See
+completed, the exact cost the guard exists to avoid.
+
+Two things a `resumable: true` node must be authored against: the guard it
+follows is **re-executed** on the resume, so it has to be re-runnable
+(deterministic gates are — a `compute` or a `tool` reading `run.*` is the
+shape this is built for); and the promise is only kept when ONE predecessor
+routed in, so a fail node used as a fan-out convergence, or declared as the
+workflow `entry:`, degrades to terminal with a WARN. Neither auto-resume
+nor the cloud retry will ever pick a typed refusal up by itself. See
 [resume](resume.md#resumable-states).
 
 ## Reuse and nested execution

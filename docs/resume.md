@@ -23,9 +23,8 @@ that prevents checkpoint persistence may also fall back to `failed`.
 
 A **named** fail node (`fail <name>:`, see [the DSL reference](dsl.md#typed-terminal-failure--fail-name))
 may opt out of that with `resumable: true`, which parks the run
-`failed_resumable` — the ordinary resumable status above, with everything
-that follows from it: the CLI and HTTP resume, and a cloud queue redelivery
-auto-resumes it. Declare it only when continuing is genuinely the cure. The
+`failed_resumable` — the ordinary resumable status above, resumable by the
+CLI and by HTTP. Declare it only when continuing is genuinely the cure. The
 reference case is a phase-budget guard whose remedy is "raise the cap and
 carry on": leaving that terminal makes the operator re-pay a phase the run
 already completed, which is the very cost the guard exists to avoid. A
@@ -35,6 +34,38 @@ stays terminal, the default.
 Either way the node's `code:` lands on the run's `failure_code` and its
 rendered `message:` on `error`, so what the resume is recovering FROM is
 legible without opening the run's artifacts.
+
+**The checkpoint anchors on the GUARD, not on the fail node.** A resume
+starts execution at the checkpoint's node, so anchoring on the fail node
+would re-dispatch the fail node and reproduce the identical outcome — the
+guard that refused would never be re-evaluated and the raised cap would
+change nothing. The engine therefore anchors a resumable fail on the
+PREDECESSOR whose outgoing edge routed into it: the resume re-executes that
+guard against the new caps and takes the other edge. Concretely:
+
+```bash
+iterion resume --run-id RUN_ID --max-cost-usd 10
+```
+
+**Fallback, stated out loud.** When no single predecessor can be named —
+the fail node IS the workflow `entry:`, or several branches converged on
+it, so no one guard owns the refusal — the promise cannot be kept. The run
+then ends **terminal `failed`** and the engine logs a WARN naming the node
+and the reason, rather than offering a resume that would silently do
+nothing. The `code:` and `message:` still land on the run; only the
+resumability degrades. (A fail node reached inside a `fan_out_all` /
+`fan_out_each` branch never takes this path at all: the branch reports the
+node's diagnosis as its error and the collector decides the run's fate.)
+
+**A typed failure is NOT auto-resumed.** `--auto-resume` and the cloud
+runner's retry both gate on a closed allow-list of engine codes
+(`EXECUTION_FAILED`, `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`,
+`NETWORK_TRANSIENT`, `TOOL_FAILED_TRANSIENT`, and `BUDGET_EXCEEDED` with a
+raised cap). A bot-defined code is outside it by construction, and
+deliberately so: the run refused on purpose, and nothing an unattended
+retry can do changes the verdict — only an operator can (a raised cap, a
+different `--var`). The run stays parked at `failed_resumable` for a
+human, and the log says "not auto-recoverable (code &lt;YOURS&gt;)".
 
 ## CLI
 
