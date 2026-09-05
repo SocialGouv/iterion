@@ -296,7 +296,12 @@ confident lie.
 
 Renaming is a metadata write at the store (`SetAccountLabel`), never a
 read-modify-write of the record: the sealed payload a concurrent refresh
-just rotated is not carried back over.
+just rotated is not carried back over. The refresh paths are symmetric —
+the background worker, the manual `POST …/refresh`, and the
+`not_refreshable` self-heal all persist through `UpdateTokens`, a `$set`
+of the token keys only — so a rename committed *during* a provider round
+trip is not reverted either. `Upsert` remains the connect path's, which
+legitimately replaces the whole record.
 
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 

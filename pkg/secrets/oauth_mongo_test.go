@@ -103,3 +103,77 @@ func TestMongoOAuth_SetAccountLabelIsMetadataOnly(t *testing.T) {
 		t.Fatalf("label after clear = %q, want empty", got.AccountLabel)
 	}
 }
+
+// The refresh's half of the rename race, on the wire the production store
+// uses: the persist must $set only the token keys, so a rename committed
+// during the provider round trip is not reverted. (The memory store would
+// pass this even through a whole-record write in the wrong direction, so
+// only Mongo can prove the $set body.)
+func TestMongoOAuth_UpdateTokensIsRefreshOnly(t *testing.T) {
+	s, ctx := mongoOAuthStore(t)
+	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdate{}); !errors.Is(err, ErrOAuthNotFound) {
+		t.Fatalf("UpdateTokens on a missing record = %v, want ErrOAuthNotFound", err)
+	}
+	if err := s.Upsert(ctx, OAuthRecord{
+		UserID: "alice", Kind: OAuthKindClaudeCode,
+		SealedPayload: []byte("sealed-v1"), Fingerprint: "fp-1", AccountLabel: "old name",
+		Scopes: []string{"read"},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// The operator renames while the refresh is out at the provider.
+	if err := s.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "jothedev"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	exp := time.Now().Add(8 * time.Hour).UTC().Truncate(time.Millisecond)
+	last := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdate{
+		SealedPayload:        []byte("sealed-v2"),
+		AccessTokenExpiresAt: &exp,
+		LastRefreshedAt:      &last,
+		Scopes:               []string{"read", "write"},
+		Fingerprint:          "fp-1",
+	}); err != nil {
+		t.Fatalf("UpdateTokens: %v", err)
+	}
+	got, err := s.Get(ctx, "alice", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccountLabel != "jothedev" {
+		t.Fatalf("account label = %q, want the rename to survive the refresh", got.AccountLabel)
+	}
+	if string(got.SealedPayload) != "sealed-v2" {
+		t.Fatalf("payload = %q, want the refreshed blob", got.SealedPayload)
+	}
+	if got.AccessTokenExpiresAt == nil || !got.AccessTokenExpiresAt.Equal(exp) {
+		t.Fatalf("expiry = %v, want %v", got.AccessTokenExpiresAt, exp)
+	}
+	if got.LastRefreshedAt == nil || !got.LastRefreshedAt.Equal(last) {
+		t.Fatalf("last_refreshed_at = %v, want %v", got.LastRefreshedAt, last)
+	}
+	if len(got.Scopes) != 2 {
+		t.Fatalf("scopes = %v, want the refreshed pair", got.Scopes)
+	}
+	if got.NotRefreshable {
+		t.Fatal("a successful refresh must leave not_refreshable false")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Fatal("created_at was cleared by the partial write")
+	}
+
+	// The self-heal shape: one flag, nothing else disturbed.
+	if err := s.UpdateTokens(ctx, "alice", OAuthKindClaudeCode, OAuthTokenUpdate{NotRefreshable: true}); err != nil {
+		t.Fatalf("self-heal: %v", err)
+	}
+	got, err = s.Get(ctx, "alice", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.NotRefreshable {
+		t.Fatal("not_refreshable was not set")
+	}
+	if string(got.SealedPayload) != "sealed-v2" || got.Fingerprint != "fp-1" || got.AccountLabel != "jothedev" {
+		t.Fatalf("self-heal disturbed the record: payload=%q fp=%q label=%q", got.SealedPayload, got.Fingerprint, got.AccountLabel)
+	}
+}

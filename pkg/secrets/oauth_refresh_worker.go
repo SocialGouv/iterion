@@ -71,9 +71,9 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			if errors.Is(err, ErrNotRefreshable) {
 				// Self-heal legacy records sealed before NotRefreshable
 				// existed so future sweeps skip them without decrypting.
-				rec.NotRefreshable = true
-				rec.UpdatedAt = time.Now().UTC()
-				if uerr := w.Store.Upsert(ctx, rec); uerr != nil {
+				// A partial write: the flag is the only thing learned here,
+				// and the record read a round trip ago may already be stale.
+				if uerr := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
 					failures++
 					if firstErr == nil {
 						firstErr = fmt.Errorf("mark not-refreshable %s/%s: %w", rec.UserID, rec.Kind, uerr)
@@ -87,7 +87,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		if err := w.Store.Upsert(ctx, rec); err != nil {
+		if err := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdateFrom(rec)); err != nil {
 			failures++
 			if firstErr == nil {
 				firstErr = fmt.Errorf("persist %s/%s: %w", rec.UserID, rec.Kind, err)
