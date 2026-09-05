@@ -133,6 +133,28 @@ func IssuesWriteInstallationPermissions() map[string]string {
 	}
 }
 
+// IssueCommentInstallationPermissions is the grant set minted for POSTing a
+// comment: issues write, pull_requests write, and the mandatory metadata
+// baseline.
+//
+// It carries BOTH writes because the endpoint is shared and the permission is
+// not: GitHub serves a pull request's comments from
+// /repos/{owner}/{repo}/issues/{number}/comments — the same path as an
+// issue's — but gates the call on `pull_requests` when that number is a pull
+// request, and on `issues` when it is an issue. One call, two grants, decided
+// by a number the client cannot classify without an extra round trip.
+//
+// Answering 403 "Resource not accessible by integration" is what a token
+// short of either grant gets, and every caller posts a courtesy notice it
+// logs at Debug and drops — so the gap would be invisible.
+func IssueCommentInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":        "write",
+		"pull_requests": "write",
+		"metadata":      "read",
+	}
+}
+
 // MissingProjectPermissions lists the project-board grants an installation does
 // NOT have, so a board binding fails at BIND time naming the missing permission
 // rather than hours later on the first status write. Empty when nothing is

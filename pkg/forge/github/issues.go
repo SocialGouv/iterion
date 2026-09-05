@@ -214,10 +214,15 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 var _ forge.IssueClient = (*AppClient)(nil)
 
 // issuesREST resolves the narrowest installation token that can serve an issue
-// call: read for the two readers, write for the three writers. Every method
-// below goes through it, so no reader can drift onto a write token — and none
-// of them rides the cached management token, which additionally carries
-// contents/pull_requests/repository_hooks writes an issue call has no use for.
+// call: read for the two readers, write for the two writers. Every method
+// below goes through it (or, for a comment, through its own profile), so no
+// reader can drift onto a write token — and none of them rides the cached
+// management token, which additionally carries contents/repository_hooks
+// writes an issue call has no use for.
+//
+// A comment is deliberately NOT one of these two: it needs pull_requests as
+// well, since the issues endpoint serves a PR's comments too — see
+// IssueCommentInstallationPermissions.
 func (a *AppClient) issuesREST(ctx context.Context, write bool) (*AdminClient, error) {
 	if write {
 		return a.scopedREST(ctx, IssuesWriteInstallationPermissions())
@@ -257,8 +262,11 @@ func (a *AppClient) UpdateIssue(ctx context.Context, repo string, number int, pa
 	return c.UpdateIssue(ctx, repo, number, patch)
 }
 
+// CommentIssue rides its own scoped token — a third cached permission set,
+// through the same chokepoint — because `number` may be a pull request, which
+// GitHub gates on pull_requests even though the endpoint is the issues one.
 func (a *AppClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
-	c, err := a.issuesREST(ctx, true)
+	c, err := a.scopedREST(ctx, IssueCommentInstallationPermissions())
 	if err != nil {
 		return forge.CommentRef{}, err
 	}

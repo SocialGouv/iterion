@@ -59,6 +59,9 @@ func newIssueMintRecorder(t *testing.T) *issueMintRecorder {
 		r.paths = append(r.paths, req.Method+" "+req.URL.RequestURI())
 		r.mu.Unlock()
 		switch {
+		case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 4242, "body": "hello", "html_url": "https://gh/c/4242"})
 		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/issues"):
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"number": 7, "title": "boom", "state": "open", "html_url": "https://gh/x/7"},
@@ -209,6 +212,89 @@ func TestAppClientIssueWritesMintTheirOwnScopedToken(t *testing.T) {
 	}
 }
 
+// A comment is the one issue call whose permission depends on WHAT it targets:
+// GitHub serves PR comments from the issues endpoint but gates them on
+// `pull_requests`, and every AppClient.CommentIssue caller in pkg/server
+// targets a pull request (the gate pause notice, the DLQ notice, the
+// approve-rejection reply). All three swallow the error at Debug, so a token
+// short of that grant would turn every notice into a silent 403.
+func TestAppClientCommentIssueMintsAPullRequestScopedToken(t *testing.T) {
+	r := newIssueMintRecorder(t)
+
+	// The PAT client first: its recorded request is the reference the App
+	// client's delegation has to reproduce.
+	pat := &AdminClient{HTTP: r.srv.Client(), APIBase: APIBaseFor(r.srv.URL), Token: "ghp_pat"}
+	if _, err := pat.CommentIssue(context.Background(), "o/r", 12, "hello"); err != nil {
+		t.Fatalf("PAT CommentIssue: %v", err)
+	}
+
+	ref, err := r.appClient(t).CommentIssue(context.Background(), "o/r", 12, "hello")
+	if err != nil {
+		t.Fatalf("CommentIssue: %v", err)
+	}
+	if ref.ID != "4242" {
+		t.Errorf("comment ref = %+v, want the comment the forge created", ref)
+	}
+	mints, bearers, paths := r.snapshot()
+	if len(mints) != 1 {
+		t.Fatalf("mints = %d, want exactly 1 (the PAT call mints nothing)", len(mints))
+	}
+	if mints[0]["pull_requests"] != "write" {
+		t.Errorf("mint permissions = %v, want pull_requests:write — a comment on a PR number is "+
+			"refused without it (403 \"Resource not accessible by integration\")", mints[0])
+	}
+	if mints[0]["issues"] != "write" {
+		t.Errorf("mint permissions = %v, want issues:write — the same call comments on a real issue too", mints[0])
+	}
+	if mints[0]["metadata"] != "read" {
+		t.Errorf("mint permissions = %v, want the mandatory metadata baseline", mints[0])
+	}
+	for _, extra := range []string{"contents", "repository_hooks", "statuses"} {
+		if _, ok := mints[0][extra]; ok {
+			t.Errorf("a comment token must not carry %s (that is the runtime token's grant), got %v", extra, mints[0])
+		}
+	}
+	if len(paths) != 2 || paths[0] != paths[1] {
+		t.Errorf("paths = %v, want the App client to hit the PAT client's own comment endpoint", paths)
+	}
+	if len(bearers) != 2 || bearers[0] != "Bearer ghp_pat" || !strings.HasPrefix(bearers[1], "Bearer ghs_scoped_") {
+		t.Errorf("bearers = %v, want [the PAT, the minted installation token]", bearers)
+	}
+}
+
+// The comment scope is its OWN cached set: a read must not inherit
+// pull_requests:write by sharing a token with it.
+func TestAppClientCommentAndReadDoNotShareAToken(t *testing.T) {
+	r := newIssueMintRecorder(t)
+	a := r.appClient(t)
+	ctx := context.Background()
+	if _, err := a.ListIssues(ctx, "o/r", forge.IssueListOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CommentIssue(ctx, "o/r", 12, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CommentIssue(ctx, "o/r", 13, "again"); err != nil {
+		t.Fatal(err)
+	}
+	mints, bearers, _ := r.snapshot()
+	if len(mints) != 2 {
+		t.Fatalf("mints = %d, want 2 (one read scope, one comment scope, both cached)", len(mints))
+	}
+	if _, ok := mints[0]["pull_requests"]; ok {
+		t.Errorf("the read token must not carry pull_requests, got %v", mints[0])
+	}
+	if mints[1]["pull_requests"] != "write" {
+		t.Errorf("the comment token = %v, want pull_requests:write (its callers all target a PR)", mints[1])
+	}
+	if bearers[0] == bearers[1] {
+		t.Error("the read and the comment must not share a token")
+	}
+	if bearers[1] != bearers[2] {
+		t.Errorf("the two comments must share one cached token, got %v", bearers)
+	}
+}
+
 // The scoped profiles are their own, and never leak into the runtime baseline
 // the cached management token carries.
 func TestIssuePermissionProfiles(t *testing.T) {
@@ -219,5 +305,19 @@ func TestIssuePermissionProfiles(t *testing.T) {
 	write := IssuesWriteInstallationPermissions()
 	if write["issues"] != "write" || write["metadata"] != "read" || len(write) != 2 {
 		t.Errorf("write profile = %v, want exactly issues:write + metadata:read", write)
+	}
+	comment := IssueCommentInstallationPermissions()
+	if comment["issues"] != "write" || comment["pull_requests"] != "write" || comment["metadata"] != "read" || len(comment) != 3 {
+		t.Errorf("comment profile = %v, want exactly issues:write + pull_requests:write + metadata:read", comment)
+	}
+	// The three stay below the runtime baseline: none of them may acquire a
+	// grant the management token holds for other work.
+	base := RuntimeInstallationPermissions()
+	for _, profile := range []map[string]string{read, write, comment} {
+		for name := range profile {
+			if _, ok := base[name]; !ok {
+				t.Errorf("profile %v carries %s, which is not even in the runtime baseline", profile, name)
+			}
+		}
 	}
 }
