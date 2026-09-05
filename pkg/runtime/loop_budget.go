@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"os"
 	"strings"
 	"time"
@@ -170,12 +171,44 @@ func markLoopBudget(rs *runState, loopName string) {
 // Loops entered later are re-marked at their entry edge, and a loop
 // whose price survived on the checkpoint keeps it.
 func (e *Engine) baselineUnpricedLoops(rs *runState) {
-	for loopName := range e.workflow.Loops {
-		if _, priced := rs.loopBudgetMarks[loopName]; priced {
+	for loopName, loop := range e.workflow.Loops {
+		mark, priced := rs.loopBudgetMarks[loopName]
+		// A restored mark still at the run-start baseline on a loop whose
+		// body does not hold the workflow entry was never measured: the
+		// run entered that body off its head, on an engine that only
+		// priced entries at the head, and carried the zero into the
+		// checkpoint. Kept, it would price the loop's first crossing at
+		// everything the run has spent and decline it. Re-based here, it
+		// prices from the resume point like a loop measured for the first
+		// time. A fresh run re-bases a zero with a zero — no change.
+		if priced && !(isRunStartBaseline(mark) && !loopHoldsEntry(loop, e.workflow.Entry)) {
 			continue
 		}
 		markLoopBudget(rs, loopName)
 	}
+}
+
+// isRunStartBaseline reports a mark taken before the run consumed anything:
+// no cost, no tokens, and less than a second of wall time.
+func isRunStartBaseline(mark loopBudgetMark) bool {
+	for dim, v := range mark {
+		if dim == "duration" {
+			if v >= float64(time.Second) {
+				return false
+			}
+			continue
+		}
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// loopHoldsEntry reports whether the workflow entry sits in the loop's
+// body — the one case where a run-start mark is the loop's true price.
+func loopHoldsEntry(loop *ir.Loop, entry string) bool {
+	return loop != nil && loop.Body[entry]
 }
 
 // restoreLoopBudgetMarks rehydrates the loop prices from a checkpoint so

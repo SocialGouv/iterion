@@ -812,10 +812,15 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 
 	if selected.LoopName == "" {
 		for loopName, loop := range e.workflow.Loops {
-			if loop == nil || len(loop.Entries) == 0 || !loop.Entries[selected.To] || loop.Body[selected.From] {
+			if loop == nil || len(loop.Body) == 0 || loop.Body[selected.From] || !loop.Body[selected.To] {
 				continue
 			}
+			// Price on any entry into the body from outside (see the
+			// engine's edge path); reset the counter on the loop's entries.
 			markLoopBudget(rs, loopName)
+			if !loop.Entries[selected.To] {
+				continue
+			}
 			if prior := rs.loopCounters[loopName]; prior > 0 {
 				rs.loopCounters[loopName] = 0
 				delete(rs.loopPreviousOutput, loopName)
