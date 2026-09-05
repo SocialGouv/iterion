@@ -264,6 +264,19 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if err != nil {
 			return nil, fmt.Errorf("runtime: create run: %w", err)
 		}
+		// A store may insert a fresh row as `queued` (the cloud store does —
+		// CreateChildRun mirrors the publisher's shape). This engine is about
+		// to execute it, so the row must read `running` now, as the pickup
+		// path above makes it: otherwise a subbot child on a pod stays
+		// `queued` for its whole life — judged by the queued-row cutoff,
+		// shown queued in the studio, never given a started_at — and ends
+		// `finished` without ever having been running.
+		if created.Status == store.RunStatusQueued {
+			if uerr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); uerr != nil {
+				return nil, fmt.Errorf("runtime: created-run transition: %w", uerr)
+			}
+			created.Status = store.RunStatusRunning
+		}
 		run = created
 	}
 	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil ||
