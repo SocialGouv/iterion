@@ -351,6 +351,12 @@ time. Rewinding into one resumes at the **current** iteration, because loop
 counters are preserved; restarting the loop from zero would also refund the
 `max_iterations` budget.
 
+A concurrent run edit can make a rewind or rename return HTTP 409. Reload the
+run before retrying: full-document saves compare the version that was read,
+so they cannot undo a cancellation, resume, or checkpoint written meanwhile.
+A failed final rewind save can leave workspace restoration already applied;
+inspect the workspace before retrying when file restoration was requested.
+
 Two further limits worth planning around:
 
 - **Only engine state is rolled back.** Board cards, forge comments, pushed

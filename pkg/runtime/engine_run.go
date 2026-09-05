@@ -234,10 +234,11 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// are terminal or resume-only and must not be silently restarted.
 		switch existing.Status {
 		case store.RunStatusQueued:
-			if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+			var err error
+			existing, err = e.runStartQueued(ctx, runID)
+			if err != nil {
 				return nil, fmt.Errorf("runtime: pickup transition: %w", err)
 			}
-			existing.Status = store.RunStatusRunning
 		case store.RunStatusRunning:
 			// Already running — assume legitimate claim.
 		default:
@@ -279,10 +280,10 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// shown queued in the studio, never given a started_at — and ends
 		// `finished` without ever having been running.
 		if created.Status == store.RunStatusQueued {
-			if uerr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); uerr != nil {
-				return nil, fmt.Errorf("runtime: created-run transition: %w", uerr)
+			created, err = e.runStartQueued(ctx, runID)
+			if err != nil {
+				return nil, fmt.Errorf("runtime: created-run transition: %w", err)
 			}
-			created.Status = store.RunStatusRunning
 		}
 		run = created
 	}
@@ -366,6 +367,27 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
+	}
+	return run, nil
+}
+
+// runStartQueued reloads the document after the transition advances its
+// version. Later metadata saves use that fresh version and cannot overwrite
+// a concurrent cancel or resume.
+func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, error) {
+	changed, err := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", []store.RunStatus{store.RunStatusQueued})
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, store.ErrRunConflict
+	}
+	run, err := e.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != store.RunStatusRunning {
+		return nil, store.ErrRunConflict
 	}
 	return run, nil
 }
