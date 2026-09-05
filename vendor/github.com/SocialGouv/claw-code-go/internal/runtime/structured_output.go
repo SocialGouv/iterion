@@ -47,5 +47,41 @@ func (loop *ConversationLoop) executeStructuredOutput(input map[string]any) (str
 	if !allowImmediate && loop.hasWorkCapableTools() && !loop.workToolCompleted.Load() {
 		return "", errors.New(structuredOutputRequiresWorkMessage)
 	}
+	loop.recordStructuredOutput(input)
 	return tools.ExecuteStructuredOutput(input)
+}
+
+// recordStructuredOutput keeps the payload of this loop's structured_output
+// call — the typed result a parent reads when this loop is a subagent.
+func (loop *ConversationLoop) recordStructuredOutput(payload map[string]any) {
+	loop.structuredMu.Lock()
+	loop.structuredOutput = payload
+	loop.structuredMu.Unlock()
+}
+
+// lastStructuredOutput returns the payload recorded by recordStructuredOutput,
+// nil when this loop never called structured_output.
+func (loop *ConversationLoop) lastStructuredOutput() map[string]any {
+	loop.structuredMu.Lock()
+	defer loop.structuredMu.Unlock()
+	return loop.structuredOutput
+}
+
+// storeSubagentStructured keeps a subagent's typed result under its task id.
+func (loop *ConversationLoop) storeSubagentStructured(taskID string, payload map[string]any) {
+	loop.structuredMu.Lock()
+	if loop.subagentStructured == nil {
+		loop.subagentStructured = map[string]map[string]any{}
+	}
+	loop.subagentStructured[taskID] = payload
+	loop.structuredMu.Unlock()
+}
+
+// subagentStructuredOutput returns the typed result a subagent returned, if it
+// called structured_output.
+func (loop *ConversationLoop) subagentStructuredOutput(taskID string) (map[string]any, bool) {
+	loop.structuredMu.Lock()
+	defer loop.structuredMu.Unlock()
+	v, ok := loop.subagentStructured[taskID]
+	return v, ok
 }

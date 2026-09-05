@@ -263,6 +263,13 @@ func (loop *ConversationLoop) runSubagent(taskID string, spec *tools.AgentSpec, 
 	drainSubagentEvents(events, &out)
 	err := <-done
 
+	// A child that returned its result through structured_output hands the
+	// parent a typed value, not only a transcript (the workflow tool's
+	// agent(…, {schema}) resolves with it).
+	if payload := child.lastStructuredOutput(); payload != nil {
+		loop.storeSubagentStructured(taskID, payload)
+	}
+
 	transcript := out.String()
 	if len(transcript) > subagentOutputCap {
 		transcript = transcript[:subagentOutputCap] + "\n… [output truncated]"
