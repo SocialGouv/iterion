@@ -338,4 +338,17 @@ lots:
 			t.Fatalf("notice = %q", res.Notice)
 		}
 	})
+	// The pre-check uses mark_done's regex, anchored to the end of the line:
+	// a status line the gate could not flip — trailing blanks, a second
+	// token — is refused HERE, before the lot is paid for, never at the last
+	// node after the gate has run (review finding: the two regexes differed
+	// on exactly that, and `status: todo  ` passed plan_read to fail mark_done).
+	for _, line := range []string{"    status: todo  ", "    status: todo\t", "    status: todo extra"} {
+		t.Run("a status line the gate could not flip is refused before spend: "+strconv.Quote(line), func(t *testing.T) {
+			res := modernizePlanRead(t, script, "version: 1\nlots:\n  - id: L1\n    title: t\n"+line+"\n    exit_gate:\n      - \"true\"\n", "L1", 1)
+			if !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
+				t.Fatalf("notice = %q, want LOT_UNEDITABLE", res.Notice)
+			}
+		})
+	}
 }

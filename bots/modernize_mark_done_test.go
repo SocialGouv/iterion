@@ -148,6 +148,39 @@ lots:
 		}
 	})
 
+	t.Run("an interrupted attempt — done in the tree, not at HEAD — is committed, not skipped", func(t *testing.T) {
+		ws, base, git := modernizeRepo(t, plan)
+		written := strings.Replace(plan, "status: todo   # a bookmark, never evidence", "status: done   # a bookmark, never evidence", 1)
+		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(written), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res := modernizeMarkDone(t, script, ws, "L1", base, 0)
+		if !res.Marked || res.Commit == "" {
+			t.Fatalf("marked=%v commit=%q — idempotence judged in the working tree skipped the commit the gate owes (%s)", res.Marked, res.Commit, res.Notice)
+		}
+		if head := git("rev-parse", "HEAD"); head == base || head != res.Commit {
+			t.Fatalf("HEAD=%s base=%s reported=%s, want the done commit at HEAD", head, base, res.Commit)
+		}
+		if dirty := git("status", "--porcelain"); dirty != "" {
+			t.Fatalf("the tree must be clean after the commit, got %q", dirty)
+		}
+	})
+
+	t.Run("a rejecting pre-commit hook does not stop the gate's commit", func(t *testing.T) {
+		ws, base, git := modernizeRepo(t, plan)
+		hooks := filepath.Join(ws, ".git", "hooks")
+		if err := os.MkdirAll(hooks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\necho rejected >&2\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := modernizeMarkDone(t, script, ws, "L1", base, 0)
+		if !res.Marked || git("rev-parse", "HEAD") != res.Commit {
+			t.Fatalf("the gate's bookkeeping commit must bypass the target's hooks: %+v", res)
+		}
+	})
+
 	t.Run("undeclared lot is refused", func(t *testing.T) {
 		ws, base, git := modernizeRepo(t, plan)
 		res := modernizeMarkDone(t, script, ws, "L9", base, 1)

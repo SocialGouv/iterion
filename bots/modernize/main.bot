@@ -187,6 +187,11 @@ schema gate_state:
   converged: bool
   ## Converged OR declared blocked — both end the run, for opposite reasons.
   stop: bool
+  ## The verifier REFUSED to judge: a worker-written `done`, a rewritten
+  ## contract. Sent back to the worker while the repair loop lasts; past it,
+  ## the run fails — it never leaves through the exhaustion edge as
+  ## `finished` with the forged word still in the contract.
+  refused: bool
   fail_log: string
   needs_reanchor: bool
   needs_extend: bool
@@ -517,7 +522,7 @@ tool plan_read:
         key_col = dash_indent + 1 + len(m0.group(2))
         same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
         end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
-        status_re = re.compile(r"^\s{%d}status:\s*\S+" % key_col)
+        status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
         if not any(status_re.match(lines[i]) for i in range(start, end)):
             return "no `status:` line at its key column inside its block"
         return ""
@@ -1059,6 +1064,7 @@ compute lot_gate:
   expr:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
+    refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0"
     fail_log: "outputs.lot_verify.log_tail"
     ## Read on EVERY outcome, including a converged one, and that is the point.
     ## An invalidated mutant does not fail the gate: its verdict is excluded
@@ -1169,15 +1175,29 @@ tool mark_done:
             return cand
         return ""
 
-    def lots_json(path):
+    def lots_json(path, what=None):
         yq = find_yq()
         if not yq:
             refuse("yq is not on PATH and was not found in the target's devbox "
                    "profile, so the contract cannot be re-read after the write.")
         raw = subprocess.run([yq, "-o=json", path], capture_output=True, text=True, timeout=60)
         if raw.returncode != 0:
-            refuse("the contract at %s does not parse: %s" % (path, raw.stderr[-400:]))
+            refuse("the contract %s does not parse: %s" % (what or ("at " + path), raw.stderr[-400:]))
         return json.loads(raw.stdout).get("lots") or []
+
+    def lots_json_text(text, what):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tf:
+            tf.write(text)
+            tmp = tf.name
+        try:
+            return lots_json(tmp, what)
+        finally:
+            os.unlink(tmp)
+
+    def git(*args):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, timeout=120)
 
     plan_path = os.path.join(ws, plan_rel)
     try:
@@ -1185,18 +1205,33 @@ tool mark_done:
     except OSError as e:
         refuse("cannot read the contract at %s: %s" % (plan_path, e))
 
-    before = lots_json(plan_path)
+    # Idempotence is judged at HEAD, never in the working tree: an attempt
+    # killed between the write and the commit leaves `done` on disk and
+    # nothing in git, and a re-execution that read the tree would skip the
+    # commit and let the run end green with the gate's word uncommitted.
+    head = git("show", "HEAD:%s" % plan_rel)
+    if head.returncode != 0:
+        refuse("the contract is not committed at HEAD (%s): %s" % (plan_rel, head.stderr[-300:]))
+    head_lots = lots_json_text(head.stdout, "at HEAD")
+    hidx = next((i for i, l in enumerate(head_lots) if l.get("id") == lot_id), None)
+    if hidx is None:
+        refuse("lot %s is not in the contract at HEAD — nothing to mark." % lot_id)
+    if head_lots[hidx].get("status") == "done":
+        finish("lot %s already reads `done` at HEAD — nothing written, nothing committed." % lot_id)
+
+    before = lots_json(plan_path, "in the working tree")
     idx = next((i for i, l in enumerate(before) if l.get("id") == lot_id), None)
     if idx is None:
-        refuse("lot %s is not in the contract at HEAD — nothing to mark." % lot_id)
-    if before[idx].get("status") == "done":
-        finish("lot %s already reads `done` at HEAD — nothing written, nothing committed." % lot_id)
+        refuse("lot %s is in the contract at HEAD but not in the working tree — "
+               "the tree is not one this node writes into." % lot_id)
 
     # The one line, edited in place: locate the lot's block by its `- id:` line
     # and the first `status:` line inside it. A structural rewrite of the file
     # (yq -i) would reflow a contract humans read and diff; a line edit keeps
-    # the diff to the word that changed.
+    # the diff to the word that changed. A tree that already reads `done` is
+    # an interrupted attempt: nothing to write, the commit is what is owed.
     lines = text.splitlines(keepends=True)
+    already_written = before[idx].get("status") == "done"
     # Anchored on INDENTATION, not on the first line that looks right: the
     # block ends at the next `- id:` at the SAME list level, and the status
     # line is the one at the item's key column — so a `status:` or `- id:`
@@ -1220,10 +1255,11 @@ tool mark_done:
     if hit is None:
         refuse("lot %s: no `status:` line inside its block — the contract's "
                "shape is not one this node knows how to edit." % lot_id)
-    m = status_re.match(lines[hit])
-    lines[hit] = "%sstatus: done%s%s" % (m.group(1), m.group(2) or "", m.group(3) or "")
-    with open(plan_path, "w", encoding="utf-8") as f:
-        f.write("".join(lines))
+    if not already_written:
+        m = status_re.match(lines[hit])
+        lines[hit] = "%sstatus: done%s%s" % (m.group(1), m.group(2) or "", m.group(3) or "")
+        with open(plan_path, "w", encoding="utf-8") as f:
+            f.write("".join(lines))
 
     # Verified, not trusted: the only difference between the two parses is this
     # lot's status. Anything else is a rewrite, and the write is undone.
@@ -1236,15 +1272,16 @@ tool mark_done:
         refuse("the status edit changed more than lot %s's status — reverted, "
                "the contract is not one this node knows how to edit." % lot_id)
 
-    def git(*args):
-        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
-                              text=True, timeout=120)
-
+    # The gate's bookkeeping commit bypasses the target's hooks: a pre-commit
+    # that reformats YAML would commit a contract other than the one just
+    # verified, and one that rejects would fail a converged lot at its last
+    # node. The lot's own commits went through them; this one line is the
+    # gate's.
     subject = "%s: done — gate, oracle and references green at %s" % (lot_id, base[:12])
     if git("add", "--", plan_rel).returncode != 0:
         refuse("git add %s failed" % plan_rel)
     c = git("-c", "user.name=iterion-modernize", "-c", "user.email=modernize@iterion.local",
-            "commit", "-q", "--only", "-m", subject, "--", plan_rel)
+            "commit", "-q", "--only", "--no-verify", "-m", subject, "--", plan_rel)
     if c.returncode != 0:
         refuse("committing the status failed: %s" % (c.stdout + c.stderr)[-600:])
     sha = git("rev-parse", "HEAD").stdout.strip()
@@ -1354,13 +1391,26 @@ workflow modernize:
 
   ## Not converged → another pass on the SAME lot, carrying the deterministic
   ## failure back so the agent fixes the cause rather than re-deriving it.
-  lot_gate -> upgrade_campaign as repair_loop("{{vars.max_passes}}") with {
+  ## Conditional on purpose: a bare `when` edge is taken in declaration order
+  ## as soon as it holds, while an unconditional edge is only the fallback —
+  ## so the loop, while it lasts, must beat the `fail when refused` edge below,
+  ## and only an EXHAUSTED loop (skipped by the engine) lets that edge fire.
+  lot_gate -> upgrade_campaign when not stop as repair_loop("{{vars.max_passes}}") with {
     lot_id:     "{{outputs.work_gate.lot_id}}",
     lot_title:  "{{outputs.work_gate.lot_title}}",
     lot_intent: "{{outputs.work_gate.lot_intent}}",
     exit_gate:  "{{outputs.work_gate.exit_gate}}",
     fail_log:   "{{outputs.lot_gate.fail_log}}"
   }
+
+  ## A refusal that outlived the loop — the worker kept its `done`, or its
+  ## rewrite, through every pass — must not exit through the green door: the
+  ## forged word is still in the contract, a merge of a `finished` run would
+  ## land it, and the lot would vanish from the programme (an only_lot
+  ## relaunch is refused as not actionable, a free relaunch skips it as
+  ## landed). The run FAILS, in words, with the work banked — after the loop
+  ## above has been exhausted, never instead of it.
+  lot_gate -> fail when refused
 
   ## Loop exhausted → stop and leave the committed work in place. A lot that
   ## will not converge in max_passes is a finding about the lot, not a reason
