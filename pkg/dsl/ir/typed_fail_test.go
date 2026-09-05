@@ -187,3 +187,39 @@ func TestReservedFailCodeIsRefused(t *testing.T) {
 		t.Errorf("code = %q, want PLAN_BUDGET_EXHAUSTED", node.Code)
 	}
 }
+
+// A `message:` is the whole point of a typed fail — it is what the operator
+// reads instead of "workflow reached fail node". A typo'd ref resolves to
+// nil at fail time, renders empty, and failOutcome falls back to exactly
+// the generic wording the feature exists to remove, with no signal
+// anywhere. The refs must go through the same C029/C036 pipeline as every
+// other template (Re2dc57).
+func TestFailMessageRefsAreValidated(t *testing.T) {
+	// A typo'd node name in the message.
+	src := "compute gate:\n  output: gauge\n  expr:\n    pct: \"42\"\n\nschema gauge:\n  pct: int\n\n" +
+		"fail refuse:\n  code: PLAN_BUDGET_EXHAUSTED\n  message: \"planning used {{outputs.gat.pct}}%\"\n\n" +
+		"workflow msg_refs:\n  entry: gate\n  gate -> refuse\n"
+	res := compileFile(t, src)
+	found := false
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagUnknownRefNode {
+			found = true
+			if !strings.Contains(d.Message, "refuse") {
+				t.Errorf("C029 does not name the fail node: %s", d.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("a typo'd message ref produced no C029: %v", res.Diagnostics)
+	}
+
+	// The correct ref stays clean — the check must not fire on every message.
+	ok := "compute gate:\n  output: gauge\n  expr:\n    pct: \"42\"\n\nschema gauge:\n  pct: int\n\n" +
+		"fail refuse:\n  code: PLAN_BUDGET_EXHAUSTED\n  message: \"planning used {{outputs.gate.pct}}%\"\n\n" +
+		"workflow msg_refs_ok:\n  entry: gate\n  gate -> refuse\n"
+	for _, d := range compileFile(t, ok).Diagnostics {
+		if d.Severity == SeverityError {
+			t.Errorf("a valid message ref produced an error: %s %s", d.Code, d.Message)
+		}
+	}
+}
