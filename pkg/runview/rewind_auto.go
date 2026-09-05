@@ -183,6 +183,9 @@ func declFingerprints(f *ast.File) map[string]string {
 	for _, d := range f.AwaitAnswers {
 		put("await_answers", d.Name, &ast.File{AwaitAnswers: []*ast.AwaitAnswersDecl{d}})
 	}
+	for _, d := range f.Fails {
+		put("fail", d.Name, &ast.File{Fails: []*ast.FailDecl{d}})
+	}
 	for _, d := range f.Prompts {
 		put("prompt", d.Name, &ast.File{Prompts: []*ast.PromptDecl{d}})
 	}
@@ -353,6 +356,10 @@ var nodeDeclKinds = map[string]bool{
 	"agent": true, "judge": true, "router": true, "human": true,
 	"tool": true, "compute": true, "subbot": true,
 	"emit": true, "wait": true, "await_answers": true,
+	// A named `fail` node IS a graph node. It is terminal, so it is never
+	// itself an executed pivot — but listing it keeps the mapping honest,
+	// and keeps an edited fail node out of the "unknown kind" fallback.
+	"fail": true,
 }
 
 // impactedNodes maps a change list onto the graph nodes it affects.

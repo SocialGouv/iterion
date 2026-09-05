@@ -150,4 +150,6 @@ const (
 	DiagLoopInExecBranch      DiagCode = "C244"
 	DiagHumanModeInExecBranch DiagCode = "C245"
 	DiagImplicitCollectorMove DiagCode = "C246" // bounded predecessor used to elect an implicit collector that now executes per branch (warning)
+	// Typed terminal failure (`fail <name>:` with code/message/resumable).
+	DiagInvalidFailCode DiagCode = "C247" // `code:` on a fail node is not an UPPER_SNAKE identifier (error — it is persisted as the run's failure_code and read by machines)
 )

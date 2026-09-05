@@ -166,14 +166,21 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Stop at terminal nodes within a branch.
-		switch node.(type) {
+		switch n := node.(type) {
 		case *ir.DoneNode:
 			result.terminatedAtDone = true
 			result.terminalNodeID = currentNodeID
 			e.checkpointBranch(rs, branchRS, result, currentNodeID, true, parallel)
 			return result
 		case *ir.FailNode:
-			result.err = fmt.Errorf("branch %s reached fail node %q", branchID, currentNodeID)
+			// A branch cannot end the run by itself — the collector
+			// decides — so the node's diagnosis travels as the branch
+			// error rather than as a run status. Carrying it is what
+			// keeps a typed refusal legible when it happens to be
+			// declared inside a fan-out.
+			outcome := e.failOutcome(branchRS, n)
+			result.err = fmt.Errorf("branch %s reached fail node %q [%s]: %s",
+				branchID, currentNodeID, outcome.code, outcome.reason)
 			return result
 		}
 

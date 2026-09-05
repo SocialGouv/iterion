@@ -267,6 +267,11 @@ func (p *parser) parseFile() *ast.File {
 				f.AwaitAnswers = append(f.AwaitAnswers, ad)
 			}
 
+		case TokenFail:
+			if fd := p.parseFailDecl(); fd != nil && !p.isReservedName(t, fd.Name, "fail") {
+				f.Fails = append(f.Fails, fd)
+			}
+
 		case TokenSubbot:
 			sd := p.parseSubbotDecl()
 			if sd != nil {

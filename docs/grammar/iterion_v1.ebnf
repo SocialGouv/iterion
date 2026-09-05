@@ -15,6 +15,7 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
                | cursor_decl | supervisor_decl
                | agent_decl | judge_decl | router_decl | human_decl
                | tool_decl | compute_decl | emit_decl | wait_decl | subbot_decl
+               | fail_decl
                | group_decl | use_decl | workflow_decl ;
 
 (* ---------- Values and collections ---------- *)
@@ -271,6 +272,15 @@ wait_prop = "description" ":" STRING_LIT NEWLINE
           | "event" ":" STRING_LIT NEWLINE
           | "timeout" ":" STRING_LIT NEWLINE
           | "output" ":" IDENT NEWLINE ;
+
+(* A NAMED terminal failure node. The bare "fail" target stays reserved and
+   untyped; a declaration is how a workflow carries its own diagnosis onto
+   the run (failure_code / error), one node per reason it refuses. *)
+fail_decl = "fail" IDENT ":" NEWLINE INDENT { fail_prop } DEDENT ;
+fail_prop = "description" ":" STRING_LIT NEWLINE
+          | "code" ":" ( IDENT | STRING_LIT ) NEWLINE
+          | "message" ":" STRING_LIT NEWLINE
+          | "resumable" ":" BOOL_LIT NEWLINE ;
 
 subbot_decl = "subbot" IDENT ":" NEWLINE INDENT { subbot_prop } DEDENT ;
 subbot_prop = "description" ":" STRING_LIT NEWLINE

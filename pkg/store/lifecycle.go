@@ -80,7 +80,10 @@ const (
 	// `interrupted:true` flag.
 	FailureInterrupted FailureCode = "INTERRUPTED"
 	// FailureFailNode: the workflow's own `fail` node ended the run —
-	// a deliberate graph termination, not a crash (ADR-015).
+	// a deliberate graph termination, not a crash (ADR-015). It is the
+	// UNTYPED outcome: a `fail <name>:` declaration supplies its own
+	// UPPER_SNAKE code instead, so this constant means "the bot refused
+	// and did not say why", which is exactly what it should read as.
 	FailureFailNode FailureCode = "FAIL_NODE"
 	// FailureProcessOrphaned: a liveness probe (flock, lease, pid)
 	// found the run's owner dead and flipped it failed_resumable.

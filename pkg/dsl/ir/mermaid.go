@@ -294,6 +294,16 @@ func fullShape(node Node, w *Workflow) string {
 		if n.OutputSchema != "" {
 			lines = append(lines, "out: "+expandSchema(n.OutputSchema, w))
 		}
+	case *FailNode:
+		// A typed refusal's whole point is being legible; a diagram that
+		// drew every fail node identically would hide the one thing that
+		// distinguishes them.
+		if n.Code != "" {
+			lines = append(lines, "code: "+n.Code)
+		}
+		if n.Resumable {
+			lines = append(lines, "resumable: true")
+		}
 	}
 
 	await := NodeAwaitMode(node)

@@ -21,6 +21,21 @@ Reaching the reserved `fail` node intentionally produces `failed`. Compile or
 bootstrap errors can happen before a resumable run exists, and a store failure
 that prevents checkpoint persistence may also fall back to `failed`.
 
+A **named** fail node (`fail <name>:`, see [the DSL reference](dsl.md#typed-terminal-failure--fail-name))
+may opt out of that with `resumable: true`, which parks the run
+`failed_resumable` — the ordinary resumable status above, with everything
+that follows from it: the CLI and HTTP resume, and a cloud queue redelivery
+auto-resumes it. Declare it only when continuing is genuinely the cure. The
+reference case is a phase-budget guard whose remedy is "raise the cap and
+carry on": leaving that terminal makes the operator re-pay a phase the run
+already completed, which is the very cost the guard exists to avoid. A
+refusal that a resume could only repeat — "this lot is not actionable" —
+stays terminal, the default.
+
+Either way the node's `code:` lands on the run's `failure_code` and its
+rendered `message:` on `error`, so what the resume is recovering FROM is
+legible without opening the run's artifacts.
+
 ## CLI
 
 The source path is optional when it was persisted at launch:

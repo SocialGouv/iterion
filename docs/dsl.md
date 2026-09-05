@@ -406,6 +406,42 @@ wait await_ready:
 
 `wait.timeout` is mandatory: the language does not permit an unbounded silent wait.
 
+### Typed terminal failure — `fail <name>:`
+
+`done` and the bare `fail` are reserved edge targets, not declarations.
+Routing to `fail` ends the run as `failed` with the engine's own generic
+outcome — `FAIL_NODE`, "workflow reached fail node" — which is all an
+operator sees whichever of a bot's refusals fired.
+
+A workflow that refuses for a **reason** declares a named fail node
+instead. One per reason; the bare `fail` keeps its untyped behaviour.
+
+```iter
+fail plan_exhausted:
+  description: "the plan phase outgrew its share of the budget"
+  code: PLAN_BUDGET_EXHAUSTED
+  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
+  resumable: true
+
+fail not_actionable:
+  code: LOT_NOT_ACTIONABLE
+  message: "nothing in this lot is actionable"
+```
+
+| Field | Meaning |
+|---|---|
+| `code:` | UPPER_SNAKE identifier stamped on the run's `failure_code`. [C247](references/diagnostics.md) refuses any other shape — the value is persisted and read by machines (`iterion runs list`, the studio, the merge-gate notice, the alert sinks). |
+| `message:` | The operator-facing reason, stamped on the run's `error`. Templated with the usual `{{...}}` references and resolved **at fail time**, so the figure that caused the refusal is the one reported. |
+| `resumable:` | `true` parks the run `failed_resumable` instead of terminal `failed`. Off by default: a fail node is intentional termination. |
+| `description:` | Human-readable node label, as on every other node kind. |
+
+The default stays terminal because that is what a deliberate refusal
+usually means. Declare `resumable: true` when continuing is genuinely the
+cure — a phase-budget guard whose remedy is "raise the cap and carry on"
+would otherwise make the operator re-pay the phase the run already
+completed, the exact cost the guard exists to avoid. See
+[resume](resume.md#resumable-states).
+
 ## Reuse and nested execution
 
 ### `group` / `use`

@@ -131,6 +131,7 @@ type jsonFile struct {
 	Emits        []*jsonEmitDecl         `json:"emits,omitempty"`
 	Waits        []*jsonWaitDecl         `json:"waits,omitempty"`
 	AwaitAnswers []*jsonAwaitAnswersDecl `json:"await_answers,omitempty"`
+	Fails        []*jsonFailDecl         `json:"fails,omitempty"`
 	Workflows    []*jsonWorkflowDecl     `json:"workflows,omitempty"`
 	Comments     []*jsonComment          `json:"comments,omitempty"`
 }
@@ -650,6 +651,14 @@ type jsonAwaitAnswersDecl struct {
 	Timeout     string `json:"timeout,omitempty"`
 }
 
+type jsonFailDecl struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Code        string `json:"code,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Resumable   bool   `json:"resumable,omitempty"`
+}
+
 type jsonWorkflowDecl struct {
 	Name            string                `json:"name,omitempty"`
 	Vars            *jsonVarsBlock        `json:"vars,omitempty"`
@@ -869,6 +878,15 @@ func toJSON(f *File) *jsonFile {
 			Description: aa.Description,
 			From:        aa.From,
 			Timeout:     aa.Timeout,
+		})
+	}
+	for _, fd := range f.Fails {
+		jf.Fails = append(jf.Fails, &jsonFailDecl{
+			Name:        fd.Name,
+			Description: fd.Description,
+			Code:        fd.Code,
+			Message:     fd.Message,
+			Resumable:   fd.Resumable,
 		})
 	}
 	for _, w := range f.Workflows {
@@ -1566,6 +1584,16 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Description: ja.Description,
 			From:        ja.From,
 			Timeout:     ja.Timeout,
+		})
+	}
+
+	for _, jfd := range jf.Fails {
+		f.Fails = append(f.Fails, &FailDecl{
+			Name:        jfd.Name,
+			Description: jfd.Description,
+			Code:        jfd.Code,
+			Message:     jfd.Message,
+			Resumable:   jfd.Resumable,
 		})
 	}
 
