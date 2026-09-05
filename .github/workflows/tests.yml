@@ -251,7 +251,8 @@ jobs:
             ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
-            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/...
+            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
+            ./pkg/forge/...
 
   nats-conformance:
     # Runs the JetStream integration tests (mixed-version schema rollout,

@@ -1,0 +1,248 @@
+package forge_test
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
+)
+
+// runBoardBindingStoreSuite exercises the forge.BoardBindingStore contract. It
+// runs against the in-memory store (always — proving the suite) and the Mongo
+// store (gated on ITERION_TEST_MONGO_URI), so the two implementations are held
+// to an identical bar. The CAS claim in particular is the whole reason the
+// cloud sync worker can run on N replicas.
+func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+
+	binding := func(tenant string, every time.Duration) forge.BoardBinding {
+		return forge.BoardBinding{
+			TenantID: tenant, Provider: forge.ProviderGitHub,
+			Owner: "SocialGouv", OwnerKind: forge.ProjectOwnerOrg, Number: 203,
+			ConnectionID: "conn-1", ProjectID: "PVT_p", ProjectTitle: "Iterion",
+			StatusFieldID: "PVTSSF_status",
+			StatusOptions: map[string]string{"ready": "opt_planned", "done": "opt_done"},
+			StatusMapping: []forge.StatusMapping{{Status: "Planned", State: "ready"}, {Status: "Done", State: "done"}},
+			LabelFields:   []forge.BoundLabelField{{FieldID: "PVTSSF_area", Name: "Area", Prefix: "area:"}},
+			SyncEvery:     every,
+			CreatedAt:     base, UpdatedAt: base,
+		}
+	}
+
+	t.Run("missing binding is a typed error", func(t *testing.T) {
+		if _, err := store.GetByTenant(ctx, "nobody"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Fatalf("want ErrBoardBindingNotFound, got %v", err)
+		}
+		if err := store.Delete(ctx, "nobody"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Fatalf("Delete of a missing binding: want ErrBoardBindingNotFound, got %v", err)
+		}
+	})
+
+	t.Run("upsert then read back", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-a", 10*time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-a")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if got.Owner != "SocialGouv" || got.Number != 203 || got.ProjectID != "PVT_p" {
+			t.Errorf("identity round-trip wrong: %+v", got)
+		}
+		if got.StatusOptions["ready"] != "opt_planned" {
+			t.Errorf("status options round-trip wrong: %v", got.StatusOptions)
+		}
+		if len(got.StatusMapping) != 2 || got.StatusMapping[0].Status != "Planned" {
+			t.Errorf("status mapping round-trip wrong: %+v", got.StatusMapping)
+		}
+		if len(got.LabelFields) != 1 || got.LabelFields[0].Prefix != "area:" {
+			t.Errorf("label fields round-trip wrong: %+v", got.LabelFields)
+		}
+		if got.SyncEvery != 10*time.Minute {
+			t.Errorf("SyncEvery = %v, want 10m", got.SyncEvery)
+		}
+		if got.OwnerKind != forge.ProjectOwnerOrg {
+			t.Errorf("OwnerKind = %q", got.OwnerKind)
+		}
+	})
+
+	t.Run("one binding per team: upsert replaces", func(t *testing.T) {
+		next := binding("team-a", 5*time.Minute)
+		next.Number = 204
+		next.ProjectTitle = "Iterion v2"
+		if err := store.Upsert(ctx, next); err != nil {
+			t.Fatalf("Upsert (replace): %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-a")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if got.Number != 204 || got.ProjectTitle != "Iterion v2" || got.SyncEvery != 5*time.Minute {
+			t.Fatalf("a second bind must REPLACE, not duplicate: %+v", got)
+		}
+		all, err := store.ListAll(ctx)
+		if err != nil {
+			t.Fatalf("ListAll: %v", err)
+		}
+		n := 0
+		for _, b := range all {
+			if b.TenantID == "team-a" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("team-a has %d bindings, want exactly 1", n)
+		}
+	})
+
+	t.Run("due bindings honour the interval and the off switch", func(t *testing.T) {
+		// team-b: never synced, 10m interval → due.
+		if err := store.Upsert(ctx, binding("team-b", 10*time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		// team-off: sync disabled → never due, whatever the clock says.
+		if err := store.Upsert(ctx, binding("team-off", 0)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		due, err := store.DueBindings(ctx, base.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("DueBindings: %v", err)
+		}
+		byTenant := map[string]forge.BoardBinding{}
+		for _, b := range due {
+			byTenant[b.TenantID] = b
+		}
+		if _, ok := byTenant["team-b"]; !ok {
+			t.Error("a never-synced binding must be due")
+		}
+		if _, ok := byTenant["team-off"]; ok {
+			t.Error("sync_every=0 means OFF — it must never come up due")
+		}
+	})
+
+	t.Run("ClaimSync is a CAS: exactly one replica wins", func(t *testing.T) {
+		b := binding("team-cas", time.Minute)
+		if err := store.Upsert(ctx, b); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		seen, err := store.GetByTenant(ctx, "team-cas")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		at := base.Add(2 * time.Hour)
+		won, err := store.ClaimSync(ctx, "team-cas", seen.LastSyncedAt, at)
+		if err != nil {
+			t.Fatalf("ClaimSync: %v", err)
+		}
+		if !won {
+			t.Fatal("the first claimant must win")
+		}
+		// A second replica presenting the SAME stale watermark must lose.
+		won2, err := store.ClaimSync(ctx, "team-cas", seen.LastSyncedAt, at)
+		if err != nil {
+			t.Fatalf("ClaimSync (second): %v", err)
+		}
+		if won2 {
+			t.Fatal("a replica presenting a stale watermark must LOSE — otherwise N replicas each run the pass")
+		}
+		after, err := store.GetByTenant(ctx, "team-cas")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if !after.LastSyncedAt.Equal(at) {
+			t.Errorf("LastSyncedAt = %v, want %v", after.LastSyncedAt, at)
+		}
+		// And it is no longer due before its next interval.
+		due, err := store.DueBindings(ctx, at.Add(30*time.Second))
+		if err != nil {
+			t.Fatalf("DueBindings: %v", err)
+		}
+		for _, d := range due {
+			if d.TenantID == "team-cas" {
+				t.Error("a just-synced binding must not be due again inside its interval")
+			}
+		}
+	})
+
+	t.Run("ClaimSync on a missing binding is a typed error", func(t *testing.T) {
+		_, err := store.ClaimSync(ctx, "nobody", time.Time{}, base)
+		if !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Fatalf("want ErrBoardBindingNotFound, got %v", err)
+		}
+	})
+
+	t.Run("delete removes it", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-del", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := store.Delete(ctx, "team-del"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, err := store.GetByTenant(ctx, "team-del"); !errors.Is(err, forge.ErrBoardBindingNotFound) {
+			t.Fatalf("want ErrBoardBindingNotFound after delete, got %v", err)
+		}
+	})
+
+	t.Run("tenants are isolated", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-x", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		other := binding("team-y", time.Minute)
+		other.Owner = "OtherOrg"
+		if err := store.Upsert(ctx, other); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		x, err := store.GetByTenant(ctx, "team-x")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if x.Owner != "SocialGouv" {
+			t.Errorf("team-x binding leaked from team-y: %+v", x)
+		}
+	})
+}
+
+func TestMemoryBoardBindingStore_Conformance(t *testing.T) {
+	runBoardBindingStoreSuite(t, forge.NewMemoryBoardBindingStore())
+}
+
+func TestMongoBoardBindingStore_Conformance(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board-binding suite")
+	}
+	ctx := context.Background()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo.Connect: %v", err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_binding_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+
+	store := forge.NewMongoBoardBindingStore(db)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	// Idempotent re-run: a redeploy calls it again on an existing collection.
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema (second): %v", err)
+	}
+	runBoardBindingStoreSuite(t, store)
+}
