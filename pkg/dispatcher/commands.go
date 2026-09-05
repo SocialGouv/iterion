@@ -932,9 +932,7 @@ func (c *Dispatcher) stampGiveUp(plan finishPlan) {
 		At:       time.Now().UTC(),
 	}
 	if plan.session != nil {
-		if owned, ok := c.tracker.(interface {
-			SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimToken) error
-		}); ok {
+		if owned, ok := c.tracker.(ownedGiveUpStamper); ok {
 			if err := owned.SetGaveUpOwned(plan.issueID, stamp, plan.session.Token()); err != nil {
 				c.logger.Warn("dispatcher: stamp give-up on %s: %v", plan.identifier, err)
 			}

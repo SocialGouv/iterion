@@ -444,6 +444,9 @@ func (s *Store) SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimTok
 		payload["run_id"] = stamped.RunID
 		payload["state"] = stamped.State
 		payload["attempts"] = stamped.Attempts
+		if stamped.Reason != "" {
+			payload["reason"] = stamped.Reason
+		}
 	}
 	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
 }

@@ -800,6 +800,9 @@
           "attempts": {
             "type": "integer"
           },
+          "reason": {
+            "type": "string"
+          },
           "run_id": {
             "type": "string"
           },

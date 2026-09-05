@@ -830,6 +830,16 @@ Three properties of that routing are easy to assume wrongly:
 - **A card in the running column with no run recorded is left alone.**
   The run stamp is best-effort and lands after the launch, so its absence
   proves nothing — freeing the card could double-launch a live worker.
+- **A card whose recorded run is GONE is filed, never re-dispatched.** A
+  pointer at a run that `iterion runs prune` removed (or that was deleted
+  behind a tombstone) means a run happened and its outcome is unknowable.
+  Freeing the card would mint a fresh run for work that may already be
+  delivered, so the watchdog files it into the failed column with a
+  give-up stamp naming the gone run and why (visible in the pipeline
+  board's *Needs attention* lane, "The dispatcher gave up … recorded run
+  … is gone"). Reopen or re-queue it to run it again; close it to
+  acknowledge. The filing carries machine provenance, so no trigger fires
+  on it.
 - **Returning a card to the pool is bounded in cloud** (`watchdogRunCeiling`,
   20 lifetime runs): the cloud launcher starts a fresh run rather than
   resuming the recorded one, so an always-failing card would otherwise be

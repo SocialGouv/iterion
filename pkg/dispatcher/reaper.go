@@ -198,6 +198,7 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	card := StuckCard{
 		State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates(),
 		StampWindowOpen: StampWindowOpen(cand.ClaimedAt, now),
+		RecordedRunID:   cand.LastRunID,
 	}
 	// PRE-transfer: only the rows that protect a live owner. The parked
 	// row is deliberately not consulted here — refusing the transfer would
@@ -242,6 +243,8 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 		filed = c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok, tracker.ReasonRunFinished)
 	case StuckFail:
 		filed = c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, tracker.ReasonRunFailed)
+	case StuckGiveUp:
+		filed = c.giveUpStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, dec.Reason)
 	case StuckRepark, StuckReleaseOnly:
 		// The release below is the whole action: the card re-enters the
 		// eligible pool, and for Repark the retry machinery resumes the
@@ -317,6 +320,50 @@ func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClai
 	}
 	if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, target, tok); err != nil {
 		c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
+		return false
+	}
+	return true
+}
+
+// ownedGiveUpStamper is the FENCED give-up stamp a lease backend offers
+// (native.Adapter does) — the owner-scoped twin of giveUpStamper, named
+// for the same reason (an assertion on an anonymous interface fails
+// silently). The watchdog's give-up filing is NOT complete without it: a
+// card filed as failed with no stamp reads as a human's decision, which
+// is the misreport the stamp exists to prevent.
+type ownedGiveUpStamper interface {
+	SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimToken) error
+}
+
+// giveUpStuckCard performs the StuckGiveUp disposition: file the card into
+// the failed column under MACHINE provenance (the watchdog decided this by
+// itself — no downstream chain may fire as if a run had failed), then
+// stamp the give-up naming the gone run and why, so the pipeline board's
+// Needs-attention lane shows it as the watchdog's own filing. Both halves
+// are the disposition: a failed stamp keeps the recovery claim, and the
+// next lease retries — loudly.
+func (c *Dispatcher) giveUpStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken, reason string) bool {
+	if target == "" {
+		c.logger.Warn("dispatcher: claim watchdog cannot file %s (recorded run %s is gone): no failed_state is configured, "+
+			"and releasing it would re-dispatch work that may already be delivered — keeping the recovery claim",
+			cand.Identifier, cand.LastRunID)
+		return false
+	}
+	stamper, ok := c.leaser.(ownedGiveUpStamper)
+	if !ok {
+		c.logger.Warn("dispatcher: claim watchdog cannot stamp a give-up on %s (leaser %T has no SetGaveUpOwned) — "+
+			"keeping the recovery claim rather than filing a card that would read as a human's decision",
+			cand.Identifier, c.leaser)
+		return false
+	}
+	if !c.fileStuckCard(ctx, cand, card, target, tok, "") {
+		return false
+	}
+	// GiveUpToRecord makes the stamp a no-op when the card is not in the
+	// stamped state (the guard declined the filing: an operator moved the
+	// card first, and their intent stands unannotated).
+	if err := stamper.SetGaveUpOwned(cand.IssueID, &native.GiveUp{RunID: cand.LastRunID, State: target, Reason: reason}, tok); err != nil {
+		c.logger.Warn("dispatcher: claim watchdog give-up stamp on %s: %v", cand.Identifier, err)
 		return false
 	}
 	return true
@@ -400,8 +447,10 @@ func (c *Dispatcher) loadRunForReap(ctx context.Context, runs *store.FilesystemR
 	if err != nil {
 		if store.RunAbsent(err) {
 			// A recorded run whose document is gone — pruned, or deleted
-			// with a tombstone — proves nothing is alive: same disposition
-			// as "no run". Reading a tombstone as a transient read failure
+			// with a tombstone — proves nothing is alive. It is NOT the
+			// "no run" row: the table tells the two apart through
+			// StuckCard.RecordedRunID and files the gone pointer as a
+			// give-up. Reading a tombstone as a transient read failure
 			// instead would conserve the card for ever (DecideStuckCard
 			// returns StuckKeep on any read error, and reapOne returns
 			// before the transfer, so keepAfterTransfer's "conserved once"

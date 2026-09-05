@@ -230,6 +230,23 @@ pre-watchdog state, which is what the rollback lever promises.
   historical same-host pid-probe sweep touches them. A deliberate long
   operator stop that wants the OFF-window claims left alone advances the
   lease; the reaper's transfer is fail-safe otherwise.
+- **A PRUNED pointer is a give-up, not a release.** "No run loaded" has
+  two causes the table keeps apart through `StuckCard.RecordedRunID`. No
+  run *recorded* is the claimant dying before launch — release-only, the
+  card is simply eligible again. A recorded run that is *gone* (pruned by
+  `iterion runs prune`, deleted behind a tombstone) means a run happened
+  and nobody can tell whether its work was delivered: released bare, the
+  card re-entered the pool (the running column is eligible locally; the
+  cloud repark writes it back to `ready`) and the launch path read the
+  absence as a legitimate fresh start — a NEW run minted on the
+  watchdog's authority for possibly-delivered work. Such a card is filed
+  into the failed column under MACHINE provenance (no downstream chain
+  fires) with a give-up stamp naming the gone run and the reason
+  (`GiveUp.Reason`, rendered in the pipeline board's Needs-attention
+  lane), and an operator decides: reopen or re-queue to run it again,
+  close to acknowledge. The stamp window is irrelevant to this row — the
+  pointer is the stamp. Under a disabled gate the un-leased sweep keeps
+  conserving it: it is a decision, and the gate stops decisions.
 
 ## Non-goals (slice 3/3)
 

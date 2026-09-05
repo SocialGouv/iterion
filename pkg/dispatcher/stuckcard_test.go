@@ -108,6 +108,44 @@ func TestDecideStuckCard_CardContext(t *testing.T) {
 // PROCESS_ORPHANED, redelivery_pending — is about to be resumed by the very
 // delivery that wrote it. The pre-transfer decision must keep the card:
 // a transfer would re-park it into a duplicate run on cloud.
+// TestDecideStuckCard_PrunedPointerIsAGiveUp: "no run loaded" has two
+// causes and they must not share a disposition. No run RECORDED is the
+// claimant dying before launch (release-only: the card is simply eligible
+// again). A recorded run that is GONE — pruned by the retention command,
+// deleted behind a tombstone — means a run happened and nobody can tell
+// whether its work was delivered: freeing the card re-dispatches it
+// (locally the running column is eligible; in cloud the repark writes it
+// back into the pool), minting a fresh run on the watchdog's authority.
+// That row is a give-up an operator decides on, whatever the stamp window
+// says (the pointer IS the stamp, so nothing is still in flight).
+func TestDecideStuckCard_PrunedPointerIsAGiveUp(t *testing.T) {
+	pruned := StuckCard{
+		State: "in_progress", RunningState: "in_progress", LaunchStates: []string{"ready"},
+		RecordedRunID: "run-gone", StampWindowOpen: true,
+	}
+	if got := DecideStuckCard(nil, nil, pruned); got.Action != StuckGiveUp {
+		t.Fatalf("pruned pointer: action = %s (%s), want give_up", got.Action, got.Reason)
+	}
+	if got := DecideTransfer(nil, nil, pruned); got.Action == StuckKeep {
+		t.Fatalf("a pruned pointer protects no live owner — the transfer must proceed, got keep (%s)", got.Reason)
+	}
+	// In a launch column too: the card was never moved by its launch, and
+	// its pointer is still gone.
+	pruned.State, pruned.StampWindowOpen = "ready", false
+	if got := DecideStuckCard(nil, nil, pruned); got.Action != StuckGiveUp {
+		t.Fatalf("pruned pointer in a launch column: action = %s, want give_up", got.Action)
+	}
+	// A read error still conserves — absence must be PROVEN, never inferred
+	// from a store blip.
+	if got := DecideStuckCard(nil, errors.New("store down"), pruned); got.Action != StuckKeep {
+		t.Fatalf("read error with a recorded run: action = %s, want keep", got.Action)
+	}
+	// And the genuine no-run shape keeps its release-only row.
+	if got := DecideStuckCard(nil, nil, StuckCard{State: "ready", RunningState: "in_progress", LaunchStates: []string{"ready"}}); got.Action != StuckReleaseOnly {
+		t.Fatalf("no run recorded: action = %s, want release", got.Action)
+	}
+}
+
 func TestDecideTransfer_KeepsAnAdoptedOrphan(t *testing.T) {
 	adopted := &store.Run{
 		ID: "r1", Status: store.RunStatusFailedResumable,

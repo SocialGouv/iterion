@@ -232,11 +232,19 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if err != nil {
 		t.Fatalf("Claim give-up probe: %v", err)
 	}
-	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3}, guTok); err != nil {
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3, Reason: "recorded run gone"}, guTok); err != nil {
 		t.Fatalf("SetGaveUpOwned: %v", err)
 	}
-	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil {
-		t.Fatalf("the give-up stamp must land: %+v", cur)
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil || cur.GaveUp.Reason != "recorded run gone" {
+		t.Fatalf("the give-up stamp must land with its reason: %+v", cur.GaveUp)
+	}
+	// A re-stamp that only changes the REASON is a real change, not a
+	// no-op: the reason is what the operator reads.
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3, Reason: "still gone"}, guTok); err != nil {
+		t.Fatalf("SetGaveUpOwned (reason change): %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil || cur.GaveUp.Reason != "still gone" {
+		t.Fatalf("a changed reason must be written: %+v", cur.GaveUp)
 	}
 	if _, err := store.SetStateOwned(gu.ID, native.StateInProgress, guTok); err != nil {
 		t.Fatalf("SetStateOwned after give-up: %v", err)
