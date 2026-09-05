@@ -13,12 +13,76 @@ import (
 
 // syncHarnessHeader is the canonical header the gate writes above the body —
 // the sync bot must reproduce it byte for byte, or the next gate writes the
-// file back and dirties the tree it was meant to leave clean.
+// file back and dirties the tree it was meant to leave clean. Pinned to the
+// harness's OWN copy by TestGoldenMasterSyncHarnessHeaderIsTheGates.
 const syncHarnessHeader = "#!/usr/bin/env python3\n" +
 	"\"\"\"Materialised oracle harness — the decision procedure, not the campaign's to edit.\n" +
 	"The reviewable source of truth lives in the golden-master bot bundle; this copy\n" +
 	"exists so the emitted runner, CI and later passes judge with the same code.\n" +
 	"Regenerated at every gate; edits made here do not survive.\"\"\"\n"
+
+// pythonStringBlock evaluates one `<assign>` block of adjacent Python string
+// literals with python3's own parser, so what is compared is the STRING, not
+// one of its spellings.
+func pythonStringBlock(t *testing.T, path, assign string) string {
+	t.Helper()
+	const prog = `
+import ast, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+if src.count(sys.argv[2]) != 1:
+    sys.exit("%s: %d occurrences of %r, want exactly one" % (sys.argv[1], src.count(sys.argv[2]), sys.argv[2]))
+i = src.index(sys.argv[2]) + len(sys.argv[2])
+lit = []
+for line in src[i:].split("\n")[1:]:
+    s = line.strip()
+    if not (s.startswith('"') or s.startswith("'")):
+        break
+    lit.append(s)
+text = "\n".join(lit).rstrip()
+if text.endswith(")"):
+    text = text[:-1]
+sys.stdout.write(ast.literal_eval("(" + text + ")"))
+`
+	out, err := exec.Command("python3", "-c", prog, path, assign).Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("reading %s from %s: %v (%s)", assign, path, err, ee.Stderr)
+		}
+		t.Fatalf("reading %s from %s: %v", assign, path, err)
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s: %s yielded nothing — the block was restructured, fix this test", path, assign)
+	}
+	return string(out)
+}
+
+// TestGoldenMasterSyncHarnessHeaderIsTheGates closes the branch's one unpinned
+// duplication. The sync bot's driver hand-copies the canonical header that the
+// HARNESS writes for itself (`canon_copy` in oracle-harness.py, inlined into
+// main.bot's gate node and held byte-identical there by
+// TestGoldenMasterHarnessCopiesStayInSync). Nothing held the DRIVER's copy to
+// it, and the whole premise of the bot is that it writes "the same bytes the
+// gate would write, so the next gate writes nothing back": a header that drifts
+// makes every gate after a sync rewrite harness.py and dirty the tree the sync
+// was meant to leave clean — the one failure the idempotence comment in the
+// harness exists to prevent.
+func TestGoldenMasterSyncHarnessHeaderIsTheGates(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	gate := pythonStringBlock(t, "golden-master/oracle-harness.py", "canon_copy = (")
+	driver := pythonStringBlock(t, "golden-master/sync-harness.bot", "HEADER = (")
+	if driver != gate {
+		t.Fatalf("sync-harness.bot's driver writes a header the gate does not:\n  driver: %q\n  gate:   %q\n"+
+			"The sync would be undone by the next gate. Copy the harness's own `canon_copy` header into "+
+			"the driver's HEADER.", driver, gate)
+	}
+	// And the constant the rest of this file asserts against is that header,
+	// so those assertions are about the gate's form and not a third spelling.
+	if syncHarnessHeader != gate {
+		t.Fatalf("syncHarnessHeader has drifted from the harness's own:\n  const: %q\n  gate:  %q", syncHarnessHeader, gate)
+	}
+}
 
 type syncHarnessOut struct {
 	Changed       bool   `json:"changed"`
