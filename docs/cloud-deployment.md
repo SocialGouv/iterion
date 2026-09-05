@@ -377,6 +377,37 @@ literal `ITERION_RUNNER_EPOCH` while pulling whatever the tag means now.
 reason: a moving tag rolled the runner Deployment on every merge to main and
 killed in-flight runs. That is a values-level choice, not a chart default.)
 
+### Verifying that an infra-apps push landed (ArgoCD sync liveness)
+
+Autosync usually applies a push within a minute, but it is not guaranteed
+to: on 2026-09-05 a values push (`runnerEpoch: 1` + a SealedSecret change)
+sat unapplied for ~2h30 with no error anywhere the operator could see, and
+was applied together with the NEXT push, in under a minute. The failure
+mode is indistinguishable from "nothing to do", and the next unrelated push
+silently carries the stalled change in — inside someone else's rollout.
+
+So a push is verified by the Deployments' `metadata.generation` moving,
+never by the pods (a drain-safe runner rollout keeps the old pods around
+for minutes):
+
+```sh
+kubectl -n iterion get deploy iterion iterion-runner \
+  -o custom-columns=NAME:.metadata.name,GEN:.metadata.generation,UPD:.status.updatedReplicas
+```
+
+- Generation unchanged after ~5 min: the cheap nudge is an empty commit on
+  the config repo (`git commit --allow-empty -m "chore: nudge argocd"`) — a
+  new revision is what cleared the 2026-09-05 stall.
+- Still unchanged: read the app's `status.sync` / `status.operationState`
+  with a fresh ArgoCD token (`argocd app get <app>`). An expired operator
+  token is what made that stall unreadable at the time.
+- A runner rollout that DID apply takes ~5 min end to end (new ReplicaSet
+  ready, then the old one drains); the pods' `imageID` is the proof that a
+  digest bump reached them.
+
+A scheduled sync-liveness probe (config-repo HEAD vs the app's
+`status.sync.revision` age) is tracked in SocialGouv/iterion#733.
+
 ### Generation-aware rollout
 
 The chart uses `RollingUpdate` with `maxSurge: 100%` and

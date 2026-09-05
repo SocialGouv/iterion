@@ -1,5 +1,55 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — plan-budget guard dogfooded on prod: the gate fires typed, before `campaign`, for $0.67–$1.80 (runs 01a0714a, 01a07156)
+
+- Status: **validated** (the guard itself; the entry below, written before
+  any live run, is superseded on its "unvalidated" point).
+- Versions: bot `branch-improve-loop` 1.3.0, pushed to the prod platform
+  bot-override tier (`iterion remote admin bots push bots/branch-improve-loop
+  --slug branch-improve-loop`) so the runners used it without an image
+  rollout · iterion runners `8727674c` (v3.102.6).
+- Method: `plan_budget_ratio=0.001` forces the guard (2h30 × 0.001 ≈ 9 s of
+  plan phase, so any real plan trips it); target SocialGouv/iterion#749;
+  `post_to_board=false`, auto-merge off. Two launches: `iterion remote runs
+  launch --bot branch-improve-loop --var pr_url=…` — which attaches NO
+  repository, so the plan node authored a plan against an empty
+  `/tmp/iterion` — then `POST /api/runs` with `repo_url` + `repo_ref` +
+  `connection_id`, the only shape that carries a checkout.
+- Result:
+
+  | run | repo | active | cost | LLM nodes served | outcome |
+  |---|---|---|---|---|---|
+  | `01a0714a` | none (empty workspace) | 5 m 21 s | $0.67 | plan, plan_review, plan_revise | `plan_budget_gate` → `fail`; `campaign` never entered; 0 push |
+  | `01a07156` | #749 checkout | 7 m 54 s | $1.80 | plan, plan_review, plan_revise | same |
+
+  Both runs end `failed` with the engine's own `workflow reached fail node`:
+  the typed `PLAN_BUDGET_EXHAUSTED` lives on the gate node's output only,
+  because a `fail` node cannot carry a code yet (#739), and a `fail`
+  terminal is non-resumable by design — the right call for a probe, the
+  wrong one for an operator who would rather widen the plan budget and
+  continue (#739's follow-up comment).
+- Value: the class of death of the three runs below — 2h30 of planning,
+  zero commits, $8.59 — is closed. The guard stops the run at the plan
+  phase's own ceiling, having spent 1–2 % of the budget instead of all of it.
+- Findings / misses (each filed): `plan_review=off` skips the WHOLE plan
+  phase, not only the peer review, so a single-provider deployment never
+  plans (#751); six of the seven campaign bots start an opus-class plan node
+  without checking the workspace is a repository — `01a0714a` paid $0.67 to
+  plan against nothing (#752); the guard has to self-measure wall-clock and
+  mirror the budget through two hand-maintained vars because no expr
+  primitive exposes the run's elapsed budget (#738); a bot-declared refusal
+  reads as "workflow reached fail node" at the top level (#739).
+- Engine hardening: #751/#752 (bot-side) and #738/#739 (engine) in flight.
+- Lessons for next run: attach the repository through `POST /api/runs`
+  (`repo_url`, `repo_ref`, `connection_id`) — a CLI `--bot` launch carries
+  `pr_url` and nothing to check out; force the guard with
+  `plan_budget_ratio` rather than waiting on a real long plan. The 04/09
+  friction this closes: Billy `01a06d80`, launched by the zero-touch lane on
+  #683's red gate, died 4 s over `max_duration` (2h30m01s / 2h30m) with a
+  plan and nothing pushed, and the deployed binary had no re-budget flag on
+  `remote runs resume` (#689, since merged) — exactly the shape the guard
+  now refuses in the first minutes.
+
 ## 2026-09-05 — plan-phase budget guard shipped (native:695); three production deaths never reached campaign (runs 01a06d80, 01a06e72, #705)
 
 - Status: **failed** (the three cited production runs, pre-fix) — the fix

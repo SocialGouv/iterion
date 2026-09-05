@@ -16,6 +16,9 @@ commit-status gate. Never edits or commits. See
   a real glance-tier run on a small PR is measured against the guard-tier
   baseline documented in the 2026-09-03/04 entry below.
 - Versions: bot 0.7.0 → 0.8.0 · iterion `c6f8bac0f` (v3.102.1) at write time
+- Landed: SocialGouv/iterion#742 (merged 2026-09-05 11:54Z, in v3.102.6);
+  prod runners carry it since 12:25Z (`edd5b9dcf`). The next real PR review
+  on this repo is the first tier measurement — record it here.
 - What shipped: `review_tier` (glance/guard/audit), a deterministic
   `tier_expand` compute node resolving severity_threshold/max_findings/
   post_to_board/effective_review_mode from sentinel-defaulted vars (any
