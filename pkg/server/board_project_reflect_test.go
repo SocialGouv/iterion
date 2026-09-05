@@ -434,3 +434,49 @@ func TestSyncProjectBoardNeverReflectsAnUnrecordedCard(t *testing.T) {
 		t.Errorf("state = %q, want %q", got, native.StateReady)
 	}
 }
+
+// TestSyncProjectBoardNeverReflectsARefusedMove pins the other half of the
+// terminal sink: a move iterion COULD NOT apply must not be recorded as
+// synced. Recording it makes the next pass read "the board already agrees",
+// which fires the reflect and writes the card's own terminal column back onto
+// the forge — undoing the operator's move, permanently, on the one gesture the
+// sink exists to leave divergent.
+//
+// Two passes, because the defect only shows on the second: the first records
+// the status it failed to apply, the second acts on that record.
+func TestSyncProjectBoardNeverReflectsARefusedMove(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	// A closed card, agreeing with the board, that an operator then drags out
+	// of Done on the forge.
+	id := seedSynced(t, board, 613, native.StateDone, "Done", at)
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", at.Add(time.Minute))),
+	}}}
+	opts := &ProjectImportOptions{Binding: testBinding()}
+
+	for pass := 1; pass <= 2; pass++ {
+		res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+		if err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		if res.RefusedTerminal != 1 {
+			t.Errorf("pass %d: RefusedTerminal = %d, want 1 — the divergence must be re-derived every pass (%+v)",
+				pass, res.RefusedTerminal, res)
+		}
+		if res.Reflected != 0 {
+			t.Errorf("pass %d: Reflected = %d, want 0", pass, res.Reflected)
+		}
+	}
+	if len(bc.writes) != 0 {
+		t.Fatalf("writes = %+v, want none — a refused move must never be pushed back onto the board", bc.writes)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateDone {
+		t.Errorf("state = %q, want %q untouched", got, native.StateDone)
+	}
+	// And the record still says what the board was last KNOWN to agree on, so
+	// the next pass re-derives the same conflict instead of a false no-op.
+	if p := mustGet(t, board, id).External.Project; p.Status != "Done" {
+		t.Errorf("recorded status = %q, want %q — a status iterion could not apply is not a synced status", p.Status, "Done")
+	}
+}

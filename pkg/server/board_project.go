@@ -243,12 +243,13 @@ func applyProjectItem(
 		logProjectConflict(opts, cardID, it, statusName, statusAt, sync, decision)
 	}
 
-	applied := false
+	applied, refused := false, false
 	if targetState != "" && targetState != card.State {
 		// CAS on the snapshot: an operator who moved the card between our read
 		// and this write wins — the board must not clobber a fresh decision
 		// with a fact it read a moment ago.
 		if _, _, err := board.SetStateFrom(cardID, card.State, targetState); err != nil {
+			refused = true
 			if errors.Is(err, tracker.ErrTerminalStateExit) {
 				res.RefusedTerminal++
 			}
@@ -267,7 +268,15 @@ func applyProjectItem(
 	// here would tell the reflect below "the board already agrees", and it
 	// would push nothing. The reflect overwrites these two fields itself with
 	// what it actually wrote, which is what makes the next pass a no-op.
-	if decision != projectStatusConflictNative {
+	//
+	// A REFUSED write is the other exception, and the sharper one: recording a
+	// status iterion could not apply makes the NEXT pass read "the board
+	// already agrees", which fires the reflect and writes the card's own column
+	// back onto the board — silently undoing the operator's move. Declining the
+	// record keeps every pass re-deriving the same divergence, which is the
+	// documented outcome for a terminal card (the two boards stay divergent
+	// until someone reopens it).
+	if decision != projectStatusConflictNative && !refused {
 		sync.Status = statusName
 		sync.StatusAt = statusAt
 	}
