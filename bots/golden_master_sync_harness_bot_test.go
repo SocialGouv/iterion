@@ -225,53 +225,84 @@ func TestGoldenMasterSyncHarnessBotRefusals(t *testing.T) {
 	})
 }
 
-// TestGoldenMasterSyncHarnessBotGateAndCommit walks the two nodes after a
-// sync: a green gate leads to one commit carrying the harness alone and both
-// proofs; a red gate restores the previous harness and commits nothing.
-func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
+type syncSealOut struct {
+	Sealed bool   `json:"sealed"`
+	Commit string `json:"commit"`
+	Notice string `json:"notice"`
+}
 
-	t.Run("green gate, then one commit with the proofs", func(t *testing.T) {
+// syncCommitNode runs commit_harness after a sync and returns the provisional
+// commit (selftest in, gate pending).
+func syncCommitNode(t *testing.T, ws string, res syncHarnessOut) syncCommitOut {
+	t.Helper()
+	out, exit := runSyncNode(t, "commit_harness", ws, map[string]string{"selftest": res.Selftest, "harness_sha256": res.HarnessSHA256})
+	var c syncCommitOut
+	if err := json.Unmarshal(out, &c); err != nil || exit != 0 || !c.Committed {
+		t.Fatalf("commit_harness: exit %d, %v, out %q", exit, err, out)
+	}
+	return c
+}
+
+// A gate stub that behaves like the real harness on the one point that
+// matters here: it REFUSES an uncommitted tree (mutant reverts would restore
+// HEAD mid-gate), so a bot that replayed the gate before committing would
+// go red — which is what the first version of this bot did on a real net.
+const syncGateWantsCommittedTree = "sh -c 'test -z \"$(git status --porcelain --untracked-files=no)\" || { echo WORKSPACE NOT COMMITTED; exit 1; }'"
+
+// TestGoldenMasterSyncHarnessBotGateAndCommit walks the nodes after a sync in
+// the order the graph runs them: a provisional commit (the harness alone,
+// selftest in the body), the target's full gate on that COMMITTED tree, then
+// the gate's verdict sealed into the commit; a red gate drops the commit and
+// leaves the previous harness at HEAD.
+func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
+	t.Run("commit, green gate on the committed tree, verdict sealed", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		base := git("rev-parse", "HEAD")
 		res, exit := syncHarness(t, ws)
 		if exit != 0 || !res.Changed {
 			t.Fatalf("sync: exit %d %s", exit, res.Notice)
 		}
-		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": "", "harness_sha256": res.HarnessSHA256})
+		c := syncCommitNode(t, ws, res)
+		if head := git("rev-parse", "HEAD"); head != c.Commit || head == base {
+			t.Fatalf("provisional commit %s is not HEAD (%s)", c.Commit, head)
+		}
+		if msg := git("log", "-1", "--format=%B"); !strings.Contains(msg, "Full gate: pending") || !strings.Contains(msg, "Harness sha256: "+res.HarnessSHA256) {
+			t.Fatalf("provisional commit body:\n%s", msg)
+		}
+		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": syncGateWantsCommittedTree, "harness_sha256": res.HarnessSHA256, "sync_commit": c.Commit})
 		var gate syncGateOut
 		if err := json.Unmarshal(out, &gate); err != nil || exit != 0 {
 			t.Fatalf("gate_replay: exit %d, %v, out %q", exit, err, out)
 		}
-		if !gate.Passed || gate.Command != ".golden-master/verify-oracle.sh" {
-			t.Fatalf("gate = %+v, want the net's runner replayed green", gate)
+		if !gate.Passed {
+			t.Fatalf("gate = %+v, want green on the committed tree", gate)
 		}
-		out, exit = runSyncNode(t, "commit_harness", ws, map[string]string{
-			"selftest": res.Selftest, "gate_command": gate.Command, "gate_minutes": "0", "harness_sha256": res.HarnessSHA256,
-		})
-		var c syncCommitOut
-		if err := json.Unmarshal(out, &c); err != nil || exit != 0 || !c.Committed {
-			t.Fatalf("commit_harness: exit %d, %v, out %q", exit, err, out)
+		out, exit = runSyncNode(t, "seal_commit", ws, map[string]string{"sync_commit": c.Commit, "gate_command": gate.Command, "gate_minutes": "0"})
+		var seal syncSealOut
+		if err := json.Unmarshal(out, &seal); err != nil || exit != 0 || !seal.Sealed {
+			t.Fatalf("seal_commit: exit %d, %v, out %q", exit, err, out)
 		}
-		if head := git("rev-parse", "HEAD"); head != c.Commit {
-			t.Fatalf("reported commit %s is not HEAD %s", c.Commit, head)
+		if head := git("rev-parse", "HEAD"); head != seal.Commit {
+			t.Fatalf("sealed commit %s is not HEAD %s", seal.Commit, head)
 		}
 		if files := git("show", "--stat", "--format=", "HEAD"); !strings.Contains(files, "1 file changed") || !strings.Contains(files, "harness.py") {
 			t.Fatalf("the sync commit must carry the harness alone:\n%s", files)
 		}
 		msg := git("log", "-1", "--format=%B")
-		for _, want := range []string{"Harness sha256: " + res.HarnessSHA256, "Selftest in this tree: ", "Full gate: `.golden-master/verify-oracle.sh` GREEN"} {
-			if !strings.Contains(msg, want) {
-				t.Fatalf("commit body lacks %q:\n%s", want, msg)
-			}
+		if strings.Contains(msg, "Full gate: pending") || !strings.Contains(msg, "GREEN in 0 min") {
+			t.Fatalf("sealed body lacks the gate verdict:\n%s", msg)
 		}
 		if dirty := git("status", "--porcelain", "--untracked-files=no"); dirty != "" {
-			t.Fatalf("tree dirty after the commit: %q", dirty)
+			t.Fatalf("tree dirty after sealing: %q", dirty)
 		}
 	})
 
-	t.Run("red gate restores the previous harness, nothing to commit", func(t *testing.T) {
+	t.Run("red gate drops the sync commit, previous harness back at HEAD", func(t *testing.T) {
 		ws, git := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		base := git("rev-parse", "HEAD")
 		res, _ := syncHarness(t, ws)
-		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": "sh -c 'echo divergence; exit 3'", "harness_sha256": res.HarnessSHA256})
+		c := syncCommitNode(t, ws, res)
+		out, exit := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": "sh -c 'echo divergence; exit 3'", "harness_sha256": res.HarnessSHA256, "sync_commit": c.Commit})
 		var gate syncGateOut
 		if err := json.Unmarshal(out, &gate); err != nil || exit != 0 {
 			t.Fatalf("gate_replay: exit %d, %v, out %q", exit, err, out)
@@ -279,18 +310,33 @@ func TestGoldenMasterSyncHarnessBotGateAndCommit(t *testing.T) {
 		if gate.Passed || !strings.Contains(gate.LogTail, "divergence") {
 			t.Fatalf("gate = %+v, want red with the gate's own words", gate)
 		}
+		if head := git("rev-parse", "HEAD"); head != base {
+			t.Fatalf("HEAD=%s, want the base %s: a red gate must drop the sync commit", head, base)
+		}
 		got, _ := os.ReadFile(filepath.Join(ws, ".golden-master", "harness.py"))
 		if !strings.Contains(string(got), "# stale") {
-			t.Fatal("a red gate must restore the previous harness")
+			t.Fatal("a red gate must leave the previous harness at HEAD")
 		}
 		if dirty := git("status", "--porcelain", "--untracked-files=no"); dirty != "" {
 			t.Fatalf("tree dirty after a red gate: %q", dirty)
 		}
-		out, exit = runSyncNode(t, "commit_harness", ws, map[string]string{
-			"selftest": res.Selftest, "gate_command": "x", "gate_minutes": "0", "harness_sha256": res.HarnessSHA256,
-		})
+		out, exit = runSyncNode(t, "seal_commit", ws, map[string]string{"sync_commit": c.Commit, "gate_command": "x", "gate_minutes": "0"})
 		if exit != 1 {
-			t.Fatalf("commit_harness on a restored tree: exit %d, want the refusal (out %q)", exit, out)
+			t.Fatalf("seal_commit after a dropped commit: exit %d, want the refusal (out %q)", exit, out)
+		}
+	})
+
+	t.Run("a gate run before the commit is what the real harness refuses — the graph never does it", func(t *testing.T) {
+		ws, _ := syncHarnessRepo(t, "\nimport hashlib\n# stale\n")
+		res, _ := syncHarness(t, ws)
+		// Not committed: the committed-tree gate stub goes red, exactly like the harness.
+		out, _ := runSyncNode(t, "gate_replay", ws, map[string]string{"gate_cmd": syncGateWantsCommittedTree, "harness_sha256": res.HarnessSHA256, "sync_commit": "0000000000000000000000000000000000000000"})
+		var gate syncGateOut
+		if err := json.Unmarshal(out, &gate); err != nil {
+			t.Fatal(err)
+		}
+		if gate.Passed || !strings.Contains(gate.LogTail, "WORKSPACE NOT COMMITTED") {
+			t.Fatalf("gate = %+v, want the uncommitted-tree refusal", gate)
 		}
 	})
 }

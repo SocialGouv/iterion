@@ -10,14 +10,19 @@
 ## bot the only path was a full rite (hours of agent work and a fresh held-out
 ## cycle) for what is a one-line fix in a file no agent may edit.
 ##
-## Three steps, each deterministic, each a typed refusal on failure:
+## Four steps, each deterministic, each a typed refusal on failure:
 ##   sync_harness   write the canonical copy (the same form the gate writes,
 ##                  so the next gate writes nothing back), run the harness's
 ##                  own selftest on the written file — the half that DECIDES.
-##   gate_replay    the target's full gate on the synced tree — the half that
-##                  COMPARES. A judge that decides well and compares wrongly
-##                  is the defect a silent sync would ship.
-##   commit_harness one commit, the harness alone, carrying both proofs.
+##   commit_harness one commit, the harness alone, with the selftest — made
+##                  BEFORE the gate: the harness refuses an uncommitted path
+##                  under the net (mutant reverts restore HEAD mid-gate, so
+##                  the verdict would describe a tree that never existed).
+##   gate_replay    the target's full gate on the committed tree — the half
+##                  that COMPARES. Red drops that commit and ends at `fail`:
+##                  a judge that decides well and compares wrongly must not
+##                  land.
+##   seal_commit    the gate's verdict and minutes written into the commit.
 ##
 ## Not a re-baseline: nothing compared changes, only the comparator. The
 ## commit is the net owner's maintenance act, landed on the base branch by
@@ -42,6 +47,7 @@ schema sync_state:
 
 schema gate_input:
   harness_sha256: string
+  sync_commit: string
 
 schema gate_report:
   passed: bool
@@ -52,12 +58,20 @@ schema gate_report:
 
 schema commit_input:
   selftest: string
-  gate_command: string
-  gate_minutes: int
   harness_sha256: string
 
 schema commit_state:
   committed: bool
+  commit: string
+  notice: string
+
+schema seal_input:
+  sync_commit: string
+  gate_command: string
+  gate_minutes: int
+
+schema seal_state:
+  sealed: bool
   commit: string
   notice: string
 
@@ -3817,9 +3831,9 @@ tool sync_harness:
     if __name__ == "__main__":
         main()
 
-## The half that compares: the target's full gate, replayed on the synced
-## tree. A red gate restores the previous harness and ends the run at `fail`
-## — a judge that decides well and compares wrongly must not land.
+## The half that compares: the target's full gate, replayed on the COMMITTED
+## sync. A red gate drops that commit — ours, just made — and ends the run at
+## `fail`: a judge that decides well and compares wrongly must not land.
 tool gate_replay:
   input: gate_input
   output: gate_report
@@ -3831,14 +3845,17 @@ tool gate_replay:
     gm_rel = {{vars.oracle_dir}}
     cmd = {{vars.gate_cmd}} or os.path.join(gm_rel, "verify-oracle.sh")
     wall = int({{vars.gate_timeout_s}})
+    sync_commit = {{input.sync_commit}}
     out = {"passed": False, "minutes": 0, "command": cmd, "log_tail": "", "harness_sha256": {{input.harness_sha256}}}
 
     def git(*args):
         return subprocess.run(["git", "-C", ws] + list(args), capture_output=True, text=True, timeout=120)
 
-    def restore_harness():
-        # The previous harness is what HEAD carries: the sync never committed.
-        git("checkout", "-q", "--", "%s/harness.py" % gm_rel)
+    def drop_sync_commit():
+        # Only the commit this run made, verified by sha — never anything else.
+        git("checkout", "-q", "--", ".")
+        if git("rev-parse", "HEAD").stdout.strip() == sync_commit:
+            git("reset", "-q", "--hard", "HEAD~1")
 
     started = time.monotonic()
     try:
@@ -3852,21 +3869,22 @@ tool gate_replay:
     out["minutes"] = int((time.monotonic() - started) // 60)
     out["log_tail"] = log
     if code == 0:
-        # The gate must leave the tree as it found it: the synced harness and nothing else.
+        # The gate must leave the committed tree as it found it.
         st = git("status", "--porcelain", "--untracked-files=no")
         moved = [l for l in st.stdout.splitlines() if l.strip()]
-        if moved != [" M %s/harness.py" % gm_rel]:
-            git("checkout", "-q", "--", ".")
-            out["log_tail"] = "the gate left the tree changed beyond the harness (%s) — that is the gate's bug, not the sync's; nothing committed" % ", ".join(moved)
+        if moved:
+            out["log_tail"] = "the gate left the tree changed (%s) — that is the gate's bug, not the sync's; the sync commit is dropped" % ", ".join(moved)
+            drop_sync_commit()
         else:
             out["passed"] = True
     else:
-        restore_harness()
+        drop_sync_commit()
     print(json.dumps(out))
 
-## One commit, the harness alone, carrying both proofs. Hooks are bypassed: a
-## pre-commit that reformats would commit a harness other than the one just
-## proven, one that rejects would throw away an hour of gate.
+## One commit, the harness alone, with the selftest — the gate's verdict is
+## sealed into it afterwards. Hooks are bypassed: a pre-commit that reformats
+## would commit a harness other than the one just proven, one that rejects
+## would throw away the sync.
 tool commit_harness:
   input: commit_input
   output: commit_state
@@ -3897,8 +3915,8 @@ tool commit_harness:
             "form (header + body from `import hashlib`), so the next gate writes nothing back.\n\n"
             "References, corpus, mutants and the held-out set are untouched: this is maintenance of "
             "the net's decision procedure, not a re-baseline.\n\n"
-            "Harness sha256: %s\nSelftest in this tree: %s\nFull gate: `%s` GREEN in %d min on this tree"
-            % ({{input.harness_sha256}}, {{input.selftest}}, {{input.gate_command}}, int({{input.gate_minutes}})))
+            "Harness sha256: %s\nSelftest in this tree: %s\nFull gate: pending"
+            % ({{input.harness_sha256}}, {{input.selftest}}))
     st = git("status", "--porcelain", "--untracked-files=no")
     moved = [l for l in st.stdout.splitlines() if l.strip()]
     if moved != [" M %s/harness.py" % gm_rel]:
@@ -3915,20 +3933,65 @@ tool commit_harness:
     out["notice"] = "%s (%s)" % (subject, sha[:12])
     print(json.dumps(out))
 
+## The gate's verdict, written into the commit it judged. Amend by sha: the
+## commit must still be HEAD and ours.
+tool seal_commit:
+  input: seal_input
+  output: seal_state
+  language: py
+  script: |
+    import json, subprocess, sys
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    ws = {{vars.workspace_dir}}
+    sync_commit = {{input.sync_commit}}
+    out = {"sealed": False, "commit": "", "notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("sync-harness: %s\n" % notice)
+        raise SystemExit(1)
+
+    def git(*args):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True, text=True, timeout=120)
+
+    if git("rev-parse", "HEAD").stdout.strip() != sync_commit:
+        refuse("HEAD is no longer the sync commit %s — nothing sealed" % sync_commit[:12])
+    msg = git("log", "-1", "--format=%B").stdout
+    line = "Full gate: `%s` GREEN in %d min on this tree" % ({{input.gate_command}}, int({{input.gate_minutes}}))
+    if "Full gate: pending" not in msg:
+        refuse("the sync commit's message does not carry the pending gate line — not a commit this node seals")
+    msg = msg.replace("Full gate: pending", line, 1)
+    c = git("-c", "user.name=iterion-golden-master", "-c", "user.email=golden-master@iterion.local",
+            "commit", "-q", "--amend", "--no-verify", "-F", "-")
+    c = subprocess.run(["git", "-C", ws, "-c", "user.name=iterion-golden-master", "-c",
+                        "user.email=golden-master@iterion.local", "commit", "-q", "--amend",
+                        "--no-verify", "-F", "-"], input=msg, capture_output=True, text=True, timeout=120)
+    if c.returncode != 0:
+        refuse("sealing the gate verdict failed: %s" % (c.stdout + c.stderr)[-400:])
+    out["sealed"] = True
+    out["commit"] = git("rev-parse", "HEAD").stdout.strip()
+    out["notice"] = "%s sealed into %s" % (line, out["commit"][:12])
+    print(json.dumps(out))
+
 workflow sync_harness:
   entry: sync_harness
   budget:
     max_parallel_branches: 1
     max_duration: "6h"
   sync_harness -> done when not changed
-  sync_harness -> gate_replay when changed with {
+  sync_harness -> commit_harness when changed with {
+    selftest:       "{{outputs.sync_harness.selftest}}",
     harness_sha256: "{{outputs.sync_harness.harness_sha256}}"
   }
-  gate_replay -> commit_harness when passed with {
-    selftest:       "{{outputs.sync_harness.selftest}}",
-    gate_command:   "{{outputs.gate_replay.command}}",
-    gate_minutes:   "{{outputs.gate_replay.minutes}}",
-    harness_sha256: "{{outputs.gate_replay.harness_sha256}}"
+  commit_harness -> gate_replay with {
+    harness_sha256: "{{outputs.sync_harness.harness_sha256}}",
+    sync_commit:    "{{outputs.commit_harness.commit}}"
+  }
+  gate_replay -> seal_commit when passed with {
+    sync_commit:  "{{outputs.commit_harness.commit}}",
+    gate_command: "{{outputs.gate_replay.command}}",
+    gate_minutes: "{{outputs.gate_replay.minutes}}"
   }
   gate_replay -> fail
-  commit_harness -> done
+  seal_commit -> done
