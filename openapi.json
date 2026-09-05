@@ -189,6 +189,12 @@
           "tenant_id": {
             "type": "string"
           },
+          "unresolved_at_bind": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"

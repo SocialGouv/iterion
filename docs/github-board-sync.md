@@ -171,6 +171,11 @@ Partial coverage is **not** a degradation. A column your map names and the
 board never had is reported as `missing_statuses` (a `!` in `board show`) and
 its cards count `reflect_no_column`, but the binding reads healthy — binding a
 three-column board with the five-column default map is a choice, not a break.
+The bind records that choice (`unresolved_at_bind`), which is how a later pass
+tells "never there" from "broke"; a binding created before that field existed
+has it reconstructed on its first pass, and one that is already degraded keeps
+its degradation through the upgrade rather than being cleared by the gap in its
+own record.
 
 ---
 

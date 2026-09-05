@@ -365,10 +365,12 @@ func TestSyncProjectBoardStaysDegradedWhileTheColumnIsStillGone(t *testing.T) {
 	bindings := forge.NewMemoryBoardBindingStore()
 	binding := boundBinding(t, project)
 	// `blocked` is a column the board never carried — the ordinary
-	// partial-coverage shape, reported as missing_statuses and NOT a
-	// degradation. It is what comes back later, unrelated to the loss.
+	// partial-coverage shape the bind ACCEPTED, reported as missing_statuses
+	// and NOT a degradation. It is what comes back later, unrelated to the
+	// loss.
 	delete(binding.StatusOptions, native.StateBlocked)
 	binding.MissingStatuses = []string{"Blocked"}
+	binding.UnresolvedAtBind = []string{"Blocked"}
 	if err := bindings.Upsert(context.Background(), *binding); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
@@ -418,6 +420,83 @@ func TestSyncProjectBoardStaysDegradedWhileTheColumnIsStillGone(t *testing.T) {
 	if res.ReflectNoColumn != 1 || len(bc.writes) != 0 {
 		t.Errorf("pass 3: ReflectNoColumn = %d writes = %+v — the reflect must keep refusing a column that is still gone",
 			res.ReflectNoColumn, bc.writes)
+	}
+}
+
+// TestSyncProjectBoardKeepsADegradationWrittenByAnOlderRelease is the upgrade
+// case, and it is the reason the lost rule may not rest on the cached id.
+//
+// The release in production flags a lost column AND DELETES its cached option
+// id, persisting both. So a binding degraded by it carries: no id for that
+// state, the column absent from the board, the column listed in
+// `missing_statuses`, and a `degraded_reason`. A rule reading "the binding HAS
+// an id and the board answers to neither it nor the name" finds nothing lost
+// there — and a readout that clears when it finds nothing lost would clear a
+// degradation that is still entirely true, permanently, because the id never
+// comes back. The same two shapes meet during a ROLLING deploy: the old
+// replica drops the id, the new one reads a healthy binding.
+//
+// A health flag is never cleared by the absence of the evidence that would
+// have kept it.
+func TestSyncProjectBoardKeepsADegradationWrittenByAnOlderRelease(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
+	project := testProject()
+
+	bindings := forge.NewMemoryBoardBindingStore()
+	binding := boundBinding(t, project)
+	// Exactly what the older release leaves behind.
+	delete(binding.StatusOptions, native.StateInProgress)
+	binding.MissingStatuses = []string{"In progress"}
+	binding.UnresolvedAtBind = nil // the field did not exist in that release
+	if err := bindings.Upsert(context.Background(), *binding); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	// Upsert clears the readout (a re-bind is the remedy), so the degradation
+	// is stamped after it, as the older release's own pass did.
+	const oldReason = `the Status field no longer carries "In progress" (in_progress); re-create the column, or re-bind the board with a --status-map that matches it`
+	if err := bindings.MarkDegraded(context.Background(), "team-a", oldReason); err != nil {
+		t.Fatalf("seed degradation: %v", err)
+	}
+	stored, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	opts := &ProjectImportOptions{Binding: &stored, Bindings: bindings}
+	bc := &fakeBoardClient{project: deletedColumn(t, "In progress"), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusOption("Planned", optionID(t, project, "Planned"), at)),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts)
+	if err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	after, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if !after.Degraded() || !strings.Contains(after.DegradedReason, "In progress") {
+		t.Fatalf("the column is still gone; the upgrade must not clear the degradation, got %q", after.DegradedReason)
+	}
+	if res.ReflectNoColumn != 1 || len(bc.writes) != 0 {
+		t.Errorf("result = %+v writes = %+v — the card must still be refused", res, bc.writes)
+	}
+
+	// And it clears on the ONE thing that fixes it: the column coming back.
+	bc.project = recreatedColumn(t, "In progress", "PVTSSO_back")
+	if _, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, opts); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	back, err := bindings.GetByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if back.Degraded() {
+		t.Errorf("the column is back; the binding must clear: %q", back.DegradedReason)
+	}
+	if back.StatusOptions[native.StateInProgress] != "PVTSSO_back" {
+		t.Errorf("stored option id = %q, want the re-resolved one", back.StatusOptions[native.StateInProgress])
 	}
 }
 

@@ -27,6 +27,10 @@ func vocabBinding() *forge.BoardBinding {
 			{Status: "In progress", State: "in_progress"},
 		},
 		StatusOptions: map[string]string{"ready": "o_planned", "in_progress": "o_prog"},
+		// A bind against a board carrying both columns accepted nothing as
+		// absent. Non-nil: "nothing was missing" and "nobody recorded this"
+		// are different answers, and the second triggers a reconstruction.
+		UnresolvedAtBind: []string{},
 	}
 }
 
@@ -83,6 +87,7 @@ func TestReconcileStatusOptionsAdoptsAColumnAddedSinceTheBind(t *testing.T) {
 	b := vocabBinding()
 	delete(b.StatusOptions, "in_progress") // the board had no such column at bind time
 	b.MissingStatuses = []string{"In progress"}
+	b.UnresolvedAtBind = []string{"In progress"}
 
 	rep := b.ReconcileStatusOptions(vocabProject(
 		forge.ProjectFieldOption{ID: "o_planned", Name: "Planned"},
@@ -161,6 +166,7 @@ func TestReconcileStatusOptionsDoesNotLoseAnUnresolvedColumn(t *testing.T) {
 	b := vocabBinding()
 	delete(b.StatusOptions, "in_progress") // never resolved at bind time
 	b.MissingStatuses = []string{"In progress"}
+	b.UnresolvedAtBind = []string{"In progress"} // and the bind ACCEPTED that
 
 	rep := b.ReconcileStatusOptions(vocabProject(
 		forge.ProjectFieldOption{ID: "o_planned", Name: "Planned"},
