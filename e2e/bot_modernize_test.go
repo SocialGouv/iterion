@@ -117,6 +117,27 @@ func TestModernize_RefusedVerdictNeverEndsGreen(t *testing.T) {
 	}
 }
 
+// TestModernize_GateTimeoutFailsAtOnce: a wall the run never crossed is a
+// verdict in the tree and a `failed` run — never a repair pass that replays
+// an hour against the same wall, never a `finished` the programme would
+// relaunch into it.
+func TestModernize_GateTimeoutFailsAtOnce(t *testing.T) {
+	exec := newScenarioExecutor()
+	modernizeStubs(exec, func(int) map[string]any {
+		return map[string]any{"gate_timed_out": true, "block_reason": "GATE_TIMEOUT: exit_gate command `sleep` exceeded gate_timeout_s=1 after 1s"}
+	})
+	run := runModernize(t, exec, "run-mod-timeout")
+	if run.Status != store.RunStatusFailed {
+		t.Fatalf("status = %s, want failed", run.Status)
+	}
+	if exec.wasCalled("mark_done") {
+		t.Fatal("mark_done ran on a timed-out gate")
+	}
+	if got := exec.callCount("upgrade_campaign"); got != 1 {
+		t.Fatalf("upgrade_campaign called %d times, want 1 (no repair pass against the same wall)", got)
+	}
+}
+
 // TestModernize_DeclaredBlockedStopsWithoutMarking: `blocked` is the worker's
 // word and a STOP, never a success — the run ends without mark_done, on the
 // first pass.

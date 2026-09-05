@@ -173,9 +173,11 @@ schema lot_report:
   ## A gate command outlived `gate_timeout_s`. A VERDICT, not an execution
   ## failure: an expiry that surfaced as a tool error was retried once by the
   ## engine — the same hour replayed for nothing — then left the run
-  ## `failed_resumable` with no line to read. Read as a STOP (`lot_blocked`,
-  ## `block_reason` GATE_TIMEOUT): a wall the next pass would hit again is a
-  ## finding about the wall, not a reason to pay four passes for it.
+  ## `failed_resumable` with no line to read, and the engine's own auto-resume
+  ## replayed the same hour on a fresh pod until the budget. The gate ends the
+  ## run at `fail`, once, with `block_reason` naming the wall: a wall the next
+  ## pass would hit again is a finding about the wall, not a reason to pay
+  ## four passes for it — nor a stop that reads `finished`.
   gate_timed_out: bool
   ## The contract was rewritten during the lot: an existing lot's normative
   ## fields changed, a lot disappeared, or another lot's status moved. One
@@ -192,6 +194,10 @@ schema gate_state:
   ## the run fails — it never leaves through the exhaustion edge as
   ## `finished` with the forged word still in the contract.
   refused: bool
+  ## A gate command outlived the contract's wall. Ends the run at `fail` on
+  ## the first occurrence — never a repair pass against the same wall, never
+  ## a `finished` the programme would relaunch into the same wall.
+  timed_out: bool
   fail_log: string
   needs_reanchor: bool
   needs_extend: bool
@@ -738,7 +744,17 @@ tool lot_verify:
     if True:
         head_ids = [l.get("id") for l in head_lots]
         head_by = {l.get("id"): l for l in head_lots}
-        rewritten = ["duplicate lot id %s in the working tree" % i
+        # The normative keys the contract carries OUTSIDE `lots` — the wall
+        # every lot gets and where the net lives — are read from the NEXT
+        # run's base, which is this tree once landed: one committed line would
+        # disarm the wall for the rest of the programme (review finding,
+        # executed: top-level gate_timeout_s 3600 -> 1 converged unrefused).
+        head_doc = plan_doc(head_text, "the working tree")
+        rewritten = []
+        for k in ("gate_timeout_s", "oracle"):
+            if base_doc.get(k) != head_doc.get(k):
+                rewritten.append("top-level %s moved from %r to %r" % (k, base_doc.get(k), head_doc.get(k)))
+        rewritten += ["duplicate lot id %s in the working tree" % i
                      for i in sorted({i for i in head_ids if head_ids.count(i) > 1})]
         for bl in base_lots:
             hl = head_by.get(bl.get("id"))
@@ -790,8 +806,11 @@ tool lot_verify:
         return p.returncode, (p.stdout + p.stderr)[-4000:]
 
     def timed_out(what, cmd, log):
+        # Not a `lot_blocked` stop: that one ends the run `finished`, and a
+        # wall the run never crossed must not read as a stop the worker
+        # declared — the lot would stay `todo` and every relaunch would hit
+        # the wall and finish green again. The gate routes it to `fail`, once.
         report["gate_timed_out"] = True
-        report["lot_blocked"] = True
         report["block_reason"] = "GATE_TIMEOUT: %s `%s` %s" % (what, cmd, log.splitlines()[0] if log else "")
         problems.append("GATE_TIMEOUT: %s `%s` %s — a verdict, not a retry: raise "
                         "gate_timeout_s in the contract (lot or top level) if the "
@@ -965,12 +984,19 @@ tool lot_verify:
         # certificate (review finding, executed: additions-only committed,
         # entry deleted in the worktree, green). A dirty net voids the
         # certificate: commit, then verify.
+        # `net_dirty` is carried to the final assignment below: a refusal
+        # written into report["refs_untouched"] here was silently overwritten
+        # there by the diff's own result — a dirty net converged and the gate
+        # committed `done` (review finding, executed).
+        net_dirty = False
         code, log = run("git -c core.quotePath=false status --porcelain -- %s"
                         % shlex.quote(gm_dir))
         if code != 0:
             problems.append("cannot read the net's worktree state: %s" % log)
             exempt = set()
+            net_dirty = True
         elif log.strip():
+            net_dirty = True
             dirty = sorted(l[3:] for l in log.splitlines() if l.strip())
             problems.append("%d uncommitted path(s) under the net (%s) — the "
                             "extension certificate reads commits, the verdict "
@@ -1010,7 +1036,7 @@ tool lot_verify:
                 exempt = set()
             changed = [p for p in raw if p not in exempt]
             report["refs_changed"] = changed
-            report["refs_untouched"] = not changed and net_at_base
+            report["refs_untouched"] = not changed and net_at_base and not net_dirty
             if changed:
                 problems.append("%d oracle artefact(s) were MODIFIED during this "
                                 "lot: %s. Either the lot changed behaviour it was "
@@ -1065,6 +1091,7 @@ compute lot_gate:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
     refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0"
+    timed_out: "outputs.lot_verify.gate_timed_out"
     fail_log: "outputs.lot_verify.log_tail"
     ## Read on EVERY outcome, including a converged one, and that is the point.
     ## An invalidated mutant does not fail the gate: its verdict is excluded
@@ -1388,6 +1415,13 @@ workflow modernize:
   }
   mark_done -> done
   lot_gate -> done when stop
+
+  ## A wall the run never crossed: the verdict is in the tree (gate_timed_out,
+  ## block_reason GATE_TIMEOUT), the run fails at once — no repair pass
+  ## replays an hour against the same wall, and no `finished` invites a
+  ## relaunch into it. Raise `gate_timeout_s` in the contract, or shorten the
+  ## gate, then relaunch.
+  lot_gate -> fail when timed_out
 
   ## Not converged → another pass on the SAME lot, carrying the deterministic
   ## failure back so the agent fixes the cause rather than re-deriving it.

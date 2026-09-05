@@ -534,8 +534,8 @@ lots:
 	t.Run("the oracle outlives the wall: a GATE_TIMEOUT verdict, not an exception", func(t *testing.T) {
 		ws, base, _ := netAndBase(t, plan, "#!/bin/sh\nsleep 3\nexit 0\n")
 		res := modernizeLotVerify(t, script, ws, "L1", base, "true")
-		if !res.GateTimedOut || !res.LotBlocked || !strings.HasPrefix(res.BlockReason, "GATE_TIMEOUT:") {
-			t.Fatalf("expiry not read as the GATE_TIMEOUT stop: %+v", res)
+		if !res.GateTimedOut || res.LotBlocked || !strings.HasPrefix(res.BlockReason, "GATE_TIMEOUT:") {
+			t.Fatalf("expiry not read as the GATE_TIMEOUT verdict (gate_timed_out, NOT a worker-declared block): %+v", res)
 		}
 		if !res.GatePassed || res.OraclePassed {
 			t.Fatalf("the exit gate ran green and the oracle never answered — want gate_passed=true oracle_passed=false, got %+v", res)
@@ -549,20 +549,25 @@ lots:
 		lotPlan = strings.Replace(lotPlan, "    status: todo\n", "    status: todo\n    gate_timeout_s: 1\n", 1)
 		ws, base, _ := netAndBase(t, lotPlan, "")
 		res := modernizeLotVerify(t, script, ws, "L1", base, "sleep 3")
-		if !res.GateTimedOut || res.GatePassed || !res.LotBlocked {
+		if !res.GateTimedOut || res.GatePassed || res.LotBlocked {
 			t.Fatalf("the lot's 1 s wall did not stop a 3 s exit_gate: %+v", res)
 		}
 	})
-	t.Run("the wall is read at the BASE: raising it in the tree changes nothing", func(t *testing.T) {
+	t.Run("a TOP-LEVEL wall the worker moved is a contract rewrite", func(t *testing.T) {
+		// The next run reads its wall from its base, which is this tree once
+		// landed: one committed line would disarm the wall for the rest of
+		// the programme (review finding, executed with 3600 -> 1).
 		ws, base, git := netAndBase(t, plan, "")
-		raised := strings.Replace(plan, "gate_timeout_s: 1\n", "gate_timeout_s: 7200\n", 1)
-		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(raised), 0o644); err != nil {
+		moved := strings.Replace(plan, "gate_timeout_s: 1\n", "gate_timeout_s: 86400\n", 1)
+		moved = strings.Replace(moved, "  refs_dir: .golden-master/refs\n", "  refs_dir: .elsewhere/refs\n", 1)
+		if err := os.WriteFile(filepath.Join(ws, ".modernize", "plan.yaml"), []byte(moved), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		git("commit", "-qam", "raise the wall")
-		res := modernizeLotVerify(t, script, ws, "L1", base, "sleep 3")
-		if !res.GateTimedOut {
-			t.Fatalf("the base's wall (1 s) must bind, not the tree's (7200): %+v", res)
+		git("commit", "-qam", "move the wall and the net")
+		res := modernizeLotVerify(t, script, ws, "L1", base, "true")
+		joined := strings.Join(res.ContractRewrite, "\n")
+		if !strings.Contains(joined, "top-level gate_timeout_s") || !strings.Contains(joined, "top-level oracle") {
+			t.Fatalf("top-level normative keys moved without a rewrite refusal: %+v", res)
 		}
 	})
 	t.Run("a lot-level wall the worker added is a contract rewrite", func(t *testing.T) {
@@ -616,5 +621,59 @@ lots:
 	}
 	if !strings.Contains(res.LogTail, "no net at the run's base") {
 		t.Fatalf("the verdict must say the net is absent at the base: %s", res.LogTail)
+	}
+}
+
+// TestModernizeLotVerifyDirtyNetVoidSurvives pins the refusal a dirty net
+// carries all the way to the verdict. The void was written into
+// refs_untouched when `git status` saw an uncommitted path under the net —
+// and the diff block below it REASSIGNED the same key from `git diff <base>`,
+// which cannot see an untracked file or an uncommitted edit to a ledger the
+// diff exempts. A dirty net converged and the gate committed `done` (review
+// finding, executed).
+func TestModernizeLotVerifyDirtyNetVoidSurvives(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	const plan = `version: 1
+oracle:
+  refs_dir: .golden-master/refs
+lots:
+  - id: L1
+    title: "raise the build tool"
+    status: todo
+    exit_gate:
+      - "true"
+`
+	for _, tc := range []struct {
+		name string
+		mess func(ws string) error
+	}{
+		{"an uncommitted edit to the extension ledger (exempt from the diff)", func(ws string) error {
+			return os.WriteFile(filepath.Join(ws, ".golden-master", "EXTENSIONS.md"), []byte("# ledger\n- request: something\n"), 0o644)
+		}},
+		{"an untracked file dropped under the net", func(ws string) error {
+			return os.WriteFile(filepath.Join(ws, ".golden-master", "json.py"), []byte("# certifier hijack\n"), 0o644)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws, _, git := modernizeRepo(t, plan)
+			modernizeNet(t, ws)
+			if err := os.WriteFile(filepath.Join(ws, ".golden-master", "EXTENSIONS.md"), []byte("# ledger\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git("add", ".golden-master")
+			git("commit", "-qm", "net")
+			base := git("rev-parse", "HEAD")
+			if err := tc.mess(ws); err != nil {
+				t.Fatal(err)
+			}
+			res := modernizeLotVerify(t, script, ws, "L1", base, "true")
+			if res.RefsUntouched {
+				t.Fatalf("refs_untouched=true on a dirty net — the void was overwritten by the diff's own result: %+v", res)
+			}
+			if !strings.Contains(res.LogTail, "uncommitted path") {
+				t.Fatalf("the verdict must name the dirty net: %s", res.LogTail)
+			}
+		})
 	}
 }

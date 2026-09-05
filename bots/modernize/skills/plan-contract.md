@@ -168,22 +168,34 @@ prove the sweep missed nothing it watches. A sweep record that says "class not
 instantiated in this stack, because X" is a legitimate record; an absent one is
 a lot that skipped a due diligence its own contract named.
 
+## The shape of a lot block is part of the contract
+
+A lot is a list item whose FIRST line is `- id: <id>` and whose `status:` key
+sits at the item's key column (the column right after `- `). The gate edits
+exactly one line when a lot converges — the status — by anchoring on that
+shape; a lot written as a flow mapping (`- {id: L1, …}`), or with `id:` below
+another key, cannot be edited by it. `plan_read` refuses such a lot as
+`LOT_UNEDITABLE` before any token is spent, never after the gate.
+
 ## `gate_timeout_s`
 
 The wall each gate command gets — every `exit_gate` entry and the oracle
 replay, one command at a time. Read from the contract **at the run's base**
 (a lot cannot move its own wall): on the lot first, else at the top level,
 else 3600 s. An integer number of seconds between 1 and 86400; anything else
-is a `CONTRACT_UNREADABLE` refusal before any command runs. On a lot it is a
-normative field: a worker who adds or changes it has rewritten the contract.
+is a `CONTRACT_UNREADABLE` refusal before any command runs. It is normative
+wherever it sits — on a lot or at the top level, like `oracle`: a worker who
+adds or changes it has rewritten the contract (the next run reads its wall from
+its base, which is this tree once landed).
 
 An expiry is a **verdict**, not a tool error: the report carries
-`gate_timed_out: true`, `lot_blocked: true` and a `block_reason` beginning
-`GATE_TIMEOUT:` naming the command, the wall and the time spent; the run stops
-non-converged with its work banked. A wall the next pass would hit again is a
-finding about the wall, not a reason to pay four passes for it — raise it here
-when the gate legitimately needs the time (a full oracle replay over ~150
-mutants can take an hour), or shorten the gate.
+`gate_timed_out: true` and a `block_reason` beginning `GATE_TIMEOUT:` naming
+the command, the wall and the time spent, and the run ends at `fail` on the
+first occurrence, its work banked — no repair pass replays an hour against the
+same wall, and no `finished` invites a relaunch into it. A wall the next pass
+would hit again is a finding about the wall: raise it here when the gate
+legitimately needs the time (a full oracle replay over ~150 mutants can take an
+hour), or shorten the gate, then relaunch.
 
 ```yaml
 gate_timeout_s: 7200        # top level: every lot of the programme
