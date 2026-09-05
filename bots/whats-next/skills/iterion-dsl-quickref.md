@@ -93,7 +93,8 @@ available as tooltip/suffix).
   is substituted from the bindings.
 - **`router mode: fan_out_each` + `over:`/`as:`/`key:`/`depends_on:`** — one parallel branch
   per element of a collection, topologically scheduled by `key`/`depends_on`; element exposed
-  as `{{outputs.<router>.<as>.<field>}}`. `await: best_effort` on the convergence node.
+  as `{{outputs.<router>.<as>.<field>}}`. `await: best_effort` on the convergence node — it fires
+  ONCE, after every branch has settled, with the survivors' outputs (`wait_all` fails the run instead).
   A loop or `as foreach` **inside** that template (or a `fan_out_all` / llm `multi` branch)
   is C244 — use a `subbot` for per-item retry, or wrap the router from the join.
 - **`src -> dst as foreach name(item in "{{coll}}")`** — ordered, stateful iteration; element

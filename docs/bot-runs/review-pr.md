@@ -49,6 +49,15 @@ commit-status gate. Never edits or commits. See
   #685; audit's forced dual just reaches it a second way), and easy to miss
   with real LLM latencies serialising the two branches' completion further
   apart. Worth a dedicated look before leaning harder on dual-mode reviews.
+  **Root-caused and fixed as #741**: not `best_effort` at all — the collector
+  election counted `topology -> reviewer_claude` (the mono edge) as a second
+  predecessor of the fan-out target, elected `reviewer_claude` itself as the
+  collector, so its branch executed nothing while the gpt branch ran the whole
+  `merge_reviews -> converge -> pr_gate` tail inside its branch, and the trunk
+  then ran `reviewer_claude` + the same tail again. Only predecessors inside
+  the fan-out count now (`ir.ExecBranchConvergencePoint`); evolve's
+  `review_fanout` had the identical shape. Guarded by
+  `e2e/review_pr_convergence_test.go`.
 
 ## 2026-09-03/04 — cost-reduction pass (0.7.0) shipped through 4 rounds of its own review (PR #651)
 - Status: validated (the review loop itself; the cost delta is measured over the following days)
