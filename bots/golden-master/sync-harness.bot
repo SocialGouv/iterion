@@ -3876,7 +3876,12 @@ tool gate_replay:
 
     def drop_sync_commit():
         # Only the commit this run made, verified by sha — never anything else.
-        git("checkout", "-q", "--", ".")
+        # Nothing touches the tree before that check: `reset --hard` already
+        # takes the worktree back to HEAD~1, so a blanket `checkout -- .` ahead
+        # of it bought nothing on the path that drops, and on the path that
+        # DECLINES it was pure loss — every unstaged tracked edit made while the
+        # gate ran (hours, on a live checkout) discarded, with no commit dropped
+        # in exchange.
         if git("rev-parse", "HEAD").stdout.strip() == sync_commit:
             git("reset", "-q", "--hard", "HEAD~1")
 
