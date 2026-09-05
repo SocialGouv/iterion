@@ -597,21 +597,17 @@ func coerceToInt(v any) (int, bool) {
 	return 0, false
 }
 
-// buildTemplateData assembles a model.TemplateData snapshot against the
-// run's trunk scope. For a node running inside a fan-out branch — which
-// must see branch-local outputs not yet merged into rs — use
-// buildTemplateDataScoped with the branch's merged scope, exactly as the
-// expr path splits exprContext / exprContextScoped.
-func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
-	return e.buildTemplateDataScoped(rs, rs.scope())
-}
-
 // buildTemplateDataScoped assembles a model.TemplateData snapshot from an
 // explicit resolveScope for `outputs.*` / `artifacts.*` and from rs for the
 // `loop.*` and `run.*` namespaces. It is attached to ctx before each node
 // execution so the executor can resolve those refs in prompt bodies, tool
-// commands, scripts and postconditions. Maps are passed by reference — the
-// executor must treat them as read-only.
+// commands, scripts and postconditions.
+//
+// The scope is a parameter rather than rs.scope() because a node inside a
+// fan-out branch must see branch-local outputs not yet merged into rs: the
+// branch passes its merged scope and the trunk passes rs.scope(), exactly as
+// the expr path splits exprContext / exprContextScoped. Maps are passed by
+// reference — the executor must treat them as read-only.
 func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.TemplateData {
 	loopMax := make(map[string]int, len(e.workflow.Loops))
 	for name, l := range e.workflow.Loops {
@@ -643,6 +639,12 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 // `{{…}}` into a shell command, which is a silent constant. Fan-out branches
 // go through execContextBranch, which is this minus the run ID; read the
 // reason there before wiring a new branch dispatch.
+//
+// Every caller being on the trunk is load-bearing beyond the run ID: it
+// resolves rs.scope(), the TRUNK outputs/artifacts view, so calling it with
+// a branch-local runState would hand the node a view holding only what that
+// branch itself produced — the upstream trunk outputs its first dispatch saw
+// through the merged scope would silently vanish.
 func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
 	return e.execContextBranch(model.WithRunID(ctx, rs.runID), rs, nodeID, rs.scope())
 }

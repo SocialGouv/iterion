@@ -787,7 +787,7 @@ func TestResolveLoopAndEachSeeEnclosingTrunkNamespaces(t *testing.T) {
 	if got := eng.resolveEachPath([]string{"scan", "index"}, sc); got != int64(1) {
 		t.Fatalf("each.scan.index = %#v, want 1", got)
 	}
-	td := eng.buildTemplateData(branch)
+	td := eng.buildTemplateDataScoped(branch, sc)
 	if td.LoopCounters["outer"] != 2 || td.LoopPreviousOutput["outer"]["tag"] != "prior" {
 		t.Fatalf("template data = %+v, want enclosing loop snapshots", td)
 	}
