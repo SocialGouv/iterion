@@ -242,6 +242,17 @@ func (f *fakeReviewerAssigner) AddSelfAsPullReviewer(_ context.Context, repo str
 // re-request-review button exist on the PR) — strictly BEHIND the response:
 // the call is detached, so a slow/failing/absent assigner never delays the
 // publish response nor the merge-gate status.
+//
+// This also closes the SECOND open item from SocialGouv/iterion#621 (the
+// re-request affordance re-arming after a NOTE-triggered `/revi` review, not
+// only after the reviewer-request button): handleForgePublishReview has no
+// notion of which webhook lane produced the review it is publishing — the
+// self-assign call fires unconditionally on every successful publish, so a
+// dedicated "note-triggered" variant of this test would exercise the exact
+// same code path under a different label. The genuinely open question — does
+// GitLab's OWN sidebar visually re-arm the button once the bot holds the
+// reviewer role again — is UI state on the forge's side, outside anything
+// iterion's code decides; it is confirmed at the next real click.
 func TestForgePublishReview_SelfAssignsReviewer(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
 	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})

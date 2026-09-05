@@ -22,6 +22,7 @@ import {
   Card,
   EmptyState,
   InlineBanner,
+  Select,
   Spinner,
 } from "@/components/ui";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
@@ -238,6 +239,29 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
     }
   };
 
+  // Review tier (SocialGouv/iterion#685): a three-position preset for
+  // review-pr's cost/thoroughness posture, pinned per repo through the
+  // integration's launch_vars (durable across re-provisioning — the same
+  // generic mechanism gate_context/post_to_board already use). Only shown
+  // when review-pr is actually bound here; irrelevant to every other bot.
+  const [reviewTierBusy, setReviewTierBusy] = useState(false);
+  const reviewTier = integration?.launch_vars?.review_tier ?? "guard";
+  const setReviewTier = async (tier: string) => {
+    if (!integration) return;
+    setReviewTierBusy(true);
+    try {
+      await updateForgeRepoBots(teamID, integration.id, integration.bot_ids, undefined, {
+        ...integration.launch_vars,
+        review_tier: tier,
+      });
+      await reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setReviewTierBusy(false);
+    }
+  };
+
   const wording = forgeLabel(repo.provider);
   const status = connectionStatusMeta(repo.connection_status);
   const events = integration?.events_normalized ?? [];
@@ -365,6 +389,36 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
           </ul>
         )}
       </Card>
+
+      {/* Review tier (review-pr only) */}
+      {repo.bot_ids.includes("review-pr") && (
+        <Card flush>
+          <header className="flex items-center justify-between border-b border-border-subtle px-4 py-2.5">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
+              Review tier
+            </h2>
+          </header>
+          <div className="flex flex-wrap items-center gap-3 px-4 py-2.5">
+            <label htmlFor="review-tier-select" className="sr-only">
+              Review tier
+            </label>
+            <Select
+              id="review-tier-select"
+              value={reviewTier}
+              onChange={(e) => void setReviewTier(e.target.value)}
+              disabled={!canManage || reviewTierBusy}
+              className="max-w-xs"
+            >
+              <option value="glance">glance — frugal, cheaper model, no board</option>
+              <option value="guard">guard — default posture</option>
+              <option value="audit">audit — dual cross-family, low floor</option>
+            </Select>
+            <span className="text-caption text-fg-muted">
+              Pinned on this repo&apos;s integration — survives re-provisioning.
+            </span>
+          </div>
+        </Card>
+      )}
 
       {/* Schedules */}
       <Card flush>

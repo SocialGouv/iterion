@@ -40,6 +40,12 @@ export interface ForgeIntegration {
    *  board (one-way forge→board sync). Toggled per-integration from the
    *  Integrations tab; absent on servers that predate the feature. */
   sync_issues_enabled?: boolean;
+  /** Operator overrides stamped onto every run this integration launches
+   *  (pkg/forge.RepoIntegration.LaunchVars) — durable across
+   *  re-provisioning. `review_tier` (glance/guard/audit, review-pr only)
+   *  is the one the studio surfaces today; any other key round-trips
+   *  through updateForgeRepoBots unmodified. */
+  launch_vars?: Record<string, string>;
   created_at: string;
 }
 
@@ -261,11 +267,17 @@ export async function enableForgeRepoBots(
 // updateForgeRepoBots sets an integration's EXACT bot set (replace
 // semantics — the per-bot unbind). Empty lists are rejected server-side;
 // removing the last bot is disableForgeIntegration.
+//
+// launchVars, when passed, REPLACES the integration's whole launch_vars map
+// server-side (forge.RepoIntegration.LaunchVars is not merged on PATCH) —
+// callers that want to change one key must spread the integration's
+// current launch_vars first (see ReviewTierSelect).
 export async function updateForgeRepoBots(
   teamID: string,
   integrationID: string,
   botIDs: string[],
   scheduleCrons?: Record<string, string>,
+  launchVars?: Record<string, string>,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
     method: "PATCH",
@@ -273,6 +285,7 @@ export async function updateForgeRepoBots(
       bot_ids: botIDs,
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
+      launch_vars: launchVars,
     }),
   });
 }

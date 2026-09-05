@@ -90,20 +90,20 @@ func TestReviewPRStaleAnchorStillPublishes(t *testing.T) {
 		findings := `[{"severity":"high","category":"correctness","title":"t","detail":"d","file":"a.txt","line":1}]`
 		body := toolCommand(t, "review-pr/main.bot", "publish_review")
 		for ref, val := range map[string]string{
-			"{{vars.workspace_dir}}":       ws,
-			"{{input.reviewed_sha}}":       reviewedSHA,
-			"{{vars.forge_publish_url}}":   srv.URL + "/api/v1/forge/publish-review",
-			"{{vars.forge_publish_token}}": "run-token",
-			"{{vars.pr_review_mode}}":      "comment",
-			"{{vars.review_mode}}":         "mono",
-			"{{input.pr_url}}":             "https://github.com/acme/widgets/pull/7",
-			"{{input.findings}}":           findings,
-			"{{input.questions}}":          "",
-			"{{input.claude_findings}}":    findings,
-			"{{input.gpt_findings}}":       "[]",
-			"{{vars.gate_enabled}}":        "true",
-			"{{vars.gate_severity}}":       "high",
-			"{{vars.gate_context}}":        "revi/review",
+			"{{vars.workspace_dir}}":          ws,
+			"{{input.reviewed_sha}}":          reviewedSHA,
+			"{{vars.forge_publish_url}}":      srv.URL + "/api/v1/forge/publish-review",
+			"{{vars.forge_publish_token}}":    "run-token",
+			"{{vars.pr_review_mode}}":         "comment",
+			"{{input.effective_review_mode}}": "mono",
+			"{{input.pr_url}}":                "https://github.com/acme/widgets/pull/7",
+			"{{input.findings}}":              findings,
+			"{{input.questions}}":             "",
+			"{{input.claude_findings}}":       findings,
+			"{{input.gpt_findings}}":          "[]",
+			"{{vars.gate_enabled}}":           "true",
+			"{{vars.gate_severity}}":          "high",
+			"{{vars.gate_context}}":           "revi/review",
 		} {
 			if !strings.Contains(body, ref) {
 				t.Fatalf("%s is no longer referenced by publish_review — the test wires nothing", ref)

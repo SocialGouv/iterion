@@ -8,6 +8,45 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-05 — review tiers shipped (0.8.0, SocialGouv/iterion#685) — design note, live measurement pending
+- Status: implemented + covered by DSL-level tests (stub executor + expr-level
+  unit tests); **not yet dogfooded live** — no LLM credentials in this
+  session, so the cost/quality claims below are the design's PREDICTION,
+  not a measured result. Flag this entry's status back to `validated` once
+  a real glance-tier run on a small PR is measured against the guard-tier
+  baseline documented in the 2026-09-03/04 entry below.
+- Versions: bot 0.7.0 → 0.8.0 · iterion `c6f8bac0f` (v3.102.1) at write time
+- What shipped: `review_tier` (glance/guard/audit), a deterministic
+  `tier_expand` compute node resolving severity_threshold/max_findings/
+  post_to_board/effective_review_mode from sentinel-defaulted vars (any
+  explicit `--var` still wins), two new judge nodes
+  (`reviewer_claude_glance` / `reviewer_gpt_glance`) the `topology` router
+  picks for the glance tier, and audit's dual fan-out forced independently
+  of `review_mode`. Full design + preset table:
+  [docs/merge-gate.md#review-tiers](../merge-gate.md#review-tiers).
+- What to measure after a real glance run: (1) actual $ on a small PR
+  (<500 lines) against the guard-tier baseline (median $1.8–3.6 per the
+  0.7.0 bilan) — the floor argument in the issue predicts the gap will be
+  SMALLER than a naive "cheaper model ⇒ proportionally cheaper" reading,
+  since claude_code's own context-file injection floor is untouched by
+  this pass; (2) whether the glance prompt's "skip exploratory reads"
+  instruction measurably shortens the reviewer's tool-call count without
+  degrading finding quality on a PR with a real, catchable bug (reuse the
+  live fixture in `e2e/live_bot_review_pr_test.go`); (3) that
+  `reviewer_claude_glance`'s sonnet-level findings don't regress silently
+  below what a maintainer would want gated (compare against a guard-tier
+  review of the SAME diff).
+- Engine finding (worth keeping in view, out of scope for this ticket): a
+  stub e2e test of review-pr's real dual path (`fan` → `reviewer_claude` /
+  `reviewer_gpt` → `merge_reviews` with `await: best_effort`) showed
+  `merge_reviews`/`converge`/`pr_gate` firing TWICE in one run when the two
+  reviewer branches complete asynchronously — `best_effort` appears to
+  trigger once per ARRIVING branch rather than once overall. Pre-existing
+  (unrelated to tiers — the same fan/merge/converge graph, unchanged by
+  #685; audit's forced dual just reaches it a second way), and easy to miss
+  with real LLM latencies serialising the two branches' completion further
+  apart. Worth a dedicated look before leaning harder on dual-mode reviews.
+
 ## 2026-09-03/04 — cost-reduction pass (0.7.0) shipped through 4 rounds of its own review (PR #651)
 - Status: validated (the review loop itself; the cost delta is measured over the following days)
 - Versions: bot 0.6.0 reviewing → 0.7.0 shipped · iterion `2bd3bbca3` (v3.100.0)

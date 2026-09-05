@@ -110,6 +110,46 @@ func TestParseMergeRequest_ReviewerChanges(t *testing.T) {
 	}
 }
 
+// TestParseMergeRequest_PureReRequestClick isolates the case
+// TestParseMergeRequest_ReviewerChanges's own fixture conflates: a REAL
+// "Re-request review" click on a reviewer already assigned to the MR. The
+// bot is present in BOTH previous and current (same id — membership never
+// changes), and only `re_requested` flips false→true. AddedReviewers (a
+// current−previous diff) is empty for this id, so ReviewRequestedFrom must
+// be answered by the re_requested flag alone — the class of bug this pins:
+// a future refactor that only checked re_requested on newly-added entries
+// would still pass TestParseMergeRequest_ReviewerChanges (whose bot id is
+// ALSO newly added) while silently breaking the real button on an
+// already-assigned reviewer (SocialGouv/iterion#621).
+func TestParseMergeRequest_PureReRequestClick(t *testing.T) {
+	payload := `{
+	  "object_kind": "merge_request",
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets"},
+	  "object_attributes": {"iid": 7, "action": "update", "updated_at": "2026-09-05 10:00:00 UTC",
+	    "url": "https://gitlab.com/acme/widgets/-/merge_requests/7", "last_commit": {"id": "abc123"}},
+	  "changes": {"reviewers": {
+	    "previous": [{"id": 12, "username": "carol"}, {"id": 575, "username": "iterion-bot", "re_requested": false}],
+	    "current": [{"id": 12, "username": "carol"}, {"id": 575, "username": "iterion-bot", "re_requested": true}]
+	  }}
+	}`
+	p, err := ParseMergeRequest([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.AddedReviewers) != 0 {
+		t.Fatalf("a pure re-request click adds nobody to the reviewer set: got %v", p.AddedReviewers)
+	}
+	if len(p.ReRequestedReviewers) != 1 || p.ReRequestedReviewers[0] != "iterion-bot" {
+		t.Fatalf("re-requested: %v (want [iterion-bot] from re_requested alone)", p.ReRequestedReviewers)
+	}
+	if !p.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("a pure re_requested flip on an already-assigned reviewer must still be a review request")
+	}
+	if p.ReviewRequestedFrom("carol") {
+		t.Fatal("carol's own entry never flipped re_requested — not a request")
+	}
+}
+
 func TestParseMergeRequest_RejectsNonMR(t *testing.T) {
 	if _, err := ParseMergeRequest([]byte(`{"object_kind":"push"}`)); err == nil {
 		t.Fatal("non-merge_request should error")
