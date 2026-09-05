@@ -991,15 +991,16 @@ func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID stri
 	})
 }
 
-// SetRunCredFingerprints stamps the sealed credentials' audit identities
-// on the run document (see RunStore). Load-modify-save, like the other
-// fs-side patches: the filesystem store has no partial update.
-func (s *FilesystemRunStore) SetRunCredFingerprints(ctx context.Context, runID string, fingerprints []string) error {
+// SetRunCredStamp writes a credential resolution's stamp on the run
+// document (see RunStore). Load-modify-save, like the other fs-side
+// patches: the filesystem store has no partial update.
+func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error {
 	r, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		return err
 	}
-	r.CredFingerprints = fingerprints
+	r.CredFingerprints = stamp.Fingerprints
+	r.SkippedCredReopensAt = stamp.SkippedReopensAt
 	return s.SaveRun(ctx, r)
 }
 

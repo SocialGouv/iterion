@@ -673,14 +673,21 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // PatchRunSteering persists the live-steering state (loop grants +
 // absolute budget raises) with a partial $set, tenant-scoped. Partial:
 // nil inputs leave the stored field untouched.
-// SetRunCredFingerprints stamps the sealed credentials' audit identities
-// on the run document (see store.RunStore). Tenant-scoped like every
-// other targeted patch: the caller stamps a run it just persisted.
-func (s *Store) SetRunCredFingerprints(ctx context.Context, id string, fingerprints []string) error {
-	set := bson.M{"cred_fingerprints": fingerprints, "updated_at": time.Now().UTC()}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+// SetRunCredStamp writes a credential resolution's stamp on the run
+// document (see store.RunStore). Tenant-scoped like every other targeted
+// patch: the caller stamps a run it just persisted. Granular $set/$unset
+// so a status transition racing this write is never disturbed.
+func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunCredStamp) error {
+	set := bson.M{"cred_fingerprints": stamp.Fingerprints, "updated_at": time.Now().UTC()}
+	update := bson.M{"$set": set}
+	if stamp.SkippedReopensAt != nil {
+		set["skipped_cred_reopens_at"] = stamp.SkippedReopensAt.UTC()
+	} else {
+		update["$unset"] = bson.M{"skipped_cred_reopens_at": ""}
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update)
 	if err != nil {
-		return fmt.Errorf("store/mongo: set run cred fingerprints: %w", err)
+		return fmt.Errorf("store/mongo: set run cred stamp: %w", err)
 	}
 	if res.MatchedCount == 0 {
 		return store.ErrRunNotFound

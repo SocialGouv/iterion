@@ -2506,9 +2506,10 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 }
 
 // testCredFingerprintMeter exercises the credential-concurrency meter
-// pair: SetRunCredFingerprints (stamp + re-stamp) and
-// CountAliveRunsWithCredFingerprint (queued/running only, exclusion of
-// the run being resolved, empty fingerprint counts nothing).
+// pair: SetRunCredStamp (stamp + re-stamp, the skipped-credential
+// reopening instant) and CountAliveRunsWithCredFingerprint (queued/running
+// only, exclusion of the run being resolved, empty fingerprint counts
+// nothing).
 func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	t.Helper()
 	ctx := testCtx()
@@ -2526,8 +2527,8 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 			t.Fatalf("SaveRun %s: %v", id, err)
 		}
 		if len(fps) > 0 {
-			if err := s.SetRunCredFingerprints(ctx, id, fps); err != nil {
-				t.Fatalf("SetRunCredFingerprints %s: %v", id, err)
+			if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: fps}); err != nil {
+				t.Fatalf("SetRunCredStamp %s: %v", id, err)
 			}
 		}
 	}
@@ -2560,7 +2561,7 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 
 	// Re-stamp replaces wholesale: a resume that resolved different
 	// credentials must not keep metering the old ones.
-	if err := s.SetRunCredFingerprints(ctx, "fp_run2", []string{"fp-anthropic"}); err != nil {
+	if err := s.SetRunCredStamp(ctx, "fp_run2", store.RunCredStamp{Fingerprints: []string{"fp-anthropic"}}); err != nil {
 		t.Fatalf("re-stamp: %v", err)
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
@@ -2568,6 +2569,31 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-anthropic", ""); err != nil || n != 2 {
 		t.Errorf("alive(fp-anthropic) after re-stamp = %d/%v, want 2", n, err)
+	}
+
+	// The skipped-credential reopening instant rides the same stamp: set
+	// when a usable credential was passed over, cleared by a re-stamp that
+	// skipped nothing — a stale instant would arm the next retry on a
+	// credential the run was never refused.
+	reopens := time.Date(2026, 9, 4, 16, 40, 0, 0, time.UTC)
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}, SkippedReopensAt: &reopens}); err != nil {
+		t.Fatalf("stamp with reopens_at: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "fp_run1")
+	if err != nil {
+		t.Fatalf("LoadRun fp_run1: %v", err)
+	}
+	if got.SkippedCredReopensAt == nil || !got.SkippedCredReopensAt.Equal(reopens) {
+		t.Fatalf("SkippedCredReopensAt = %v, want %v", got.SkippedCredReopensAt, reopens)
+	}
+	if len(got.CredFingerprints) != 1 || got.CredFingerprints[0] != "fp-zai" {
+		t.Fatalf("CredFingerprints = %v, want [fp-zai] alongside the reopening instant", got.CredFingerprints)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+		t.Fatalf("re-stamp without reopens_at: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.SkippedCredReopensAt != nil {
+		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v (%v)", got.SkippedCredReopensAt, err)
 	}
 }
 

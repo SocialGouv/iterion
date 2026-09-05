@@ -61,7 +61,17 @@ const (
 // when a recovery dispatcher classified it; and the flattened message is a
 // last resort for a host that has neither — which is not hypothetical, since
 // a runner with no dispatcher wired classifies nothing at all.
-func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time) (time.Time, string, bool) {
+//
+// skippedReopensAt is when the earliest credential the launch's resolution
+// PASSED OVER reopens (store.Run.SkippedCredReopensAt; zero when none). The
+// retry arms on the earlier of that and the failed credential's own reset:
+// the credential that failed is the one the walk fell THROUGH to, and the
+// one it skipped often reopens first — a team key refused on its five-hour
+// window reopens the same afternoon while the platform forfait it fell
+// through to is walled until Monday. Fourteen reviews slept four days
+// instead of three hours on that difference. The resume re-resolves the
+// chain, so coming back at the earlier instant lands on the reopened key.
+func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, skippedReopensAt time.Time) (time.Time, string, bool) {
 	if execErr == nil || !pol.Enabled() {
 		return time.Time{}, "", false
 	}
@@ -82,6 +92,11 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time) (t
 	} else {
 		// Come back just after the reset, not exactly on it.
 		at = at.Add(time.Minute)
+	}
+	if !skippedReopensAt.IsZero() {
+		if alt := skippedReopensAt.Add(time.Minute); alt.Before(at) {
+			at, source = alt, "skipped_credential"
+		}
 	}
 
 	// Spread runs that share one reset instant. Several schedules commonly
@@ -237,7 +252,11 @@ func (r *Runner) armUsageWindowRetry(
 	}
 	pol := runRetryPolicy(runMeta)
 
-	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC())
+	var skipped time.Time
+	if runMeta.SkippedCredReopensAt != nil {
+		skipped = *runMeta.SkippedCredReopensAt
+	}
+	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC(), skipped)
 	if !ok {
 		return usageRetryNotApplicable
 	}
@@ -266,7 +285,7 @@ func (r *Runner) armUsageWindowRetry(
 	if r.cfg.Metrics != nil {
 		r.cfg.Metrics.RunsRetryScheduled.Inc()
 	}
-	if emitErr := r.emitRetryScheduled(ctx, runID, at, attempt, pol, source); emitErr != nil {
+	if emitErr := r.emitRetryScheduled(ctx, runID, at, attempt, pol, source, skipped); emitErr != nil {
 		// Observational only — the durable intent is already committed.
 		logger.Warn("runner: run %s: could not emit run_retry_scheduled: %v", runID, emitErr)
 	}
@@ -276,18 +295,24 @@ func (r *Runner) armUsageWindowRetry(
 }
 
 // emitRetryScheduled records the armed retry on the run's timeline so the
-// wait is visible rather than looking like a dead run.
-func (r *Runner) emitRetryScheduled(ctx context.Context, runID string, at time.Time, attempt int, pol retrypolicy.Policy, source string) error {
+// wait is visible rather than looking like a dead run. skippedReopensAt,
+// when set, names the skipped credential's reopening the arming considered
+// — so a retry that came back early reads as a decision, not an accident.
+func (r *Runner) emitRetryScheduled(ctx context.Context, runID string, at time.Time, attempt int, pol retrypolicy.Policy, source string, skippedReopensAt time.Time) error {
+	data := map[string]any{
+		"code":         string(runtime.ErrCodeUsageLimitBlocked),
+		"reason":       "usage_window",
+		"retry_after":  at.Format(time.RFC3339),
+		"attempt":      attempt,
+		"max_attempts": pol.MaxAttempts,
+		"reset_source": source,
+	}
+	if !skippedReopensAt.IsZero() {
+		data["skipped_cred_reopens_at"] = skippedReopensAt.UTC().Format(time.RFC3339)
+	}
 	_, err := r.cfg.Store.AppendEvent(ctx, runID, store.Event{
 		Type: store.EventRunRetryScheduled,
-		Data: map[string]any{
-			"code":         string(runtime.ErrCodeUsageLimitBlocked),
-			"reason":       "usage_window",
-			"retry_after":  at.Format(time.RFC3339),
-			"attempt":      attempt,
-			"max_attempts": pol.MaxAttempts,
-			"reset_source": source,
-		},
+		Data: data,
 	})
 	return err
 }

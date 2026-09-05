@@ -378,6 +378,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// Refused-but-only keys, per provider, remembered across the tiers for
 	// the restore step — the api-key twin of skippedForfaits below.
 	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
+	// When the earliest credential passed over by any tier reopens — the
+	// instant the run's usage-window retry may arm on (see credResolution).
+	skips := &skipTracker{}
 	// Audit identity of the API key that filled each provider slot, for
 	// the run-document stamp (the OAuth side rides bundle.OAuthFingerprints).
 	apiKeyFPs := map[secrets.Provider]string{}
@@ -397,7 +400,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		// passed over so the priority walk yields the next key of that
 		// provider — the BYOK tier becomes an ordered fallback chain.
 		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer,
-			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID))
+			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips))
 		if err != nil {
 			return credResolution{}, fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
@@ -560,6 +563,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+					skips.note(until)
 					// Remembered: if the end of the resolution finds the
 					// wire still empty, this forfait is restored — a
 					// parked run with a durable retry beats a stuck one.
@@ -619,8 +623,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs)
+		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
 	}
+	res.skippedReopensAt = skips.earliest
 
 	// A skipped credential is only an improvement when some other tier
 	// could actually serve its wire. If nothing did — no second key, no
@@ -764,6 +769,36 @@ type credResolution struct {
 	// The caller stamps them on the run document so the per-key
 	// concurrency meter can count alive runs by credential.
 	fingerprints []string
+	// skippedReopensAt is when the earliest credential the walk passed
+	// over (refused window, reached cap) reopens; zero when none was.
+	// Stamped on the run document next to the fingerprints, so a run that
+	// parks on the credential it fell THROUGH to retries when the one it
+	// was refused reopens, not when the fallback does.
+	skippedReopensAt time.Time
+}
+
+// stamp is the run-document form of the resolution.
+func (c credResolution) stamp() store.RunCredStamp {
+	s := store.RunCredStamp{Fingerprints: c.fingerprints}
+	if !c.skippedReopensAt.IsZero() {
+		at := c.skippedReopensAt.UTC()
+		s.SkippedReopensAt = &at
+	}
+	return s
+}
+
+// skipTracker remembers the earliest reopening among the credentials one
+// resolution passed over. Nil-safe, so a caller with no resolution to
+// report into (a unit test of the predicate) passes nil.
+type skipTracker struct{ earliest time.Time }
+
+func (s *skipTracker) note(until time.Time) {
+	if s == nil || until.IsZero() {
+		return
+	}
+	if s.earliest.IsZero() || until.Before(s.earliest) {
+		s.earliest = until
+	}
 }
 
 // setOAuthFingerprint stamps the audit identity of the credential that
@@ -797,7 +832,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
 	if p.sealer == nil {
 		return
 	}
@@ -822,7 +857,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
 			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer,
-				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID))
+				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 			} else {
@@ -1125,8 +1160,10 @@ func usageBackendForProvider(prov secrets.Provider) string {
 // fresh provider-refusal evidence under its fingerprint is skipped, and the
 // priority walk hands the NEXT key of that provider over — the ordered
 // fallback the 2026-09-02 fair-usage freeze was routed around by hand.
-// Everything uncertain means "usable", same contract as refusedUntil.
-func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string) func(secrets.ApiKey) bool {
+// Everything uncertain means "usable", same contract as refusedUntil. A
+// skipped key's reopening is reported into skips (nil-safe) so the run can
+// retry when THAT key reopens rather than when its fallback does.
+func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string, skips *skipTracker) func(secrets.ApiKey) bool {
 	return func(k secrets.ApiKey) bool {
 		// Concurrency ceiling first — cheaper than the meter read, and a
 		// key at its ceiling must rest whatever its refusal history says.
@@ -1152,6 +1189,7 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string
 		}
 		p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
 			k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
+		skips.note(until)
 		return false
 	}
 }
@@ -1568,6 +1606,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// would be a warn-and-lose no-op that leaves the ceiling blind to
 	// every launched run.
 	r.CredFingerprints = creds.fingerprints
+	r.SkippedCredReopensAt = creds.stamp().SkippedReopensAt
 
 	// A run served by the pool may not spend more than what remains of its
 	// donor's allowance. This is the enforcement: the engine stops the run
@@ -1877,7 +1916,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// no longer carries, for its whole remaining alive life. An empty
 	// re-resolution therefore CLEARS the stamp. Best-effort: a failed
 	// write degrades the ceiling toward uncapped, never the resume.
-	if serr := p.store.SetRunCredFingerprints(secretsCtx, spec.RunID, creds.fingerprints); serr != nil {
+	if serr := p.store.SetRunCredStamp(secretsCtx, spec.RunID, creds.stamp()); serr != nil {
 		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
