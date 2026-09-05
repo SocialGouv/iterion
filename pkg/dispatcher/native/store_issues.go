@@ -791,6 +791,7 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	if err := validateIssueID(iss.ID); err != nil {
 		return err
 	}
+	stampStateAtLocked(s.index[iss.ID], iss)
 	expireGiveUp(iss)
 	if err := os.MkdirAll(filepath.Join(s.root, issuesDir), dirPerm); err != nil {
 		return err
@@ -804,6 +805,21 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 		return fmt.Errorf("native store: write issue: %w", err)
 	}
 	return nil
+}
+
+// stampStateAtLocked derives Issue.StateAt from the write itself: prev is the
+// INDEXED record (what is persisted right now), next the value about to
+// replace it, so the column changing is the only thing that advances the
+// stamp. Every FS mutator funnels through writeIssueLocked, which is why the
+// derivation lives there instead of at each of the seven state writers — a new
+// one cannot forget it, and a label edit cannot forge it.
+//
+// A card with no indexed record is a CREATE: its column was decided now.
+func stampStateAtLocked(prev, next *Issue) {
+	if prev != nil && prev.State == next.State {
+		return
+	}
+	next.StateAt = time.Now().UTC()
 }
 
 // StateChangePayload builds the state-change event body, stamping the

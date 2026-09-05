@@ -250,11 +250,12 @@ func applyProjectItem(
 		res.Labelled++
 	}
 
-	targetState, decision := decideProjectStatus(statusName, statusAt, sync, opts)
+	nativeAt := nativeStateAt(card, sync)
+	targetState, decision := decideProjectStatus(statusName, statusAt, nativeAt, sync, opts)
 	switch decision {
 	case projectStatusConflictGitHub, projectStatusConflictNative:
 		res.Conflicts++
-		logProjectConflict(opts, cardID, it, statusName, statusAt, sync, decision)
+		logProjectConflict(opts, cardID, it, statusName, statusAt, nativeAt, sync, decision)
 	}
 
 	applied, refused := false, false
@@ -448,9 +449,29 @@ const (
 	projectStatusConflictNative
 )
 
+// nativeStateAt is when the card's column last changed — the value the "newer
+// state change wins" rule has to compare, and deliberately not the card's
+// UpdatedAt (a retitle would win a status conflict) nor the sync record's
+// StateAt (only THIS package writes it, so a move made in the studio, by the
+// dispatcher or through the board MCP tool was invisible and lost every
+// conflict inside one interval).
+//
+// The fallback is for a card whose last transition predates the store stamping
+// one: the only transition time iterion has for it is when it last wrote the
+// state itself, which is exactly what the rule used to read. Naming the
+// fallback keeps a legacy card's behaviour unchanged instead of silently
+// re-dating it to the zero time, where the board would win every conflict.
+func nativeStateAt(card *native.Issue, sync native.ExternalProject) time.Time {
+	if card != nil && !card.StateAt.IsZero() {
+		return card.StateAt
+	}
+	return sync.StateAt
+}
+
 // decideProjectStatus resolves ADR-097's conflict rule. It returns the native
-// state to write ("" = write nothing) and why.
-func decideProjectStatus(statusName string, statusAt time.Time, sync native.ExternalProject, opts *ProjectImportOptions) (string, projectStatusDecision) {
+// state to write ("" = write nothing) and why. nativeAt is the card's own
+// transition time (nativeStateAt).
+func decideProjectStatus(statusName string, statusAt, nativeAt time.Time, sync native.ExternalProject, opts *ProjectImportOptions) (string, projectStatusDecision) {
 	if strings.TrimSpace(statusName) == "" {
 		return "", projectStatusNoop
 	}
@@ -473,7 +494,7 @@ func decideProjectStatus(statusName string, statusAt time.Time, sync native.Exte
 	}
 	// 2/3. Both sides moved. Newer wins; a tie goes to the board, which is
 	// what a human is looking at.
-	if sync.StateAt.After(statusAt) {
+	if nativeAt.After(statusAt) {
 		return "", projectStatusConflictNative
 	}
 	return state, projectStatusConflictGitHub
@@ -547,7 +568,7 @@ func sameLabelSet(a, b []string) bool {
 	return true
 }
 
-func logProjectConflict(opts *ProjectImportOptions, cardID string, it forge.ProjectItem, statusName string, statusAt time.Time, sync native.ExternalProject, d projectStatusDecision) {
+func logProjectConflict(opts *ProjectImportOptions, cardID string, it forge.ProjectItem, statusName string, statusAt, nativeAt time.Time, sync native.ExternalProject, d projectStatusDecision) {
 	winner := "forge_board"
 	if d == projectStatusConflictNative {
 		winner = "native_board"
@@ -558,7 +579,7 @@ func logProjectConflict(opts *ProjectImportOptions, cardID string, it forge.Proj
 		"forge_status", statusName,
 		"forge_status_at", statusAt.Format(time.RFC3339),
 		"recorded_status", sync.Status,
-		"native_state_at", sync.StateAt.Format(time.RFC3339),
+		"native_state_at", nativeAt.Format(time.RFC3339),
 		"winner", winner)
 }
 

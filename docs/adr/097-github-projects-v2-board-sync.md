@@ -219,7 +219,18 @@ already survives the import's patch path.
 
 Both directions carry a timestamp of the **state change** (not of the record):
 GitHub's `ProjectV2ItemFieldSingleSelectValue.updatedAt`, and iterion's
-`ExternalRef.Project.StateAt`.
+`native.Issue.StateAt`.
+
+`Issue.StateAt` is stamped **by the store** at every state write, on both twins
+(the FS store derives it in `writeIssueLocked` from the state differing from
+the indexed record; the Mongo store in `stateSetAt` and in the state-naming
+`replace`). It has to be the store's, not this sync's: a card moves from the
+studio, the dispatcher, a board MCP tool and the trigger spine, and a stamp
+only this package wrote would have under-dated every one of them and lost them
+all. It is not `UpdatedAt` either — that bumps on any edit, so a retitle would
+win a status conflict. A card whose last transition predates the stamp falls
+back to `ExternalRef.Project.StateAt` (when iterion last wrote its state for
+this board), which is what the rule read before.
 
 1. **Value already equal ⇒ nothing happens.** This is the echo suppressor, and
    it is checked first, in both directions: a Status the reflect just wrote

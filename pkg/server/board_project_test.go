@@ -340,34 +340,44 @@ func TestImportProjectBoardEchoSuppression(t *testing.T) {
 	}
 }
 
+// TestImportProjectBoardConflictNewerWins pins the conflict rule against the
+// CARD's own transition time, which the store stamps at every state write
+// (native.Issue.StateAt). The board's timestamp is expressed as an offset from
+// it, because "newer" is a comparison between the two sides and nothing else.
 func TestImportProjectBoardConflictNewerWins(t *testing.T) {
-	older := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
-	newer := time.Date(2026, 9, 4, 11, 0, 0, 0, time.UTC)
-
 	for _, tc := range []struct {
-		name              string
-		ghAt, nativeAt    time.Time
+		name string
+		// boardOffset positions the board's status timestamp relative to the
+		// card's real transition.
+		boardOffset       time.Duration
 		wantState         string
 		wantMoved, wantCf int
 	}{
-		{"github newer wins", newer, older, native.StateInProgress, 1, 1},
-		{"native newer wins", older, newer, native.StateReview, 0, 1},
-		{"a tie goes to github", newer, newer, native.StateInProgress, 1, 1},
+		{"github newer wins", time.Hour, native.StateInProgress, 1, 1},
+		{"native newer wins", -time.Hour, native.StateReview, 0, 1},
+		{"a tie goes to github", 0, native.StateInProgress, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			board := newTestBoard(t)
 			id := seedCard(t, board, 613, native.StateReview)
+			cardAt := mustGet(t, board, id).StateAt
+			if cardAt.IsZero() {
+				t.Fatal("the store must stamp a card's transition time; the rule has nothing to compare otherwise")
+			}
+			ghAt := cardAt.Add(tc.boardOffset)
+			// The sync record carries a STALE write time — the value the rule
+			// used to read. It must not decide anything here.
 			if _, err := board.Update(id, native.Patch{External: &native.ExternalRef{
 				Provider: "github", Repo: "SocialGouv/iterion", Number: 613,
 				Project: &native.ExternalProject{
 					Owner: "SocialGouv", Number: 203, ItemID: "PVTI_1",
-					Status: "Planned", StatusAt: tc.ghAt, StateAt: tc.nativeAt,
+					Status: "Planned", StatusAt: ghAt, StateAt: cardAt.Add(-24 * time.Hour),
 				},
 			}}); err != nil {
 				t.Fatalf("seed sync state: %v", err)
 			}
 			bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
-				item("PVTI_1", 613, statusValue("In progress", tc.ghAt)),
+				item("PVTI_1", 613, statusValue("In progress", ghAt)),
 			}}}
 
 			res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, nil)

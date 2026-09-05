@@ -45,6 +45,20 @@ func seedSynced(t *testing.T, board native.BoardStore, number int, state, record
 	return id
 }
 
+// cardStateAt is the card's REAL transition time — the store stamps it at
+// every state write, and it is one of the two sides the conflict rule
+// compares. A fixture that pins the board's timestamp to a calendar date while
+// the card's is whenever the test ran is not expressing an ordering at all, so
+// every conflict fixture below positions the board RELATIVE to this.
+func cardStateAt(t *testing.T, board native.BoardStore, id string) time.Time {
+	t.Helper()
+	at := mustGet(t, board, id).StateAt
+	if at.IsZero() {
+		t.Fatal("the store must stamp a card's transition time; the conflict rule has nothing to compare otherwise")
+	}
+	return at
+}
+
 func TestSyncProjectBoardReflectsANativeMove(t *testing.T) {
 	board := newTestBoard(t)
 	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
@@ -118,7 +132,7 @@ func TestSyncProjectBoardDefersToAMovedBoard(t *testing.T) {
 	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 	id := seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
 	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
-		item("PVTI_1", 613, statusValue("Blocked", at.Add(time.Hour))),
+		item("PVTI_1", 613, statusValue("Blocked", cardStateAt(t, board, id).Add(time.Hour))),
 	}}}
 
 	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
@@ -152,6 +166,8 @@ func TestSyncProjectBoardReflectsWhenNativeWinsTheConflict(t *testing.T) {
 	// Recorded "Planned"; the board has since moved to "In progress" (at
 	// `older`), and iterion moved the card to blocked later (at `newer`).
 	id := seedSynced(t, board, 613, native.StateBlocked, "Planned", older)
+	moved := cardStateAt(t, board, id)
+	older, newer = moved.Add(-2*time.Hour), moved
 	if _, err := board.Update(id, native.Patch{External: &native.ExternalRef{
 		Provider: "github", Repo: "SocialGouv/iterion", Number: 613,
 		Project: &native.ExternalProject{
@@ -451,7 +467,7 @@ func TestSyncProjectBoardNeverReflectsARefusedMove(t *testing.T) {
 	// of Done on the forge.
 	id := seedSynced(t, board, 613, native.StateDone, "Done", at)
 	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
-		item("PVTI_1", 613, statusValue("Planned", at.Add(time.Minute))),
+		item("PVTI_1", 613, statusValue("Planned", cardStateAt(t, board, id).Add(time.Minute))),
 	}}}
 	opts := &ProjectImportOptions{Binding: testBinding()}
 
@@ -478,5 +494,78 @@ func TestSyncProjectBoardNeverReflectsARefusedMove(t *testing.T) {
 	// the next pass re-derives the same conflict instead of a false no-op.
 	if p := mustGet(t, board, id).External.Project; p.Status != "Done" {
 		t.Errorf("recorded status = %q, want %q — a status iterion could not apply is not a synced status", p.Status, "Done")
+	}
+}
+
+// TestSyncProjectBoardConflictReadsTheNativeTransitionTime pins the "newer
+// state change wins" rule against the card's REAL transition time.
+//
+// The rule was resolved against `sync.StateAt` — the moment of iterion's last
+// sync WRITE, which only this package sets. A native move made anywhere else
+// (studio drag, dispatcher, board MCP tool) does not touch it, so every native
+// move inside one interval was systematically under-dated and lost: the
+// effective policy was "the board wins", and the reflect branch guarded on the
+// native-wins decision was near-unreachable.
+func TestSyncProjectBoardConflictReadsTheNativeTransitionTime(t *testing.T) {
+	board := newTestBoard(t)
+	// The board's status moved an hour ago; iterion last synced then too.
+	old := time.Now().UTC().Add(-time.Hour)
+	id := seedSynced(t, board, 613, native.StateInbox, "Inbox", old)
+	// Now somebody moves the card natively — through the store, like every
+	// other surface does. Nothing updates the card's project sync state.
+	if _, _, err := board.SetStateFrom(id, native.StateInbox, native.StateReady); err != nil {
+		t.Fatalf("native move: %v", err)
+	}
+	// The board says Blocked, stamped BEFORE the native move.
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Blocked", cardStateAt(t, board, id).Add(-30*time.Minute))),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: testBinding()})
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Conflicts != 1 {
+		t.Fatalf("Conflicts = %d, want 1 (%+v)", res.Conflicts, res)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateReady {
+		t.Errorf("state = %q, want %q — the NEWER change is the native one", got, native.StateReady)
+	}
+	if res.Reflected != 1 || len(bc.writes) != 1 {
+		t.Fatalf("Reflected = %d writes = %+v, want the native move pushed to the board", res.Reflected, bc.writes)
+	}
+	if w := bc.writes[0]; w.OptionID != "o_planned" {
+		t.Errorf("wrote option %q, want the Planned option for `ready`", w.OptionID)
+	}
+}
+
+// The mirror: a board move NEWER than the card's transition still wins, so the
+// fix is a corrected comparison rather than an inverted one.
+func TestSyncProjectBoardConflictStillLetsANewerBoardWin(t *testing.T) {
+	board := newTestBoard(t)
+	old := time.Now().UTC().Add(-time.Hour)
+	id := seedSynced(t, board, 613, native.StateInbox, "Inbox", old)
+	if _, _, err := board.SetStateFrom(id, native.StateInbox, native.StateReady); err != nil {
+		t.Fatalf("native move: %v", err)
+	}
+	// The board moved AFTER the native transition.
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Blocked", cardStateAt(t, board, id).Add(time.Hour))),
+	}}}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: testBinding()})
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Conflicts != 1 || res.Moved != 1 {
+		t.Errorf("res = %+v, want one conflict the board won", res)
+	}
+	if got := mustGet(t, board, id).State; got != native.StateBlocked {
+		t.Errorf("state = %q, want %q", got, native.StateBlocked)
+	}
+	if len(bc.writes) != 0 {
+		t.Errorf("writes = %+v, want none — the board already shows what it decided", bc.writes)
 	}
 }

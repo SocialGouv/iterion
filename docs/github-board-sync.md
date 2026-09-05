@@ -169,7 +169,9 @@ When both sides moved since the last pass:
 
 1. **Value already equal ⇒ nothing happens.** This is checked first and is what
    makes the loop terminate: a status iterion itself wrote reads back as equal.
-2. Otherwise the **newer** state change wins.
+2. Otherwise the **newer** state change wins — the card's own transition time
+   (stamped by the board store at every move, wherever the move came from)
+   against the board column's `updatedAt`.
 3. A tie goes to **GitHub** — it is the roadmap a human is looking at.
 4. Every resolution is logged at `Warn` with both timestamps, both values and
    the winner.

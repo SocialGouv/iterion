@@ -94,6 +94,21 @@ type Issue struct {
 	Runs      []RunRef  `json:"runs,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// StateAt is when the card's COLUMN last changed — the transition time,
+	// not the record's. UpdatedAt bumps on any edit (a title, a label, a
+	// last-run stamp), so anything asking "which side moved more recently?"
+	// reads a retitle as a move; the two-way project-board sync's conflict
+	// rule is exactly that question (ADR-097).
+	//
+	// Stamped by the store at every state write, on both twins: the FS one
+	// derives it in writeIssueLocked (the state differs from the indexed
+	// record), the Mongo one in stateSetAt + the state-naming replace. A
+	// caller cannot forget it, and cannot forge it either.
+	//
+	// Zero on a card written before the field existed — legacy, exactly like
+	// ClaimedAt. A reader wanting a transition time for such a card has to
+	// say what it falls back to.
+	StateAt time.Time `json:"state_at,omitempty"`
 	// External links this card to an issue on an external forge — set when
 	// the card is mirrored FROM a forge (one-way forge→board sync) or pushed
 	// TO one (push-to-forge). It is metadata: the card's column stays
@@ -231,7 +246,10 @@ type ExternalProject struct {
 	Status string `json:"status,omitempty"`
 	// StatusAt is the provider's own timestamp for that status value.
 	StatusAt time.Time `json:"status_at,omitempty"`
-	// StateAt is when the native state last changed, per iterion.
+	// StateAt is when iterion last WROTE the native state for this board —
+	// the moment of a sync write, not of the card's transition. The conflict
+	// rule reads the card's own Issue.StateAt; this stays as the fallback for
+	// a card whose last transition predates that stamp.
 	StateAt time.Time `json:"state_at,omitempty"`
 }
 
