@@ -748,8 +748,7 @@ schema plan_revised_output:
 ## plan node would otherwise author a plan against nothing). Refuses
 ## with the typed code WORKSPACE_NOT_A_REPO when workspace_dir is absent
 ## or is not a git repository (`git rev-parse --git-dir` fails). The
-## verdict is the node's OUTPUT (ok/code/reason, routed to `fail` by the
-## workflow) and is echoed on stderr for the tool log; the process exits
+## verdict is the node's OUTPUT (ok/code/reason, routed to the named `workspace_not_a_repo` fail node, which stamps that code on the RUN) and is echoed on stderr for the tool log; the process exits
 ## 0 on purpose — a non-zero exit would replace the typed verdict with
 ## the engine's generic tool failure. python3 for safe JSON (mirrors
 ## verify_run); read-only, ~100ms.
@@ -770,6 +769,16 @@ if p.returncode != 0:
 print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws}))
 "`
   output: workspace_probe_state
+
+## workspace_not_a_repo — the entry precondition refused. NOT resumable:
+## nothing about this run changes by resuming it, because the workspace it
+## was launched against is not the thing the operator can widen. Fix the
+## launch (attach a repository) and start again.
+fail workspace_not_a_repo:
+  description: "the launch has no repository to work on"
+  code: WORKSPACE_NOT_A_REPO
+  message: "{{outputs.workspace_probe.reason}}"
+  resumable: false
 
 ## plan_topology lifts the plan_phase switch into a bool so the entry
 ## edges use the C012-exhaustive simple form. No LLM. This gate is the
@@ -1147,7 +1156,7 @@ workflow whole_improve_loop:
 
   ## Precondition: nothing LLM runs on a workspace with no repository.
   workspace_probe -> plan_topology when ok
-  workspace_probe -> fail when not ok
+  workspace_probe -> workspace_not_a_repo when not ok
 
   ## Plan phase: on by default; plan_phase off → straight to the campaign.
   plan_topology -> plan when do_plan

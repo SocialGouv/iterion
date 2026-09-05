@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -301,34 +300,44 @@ func TestBranchImproveLoop_Structural(t *testing.T) {
 // A production run on a +3870/-273 diff spent the planning chain (plan ->
 // plan_review -> plan_revise) for 150 min / $8.59 and never reached
 // `campaign`. plan_budget_gate is the deterministic choke point that must
-// now fail the run — typed, before campaign starts — the moment planning
+// fail the run — typed, before campaign starts — the moment planning
 // crosses its share of the run's budget, and must otherwise let campaign
 // proceed with the (possibly revised) plan carried forward exactly as
 // before the guard existed.
 //
-// plan_scope_probe, plan, plan_review, plan_revise, and plan_budget_gate
-// are STUBBED (plan_scope_probe and plan_budget_gate are tool nodes whose
-// real bodies shell out to git/python — this harness never exercises a
-// tool node's real subprocess, matching every other tool node in this
-// file). plan_gate and plan_cost_probe are left REAL: they are pure
-// compute/expr, so the test exercises the actual nil-safe cost-sum
-// arithmetic (plan_cost_probe) rather than a hand-picked verdict — the
-// plan_budget_gate stub decides `exhausted` from the REAL summed
-// plan_cost_usd it receives, against a threshold the test picks (standing
-// in for plan_budget_gate's own ratio-of-ceiling math, which is plain
-// python arithmetic with no branch worth a second, non-hermetic test).
+// The guard is REAL here, not stubbed: it is a compute reading the run's
+// own `run.cost_usd` / `run.elapsed_seconds` against the caps in force, so
+// a scenario steers it the only honest way — by choosing what the stubbed
+// LLM nodes BILL against the bot's shipped `budget:` block (max_duration
+// 2h30m, max_cost_usd 75; plan_budget_ratio 0.3, so the plan phase's cost
+// share is $22.50). The COST axis is what these tests drive: it is a
+// figure the stub sets exactly, whereas tripping the duration axis would
+// need the run to genuinely take minutes.
+//
+// plan_scope_probe, plan, plan_review and plan_revise are stubbed
+// (plan_scope_probe is a tool node whose real body shells out to git —
+// this harness never exercises a tool node's real subprocess). plan_gate
+// and plan_budget_gate are REAL computes.
+
+const (
+	// planCostShareUSD is plan_budget_ratio (0.3) x the bot's shipped
+	// max_cost_usd (75) — the share the plan phase may spend.
+	planCostShareUSD = 22.5
+	// planOverShareUSD / planUnderShareUSD are per-LLM-node prices; three
+	// nodes run, so the phase spends 3x. $37.50 crosses the share while
+	// staying under the engine's own 90%-of-cap hard limit ($67.50), and
+	// $7.50 stays well inside it.
+	planOverShareUSD  = 12.50
+	planUnderShareUSD = 2.50
+)
 
 // planBudgetGateStubs wires a full (non-skipped, non-large-diff) plan
 // phase: plan -> plan_review -> plan_gate -> plan_revise, each of the three
-// LLM nodes spending planCostUSD (so plan_cost_probe's real nil-safe sum is
-// 3*planCostUSD). The plan_budget_gate stub captures every input it
-// receives and fails the phase (exhausted=true) iff the real summed cost
-// crosses exhaustAt.
-func planBudgetGateStubs(exec *scenarioExecutor, planCostUSD, exhaustAt float64, gateInputs *[]map[string]any) {
+// LLM nodes billing planCostUSD, so the run's own cost at the guard is
+// 3*planCostUSD.
+func planBudgetGateStubs(exec *scenarioExecutor, planCostUSD float64) {
 	stubWorkspaceProbeOK(exec)
-	exec.on("plan_scope_probe", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"diff_stat": "1 file changed, 4 insertions(+)", "large": false, "started_epoch": 1, "_tokens": 1}, nil
-	})
+	stubBranchPlanRelay(exec)
 	exec.on("plan", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"plan": "fix the seam", "assumptions": "small blast radius", "risks": "none flagged",
 			"_tokens": 10, "_cost_usd": planCostUSD}, nil
@@ -341,95 +350,14 @@ func planBudgetGateStubs(exec *scenarioExecutor, planCostUSD, exhaustAt float64,
 		return map[string]any{"plan": "fix the seam, revised", "review_responses": "accepted: added the test",
 			"_tokens": 10, "_cost_usd": planCostUSD}, nil
 	})
-	exec.on("plan_budget_gate", func(in map[string]any) (map[string]any, error) {
-		if gateInputs != nil {
-			*gateInputs = append(*gateInputs, in)
-		}
-		cost, _ := in["plan_cost_usd"].(float64)
-		exhausted := cost > exhaustAt
-		code, reason := "", ""
-		if exhausted {
-			code = "PLAN_BUDGET_EXHAUSTED"
-			reason = fmt.Sprintf("stub verdict: real plan-phase spend %.2f crossed the test threshold %.2f", cost, exhaustAt)
-		}
-		return map[string]any{
-			"exhausted": exhausted, "code": code, "reason": reason,
-			"plan": in["plan"], "plan_critique": in["plan_critique"], "plan_responses": in["plan_responses"],
-			"plan_provenance": in["plan_provenance"],
-			"_tokens":         1,
-		}, nil
-	})
 }
 
-// TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign is scenario
-// (a): the plan phase's real, nil-safe-summed spend (3 * $12.50 = $37.50)
-// crosses the test's $10 threshold, so plan_budget_gate reports exhausted —
-// the run must end FAILED, typed PLAN_BUDGET_EXHAUSTED on the gate's own
-// output, with campaign NEVER started (the delivery reserve this guard
-// exists to protect).
-func TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	var gateIns []map[string]any
-	planBudgetGateStubs(exec, 12.50, 10.0, &gateIns)
-	// campaign must never run; fail loudly if the graph reaches it anyway.
-	exec.on("campaign", func(_ map[string]any) (map[string]any, error) {
-		t.Error("campaign ran — the plan-budget guard must fail the run BEFORE campaign starts")
-		return map[string]any{"branch_clean": true, "commits_this_pass": 0, "issues_remaining": "",
-			"needs_human": false, "human_note": "", "summary": "", "_tokens": 1}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	err := eng.Run(context.Background(), "run-bil-plan-budget-fail", map[string]any{"plan_review": "on"})
-	if err == nil {
-		t.Fatal("Run: want an error (the plan budget guard routes to fail), got nil")
-	}
-	run, loadErr := s.LoadRun(context.Background(), "run-bil-plan-budget-fail")
-	if loadErr != nil {
-		t.Fatalf("LoadRun: %v", loadErr)
-	}
-	if run.Status != store.RunStatusFailed {
-		t.Fatalf("status = %s, want %s (plan_budget_gate -> fail)", run.Status, store.RunStatusFailed)
-	}
-	if exec.wasCalled("campaign") {
-		t.Error("campaign was called — the plan-budget guard did not stop the run before campaign")
-	}
-	if len(gateIns) != 1 {
-		t.Fatalf("plan_budget_gate called %d times, want 1", len(gateIns))
-	}
-	gotCost, _ := gateIns[0]["plan_cost_usd"].(float64)
-	wantCost := 3 * 12.50
-	if gotCost != wantCost {
-		t.Errorf("plan_budget_gate received plan_cost_usd = %v, want %v (nil-safe sum of plan+plan_review+plan_revise's _cost_usd)", gotCost, wantCost)
-	}
-	// The DSL `-> fail` terminal has no mechanism to carry a custom
-	// RuntimeError code/message (pkg/runtime/engine_exec.go hardcodes
-	// "workflow reached fail node" + a fixed FailureFailNode code) — so the
-	// run's OWN top-level failure stays generic; the typed code/reason live
-	// on plan_budget_gate's own persisted output instead (asserted above via
-	// the stub's captured input/decision). Document the gap here so a
-	// reader of this test sees why the assertions above don't check
-	// run.Error for "PLAN_BUDGET_EXHAUSTED".
-	if run.Error != "workflow reached fail node" {
-		t.Logf("run.Error = %q (engine's generic fail-node message; the typed PLAN_BUDGET_EXHAUSTED code lives on plan_budget_gate's own output, not here — no DSL primitive carries a custom code/message to a `-> fail` terminal)", run.Error)
-	}
-}
-
-// TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign is scenario (b):
-// the plan phase's real spend (3 * $2.50 = $7.50) stays under the test's
-// $10 threshold, so plan_budget_gate reports NOT exhausted — campaign must
-// run normally, receiving the plan/critique/responses exactly as the
-// pre-guard edges handed them off (no hysteria: the guard is silent when
-// planning stayed inside its share).
-func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	var gateIns []map[string]any
-	planBudgetGateStubs(exec, 2.50, 10.0, &gateIns)
-	var campaignIns []map[string]any
+// stubConvergingCampaignTail wires a campaign that converges on its first
+// pass plus the deterministic loop tail behind it, capturing every input
+// the campaign received.
+func stubConvergingCampaignTail(exec *scenarioExecutor, into *[]map[string]any) {
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
-		campaignIns = append(campaignIns, in)
+		*into = append(*into, in)
 		return map[string]any{"branch_clean": true, "commits_this_pass": 1, "issues_remaining": "",
 			"needs_human": false, "human_note": "", "summary": "converged", "_tokens": 10, "_cost_usd": 0.01}, nil
 	})
@@ -445,6 +373,101 @@ func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
 	exec.on("review", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"clean": true, "findings": "", "_tokens": 1}, nil
 	})
+}
+
+// gateOutput returns plan_budget_gate's persisted output, failing the test
+// when the guard never ran.
+func gateOutput(t *testing.T, run *store.Run) map[string]any {
+	t.Helper()
+	if run.Checkpoint == nil {
+		t.Fatal("the run carries no checkpoint — plan_budget_gate's verdict was not persisted")
+	}
+	out := run.Checkpoint.Outputs["plan_budget_gate"]
+	if out == nil {
+		t.Fatal("plan_budget_gate never ran")
+	}
+	return out
+}
+
+// TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign is scenario
+// (a): the plan phase bills 3 * $12.50 = $37.50 against a $22.50 share, so
+// the guard refuses. The run must end FAILED_RESUMABLE, stamped
+// PLAN_BUDGET_EXHAUSTED on the RUN (not merely on a node output), with the
+// checkpoint anchored on the GUARD — so `iterion resume --max-cost-usd …`
+// re-evaluates it — and `campaign` never started (the delivery reserve
+// this guard exists to protect).
+func TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	planBudgetGateStubs(exec, planOverShareUSD)
+	// campaign must never run; fail loudly if the graph reaches it anyway.
+	exec.on("campaign", func(_ map[string]any) (map[string]any, error) {
+		t.Error("campaign ran — the plan-budget guard must fail the run BEFORE campaign starts")
+		return map[string]any{"branch_clean": true, "commits_this_pass": 0, "issues_remaining": "",
+			"needs_human": false, "human_note": "", "summary": "", "_tokens": 1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-bil-plan-budget-fail", map[string]any{"plan_review": "on"})
+	if err == nil {
+		t.Fatal("Run: want an error (the plan budget guard routes to plan_exhausted), got nil")
+	}
+	run, loadErr := s.LoadRun(context.Background(), "run-bil-plan-budget-fail")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if exec.wasCalled("campaign") {
+		t.Error("campaign was called — the plan-budget guard did not stop the run before campaign")
+	}
+
+	// The refusal is on the RUN, which is where every machine reads it.
+	if run.FailureCode != "PLAN_BUDGET_EXHAUSTED" {
+		t.Errorf("run.failure_code = %q, want PLAN_BUDGET_EXHAUSTED — the bot's refusal is indistinguishable from any other fail node", run.FailureCode)
+	}
+	// resumable: the cure is "widen the caps and carry on", never "re-pay
+	// the plan phase this run already completed".
+	if run.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFailedResumable)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.NodeID != "plan_budget_gate" {
+		t.Fatalf("checkpoint anchored on %v, want the GUARD plan_budget_gate — anchored on the fail node, a resume re-enters the refusal and the raised cap changes nothing",
+			run.Checkpoint)
+	}
+	// And it names the figures, not just the code: a message that only
+	// restates PLAN_BUDGET_EXHAUSTED tells the operator nothing about how
+	// much to widen by.
+	for _, want := range []string{"37.5", "22.5"} {
+		if !strings.Contains(run.Error, want) {
+			t.Errorf("run.error does not name %s (spent vs share): %q", want, run.Error)
+		}
+	}
+
+	gate := gateOutput(t, run)
+	if gate["exhausted"] != true {
+		t.Errorf("plan_budget_gate.exhausted = %v, want true", gate["exhausted"])
+	}
+	if gate["over_cost"] != true {
+		t.Errorf("plan_budget_gate.over_cost = %v, want true", gate["over_cost"])
+	}
+	if got := toFloat(gate["spent_usd"]); got != 3*planOverShareUSD {
+		t.Errorf("plan_budget_gate.spent_usd = %v, want %v (the RUN's own cost at the guard)", gate["spent_usd"], 3*planOverShareUSD)
+	}
+	if got := toFloat(gate["cost_share_usd"]); got != planCostShareUSD {
+		t.Errorf("plan_budget_gate.cost_share_usd = %v, want %v (plan_budget_ratio x the cap in force)", gate["cost_share_usd"], planCostShareUSD)
+	}
+}
+
+// TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign is scenario (b):
+// the plan phase bills 3 * $2.50 = $7.50, well inside its $22.50 share, so
+// the guard is silent — campaign runs normally, receiving the
+// plan/critique/responses exactly as the pre-guard edges handed them off.
+func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	planBudgetGateStubs(exec, planUnderShareUSD)
+	var campaignIns []map[string]any
+	stubConvergingCampaignTail(exec, &campaignIns)
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
@@ -458,13 +481,9 @@ func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
 	if run.Status != store.RunStatusFinished {
 		t.Fatalf("status = %s, want %s (within-share plan phase must not block delivery)", run.Status, store.RunStatusFinished)
 	}
-	if len(gateIns) != 1 {
-		t.Fatalf("plan_budget_gate called %d times, want 1", len(gateIns))
-	}
-	gotCost, _ := gateIns[0]["plan_cost_usd"].(float64)
-	wantCost := 3 * 2.50
-	if gotCost != wantCost {
-		t.Errorf("plan_budget_gate received plan_cost_usd = %v, want %v", gotCost, wantCost)
+	gate := gateOutput(t, run)
+	if gate["exhausted"] != false {
+		t.Errorf("plan_budget_gate.exhausted = %v, want false at %v of a %v share", gate["exhausted"], gate["spent_usd"], gate["cost_share_usd"])
 	}
 	if len(campaignIns) != 1 {
 		t.Fatalf("campaign called %d times, want 1 (converges on the first pass)", len(campaignIns))
@@ -477,5 +496,168 @@ func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
 	}
 	if campaignIns[0]["plan_responses"] != "accepted: added the test" {
 		t.Errorf("campaign received plan_responses %q", campaignIns[0]["plan_responses"])
+	}
+}
+
+// TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce is the reason the
+// two mirror vars had to go. The plan phase bills exactly what scenario
+// (a) billed — $37.50 — but the run was re-budgeted to a $200 cap, which
+// puts the phase's share at $60. The guard must follow the cap IN FORCE
+// and let the campaign through.
+//
+// A mirror var (`budget_max_cost_usd = 75`, kept in sync by hand) could
+// not: `iterion run --max-cost-usd 200` never reached it, so the guard
+// went on refusing against a literal nobody had updated.
+func TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
+	if wf.Budget == nil {
+		t.Fatal("branch-improve-loop declares no budget: block — the guard has no cap to read")
+	}
+	wf.Budget.MaxCostUSD = 200 // what `iterion run --max-cost-usd 200` resolves to
+
+	exec := newScenarioExecutor()
+	planBudgetGateStubs(exec, planOverShareUSD)
+	var campaignIns []map[string]any
+	stubConvergingCampaignTail(exec, &campaignIns)
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-bil-plan-budget-recap", map[string]any{"plan_review": "on"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-bil-plan-budget-recap")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	gate := gateOutput(t, run)
+	if got := toFloat(gate["cost_share_usd"]); got != 60 {
+		t.Errorf("plan_budget_gate.cost_share_usd = %v, want 60 (0.3 x the RE-BUDGETED cap) — the guard is reading a literal, not run.max_cost_usd", gate["cost_share_usd"])
+	}
+	if gate["exhausted"] != false {
+		t.Fatalf("the guard refused $%v against a $%v share — the raised cap did not reach it", gate["spent_usd"], gate["cost_share_usd"])
+	}
+	if len(campaignIns) != 1 {
+		t.Fatalf("campaign called %d times, want 1", len(campaignIns))
+	}
+}
+
+// TestBranchImproveLoop_PlanBudgetUnboundedNeverTrips pins the documented
+// convention a phase guard is easiest to get wrong: a `max_*` of 0 means
+// UNBOUNDED on that axis, never "no allowance left". Without the `> 0`
+// guard on each comparison, an uncapped run refuses on its first pass —
+// every spend is "over" a share of zero.
+func TestBranchImproveLoop_PlanBudgetUnboundedNeverTrips(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
+	if wf.Budget == nil {
+		t.Fatal("branch-improve-loop declares no budget: block")
+	}
+	wf.Budget.MaxCostUSD = 0   // `--max-cost-usd 0` / no cost cap
+	wf.Budget.MaxDuration = "" // no duration cap
+
+	exec := newScenarioExecutor()
+	planBudgetGateStubs(exec, planOverShareUSD)
+	var campaignIns []map[string]any
+	stubConvergingCampaignTail(exec, &campaignIns)
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-bil-plan-budget-uncapped", map[string]any{"plan_review": "on"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-bil-plan-budget-uncapped")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	gate := gateOutput(t, run)
+	if gate["exhausted"] != false {
+		t.Fatalf("the guard refused an UNCAPPED run (cost share %v, duration share %v) — a cap of 0 is unbounded, not exhausted",
+			gate["cost_share_usd"], gate["duration_share_seconds"])
+	}
+	if gate["over_cost"] != false || gate["over_duration"] != false {
+		t.Errorf("over_cost = %v / over_duration = %v on an uncapped run, want false", gate["over_cost"], gate["over_duration"])
+	}
+	if len(campaignIns) != 1 {
+		t.Fatalf("campaign called %d times, want 1 — an uncapped run must still deliver", len(campaignIns))
+	}
+}
+
+// TestBranchImproveLoop_PlanBudgetResumeRunsTheCampaign is the promise the
+// `resumable: true` on `plan_exhausted` makes, exercised on the SHIPPED
+// bot rather than a fixture: the operator widens the caps and resumes, and
+// the campaign starts on the plan the run already paid for.
+//
+// The engine anchors the checkpoint on the GUARD, so the resume re-executes
+// plan_budget_gate — which means the guard has to be re-runnable and its
+// input has to rebuild from the edge that was selected. The readout is the
+// node-start counts: the guard twice, the fail node once, campaign once.
+func TestBranchImproveLoop_PlanBudgetResumeRunsTheCampaign(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
+	s := tmpStore(t)
+	const runID = "run-bil-plan-budget-resume"
+
+	exec := newScenarioExecutor()
+	planBudgetGateStubs(exec, planOverShareUSD)
+	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, map[string]any{"plan_review": "on"}); err == nil {
+		t.Fatal("first pass succeeded; $37.50 must cross the $22.50 share")
+	}
+	run, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s (%s), want failed_resumable", run.Status, run.Error)
+	}
+
+	// What the message asks for: raise the caps, resume. The plan phase's
+	// spend is restored with the checkpoint, so the verdict flips only
+	// because the CAP moved.
+	wf.Budget.MaxCostUSD = 200
+	resumeExec := newScenarioExecutor()
+	planBudgetGateStubs(resumeExec, planOverShareUSD)
+	var campaignIns []map[string]any
+	stubConvergingCampaignTail(resumeExec, &campaignIns)
+	if err := runtime.New(wf, s, resumeExec).Resume(context.Background(), runID, nil); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+
+	run, err = s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s (%s), want finished after widening the cap", run.Status, run.Error)
+	}
+	if run.FailureCode != "" {
+		t.Errorf("failure_code = %q, want cleared by the successful resume", run.FailureCode)
+	}
+	if len(campaignIns) != 1 {
+		t.Fatalf("campaign ran %d times, want 1 — the resume did not get past the guard", len(campaignIns))
+	}
+	if campaignIns[0]["plan"] != "fix the seam, revised" {
+		t.Errorf("campaign received plan %q — the resume lost the plan this run already paid for", campaignIns[0]["plan"])
+	}
+
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	starts := map[string]int{}
+	for _, e := range events {
+		if e.Type == store.EventNodeStarted {
+			starts[e.NodeID]++
+		}
+	}
+	if starts["plan_budget_gate"] != 2 {
+		t.Errorf("the guard ran %d times, want 2 (once per pass) — the resume did not re-evaluate it", starts["plan_budget_gate"])
+	}
+	if starts["plan_exhausted"] != 1 {
+		t.Errorf("the fail node ran %d times, want 1 — the resume re-entered the refusal instead of the guard", starts["plan_exhausted"])
+	}
+	// The expensive half must NOT be re-paid: the plan chain ran on the
+	// first pass only, which is the whole reason the refusal is resumable.
+	for _, id := range []string{"plan", "plan_review", "plan_revise"} {
+		if starts[id] != 1 {
+			t.Errorf("%s ran %d times, want 1 — the resume re-paid the plan phase the guard exists to protect", id, starts[id])
+		}
 	}
 }

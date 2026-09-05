@@ -1,7 +1,12 @@
 name: feature-gap-fill
 display_name: Fini
 icon: 🧩
-version: 2.2.0
+version: 2.3.0
+## 2.3.0 — the entry precondition's refusal is a NAMED fail node
+## (`workspace_not_a_repo`, code WORKSPACE_NOT_A_REPO, terminal), so the
+## code reaches the RUN's own `failure_code` / `error` — read by `iterion
+## runs list`, the studio and the alert sinks — instead of sitting on the
+## probe's output under the generic FAIL_NODE.
 ## 2.2.0 — the plan phase runs by default on every deployment: `plan_review`
 ## gates ONLY the cross-model peer review (the plan_topology gate no longer
 ## skips planning when it resolves off); the new `plan_phase` (on|off) is

@@ -288,11 +288,12 @@ is the class guard):
   targeting any other branch has its base only as a remote-tracking ref;
   `plan_scope_probe` measures the diff against the same resolved base.
   The verdict rides the node's
-  output (`-> fail when not ok`) and stderr; the process exits 0 on
+  output and stderr; the process exits 0 on
   purpose, since a non-zero exit would replace it with the engine's
   generic tool failure. app-dev keeps no precondition: it starts from an
-  empty directory. The `-> fail` terminal still carries no custom code
-  (see `plan_budget_gate_state`'s comment): the typed code lives on the
-  probe's own persisted output.
+  empty directory. The refusal routes to the named `workspace_not_a_repo`
+  fail node (ADR-following work on #739), which stamps the code on the RUN
+  — `failure_code` / `error` — so a machine reads it without opening the
+  artifacts.
 
 `ResolvePlanReview` itself is unchanged.

@@ -40,20 +40,15 @@ func stubPlanAuthor(exec *scenarioExecutor) {
 	})
 }
 
-// stubBranchPlanRelay stubs branch-improve-loop's deterministic plan-phase
-// relays (both tool nodes): the scope probe, and the budget gate relaying
-// the hand-off fields to the campaign within its share.
+// stubBranchPlanRelay stubs branch-improve-loop's one deterministic
+// plan-phase tool node, the scope probe. plan_budget_gate is left REAL: it
+// is a compute reading the run's own consumption against the caps in
+// force, and under the bot's shipped budget (2h30m / $75) these cheap
+// stubs stay far inside plan_budget_ratio — so the hand-off it relays to
+// the campaign is exercised, not simulated.
 func stubBranchPlanRelay(exec *scenarioExecutor) {
 	exec.on("plan_scope_probe", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"diff_stat": "1 file changed", "large": false, "started_epoch": 1, "_tokens": 1}, nil
-	})
-	exec.on("plan_budget_gate", func(in map[string]any) (map[string]any, error) {
-		return map[string]any{
-			"exhausted": false, "code": "", "reason": "",
-			"plan": in["plan"], "plan_critique": in["plan_critique"], "plan_responses": in["plan_responses"],
-			"plan_provenance": in["plan_provenance"],
-			"_tokens":         1,
-		}, nil
+		return map[string]any{"diff_stat": "1 file changed", "large": false, "_tokens": 1}, nil
 	})
 }
 
@@ -179,9 +174,10 @@ func TestCampaignPlanPhase_OffSkipsPlanningExplicitly(t *testing.T) {
 
 // TestCampaignPrecondition_NotARepoFailsBeforeAnyLLM: the entry probe
 // refusing (workspace_dir absent / not a repository) must end the run
-// FAILED through the `-> fail` edge with NO LLM node started — the typed
-// code WORKSPACE_NOT_A_REPO rides the probe's own persisted output (the DSL
-// `-> fail` terminal carries no custom code, see pkg/runtime/engine_exec.go).
+// FAILED with NO LLM node started, and the typed code must be on the RUN —
+// `failure_code` / `error`, what `iterion runs list`, the studio and the
+// alert sinks read — through the named `workspace_not_a_repo` fail node,
+// not only on the probe's persisted output.
 func TestCampaignPrecondition_NotARepoFailsBeforeAnyLLM(t *testing.T) {
 	for _, tc := range campaignBotCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,19 +244,31 @@ func runProbeRefusal(t *testing.T, tc campaignBotCase, reason string) {
 	if got, _ := probeOut["reason"].(string); got != reason {
 		t.Errorf("persisted probe reason = %q, want %q", got, reason)
 	}
+	// And on the RUN itself, which is the readout an operator gets without
+	// opening the artifacts. The fail node's `message:` resolves at fail
+	// time from the probe's own reason, so the two cannot diverge.
+	if run.FailureCode != "WORKSPACE_NOT_A_REPO" {
+		t.Errorf("run.failure_code = %q, want WORKSPACE_NOT_A_REPO — the refusal reads like every other fail node", run.FailureCode)
+	}
+	if run.Error != reason {
+		t.Errorf("run.error = %q, want the probe's reason %q", run.Error, reason)
+	}
+	if run.Status == store.RunStatusFailedResumable {
+		t.Error("status = failed_resumable — a workspace that is not a repository is a launch to fix, not a cap to widen; a resume would refuse identically")
+	}
 	events, err := s.LoadEvents(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
-	// Only the probe and the `fail` terminal complete: the run stops right
-	// after the refusal, before any LLM node starts.
+	// Only the probe and its fail node complete: the run stops right after
+	// the refusal, before any LLM node starts.
 	finished := eventNodeIDs(events, store.EventNodeFinished)
 	if len(finished) == 0 || finished[0] != "workspace_probe" {
 		t.Errorf("node_finished events = %v, want workspace_probe first", finished)
 	}
 	for _, id := range finished {
-		if id != "workspace_probe" && id != "fail" {
-			t.Errorf("node %q finished after the refusal — nothing but the probe and the fail terminal may run (events: %v)", id, finished)
+		if id != "workspace_probe" && id != "workspace_not_a_repo" {
+			t.Errorf("node %q finished after the refusal — nothing but the probe and its fail node may run (events: %v)", id, finished)
 		}
 	}
 }

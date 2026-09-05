@@ -1,7 +1,16 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.3.0
+version: 0.4.0
+## 0.4.0 — the three coded refusals are NAMED fail nodes, so their code
+## reaches the RUN's own `failure_code` / `error` instead of a prefix on a
+## node output nobody reads without opening the artifacts:
+## `lot_not_actionable` (LOT_NOT_ACTIONABLE — an only_lot request naming a
+## done/blocked/absent lot), `gate_timeout` (GATE_TIMEOUT) and
+## `contract_unreadable` (CONTRACT_UNREADABLE). All terminal: each answer
+## only changes when the contract does. `work_gate -> fail when refused`
+## stays bare — that one bool carries two codes (CONTRACT_UNREADABLE,
+## LOT_UNEDITABLE) and a fail node stamps one.
 ## 0.3.0 — `done` is the gate's word: a new mark_done node writes it after the
 ## lot converged, a worker-written `done` or a rewritten contract is refused
 ## before the gate runs, and a refusal that outlives the repair loop fails the

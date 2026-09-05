@@ -1,7 +1,22 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.4.0
+version: 1.5.0
+## 1.5.0 — the plan-phase budget guard reads the run itself. ONE `compute`
+## (`plan_budget_gate`) compares `run.elapsed_seconds` / `run.cost_usd`
+## against `run.max_duration_seconds` / `run.max_cost_usd` — the caps IN
+## FORCE, after any `--max-duration` / `--max-cost-usd` override, the
+## recipe, the platform ceiling and any live raise_budget. Gone with it:
+## the two mirror vars (`budget_max_duration_minutes` /
+## `budget_max_cost_usd`, which drifted from the `budget:` block in
+## silence), `plan_scope_probe`'s self-measured `started_epoch`, and the
+## `plan_cost_probe` relay whose nil-safe per-node cost sum the run's own
+## figure supersedes. Both refusals are now NAMED fail nodes, so the code
+## reaches the RUN (`failure_code` / `error`) instead of only the node
+## output: `plan_exhausted` (PLAN_BUDGET_EXHAUSTED, **resumable** — widen
+## the caps and resume, and the guard is re-evaluated rather than the plan
+## phase re-paid) and `workspace_not_a_repo` (WORKSPACE_NOT_A_REPO,
+## terminal — a launch to fix, not a budget).
 ## 1.4.0 — the plan phase runs by default on every deployment: `plan_review`
 ## gates ONLY the cross-model peer review (the plan_topology gate no longer
 ## skips planning when it resolves off); the new `plan_phase` (on|off) is

@@ -574,6 +574,16 @@ compute work_gate:
     lot_status: "outputs.plan_read.lot_status"
     refused: "outputs.plan_read.refused"
 
+## lot_not_actionable — an EXPLICIT only_lot request naming a lot the
+## reader resolved as done / blocked / absent (native:670). Terminal by
+## design: the answer only changes when the contract does, so a resume
+## would re-read the same lot and refuse identically.
+fail lot_not_actionable:
+  description: "only_lot named a lot that cannot be actioned"
+  code: LOT_NOT_ACTIONABLE
+  message: "lot '{{vars.only_lot}}' is {{outputs.work_gate.lot_status}} — {{outputs.work_gate.notice}}"
+  resumable: false
+
 agent upgrade_campaign:
   backend: "claude_code"
   model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5}"
@@ -1119,6 +1129,26 @@ compute lot_gate:
     ## decides the verdict.
     needs_extend: "vars.extend && length(outputs.lot_verify.extension_pending) > 0"
 
+## gate_timeout — a gate command outlived the contract's `gate_timeout_s`.
+## The verdict is in the tree; ending on the bare `fail` reported the same
+## FAIL_NODE as a forged `done`, and the wall is what the operator must
+## act on. Terminal: a resume would replay the same hour against the same
+## wall — raise gate_timeout_s or shorten the gate, then relaunch.
+fail gate_timeout:
+  description: "a gate command outlived the contract's gate_timeout_s"
+  code: GATE_TIMEOUT
+  message: "{{outputs.lot_verify.block_reason}}"
+  resumable: false
+
+## contract_unreadable — the verifier could not READ the contract. Never a
+## verdict over the lot (every conjunct stays false), so it must not read
+## as one on the run either. Terminal: the contract has to be fixed.
+fail contract_unreadable:
+  description: "the verifier could not read the programme contract"
+  code: CONTRACT_UNREADABLE
+  message: "{{outputs.lot_gate.fail_log}}"
+  resumable: false
+
 ## reanchor — the net's OWN bot, run as a subbot, to repair a mutant this lot
 ## invalidated.
 ##
@@ -1408,9 +1438,12 @@ workflow modernize:
   ## absent lot fails loud instead of falling into the done/campaign pair
   ## below, which is exhaustive only over the unfiltered "pick next" scan.
   ## An unreadable or uneditable contract is a verdict, not a tool error:
-  ## the run fails here, typed, before any token is spent.
+  ## the run fails here, before any token is spent — on the bare `fail`,
+  ## because one bool carries two codes (CONTRACT_UNREADABLE and
+  ## LOT_UNEDITABLE) and a named fail may only stamp one; plan_read's
+  ## notice names which.
   work_gate -> fail when refused
-  work_gate -> fail when lot_not_actionable
+  work_gate -> lot_not_actionable when lot_not_actionable
 
   ## Exhaustive pair on one bool (C012): an already-finished programme is a
   ## clean no-op, not an error — running a done programme must cost nothing and
@@ -1445,8 +1478,8 @@ workflow modernize:
   ## engine takes the first `when` that holds, and a timed-out verdict may
   ## also carry an invalidated mutant or a pending extension — routed to a
   ## subbot, it would replay the same gate before failing.
-  lot_gate -> fail when timed_out
-  lot_gate -> fail when unreadable
+  lot_gate -> gate_timeout when timed_out
+  lot_gate -> contract_unreadable when unreadable
 
   ## Repair the net BEFORE deciding the lot, and on every outcome — a converged
   ## lot is exactly the case where a lost mutant would never be noticed. Bounded
