@@ -1344,9 +1344,25 @@ def extension_verdict(ws, gm_rel, base):
                 seen_new[key] = "added entry %r" % aid
         corpus_ok = not corpus_problems
 
+    # An act already recorded in the ledger AT BASE was judged by the run
+    # that introduced it, and its additions are that base's references now:
+    # judging it again against a base that contains them reads every one as
+    # "existed at base — a rewrite wearing an addition's name" and refuses a
+    # net that did nothing wrong. Measured on a live campaign: an extension
+    # certified one day blocked every lot launched from the next day's base,
+    # and the repair was a whole re-sealing rite — for a verdict that should
+    # have said "already judged". Only acts the segment base..HEAD introduces
+    # are judged here; the rest are reported acted-at-base and left alone.
+    base_act_ids = {b.get("id") for b in _extension_blocks(base_txt, "act")
+                    if b.get("id") != "UNPARSEABLE"}
     intro = introducing_commits()
     for act in acts:
         row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
+        if act.get("id") in base_act_ids:
+            row["ok"] = True
+            row["acted_at_base"] = True
+            verdict["acted"].append(row)
+            continue
         req = requests.get(act.get("id"))
         if req is None:
             row["problems"].append("an act without a request acts nothing")
@@ -2701,6 +2717,27 @@ def _selftest():
         check("add-file legitime -> ok, chemin exempte",
               [v["acted"][0]["ok"], v["ok_paths"]],
               [True, [".golden-master/refs/2.txt"]])
+
+        # Un acte deja present A LA BASE n'est pas re-juge : ses ajouts sont
+        # les references de cette base, et les relire comme des reecritures
+        # refuserait tout lot parti d'une base qui contient un acte certifie.
+        xbase_acted = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        with open(os.path.join(xroot, "later.txt"), "w", encoding="utf-8") as f:
+            f.write("a lot landed after the act\n")
+        xcommit()
+        v_after = extension_verdict(xroot, ".golden-master", xbase_acted)
+        check("acte present a la base -> ok, acted_at_base, aucun probleme",
+              [v_after["acted"][0]["ok"], v_after["acted"][0].get("acted_at_base"),
+               v_after["acted"][0]["problems"], v_after["problems"]],
+              [True, True, [], []])
+        # ... et la reecriture d'une de ses refs par le lot reste vue par le
+        # verdict d'immutabilite (git diff), pas par le certificat.
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2-reecrite-par-un-lot\n")
+        xcommit()
+        v_touch = extension_verdict(xroot, ".golden-master", xbase_acted)
+        check("acte a la base + ref reecrite -> le certificat n'exempte rien",
+              [v_touch["acted"][0]["ok"], v_touch["ok_paths"]], [True, []])
 
         # Reecriture deguisee : la ref existait a la base.
         xreset()
