@@ -28,6 +28,37 @@ func WithSandboxRunObserver(fn func(sandbox.Run)) EngineOption {
 	return func(e *Engine) { e.sandboxRunObserver = fn }
 }
 
+// SharedSandbox is what a child engine needs to execute inside a PARENT
+// run's live sandbox: the driver handle its executor routes commands
+// through, the in-container workspace path ${PROJECT_DIR} remaps to, and
+// the host-state directory both sides can reach. Facts only — the parent
+// owns the sandbox's lifecycle; a child never prepares, starts or cleans
+// it up.
+type SharedSandbox struct {
+	Run             sandbox.Run
+	WorkspaceFolder string
+	SharedStateDir  string
+	// The parent's per-run MCP listeners, reachable from the same sandbox:
+	// a child's board-capability and interactive nodes use them instead of
+	// listeners of their own (none are started for a child).
+	BoardEndpoint   string
+	AskUserEndpoint string
+	AskUserToken    string
+}
+
+// WithSharedSandbox makes the engine execute every node in the given
+// live sandbox instead of starting one of its own — the shape of a
+// subbot child under a sandboxed parent. Applies only when the shared
+// Run is non-nil; a nil value leaves the engine's own sandbox decision
+// untouched.
+func WithSharedSandbox(s *SharedSandbox) EngineOption {
+	return func(e *Engine) {
+		if s != nil && s.Run != nil {
+			e.sharedSandbox = s
+		}
+	}
+}
+
 // AttachmentPromoteFunc is invoked once at the start of a run, right
 // after the run is created in the store but before the engine walks
 // the graph. It is expected to populate Run.Attachments by calling

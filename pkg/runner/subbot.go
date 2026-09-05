@@ -242,6 +242,12 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 				}
 			}),
 		}
+		// The child executes in the PARENT's sandbox when the parent has one:
+		// on a copy-based driver a pod of its own would be a second copy of
+		// the workspace, and its commits would die with that pod.
+		if req.ParentSandbox != nil {
+			opts = append(opts, runtime.WithSharedSandbox(req.ParentSandbox))
+		}
 		// The child's own bundle: its skills and devbox tools, exactly as a
 		// local `iterion run bots/<child>` would provision them.
 		if b, berr := bundle.OpenDir(filepath.Dir(childPath)); berr == nil {
