@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -14,24 +15,48 @@ import (
 // header into the part: DoMultipartFile is exported and general-purpose, and
 // the explicit Content-Type it sets is the one an upload validator reads.
 func TestDoMultipartFile_HeaderInjectionIsNeutralised(t *testing.T) {
-	var raw []byte
+	var (
+		gotHeader textproto.MIMEHeader
+		gotBytes  []byte
+		parseErr  error
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ = io.ReadAll(r.Body)
+		mr, err := r.MultipartReader()
+		if err != nil {
+			parseErr = err
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		part, err := mr.NextPart()
+		if err != nil {
+			parseErr = err
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotHeader = part.Header
+		gotBytes, _ = io.ReadAll(part)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	code, _, err := DoMultipartFile(context.Background(), srv.Client(), http.MethodPut, srv.URL, "t", nil,
 		"avatar", "a.png\"\r\nX-Injected: yes\r\nContent-Type: text/plain", "image/png\r\nX-Also: yes", []byte("png"), nil)
-	if err != nil || code != http.StatusNoContent {
-		t.Fatalf("code=%d err=%v", code, err)
+	if err != nil || code != http.StatusNoContent || parseErr != nil {
+		t.Fatalf("code=%d err=%v parse=%v", code, err, parseErr)
 	}
-	body := string(raw)
-	if strings.Contains(body, "X-Injected") || strings.Contains(body, "X-Also") || strings.Contains(body, "text/plain\"\n") {
-		t.Fatalf("a header was injected through a part parameter:\n%s", body)
+	// The CR/LF are gone, so the smuggled text is inert: it stays INSIDE the
+	// parameter value instead of becoming a header of its own.
+	if v := gotHeader.Get("X-Injected"); v != "" {
+		t.Errorf("a header was injected through the file name: X-Injected=%q", v)
 	}
-	if strings.Count(body, "Content-Type:") != 1 || !strings.Contains(body, "Content-Type: image/png") {
-		t.Fatalf("the part must carry exactly one Content-Type, the caller's:\n%s", body)
+	if v := gotHeader.Get("X-Also"); v != "" {
+		t.Errorf("a header was injected through the content type: X-Also=%q", v)
+	}
+	if cts := gotHeader.Values("Content-Type"); len(cts) != 1 || !strings.HasPrefix(cts[0], "image/png") {
+		t.Errorf("the part must carry exactly one Content-Type, the caller's: %q", cts)
+	}
+	if string(gotBytes) != "png" {
+		t.Errorf("body = %q", gotBytes)
 	}
 }
 
