@@ -200,10 +200,19 @@ func printBoardBinding(p *Printer, b forge.BoardBinding) {
 	if b.StatusFieldID == "" {
 		p.Line("  (this board has no Status field — labels only, no status projection)")
 	}
+	// A column can be absent from the board while the binding still caches its
+	// option id: that is a LOST column, whose id is deliberately KEPT as the
+	// evidence that keeps the degradation re-derivable. So the cached id is not
+	// the test — `missing_statuses`, which every reconciliation recomputes, is.
+	// Marking on the id alone left a broken column rendering exactly like a
+	// working one, while the studio (keyed on the same list) marked it.
+	absent := make(map[string]bool, len(b.MissingStatuses))
+	for _, s := range b.MissingStatuses {
+		absent[strings.ToLower(strings.TrimSpace(s))] = true
+	}
 	for _, m := range b.Mapping() {
-		opt := b.StatusOptions[m.State]
 		mark := "  "
-		if opt == "" {
+		if b.StatusOptions[m.State] == "" || absent[strings.ToLower(strings.TrimSpace(m.Status))] {
 			mark = "! " // present in the map, absent from the board
 		}
 		p.Line("%s%-14s → %s", mark, m.Status, m.State)
