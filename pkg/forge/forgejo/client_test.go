@@ -1,7 +1,9 @@
 package forgejo
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -109,5 +111,48 @@ func TestForgejoOAuth_AuthorizeWithPKCEAndRefresh(t *testing.T) {
 	}
 	if tok.AccessToken != "at2" || tok.RefreshToken != "rt2" || tok.ExpiresAt.IsZero() {
 		t.Errorf("refreshed token = %+v", tok)
+	}
+}
+
+// TestSetAvatar_JSONBase64 pins Gitea/Forgejo's POST /user/avatar shape: a
+// JSON body whose `image` is the raw bytes base64-encoded (standard alphabet,
+// no data-URL prefix), answered 204 with no URL to report.
+func TestSetAvatar_JSONBase64(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', 1, 2, 3, 250}
+	var gotMethod, gotPath, gotAuth string
+	var got struct {
+		Image string `json:"image"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	url, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "" {
+		t.Errorf("forgejo reports no avatar url, got %q", url)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1/user/avatar" || gotAuth != "token tok" {
+		t.Errorf("request = %s %s auth %q", gotMethod, gotPath, gotAuth)
+	}
+	dec, err := base64.StdEncoding.DecodeString(got.Image)
+	if err != nil || !bytes.Equal(dec, png) {
+		t.Errorf("image field = %q (decode err %v), want the png bytes base64-encoded", got.Image, err)
+	}
+}
+
+func TestSetAvatar_UnsupportedInstance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	_, err := New(srv.Client(), srv.URL, "tok").SetAvatar(context.Background(), []byte("png"))
+	if !errors.Is(err, forge.ErrAvatarUnsupported) {
+		t.Errorf("err = %v, want ErrAvatarUnsupported (a 404 is the missing route, not a missing hook)", err)
 	}
 }

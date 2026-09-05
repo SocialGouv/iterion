@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"strings"
 )
 
 // DoJSON performs one JSON-over-HTTP API call shared by every outbound
@@ -71,4 +74,68 @@ func StatusErr(errPrefix, op string, code int) error {
 	default:
 		return fmt.Errorf("%s: %s: HTTP %d", errPrefix, op, code)
 	}
+}
+
+// DoMultipartFile performs one multipart/form-data upload carrying a single
+// file part — the shape GitLab's avatar endpoint takes — with DoJSON's header
+// strategy (the token never rides the URL). Unlike DoJSON it hands the response
+// body back on every status (capped at 8 KiB): an upload refusal names its
+// reason there ("is too big", "content type is invalid"), and the operator
+// needs that verbatim. out (when non-nil, on a 2xx with a body) is JSON-decoded.
+func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), field, filename, contentType string, data []byte, out any) (int, []byte, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	hdr := make(textproto.MIMEHeader)
+	hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, quoteEscape(field), quoteEscape(filename)))
+	// Named explicitly: multipart.CreateFormFile would stamp
+	// application/octet-stream, and an upload validator may read the part's
+	// own type before sniffing the bytes.
+	hdr.Set("Content-Type", contentType)
+	part, err := mw.CreatePart(hdr)
+	if err != nil {
+		return 0, nil, fmt.Errorf("%s: multipart: %w", errPrefix, err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return 0, nil, fmt.Errorf("%s: multipart: %w", errPrefix, err)
+	}
+	if err := mw.Close(); err != nil {
+		return 0, nil, fmt.Errorf("%s: multipart: %w", errPrefix, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, &buf)
+	if err != nil {
+		return 0, nil, err
+	}
+	if setHeaders != nil {
+		setHeaders(req)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if out != nil && resp.StatusCode/100 == 2 && len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, out); err != nil {
+			return resp.StatusCode, body, fmt.Errorf("%s: decode response: %w", errPrefix, err)
+		}
+	}
+	return resp.StatusCode, body, nil
+}
+
+var quoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+func quoteEscape(s string) string { return quoteEscaper.Replace(s) }
+
+// TrimBody flattens a response body into one short line, for an error message
+// that quotes what the forge said without pasting a page of HTML into a log.
+func TrimBody(b []byte) string {
+	s := strings.Join(strings.Fields(string(b)), " ")
+	if len(s) > 300 {
+		s = s[:300] + "…"
+	}
+	return s
 }

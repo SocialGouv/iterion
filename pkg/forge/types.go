@@ -61,6 +61,19 @@ const (
 	KindPAT Kind = "pat"
 )
 
+// AccountKind values — what the account behind a credential IS on the forge.
+// Identity.Kind carries one at connect time and Connection.AccountKind keeps it.
+const (
+	// AccountKindUser is a person's account: an OAuth authorization or a PAT.
+	AccountKindUser = "user"
+	// AccountKindBot is a machine account the forge itself flags as one —
+	// GitLab's group/project-access-token bot user or service account. The
+	// only kind iterion rebrands with the iterion-bot avatar unasked.
+	AccountKindBot = "bot"
+	// AccountKindInstallation is a GitHub App acting through an installation.
+	AccountKindInstallation = "installation"
+)
+
 // ConnectionStatus is the health of a connection's admin credential.
 type ConnectionStatus string
 
@@ -194,6 +207,21 @@ type Connection struct {
 	// to the operator so the fix is actionable; cleared on reconnect.
 	StatusReason string `bson:"status_reason,omitempty" json:"status_reason,omitempty"`
 
+	// AccountKind is what the connected account IS on the forge (the
+	// AccountKind* constants), copied from WhoAmI at connect time. It gates
+	// the iterion-bot avatar upload: only AccountKindBot is rebranded without
+	// the operator asking. Empty on connections older than the field, which
+	// reads as a user — nothing is ever rebranded on a mere absence.
+	AccountKind string `bson:"account_kind,omitempty" json:"account_kind,omitempty"`
+	// AvatarAppliedAt is when iterion last uploaded the iterion-bot avatar
+	// onto this connection's account (at connect time for a bot identity, or
+	// through the explicit apply action). Nil = never.
+	AvatarAppliedAt *time.Time `bson:"avatar_applied_at,omitempty" json:"avatar_applied_at,omitempty"`
+	// AvatarError keeps the forge's refusal of the last avatar upload, so the
+	// studio can name it and offer a retry instead of showing a default
+	// avatar with no explanation. Cleared by the next successful upload.
+	AvatarError string `bson:"avatar_error,omitempty" json:"avatar_error,omitempty"`
+
 	// SealedPayload holds the token blob (access/refresh/PAT + expiry),
 	// sealed via secrets.Sealer with AAD "forge_conn:<ID>". Never serialised.
 	SealedPayload []byte `bson:"sealed_payload" json:"-"`
@@ -309,4 +337,8 @@ var (
 	// (an org admin must re-approve the install with the updated permissions,
 	// or the connection should be removed) instead of re-minting each tick.
 	ErrPermissionsNotGranted = errors.New("forge: installation permissions not granted")
+	// ErrAvatarUnsupported is returned by an AvatarSetter when the forge
+	// instance has no avatar endpoint at all (GitLab before 17.0, Gitea before
+	// 1.20): the operator's only path is the forge's own profile page.
+	ErrAvatarUnsupported = errors.New("forge: this instance has no avatar API")
 )

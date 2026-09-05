@@ -96,8 +96,10 @@ type Identity struct {
 	Login string `json:"login"`
 	ID    string `json:"id"`
 	Email string `json:"email,omitempty"`
-	// Kind is "user" | "installation" | "bot" — a GitHub-App connection
-	// posts as the App ("bot"), an OAuth/PAT connection as a user.
+	// Kind is one of the AccountKind* constants: a GitHub-App connection
+	// posts as the App ("installation"), an OAuth/PAT connection as the
+	// person ("user") — or as the machine account the forge flags as one
+	// ("bot": GitLab's access-token bot users and service accounts).
 	Kind string `json:"kind,omitempty"`
 	// Namespace is the user/org/group the account belongs to, surfaced in
 	// the studio so the operator confirms the right account is connected.
@@ -147,4 +149,19 @@ type HookHandle struct {
 	URL    string   `json:"url"`
 	Events []string `json:"events,omitempty"`
 	Active bool     `json:"active"`
+}
+
+// AvatarSetter replaces the avatar of the ACCOUNT the credential authenticates
+// as — the bot user behind a GitLab group/project access token, a dedicated
+// Forgejo bot account — with the iterion-bot mascot, so every identity iterion
+// operates shows one face. An optional capability, like RepoCreator: the
+// GitHub clients deliberately do not implement it, because GitHub exposes no
+// API for a user's avatar nor for an App's logo (the manifest flow cannot set
+// one either) — those stay a documented manual upload. Callers gate on WHO the
+// token is: an OAuth user token is a person's account and is never rebranded.
+type AvatarSetter interface {
+	// SetAvatar uploads png as the current account's avatar. avatarURL is
+	// the URL the forge reports back, "" when it reports none (Forgejo).
+	// Returns ErrAvatarUnsupported when the instance has no avatar endpoint.
+	SetAvatar(ctx context.Context, png []byte) (avatarURL string, err error)
 }
