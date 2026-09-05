@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,11 @@ const (
 	reaperMarkerPrefix = tracker.ReaperMarkerPrefix
 )
 
+// claimReaperTick is the cadence the local reaper goroutine actually
+// ticks on — the production constant, injectable so a pass can be driven
+// under test without waiting a real minute.
+var claimReaperTick = claimReaperInterval
+
 // ClaimReaperInterval is the watchdog's cadence, exported so the cloud
 // board dispatcher paces its own pass by the SAME constant instead of
 // inheriting whatever its dispatch tick happens to be.
@@ -77,34 +83,41 @@ func ClaimReaperEnabled() bool {
 }
 
 // ClaimReaperMisspelling returns a diagnostic when the gate is set to a
-// value that is neither "on" nor "off", and "" otherwise. The var takes
-// exactly those two spellings, while this repo's other toggles accept
-// 1/true/0 — so an operator who reaches for a familiar one gets a
-// watchdog that is OFF, at the release N+1 cutover, with no feedback but
-// cards that stay stuck. That is precisely the failure mode this file's
-// own comment names ("a declared watchdog that silently isn't running").
-// Both surfaces log it once at startup.
+// value it does not understand, and "" otherwise. An unrecognised value
+// leaves the watchdog OFF — at the release N+1 cutover, where the
+// operator's only other feedback is cards that stay stuck — which is
+// precisely the failure mode this file's own comment names ("a declared
+// watchdog that silently isn't running"). Both surfaces log it once at
+// startup.
 func ClaimReaperMisspelling() string {
 	_, raw := claimReaperSetting()
 	if raw == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s=%q is not a value this gate understands — it takes %q or %q, so the claim watchdog stays OFF",
-		claimReaperEnv, raw, "on", "off")
+	return fmt.Sprintf("%s=%q is not a value this gate understands — it takes on/off, 1/0, true/false or yes/no, so the claim watchdog stays OFF",
+		claimReaperEnv, raw)
 }
 
 // claimReaperSetting resolves the gate, returning whether it is on and
-// the raw value when that value is unrecognised (empty otherwise).
+// the raw value when that value is unrecognised (empty otherwise). It
+// takes the spellings this repo's other toggles take (strconv.ParseBool's
+// 1/0/t/f/true/false) plus on/off and yes/no, case-insensitively.
 func claimReaperSetting() (on bool, unrecognised string) {
 	raw := strings.TrimSpace(os.Getenv(claimReaperEnv))
-	switch {
-	case strings.EqualFold(raw, "on"):
-		return true, ""
-	case raw == "" || strings.EqualFold(raw, "off"):
+	if raw == "" {
 		return false, ""
-	default:
+	}
+	switch strings.ToLower(raw) {
+	case "on", "yes":
+		return true, ""
+	case "off", "no":
+		return false, ""
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
 		return false, raw
 	}
+	return b, ""
 }
 
 // startClaimReaper launches the periodic reaper when the gate is on and
@@ -124,15 +137,33 @@ func (c *Dispatcher) startClaimReaper() {
 		return
 	}
 	c.logger.Info("dispatcher: claim watchdog active (every %s — expired leases are reclaimed and routed by the decision table)", claimReaperInterval)
+	// Tracked by workersWG and cancelled by c.stop: Stop() promises that
+	// nothing of this dispatcher keeps writing once it returns
+	// (Manager.Stop tears the EngineRunner down right after; the studio
+	// rebuilds the dispatcher on a project switch). A pass on
+	// context.Background() outside the WaitGroup kept transferring
+	// claims, filing cards and writing run statuses under a config the
+	// operator had already replaced.
+	c.workersWG.Add(1)
 	errtrack.Go("dispatcher.claimReaper", func() {
-		t := time.NewTicker(claimReaperInterval)
+		defer c.workersWG.Done()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			select {
+			case <-c.stop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		t := time.NewTicker(claimReaperTick)
 		defer t.Stop()
 		for {
 			select {
 			case <-c.stop:
 				return
 			case <-t.C:
-				c.reapExpiredClaims(context.Background(), reaper, time.Now().UTC())
+				c.reapExpiredClaims(ctx, reaper, time.Now().UTC())
 			}
 		}
 	})
@@ -198,6 +229,7 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 	card := StuckCard{
 		State: cand.State, RunningState: cfg.Agent.RunningState, LaunchStates: c.launchStates(),
 		StampWindowOpen: StampWindowOpen(cand.ClaimedAt, now),
+		RecordedRunID:   cand.LastRunID,
 	}
 	// PRE-transfer: only the rows that protect a live owner. The parked
 	// row is deliberately not consulted here — refusing the transfer would
@@ -242,6 +274,8 @@ func (c *Dispatcher) reapOne(ctx context.Context, reaper tracker.ClaimReaper, ru
 		filed = c.fileStuckCard(ctx, cand, card, cfg.Agent.CompletedState, tok, tracker.ReasonRunFinished)
 	case StuckFail:
 		filed = c.fileStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, tracker.ReasonRunFailed)
+	case StuckGiveUp:
+		filed = c.giveUpStuckCard(ctx, cand, card, cfg.Agent.FailedState, tok, dec.Reason)
 	case StuckRepark, StuckReleaseOnly:
 		// The release below is the whole action: the card re-enters the
 		// eligible pool, and for Repark the retry machinery resumes the
@@ -317,6 +351,50 @@ func (c *Dispatcher) fileStuckCard(ctx context.Context, cand tracker.ExpiredClai
 	}
 	if err := c.leaser.UpdateStateOwned(ctx, cand.IssueID, target, tok); err != nil {
 		c.logger.Warn("dispatcher: claim watchdog file %s → %s: %v", cand.Identifier, target, err)
+		return false
+	}
+	return true
+}
+
+// ownedGiveUpStamper is the FENCED give-up stamp a lease backend offers
+// (native.Adapter does) — the owner-scoped twin of giveUpStamper, named
+// for the same reason (an assertion on an anonymous interface fails
+// silently). The watchdog's give-up filing is NOT complete without it: a
+// card filed as failed with no stamp reads as a human's decision, which
+// is the misreport the stamp exists to prevent.
+type ownedGiveUpStamper interface {
+	SetGaveUpOwned(id string, g *native.GiveUp, tok tracker.ClaimToken) error
+}
+
+// giveUpStuckCard performs the StuckGiveUp disposition: file the card into
+// the failed column under MACHINE provenance (the watchdog decided this by
+// itself — no downstream chain may fire as if a run had failed), then
+// stamp the give-up naming the gone run and why, so the pipeline board's
+// Needs-attention lane shows it as the watchdog's own filing. Both halves
+// are the disposition: a failed stamp keeps the recovery claim, and the
+// next lease retries — loudly.
+func (c *Dispatcher) giveUpStuckCard(ctx context.Context, cand tracker.ExpiredClaim, card StuckCard, target string, tok tracker.ClaimToken, reason string) bool {
+	if target == "" {
+		c.logger.Warn("dispatcher: claim watchdog cannot file %s (recorded run %s is gone): no failed_state is configured, "+
+			"and releasing it would re-dispatch work that may already be delivered — keeping the recovery claim",
+			cand.Identifier, cand.LastRunID)
+		return false
+	}
+	stamper, ok := c.leaser.(ownedGiveUpStamper)
+	if !ok {
+		c.logger.Warn("dispatcher: claim watchdog cannot stamp a give-up on %s (leaser %T has no SetGaveUpOwned) — "+
+			"keeping the recovery claim rather than filing a card that would read as a human's decision",
+			cand.Identifier, c.leaser)
+		return false
+	}
+	if !c.fileStuckCard(ctx, cand, card, target, tok, "") {
+		return false
+	}
+	// GiveUpToRecord makes the stamp a no-op when the card is not in the
+	// stamped state (the guard declined the filing: an operator moved the
+	// card first, and their intent stands unannotated).
+	if err := stamper.SetGaveUpOwned(cand.IssueID, &native.GiveUp{RunID: cand.LastRunID, State: target, Reason: reason}, tok); err != nil {
+		c.logger.Warn("dispatcher: claim watchdog give-up stamp on %s: %v", cand.Identifier, err)
 		return false
 	}
 	return true
@@ -400,8 +478,10 @@ func (c *Dispatcher) loadRunForReap(ctx context.Context, runs *store.FilesystemR
 	if err != nil {
 		if store.RunAbsent(err) {
 			// A recorded run whose document is gone — pruned, or deleted
-			// with a tombstone — proves nothing is alive: same disposition
-			// as "no run". Reading a tombstone as a transient read failure
+			// with a tombstone — proves nothing is alive. It is NOT the
+			// "no run" row: the table tells the two apart through
+			// StuckCard.RecordedRunID and files the gone pointer as a
+			// give-up. Reading a tombstone as a transient read failure
 			// instead would conserve the card for ever (DecideStuckCard
 			// returns StuckKeep on any read error, and reapOne returns
 			// before the transfer, so keepAfterTransfer's "conserved once"

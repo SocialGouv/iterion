@@ -83,7 +83,7 @@ though read-only mode restricts it to GET.
 | `local_run` | write | **Launch a run** (see semantics below). |
 | `local_resume` | write | Resume a paused / `failed_resumable` / cancelled run (answers supported). |
 | `local_run_cancel` | write | Cancel a detached run — or explicitly repair a dead one (see below). |
-| `local_board_*` | read/write | The native kanban board of this store — the full boardops tool set (`create_issue`, `list_issues`, `get_issue`, `transition_issue`, `assign_issue`, `set_bot`, `set_labels`, `comment_issue`, `close_issue`, `list_labels`) under the `local_board_` prefix, all capabilities granted (the operator drives their own board). |
+| `local_board_*` | read/write | The native kanban board of this store — the full boardops tool set (`create_issue`, `list_issues`, `get_issue`, `transition_issue`, `assign_issue`, `set_bot`, `add_labels`, `remove_labels`, `set_labels`, `comment_issue`, `close_issue`, `list_labels`) under the `local_board_` prefix, all capabilities granted (the operator drives their own board). |
 
 **Launch semantics (`local_run`).** The workflow is validated
 synchronously (invalid → diagnostics, nothing launched), then executed
@@ -169,7 +169,7 @@ without a terminal status, `local_run_cancel` repairs it to
 > "Create a board issue for the flaky webhook test, label it `bug`,
 > route it to feature-dev."
 
-`local_board_create_issue` → `local_board_set_labels` →
+`local_board_create_issue` → `local_board_add_labels` →
 `local_board_set_bot` (the dispatcher picks it up from there — see
 [native-tracker.md](native-tracker.md)).
 

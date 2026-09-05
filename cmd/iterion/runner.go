@@ -191,7 +191,8 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	})
 	// Per-run OAuth-forfait dirs (codex / claude_code) the runner materialised
 	// at claim time. Lets the in-process claw model factory consume a tenant's
-	// resolved OpenAI ChatGPT-forfait in cloud mode (no ~/.codex on the pod).
+	// resolved subscription in cloud mode, where the pod has neither ~/.codex
+	// nor ~/.claude: codex → openai, claude_code → anthropic.
 	model.SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
 		creds, ok := secrets.CredentialsFromContext(ctx)
 		if !ok {

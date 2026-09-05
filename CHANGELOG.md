@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.102.3](https://github.com/SocialGouv/iterion/compare/v3.102.2...v3.102.3) (2026-09-05)
+
+### Bug Fixes
+
+* **board:** the cloud twin claims launches atomically, the reaper gives up on a pruned run, labels adjust relatively, GitHub claims bootstrap their label ([#731](https://github.com/SocialGouv/iterion/issues/731)) ([53f5635](https://github.com/SocialGouv/iterion/commit/53f5635167d0593dae2ec7f12d33dc5f535ac689)), references [#665](https://github.com/SocialGouv/iterion/issues/665) [#660](https://github.com/SocialGouv/iterion/issues/660) [#660](https://github.com/SocialGouv/iterion/issues/660) [#667](https://github.com/SocialGouv/iterion/issues/667) [#666](https://github.com/SocialGouv/iterion/issues/666)
+
+    <details><summary>why</summary>
+
+    The studio's pipeline admission loop launches a Ready card through native.LaunchClaimer — a CAS Ready → in_progress that also reads the claim family, because the dispatcher wins a card with the CLAIM and moves it to in_progress afterwards, off the actor. The Mongo twin never implemented it, so on a cloud board the admission loop degraded to a best-effort SetState: replica A's board dispatcher claims a Ready card (lease live, in_progress move in flight) while replica B's admission tick launches…
+
+    </details>
+* **engine:** a recovery pause retries its node, an orchestration stall recovers in place, and a run read never writes run.json back ([#716](https://github.com/SocialGouv/iterion/issues/716)) ([9c3ab3d](https://github.com/SocialGouv/iterion/commit/9c3ab3d51b25469098c3ba007faf11faee75cb75)), references [#688](https://github.com/SocialGouv/iterion/issues/688) [#692](https://github.com/SocialGouv/iterion/issues/692) [#692](https://github.com/SocialGouv/iterion/issues/692) [#691](https://github.com/SocialGouv/iterion/issues/691) [#691](https://github.com/SocialGouv/iterion/issues/691)
+
+    <details><summary>why</summary>
+
+    The recovery dispatcher parks a FAILED node for a human (AUTH_FAILED, budget, any RecoveryPauseForHuman policy) through the plain human-pause path, with an empty pauseInfo. The checkpoint therefore carried no BackendName, and resumeFromPause has exactly one branch that re-executes the paused node — the delegate pause, keyed on BackendName. A recovery pause fell through to the human path: the acknowledgement became the node's OUTPUT, node_finished was emitted, and the DAG moved on to the gate,…
+
+    </details>
+* **sandbox/kubernetes:** the pod-ready wait is configurable and defaults to 10 min — a 180 s cap killed runs the autoscaler had just made room for ([#707](https://github.com/SocialGouv/iterion/issues/707)) ([70da3d9](https://github.com/SocialGouv/iterion/commit/70da3d9c249000d420ae573526d502ed23a8530f)), closes [#696](https://github.com/SocialGouv/iterion/issues/696), references [#694](https://github.com/SocialGouv/iterion/issues/694)
+
+    <details><summary>why</summary>
+
+    Measured on a 12-node cluster once run pods carry requests (#694): with ten run pods the scheduler answered "0/12 nodes are available: 11 Insufficient cpu" for two minutes, the cluster autoscaler added a worker, the fresh node's CNI took a few seconds, the 736 MB sandbox image pulled in 1m37 — and the driver, which had given up at 180 s, killed the container one second after it started. Cold pulls alone measured 2m25 to 3m05 on other nodes; one run died on that too. Closes #696.
+
+    </details>
+
 ## [3.102.2](https://github.com/SocialGouv/iterion/compare/v3.102.1...v3.102.2) (2026-09-05)
 
 ### Bug Fixes

@@ -23,10 +23,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // DefaultCapPct is the utilization percentage at or above which an
@@ -235,15 +236,8 @@ func fetchUsage(ctx context.Context, token string, doer Doer) (*Usage, error) {
 // missing file is the common "not a forfait host" case. The token value is
 // never logged.
 func readAccessToken(configDir func() string) (string, bool) {
-	dir := configDir()
-	if dir == "" {
-		return "", false
-	}
-	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
-	if err != nil {
-		return "", false
-	}
-	return AccessTokenFromCredentialsJSON(data)
+	tok := secrets.AnthropicForfaitAccessToken(configDir())
+	return tok, tok != ""
 }
 
 // AccessTokenFromCredentialsJSON extracts the Claude Code OAuth access
@@ -266,15 +260,5 @@ func AccessTokenFromCredentialsJSON(data []byte) (string, bool) {
 	return tok, true
 }
 
-// claudeConfigDir mirrors detect.claudeConfigDir without importing it (avoids
-// a heavier dependency for a one-liner): CLAUDE_CONFIG_DIR, else ~/.claude.
-func claudeConfigDir() string {
-	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude")
-}
+// claudeConfigDir is the shared resolver: CLAUDE_CONFIG_DIR, else ~/.claude.
+func claudeConfigDir() string { return secrets.ClaudeCodeConfigDir() }
