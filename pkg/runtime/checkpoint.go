@@ -70,6 +70,13 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 		return
 	}
 	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes)
+	// Keep the run-state clock in step with the budget's, so the two
+	// sources `{{run.elapsed_seconds}}` can read never disagree. Only the
+	// budgeted shape persists an elapsed at all; without a `budget:` block
+	// the checkpoint carries 0 and the resumed run measures its own attempt.
+	if cp.BudgetElapsedNS > 0 {
+		rs.startedAt = time.Now().Add(-time.Duration(cp.BudgetElapsedNS))
+	}
 	rs.costUSDTotal = cp.CostUSDTotal
 	// Consumption is continuous across the pause, so the persisted loop
 	// prices stay comparable to it and the first crossing after a resume

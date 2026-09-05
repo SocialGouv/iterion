@@ -80,11 +80,34 @@ workflow my_workflow:
 | `wait` | Block a branch until an event fires | `event: "<name>"` + **mandatory** `timeout: "30s"` (the bornage, C197) + optional `output:` schema for the payload. Pair with `emit` in a parallel `fan_out_all` branch for reactive coordination. |
 | `await_answers` | Sync point for async human questions (ADR-081) | Optional `from: <node>` + **mandatory** `timeout:` (C241). Parks its branch until every pending `ask_user_async` question is answered; output is `{answers: [...]}`. The asking agent declares `interaction: async` (grants `ask_user_async` + `await_answers` tools — the agent keeps working while questions are pending, answers arrive in its message queue). |
 | `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
-| `done` / `fail` | Built-in terminals | Never declare them |
+| `done` / `fail` | Built-in terminals | Never declare `done`. A bare `-> fail` is the untyped terminal (`FAIL_NODE`, non-resumable); declare `fail <name>:` when the refusal must carry a code — see below |
 
 Every declarable node kind accepts an optional `description: "…"` — a human-readable
 label the run console shows instead of the humanized node id (the raw id stays
 available as tooltip/suffix).
+
+### Typed terminal failure — `fail <name>:`
+
+A bot-declared refusal (a budget guard, a precondition, a non-actionable lot)
+should end the run with a code the operator, `iterion remote runs list`, the
+gate notice and the alert sinks can act on — not "workflow reached fail node":
+
+```iter
+fail plan_exhausted:
+  code: PLAN_BUDGET_EXHAUSTED         ## UPPER_SNAKE identifier (C247 otherwise)
+  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
+  resumable: true                     ## default false = intentional, non-resumable end
+
+plan_budget_gate -> plan_exhausted when over_budget
+```
+
+The engine stamps `code` as the run's `failure_code` and the rendered
+`message` as its `error`. Declare one `fail <name>:` per reason. `resumable:
+true` anchors the checkpoint on the GUARD that routed in (never on the fail
+node, which a resume would only re-enter), so `iterion resume --run-id ID
+--max-cost-usd 10` re-evaluates the guard against the new caps and takes the
+other edge. It is never picked up by auto-resume or the cloud retry: a
+deliberate refusal only changes verdict when an operator changes something.
 
 ## Reuse & iteration (see docs/groups-iteration-subbots.md)
 
@@ -428,6 +451,9 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 | `{{loop.<name>.previous_output}}` | last iter's output of the loop's tail |
 | `{{artifacts.name}}` | published artifact |
 | `${ENV_VAR}` | compile-time env substitution |
+| `{{run.id}}` | the run id |
+| `{{run.elapsed_seconds}}` `{{run.cost_usd}}` `{{run.tokens}}` `{{run.iterations}}` | the run's own consumption so far |
+| `{{run.max_duration_seconds}}` `{{run.max_cost_usd}}` `{{run.max_tokens}}` `{{run.max_iterations}}` | the caps IN FORCE (after `--max-*` flags, recipe, platform ceiling, `raise_budget`). `0` = unbounded on that axis. No `budget:` block ⇒ no tracker: consumption and caps read `0`, only `elapsed_seconds` advances |
 
 `{{...}}` is parsed in every prompt block. Even literal examples
 inside markdown code-fences trigger validation. Avoid example
@@ -452,7 +478,15 @@ compute pass_through:
 
 `expr:` values are quoted expressions (CEL-like), NOT templates.
 Reference `input.x`, `outputs.x.y`, `loop.<name>.previous_output.x`
-directly without `{{...}}`.
+directly without `{{...}}`. The same `run.*` members are readable bare — the
+**phase-budget guard** is one `compute`:
+
+```iter
+compute plan_budget_gate:
+  output: gate
+  expr:
+    over_budget: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.3"
+```
 
 ### Expression operators & builtins
 

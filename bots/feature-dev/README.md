@@ -26,9 +26,11 @@ on GitLab — the issue-label → PR lineage).
 ## Shape (v2 — one agent, minimal framing)
 
 ```
-plan_topology → plan → plan_review → plan_gate → plan_revise ┐   (only when
-plan_topology ─────────────────────────────────────────────→ ┤   plan_review
-                                                             ▼   resolved on)
+workspace_probe → fail                    when not ok (WORKSPACE_NOT_A_REPO, no LLM spent)
+workspace_probe → plan_topology           when ok
+plan_topology → plan → plan_review_topology ─┬─ plan_review → plan_gate → plan_revise ┐ (peer only when
+plan_topology ──────────────── (plan_phase off) ┴──── (plan_review off: unreviewed) ──┤  plan_review
+                                                                                     ▼  resolved on)
 campaign → verify_probe → verify_build → verify_run → review → gate
 gate → mr_gate         when converged (green AND feature_complete AND review.clean)
 gate → campaign        as continuation_loop(max_passes), carrying fail_log
@@ -41,15 +43,30 @@ mr_gate → done         when not open_mr
 `verify_build`; `forge_auth_probe` is a ~100ms credential pre-flight before the
 `finalize_mr` agent.)
 
-**Plan phase (ADR-091).** `plan_review: auto` resolves at launch from the
-run's credentials: when a SECOND model family is available, the plan is
-authored (claude, read-only), critiqued by a cross-family peer
-(`claw` + `openai/gpt-5.6-sol` by default), and revised by the SAME
-author session before the campaign implements; otherwise the phase is
-bypassed whole (the v2 shape, unchanged). `plan_review_policy` picks the
-mid-run peer-unavailability behaviour: `wait` (default — the run parks
-failed_resumable, the usage-window retry resumes it) or `skip` (the
-reviewer's `action: skip` route — continue unreviewed, loudly stamped).
+**Precondition.** `workspace_probe` (a tool node, ~100ms, no LLM) is the
+entry: a launch whose `workspace_dir` is absent or not a git repository
+fails typed (`WORKSPACE_NOT_A_REPO` on the node's output and in the tool
+log) before any LLM node spends — a `--bot` launch carrying only `pr_url`
+attaches no repository.
+
+**Plan phase (ADR-091).** The plan is AUTHORED by default on every
+deployment (claude, read-only); `plan_phase: off` is the explicit opt-out
+(plan in stride, the v2 shape). `plan_review: auto` resolves at launch
+from the run's credentials and gates ONLY the peer review: when a SECOND
+model family is available, the plan is critiqued by a cross-family peer
+(`claw` + `openai/gpt-5.6-sol` by default) and revised by the SAME author
+session before the campaign implements; otherwise the campaign receives
+the author's plan stamped as unreviewed (`plan_provenance`).
+`plan_review_policy` picks the mid-run peer-unavailability behaviour:
+`skip` (default — the reviewer's `action: skip` route: continue
+unreviewed, loudly stamped) or `wait` (the run parks failed_resumable,
+the usage-window retry resumes it — the deliberate-spend posture).
+
+**Persy.** A `supervisor persy:` block watches the `campaign` node
+(docs/supervisors.md): the perseverance coach that pushes back on
+premature "impossible" verdicts, expedient shortcuts, failure loops and
+unbanked state under budget pressure. `--supervisors off` disables it per
+run.
 
 - `campaign` — one adaptive claude_code agent: brief exploration, living
   todo of slices, one verified commit per slice, ADR obligation and

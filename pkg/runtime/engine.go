@@ -51,6 +51,22 @@ var ErrRunCancelled = errors.New("runtime: run cancelled")
 // Canceled-vs-DeadlineExceeded split in handleContextDoneWithCheckpoint.
 var ErrRunInterrupted = errors.New("runtime: run interrupted (resumable)")
 
+// ErrDeliberateFailure marks a run that the WORKFLOW ended on purpose —
+// it reached a `fail` node. It rides as the Cause of the RuntimeError
+// failRunDeliberate returns, so a caller tests it with errors.Is, the
+// shape every other stop-reason carve-out already uses.
+//
+// It exists for the cloud runner. A refusal is the one failure an
+// automatic retry can never fix: the graph re-executes the same guard
+// against the same inputs and refuses identically, so a redelivery is a
+// pod and a sandbox spent to reach the same verdict — the pathology
+// ErrBudgetExceeded's carve-out was added for. This one is worse, because
+// a `resumable: true` refusal parks failed_resumable, which the runner's
+// redelivery path otherwise reads as "synthesise a resume". Only a HUMAN
+// changing something (a raised cap, a different --var) can change the
+// verdict, so the delivery is ACKed and the run waits.
+var ErrDeliberateFailure = errors.New("runtime: workflow refused deliberately (fail node)")
+
 // ErrRunPausedOperator is returned when execution is suspended in
 // response to a POST /api/runs/{id}/pause request — the operator
 // asked for a soft pause (no cancellation) that resumes via the
@@ -147,6 +163,8 @@ type Engine struct {
 	boardMCPHandler          http.Handler             // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
 	subbotRunner             SubbotRunner             // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
 	sandboxRunObserver       func(sandbox.Run)        // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
+	sharedSandbox            *SharedSandbox           // optional: a PARENT run's live sandbox this engine executes in, instead of starting its own (a subbot child). Set via WithSharedSandbox; nil = this engine decides its own sandbox.
+	activeShare              *SharedSandbox           // the facts of the sandbox this run executes in (own or shared), handed to subbot children through SubbotRequest.ParentSandbox; nil when the run has no sandbox
 	answersBell              answersDoorbell          // in-process fast-path waking await_answers nodes when an async interaction is answered (ADR-081); rung via NotifyInteractionAnswered
 
 	// activeBudget points at the SharedBudget of the run currently
@@ -183,10 +201,18 @@ func (e *Engine) ActiveElapsed() time.Duration {
 // SubbotRunner: the child .bot source, the resolved input vars, and the
 // parent linkage so the runner can record a child run tied to the parent.
 type SubbotRequest struct {
-	Source      string         // child .bot path/ref (relative to the parent workdir)
-	Vars        map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
-	ParentRunID string
-	NodeID      string
+	Source string // child .bot path/ref (relative to the parent workdir)
+	// ParentSandbox is the live sandbox the PARENT run executes in, nil when
+	// it has none. A child must execute in it — not in a sandbox of its own:
+	// on a copy-based driver (kubernetes) a second pod is a second copy of
+	// the workspace, and the child's commits die with that pod while the
+	// parent re-judges an unchanged tree (measured on the first cloud
+	// subbot). On a bind-mount driver (docker) a second container happened
+	// to share the tree; sharing the parent's makes the two drivers agree.
+	ParentSandbox *SharedSandbox
+	Vars          map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
+	ParentRunID   string
+	NodeID        string
 	// ReattachKey uniquely identifies THIS execution of the subbot node
 	// (node id + loop-iteration path + fan-out branch id) so the runner can
 	// persist the child run id under it on the parent and, on a resumed
@@ -393,6 +419,13 @@ type runState struct {
 	resumed bool
 	budget  *SharedBudget // shared across branches, nil if no budget
 
+	// startedAt is when this run state was built — the fallback clock for
+	// `{{run.elapsed_seconds}}` on a workflow that declares no `budget:`
+	// block and therefore has no SharedBudget to measure against. When a
+	// budget IS declared, its own monotonic startedAt is authoritative
+	// (it is shifted back on resume, so elapsed spans the whole run).
+	startedAt time.Time
+
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all
 	// branches so contention is global. A node that declares `needs: <resource>`
@@ -598,6 +631,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
+		startedAt:          time.Now(),
 	}
 	// Publish the run's budget so the active-duration stamping callback
 	// (runview Service / runner) can read its monotonic elapsed. nil when

@@ -95,6 +95,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}()
 
 	// 1. NATS layer — provides the queue + KV lock bucket.
+	// Keep in sync with the natsq.Connect literal in server.go: a field only
+	// one side passes is silently defaulted for the other, and the two then
+	// disagree about the same broker. LockTTL is what just drifted.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:                 cfg.NATS.URL,
 		StreamName:          cfg.NATS.Stream,

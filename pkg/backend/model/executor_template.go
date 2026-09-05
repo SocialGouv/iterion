@@ -390,12 +390,7 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *
 		}
 		return formatValue(v), true
 	case "run":
-		if td == nil {
-			return "", false
-		}
-		if key == "id" {
-			return td.RunID, true
-		}
+		return lookupRunTemplateRef(td, key)
 	case "attachments":
 		if td == nil {
 			return "", false
@@ -430,6 +425,30 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *
 	}
 
 	return "", false
+}
+
+// lookupRunTemplateRef resolves one `{{run.<key>}}` reference against the
+// engine's namespace snapshot. Shared by the prompt path (resolveTemplateRef
+// above) and the tool-command path (resolveRunRefs), so a member added to
+// the namespace reaches both instead of rendering as a literal placeholder
+// in whichever one was forgotten.
+//
+// `id` is served from RunID whether or not the snapshot map is populated:
+// callers that predate the map (tests, hosts that wire only WithRunID) keep
+// the member that has always worked. Any other unknown key stays
+// unresolved, which is what a caller distinguishes from an empty value.
+func lookupRunTemplateRef(td *TemplateData, key string) (string, bool) {
+	if td == nil {
+		return "", false
+	}
+	if key == "id" {
+		return td.RunID, true
+	}
+	v, ok := td.Run[key]
+	if !ok {
+		return "", false
+	}
+	return formatValue(v), true
 }
 
 // drillTemplatePath walks a dotted path through nested maps. Returns

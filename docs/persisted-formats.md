@@ -73,7 +73,15 @@ on a failure status (`failed` / `failed_resumable` / `cancelled`), written
 atomically with the status and cleared by every transition to a non-failure
 status. Absent/empty means UNKNOWN (legacy rows, unclassified writers) —
 never "no failure". The vocabulary is open-world: readers must accept codes
-they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)).
+they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)) —
+and it is open in practice, not just in principle: a workflow's own
+`fail <name>:` declaration supplies the code and the `error` text
+([DSL](dsl.md#typed-terminal-failure--fail-name)), so a deployment sees
+whatever vocabulary its bots define. The engine's constants remain the
+fallback: an untyped `-> fail` still writes `FAIL_NODE` /
+"workflow reached fail node". A `fail` node that declares
+`resumable: true` writes its code on `failed_resumable` instead of
+`failed`; the code says WHY, never whether the run may continue.
 
 `outcome_seq` counts the run's terminal EPISODES: it increments on every
 TRANSITION into `finished` / `failed` / `failed_resumable` / `cancelled`
@@ -211,7 +219,7 @@ emitter when a consumer needs an exact payload contract.
 
 | Family | Persisted event types |
 |---|---|
-| Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_workspace_bank_restored`, `run_redelivery_deferred`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
+| Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_workspace_bank_restored`, `run_redelivery_deferred`, `run_delivery_exhausted`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
 | LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `model_fallback`, `model_drift` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |

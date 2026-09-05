@@ -18,27 +18,25 @@ type queuedCreatingStore struct {
 }
 
 func (q *queuedCreatingStore) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*store.Run, error) {
-	run, err := q.FilesystemRunStore.CreateRun(ctx, id, workflowName, inputs)
+	_, err := q.FilesystemRunStore.CreateRun(ctx, id, workflowName, inputs)
 	if err != nil {
 		return nil, err
 	}
 	if err := q.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
 		return nil, err
 	}
-	run.Status = store.RunStatusQueued
-	return run, nil
+	return q.LoadRun(ctx, id)
 }
 
 func (q *queuedCreatingStore) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*store.Run, error) {
-	run, err := q.FilesystemRunStore.CreateChildRun(ctx, id, workflowName, parentRunID, inputs)
+	_, err := q.FilesystemRunStore.CreateChildRun(ctx, id, workflowName, parentRunID, inputs)
 	if err != nil {
 		return nil, err
 	}
 	if err := q.UpdateRunStatus(ctx, id, store.RunStatusQueued, ""); err != nil {
 		return nil, err
 	}
-	run.Status = store.RunStatusQueued
-	return run, nil
+	return q.LoadRun(ctx, id)
 }
 
 // TestRunDirectCreateQueuedBecomesRunning pins the direct path against a
@@ -81,7 +79,7 @@ workflow w:
 	})
 	for _, child := range []bool{false, true} {
 		runID := "direct-queued"
-		opts := []EngineOption{WithWorkDir(t.TempDir()), WithSandboxOverride("none"), observe}
+		opts := []EngineOption{WithWorkDir(t.TempDir()), WithRunName("queued run"), WithSandboxOverride("none"), observe}
 		if child {
 			runID = "direct-queued-child"
 			opts = append(opts, WithParentRunID("parent-1"))

@@ -105,6 +105,129 @@
         ],
         "type": "object"
       },
+      "BoardBinding": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
+          "label_fields": {
+            "items": {
+              "$ref": "#/components/schemas/BoundLabelField"
+            },
+            "type": "array"
+          },
+          "last_synced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "missing_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_title": {
+            "type": "string"
+          },
+          "project_url": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status_field_id": {
+            "type": "string"
+          },
+          "status_mapping": {
+            "items": {
+              "$ref": "#/components/schemas/StatusMapping"
+            },
+            "type": "array"
+          },
+          "status_options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "sync_every": {
+            "type": "integer"
+          },
+          "sync_every_seconds": {
+            "type": "integer"
+          },
+          "sync_lease_owner": {
+            "type": "string"
+          },
+          "sync_lease_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "provider",
+          "owner",
+          "owner_kind",
+          "number",
+          "connection_id",
+          "project_id",
+          "sync_every",
+          "sync_every_seconds",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "BoundLabelField": {
+        "properties": {
+          "field_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field_id",
+          "name",
+          "prefix"
+        ],
+        "type": "object"
+      },
       "BranchCheckpoint": {
         "properties": {
           "artifact_versions": {
@@ -671,6 +794,31 @@
         ],
         "type": "object"
       },
+      "ExternalProject": {
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ExternalRef": {
         "properties": {
           "author": {
@@ -681,6 +829,9 @@
           },
           "number": {
             "type": "integer"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ExternalProject"
           },
           "provider": {
             "type": "string"
@@ -942,6 +1093,10 @@
             "type": "array"
           },
           "state": {
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
             "type": "string"
           },
           "title": {
@@ -1979,6 +2134,21 @@
         ],
         "type": "object"
       },
+      "StatusMapping": {
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "state"
+        ],
+        "type": "object"
+      },
       "Token": {
         "properties": {
           "created_at": {
@@ -2233,6 +2403,37 @@
           "name",
           "is_default",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "boardBindingReq": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "status_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "sync_every_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "owner",
+          "number",
+          "connection_id"
         ],
         "type": "object"
       },
@@ -2594,6 +2795,9 @@
             "type": "string"
           },
           "allow_app_delivery": {
+            "type": "boolean"
+          },
+          "allow_project_board": {
             "type": "boolean"
           },
           "allow_repo_creation": {
@@ -7836,6 +8040,78 @@
           }
         }
       ]
+    },
+    "/api/teams/{id}/board-binding": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBoardBinding",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdBoardBinding",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardBinding"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBoardBinding",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/boardBindingReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardBinding"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/bot-sources": {
       "get": {

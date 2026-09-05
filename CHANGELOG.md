@@ -3,6 +3,121 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.108.2](https://github.com/SocialGouv/iterion/compare/v3.108.1...v3.108.2) (2026-09-05)
+
+### Bug Fixes
+
+* **runner:** retain exhausted lock deliveries in the DLQ ([#770](https://github.com/SocialGouv/iterion/issues/770)) ([c804064](https://github.com/SocialGouv/iterion/commit/c80406445b17f4d4ce42ed55be6f58795db01593)), closes [#703](https://github.com/SocialGouv/iterion/issues/703)
+
+    <details><summary>why</summary>
+
+    Delay lock contention by the configured lease interval and retain the final delivery in the DLQ with a durable event. Closes #703.
+
+    </details>
+
+## [3.108.1](https://github.com/SocialGouv/iterion/compare/v3.108.0...v3.108.1) (2026-09-05)
+
+### Bug Fixes
+
+* **cli:** a subbot child on the CLI host executes in the parent's sandbox and in the parent's workdir ([#778](https://github.com/SocialGouv/iterion/issues/778)) ([1a781bb](https://github.com/SocialGouv/iterion/commit/1a781bbb05035a9a4be88f27184ebc3c1db0585e)), references [#766](https://github.com/SocialGouv/iterion/issues/766)
+
+    <details><summary>why</summary>
+
+    #766 made a child execute in its parent's sandbox on the cloud runner and in the studio's in-process service — and left the third host out: the CLI's subbot runner built the child engine without the parent's sandbox facts and without a workdir, so the child defaulted to the process cwd (engine.go: workDir defaults to os.Getwd() at Run time). A parent that swapped to a per-run worktree therefore handed its child the BASE tree: whatever the child committed landed in a tree the parent's gate never…
+
+    </details>
+
+## [3.108.0](https://github.com/SocialGouv/iterion/compare/v3.107.0...v3.108.0) (2026-09-05)
+
+### Features
+
+* **dsl:** a node reads the run's budget through run.*, and a fail node carries a typed code, message and resumability ([#764](https://github.com/SocialGouv/iterion/issues/764)) ([34a6850](https://github.com/SocialGouv/iterion/commit/34a6850df9ef5007281f9bd287a89ba3f7b25dde)), closes [#738](https://github.com/SocialGouv/iterion/issues/738) [#739](https://github.com/SocialGouv/iterion/issues/739), references [#737](https://github.com/SocialGouv/iterion/issues/737) [#695](https://github.com/SocialGouv/iterion/issues/695) [#670](https://github.com/SocialGouv/iterion/issues/670) [#760](https://github.com/SocialGouv/iterion/issues/760)
+
+    <details><summary>why</summary>
+
+    A node that wants to reason about the run's budget -- "planning has used a third of max_duration, stop planning" -- had nothing to read: the `run` namespace resolved only `run.id`, and the `budget:` block's caps were compile-time literals. PR #737 had to self-measure wall-clock in a tool node and mirror the budget through two hand-maintained vars that drift from the block in silence; every phase-budget guard would have repeated it.
+
+    </details>
+
+## [3.107.0](https://github.com/SocialGouv/iterion/compare/v3.106.1...v3.107.0) (2026-09-05)
+
+### Features
+
+* **golden-master:** sync-harness.bot — the judge's code reaches a target tree without a rite ([#750](https://github.com/SocialGouv/iterion/issues/750)) ([12e35c6](https://github.com/SocialGouv/iterion/commit/12e35c6731d26a2b0802d643027e392d7f311ce1)), references [#765](https://github.com/SocialGouv/iterion/issues/765) [#765](https://github.com/SocialGouv/iterion/issues/765)
+
+    <details><summary>why</summary>
+
+    The harness is the net's decision procedure. Its content belongs to the net's owner and changes through a rite; its code is this bundle's and is repaired upstream — and until now the only path for a repaired judge into a tree that judges with it was a full rite: hours of agent work and a fresh held-out cycle for a one-line fix in a file no agent may edit. Measured on a live campaign: a rite re-materialised the harness with the bug still in it, and every lot on that tree was refused on the same…
+
+    </details>
+
+## [3.106.1](https://github.com/SocialGouv/iterion/compare/v3.106.0...v3.106.1) (2026-09-05)
+
+### Bug Fixes
+
+* **board:** re-land [#745](https://github.com/SocialGouv/iterion/issues/745)'s round-4 fixes the merge queue dropped, plus the round-5 findings and [#759](https://github.com/SocialGouv/iterion/issues/759) ([#772](https://github.com/SocialGouv/iterion/issues/772)) ([ef7b8c1](https://github.com/SocialGouv/iterion/commit/ef7b8c1758a3e4e0a03ef169d71aaf1cec3ad1da))
+
+    <details><summary>why</summary>
+
+    SetStateFrom answers a card that drifted between the read and the write with (issue, changed=false, nil) — the operator got there first, which is not an error. The project import discarded that flag and read the nil error as success: it counted a transition the store never made, skipped the reflect, and recorded the board's status as synchronized, which makes decideProjectStatus a no-op from then on. The periodic worker repairs that on a later pass; the one-shot `iterion issue import --project`…
+
+    </details>
+* **runtime,runner:** a subbot child executes in its parent's sandbox — a pod of its own lost its commits ([#766](https://github.com/SocialGouv/iterion/issues/766)) ([b272045](https://github.com/SocialGouv/iterion/commit/b272045cfb5a13730098360c3c81dbf8003cf4e8))
+
+    <details><summary>why</summary>
+
+    Measured on the first subbot to run on a cloud pod: under the kubernetes driver the child engine started a sandbox of its own, the driver copies the workspace into a pod, so the child's commits lived in its copy and died with it (final_branch null, the commit unreachable from anywhere) while the parent, parked on the subbot node, resumed and re-judged an unchanged tree. A net's extension loop cannot converge that way. On the docker driver the same code happened to work: a second container…
+
+    </details>
+* **store:** protect run saves with document version checks ([#771](https://github.com/SocialGouv/iterion/issues/771)) ([09fe07f](https://github.com/SocialGouv/iterion/commit/09fe07f354d10763720f4d142338230dbb772ad6)), closes [#701](https://github.com/SocialGouv/iterion/issues/701)
+
+    <details><summary>why</summary>
+
+    Advance versions on partial writes in both stores; protect rename and rewind, and reload queued transitions before saving metadata. Preserve legacy documents and destination versions during migration. Closes #701.
+
+    </details>
+* **webhooks:** acknowledge authorization outages without launching work ([#768](https://github.com/SocialGouv/iterion/issues/768)) ([d2d0def](https://github.com/SocialGouv/iterion/commit/d2d0defdf8f074e6f43f1cd57e99d6bc4c61a486)), closes [#704](https://github.com/SocialGouv/iterion/issues/704)
+
+    <details><summary>why</summary>
+
+    Retain the forge failure in the delivery audit and return HTTP 200 across the command, conversation and review request lanes. Closes #704.
+
+    </details>
+
+## [3.106.0](https://github.com/SocialGouv/iterion/compare/v3.105.0...v3.106.0) (2026-09-05)
+
+### Features
+
+* **bots:** the campaign fleet plans by default, refuses a missing repo typed, and carries Persy ([#761](https://github.com/SocialGouv/iterion/issues/761)) ([7aa77ff](https://github.com/SocialGouv/iterion/commit/7aa77ffeba2e01c18c0f4c529ac978bb566d42a5)), references [#751](https://github.com/SocialGouv/iterion/issues/751) [#752](https://github.com/SocialGouv/iterion/issues/752) [#619](https://github.com/SocialGouv/iterion/issues/619) [#751](https://github.com/SocialGouv/iterion/issues/751) [#752](https://github.com/SocialGouv/iterion/issues/752) [#619](https://github.com/SocialGouv/iterion/issues/619)
+
+    <details><summary>why</summary>
+
+    The seven campaign bots (feature-dev, feature-gap-fill, branch-improve-loop, whole-improve-loop, test-coverage, e2e-coverage, app-dev) keyed their plan phase on plan_review, which ResolvePlanReview answers off on every single-provider deployment - so the commonest setup never planned, silently, under a var named after a review (#751).
+
+    </details>
+
+### Bug Fixes
+
+* **golden-master:** the certifier reads a request in the re-baseline ledger's spelling too; an act already at the base is not an extension ([#765](https://github.com/SocialGouv/iterion/issues/765)) ([21ee24f](https://github.com/SocialGouv/iterion/commit/21ee24f124b3b90519a2f34d391f04857c0e886f))
+
+    <details><summary>why</summary>
+
+    Measured on the first extension request to reach the additions-only verdict in cloud: the request had been written as the ledger's own header taught — `expected_paths` and `entries` (the re-baseline idiom a worker had copied into the header) — while `extension_verdict` read only `paths` and `corpus_entries`. Every conforming request was therefore "smuggled": "1 added entry no acted request claims", "refs/<id>.txt is neither declared in the request's paths nor derived from a claimed corpus…
+
+    </details>
+
+## [3.105.0](https://github.com/SocialGouv/iterion/compare/v3.104.2...v3.105.0) (2026-09-05)
+
+### Features
+
+* **board:** sync a team's GitHub Projects v2 board with the native board — ADR-097 ([#745](https://github.com/SocialGouv/iterion/issues/745)) ([3e991ce](https://github.com/SocialGouv/iterion/commit/3e991ce0ae90714ed0da033bf0847892d45d3017)), references [#2](https://github.com/SocialGouv/iterion/issues/2) [#1](https://github.com/SocialGouv/iterion/issues/1) [SocialGouv/iterion#613](https://github.com/SocialGouv/iterion/issues/613)
+
+    <details><summary>why</summary>
+
+    AGENTS.md makes the Projects v2 board the roadmap truth and the native board the bots' operational surface, but nothing joins them: the board's Status/Area/Mode/Priority live in the GraphQL API, and no seam in iterion speaks GraphQL to a forge. So a human's "In progress" never reaches the dispatcher and a bot's "done" never reaches the roadmap.
+
+    </details>
+
 ## [3.104.2](https://github.com/SocialGouv/iterion/compare/v3.104.1...v3.104.2) (2026-09-05)
 
 ### Bug Fixes

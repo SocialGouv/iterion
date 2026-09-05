@@ -1,7 +1,22 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.3.0
+version: 1.4.0
+## 1.4.0 — the plan phase runs by default on every deployment: `plan_review`
+## gates ONLY the cross-model peer review (the plan_topology gate no longer
+## skips planning when it resolves off); the new `plan_phase` (on|off) is
+## the phase's own switch, and the campaign receives the authored triage
+## stamped with its provenance (`plan_provenance`, relayed through
+## plan_cost_probe/plan_budget_gate). `workspace_probe`, a deterministic
+## entry precondition, refuses a launch whose workspace_dir is absent or
+## not a git repository, OR whose base_ref resolves nowhere / shares no
+## history with HEAD (typed WORKSPACE_NOT_A_REPO) before any LLM node
+## spends — base_ref resolved as the bare name, then
+## refs/remotes/origin/<base_ref> (a cloud PR checkout carries a
+## non-default base only as a remote-tracking ref), never fetched;
+## plan_scope_probe measures the diff against the same resolved base. Persy, the
+## perseverance-coach supervisor on the campaign node + the contract's
+## PERSISTENCE clause (fleet-wide, from feature-dev 2.2.0).
 ## 1.3.0 — plan-phase budget guard (native:695): a production run on a
 ## +3870/-273 diff spent the planning chain (plan -> plan_review ->
 ## plan_revise) for 150 min / $8.59 and never reached `campaign`. New

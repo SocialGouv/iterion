@@ -106,7 +106,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	var worktreeCleanup func()
 	var wtCtx worktreeContext
 	worktreeActive := false
-	if e.workflow.Worktree == "auto" {
+	if e.workflow.Worktree == "auto" && e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
+		// A subbot child in its parent's sandbox works in the PARENT's tree:
+		// a worktree of its own would be a tree the parent's sandbox never
+		// mounts — its skills mirrored there, its commits landing there.
+		if e.logger != nil {
+			e.logger.Info("runtime: executing in the parent run's sandbox — running in place in %s (no worktree of its own)", e.workDir)
+		}
+	} else if e.workflow.Worktree == "auto" {
 		// Workspace isolation is the IR default (ir.defaultWorktreeMode),
 		// so any `iterion run` against a non-git workspace would otherwise
 		// hard-fail with "not a git repository". Degrade gracefully to
@@ -227,10 +234,11 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// are terminal or resume-only and must not be silently restarted.
 		switch existing.Status {
 		case store.RunStatusQueued:
-			if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+			var err error
+			existing, err = e.runStartQueued(ctx, runID)
+			if err != nil {
 				return nil, fmt.Errorf("runtime: pickup transition: %w", err)
 			}
-			existing.Status = store.RunStatusRunning
 		case store.RunStatusRunning:
 			// Already running — assume legitimate claim.
 		default:
@@ -272,10 +280,10 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// shown queued in the studio, never given a started_at — and ends
 		// `finished` without ever having been running.
 		if created.Status == store.RunStatusQueued {
-			if uerr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); uerr != nil {
-				return nil, fmt.Errorf("runtime: created-run transition: %w", uerr)
+			created, err = e.runStartQueued(ctx, runID)
+			if err != nil {
+				return nil, fmt.Errorf("runtime: created-run transition: %w", err)
 			}
-			created.Status = store.RunStatusRunning
 		}
 		run = created
 	}
@@ -359,6 +367,27 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
+	}
+	return run, nil
+}
+
+// runStartQueued reloads the document after the transition advances its
+// version. Later metadata saves use that fresh version and cannot overwrite
+// a concurrent cancel or resume.
+func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, error) {
+	changed, err := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", []store.RunStatus{store.RunStatusQueued})
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, store.ErrRunConflict
+	}
+	run, err := e.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != store.RunStatusRunning {
+		return nil, store.ErrRunConflict
 	}
 	return run, nil
 }

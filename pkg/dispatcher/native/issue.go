@@ -94,6 +94,21 @@ type Issue struct {
 	Runs      []RunRef  `json:"runs,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// StateAt is when the card's COLUMN last changed — the transition time,
+	// not the record's. UpdatedAt bumps on any edit (a title, a label, a
+	// last-run stamp), so anything asking "which side moved more recently?"
+	// reads a retitle as a move; the two-way project-board sync's conflict
+	// rule is exactly that question (ADR-097).
+	//
+	// Stamped by the store at every state write, on both twins: the FS one
+	// derives it in writeIssueLocked (the state differs from the indexed
+	// record), the Mongo one in stateSetAt + the state-naming replace. A
+	// caller cannot forget it, and cannot forge it either.
+	//
+	// Zero on a card written before the field existed — legacy, exactly like
+	// ClaimedAt. A reader wanting a transition time for such a card has to
+	// say what it falls back to.
+	StateAt time.Time `json:"state_at,omitempty"`
 	// External links this card to an issue on an external forge — set when
 	// the card is mirrored FROM a forge (one-way forge→board sync) or pushed
 	// TO one (push-to-forge). It is metadata: the card's column stays
@@ -188,6 +203,78 @@ type ExternalRef struct {
 	// the author-trust gate classified at ingest, kept so operators can see
 	// WHO requested a parked card before approving its triage.
 	Author string `json:"author,omitempty"`
+	// Project is the card's sync state with the forge's PROJECT board (GitHub
+	// Projects v2), when the team is bound to one. Nil until a project import
+	// has seen this card on the board.
+	Project *ExternalProject `json:"project,omitempty"`
+}
+
+// Clone returns a deep copy. ExternalRef is passed by value at several store
+// boundaries; since it now carries a pointer, a plain `*ref` copy would alias
+// the project sync state between the caller's value and the stored record.
+func (e *ExternalRef) Clone() *ExternalRef {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	if e.Project != nil {
+		p := *e.Project
+		out.Project = &p
+	}
+	return &out
+}
+
+// ExternalProject is a card's sync state with ONE forge project board. It is
+// the per-card half of the two-way status sync (ADR-097); the board itself is
+// identified by the team's binding.
+//
+// The two timestamps are what make "both sides moved" decidable. They record
+// STATE CHANGES, not record touches: Issue.UpdatedAt bumps on any edit, so
+// comparing it against the board would let an unrelated title edit win a
+// status conflict.
+type ExternalProject struct {
+	// Owner + Number identify the board (its "owner/number" URL form).
+	Owner  string `json:"owner,omitempty"`
+	Number int    `json:"number,omitempty"`
+	// ItemID is the provider's project-item handle, so a status write skips a
+	// lookup. Re-resolved when the board no longer knows it.
+	ItemID string `json:"item_id,omitempty"`
+	// Status is the board status option NAME last synchronized, in the
+	// board's own vocabulary ("In progress"). Comparing against it is the
+	// ECHO SUPPRESSOR: a status iterion itself wrote reads back as equal and
+	// changes nothing.
+	Status string `json:"status,omitempty"`
+	// StatusAt is the provider's own timestamp for that status value.
+	StatusAt time.Time `json:"status_at,omitempty"`
+	// StateAt is when iterion last WROTE the native state for this board —
+	// the moment of a sync write, not of the card's transition. The conflict
+	// rule reads the card's own Issue.StateAt; this stays as the fallback for
+	// a card whose last transition predates that stamp.
+	StateAt time.Time `json:"state_at,omitempty"`
+}
+
+// Equal reports whether two sync states carry the same information.
+//
+// It lives here, next to the struct, because it is what a periodic writer
+// checks before deciding to write at all: a card rewritten when nothing
+// changed bumps UpdatedAt and emits an EvtIssueUpdated the trigger spine
+// consumes as `card.updated`, which relaunches label-matching board
+// subscriptions. Keeping the comparison beside the fields is what stops it
+// silently going stale the day a field is added.
+//
+// The timestamps compare with Equal, never ==: a time.Time carries a monotonic
+// reading and a location, so two values denoting the same instant are routinely
+// unequal under ==.
+func (p *ExternalProject) Equal(o ExternalProject) bool {
+	if p == nil {
+		return false
+	}
+	return p.Owner == o.Owner &&
+		p.Number == o.Number &&
+		p.ItemID == o.ItemID &&
+		p.Status == o.Status &&
+		p.StatusAt.Equal(o.StatusAt) &&
+		p.StateAt.Equal(o.StateAt)
 }
 
 // Comment is a single append-only note on a native issue. Author is a

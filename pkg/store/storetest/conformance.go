@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +62,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
@@ -2016,6 +2018,7 @@ func testSaveRunHostileValues(t *testing.T, s store.RunStore) {
 	// cancelled children through SaveRun on a run that does not exist).
 	born := *got
 	born.ID = "run-born-terminal"
+	born.CASVersion = 0
 	born.Status = store.RunStatusCancelled
 	born.OutcomeSeq = 0
 	if err := s.SaveRun(ctx, &born); err != nil {
@@ -2198,15 +2201,15 @@ func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
 	}
 	// The stale writer saves (e.g. a rename): the claim must survive.
 	stale.Name = "renamed"
-	if err := s.SaveRun(ctx, stale); err != nil {
+	if err := s.SaveRun(ctx, stale); !errors.Is(err, store.ErrRunConflict) {
 		t.Fatal(err)
 	}
 	r, err := s.LoadRun(ctx, "mc-save")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Name != "renamed" {
-		t.Errorf("the save's own payload was lost: name=%q", r.Name)
+	if r.Name == "renamed" {
+		t.Errorf("a rejected stale save changed the name: %q", r.Name)
 	}
 	if r.MergeStatus != store.MergeStatusMerging {
 		t.Errorf("SaveRun disavowed a live merge claim: merge_status=%q, want %q — the next claimant would double-squash", r.MergeStatus, store.MergeStatusMerging)
@@ -2852,5 +2855,71 @@ func testSetRunBudgetSnapshot(t *testing.T, s store.RunStore) {
 	}
 	if err := s.SetRunBudgetSnapshot(ctx, "does-not-exist", &store.RunBudget{MaxCostUSD: 1}); err == nil {
 		t.Fatal("SetRunBudgetSnapshot on a missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// Every mutation must invalidate a previously loaded full-document copy,
+// including metadata patches and writes that leave the status unchanged.
+func testSaveRunVersionConflicts(t *testing.T, factory func(*testing.T) store.RunStore) {
+	mutations := map[string]func(context.Context, store.RunStore, string) error{
+		"cancel": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.UpdateRunStatus(ctx, id, store.RunStatusCancelled, "operator cancel")
+		},
+		"checkpoint": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.SaveCheckpoint(ctx, id, &store.Checkpoint{NodeID: "new-node"})
+		},
+		"watched-issues": func(ctx context.Context, s store.RunStore, id string) error {
+			_, err := s.AddWatchedIssues(ctx, id, []string{"issue-2"})
+			return err
+		},
+		"subbot-child": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.SetSubbotChild(ctx, id, "child-key", "child-2")
+		},
+		"steering": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.PatchRunSteering(ctx, id, map[string]int{"loop": 9}, nil)
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			s := factory(t)
+			ctx := testCtx()
+			stale, err := s.CreateRun(ctx, "version-conflict", "wf", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mutate(ctx, s, stale.ID); err != nil {
+				t.Fatal(err)
+			}
+			before, err := s.LoadRun(ctx, stale.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale.Name = "stale rename"
+			if err := s.SaveRun(ctx, stale); !errors.Is(err, store.ErrRunConflict) {
+				t.Fatalf("stale save=%v", err)
+			}
+			after, err := s.LoadRun(ctx, stale.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("rejected save mutated document: before=%+v after=%+v", before, after)
+			}
+			winner := *after
+			winner.Name = "fresh rename"
+			if err := s.SaveRun(ctx, &winner); err != nil {
+				t.Fatal(err)
+			}
+			if winner.CASVersion <= after.CASVersion {
+				t.Fatal("successful save did not advance the caller's version")
+			}
+			if err := s.SaveRun(ctx, after); !errors.Is(err, store.ErrRunConflict) {
+				t.Fatalf("competing writer=%v", err)
+			}
+			winner.Name = "second fresh rename"
+			if err := s.SaveRun(ctx, &winner); err != nil {
+				t.Fatalf("reuse advanced version: %v", err)
+			}
+		})
 	}
 }

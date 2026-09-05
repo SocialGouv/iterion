@@ -92,8 +92,10 @@ defaults regardless of tenant credentials.
    reading `_skipped`) → `plan_revise` (the SAME author session via
    `_session_id`, challenges + integrates) → `campaign`. One revision
    turn, no loop — the campaign remains the arbiter of reality, so the
-   asymptote discipline is untouched. `plan_review: off` routes entry
-   straight to the campaign: the v2 shape, byte-identical behaviour.
+   asymptote discipline is untouched. `plan_review: off` skips ONLY the
+   peer (`plan_review_topology`, after the plan): the authored plan still
+   reaches the campaign, stamped unreviewed — see the 2026-09-05 entry
+   below; `plan_phase: off` is the switch that skips the phase.
 
 ## Alternatives rejected
 
@@ -248,3 +250,49 @@ Two of the decisions above met a real run and moved
   e2e-coverage after the dogfood proof; docs-refresh (loop re-enters
   through its scan pipeline), modernize (lot system) and adr-cartograph
   (manifest-driven) were deliberately left out.
+
+## 2026-09-05 — `plan_review` gates the review, not the phase (#751, #752)
+
+The original wiring keyed `plan_topology` on `plan_review`, so `off`
+bypassed the whole phase — and `ResolvePlanReview` answers `off` on
+every single-provider deployment. The commonest setup there is (a
+desktop with one Claude subscription) therefore never planned, silently,
+under a var named after a review; and an operator turning the REVIEW off
+to save the peer pass lost the author along with the reviewer.
+
+Decision, applied to all seven bots at once (`bots/plan_phase_split_test.go`
+is the class guard):
+
+- **The plan phase runs by default.** `plan_topology` reads a new
+  `plan_phase: string [enum: on, off] = "on"`; `off` is the explicit
+  opt-out for a small, well-specified mission (plan in stride).
+- **`plan_review` gates ONLY the peer.** A `plan_review_topology` compute
+  AFTER the plan node lifts the launch-resolved var into `do_review`; off
+  hands the authored plan straight to the campaign.
+- **The campaign always knows who looked at the plan.** `campaign_input`
+  carries `plan_provenance`, a literal stamp set on each hand-off edge:
+  unreviewed (`plan_review` off), peer skipped mid-run (the `action: skip`
+  route), or peer-reviewed + author-revised (branch-improve-loop adds
+  "revise bypassed on a large diff", computed in `plan_gate` since one
+  edge serves both stories). Empty when no plan ran, and blanked on the
+  continuation back-edge like the other plan fields.
+- **A deterministic precondition ahead of the first LLM node** (#752):
+  `workspace_probe`, the entry of the six repo-requiring bots, refuses
+  with the typed code `WORKSPACE_NOT_A_REPO` when `workspace_dir` is
+  absent / not a git repository — and, for branch-improve-loop, when
+  `base_ref` resolves nowhere or shares no history with HEAD. The base
+  is resolved, never fetched: the bare name, then
+  `refs/remotes/origin/<base_ref>`, because a cloud PR run's checkout
+  (`git clone --no-tags` + a fetch of the head, `pkg/runner/loop_gitws.go`)
+  carries only the default branch and the PR head locally, so a PR
+  targeting any other branch has its base only as a remote-tracking ref;
+  `plan_scope_probe` measures the diff against the same resolved base.
+  The verdict rides the node's
+  output (`-> fail when not ok`) and stderr; the process exits 0 on
+  purpose, since a non-zero exit would replace it with the engine's
+  generic tool failure. app-dev keeps no precondition: it starts from an
+  empty directory. The `-> fail` terminal still carries no custom code
+  (see `plan_budget_gate_state`'s comment): the typed code lives on the
+  probe's own persisted output.
+
+`ResolvePlanReview` itself is unchanged.

@@ -170,6 +170,20 @@ const (
 	//     budget (the DLQ park follows the last one)
 	//   - error: the engine's error text
 	EventRunRedeliveryDeferred EventType = "run_redelivery_deferred"
+	// EventRunDeliveryExhausted records a queue delivery that could not acquire
+	// ownership before exhausting its attempts. It does NOT end the run: no
+	// writer may change a run's outcome or continuation without holding its
+	// lock, and this delivery never got one. Data:
+	//   - reason: the reason archived on the DLQ entry, naming which of the
+	//     two lock-failure classes this was — ownership CONFIRMED held by a
+	//     sibling, or a lock error that leaves ownership unconfirmed
+	//   - delivered: this attempt's rank in the redelivery budget (the last)
+	//   - parked: whether the DLQ publish was ACKNOWLEDGED. false means the
+	//     archive could not be confirmed, NOT that no copy exists —
+	//     PublishDLQ waits for a PubAck, so a lost ack hides a copy that
+	//     landed. Triage reads the DLQ, it does not infer absence from here
+	//   - error: why the archive was not confirmed (absent when parked)
+	EventRunDeliveryExhausted EventType = "run_delivery_exhausted"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
 	// the storage branch — because that attempt banked a strictly richer
@@ -393,6 +407,11 @@ const (
 	//   - mode: the requested mode ("auto" or "inline")
 	//   - reason: human-readable explanation
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSandboxShared is emitted at run start when the run executes in
+	// its PARENT run's live sandbox instead of one of its own (a subbot
+	// child): {driver, workspace, parent_run}. The parent's sandbox_started
+	// is the only container this lineage starts.
+	EventSandboxShared EventType = "sandbox_shared"
 	// EventSandboxStarted fires after the active sandbox driver finishes
 	// `Start` (container running, postCreate executed). The data block
 	// makes the resolved spec visible to operators without parsing

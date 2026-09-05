@@ -166,16 +166,14 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 			// R34eb8c: an authz ERROR must not strand an automatic lane
 			// co-riding the same event (one update can be BOTH a push and a
 			// reviewers change) — demote the gesture and let the resync
-			// proceed. 502 only when the click was the delivery's sole
-			// reason, so the forge redelivers it.
+			// proceed. A click-only failure is acknowledged and audited.
 			if p.IsReviewable() || gateResync {
 				if s.logger != nil {
 					s.logger.Warn("webhooks: gitlab re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", gerr)
 				}
 				reviewRequested = false
 			} else {
-				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
-				httpError(w, http.StatusBadGateway, "authorization check failed")
+				s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "re-request authz check", gerr)
 				return
 			}
 		} else if !authorized {
@@ -419,8 +417,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	}
 	authorized, _, threadContext, reason, aerr := gate(ctx, cfg, p, converseBot)
 	if aerr != nil {
-		s.recordNoteDelivery(ctx, cfg, webhooks.StatusLaunchError, payloadHash, srcIP, p, "authz check: "+aerr.Error())
-		httpError(w, http.StatusBadGateway, "authorization check failed")
+		s.failWebhookAuthorization(ctx, w, cfg, gitlabNoteMeta(p), payloadHash, srcIP, "authz check", aerr)
 		return
 	}
 	if !authorized {
@@ -483,8 +480,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	}
 	outcome, reason, aerr := gate(ctx, cfg, p, route)
 	if aerr != nil {
-		s.recordNoteDelivery(ctx, cfg, webhooks.StatusLaunchError, payloadHash, srcIP, p, "authz check: "+aerr.Error())
-		httpError(w, http.StatusBadGateway, "authorization check failed")
+		s.failWebhookAuthorization(ctx, w, cfg, gitlabNoteMeta(p), payloadHash, srcIP, "authz check", aerr)
 		return
 	}
 	if outcome != gateAuthorized {
@@ -1303,12 +1299,10 @@ func (s *Server) handleGitLabReviewApprove(ctx context.Context, w http.ResponseW
 	}
 	outcome, gateReason, aerr := gate(ctx, gateCfg, p, route)
 	if aerr != nil {
-		why := "authz check: " + aerr.Error()
-		s.warnApproveDidNotLand(cfg.Provider, p.ProjectPath, int(p.MRIID), p.AuthorUsername, why)
-		s.recordNoteDelivery(ctx, cfg, webhooks.StatusLaunchError, payloadHash, srcIP, p, why)
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
+		s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "authz check", aerr)
 		return
 	}
+
 	switch outcome {
 	case gateRefused:
 		if s.logger != nil {

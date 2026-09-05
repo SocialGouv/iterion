@@ -157,9 +157,18 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			last   map[string]any
 		)
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{})
+		// The child works in the parent's EFFECTIVE workdir (its worktree when
+		// it swapped to one), not the service's repo root: that is the tree
+		// the parent's sandbox mounts and the parent's gate judges.
+		if req.WorkDir != "" {
+			opts = append(opts, runtime.WithWorkDir(req.WorkDir))
+		}
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			// The child executes in the parent's sandbox when the parent has
+			// one — the same tree, on every driver.
+			runtime.WithSharedSandbox(req.ParentSandbox),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.

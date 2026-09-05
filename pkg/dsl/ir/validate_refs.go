@@ -98,6 +98,27 @@ func collectAllRefs(w *Workflow) []refContext {
 		}
 	}
 
+	// Fail node `message:` refs. Same argument the ScriptRefs comment
+	// above makes: the message is what the operator reads INSTEAD of the
+	// generic "workflow reached fail node", so a typo'd
+	// `{{outputs.gat.pct}}` resolves to nil at fail time, renders empty,
+	// and the outcome silently falls back to exactly the wording a typed
+	// fail exists to remove — the one moment nobody is watching a
+	// compiler.
+	for _, n := range w.Nodes {
+		fn, ok := n.(*FailNode)
+		if !ok || fn.Message == nil {
+			continue
+		}
+		for _, ref := range fn.Message.Refs {
+			out = append(out, refContext{
+				Ref:      ref,
+				NodeID:   fn.ID,
+				Location: fmt.Sprintf("fail node %q message", fn.ID),
+			})
+		}
+	}
+
 	// Compute node expressions. Each ComputeExpr.AST exposes its
 	// vars/input/outputs/... references — convert them to ir.Ref
 	// shape and feed them into the same C029–C036 pipeline so a

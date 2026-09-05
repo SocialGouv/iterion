@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -85,29 +86,160 @@ func (e *Engine) emitRunFailedAndReturn(ctx context.Context, runID, nodeID, reas
 	return &RuntimeError{Code: code, Message: reason, NodeID: nodeID}
 }
 
-// failRunDeliberate handles the DSL FailNode: the graph routed here on
-// purpose, so the run is terminal — status failed, no auto-resume — but
-// the checkpoint is preserved. The state on disk is coherent (the fail
-// node is reached from a normal node boundary) and an explicit operator
-// rewind remains possible, same as a cancelled run. Falls back to a
-// plain checkpoint-less failure if the write fails.
-func (e *Engine) failRunDeliberate(rs *runState, nodeID, reason string) error {
-	cp := buildCheckpoint(rs, nodeID)
-	if storeErr := e.store.FailRunTerminal(rs.ctx, rs.runID, cp, reason, store.FailureFailNode); storeErr != nil {
-		e.logger.Error("failed to persist terminal failure: %v", storeErr)
-		return e.failRun(rs.ctx, rs.runID, nodeID, reason)
+// failOutcome is the single place a fail node's diagnosis is derived, so
+// the trunk and the fan-out branch path cannot disagree about what the
+// operator is told. An undeclared field falls back to the engine's own
+// constant — the untyped `-> fail` target keeps behaving exactly as it
+// always has.
+//
+// The message is resolved against the run's namespaces here, at fail
+// time: what a bot wants to say about WHY it refused is usually the very
+// figure that made it refuse.
+func (e *Engine) failOutcome(rs *runState, n *ir.FailNode) failNodeOutcome {
+	out := failNodeOutcome{
+		reason:    deliberateFailReason,
+		code:      store.FailureFailNode,
+		resumable: n != nil && n.Resumable,
 	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
-		"error":      reason,
-		"code":       string(store.FailureFailNode),
-		"rewindable": true,
-	}); err != nil {
+	if n == nil {
+		return out
+	}
+	if n.Code != "" {
+		out.code = store.FailureCode(n.Code)
+	}
+	if n.Message != nil {
+		if rendered := renderMappingValue(e.resolveMapping(n.Message, rs.scope())); rendered != "" {
+			out.reason = rendered
+		}
+	}
+	return out
+}
+
+// deliberateFailReason is the wording a fail node with no `message:`
+// still produces — the historical text, kept because operator greps and
+// tests key on it.
+const deliberateFailReason = "workflow reached fail node"
+
+// failNodeOutcome is what reaching a fail node puts ON THE RUN: the
+// operator-facing reason, the machine-readable code, and whether the run
+// stays resumable.
+type failNodeOutcome struct {
+	reason    string
+	code      store.FailureCode
+	resumable bool
+}
+
+// resumableFailAnchor returns the node a `resumable: true` fail node's
+// checkpoint must be anchored on: the PREDECESSOR whose outgoing edge
+// routed into it.
+//
+// Anchoring on the fail node itself would make the promise a lie.
+// resumeFromFailure starts execLoop at cp.NodeID, so a checkpoint on the
+// fail node re-dispatches the fail node, which fails again identically —
+// the guard that refused is never re-evaluated, and the operator's raised
+// cap changes nothing. The predecessor is the guard: re-executing it is
+// what lets the run take the other edge this time.
+//
+// Reported false (with a reason) when no single predecessor can be named:
+//
+//   - the fail node IS the workflow entry, so nothing routed into it;
+//   - several branches converged on it, so no ONE guard owns the refusal.
+//
+// The caller then keeps the run TERMINAL and says why, rather than
+// persisting a resumable checkpoint whose only possible resume is a
+// no-op. A fan-out branch that reaches a fail node never arrives here at
+// all — branch.go carries the outcome as a branch error and the collector
+// decides.
+func (e *Engine) resumableFailAnchor(rs *runState, failNodeID string) (anchor, reason string) {
+	if rs == nil {
+		return "", "no run state"
+	}
+	selected := rs.selectedIncoming[failNodeID]
+	switch len(selected) {
+	case 0:
+		return "", "nothing routed into it (it is the workflow entry, or its incoming edge was not recorded)"
+	case 1:
+	default:
+		return "", fmt.Sprintf("%d branches converged on it, so no single guard owns the refusal", len(selected))
+	}
+
+	from := selected[0].From
+	if from == "" {
+		return "", "the recorded incoming edge names no source"
+	}
+	node, ok := e.workflow.Nodes[from]
+	if !ok {
+		return "", fmt.Sprintf("its predecessor %q is not in the workflow", from)
+	}
+	// A terminal predecessor is impossible by construction (a terminal has
+	// no outgoing edges) — guarded because resuming INTO one would end the
+	// run without re-deciding anything, which is the same no-op by another
+	// route.
+	if ir.IsTerminalNode(node) {
+		return "", fmt.Sprintf("its predecessor %q is itself a terminal node", from)
+	}
+	return from, ""
+}
+
+// failRunDeliberate handles the DSL FailNode: the graph routed here on
+// purpose, so the run is terminal by default — status failed, no
+// auto-resume — but the checkpoint is preserved. The state on disk is
+// coherent (the fail node is reached from a normal node boundary) and an
+// explicit operator rewind remains possible, same as a cancelled run.
+//
+// A node that declares `resumable: true` parks failed_resumable instead:
+// a budget guard whose cure is "raise the cap and continue" must not make
+// the operator re-pay the phase it already completed. Its checkpoint is
+// anchored on the GUARD, not on the fail node — see resumableFailAnchor.
+// Falls back to a plain checkpoint-less failure if the write fails.
+func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNodeOutcome) error {
+	anchor := nodeID
+	persist := e.store.FailRunTerminal
+	if outcome.resumable {
+		guard, why := e.resumableFailAnchor(rs, nodeID)
+		if guard == "" {
+			// The declaration cannot be honoured. Say so at WARN and end
+			// the run terminal: a resumable checkpoint here would only
+			// ever replay this same refusal, which reads to the operator
+			// as a resume that silently does nothing.
+			e.logger.Warn("runtime: fail node %q declares `resumable: true` but the run cannot resume from it — %s; ending the run terminal (failed) instead", nodeID, why)
+			outcome.resumable = false
+		} else {
+			anchor = guard
+			e.captureFailureBoundary(rs, nodeID)
+			persist = e.store.FailRunResumable
+		}
+	}
+	cp := buildCheckpoint(rs, anchor)
+	if storeErr := persist(rs.ctx, rs.runID, cp, outcome.reason, outcome.code); storeErr != nil {
+		e.logger.Error("failed to persist deliberate failure: %v", storeErr)
+		return e.failRun(rs.ctx, rs.runID, nodeID, outcome.reason)
+	}
+	data := map[string]any{
+		"error": outcome.reason,
+		"code":  string(outcome.code),
+	}
+	if outcome.resumable {
+		data["resumable"] = true
+	} else {
+		// A terminal deliberate failure is still rewindable: the
+		// checkpoint is intact, so an operator may re-anchor and resume
+		// by hand. The flag is what tells the studio to offer it.
+		data["rewindable"] = true
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, data); err != nil {
 		e.logger.Warn("failed to emit run_failed event: %v", err)
 	}
 	return &RuntimeError{
-		Code:    store.FailureFailNode,
-		Message: reason,
+		Code:    outcome.code,
+		Message: outcome.reason,
 		NodeID:  nodeID,
+		// The sentinel is what tells a CLOUD runner this failure is a
+		// decision, not a fault: the code alone is bot-defined, so no
+		// allow-list can recognise it, and a redelivery re-runs the same
+		// guard against the same inputs to the same verdict. See
+		// ErrDeliberateFailure.
+		Cause: ErrDeliberateFailure,
 	}
 }
 

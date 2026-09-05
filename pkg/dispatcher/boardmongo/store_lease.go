@@ -126,6 +126,7 @@ func stateSet(newState string) bson.M { return stateSetAt(newState, time.Now().U
 func stateSetAt(newState string, at time.Time) bson.M {
 	return bson.M{
 		"issue.state":     newState,
+		"issue.stateat":   at,
 		"issue.gaveup":    nil,
 		"issue.updatedat": at,
 	}

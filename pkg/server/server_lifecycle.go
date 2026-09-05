@@ -166,6 +166,7 @@ func (s *Server) ListenAndServe() error {
 	s.startUserNotify()
 	s.startOperatorAlerts()
 	s.startGateReconciler()
+	s.startBoardSync()
 	s.startGateAutofix()
 	s.startOutcomeRouter()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
@@ -658,6 +659,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.outcomeRouterCancel != nil {
 		s.outcomeRouterCancel()
 		s.outcomeRouterCancel = nil
+	}
+	if s.boardSyncCancel != nil {
+		s.boardSyncCancel()
 	}
 	if s.gateReconcileCancel != nil {
 		s.gateReconcileCancel()

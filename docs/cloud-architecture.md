@@ -172,6 +172,38 @@ The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
 `IterionDLQNotEmpty` alert in the starter pack fires on.
 
+A delivery that cannot take the run lock is retried after one lease interval
+— the configured `ITERION_LOCK_TTL` / `runner.lock_ttl`, 60 seconds by
+default — which is how long a lease nobody refreshes takes to evaporate, so
+the retry either finds the run free or meets a live owner. Raising it above
+`AckWait` stretches the queue's worst-case redelivery window to
+`MaxDeliver × lock_ttl`, which the orphan sweeper's queued-staleness cutoff
+tracks. On its last allowed attempt the original message is archived on
+the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
+the run itself is untouched — without the lock no writer may change its
+outcome or its continuation — so this records a *delivery* failure, never an
+execution one.
+
+Two different failures reach that path, and the DLQ reason names which:
+
+- **`run lock held by another runner`** — confirmed contention
+  (`jetstream.ErrKeyExists` on the lease). A sibling owns the run; inspect
+  that owner's outcome, and discarding the duplicate is safe once it
+  completed.
+- **`run lock acquisition failed`** — every other lock error (KV bucket
+  missing, a broker blip on the create). Ownership **could not be
+  confirmed**, which is not the same as no owner: a sibling may hold the
+  lease and its collision simply never got reported. Replay only after
+  checking the run itself *and* a healthy lock service — a blind replay
+  duplicates a live run. A run left `queued`/`running` with no lease is the
+  orphan sweeper's, above.
+
+`parked: false` on the event means the archive was **not acknowledged**, not
+that no copy exists: the publish waits for a JetStream ack, so a lost ack can
+hide a copy that landed. Read the DLQ before either replaying (which may
+duplicate the run) or discarding (which may destroy its last copy) — neither
+is safe blind.
+
 ## Multitenancy enforcement layers
 
 Four boundaries, each fail-closed:

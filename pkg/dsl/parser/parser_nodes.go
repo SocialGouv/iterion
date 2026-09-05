@@ -1091,6 +1091,65 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 	return wd
 }
 
+// ---- fail (typed terminal failure) ----
+
+// parseFailDecl parses a named terminal failure node:
+//
+//	fail plan_exhausted:
+//	  code: PLAN_BUDGET_EXHAUSTED
+//	  message: "planning used {{outputs.gate.pct}}% of the budget"
+//	  resumable: true
+//
+// `code:` is accepted as a bare identifier or a quoted string; the
+// UPPER_SNAKE shape is a compile-time check (C247), not a lexical one, so
+// a malformed code is reported with its own diagnostic rather than as an
+// opaque parse error.
+func (p *parser) parseFailDecl() *ast.FailDecl {
+	start, name, ok := p.parseDeclHeader("fail")
+	if !ok {
+		return nil
+	}
+	fd := &ast.FailDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch {
+		case t.Type == TokenIdent && t.Value == "code":
+			p.next()
+			p.expect(TokenColon)
+			fd.Code = p.expectStringOrIdent()
+		case t.Type == TokenIdent && t.Value == "message":
+			p.next()
+			p.expect(TokenColon)
+			fd.Message = p.expectString()
+		case t.Type == TokenIdent && t.Value == "resumable":
+			p.next()
+			p.expect(TokenColon)
+			bt := p.next()
+			if bt.Type == TokenTrue {
+				fd.Resumable = true
+			} else if bt.Type != TokenFalse {
+				p.addError(DiagInvalidValue, bt, "expected true or false for 'resumable'")
+			}
+		case t.Type == TokenIdent && t.Value == "description":
+			p.next()
+			p.expect(TokenColon)
+			fd.Description = p.expectString()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown fail property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+		}
+	}
+	return fd
+}
+
 // parseAwaitAnswersDecl parses an await_answers node — the deterministic sync
 // point for async human questions:
 //

@@ -35,6 +35,13 @@ type branchCampaignState struct {
 // afterward (later .on wins) to exercise a red verify pass or the MR path.
 // toStr is shared with whole_improve_loop_test.go (same package).
 func stubBranchCampaign(exec *scenarioExecutor, st *branchCampaignState) {
+	// The entry precondition passes and the plan phase (on by default)
+	// authors a triage that rides the deterministic relays (scope probe,
+	// budget gate) to the campaign; plan_review is unresolved (auto →
+	// off) in this harness, so the peer never runs.
+	stubWorkspaceProbeOK(exec)
+	stubPlanAuthor(exec)
+	stubBranchPlanRelay(exec)
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
@@ -240,11 +247,15 @@ func TestBranchImproveLoop_MRPathOnConverge(t *testing.T) {
 func TestBranchImproveLoop_Structural(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 
-	// Entry is the plan-phase gate (ADR-091), whose off branch routes
-	// STRAIGHT to the campaign — the v2 "start working immediately" shape
-	// is preserved whenever plan_review resolves off.
-	if wf.Entry != "plan_topology" {
-		t.Errorf("workflow entry = %q, want %q (the plan-phase gate; its off branch is the v2 immediate-campaign shape)", wf.Entry, "plan_topology")
+	// Entry is the deterministic workspace precondition (a tool node, no
+	// LLM — it also checks base_ref is reachable), then the plan-phase
+	// gate (ADR-091) — on by default, its off branch (plan_phase=off)
+	// being the v2 "start working immediately" shape.
+	if wf.Entry != "workspace_probe" {
+		t.Errorf("workflow entry = %q, want %q (the deterministic precondition ahead of any LLM node)", wf.Entry, "workspace_probe")
+	}
+	if _, ok := wf.Nodes["workspace_probe"].(*ir.ToolNode); !ok {
+		t.Errorf("workspace_probe is %T, want *ir.ToolNode (deterministic precondition)", wf.Nodes["workspace_probe"])
 	}
 	if _, ok := wf.Nodes["plan_topology"].(*ir.ComputeNode); !ok {
 		t.Errorf("plan_topology is %T, want *ir.ComputeNode (deterministic gate)", wf.Nodes["plan_topology"])
@@ -314,6 +325,7 @@ func TestBranchImproveLoop_Structural(t *testing.T) {
 // receives and fails the phase (exhausted=true) iff the real summed cost
 // crosses exhaustAt.
 func planBudgetGateStubs(exec *scenarioExecutor, planCostUSD, exhaustAt float64, gateInputs *[]map[string]any) {
+	stubWorkspaceProbeOK(exec)
 	exec.on("plan_scope_probe", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"diff_stat": "1 file changed, 4 insertions(+)", "large": false, "started_epoch": 1, "_tokens": 1}, nil
 	})
@@ -343,7 +355,8 @@ func planBudgetGateStubs(exec *scenarioExecutor, planCostUSD, exhaustAt float64,
 		return map[string]any{
 			"exhausted": exhausted, "code": code, "reason": reason,
 			"plan": in["plan"], "plan_critique": in["plan_critique"], "plan_responses": in["plan_responses"],
-			"_tokens": 1,
+			"plan_provenance": in["plan_provenance"],
+			"_tokens":         1,
 		}, nil
 	})
 }

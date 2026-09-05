@@ -55,10 +55,10 @@ func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
 	_, _ = s.runs.UpdateOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"_id": a.RunID}),
-		bson.M{"$set": bson.M{
+		versionRunUpdate(bson.M{"$set": bson.M{
 			fmt.Sprintf("artifact_index.%s", a.NodeID): a.Version,
 			"updated_at": a.WrittenAt,
-		}},
+		}}),
 	)
 	return nil
 }

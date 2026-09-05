@@ -32,23 +32,31 @@ import (
 func TestGoldenMasterHarnessCopiesStayInSync(t *testing.T) {
 	bot := readHarnessFile(t, "golden-master/main.bot")
 	harness := readHarnessFile(t, "golden-master/oracle-harness.py")
-
-	inlined := inlinedHarnessBody(t, bot)
 	standalone := standaloneHarnessBody(t, harness)
 
-	if inlined != standalone {
-		a, b := strings.Split(inlined, "\n"), strings.Split(standalone, "\n")
-		for i := 0; i < len(a) || i < len(b); i++ {
-			x, y := lineAt(a, i), lineAt(b, i)
-			if x != y {
-				t.Fatalf("the two copies of the harness have diverged at body line %d.\n"+
-					"  main.bot (the copy that RUNS):        %q\n"+
-					"  oracle-harness.py (the one REVIEWED): %q\n"+
-					"Regenerate the inlined copy from the standalone one: same body, indented by four, "+
-					"under the node preamble.", i+1, x, y)
+	// Every inlined copy, with the line that ends its preamble: main.bot's
+	// gate node, and sync-harness.bot's driver — the tool-only bot that
+	// materialises this same body into a target tree. A third copy that
+	// drifted would sync a judge nobody reviewed.
+	for _, c := range []struct{ file, preambleEnd string }{
+		{"golden-master/main.bot", "os.environ['GM_MODE'] = 'gate'"},
+		{"golden-master/sync-harness.bot", "# ---- inlined harness below"},
+	} {
+		inlined := inlinedHarnessBody(t, readHarnessFile(t, c.file), c.preambleEnd)
+		if inlined != standalone {
+			a, b := strings.Split(inlined, "\n"), strings.Split(standalone, "\n")
+			for i := 0; i < len(a) || i < len(b); i++ {
+				x, y := lineAt(a, i), lineAt(b, i)
+				if x != y {
+					t.Fatalf("the copies of the harness have diverged at body line %d.\n"+
+						"  %s (a copy that RUNS):            %q\n"+
+						"  oracle-harness.py (the one REVIEWED): %q\n"+
+						"Regenerate the inlined copies from the standalone one (bots/golden-master/sync-harness.py): "+
+						"same body, indented by four, under each node's preamble.", i+1, c.file, x, y)
+				}
 			}
+			t.Fatalf("%s and the standalone copy differ in length: %d lines inlined, %d standalone", c.file, len(a), len(b))
 		}
-		t.Fatalf("the two copies differ in length: %d lines inlined, %d standalone", len(a), len(b))
 	}
 
 	// Orthogonal, and it survives the identity check above because it pins a
@@ -78,20 +86,20 @@ func lineAt(lines []string, i int) string {
 // inlinedHarnessBody returns the runnable copy, dedented, with the node
 // preamble removed. The preamble is the part that CANNOT be shared: it binds
 // {{vars.*}} into the environment, which only means something inside the graph.
-func inlinedHarnessBody(t *testing.T, bot string) string {
+func inlinedHarnessBody(t *testing.T, bot, preambleEnd string) string {
 	t.Helper()
-	const preambleEnd = "os.environ['GM_MODE'] = 'gate'"
-
 	lines := strings.Split(bot, "\n")
 	start := -1
 	for i, l := range lines {
-		if strings.Contains(l, preambleEnd) {
+		// The line that IS the end of the preamble — an assignment quoting
+		// the marker in a string is not one.
+		if strings.Contains(l, preambleEnd) && !strings.HasPrefix(strings.TrimSpace(l), "MARK") {
 			start = i + 1
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatalf("main.bot: end of the oracle_run preamble (%q) not found — the node was restructured, fix this test", preambleEnd)
+		t.Fatalf("end of the harness preamble (%q) not found — the node was restructured, fix this test", preambleEnd)
 	}
 
 	var out []string
@@ -102,7 +110,7 @@ func inlinedHarnessBody(t *testing.T, bot string) string {
 		out = append(out, strings.TrimPrefix(l, "    "))
 	}
 	if len(out) < 100 {
-		t.Fatalf("main.bot: only %d lines of harness body found after the preamble — the block scalar was not read correctly", len(out))
+		t.Fatalf("only %d lines of harness body found after the preamble — the block scalar was not read correctly", len(out))
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }

@@ -1,7 +1,16 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.3.1
+version: 2.4.0
+## 2.4.0 — the plan phase runs by default on every deployment: `plan_review`
+## gates ONLY the cross-model peer review (the plan_topology gate no longer
+## skips planning when it resolves off — every single-provider host used to
+## plan nothing, silently); the new `plan_phase` (on|off) is the phase's own
+## switch, and the campaign receives the authored plan stamped with its
+## provenance (`plan_provenance`: unreviewed / peer skipped / revised).
+## `workspace_probe`, a deterministic entry precondition, refuses a launch
+## whose workspace_dir is absent or not a git repository with the typed code
+## WORKSPACE_NOT_A_REPO before any LLM node spends.
 ## 2.3.1 — plan_review_policy defaults to "skip": the cross-model plan peer
 ## is an optional enrichment, and the primary family alone must always
 ## suffice. A dead/parked peer credential (401, shut forfait window,

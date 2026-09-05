@@ -184,16 +184,10 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	}
 	outcome, gateReason, aerr := gate(ctx, gateCfg, provider, p, route)
 	if aerr != nil {
-		// Never a 5xx: a forge that keeps seeing them disables the hook, and
-		// with it every future launch, re-review and override (#662). The
-		// commenter is still unverified here, so nothing is said on the PR;
-		// the delivery audit carries the reason.
-		why := "authz check: " + aerr.Error()
-		s.warnApproveDidNotLand(provider, p.ProjectPath, int(p.IssueNumber), p.AuthorLogin, why)
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": why})
+		s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "authz check", aerr)
 		return
 	}
+
 	switch outcome {
 	case gateRefused:
 		// Anyone who can comment reaches this branch: silence, like every

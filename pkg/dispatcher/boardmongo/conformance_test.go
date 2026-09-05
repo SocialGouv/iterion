@@ -105,6 +105,49 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("SetState no-op: %v", err)
 	}
 
+	// Issue.StateAt is the card's TRANSITION time, and both twins owe the
+	// same contract: stamped by the store at every state write, never
+	// advanced by an ordinary edit. Without the second half, anything asking
+	// "which side moved more recently?" reads a retitle as a move — which is
+	// exactly the question the project-board conflict rule asks (ADR-097).
+	//
+	// Timestamps compare against a client-clock reading (both twins stamp
+	// with time.Now, like UpdatedAt) truncated to the millisecond BSON keeps.
+	stateAtOf := func(what string) time.Time {
+		got, err := store.Get(created.ID)
+		if err != nil {
+			t.Fatalf("StateAt/%s: Get: %v", what, err)
+		}
+		if got.StateAt.IsZero() {
+			t.Fatalf("StateAt/%s: not stamped — the transition time is unrecoverable", what)
+		}
+		return got.StateAt
+	}
+	atReady := stateAtOf("after SetState")
+	pr2 := 9
+	if _, err := store.Update(created.ID, native.Patch{Priority: &pr2}); err != nil {
+		t.Fatalf("StateAt: Update: %v", err)
+	}
+	if got := stateAtOf("after a non-state Update"); !got.Equal(atReady) {
+		t.Errorf("StateAt advanced on a priority edit: %v → %v — an edit is not a transition", atReady, got)
+	}
+	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateAt: SetState no-op: %v", err)
+	}
+	if got := stateAtOf("after a same-state SetState"); !got.Equal(atReady) {
+		t.Errorf("StateAt advanced on a no-op transition: %v → %v", atReady, got)
+	}
+	beforeMove := time.Now().UTC().Truncate(time.Millisecond)
+	if _, moved, err := store.SetStateFrom(created.ID, native.StateReady, native.StateInProgress); err != nil || !moved {
+		t.Fatalf("StateAt: SetStateFrom: moved=%v err=%v", moved, err)
+	}
+	if got := stateAtOf("after SetStateFrom"); got.Before(beforeMove) {
+		t.Errorf("StateAt = %v, want the moment of the transition (>= %v)", got, beforeMove)
+	}
+	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateAt: restore state: %v", err)
+	}
+
 	// Claim: idempotent same marker; conflict on a different marker; release.
 	if _, err := store.Claim(created.ID, "runner-A"); err != nil {
 		t.Fatalf("Claim: %v", err)

@@ -151,6 +151,18 @@ func (s *Server) suppressedByHoldLabel(ctx context.Context, w http.ResponseWrite
 	return true
 }
 
+// failWebhookAuthorization acknowledges a forge error while retaining its cause
+// in the delivery audit. The caller must return: an unverified actor cannot
+// launch work or receive a forge reply, and repeated 5xx can disable the hook.
+func (s *Server) failWebhookAuthorization(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, payloadHash, srcIP, operation string, err error) {
+	why := operation + ": " + err.Error()
+	if s.logger != nil {
+		s.logger.Warn("webhooks: %s %s %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, why)
+	}
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
+	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": "authorization check failed"})
+}
+
 // mergeVarsInto copies every key from src into dst (overwriting on
 // collision) and returns dst. A nil src is a no-op. Used by the
 // webhook launch-vars builders to layer overlays (context vars,

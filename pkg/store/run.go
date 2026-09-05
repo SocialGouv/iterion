@@ -26,6 +26,10 @@ import (
 // wraps os.ErrNotExist, so errors.Is(err, os.ErrNotExist) also holds there.
 var ErrRunNotFound = errors.New("store: run not found")
 
+// ErrRunConflict means the loaded version changed before a full-document save.
+// Reload and reapply the intended edit; never retry the stale document.
+var ErrRunConflict = errors.New("store: run changed since it was loaded")
+
 // ErrRunDeleted marks a run that was DELIBERATELY deleted (DeleteRun
 // left a durable tombstone). Distinct from ErrRunNotFound so late
 // writers — a detached engine goroutine, a stale runner, a replayed
@@ -735,12 +739,10 @@ type Run struct {
 	// cancel can target the queued message before pickup. Empty after
 	// pickup or when not in cloud mode.
 	QueueMsgID string `json:"queue_msg_id,omitempty" bson:"queue_msg_id,omitempty"`
-	// CASVersion is the optimistic-lock counter incremented on every
-	// SaveCheckpoint / UpdateRunStatus in cloud mode. The runner's
-	// checkpoint write conditions on the previous value; a mismatch
-	// signals two runners raced and one must back off. Zero in local
-	// mode (filesystem flock guards single-writer semantics).
-	CASVersion int64 `json:"-" bson:"version,omitempty"`
+	// CASVersion advances on every run-document write. SaveRun only accepts
+	// the version returned by the last load or successful save. Missing on a
+	// legacy document is version zero; its first writer upgrades it atomically.
+	CASVersion int64 `json:"cas_version,omitempty" bson:"version,omitempty"`
 
 	// TenantID is the team_id the run belongs to. Set on every cloud
 	// run at Launch from the JWT's active team. Local-mode runs leave

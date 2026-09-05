@@ -46,10 +46,22 @@ duplicates them (so it doubles as an incremental --since sync).
 The forge token is read ONLY from the named environment variable
 (--token-env), never passed as a flag value.
 
-Example:
+With --project, a second pass mirrors a forge PROJECT board onto the
+cards the first pass created: its Status becomes the card's column
+(Inbox/Planned/In progress/Blocked/Done ↔ inbox/ready/in_progress/
+blocked/done) and its Area/Mode/Priority become area:/mode:/prio:
+labels. It hydrates cards, never creates them — run the issue import
+for each repo the board spans. A card already in a terminal column is
+left alone: reopening is an operator gesture, not an import's.
+
+Examples:
   FORGE_TOKEN=... iterion issue import \
     --forge forgejo --repo owner/name \
-    --base-url https://forge.example.com --token-env FORGE_TOKEN`,
+    --base-url https://forge.example.com --token-env FORGE_TOKEN
+
+  GH_TOKEN=... iterion issue import \
+    --forge github --repo SocialGouv/iterion \
+    --project SocialGouv/203 --token-env GH_TOKEN`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		issueImportOpts.StoreDir = issueStoreDir
@@ -271,6 +283,8 @@ func init() {
 	issueImportCmd.Flags().StringVar(&issueImportOpts.BaseURL, "base-url", "", "Forge base URL (default: provider SaaS host; required for self-hosted forgejo/gitlab)")
 	issueImportCmd.Flags().StringVar(&issueImportOpts.Since, "since", "", "Only import issues updated since this RFC3339 timestamp (default: full re-sync)")
 	issueImportCmd.Flags().StringVar(&issueImportOpts.MinAuthorRole, "min-author-role", "", "Minimum repo role (guest|reporter|developer|maintainer|owner) an issue author needs for the card to be stamped triage:auto; below it the card parks as needs:approval (default: developer)")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.Project, "project", "", "Also mirror a forge project board as <owner>/<number> (e.g. SocialGouv/203): Status → card column, Area/Mode/Priority → card labels")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.ProjectOwnerKind, "project-owner-kind", "", "Namespace the --project board lives under: org (default) or user")
 
 	issueBoardCmd.AddCommand(issueBoardShowCmd)
 	issueBoardCmd.AddCommand(issueBoardInitCmd)

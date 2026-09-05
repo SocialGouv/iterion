@@ -99,7 +99,7 @@ the staging step alone and prints the upload id.
 | `bots` | `list · get · put · overlay · install · upload` |
 | `marketplace` | `list · get · download · submit · install · uninstall · moderation` |
 | `issues` | `list · get · create · update · delete · transition · comment · push · pulls` |
-| `labels` / `board` | `list · rename · merge · delete` / `get · set` |
+| `labels` / `board` | `list · rename · merge · delete` / `get · set · bind · show · unbind` |
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
 | `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
@@ -122,6 +122,27 @@ the staging step alone and prints the upload id.
 Structured mutation payloads follow the `--data '<json>'` /
 `--data @file.json` / `--data @-` (stdin) convention shared with
 `remote api`.
+
+### Bind the team to a GitHub project board
+
+Makes a Projects v2 board and the native board the same tickets: the board's
+`Status` column becomes two-way with the native columns, and its
+`Area`/`Mode`/`Priority` land as `area:`/`mode:`/`prio:` card labels.
+
+```sh
+iterion remote forge connections                 # find the connection id
+iterion remote board bind --project SocialGouv/203 --connection conn_123
+iterion remote board show                        # the EFFECTIVE map + coverage
+```
+
+Field and option ids are discovered by name at bind time, never hardcoded. A
+board with different columns binds with `--status-map
+"Todo=ready,Doing=in_progress,Shipped=done"`; the map must be injective (two
+columns on one state is refused, naming the collision). `--sync-every 2m`
+(default; `0`/`off` disables, floor 1m) sets the reconciliation interval, which
+the server runs elected per tenant. Full runbook, incl. the permissions the
+credential needs and what the sync deliberately refuses to do:
+[github-board-sync.md](github-board-sync.md).
 
 ### Refresh GitHub App grants
 

@@ -225,6 +225,44 @@ The OAuth handshake completes on public callbacks the SPA is redirected to:
 `GET /api/forge/oauth/callback`, `GET /api/forge/github/app/callback`, and
 `GET /api/forge/github/app-manifest/callback`.
 
+## Project-board binding (GitHub Projects v2)
+
+One board per team (ADR-097). Binding it makes the board's `Status` column
+two-way with the native board's columns and imports `Area`/`Mode`/`Priority`
+onto cards as `area:`/`mode:`/`prio:` labels. Runbook:
+[docs/github-board-sync.md](github-board-sync.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/board-binding` | team member | The binding, incl. the effective status map and the last sync |
+| `PUT` | `/api/teams/{id}/board-binding` | team admin | Bind / re-bind (resolves the board and caches its ids) |
+| `DELETE` | `/api/teams/{id}/board-binding` | team admin | Unbind |
+
+`PUT` takes the board's **address**, never its ids — every id in the stored
+binding comes from reading the board with the team's own credential, so a
+caller cannot point a team at a board it has no rights on:
+
+```jsonc
+{
+  "owner": "SocialGouv",
+  "number": 203,
+  "owner_kind": "org",              // or "user"; default "org"
+  "connection_id": "conn_123",
+  "status_map": {                   // optional; default = the shipped five
+    "Todo": "ready",
+    "Doing": "in_progress",
+    "Shipped": "done"
+  },
+  "sync_every_seconds": 120         // absent = default (120); 0 = off; floor 60
+}
+```
+
+Every rejection is a `400` naming the cause: a malformed ref, a non-injective
+`status_map` (two columns on one state), an interval under the floor, a board
+the credential cannot resolve, or a map matching none of the board's columns
+(the real column names are listed in the message). `GET`/`DELETE` on an unbound
+team are `404`, never a silent success.
+
 ## Inbound webhooks
 
 CRUD (operator-side) plus per-provider delivery URLs.

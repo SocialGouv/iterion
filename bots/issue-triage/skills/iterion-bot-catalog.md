@@ -202,7 +202,7 @@ pull request (PR; merge request on GitLab).
   for a fast free first draft the operator reframes at the draft-review
   gate. A re-run against the generated app evolves it.
 - **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
-- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
+- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
 - **Path**: `bots/app-dev/main.bot`
 
 ### `arbitrate` — Themis
@@ -287,7 +287,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `budget_max_cost_usd` (float), `budget_max_duration_minutes` (int), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `budget_max_cost_usd` (float), `budget_max_duration_minutes` (int), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `campaign` — Campy
@@ -475,7 +475,7 @@ workflow — so adding a language or harness style needs no DSL edit.
   tests). Endy's axis is the FEATURE-level e2e completeness of the
   whole application, made checkable by the matrix.
 - **Triggers**: e2e, e2e-coverage, end-to-end, coverage-matrix, e2e-tests, regression-net, feature-coverage
-- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
 - **Path**: `bots/e2e-coverage/main.bot`
 
 ### `evolve` — Evoly
@@ -543,7 +543,7 @@ pull request (PR; merge request on GitLab).
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini
@@ -563,7 +563,7 @@ without re-architecting what already works.
   bot, OR manually via --var gap_spec='<spec>' when an operator wants to
   close a specific gap on a feature. Prefer feature_dev when the work is
   greenfield (no existing partial implementation to preserve).
-- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
 
 ### `feed-watch` — Vigie
@@ -1148,7 +1148,7 @@ not in the workflow — so adding a language needs no DSL edit.
   feature-dev — though feature-dev already writes tests for the feature
   it ships). Testy's job is coverage of code that already exists.
 - **Triggers**: test, tests, testing, coverage, test-coverage, unit-test, add-tests, augment-tests
-- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
 - **Path**: `bots/test-coverage/main.bot`
 
 ### `ultra11y` — Ally
@@ -1295,7 +1295,7 @@ docs/references/productive-session-patterns.md.
   always leave landed, reviewable commits. For an open-ended "find whatever is
   wrong" production-readiness audit (no single axis), point a review-loop bot
   at the tree instead — this bot needs an axis to sweep.
-- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 ### `wiki-gen` — Wikky

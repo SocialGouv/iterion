@@ -381,12 +381,17 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// leaves engine state untouched" — holds here too: `cancelled`
 	// preserves the checkpoint, so a revert failure after the claim leaves
 	// a resumable run carrying its pre-rewind state.
-	claimed, err := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
-	if err != nil {
+	// Claim the exact document we inspected, not merely a status shared by
+	// several attempts. The successful save advances run.CASVersion for the
+	// final write, so a concurrent cancel/resume or metadata edit is detected.
+	run.Status = store.RunStatusCancelled
+	run.Error = ""
+	run.FailureCode = ""
+	now := time.Now().UTC()
+	run.UpdatedAt = now
+	run.FinishedAt = &now
+	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("claim run for rewind: %w", err)
-	}
-	if !claimed {
-		return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
 	}
 
 	scope := spec.RestoreScope
@@ -445,26 +450,15 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	run.FailureCode = ""
 	run.Checkpoint = cp
 	run.UpdatedAt = time.Now().UTC()
-	// Re-apply the stamp the claim performed. `run` was loaded BEFORE the
-	// CAS, and UpdateRunStatusIf mutates its own copy (loadRunRaw →
-	// applyStatusTransition), which sets FinishedAt for the `cancelled`
-	// transition. SaveRun is a full-document overwrite, so saving `run`
-	// verbatim drops it whenever the pre-rewind status was paused_* or
-	// queued — where FinishedAt was nil. The run then persists as
-	// cancelled with finished_at null, nothing heals it (healRun only
-	// nulls it for `running`), and the studio duration ticker runs
-	// forever because runs_stats falls back to now for the end.
-	//
-	// Same read-modify-write-across-a-CAS hazard this branch already fixed
-	// on the resume path (restampWorkflowSource).
-	finishedAt := run.UpdatedAt
-	run.FinishedAt = &finishedAt
+	// The claim stamped FinishedAt and advanced the version. SaveRun refuses
+	// if another writer changed the run while the rewind was being prepared.
+
 	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("save rewound run: %w", err)
 	}
-	if err := s.store.SaveCheckpoint(ctx, run.ID, cp); err != nil {
-		return nil, fmt.Errorf("save rewound checkpoint: %w", err)
-	}
+	// SaveRun includes the checkpoint in its version-checked replacement.
+	// A second, unconditional SaveCheckpoint would overwrite an engine
+	// checkpoint written by a resume that starts after this save.
 	if bss := store.AsBackendSessionStore(s.store); bss != nil {
 		for _, ref := range dropSessionRefs {
 			_ = bss.DeleteBackendSession(ctx, run.ID, ref)

@@ -255,6 +255,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		_ = traceShutdown(shutCtx)
 	}()
 
+	// Keep in sync with the natsq.Connect literal in runner.go: a field only
+	// one side passes is silently defaulted for the other, and the two then
+	// disagree about the same broker. LockTTL is what just drifted.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:                 cfg.NATS.URL,
 		StreamName:          cfg.NATS.Stream,
@@ -270,6 +273,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
 		MaxPayload:          cfg.NATS.MaxPayload,
+		LockTTL:             cfg.Runner.LockTTL,
 		Logger:              logger,
 	})
 	if err != nil {
@@ -616,6 +620,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BotBindings:            stores.botBindings,
 		ForgeConnections:       stores.forgeConn,
 		ForgeIntegrations:      stores.forgeIntegration,
+		BoardBindings:          stores.boardBinding,
 		ProvisionApprovals:     stores.forgeApprovals,
 		ForgeOAuthApps:         stores.forgeOAuthApp,
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
@@ -716,6 +721,7 @@ type cloudStores struct {
 	configShares     *configshare.MongoStore
 	forgeConn        *forge.MongoConnectionStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
+	boardBinding     *forge.MongoBoardBindingStore
 	forgeApprovals   *forge.MongoProvisionApprovalStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
 	pluginSources    *pluginsource.MongoStore
@@ -760,6 +766,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
+		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),
 		forgeApprovals:   forge.NewMongoProvisionApprovalStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
@@ -805,6 +812,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"webhooks", func(c context.Context) error { return webhooks.EnsureSchema(c, st.DB()) }},
 		{"forge_connections", s.forgeConn.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
+		{"forge_board_bindings", s.boardBinding.EnsureSchema},
 		{"forge_provision_approvals", s.forgeApprovals.EnsureSchema},
 		{"forge_oauth_apps", s.forgeOAuthApp.EnsureSchema},
 		{"plugin_sources", s.pluginSources.EnsureSchema},

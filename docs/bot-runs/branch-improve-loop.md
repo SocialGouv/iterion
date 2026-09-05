@@ -1,5 +1,121 @@
 # Billy — branch-improvement validation
 
+## 2026-09-05 — PR #769 follow-up: drain recovery and local credential destinations
+
+- Status: **fixes delivered; independent validation pending**. Run
+  [01a072b5-6010-70b2-8df0-3e78458c92ef](https://iterion.fabrique.social.gouv.fr/runs/01a072b5-6010-70b2-8df0-3e78458c92ef)
+  finished at 19:51:47Z after 1 h 55 m 23 s active. Target:
+  [PR #769](https://github.com/SocialGouv/iterion/pull/769) /
+  [issue #702](https://github.com/SocialGouv/iterion/issues/702).
+- Method: a focused `/billy` follow-up named Revi findings `Rbdd8d5` and
+  `R47ce28`, requiring the local/team fork guard to remain intact. The
+  interactive session reviewed the published diff after the run stopped;
+  no interactive push overlapped the fixer.
+- Result: eight commits, `76fcea019` through `78358ec2460c`, pushed and
+  banked on `iterion/run-01a072b5-6010-70b2-8df0-3e78458c92ef`. Both finding
+  IDs are recorded as fixed in the publisher's PR review. A pre-launch
+  retry now outranks replica draining, while a post-launch drain still
+  leaves the live run alone. Unpinned local tokens reach only the exact
+  canonical HTTPS origins of GitHub, GitLab and Codeberg; other origins
+  require the operator's host pin.
+- Additional value: a refused return-to-ready write retains the claim,
+  rather than releasing an unfiled card with no run pointer; the local
+  forge base canonicalises host case; and the shared head-verification
+  function rejects repository path traversal before building a request.
+  Tests include actual authenticated TLS requests, their zero-request
+  negative control, recovery after draining, and failed final-state writes.
+- Verification: the campaign reports `devbox run -- task check` passing
+  (136 packages, zero failures) and focused race tests passing. One earlier
+  concurrent suite reported a failure, followed by three clean reruns;
+  resource contention was the bot's inference, not a reproduced cause.
+  The final `verify_run` **returned 3**: build, vet, server tests and OpenAPI
+  generation succeeded, but the deterministic tail rejected the script's
+  quiet-diff check as a missing drift gate. This is not a green bot gate.
+  The detector only recognises a quiet diff when a failing exit appears
+  on the same line; the repository itself also uses a multiline failing
+  conditional. The friction is tracked in
+  [#789](https://github.com/SocialGouv/iterion/issues/789).
+- Delivery follow-up: merging current `main` conflicted only in this
+  bilan file. Both histories were retained verbatim, and this second-run
+  record was added. The merged tree passed whole-module build and the
+  server PR-guard/dispatcher regressions under `-race`, the full server
+  and dispatcher package suites, and the actual `task openapi:check`
+  with no generated-file drift. Required GitHub
+  checks and independent Revi must validate the updated branch before
+  protected merging; no status override is used.
+- Lessons: test the outbound request count, not only the HTTP refusal;
+  preserve the stronger pre-launch fact during draining; and distinguish
+  a test failure from a verifier that rejects the shape of its own script.
+  Claim-retention recovery still needs the opt-in claim watchdog, as the
+  forge integration documentation explicitly records.
+
+## 2026-09-05 — lock-delivery follow-up on PR #770: an "open question" was a two-part defect, and one comment cited a function that never existed
+
+- Status: **delivered**. Run
+  [01a07283-16f2-7b55-bf66-db10c5453fdf](https://iterion.fabrique.social.gouv.fr/runs/01a07283-16f2-7b55-bf66-db10c5453fdf),
+  a focused follow-up to `01a07243` on the same
+  [PR #770](https://github.com/SocialGouv/iterion/pull/770) /
+  [issue #703](https://github.com/SocialGouv/iterion/issues/703).
+- Method: seeded with Revi's single new finding `R1dca02` plus five open
+  questions, and with a plan a cross-model peer had already critiqued. The
+  peer's catch changed the shipped result — see below.
+- Result: nine commits, `38f2d98e2` … `eaa33d0ce`. `R1dca02` fixed (the
+  non-contention lock class logs at Error again, so a broken lock store
+  raises a tracker event instead of a breadcrumb nobody ships); one open
+  question promoted to a defect and closed; one phantom cross-reference
+  corrected; two ratchets landed.
+- Verification — **passed** with the exit code captured before any pipe:
+  `task test` (rc 0), `go test ./e2e/...` (rc 0, 769s), `task lint` (rc 0),
+  `go test -race` on runner/queue-nats/server (rc 0), and the three studio
+  targets `studio:lint` / `studio:typecheck` / `studio:test` (rc 0, 1308
+  tests). **Unavailable locally**, left to the GitHub checks: the
+  `mongo-conformance` and `nats-conformance` jobs (each needs a service
+  container) and the Playwright UI suite (opt-in browser download).
+- Verification gotcha worth keeping: the first attempt at each of these
+  piped through `grep`/`tail` and then read `$?`, which reports the LAST
+  pipeline stage, not the test command. A studio `tsc` invocation that died
+  on `exit 127` (no `node_modules`) printed `EXIT=0` that way. Redirect to a
+  log, save `$?` immediately, then filter — or set `pipefail`.
+- Value — the open question was the bigger finding. Registering LockTTL in
+  `RedeliveryWindow` is the obvious half, and on its own it is **inert**:
+  `cmd/iterion/server.go`'s `natsq.Connect` literal never passed LockTTL, so
+  `applyDefaults` pinned the sweeper's own connection to 60s and the widened
+  formula would have read a value no deployment configured. Passing it also
+  closes a second, pre-existing hazard this branch made load-bearing —
+  `EnsureSchema` writes the KV bucket TTL from `cfg.LockTTL`, so server and
+  runner disagreeing meant the effective lease lifetime flapped by restart
+  order. Neither edit protects an `ITERION_LOCK_TTL=15m` deployment alone.
+- Findings the review missed: `archiveLockFailure`'s audit-deadline comment
+  justified itself as "same hazard, same remedy as parkAdmissionMismatch's
+  status flip" — a function that exists nowhere in the tree, and whose real
+  sibling (`parkOnDLQOnFinalDelivery`) does the OPPOSITE, handing its spent
+  publish context straight to the status flip. A citation asserting a settled
+  pattern for a remedy no other site applies.
+- Ratchets: the log-level regression asserts the hook LEVEL, not the message
+  (verified failing against the unfixed tree first); and a wrapped-`ErrLockHeld`
+  test pins the classification against the shape production actually delivers
+  — every other double returns the sentinel bare, so swapping `errors.Is` for
+  `==` kept the whole suite green while the fleet would page on every sibling
+  collision (verified: that one token turns the new test red and nothing else).
+- Lessons for next run: an "open question" in a review is not automatically
+  out of scope — this one was a real defect whose fix needed a second edit in
+  a file the reviewer never named. And a comment citing a precedent deserves
+  the same grep a code reference gets; a phantom name reads as authority.
+- One open question answered with evidence rather than left open: a foreign
+  `run_delivery_exhausted` does NOT disturb a live run's observers, and the
+  reason is narrow enough to be worth a comment at the emission site.
+  `alert.Manager` treats **any** event as liveness (it clears `stallAlerted`
+  and can fire a spurious `stall_recovered`) — but it is fed only by the
+  local `events.jsonl` tailer and in-process run observers, never by the
+  Mongo store this path writes to; and the cloud twin `alert.OpsDispatcher`
+  filters the bus to `KindRunFailed`, which a store event never becomes.
+  Wiring a cloud event source into the Manager would turn this row into a
+  false liveness signal.
+- Left deliberately: `MaxAckPending` headroom during a lock outage and
+  sweeper-vs-operator DLQ-replay ownership — genuine open questions, not
+  findings. `parkOnDLQOnFinalDelivery`'s inherited publish context is a real
+  smell but pre-existing and outside this branch.
+
 ## 2026-09-05 — PR-launch guard: local credentials and bounded board retry (#769 / #702)
 
 - Status: **completed and delivered**; independent Revi re-review and GitHub
@@ -46,6 +162,51 @@
   checkout's remote or HEAD SHA. Keep those limits explicit, verify the
   original issue against the final diff, and wait for independent Revi
   rather than treating the fixer's own green gate as the final review.
+
+## 2026-09-05 — lock-delivery hardening on PR #770: seven commits delivered; the publisher still says nothing was pushed
+
+- Status: **first pass delivered and verified; review follow-up pending**.
+  Run [01a07243-13f3-7229-8aea-801a2fc3569e](https://iterion.fabrique.social.gouv.fr/runs/01a07243-13f3-7229-8aea-801a2fc3569e)
+  finished on 05/09 at 16:46Z, with 54m42s of recorded active duration.
+  Target: [PR #770](https://github.com/SocialGouv/iterion/pull/770),
+  [issue #703](https://github.com/SocialGouv/iterion/issues/703).
+- Method: a maintainer `/billy` comment named Revi findings `Rd41f5d` and
+  `R1cae68`; auto-merge stayed off. Plan, peer review and revision preceded
+  the campaign. No interactive session edited the branch while Billy ran.
+- Result: seven commits reached the PR, from `b8166f730` to
+  `eb58773074357201f544d11525090a262be732a3`. The run's final commit equals
+  that PR head; its storage branch is
+  `iterion/run-01a07243-13f3-7229-8aea-801a2fc3569e`.
+  `fca63105e` gives the audit an independent deadline after the DLQ publish;
+  `9a2b771af` distinguishes confirmed contention from unconfirmed ownership.
+  Further commits correct the lost-PubAck wording, document both unknowns,
+  add the event to the studio union and update the coverage matrix.
+- Proof: `TestExhaustedPublishDeadlineStillRecordsTheAuditRow` waits until
+  the publication context expires and uses a store that honours cancellation;
+  the old implementation loses the audit row. The reason-classification
+  regression rejects both an asserted owner and asserted absence when the
+  lock service did not answer. Billy's verification gate returned exit 0
+  (format/build/vet, touched Go suites, race checks and lint); the new head's
+  NATS conformance CI also passed. The full PR test check was still running
+  when this record was written.
+- Value of the peer review: a failed lock acquisition does **not** prove
+  absence of an owner, and a missing PubAck does **not** prove the DLQ copy
+  is absent. The final code reports both as unknown instead of inviting an
+  unsafe replay or discard. No lock-failure branch mutates the run outcome
+  or checkpoint.
+- Friction: despite the campaign having pushed all seven commits,
+  `publish_verdict` opened its review with “No commits pushed. nothing to
+  push: HEAD not ahead of origin/codex/fix-703-lock-delivery-dlq” and reported
+  a failure status. The same review then correctly listed the delivered
+  commits and fixed findings. This is additional evidence for
+  [#773](https://github.com/SocialGouv/iterion/issues/773), not missing work
+  in this run: the PR head and final commit were equal. Revi's independent
+  review subsequently replaced that status with success.
+- Remaining work: the independent review found `R1dca02` — infrastructure
+  lock failures had lost their error-level log, suppressing the tracker
+  event. Keep auto-merge off for the follow-up correction. Also check that
+  a configured lock delay larger than AckWait is represented in the
+  redelivery window used by the queued-run sweeper.
 
 ## 2026-09-05 — plan-budget guard dogfooded on prod: the gate fires typed, before `campaign`, for $0.67–$1.80 (runs 01a0714a, 01a07156)
 

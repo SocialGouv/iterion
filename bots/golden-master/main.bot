@@ -1301,9 +1301,25 @@ tool oracle_run:
                 # gate — the ledger disabling its own guard (adversarial finding,
                 # executed). Normalising at the single parse point makes such a
                 # block refusable instead of fatal.
-                for field in ("recorded_paths", "paths", "corpus_entries"):
+                for field in ("recorded_paths", "paths", "corpus_entries",
+                              "expected_paths", "entries"):
                     if field in obj and not isinstance(obj[field], list):
                         obj[field] = []
+                # Two spellings of a request are read, at this single parse
+                # point, so every judgement below sees one shape. The canonical
+                # one (`paths`, `corpus_entries` with full entries) is what the
+                # doctrine teaches; the other (`expected_paths`, `entries` as
+                # ids) is the re-baseline ledger's, and a ledger header written
+                # by a worker in that idiom taught it to every request after it
+                # — measured: every conforming request of a programme was judged
+                # "smuggled", because the judge read only the first spelling.
+                if kind == "request":
+                    if "paths" not in obj and isinstance(obj.get("expected_paths"), list):
+                        obj["paths"] = [p for p in obj["expected_paths"] if isinstance(p, str)]
+                    if "corpus_entries" not in obj and isinstance(obj.get("entries"), list):
+                        obj["corpus_entries"] = [
+                            e if isinstance(e, dict) else {"id": e}
+                            for e in obj["entries"] if isinstance(e, (dict, str))]
             out.append(obj)
         return out
 
@@ -2989,6 +3005,26 @@ tool oracle_run:
                 json.dump({"entries": [base_entry, new_entry]}, f)
             xcommit()
             check("add-entry legitime et revendiquee -> ok",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], True)
+
+            # La meme demande dans l'orthographe du registre de re-baseline
+            # (`expected_paths` + `entries` en identifiants) : lue au meme point,
+            # jugee pareil. Mesure : toute demande conforme a un en-tete de
+            # registre ecrit dans cet idiome etait jugee « smuggled ».
+            xreset()
+            req_taught = ('{"id": "E-2", "lot": "L", "entries": ["2"],'
+                          ' "expected_paths": [".golden-master/refs/2.txt"]}')
+            xrequest(req_taught)
+            xledger(("request", req_taught),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json",'
+                            ' ".golden-master/refs/2.txt"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, new_entry]}, f)
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            check("demande ecrite comme le registre de re-baseline l'enseigne -> ok",
                   extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], True)
 
             # Retouche d'une entree existante sous couvert d'ajout.
