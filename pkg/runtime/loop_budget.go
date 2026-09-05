@@ -181,7 +181,7 @@ func (e *Engine) baselineUnpricedLoops(rs *runState) {
 		// everything the run has spent and decline it. Re-based here, it
 		// prices from the resume point like a loop measured for the first
 		// time. A fresh run re-bases a zero with a zero — no change.
-		if priced && !(isRunStartBaseline(mark) && !loopHoldsEntry(loop, e.workflow.Entry)) {
+		if priced && (!isRunStartBaseline(mark) || loopHoldsEntry(loop, e.workflow.Entry)) {
 			continue
 		}
 		markLoopBudget(rs, loopName)
