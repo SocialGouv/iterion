@@ -21,7 +21,9 @@
 ##   gate_replay    the target's full gate on the committed tree — the half
 ##                  that COMPARES. Red drops that commit and ends at `fail`:
 ##                  a judge that decides well and compares wrongly must not
-##                  land.
+##                  land. When it cannot drop it — HEAD moved, so the reset
+##                  would take another hand's work — it says so in log_tail
+##                  rather than let `fail` read as "nothing landed".
 ##   seal_commit    the gate's verdict and minutes written into the commit.
 ##
 ## Not a re-baseline: nothing compared changes, only the comparator. The
@@ -3882,8 +3884,19 @@ tool gate_replay:
         # DECLINES it was pure loss — every unstaged tracked edit made while the
         # gate ran (hours, on a live checkout) discarded, with no commit dropped
         # in exchange.
-        if git("rev-parse", "HEAD").stdout.strip() == sync_commit:
-            git("reset", "-q", "--hard", "HEAD~1")
+        #
+        # Returns what the caller must SAY when it declined: the run ends at
+        # `fail` either way, and a red verdict over a surviving sync commit
+        # reads as "nothing landed" unless the report contradicts it.
+        if git("rev-parse", "HEAD").stdout.strip() != sync_commit:
+            return ("the sync commit %s is no longer HEAD — dropping it would drop someone else's work, so it "
+                    "was NOT dropped and is still in this branch's history; remove it by hand before anything "
+                    "lands" % sync_commit[:12])
+        r = git("reset", "-q", "--hard", "HEAD~1")
+        if r.returncode != 0:
+            return ("the sync commit %s could not be dropped (%s) — it is still at HEAD; remove it by hand "
+                    "before anything lands" % (sync_commit[:12], (r.stderr or r.stdout).strip()[-200:]))
+        return ""
 
     started = time.monotonic()
     # The gate runs in its own session: on expiry the WHOLE process group is
@@ -3911,11 +3924,12 @@ tool gate_replay:
         moved = [l for l in st.stdout.splitlines() if l.strip()]
         if moved:
             out["log_tail"] = "the gate left the tree changed (%s) — that is the gate's bug, not the sync's; the sync commit is dropped" % ", ".join(moved)
-            drop_sync_commit()
         else:
             out["passed"] = True
-    else:
-        drop_sync_commit()
+    if not out["passed"]:
+        undropped = drop_sync_commit()
+        if undropped:
+            out["log_tail"] = (out["log_tail"] + "\n\n" + undropped)[-4000:]
     print(json.dumps(out))
 
 ## One commit, the harness alone, with the selftest — the gate's verdict is

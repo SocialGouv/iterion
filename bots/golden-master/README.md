@@ -125,9 +125,14 @@ the harness alone with that proof, BEFORE the gate, because the harness refuses 
 uncommitted tree (mutant reverts restore HEAD mid-gate, so the verdict would describe a tree that
 never existed); it replays the target's full gate on that committed tree (`gate_cmd`, default the
 runner the net materialised) — the half that COMPARES; and it seals the gate's verdict and minutes
-into the commit. A red gate drops the sync commit and ends the run at `fail`, the previous harness
-back at HEAD. It never pushes: landing the commit on the base branch is the act of whoever owns
-landings. Not a re-baseline — nothing compared changes, only the comparator.
+into the commit. A red gate drops the sync commit, putting the previous harness back at HEAD, and
+ends the run at `fail` — and on the one case where it cannot (the sync commit is no longer HEAD, so
+dropping it would drop another hand's work), it says so in `log_tail` rather than leaving a red
+verdict to read as "nothing landed". It never pushes: landing the commit on the base branch is the
+act of whoever owns landings. Not a re-baseline — nothing compared changes, only the comparator.
+
+The sync commits on whatever branch the target has checked out, so run it where you want that commit:
+a scratch branch if the checkout is a protected base.
 
 ```
 iterion run bots/golden-master/sync-harness.bot            # in the target tree
