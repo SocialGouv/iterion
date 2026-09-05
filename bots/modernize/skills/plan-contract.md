@@ -74,9 +74,11 @@ bank taken before the verdict can never carry a completion nobody proved. A
 command; revert the line and let the gate decide.
 
 An explicit launch (`only_lot`) on a lot that cannot be carried out — already
-`done` or `blocked`, undeclared, or waiting on a dependency — is refused,
-typed (`LOT_NOT_ACTIONABLE`), never answered with a green no-op: a `finished`
-run that crossed no gate reads as convergence to whoever relaunched it.
+`done` or `blocked`, undeclared, waiting on a dependency, or declaring no
+`exit_gate` — is a typed verdict the graph reads (`lot_not_actionable`,
+`lot_status`: done / blocked / absent / waiting / no_gate) and the run fails on
+it, never a green no-op: a `finished` run that crossed no gate reads as
+convergence to whoever relaunched it.
 
 ## `exit_gate`
 

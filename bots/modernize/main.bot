@@ -438,21 +438,11 @@ tool plan_read:
         # every one a relaunch from a banked branch whose contract carried a
         # `done` no gate had proven.
         target = next((l for l in lots if l.get("id") == only), None)
-        if target is None:
-            refuse("LOT_NOT_ACTIONABLE: no lot %r in the contract — the request "
-                   "names a lot the programme does not declare." % only)
-        st = target.get("status")
-        if st in ("done", "blocked"):
-            refuse("LOT_NOT_ACTIONABLE: lot %s is `%s` at HEAD — an explicit "
-                   "request on a lot the contract carries as landed is refused "
-                   "rather than reported as a green no-op. If the work is real "
-                   "but its gate never ran, flip the lot back to `todo` on the "
-                   "branch you relaunch from and let the gate decide."
-                   % (only, st))
+        # done / blocked / absent were resolved above, by not_actionable().
         missing = [d for d in (target.get("depends_on") or []) if d not in done_ids]
-        refuse("LOT_NOT_ACTIONABLE: lot %s waits on %s — an explicit request "
-               "cannot skip the contract's order."
-               % (only, ", ".join(missing) or "an unmet dependency"))
+        not_actionable("waiting",
+            "only_lot %r is not actionable: it waits on %s — an explicit request "
+            "cannot skip the contract's order." % (only, ", ".join(missing) or "an unmet dependency"))
 
     if chosen is None:
         if waiting:
@@ -500,9 +490,10 @@ tool plan_read:
                "and invoke it." % chosen.get("id"))
     if not gate:
         if only:
-            refuse("LOT_NOT_ACTIONABLE: lot %s declares no exit_gate — an "
-                   "explicit request on a lot that cannot be verified is refused, "
-                   "not answered with a green no-op." % chosen.get("id"))
+            not_actionable("no_gate",
+                "only_lot %r is not actionable: it declares no exit_gate — an "
+                "explicit request on a lot that cannot be verified is refused, "
+                "not answered with a green no-op." % chosen.get("id"))
         emit("lot %s declares no exit_gate. A lot with no gate cannot be "
              "verified, and an unverifiable lot is indistinguishable from one "
              "that was never done." % chosen.get("id"))

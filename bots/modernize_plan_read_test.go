@@ -109,10 +109,12 @@ lots:
 
 // modernizePlanReadOut is the subset of plan_read's output the tests read.
 type modernizePlanReadOut struct {
-	NothingToDo bool   `json:"nothing_to_do"`
-	LotID       string `json:"lot_id"`
-	ExitGate    string `json:"exit_gate"`
-	Notice      string `json:"notice"`
+	NothingToDo      bool   `json:"nothing_to_do"`
+	LotID            string `json:"lot_id"`
+	ExitGate         string `json:"exit_gate"`
+	Notice           string `json:"notice"`
+	LotNotActionable bool   `json:"lot_not_actionable"`
+	LotStatus        string `json:"lot_status"`
 }
 
 // modernizePlanRead executes the REAL plan_read script against a throwaway
@@ -211,11 +213,15 @@ lots:
     depends_on: [L3]
     exit_gate: [ "true" ]
 `
-	refused := func(t *testing.T, lot string) modernizePlanReadOut {
+	// A non-actionable explicit request is a VERDICT the graph reads
+	// (lot_not_actionable + lot_status → work_gate -> fail), never a tool
+	// error: an exit 1 here would be retried once by the engine and end the
+	// run failed_resumable — a typed fail is neither.
+	refused := func(t *testing.T, lot, status string) modernizePlanReadOut {
 		t.Helper()
-		res := modernizePlanRead(t, script, plan, lot, 1)
-		if !strings.HasPrefix(res.Notice, "LOT_NOT_ACTIONABLE: ") {
-			t.Fatalf("only_lot=%s: notice = %q, want a typed LOT_NOT_ACTIONABLE refusal", lot, res.Notice)
+		res := modernizePlanRead(t, script, plan, lot, 0)
+		if !res.LotNotActionable || res.LotStatus != status || res.NothingToDo {
+			t.Fatalf("only_lot=%s: lot_not_actionable=%v lot_status=%q nothing_to_do=%v, want the typed verdict with status %q (%s)", lot, res.LotNotActionable, res.LotStatus, res.NothingToDo, status, res.Notice)
 		}
 		if res.LotID != "" {
 			t.Fatalf("only_lot=%s: a refused request must select no lot, got %q", lot, res.LotID)
@@ -223,26 +229,26 @@ lots:
 		return res
 	}
 
-	t.Run("done lot is refused, and names the way out", func(t *testing.T) {
-		res := refused(t, "L1")
-		if !strings.Contains(res.Notice, "`done`") || !strings.Contains(res.Notice, "todo") {
-			t.Fatalf("notice = %q, want the status named and the `todo` flip suggested", res.Notice)
+	t.Run("done lot is refused, typed", func(t *testing.T) {
+		res := refused(t, "L1", "done")
+		if !strings.Contains(res.Notice, "'done'") {
+			t.Fatalf("notice = %q, want the status named", res.Notice)
 		}
 	})
 	t.Run("blocked lot is refused", func(t *testing.T) {
-		res := refused(t, "L2")
-		if !strings.Contains(res.Notice, "`blocked`") {
+		res := refused(t, "L2", "blocked")
+		if !strings.Contains(res.Notice, "'blocked'") {
 			t.Fatalf("notice = %q, want the status named", res.Notice)
 		}
 	})
 	t.Run("undeclared lot is refused", func(t *testing.T) {
-		res := refused(t, "L9")
-		if !strings.Contains(res.Notice, "does not declare") {
+		res := refused(t, "L9", "absent")
+		if !strings.Contains(res.Notice, "does not exist") {
 			t.Fatalf("notice = %q, want the undeclared lot named", res.Notice)
 		}
 	})
 	t.Run("lot behind an unmet dependency is refused", func(t *testing.T) {
-		res := refused(t, "L4")
+		res := refused(t, "L4", "waiting")
 		if !strings.Contains(res.Notice, "waits on L3") {
 			t.Fatalf("notice = %q, want the unmet dependency named", res.Notice)
 		}
@@ -310,12 +316,12 @@ lots:
 	t.Run("explicit request on a gate-less lot is refused, typed", func(t *testing.T) {
 		res := modernizePlanRead(t, script, `version: 1
 lots:
-  - id: L5
+  - id: L1
     title: no gate
     status: todo
-`, "L5", 1)
-		if !strings.HasPrefix(res.Notice, "LOT_NOT_ACTIONABLE") || !strings.Contains(res.Notice, "no exit_gate") {
-			t.Fatalf("notice = %q", res.Notice)
+`, "L1", 0)
+		if !res.LotNotActionable || res.LotStatus != "no_gate" || !strings.Contains(res.Notice, "no exit_gate") {
+			t.Fatalf("lot_not_actionable=%v lot_status=%q notice=%q, want the typed no_gate verdict", res.LotNotActionable, res.LotStatus, res.Notice)
 		}
 	})
 	t.Run("unfiltered mode keeps the documented no-op on a gate-less lot", func(t *testing.T) {
