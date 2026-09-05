@@ -652,9 +652,6 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	}
 }
 
-// reconcileDue reports whether the sweep's evaluation of a (tenant, issue)
-// card is due again — false while a previous evaluation is younger than
-// forkAdoptionScanTTL.
 // eligible0 is the state a card is returned to when nothing launched — the
 // first state the poll claims from. Empty when a hand-built dispatcher lists
 // none, which the retry arm reads as "there is no pool to return to".
@@ -723,6 +720,9 @@ func (d *boardDispatcher) clearCardRetry(tenant, issueID string) {
 	delete(d.retryMemo, tenant+"|"+issueID)
 }
 
+// reconcileDue reports whether the sweep's evaluation of a (tenant, issue)
+// card is due again — false while a previous evaluation is younger than
+// forkAdoptionScanTTL.
 func (d *boardDispatcher) reconcileDue(tenant, issueID string) bool {
 	d.reconcileMemoMu.Lock()
 	defer d.reconcileMemoMu.Unlock()
