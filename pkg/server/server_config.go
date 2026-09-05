@@ -223,6 +223,10 @@ type Config struct {
 	// and the OAuth callback to register.
 	ForgeConnections  forge.ConnectionStore
 	ForgeIntegrations forge.RepoIntegrationStore
+	// BoardBindings ties each team to one forge PROJECT board (ADR-097).
+	// Absent (local mode) self-disables the board endpoints and the periodic
+	// reconciliation worker.
+	BoardBindings forge.BoardBindingStore
 	// ProvisionApprovals parks team-admin provisioning requests pending an
 	// org admin's decision when Org.RequireProvisionApproval is set. Nil
 	// disables the approval gate (every org behaves as if the flag were off).

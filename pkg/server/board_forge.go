@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -284,7 +285,13 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		Author:       is.Author,
 	}
 	existing, gerr := board.Get(cardID)
-	if gerr != nil {
+	if gerr != nil && !errors.Is(gerr, tracker.ErrNotFound) {
+		// Only the not-found sentinel means "no card yet" — both twins answer
+		// a missing card with it and wrap everything else. Creating on any
+		// error would have this import write blind through a store outage.
+		return 0, 0, fmt.Errorf("board sync: read card %s: %w", cardID, gerr)
+	}
+	if gerr != nil || existing == nil {
 		col := openCol
 		labels := is.Labels
 		if is.State == "closed" && doneCol != "" {
@@ -310,6 +317,15 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		return 1, 0, nil
 	}
 	labels := mergeForgeLabels(is.Labels, existing.Labels)
+	// Patch.External REPLACES the whole ref, so the project sync state — which
+	// this import knows nothing about and never sets — has to be carried
+	// across. Dropping it would silently reset every card on any plain issue
+	// import: the next project pass would read "first sight" and overwrite a
+	// native move it should have pushed to the board instead.
+	if existing.External != nil && existing.External.Project != nil {
+		p := *existing.External.Project
+		ext.Project = &p
+	}
 	if _, err := board.Update(cardID, native.Patch{
 		Title:    &is.Title,
 		Body:     &is.Body,
@@ -331,9 +347,31 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 
 // boardLocalLabelPrefixes are the label namespaces owned by the BOARD, not
 // the forge: the ingest trust labels (triage:, needs:), command idempotency
-// markers (cmd:) and provenance (source:). The forge sync's label refresh
-// preserves them; everything else mirrors the forge verbatim.
-var boardLocalLabelPrefixes = []string{"triage:", "needs:", "cmd:", "source:"}
+// markers (cmd:), provenance (source:) and the project-board field labels
+// (area:, mode:, prio: — written by the PROJECT import, present on no forge
+// repo). The forge sync's label refresh preserves them; everything else
+// mirrors the forge verbatim.
+var boardLocalLabelPrefixes = append(
+	[]string{"triage:", "needs:", "cmd:", "source:"},
+	projectFieldLabelPrefixes()...,
+)
+
+// projectFieldLabelPrefixes lists the namespaces the project import owns, read
+// from the same declaration the import writes through — so adding a bound
+// field cannot leave its labels unprotected against the next issue import.
+//
+// It reads the DEFAULTS, which is exactly what every stored binding carries:
+// forge.BindRequest.LabelFields is reachable from no surface (see its own
+// doc). Wiring one means feeding the binding's prefixes here too, or the next
+// issue import strips the labels the project import just wrote.
+func projectFieldLabelPrefixes() []string {
+	fields := forge.DefaultLabelFields()
+	out := make([]string, 0, len(fields))
+	for _, lf := range fields {
+		out = append(out, lf.Prefix)
+	}
+	return out
+}
 
 func isBoardLocalLabel(l string) bool {
 	ll := strings.ToLower(l)

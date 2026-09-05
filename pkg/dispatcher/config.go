@@ -130,6 +130,28 @@ type GitHubTrackerConfig struct {
 	// any author. The anti-abuse scope for auto-dispatch on a public repo — a
 	// drive-by issue from an untrusted author is never auto-processed.
 	AuthorAllowlist []string `yaml:"author_allowlist,omitempty" json:"author_allowlist,omitempty"`
+	// Project, when set, puts the adapter in BOARD MODE: the workflow state is
+	// read from (and written to) a Projects v2 board's Status field instead of
+	// labels, so a card a human dragged is a card the dispatcher sees
+	// (ADR-097). state_mapping is then unused. The claim stays a label.
+	Project *GitHubProjectConfig `yaml:"project,omitempty" json:"project,omitempty"`
+}
+
+// GitHubProjectConfig binds the github tracker to one Projects v2 board.
+type GitHubProjectConfig struct {
+	// Owner + Number identify the board ("owner/number" in its URL).
+	Owner  string `yaml:"owner" json:"owner"`
+	Number int    `yaml:"number" json:"number"`
+	// OwnerKind is "org" (default) or "user".
+	OwnerKind string `yaml:"owner_kind,omitempty" json:"owner_kind,omitempty"`
+	// BaseURL overrides the forge host (GitHub Enterprise). Empty = github.com.
+	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	// CandidateStatuses are the columns eligible for dispatch. Empty defaults
+	// to ["Planned"]; widen it to dispatch from several columns.
+	CandidateStatuses []string `yaml:"candidate_statuses,omitempty" json:"candidate_statuses,omitempty"`
+	// StatusMap overrides the (board column → workflow state) pairs, e.g.
+	// {"Todo": "ready"}. Empty uses the shipped five-column vocabulary.
+	StatusMap map[string]string `yaml:"status_map,omitempty" json:"status_map,omitempty"`
 }
 
 // ForgejoTrackerConfig configures the forgejo (Gitea-compatible) adapter.

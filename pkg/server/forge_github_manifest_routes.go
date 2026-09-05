@@ -80,6 +80,7 @@ func (s *Server) handleStartGitHubManifest(w http.ResponseWriter, r *http.Reques
 			AllowRepoCreation: req.AllowRepoCreation,
 			AllowAppDelivery:  req.AllowAppDelivery,
 			AllowSecurityRead: req.AllowSecurityRead,
+			AllowProjectBoard: req.AllowProjectBoard,
 		})
 	// Create the App UNDER the chosen org so a (private) App is installable
 	// org-wide; empty org = the user's personal account.

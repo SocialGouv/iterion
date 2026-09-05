@@ -13,6 +13,7 @@ import WebhooksTab from "@/views/teams/tabs/WebhooksTab";
 import SecretsTab from "@/views/teams/tabs/SecretsTab";
 import BindingsTab from "@/views/teams/tabs/BindingsTab";
 import ModelProvidersTab from "./ModelProvidersTab";
+import ProjectBoardTab from "./ProjectBoardTab";
 
 // FORGES_LABEL is the user-facing name of the forge-connection tab. The
 // internal id stays `forges` so deep links keep working; the label
@@ -24,7 +25,7 @@ const FORGES_LABEL = "Repositories";
 // "Team settings" (/teams/:id, reached from the account chip). Everything here
 // is about connecting iterion to the outside world — git forges, the webhooks
 // they fire, the secrets bots consume, and the LLM subscriptions they run on.
-type Tab = "forges" | "webhooks" | "secrets" | "bindings" | "providers";
+type Tab = "forges" | "webhooks" | "secrets" | "bindings" | "providers" | "project-board";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "forges", label: FORGES_LABEL },
@@ -32,6 +33,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "secrets", label: "Secrets" },
   { id: "bindings", label: "Bot bindings" },
   { id: "providers", label: "Model providers" },
+  { id: "project-board", label: "Project board" },
 ];
 
 const TAB_ITEMS = TABS.map((t) => ({ value: t.id, label: t.label }));
@@ -109,6 +111,9 @@ export default function IntegrationsPage() {
           {tab === "secrets" && <SecretsTab teamID={teamID} canManage={canManage} />}
           {tab === "bindings" && <BindingsTab teamID={teamID} canManage={canManage} />}
           {tab === "providers" && <ModelProvidersTab teamID={teamID} />}
+          {tab === "project-board" && (
+            <ProjectBoardTab teamID={teamID} canManage={canManage} />
+          )}
         </main>
       </div>
     </div>

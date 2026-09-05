@@ -199,3 +199,41 @@ func TestForgeGitHubManifest_Start(t *testing.T) {
 		t.Fatalf("manifest redirect_url = %v", resp.Manifest["redirect_url"])
 	}
 }
+
+// TestForgeGitHubManifest_ProjectBoardGrant pins that the opt-in project-board
+// grant reaches the manifest GitHub is asked to create the App from.
+//
+// Without it the whole App credential path of the board sync is unusable: the
+// per-call mint asks for organization_projects, GitHub refuses a token for a
+// permission the App does not hold, and the failure surfaces at the first
+// board write — with no surface anywhere that could have requested the grant.
+func TestForgeGitHubManifest_ProjectBoardGrant(t *testing.T) {
+	perms := func(t *testing.T, body string) map[string]any {
+		t.Helper()
+		s := newForgeOAuthAppTestServer(t)
+		w := httptest.NewRecorder()
+		s.handleStartGitHubManifest(w, oauthAppReq(superAdminCtx(), "POST",
+			"/api/teams/t1/forge/oauth-apps/github-manifest", body, "t1", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("start: code=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Manifest struct {
+				DefaultPermissions map[string]any `json:"default_permissions"`
+			} `json:"manifest"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.Manifest.DefaultPermissions
+	}
+
+	if got := perms(t, `{"allow_project_board":true}`)["organization_projects"]; got != "write" {
+		t.Errorf("organization_projects = %v, want \"write\" — the request asked for the board grant", got)
+	}
+	// And it stays OPT-IN: an org-wide roadmap grant is not something a plain
+	// connect quietly acquires.
+	if got, ok := perms(t, `{}`)["organization_projects"]; ok {
+		t.Errorf("organization_projects = %v on a default App, want absent", got)
+	}
+}

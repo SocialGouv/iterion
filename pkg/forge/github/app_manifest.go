@@ -60,6 +60,14 @@ type AppManifestOptions struct {
 	// the dedicated security-read token (SecurityReadInstallationPermissions),
 	// never into the runtime forge token.
 	AllowSecurityRead bool
+	// AllowProjectBoard adds organization_projects:write so iterion can read
+	// an org's Projects v2 board and reflect native card transitions onto its
+	// Status field (ADR-097). Opt-in because it is an ORG-level grant — it
+	// spans every project the org owns, not the installed repositories — and
+	// at run time it is minted per board call only
+	// (ProjectsInstallationPermissions); the cached runtime token never
+	// carries it.
+	AllowProjectBoard bool
 	// SecurityReadOnly builds a WATCH-ONLY App: metadata:read plus
 	// vulnerability_alerts:read, and nothing else. It REPLACES the runtime
 	// baseline rather than adding to it, so the App can be installed org-wide
@@ -106,6 +114,9 @@ func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOpti
 		}
 		if o.AllowSecurityRead {
 			perms["vulnerability_alerts"] = "read"
+		}
+		if o.AllowProjectBoard {
+			perms["organization_projects"] = "write"
 		}
 	}
 	return newAppManifest(name, homeURL, redirectURL, perms)

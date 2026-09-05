@@ -251,6 +251,58 @@ var remoteBoardCmd = &cobra.Command{
 	Short: "Board configuration (states, fields, views)",
 }
 
+// ---------------------------------------------------------------------------
+// the team ⇄ forge PROJECT board binding (ADR-097)
+// ---------------------------------------------------------------------------
+
+var (
+	remoteBoardBindOpts    cli.RemoteBoardBindOptions
+	remoteBoardBindingTeam string
+)
+
+var remoteBoardBindCmd = &cobra.Command{
+	Use:   "bind",
+	Short: "Bind this team to a forge project board (GitHub Projects v2)",
+	Long: `Bind the team to a forge project board.
+
+The board's Status column becomes two-way with the native board's columns
+(Inbox/Planned/In progress/Blocked/Done ↔ inbox/ready/in_progress/blocked/done
+by default), and its other single-select fields are imported onto cards as
+area:/mode:/prio: labels.
+
+Field and option ids are DISCOVERED by name at bind time, so nothing is
+hardcoded and a board renamed later just re-binds. A board whose columns read
+differently binds with --status-map; the map must be injective (two columns on
+one state is refused, naming the collision).
+
+Examples:
+  iterion remote board bind --project SocialGouv/203 --connection conn_123
+  iterion remote board bind --project acme/7 --connection conn_123 \
+    --status-map "Todo=ready,Doing=in_progress,Shipped=done" --sync-every 5m`,
+	Args: cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteBoardBind(cmd.Context(), c, p, remoteBoardBindOpts)
+	}),
+}
+
+var remoteBoardShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Show the team's project-board binding (incl. the effective status map)",
+	Args:  cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteBoardShow(cmd.Context(), c, p, remoteBoardBindingTeam)
+	}),
+}
+
+var remoteBoardUnbindCmd = &cobra.Command{
+	Use:   "unbind",
+	Short: "Remove the team's project-board binding",
+	Args:  cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteBoardUnbind(cmd.Context(), c, p, remoteBoardBindingTeam)
+	}),
+}
+
 var remoteBoardGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Show the board configuration",
@@ -298,7 +350,16 @@ func init() {
 		remoteIssuesPushCmd, remotePullsCmd,
 	)
 	remoteLabelsCmd.AddCommand(remoteLabelsListCmd, remoteLabelsRenameCmd, remoteLabelsMergeCmd, remoteLabelsDeleteCmd)
-	remoteBoardCmd.AddCommand(remoteBoardGetCmd, remoteBoardSetCmd)
+	remoteBoardCmd.AddCommand(remoteBoardGetCmd, remoteBoardSetCmd,
+		remoteBoardBindCmd, remoteBoardShowCmd, remoteBoardUnbindCmd)
+	remoteBoardBindCmd.Flags().StringVar(&remoteBoardBindOpts.Project, "project", "", "The project board as <owner>/<number> (e.g. SocialGouv/203) (required)")
+	remoteBoardBindCmd.Flags().StringVar(&remoteBoardBindOpts.OwnerKind, "owner-kind", "", "Namespace the board lives under: org (default) or user")
+	remoteBoardBindCmd.Flags().StringVar(&remoteBoardBindOpts.Connection, "connection", "", "Forge connection id whose credential reads the board (required)")
+	remoteBoardBindCmd.Flags().StringVar(&remoteBoardBindOpts.StatusMap, "status-map", "", `Override the column vocabulary: "Todo=ready,Doing=in_progress,Shipped=done"`)
+	remoteBoardBindCmd.Flags().StringVar(&remoteBoardBindOpts.SyncEvery, "sync-every", "", "Reconciliation interval (e.g. 2m; 0 or off to disable). Default: the server's")
+	remoteBoardBindCmd.Flags().StringVar(&remoteBoardBindOpts.Team, "team", "", "Team id (default: the active team)")
+	remoteBoardShowCmd.Flags().StringVar(&remoteBoardBindingTeam, "team", "", "Team id (default: the active team)")
+	remoteBoardUnbindCmd.Flags().StringVar(&remoteBoardBindingTeam, "team", "", "Team id (default: the active team)")
 	remoteBoardSetCmd.Flags().StringVar(&remoteBoardSetData, "data", "", "Board config JSON (literal or @file)")
 	remoteCmd.AddCommand(remoteIssuesCmd, remoteLabelsCmd, remoteBoardCmd)
 }

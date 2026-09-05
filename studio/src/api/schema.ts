@@ -3381,6 +3381,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/board-binding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/board-binding */
+        get: operations["getTeamsByIdBoardBinding"];
+        /** PUT /api/teams/{id}/board-binding */
+        put: operations["putTeamsByIdBoardBinding"];
+        post?: never;
+        /** DELETE /api/teams/{id}/board-binding */
+        delete: operations["deleteTeamsByIdBoardBinding"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/bot-sources": {
         parameters: {
             query?: never;
@@ -5362,6 +5383,39 @@ export interface components {
             id: string;
             title?: string;
         };
+        BoardBinding: {
+            connection_id: string;
+            /** Format: date-time */
+            created_at: string;
+            label_fields?: components["schemas"]["BoundLabelField"][];
+            /** Format: date-time */
+            last_synced_at?: string;
+            missing_statuses?: string[];
+            number: number;
+            owner: string;
+            owner_kind: string;
+            project_id: string;
+            project_title?: string;
+            project_url?: string;
+            provider: string;
+            status_field_id?: string;
+            status_mapping?: components["schemas"]["StatusMapping"][];
+            status_options?: {
+                [key: string]: string;
+            };
+            sync_every: number;
+            sync_every_seconds: number;
+            /** Format: date-time */
+            sync_lease_until?: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        BoundLabelField: {
+            field_id: string;
+            name: string;
+            prefix: string;
+        };
         BranchCheckpoint: {
             artifact_versions?: {
                 [key: string]: number;
@@ -5574,10 +5628,21 @@ export interface components {
             started_at?: string;
             status: string;
         };
+        ExternalProject: {
+            item_id?: string;
+            number?: number;
+            owner?: string;
+            /** Format: date-time */
+            state_at?: string;
+            status?: string;
+            /** Format: date-time */
+            status_at?: string;
+        };
         ExternalRef: {
             author?: string;
             connection_id: string;
             number: number;
+            project?: components["schemas"]["ExternalProject"];
             provider: string;
             repo: string;
             state?: string;
@@ -5660,6 +5725,8 @@ export interface components {
             priority?: number;
             runs?: components["schemas"]["RunRef"][];
             state: string;
+            /** Format: date-time */
+            state_at?: string;
             title: string;
             /** Format: date-time */
             updated_at: string;
@@ -5978,6 +6045,10 @@ export interface components {
             work_dir?: string;
             workflow_name: string;
         };
+        StatusMapping: {
+            state: string;
+            status: string;
+        };
         Token: {
             /** Format: date-time */
             created_at: string;
@@ -6049,6 +6120,16 @@ export interface components {
             refused_reason?: string;
             refused_until?: string;
             scope_user_id?: string;
+        };
+        boardBindingReq: {
+            connection_id: string;
+            number: number;
+            owner: string;
+            owner_kind?: string;
+            status_map?: {
+                [key: string]: string;
+            };
+            sync_every_seconds?: number;
         };
         botSourceForkReq: {
             from: string;
@@ -6160,6 +6241,7 @@ export interface components {
         forgeOAuthAppReq: {
             admin_token?: string;
             allow_app_delivery?: boolean;
+            allow_project_board?: boolean;
             allow_repo_creation?: boolean;
             allow_security_read?: boolean;
             client_id?: string;
@@ -10737,6 +10819,74 @@ export interface operations {
         };
     };
     getTeamsByIdAudit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdBoardBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardBinding"];
+                };
+            };
+        };
+    };
+    putTeamsByIdBoardBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["boardBindingReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardBinding"];
+                };
+            };
+        };
+    };
+    deleteTeamsByIdBoardBinding: {
         parameters: {
             query?: never;
             header?: never;

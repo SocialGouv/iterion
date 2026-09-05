@@ -280,6 +280,16 @@ the hours this one spent.
   terminal-state sink + operator `Reopen`, and the two-release
   expand/contract rollout. Read it when a native-board card is stuck
   `in_progress` with a dead owner, or before enabling the reaper.
+- [docs/github-board-sync.md](docs/github-board-sync.md) — making a GitHub
+  **Projects v2** board and the native board the same tickets (ADR-097): the
+  permissions (App `organization_projects`, PAT `project`), `iterion issue
+  import --project` locally vs `iterion remote board bind` on cloud, the
+  operator-replaceable `--status-map`, the reconciliation interval + its one
+  log line per pass, and the conflict rule. Read it when a card moved on one
+  board and not the other — the three answers are almost always an unmapped
+  state (inert by design), a terminal card (automation never reopens), or a
+  card the project pass could not create because the issue import had not run
+  for that repo (it names the repos).
 - [docs/ticket-context.md](docs/ticket-context.md) — plugging tracker
   tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
   verifies the PR delivers what the ticket asks: the team wiring (team

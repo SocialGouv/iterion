@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -230,6 +231,7 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 	now := time.Now().UTC()
 	in.CreatedAt = now
 	in.UpdatedAt = now
+	in.StateAt = now // the card's column was decided now (the FS twin derives the same)
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	if _, err := s.issues.InsertOne(ctx, issueDoc{ID: in.ID, Tenant: s.tenant, Issue: in}); err != nil {
@@ -391,6 +393,15 @@ func (s *Store) replace(ctx context.Context, iss *native.Issue, changed ...strin
 // stale read). The ungarded form keeps replace()'s historical
 // semantics: a write to a deleted document is a silent no-op.
 func (s *Store) replaceGuarded(ctx context.Context, iss *native.Issue, guard bson.M, changed ...string) (bool, error) {
+	// A write that declares it changed the state carries the transition time
+	// with it, so Issue.StateAt is derived from the caller's own declaration
+	// instead of remembered at each state writer. It is the replace-path twin
+	// of stateSetAt (the targeted $set writers) and of the FS store's
+	// writeIssueLocked derivation.
+	if slices.Contains(changed, "state") {
+		iss.StateAt = time.Now().UTC()
+		changed = append(changed, "state_at")
+	}
 	hadGaveUp := iss.GaveUp != nil
 	expireGiveUp(iss)
 	expired := hadGaveUp && iss.GaveUp == nil
@@ -1163,8 +1174,7 @@ func applyPatch(iss *native.Issue, p native.Patch, board *native.Board) patchRes
 		changed = append(changed, "bot_args")
 	}
 	if p.External != nil {
-		ext := *p.External
-		iss.External = &ext
+		iss.External = p.External.Clone()
 		changed = append(changed, "external")
 	}
 	return patchResult{fields: changed}

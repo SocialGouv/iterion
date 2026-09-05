@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,5 +198,47 @@ func TestUpsertForgeCard_ClosedCreatesInTerminal(t *testing.T) {
 	card, _ := board.Get(forgeCardID(forge.ProviderForgejo, "o/r", 9))
 	if card.State != terminalColumn(b) {
 		t.Errorf("closed issue should be created in terminal column, got %q", card.State)
+	}
+}
+
+// TestUpsertForgeCard_PropagatesAStoreFailure is the issue import's half of the
+// same class as the project import's: reading ANY board.Get error as "no card
+// yet" turns a store outage into a CREATE of a card that already exists. Both
+// twins answer a missing card with tracker.ErrNotFound and wrap everything
+// else, so the sentinel is what distinguishes the two.
+func TestUpsertForgeCard_PropagatesAStoreFailure(t *testing.T) {
+	board := newTestBoard(t)
+	b := board.Board()
+	flaky := &flakyBoard{BoardStore: board, err: errors.New("boardmongo: get issue: i/o timeout")}
+
+	is := forge.IssueRef{Number: 7, Title: "fix login", State: "open"}
+	_, _, err := upsertForgeCard(flaky, b, defaultOpenColumn(b), terminalColumn(b),
+		forge.ProviderGitHub, "conn1", "org/api", is, false)
+	if err == nil {
+		t.Fatal("a store failure must surface, got nil — the card was created blind")
+	}
+	if !strings.Contains(err.Error(), "i/o timeout") {
+		t.Errorf("error = %v, want the store's own cause named", err)
+	}
+}
+
+// TestBoardLocalLabelsCoverEveryProjectFieldPrefix pins the coupling between
+// the two halves of the board's label ownership: the project import WRITES a
+// label per bound single-select field, and the plain issue import must not
+// strip it on its next pass (it mirrors the forge's labels verbatim and keeps
+// only what it recognises as board-local).
+//
+// Both sides read forge.DefaultLabelFields today; this fails the moment one of
+// them stops, which is the shape the area:/mode:/prio: defect had.
+func TestBoardLocalLabelsCoverEveryProjectFieldPrefix(t *testing.T) {
+	for _, lf := range forge.DefaultLabelFields() {
+		label := forge.FieldLabel(lf.Prefix, "some-value")
+		if label == "" {
+			t.Fatalf("field %q produced no label for prefix %q", lf.Field, lf.Prefix)
+		}
+		if !isBoardLocalLabel(label) {
+			t.Errorf("the issue import would strip %q (field %q): every prefix the project import writes must be board-local",
+				label, lf.Field)
+		}
 	}
 }
