@@ -216,6 +216,7 @@ tool plan_read:
   script: |
     import json
     import os
+    import re
     import subprocess
     import sys
 
@@ -331,10 +332,27 @@ tool plan_read:
     rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
                          capture_output=True, text=True, timeout=30)
     if rev.returncode != 0:
-        emit("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+        # A failure to LOOK, never a no-op: refs_immutable_gate compares
+        # against this commit, and a run that cannot read it has nothing to
+        # judge against.
+        refuse("CONTRACT_UNREADABLE: cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
     out["base_sha"] = rev.stdout.strip()
 
     lots = plan.get("lots") or []
+    # An id is a KEY. A contract declaring one twice is not one this bot can
+    # read: the reader would take the first, the verifier the last, and a
+    # worker could add a homonym ahead of its lot, carrying the gate of its
+    # choice (adversarial finding, executed). Refused here — the single point
+    # every later node relies on — for both launch modes.
+    ids = [l.get("id") for l in lots]
+    if any(not isinstance(i, str) or not i for i in ids):
+        refuse("CONTRACT_UNREADABLE: every lot needs a non-empty string id; "
+               "got %r" % [i for i in ids if not isinstance(i, str) or not i][:5])
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        refuse("CONTRACT_UNREADABLE: duplicate lot id(s) %s — an id is a key, "
+               "and a contract that declares one twice is not readable."
+               % ", ".join(dupes))
 
     # only_lot is an EXPLICIT request for one lot, not a scope filter over
     # an otherwise-normal scan. Resolve its actual status FIRST: a lot
@@ -463,9 +481,48 @@ tool plan_read:
                "must be a single line; put multi-line logic in a script file "
                "and invoke it." % chosen.get("id"))
     if not gate:
+        if only:
+            refuse("LOT_NOT_ACTIONABLE: lot %s declares no exit_gate — an "
+                   "explicit request on a lot that cannot be verified is refused, "
+                   "not answered with a green no-op." % chosen.get("id"))
         emit("lot %s declares no exit_gate. A lot with no gate cannot be "
              "verified, and an unverifiable lot is indistinguishable from one "
              "that was never done." % chosen.get("id"))
+
+    # The gate writes `done` by editing ONE line of this file (mark_done), and
+    # it must be able to. A lot whose block the editor cannot locate — flow
+    # mapping, `- id:` not opening the item, no `status:` at the item's key
+    # column — would be refused AFTER convergence, when the work is done and
+    # the campaign has no way to mark it: check the shape now, before a token
+    # is spent. Same regexes as mark_done, on purpose.
+    def block_shape_ok(text, lot_id):
+        lines = text.splitlines()
+        id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+        start = m0 = None
+        for i, l in enumerate(lines):
+            m0 = id_re.match(l)
+            if m0:
+                start = i
+                break
+        if start is None:
+            return "its `- id:` line was not found (only `- id: <id>` opening a block item is edited)"
+        dash_indent = len(m0.group(1))
+        key_col = dash_indent + 1 + len(m0.group(2))
+        same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
+        end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
+        status_re = re.compile(r"^\s{%d}status:\s*\S+" % key_col)
+        if not any(status_re.match(lines[i]) for i in range(start, end)):
+            return "no `status:` line at its key column inside its block"
+        return ""
+    try:
+        with open(plan_path, encoding="utf-8") as f:
+            shape = block_shape_ok(f.read(), chosen.get("id"))
+    except OSError as e:
+        refuse("CONTRACT_UNREADABLE: %s" % e)
+    if shape:
+        refuse("LOT_UNEDITABLE: lot %s — %s; the gate could never write its "
+               "`done`. Write the lot as a block item (`- id: %s` then its keys "
+               "at one column) before running it." % (chosen.get("id"), shape, chosen.get("id")))
 
     out["nothing_to_do"] = False
     out["lot_id"] = chosen.get("id") or ""
@@ -514,6 +571,7 @@ tool lot_verify:
     import os
     import shlex
     import subprocess
+    import sys
 
     ws = {{vars.workspace_dir}}
     base = {{input.base_sha}}
@@ -534,26 +592,52 @@ tool lot_verify:
     #    own — so a `done` the worker wrote is refused HERE, before a single
     #    gate command runs: the revert costs seconds, the gate costs an hour,
     #    and a run interrupted after such a write relaunches as a green no-op.
-    def plan_lots(text):
-        if text is None:
-            return None
+    # Same lookup as plan_read and mark_done: yq on PATH, then the TARGET's
+    # devbox profile — declared is not realised, and a verifier that cannot
+    # find its parser must say so, never fall through to a verdict that skips
+    # the checks it could not make (adversarial finding, executed: with yq
+    # off PATH, a worker-written `done` and an amputated gate converged green).
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    def unreadable(why):
+        """A failure to LOOK is refused, never turned into a verdict: a verdict
+        over a contract this node could not read would skip exactly the checks
+        that exist to catch a rewritten one."""
+        sys.stderr.write("modernize: CONTRACT_UNREADABLE: %s\n" % why)
+        report["log_tail"] = "CONTRACT_UNREADABLE: %s" % why
+        print(json.dumps(report))
+        raise SystemExit(1)
+
+    def plan_lots(text, what):
         import tempfile
+        yq = find_yq()
+        if not yq:
+            unreadable("yq is not on PATH and was not found in the target's devbox "
+                       "profile, so the contract cannot be read (%s)" % what)
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tf:
             tf.write(text)
             tmp = tf.name
         try:
-            raw = subprocess.run(["yq", "-o=json", tmp], capture_output=True,
+            raw = subprocess.run([yq, "-o=json", tmp], capture_output=True,
                                  text=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            return None
+        except (OSError, subprocess.SubprocessError) as e:
+            unreadable("cannot run yq on the contract (%s): %s" % (what, e))
         finally:
             os.unlink(tmp)
         if raw.returncode != 0:
-            return None
+            unreadable("the contract does not parse (%s): %s" % (what, raw.stderr[-400:]))
         try:
             return json.loads(raw.stdout).get("lots") or []
-        except ValueError:
-            return None
+        except ValueError as e:
+            unreadable("yq produced no JSON for the contract (%s): %s" % (what, e))
 
     def lot_of(lots, lot_id):
         for lot in lots or []:
@@ -564,19 +648,28 @@ tool lot_verify:
     plan_rel = {{input.plan_path}}
     try:
         head_text = open(os.path.join(ws, plan_rel), encoding="utf-8").read()
-    except OSError:
-        head_text = None
+    except OSError as e:
+        unreadable("the contract is missing from the tree at HEAD (%s): %s" % (plan_rel, e))
     base_show = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (base, plan_rel)],
                                capture_output=True, text=True, timeout=60)
-    head_lot = lot_of(plan_lots(head_text), {{input.lot_id}})
-    base_lot = lot_of(plan_lots(base_show.stdout if base_show.returncode == 0 else None),
-                      {{input.lot_id}})
+    if base_show.returncode != 0:
+        unreadable("the contract is not committed at the run's base %s — a programme "
+                   "that lives only in the working tree cannot be judged: %s"
+                   % (base[:12], base_show.stderr[-300:]))
+    head_lots = plan_lots(head_text, "HEAD")
+    base_lots = plan_lots(base_show.stdout, "base %s" % base[:12])
+    head_lot = lot_of(head_lots, {{input.lot_id}})
+    base_lot = lot_of(base_lots, {{input.lot_id}})
     head_status = (head_lot or {}).get("status")
     if head_status == "blocked":
         report["lot_blocked"] = True
         report["block_reason"] = ((head_lot or {}).get("title") or "") + " -- see the committed report"
     if head_status == "done" and (base_lot or {}).get("status") != "done":
         report["done_self_written"] = True
+        # Not a stop: a self-written verdict goes back to the worker with the
+        # refusal in fail_log, whatever else the contract says.
+        report["lot_blocked"] = False
+        report["block_reason"] = ""
         problems.append(
             "the contract marks lot %s `done` at HEAD while it was `%s` at base "
             "%s: the worker wrote the verdict. `done` is the gate's word — a "
@@ -603,11 +696,11 @@ tool lot_verify:
         if not isinstance(v, list):
             return v
         return [c.strip() for c in v if isinstance(c, str) and c.strip()]
-    base_lots = plan_lots(base_show.stdout if base_show.returncode == 0 else None)
-    head_lots = plan_lots(head_text)
-    if base_lots is not None and head_lots is not None:
+    if True:
+        head_ids = [l.get("id") for l in head_lots]
         head_by = {l.get("id"): l for l in head_lots}
-        rewritten = []
+        rewritten = ["duplicate lot id %s at HEAD" % i
+                     for i in sorted({i for i in head_ids if head_ids.count(i) > 1})]
         for bl in base_lots:
             hl = head_by.get(bl.get("id"))
             if hl is None:
@@ -623,6 +716,12 @@ tool lot_verify:
                                  % (bl.get("id"), bl.get("status"), hl.get("status")))
         if rewritten:
             report["contract_rewritten"] = rewritten
+            # A rewritten contract is never a clean stop, even under a lot the
+            # worker declared blocked: `stop` would end the run with the rewrite
+            # landed (adversarial finding, executed). It goes back to the
+            # worker with the refusal in fail_log.
+            report["lot_blocked"] = False
+            report["block_reason"] = ""
             problems.append(
                 "the contract was rewritten during lot %s (%s). The plan is "
                 "read-only inside a lot: existing lots keep their gates, intents "
@@ -1013,14 +1112,25 @@ tool mark_done:
     # (yq -i) would reflow a contract humans read and diff; a line edit keeps
     # the diff to the word that changed.
     lines = text.splitlines(keepends=True)
-    id_re = re.compile(r"^\s*-\s+id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
-    any_id_re = re.compile(r"^\s*-\s+id:")
-    start = next((i for i, l in enumerate(lines) if id_re.match(l)), None)
+    # Anchored on INDENTATION, not on the first line that looks right: the
+    # block ends at the next `- id:` at the SAME list level, and the status
+    # line is the one at the item's key column — so a `status:` or `- id:`
+    # written inside an `intent: |` block scalar (deeper) is text, not a key.
+    id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+    start = m0 = None
+    for i, l in enumerate(lines):
+        m0 = id_re.match(l)
+        if m0:
+            start = i
+            break
     if start is None:
         refuse("lot %s: its `- id:` line was not found in %s — the contract's "
                "shape is not one this node knows how to edit." % (lot_id, plan_rel))
-    end = next((i for i in range(start + 1, len(lines)) if any_id_re.match(lines[i])), len(lines))
-    status_re = re.compile(r"^(\s*)status:\s*\S+(\s*#.*)?(\r?\n?)$")
+    dash_indent = len(m0.group(1))
+    key_col = dash_indent + 1 + len(m0.group(2))
+    same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
+    end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
+    status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
     hit = next((i for i in range(start, end) if status_re.match(lines[i])), None)
     if hit is None:
         refuse("lot %s: no `status:` line inside its block — the contract's "

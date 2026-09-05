@@ -20,11 +20,7 @@ import (
 // (exit 127: `t: not found`) and the lot can never converge — a red verdict
 // manufactured by the reader, not earned by the tree.
 func TestModernizePlanReadExitGateForms(t *testing.T) {
-	for _, tool := range []string{"python3", "git", "yq"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not on PATH", tool)
-		}
-	}
+	requireModernizeTools(t)
 
 	script := toolScript(t, "modernize/main.bot", "plan_read")
 
@@ -193,11 +189,7 @@ func modernizePlanRead(t *testing.T, script, planYAML, onlyLot string, wantExit 
 // whose contract carried a `done` no gate had proven. An operator reading
 // convergence where nothing was measured.
 func TestModernizePlanReadOnlyLotRefusal(t *testing.T) {
-	for _, tool := range []string{"python3", "git", "yq"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not on PATH", tool)
-		}
-	}
+	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "plan_read")
 	const plan = `version: 1
 lots:
@@ -271,6 +263,79 @@ lots:
 `, "", 0)
 		if !res.NothingToDo {
 			t.Fatalf("an exhausted programme without only_lot must stay a clean no-op, got %+v", res)
+		}
+	})
+}
+
+// TestModernizePlanReadContractShape pins what plan_read refuses BEFORE a
+// token is spent: duplicate or non-string ids (a key declared twice cannot be
+// read consistently by three nodes), an explicit request on a gate-less lot
+// (the green no-op the typed refusal exists to remove), and a lot block the
+// gate could never edit its `done` into.
+func TestModernizePlanReadContractShape(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "plan_read")
+
+	t.Run("duplicate ids are unreadable, in both modes", func(t *testing.T) {
+		dup := `version: 1
+lots:
+  - id: L1
+    title: first
+    status: todo
+    exit_gate: [ "true" ]
+  - id: L1
+    title: impostor
+    status: todo
+    exit_gate: [ "false" ]
+`
+		for _, only := range []string{"", "L1"} {
+			res := modernizePlanRead(t, script, dup, only, 1)
+			if !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE: duplicate lot id") {
+				t.Fatalf("only=%q notice = %q", only, res.Notice)
+			}
+		}
+	})
+	t.Run("a non-string id is unreadable", func(t *testing.T) {
+		res := modernizePlanRead(t, script, `version: 1
+lots:
+  - id: 1.0
+    title: numeric
+    status: todo
+    exit_gate: [ "true" ]
+`, "", 1)
+		if !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE") {
+			t.Fatalf("notice = %q", res.Notice)
+		}
+	})
+	t.Run("explicit request on a gate-less lot is refused, typed", func(t *testing.T) {
+		res := modernizePlanRead(t, script, `version: 1
+lots:
+  - id: L5
+    title: no gate
+    status: todo
+`, "L5", 1)
+		if !strings.HasPrefix(res.Notice, "LOT_NOT_ACTIONABLE") || !strings.Contains(res.Notice, "no exit_gate") {
+			t.Fatalf("notice = %q", res.Notice)
+		}
+	})
+	t.Run("unfiltered mode keeps the documented no-op on a gate-less lot", func(t *testing.T) {
+		res := modernizePlanRead(t, script, `version: 1
+lots:
+  - id: L5
+    title: no gate
+    status: todo
+`, "", 0)
+		if !res.NothingToDo {
+			t.Fatalf("expected the legitimate no-op, got %+v", res)
+		}
+	})
+	t.Run("a flow-mapping lot cannot be edited by the gate: refused before spend", func(t *testing.T) {
+		res := modernizePlanRead(t, script, `version: 1
+lots:
+  - {id: L1, title: flow, status: todo, exit_gate: ["true"]}
+`, "L1", 1)
+		if !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
+			t.Fatalf("notice = %q", res.Notice)
 		}
 	})
 }

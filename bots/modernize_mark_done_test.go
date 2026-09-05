@@ -89,11 +89,7 @@ func modernizeMarkDone(t *testing.T, script, ws, lotID, base string, wantExit in
 // this node is the only place the programme's "accepted" ever gets written,
 // and a landing has exactly one commit to check for it.
 func TestModernizeMarkDone(t *testing.T) {
-	for _, tool := range []string{"python3", "git", "yq"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not on PATH", tool)
-		}
-	}
+	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "mark_done")
 	const plan = `version: 1
 # the programme, as a human wrote it
@@ -175,4 +171,44 @@ lots:
 			t.Fatalf("a refused edit must leave the contract byte-identical")
 		}
 	})
+}
+
+// TestModernizeMarkDoneAnchorsOnIndentation pins the editor against the two
+// look-alikes an intent can carry: a `status:` line and a `- id:` line written
+// INSIDE an `intent: |` block scalar. Both sit deeper than the item's key
+// column, so neither is the key the gate flips nor the boundary of the block.
+func TestModernizeMarkDoneAnchorsOnIndentation(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "mark_done")
+	const plan = `version: 1
+lots:
+  -   id: L1
+      title: "wide dash"
+      intent: |
+        the previous line said
+        status: done
+        - id: L9
+        but that is prose, not a key
+      status: todo
+      exit_gate:
+        - "true"
+  -   id: L2
+      title: "next"
+      status: todo
+      exit_gate:
+        - "true"
+`
+	ws, base, git := modernizeRepo(t, plan)
+	res := modernizeMarkDone(t, script, ws, "L1", base, 0)
+	if !res.Marked {
+		t.Fatalf("not marked: %s", res.Notice)
+	}
+	got, _ := os.ReadFile(filepath.Join(ws, ".modernize", "plan.yaml"))
+	want := strings.Replace(plan, "      status: todo\n      exit_gate:\n        - \"true\"\n  -   id: L2", "      status: done\n      exit_gate:\n        - \"true\"\n  -   id: L2", 1)
+	if string(got) != want {
+		t.Fatalf("the wrong line was edited:\n%s", got)
+	}
+	if subj := git("log", "-1", "--format=%s"); !strings.HasPrefix(subj, "L1: done") {
+		t.Fatalf("commit subject = %q", subj)
+	}
 }
