@@ -205,16 +205,62 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 	}, nil
 }
 
-// CommentIssue on an App connection delegates to a management-token
-// AdminClient minted on demand — the same shape CreatePullReview uses, and
-// for the same reason: an App connection resolves to *AppClient, so a
-// capability implemented only on *AdminClient is INVISIBLE to every type
-// assertion the server does. That is not a fringe shape: the studio's
-// GitHub connect wizard creates App connections by default.
+// AppClient's half of forge.IssueClient — the one an App connection resolves
+// to, so a capability implemented only on *AdminClient is INVISIBLE to every
+// `admin.(forge.IssueClient)` the server does. That is not a fringe shape: the
+// studio's GitHub connect wizard creates App connections by default, and the
+// forge→board sync, the board's push-to-forge routes and the autofix lane's
+// hold-label veto all read the issue API through that assertion.
+var _ forge.IssueClient = (*AppClient)(nil)
+
+// issuesREST resolves the narrowest installation token that can serve an issue
+// call: read for the two readers, write for the three writers. Every method
+// below goes through it, so no reader can drift onto a write token — and none
+// of them rides the cached management token, which additionally carries
+// contents/pull_requests/repository_hooks writes an issue call has no use for.
+func (a *AppClient) issuesREST(ctx context.Context, write bool) (*AdminClient, error) {
+	if write {
+		return a.scopedREST(ctx, IssuesWriteInstallationPermissions())
+	}
+	return a.scopedREST(ctx, IssuesReadInstallationPermissions())
+}
+
+func (a *AppClient) ListIssues(ctx context.Context, repo string, opts forge.IssueListOptions) ([]forge.IssueRef, error) {
+	c, err := a.issuesREST(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListIssues(ctx, repo, opts)
+}
+
+func (a *AppClient) GetIssue(ctx context.Context, repo string, number int) (forge.IssueRef, error) {
+	c, err := a.issuesREST(ctx, false)
+	if err != nil {
+		return forge.IssueRef{}, err
+	}
+	return c.GetIssue(ctx, repo, number)
+}
+
+func (a *AppClient) CreateIssue(ctx context.Context, repo string, in forge.NewIssue) (forge.IssueRef, error) {
+	c, err := a.issuesREST(ctx, true)
+	if err != nil {
+		return forge.IssueRef{}, err
+	}
+	return c.CreateIssue(ctx, repo, in)
+}
+
+func (a *AppClient) UpdateIssue(ctx context.Context, repo string, number int, patch forge.IssuePatch) (forge.IssueRef, error) {
+	c, err := a.issuesREST(ctx, true)
+	if err != nil {
+		return forge.IssueRef{}, err
+	}
+	return c.UpdateIssue(ctx, repo, number, patch)
+}
+
 func (a *AppClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
-	rest, err := a.rest(ctx)
+	c, err := a.issuesREST(ctx, true)
 	if err != nil {
 		return forge.CommentRef{}, err
 	}
-	return rest.CommentIssue(ctx, repo, number, body)
+	return c.CommentIssue(ctx, repo, number, body)
 }

@@ -106,6 +106,33 @@ func ProjectsInstallationPermissions() map[string]string {
 	}
 }
 
+// IssuesReadInstallationPermissions is the grant set minted for READING issues
+// (the forge→board sync's ListIssues/GetIssue) — the issues read permission
+// plus the mandatory metadata baseline.
+//
+// It is its own profile rather than a reuse of the cached runtime token
+// because that token carries issues:WRITE (finalize_mr posts back on the
+// source issue): letting a listing ride it would hand a read the permission to
+// rewrite every issue in the installation, and a sync pass reads far more
+// often than anything writes.
+func IssuesReadInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":   "read",
+		"metadata": "read",
+	}
+}
+
+// IssuesWriteInstallationPermissions is the grant set minted for WRITING
+// issues (board→forge push, a bot's reply on the source issue): the issues
+// write permission plus the mandatory metadata baseline. Narrower than the
+// runtime token, which also carries contents/pull_requests/hooks writes.
+func IssuesWriteInstallationPermissions() map[string]string {
+	return map[string]string{
+		"issues":   "write",
+		"metadata": "read",
+	}
+}
+
 // MissingProjectPermissions lists the project-board grants an installation does
 // NOT have, so a board binding fails at BIND time naming the missing permission
 // rather than hours later on the first status write. Empty when nothing is
@@ -445,9 +472,10 @@ type AppClient struct {
 	// and only a caller that needs one of these would fail — at the write,
 	// unless it asked PreflightFor first.
 	denied map[string]bool
-	// scoped caches the tokens minted for a NARROWER, opt-in grant than the
-	// runtime baseline (the board profile), keyed by the permission set so a
-	// broad grant can never be handed to a differently-scoped call.
+	// scoped caches the tokens minted for a grant OTHER than the runtime
+	// baseline — the board profile, the issue profiles — keyed by the
+	// permission set so one call family's grant can never be handed to a
+	// differently-scoped call.
 	scoped map[string]scopedToken
 }
 
@@ -512,7 +540,9 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 }
 
 // scopedREST returns an AdminClient backed by a token minted for exactly perms,
-// cached until it nears expiry.
+// cached until it nears expiry. It is the ONE mint-and-cache for every call
+// family that must not ride the runtime baseline — the board profile and the
+// issue profiles alike.
 //
 // Minting per CALL is what this replaces: every board method went through its
 // own mint, so one reconciliation pass cost a token round trip per project
