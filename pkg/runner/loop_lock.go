@@ -155,8 +155,10 @@ func (r *Runner) archiveLockFailure(msg *queue.RunMessage, delivery jsDelivery, 
 	// and this the only trail that is not. Inheriting the spent publish
 	// context would fail the append instantly on any store that honours it:
 	// Mongo threads ctx into guardNotDeleted/allocSeq/InsertOne, and the
-	// cloud runner — the only place this path executes — uses Mongo. Same
-	// hazard, same remedy as parkAdmissionMismatch's status flip.
+	// cloud runner — the only place this path executes — uses Mongo. The
+	// sibling park path (parkOnDLQOnFinalDelivery, loop_nats.go) hands its
+	// spent publish context straight to the status flip; the fresh deadline
+	// here is a deliberate divergence, not an oversight.
 	auditCtx, auditCancel := context.WithTimeout(context.Background(), archiveWriteTimeout)
 	defer auditCancel()
 	if _, auditErr := r.cfg.Store.AppendEvent(store.WithIdentity(auditCtx, msg.TenantID, msg.OwnerID), msg.RunID,
