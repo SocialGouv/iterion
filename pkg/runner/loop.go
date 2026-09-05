@@ -188,6 +188,14 @@ func isNakAction(a deliveryAction) bool {
 // the DLQ park, and nothing on the run's timeline says so in between.
 const sandboxSetupTimeoutNakDelay = 2 * time.Minute
 
+// sandboxCapacityNakDelay spaces the redeliveries of a run whose sandbox
+// pod never got placed. The cure is the cluster growing, not the pod
+// retrying: the measured autoscaler cycle on a full fleet was a
+// TriggeredScaleUp followed by a Ready node about two minutes later, plus
+// the image pull on that cold node. Re-offering sooner just re-hits the
+// same ceiling and spends a delivery for it.
+const sandboxCapacityNakDelay = 3 * time.Minute
+
 // resolveDeliveryPreconditions runs the pre-lock store gauntlet:
 // LoadRun (with its own short detached timeout context so a runner
 // shutdown can't terminate a live delivery) and the status switch
@@ -627,6 +635,24 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			level:       logWarn,
 			logFmt:      "runner: run %s: sandbox setup phase timed out (resumable) — re-offered to a fresh pod in %s (%v)",
 			logArgs:     []any{runID, sandboxSetupTimeoutNakDelay, execErr},
+		}
+	}
+	// A sandbox pod that never got placed (sandbox.ErrCapacity): the
+	// engine wrote failed_resumable + SANDBOX_CAPACITY. Same treatment as
+	// the phase timeout above and for the same reason, with a longer
+	// spacing — the cure is the cluster growing, not the pod retrying, and
+	// an autoscaler cycle is minutes. The DLQ park on the last permitted
+	// delivery still applies, so a fleet that stays full ends parked and
+	// announced instead of naking into nothing.
+	if errors.Is(execErr, sandbox.ErrCapacity) {
+		return execOutcome{
+			finalStatus: "sandbox_capacity",
+			op:          "nak-sandbox-capacity",
+			action:      actionNakDelayed,
+			delay:       sandboxCapacityNakDelay,
+			level:       logWarn,
+			logFmt:      "runner: run %s: the sandbox could not be placed (resumable) — re-offered in %s (%v)",
+			logArgs:     []any{runID, sandboxCapacityNakDelay, execErr},
 		}
 	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).

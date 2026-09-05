@@ -150,8 +150,15 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 		// knows WHY, and the reason decides between two different fixes: a
 		// resource request no node can hold (Unschedulable: Insufficient
 		// memory) and a slow or broken image pull. Read it on the error
-		// path only.
-		return fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s%s", podName, err, string(out), podScheduledReason(ctx, namespace, podName))
+		// path only — ONCE, since the same reading both decorates the
+		// error and classifies it (podStartFailure): a pod that never got
+		// placed carries sandbox.ErrCapacity and the run parks resumable,
+		// while a broken image reference stays terminal.
+		//
+		// Read BEFORE the caller's Cleanup, which deletes the pod.
+		return podStartFailure(
+			fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s", podName, err, string(out)),
+			probePodStart(ctx, namespace, podName))
 	}
 	return nil
 }
@@ -190,23 +197,4 @@ func NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, er
 		}
 	}
 	return labelled, len(nodes.Items), nil
-}
-
-// podScheduledReason renders the pod's PodScheduled condition (status,
-// reason, message) as a "\nscheduling: …" suffix for a wait error — "" when
-// it cannot be read. Best-effort: it decorates an error, it never creates one.
-func podScheduledReason(ctx context.Context, namespace, podName string) string {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "get", "pod", podName, "-o",
-		`jsonpath={.status.conditions[?(@.type=="PodScheduled")].status}{" "}{.status.conditions[?(@.type=="PodScheduled")].reason}{": "}{.status.conditions[?(@.type=="PodScheduled")].message}`)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	// A scheduled pod has no reason and no message: the jsonpath's literal
-	// ": " then dangles after the status and is dropped here.
-	reason := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(string(out)), ":"))
-	if reason == "" {
-		return ""
-	}
-	return "\nscheduling: " + reason
 }

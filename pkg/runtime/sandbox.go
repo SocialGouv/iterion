@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -245,6 +246,14 @@ type SandboxParams struct {
 	// board (C082). The engine sets it from WithBoardMCP (server path);
 	// nil (CLI / no server) leaves sandboxed board-emit disabled.
 	BoardMCPHandler http.Handler
+
+	// EffectiveBackend resolves a node's backend the way DISPATCH will —
+	// launch-time `--backend`/`--model` overrides included. The engine
+	// passes its executor; nil (a driver-level test) reads the raw IR
+	// alone. Without it the claw bind-mount decision misses every
+	// override, since they are applied at dispatch and never folded back
+	// into the IR. Same seam as the workspace-safety admission check.
+	EffectiveBackend effectiveBackendResolver
 }
 
 // workflowMaxDurationSeconds returns the workflow budget's max_duration
@@ -394,7 +403,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// translateMounts; there the iterion/rtk binaries are baked into the
 	// sandbox image instead (see sandbox/*/Dockerfile).
 	if caps.SupportsHostBindMounts {
-		addClawBinaryMount(spec, p.Workflow)
+		addClawBinaryMount(spec, p.Workflow, p.EffectiveBackend)
 		addRewriterMounts(spec)
 		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
 	}
@@ -425,7 +434,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// edits) execute inside the sandbox. Surface the routing decision
 	// so operators can audit it and opt out by setting `backend:` on
 	// the affected nodes.
-	if p.Workflow != nil && containsClawNode(p.Workflow) {
+	if p.Workflow != nil && containsClawNode(p.Workflow, p.EffectiveBackend) {
 		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]any{
 			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
 			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
@@ -1243,13 +1252,37 @@ func cloneStringMap(m map[string]string) map[string]string {
 	return cloneMap(m)
 }
 
-// containsClawNode reports whether any agent/judge node in the workflow
-// uses the in-process claw backend. Sandboxing claw requires the
-// Phase 4 sub-binary split which is not yet shipped; until then we
-// fail fast with a clear message rather than silently running claw on
-// the host while pretending the workflow is sandboxed.
-func containsClawNode(wf *ir.Workflow) bool {
+// containsClawNode reports whether any route this run may take executes
+// on the in-process claw backend — the predicate the in-container
+// iterion bind-mount and the `sandbox_claw_routed_via_runner` event are
+// taken on, since a claw node dispatches through `iterion __claw-runner`
+// inside the container.
+//
+// It is a UNION of two readings, never a narrowing:
+//
+//   - the IR as authored — the node's `backend:` (empty meaning claw, the
+//     implicit default) and its `fallbacks:` routes;
+//   - the backend DISPATCH will resolve, resolver being the executor's own
+//     chain (launch `--backend`/`--model` overrides → DSL → workflow
+//     default → env → auto-detection). Overrides are applied at dispatch
+//     and never folded into the IR, so `--backend '*=claw'` on a workflow
+//     of claude_code nodes is invisible to the first reading alone.
+//
+// The union is deliberate in both directions. A node the resolver routes
+// onto claw NEEDS the binary. A node that DECLARES claw keeps the mount
+// even when an override routes it elsewhere: the resolver reads this
+// HOST's credentials and env, which need not match what the container
+// resolves, and the two costs are not comparable — a missing binary kills
+// the node mid-run with `exec: /usr/local/bin/iterion: no such file or
+// directory`, an unused read-only bind costs nothing.
+//
+// A nil resolver (a driver-level call, a stub executor) reads the IR
+// alone: today's behaviour, unchanged.
+func containsClawNode(wf *ir.Workflow, resolver effectiveBackendResolver) bool {
 	for _, n := range wf.Nodes {
+		if resolverRoutesToClaw(n, resolver) {
+			return true
+		}
 		switch nn := n.(type) {
 		case *ir.AgentNode:
 			if backendIsClaw(nn.Backend) || fallbacksReachClaw(nn.Fallbacks) {
@@ -1266,6 +1299,29 @@ func containsClawNode(wf *ir.Workflow) bool {
 		}
 	}
 	return false
+}
+
+// resolverRoutesToClaw asks the dispatch resolver where a node will
+// actually run. Restricted to the three kinds the resolver reads a
+// `backend:` from — the same kinds the raw reading above inspects: every
+// other kind falls through the resolver's chain to its last-resort claw
+// arm, which would mount the binary for any sandboxed workflow with a
+// subbot or a compute node.
+//
+// Deliberately NOT backendIsClaw: that helper reads an EMPTY backend as
+// claw, which is right for the raw IR (the implicit default) but says
+// nothing here — an empty answer from the resolver means "no opinion".
+func resolverRoutesToClaw(n ir.Node, resolver effectiveBackendResolver) bool {
+	if resolver == nil {
+		return false
+	}
+	switch n.(type) {
+	case *ir.AgentNode, *ir.JudgeNode, *ir.RouterNode:
+	default:
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(resolver.EffectiveBackendName(n)))
+	return name == delegate.BackendClaw
 }
 
 // fallbacksReachClaw reports whether any of a node's `fallbacks:` routes
@@ -1527,6 +1583,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		WorktreeGitDir:           worktreeGitDir,
 		SecretRewriter:           e.resolveSecretRewriter(),
 		BoardMCPHandler:          e.boardMCPHandler,
+		EffectiveBackend:         e.backendResolver(),
 	})
 	if sbErr != nil {
 		return noopCleanup, sbErr

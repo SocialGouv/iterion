@@ -111,6 +111,17 @@ const (
 	// redelivery lands on a healthy pod, where a stuck kubectl-exec pipe
 	// routinely clears.
 	FailureSandboxSetupTimeout FailureCode = "SANDBOX_SETUP_TIMEOUT"
+	// FailureSandboxCapacity: the sandbox never STARTED because the
+	// cluster had no room for its pod (unschedulable past the start
+	// deadline, or still being brought up on the node it landed on).
+	// Distinct from FailureSandboxSetupTimeout, which is a phase that RAN
+	// and stalled: here nothing of the run executed at all, so the retry
+	// is a fresh placement rather than a resume of half-done work — and
+	// distinct from a terminal sandbox failure (a bad image reference, an
+	// invalid spec), which re-fails identically on every pod. Persisted on
+	// RunStatusFailedResumable so an hourly sentinel does not silently
+	// lose its tick when the fleet sits at its request ceiling.
+	FailureSandboxCapacity FailureCode = "SANDBOX_CAPACITY"
 )
 
 // AllRunStatuses is the exhaustive status vocabulary, for callers that

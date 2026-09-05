@@ -481,6 +481,31 @@ func TestClassifyExecResult_SandboxSetupTimeoutIsReofferedAfterADelay(t *testing
 	}
 }
 
+// A pod that never got placed is re-offered too, after long enough for a
+// cluster autoscaler to add a node (the measured scale-up was ~2 min).
+// Deliberately a delayed NAK and not an interruption: the DLQ park on the
+// last permitted delivery still applies, so a fleet that stays full ends
+// parked and announced rather than naking into nothing.
+func TestClassifyExecResult_SandboxCapacityIsReofferedAfterADelay(t *testing.T) {
+	err := fmt.Errorf("runtime: sandbox: %w",
+		errors.Join(sandbox.ErrCapacity, errors.New("0/12 nodes are available: 11 Insufficient cpu")))
+	out := classifyExecResult(err, "run-1")
+	if out.finalStatus != "sandbox_capacity" {
+		t.Fatalf("finalStatus = %q, want sandbox_capacity", out.finalStatus)
+	}
+	if out.delay != sandboxCapacityNakDelay || out.delay <= 0 {
+		t.Fatalf("delay = %s, want %s — an immediate re-offer re-hits a cluster that has not grown yet", out.delay, sandboxCapacityNakDelay)
+	}
+	if bankableStatus(out.finalStatus) {
+		t.Fatal("a pod that never started has nothing to bank")
+	}
+	d := &fakeDelivery{delivered: 3}
+	dispatchExecOutcome(iterlog.Nop(), d, out, "run-1")
+	if len(d.nakDelays) != 1 || d.nakDelays[0] != sandboxCapacityNakDelay || d.naks != 0 || d.terms != 0 || d.acks != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one NakWithDelay(%s)", d, sandboxCapacityNakDelay)
+	}
+}
+
 // The delayed redelivery lands on the run's timeline, naming the phase
 // timeout, the delay and the attempt's rank — the only trace between two
 // attempts of why the run sits failed_resumable.
@@ -557,6 +582,8 @@ func TestOutcomeSideEffectsFire(t *testing.T) {
 		{"interrupted naks — no fire", runtime.ErrRunInterrupted, false},
 		{"wrapped interrupted naks — no fire", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), false},
 		{"sandbox phase timeout naks — no fire", fmt.Errorf("runtime: sandbox: %w", sandbox.ErrPhaseTimeout), false},
+		{"sandbox capacity (delayed nak) does not fire", fmt.Errorf("runtime: sandbox: %w",
+			errors.Join(sandbox.ErrCapacity, errors.New("11 Insufficient cpu"))), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

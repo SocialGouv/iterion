@@ -104,7 +104,7 @@ func TestContainsClawNode(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := containsClawNode(c.wf); got != c.want {
+			if got := containsClawNode(c.wf, nil); got != c.want {
 				t.Errorf("got %v, want %v", got, c.want)
 			}
 		})

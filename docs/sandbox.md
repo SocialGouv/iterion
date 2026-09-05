@@ -564,6 +564,17 @@ boundary instead of escaping to the host.
 local sandboxes built from third-party images you can mount the host
 binary in (subject to architecture matching) via `runArgs`:
 
+> **The mount decision reads the EFFECTIVE backend, not the `.bot`.**
+> `--backend '*=claw'` (and `--model`, the studio override object,
+> `RunMessage.model_overrides`) is applied at dispatch and never folded
+> back into the IR, so the bind is decided through the executor's own
+> resolution chain — the same one the node will dispatch on. It is a
+> UNION with the authored IR, never a narrowing: a node that *declares*
+> `claw` keeps the mount even when an override routes it elsewhere,
+> because the resolver reads the HOST's credentials and the container may
+> resolve differently, and a missing binary is a hard mid-run death while
+> an unused read-only bind costs nothing.
+
 ```jsonc
 // .devcontainer/devcontainer.json
 {
@@ -852,6 +863,29 @@ an exponent, or the SI/binary byte suffixes (`4Gi`); `m` on memory
 (milli-bytes) and a byte suffix on CPU are refused, as are zero quantities
 (a block that schedules like no block). The API server owns the rest.
 
+**When the deadline does expire, the failure is classified.** The driver
+reads the pod's own status once, before deleting it, and decides between
+a PLACEMENT failure — the pod is still `Pending`, which is the API's own
+guarantee that no container was created: unscheduled (`Unschedulable`,
+`Insufficient cpu`) or scheduled onto a node that had not started it — and
+everything else. A placement failure carries `sandbox.ErrCapacity`, so the run parks
+`failed_resumable` + `SANDBOX_CAPACITY` and the cloud runner re-offers
+the delivery after a delay long enough for an autoscaler cycle, instead
+of dying terminal and silently losing an hourly sentinel's tick. A broken
+image reference, an invalid spec, a crash-looping container or a pod the
+driver could not read stay terminal `failed`: a redelivery re-hits them
+identically and spends a pod for it. The full table is in
+[resume](resume.md#sandbox-startup--which-failures-are-resumable).
+
+The capacity signal is read from the pod's `PodScheduled` condition, not
+from the `TriggeredScaleUp` **Event** the autoscaler writes: Events need
+a `get events` verb the runner's namespaced Role deliberately does not
+grant, and the condition already says the same thing. There is no second
+"keep waiting while a node is coming" deadline either — the resumable
+classification IS that wait, with the queue as its timer and a different,
+less loaded pod free to claim the redelivery; a run that needs longer in
+one shot raises `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT`.
+
 **Nothing is shipped by default.** Measured on a three-worker cluster with the
 image on one node only: no requests → 2/3/1, requests alone → 2/2/2, requests
 plus spread → 2/2/2 — the request is the half that moves the pods (it is what
@@ -1058,6 +1092,10 @@ use an iterion sandbox image that includes the binary, add it to your
 custom image, set `ITERION_BIN` so the host can mount it, or add an
 explicit read-only mount that places a compatible `iterion` binary on
 the container PATH.
+
+The bind and the `sandbox_claw_routed_via_runner` event are decided on
+the backend DISPATCH resolves, launch overrides included — so a workflow
+of `claude_code` nodes run with `--backend '*=claw'` gets both.
 
 ### `network_blocked` events you don't expect
 

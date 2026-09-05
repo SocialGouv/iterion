@@ -9,27 +9,37 @@ import (
 )
 
 // kubectlShim puts a fake `kubectl` first on PATH whose `wait` times out and
-// whose `get pod … -o jsonpath=…` answers with the given scheduling
-// condition, so the wait error path can be exercised without a cluster.
-func kubectlShim(t *testing.T, scheduledCondition string) {
+// whose `get pod … -o json` answers with the given pod document (empty =
+// unreadable), so the wait error path can be exercised without a cluster.
+func kubectlShim(t *testing.T, podJSON string) {
 	t.Helper()
 	dir := t.TempDir()
+	exit := "0"
+	if strings.TrimSpace(podJSON) == "" {
+		exit = "1"
+	}
 	script := "#!/bin/sh\n" +
 		"case \"$*\" in\n" +
 		"  *\" wait \"*) echo 'error: timed out waiting for the condition on pods/iterion-run-x'; exit 1 ;;\n" +
-		"  *\" get pod \"*) printf '%s' '" + scheduledCondition + "'; exit 0 ;;\n" +
+		"  *\" get pod \"*) cat \"$ITERION_TEST_POD_JSON\"; exit " + exit + " ;;\n" +
 		"esac\n" +
 		"exit 2\n"
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	podFile := filepath.Join(dir, "pod.json")
+	if err := os.WriteFile(podFile, []byte(podJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ITERION_TEST_POD_JSON", podFile)
 }
 
 // A pod that never becomes Ready must say why: a request no node can hold
 // reads differently from a slow image pull, and the fix differs.
 func TestWaitForPodRunningNamesTheSchedulingReason(t *testing.T) {
-	kubectlShim(t, "False Unschedulable: 0/3 nodes are available: 3 Insufficient memory.")
+	kubectlShim(t, `{"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"False",`+
+		`"reason":"Unschedulable","message":"0/3 nodes are available: 3 Insufficient memory."}]}}`)
 	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil {
 		t.Fatal("expected the wait to fail")
@@ -44,9 +54,9 @@ func TestWaitForPodRunningNamesTheSchedulingReason(t *testing.T) {
 }
 
 // A scheduled pod that never became Ready has a status but no reason and no
-// message; the decoration must not end in the jsonpath's dangling colon.
+// message; the decoration must not end in a dangling separator.
 func TestWaitForPodRunningScheduledPodReportsTheStatusOnly(t *testing.T) {
-	kubectlShim(t, "True : ")
+	kubectlShim(t, `{"status":{"phase":"Running","conditions":[{"type":"PodScheduled","status":"True"}]}}`)
 	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil {
 		t.Fatal("expected the wait to fail")
