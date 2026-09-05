@@ -267,6 +267,15 @@ the who-moved oracle and the echo suppressor:
   on the join, and pushing would overwrite a column nobody has reconciled yet;
 - **unmapped native state** ⇒ inert (§2).
 
+A native-wins conflict is the one case that does not advance the recorded
+status inline: the reflect writes it with what it actually pushed. When the
+reflect pushes NOTHING — the two sides already landed on the same column, the
+native state is unmapped, the bound board has no column for it, the pass is
+read-only — the import records what it OBSERVED instead, so a divergence
+nothing can resolve is derived once rather than warned and counted on every
+tick. A *failed* write is deliberately excluded: the stale record is what makes
+the next pass retry it.
+
 Because the recorded status advances on every write, a pass with nothing moving
 writes nothing — the property that keeps the loop from re-pushing forever and
 stamping a fresh `updatedAt` that would then win every conflict against the
