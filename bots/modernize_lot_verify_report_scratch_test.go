@@ -208,11 +208,13 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
-	// The four below pin what bounding the search must NOT cost. Each shape
-	// reads on an unbounded scan; each was silently dropped by a first bound
-	// that budgeted the whole scan instead of the quadratic half of it, and
-	// a dropped report is not "no verdict" — it routes the run to fail as
-	// ORACLE_NOT_RUN while the oracle had, in fact, delivered one.
+	// The six below pin what bounding the search must NOT cost. Every one of
+	// them reads on an unbounded scan, and every one was dropped by some
+	// bound written to make the no-report path fast — whether by ending the
+	// scan outright, by letting chatter spend the budget, or by counting a
+	// brace inside a string as structure. A dropped report is not "no
+	// verdict": it routes the run to fail as ORACLE_NOT_RUN while the oracle
+	// had, in fact, delivered one.
 
 	t.Run("an indented one-line report is read: a format is not a verdict", func(t *testing.T) {
 		indented := scratchWrapperHead +
