@@ -140,7 +140,7 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 
 **Inside a fan-out branch**, every namespace above resolves exactly as it does on the trunk — a node renders the same whether it was reached by a plain edge or by a `fan_out_all` / `fan_out_each` router. `{{outputs.*}}` resolves against the BRANCH's own view: its upstream trunk outputs plus what this branch has produced, plus the per-item binding a `fan_out_each` stamped. Sibling branches are invisible to each other, which is what makes the render deterministic; their outputs only become readable at the convergence node. `{{run.*}}` is the run's, not the branch's — the whole run's consumption and caps, shared by every branch.
 
-`{{outputs.*}}` is a prompt-side namespace: a tool `command:` / `script:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}` and `{{run.*}}`, and leaves an `{{outputs.*}}` reference untouched — on the trunk and in a branch alike. Reach a prior node's output from a tool node through an edge `with` mapping, then `{{input.<key>}}`.
+A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}` and `{{outputs.<node>.<field>}}` — the last from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `sh -c` fails on it visibly, and renders as `null` in a script body. The output arrives with the shape its producer gave it: a `json`-declared **input** field is pre-encoded into one JSON token for the shell, an output referenced directly is not, so a list of strings space-joins into several words. To keep the pre-encoding, thread the value through an edge `with` mapping into a `json` input field and read `{{input.<key>}}`.
 
 ## LLM nodes: `agent` and `judge`
 
@@ -329,7 +329,19 @@ compute summarize:
     ready: "input.approved && length(input.issues) == 0"
 ```
 
-Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, and `flatten`. They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
+Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, and `round`. They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
+
+**The output is typed by its schema.** A compute output is conformed to the declared field types where it is produced, on the trunk and inside a fan-out branch alike: an integral number under `int` is stored as the integer it reads as, an integer under `float` as a float, and a value that cannot be conformed fails the node with the field named — a fractional float under `int` (`10.58` from a division), a string under `bool`, a number under `string`. The engine never picks a rounding for you: write it, with `floor(x)` (towards negative infinity) or `round(x)` (half away from zero), both of which return an integer.
+
+```iter
+schema gauge:
+  used_pct: int
+
+compute plan_budget_gate:
+  output: gauge
+  expr:
+    used_pct: "floor(run.elapsed_seconds * 100 / run.max_duration_seconds)"
+```
 
 ### The `run` namespace
 
@@ -373,11 +385,13 @@ silence as `vars.<unknown>` — rather than raising. Comparing it in an
 expression is what fails, loudly, at the node.
 
 The members are available in `compute` expressions and quoted `when`
-conditions, in prompt bodies, and in tool `command:` / `script:` /
-`postcondition:` templates — on every dispatch path, a fan-out branch
-included. An expression resolves them at **evaluation** time; a prompt or
-a command is rendered once at node dispatch, so those read the run as it
-was when the node started.
+conditions, in prompt bodies, in tool `command:` / `script:` /
+`postcondition:` templates, and in every `{{…}}` data mapping — an edge
+`with`, an `emit` payload, a `subbot` `with:`, a fail node's `message:` —
+on every dispatch path, a fan-out branch included. An expression resolves
+them at **evaluation** time; a prompt or a command is rendered once at
+node dispatch, so those read the run as it was when the node started; a
+fail node's `message:` is rendered at fail time.
 
 Alongside them, every executed node's output carries `_duration_ms` next
 to the `_tokens` / `_cost_usd` keys the backends write — the per-node
@@ -385,12 +399,21 @@ timing counterpart, stamped by the engine so tool and compute nodes get
 it too.
 
 ```iter
+schema gauge:
+  used_pct: int
+  exhausted: bool
+
 compute plan_budget_gate:
   output: gauge
   expr:
-    used_ratio: "run.elapsed_seconds / run.max_duration_seconds"
+    used_pct: "if(run.max_duration_seconds > 0, floor(run.elapsed_seconds * 100 / run.max_duration_seconds), 0)"
     exhausted: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.33"
 ```
+
+`used_pct` is declared `int`, so the division is wrapped in `floor(...)`:
+a compute output is [typed by its schema](#compute), and a fractional
+result under an `int` field fails the node rather than travelling on as a
+float with an integer's label.
 
 ### `emit` and `wait`
 
@@ -425,7 +448,7 @@ instead. One per reason; the bare `fail` keeps its untyped behaviour.
 fail plan_exhausted:
   description: "the plan phase outgrew its share of the budget"
   code: PLAN_BUDGET_EXHAUSTED
-  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
+  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration ({{run.elapsed_seconds}}s of {{run.max_duration_seconds}}s)"
   resumable: true
 
 fail not_actionable:
@@ -436,7 +459,7 @@ fail not_actionable:
 | Field | Meaning |
 |---|---|
 | `code:` | UPPER_SNAKE identifier stamped on the run's `failure_code`. [C247](references/diagnostics.md) refuses any other shape — the value is persisted and read by machines (`iterion runs list`, the studio, the merge-gate notice, the alert sinks) — and [C248](references/diagnostics.md) refuses one that collides with an ENGINE code (`BUDGET_EXCEEDED`, `TIMEOUT`, `USAGE_LIMIT_BLOCKED`, …), which the retry machinery reads as control flow. |
-| `message:` | The operator-facing reason, stamped on the run's `error`. Templated with the usual `{{...}}` references and resolved **at fail time**, so the figure that caused the refusal is the one reported. |
+| `message:` | The operator-facing reason, stamped on the run's `error`. Templated with the usual `{{...}}` references — `outputs.*`, `vars.*`, `input.*`, `loop.*` and the whole [`run.*`](#the-run-namespace) namespace — and resolved **at fail time**, so the figure that caused the refusal is the one reported: a budget guard names the ceiling the run actually had (`{{run.max_duration_seconds}}`), not the `budget:` literal. |
 | `resumable:` | `true` parks the run `failed_resumable` instead of terminal `failed`, with its checkpoint anchored on the GUARD that routed in — so the resume re-evaluates that guard, not the fail node. Off by default: a fail node is intentional termination. |
 | `description:` | Human-readable node label, as on every other node kind. |
 

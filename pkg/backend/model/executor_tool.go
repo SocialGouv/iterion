@@ -333,11 +333,13 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// shell-level variables (positional args, exit-status, captured
 			// stdout) survive into the resolved command for sh -c to interpret.
 			expandedCommand := expandBracedEnv(node.Command)
-			// Resolve {{run.id}} first — resolveCommandTemplate only knows the
-			// input/vars/secrets namespaces, so a direct run ref would survive
-			// into the command verbatim.
-			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), TemplateDataFromContext(ctx), node.CommandRefs, shellEscapeValue)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, e.secretGuard)
+			// One snapshot for both passes — the same one the prompts render
+			// from. {{run.*}} goes first (its own pre-pass); {{outputs.*}}
+			// resolves in the main pass beside {{input.*}}, under the same
+			// shell escaping and the same missing-value rule.
+			td := TemplateDataFromContext(ctx)
+			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), td, node.CommandRefs, shellEscapeValue)
+			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, td, e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -472,9 +474,11 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// script-language string parsers when the value contains embedded
 			// apostrophes. No compression: a script body is not a shell command line.
 			expanded := expandBracedEnv(node.Script)
-			// {{run.id}} first — resolveScriptTemplate only knows input/vars/secrets.
-			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), TemplateDataFromContext(ctx), node.ScriptRefs, jsonLiteralValue)
-			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, e.secretGuard)
+			// Same two passes over one snapshot as the shell recipe: {{run.*}}
+			// first, {{outputs.*}} beside {{input.*}} as JSON literals.
+			td := TemplateDataFromContext(ctx)
+			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), td, node.ScriptRefs, jsonLiteralValue)
+			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, e.secretGuard)
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
@@ -684,8 +688,10 @@ func looksLikeShellCommand(cmd string) bool {
 	return strings.ContainsAny(cmd, " \t|&;><$`(){}\"'/")
 }
 
-// resolveCommandTemplate substitutes {{input.X}} and {{vars.X}} references in
-// a command string with values from the input map and workflow variables.
+// resolveCommandTemplate substitutes {{input.X}}, {{vars.X}}, {{secrets.X}}
+// and {{outputs.<node>.<field>}} references in a command string — the input
+// map, the workflow variables, the secret guard's placeholders, and the
+// template snapshot td (the same one the prompts render from; nil-tolerant).
 // Values are shell-escaped to prevent command injection when the resolved
 // string is passed to sh -c.
 //
@@ -695,7 +701,7 @@ func looksLikeShellCommand(cmd string) bool {
 // command line that the wrapping tool needs to RE-INTERPRET as shell, not
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, guards ...*secretguard.Guard) string {
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -703,11 +709,12 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Shell commands preserve `{{input.X}}` literal text for missing
 	// values — sh -c sees the placeholder and either fails informatively
 	// or the operator notices. Substituting silently would lose that
-	// signal and could mask wiring bugs.
+	// signal and could mask wiring bugs. An `{{outputs.*}}` ref whose node
+	// has not produced takes the same rule.
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return resolveTemplateWith(command, refs, input, vars, guard, shellEscapeValue, false)
+	return resolveTemplateWith(command, refs, input, vars, td, guard, shellEscapeValue, false)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -723,7 +730,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 // The bang form `{{!input.X}}` keeps the legacy raw-passthrough
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
-func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, guards ...*secretguard.Guard) string {
+func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -733,14 +740,14 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 	// parse time before any user logic can react. Substitute with the
 	// language's null literal (rendered as JSON null = "null") so the
 	// script can still run and handle the missing input itself.
-	return resolveTemplateWith(script, refs, input, vars, guard, jsonLiteralValue, true)
+	return resolveTemplateWith(script, refs, input, vars, td, guard, jsonLiteralValue, true)
 }
 
 // resolveRunRefs substitutes run-namespace refs ({{run.id}}) into a tool
-// command / script template. The shared resolveTemplateWith handles only
-// the input / vars / secrets namespaces — the ones tool nodes normally
-// reach via edge `with`-mappings — so a *direct* {{run.id}} (there is no
-// node output to map it from) would otherwise survive verbatim and run as
+// command / script template. The shared resolveTemplateWith handles the
+// input / vars / secrets / outputs namespaces — values a tool node reads
+// from a map — so a *direct* {{run.id}} (there is no node output to map it
+// from) would otherwise survive verbatim and run as
 // the literal text "{{run.id}}". That bit sec-audit-source's
 // apply-mode prepare_branch, which named its temp branch
 // `iterion/sec-fix/{{run.id}}` and ended up on `iterion/sec-fix/run.id`
@@ -787,7 +794,7 @@ func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, re
 // {{...}} literal matching a later ref would be silently rewritten
 // (the "cascade" bug). The single-pass walk only touches positions
 // that were in the source template.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -801,6 +808,14 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
 			val = vars[ref.Path[0]]
+			handled = true
+		case ref.Kind == ir.RefOutputs && len(ref.Path) > 0:
+			// The snapshot the prompts render from. An output not yet
+			// produced (or no snapshot at all) is nil here and takes the
+			// same missing-value rule as an absent input below — the
+			// placeholder in a shell body, `null` in a script body — so
+			// the two namespaces cannot disagree about a hole.
+			val, _ = outputsTemplateValue(td, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefSecrets && len(ref.Path) > 0:
 			// Render the opaque placeholder into the command; the real

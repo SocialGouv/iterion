@@ -33,7 +33,7 @@ func TestToolCommandRefsAreShellEscaped(t *testing.T) {
 		{"redirect", "x>/tmp/iterion-escape-sentinel"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolved := resolveCommandTemplate(command, []*ir.Ref{ref}, nil, map[string]any{"branch": tc.value})
+			resolved := resolveCommandTemplate(command, []*ir.Ref{ref}, nil, map[string]any{"branch": tc.value}, nil)
 			if strings.Contains(resolved, "{{vars.branch}}") {
 				t.Fatalf("ref was not substituted at all: %s", resolved)
 			}
@@ -56,7 +56,7 @@ func TestToolCommandRefsAreShellEscaped(t *testing.T) {
 // bots.TestCatalogHasNoRawRefs); this pins WHY that rule exists.
 func TestRawRefsBypassEscapingByDesign(t *testing.T) {
 	ref := &ir.Ref{Kind: ir.RefVars, Path: []string{"branch"}, Raw: "{{!vars.branch}}", Unquoted: true}
-	resolved := resolveCommandTemplate(`BRANCH={{!vars.branch}} true`, []*ir.Ref{ref}, nil, map[string]any{"branch": "x;id"})
+	resolved := resolveCommandTemplate(`BRANCH={{!vars.branch}} true`, []*ir.Ref{ref}, nil, map[string]any{"branch": "x;id"}, nil)
 	if !strings.Contains(resolved, "BRANCH=x;id") {
 		t.Fatalf("raw ref was escaped after all — the catalog rule against it would be pointless: %s", resolved)
 	}
@@ -76,7 +76,7 @@ func TestAuthorQuotedRefsAreNotContained(t *testing.T) {
 	t.Run("single quotes cancel — the value becomes syntax", func(t *testing.T) {
 		sentinel := filepath.Join(t.TempDir(), "pwned")
 		resolved := resolveCommandTemplate(`BASE_REF='{{vars.base_ref}}' true`, []*ir.Ref{ref}, nil,
-			map[string]any{"base_ref": "x;touch " + sentinel + ";#"})
+			map[string]any{"base_ref": "x;touch " + sentinel + ";#"}, nil)
 		_ = exec.Command("sh", "-c", resolved).Run()
 		if _, err := os.Stat(sentinel); err != nil {
 			t.Errorf("no sentinel (%v) — if the runtime learned to see the author's quotes, C137 can be reconsidered; resolved: %s", err, resolved)
@@ -85,7 +85,7 @@ func TestAuthorQuotedRefsAreNotContained(t *testing.T) {
 
 	t.Run("double quotes corrupt a benign value", func(t *testing.T) {
 		resolved := resolveCommandTemplate(`BASE_REF="{{vars.base_ref}}" sh -c 'printf %s "$BASE_REF"'`,
-			[]*ir.Ref{ref}, nil, map[string]any{"base_ref": "main"})
+			[]*ir.Ref{ref}, nil, map[string]any{"base_ref": "main"}, nil)
 		out, err := exec.Command("sh", "-c", resolved).Output()
 		if err != nil {
 			t.Fatalf("resolved command failed (%v): %s", err, resolved)
@@ -100,7 +100,7 @@ func TestAuthorQuotedRefsAreNotContained(t *testing.T) {
 	t.Run("double quotes inject when the value carries one", func(t *testing.T) {
 		sentinel := filepath.Join(t.TempDir(), "pwned")
 		resolved := resolveCommandTemplate(`BASE_REF="{{vars.base_ref}}" true`, []*ir.Ref{ref}, nil,
-			map[string]any{"base_ref": `a";touch ` + sentinel + `;"b`})
+			map[string]any{"base_ref": `a";touch ` + sentinel + `;"b`}, nil)
 		_ = exec.Command("sh", "-c", resolved).Run()
 		if _, err := os.Stat(sentinel); err != nil {
 			t.Errorf("no sentinel (%v) — resolved: %s", err, resolved)

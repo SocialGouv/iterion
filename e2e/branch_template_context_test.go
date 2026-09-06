@@ -108,7 +108,11 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 	//
 	// A `{{run.id}}` a tool node cannot resolve does not survive as visible
 	// braces: resolveRunRefs substitutes it with the empty string, so the
-	// command runs with an argument nobody notices is missing.
+	// command runs with an argument nobody notices is missing. An
+	// `{{outputs.*}}` ref the command resolver did not know (#797) survived
+	// the other way — as the literal braces, handed to sh -c as an argument.
+	// Both are asserted on every dispatch path.
+	toolItems := map[string]bool{}
 	for _, probe := range []struct {
 		node  string
 		calls int
@@ -126,7 +130,24 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 				t.Errorf("tool %q call %d: command rendered run.id = %q, want %q", probe.node, i, got, runID)
 			}
 			assertElapsed(t, probe.node, out["elapsed"])
+			if got := out["seed"]; got != "SEEDED" {
+				t.Errorf("tool %q call %d: command rendered {{outputs.seed.value}} as %q, want SEEDED", probe.node, i, got)
+			}
+			if probe.node == "each_probe" {
+				// The per-item binding lives only in the branch's own
+				// outputs view: resolving it proves the command was
+				// rendered from the branch snapshot, like the prompt is.
+				switch it := out["item"]; it {
+				case "alpha", "beta":
+					toolItems[it.(string)] = true
+				default:
+					t.Errorf("each_probe call %d: command rendered {{outputs.spread.it}} as %q, want alpha or beta", i, it)
+				}
+			}
 		}
+	}
+	if len(toolItems) != 2 {
+		t.Errorf("the two fan_out_each tool bodies rendered %v, want one command per item", toolItems)
 	}
 
 	// --- agent `user:` prompt — the literal-braces half -------------------

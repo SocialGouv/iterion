@@ -458,9 +458,10 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 Inside a fan-out branch every form resolves as on the trunk;
 `{{outputs.*}}` reads the branch's own view (its upstream trunk
 outputs + what this branch produced + a `fan_out_each` item),
-never a sibling's. `{{outputs.*}}` stays prompt-side: a tool
-`command:`/`script:` resolves `input`/`vars`/`secrets`/`run`
-only — thread an output through an edge `with` mapping instead.
+never a sibling's. A tool `command:`/`script:`/`postcondition:`
+resolves `input`/`vars`/`secrets`/`run` AND `outputs.<node>.<field>`
+(shell-escaped like an input; an output not yet produced keeps its
+`{{…}}` placeholder in a shell body, renders `null` in a script).
 
 `{{...}}` is parsed in every prompt block. Even literal examples
 inside markdown code-fences trigger validation. Avoid example
@@ -501,7 +502,10 @@ compute plan_budget_gate:
 - Indexing: `arr[0]`, `m["key"]`, `people[0].name` (OOB / missing key → nil).
 - Builtins: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
   `if(cond, then, else)`, `sort`, `keys`, `values`, `slice(arr, start, end)`,
-  `sum`, `min`, `max`, `flatten`.
+  `sum`, `min`, `max`, `flatten`, `floor(x)`, `round(x)`.
+- A compute output is TYPED by its schema: an integral number under `int`
+  is stored as an int, a fractional one (a division) FAILS the node — wrap
+  it in `floor(...)` / `round(...)`; a string under `bool`/`int` fails too.
 - Bounded combinators (lambda, applied once per element of a finite list):
   - `map(arr, x => x.field)`
   - `filter(arr, x => x.score > 5)`

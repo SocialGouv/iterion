@@ -21,11 +21,15 @@
 //
 // The path namespaces recognized by the evaluator depend on the Context:
 // `vars`, `input`, `outputs`, `artifacts`, `loop.<name>.{iteration,max,previous_output[.field]}`,
-// and `run.{id}` are the standard ones.
+// and `run.<member>` (the run's identity, consumption and effective budget
+// caps — the vocabulary is pkg/runtime's RunNamespaceMembers) are the
+// standard ones.
 //
 // Builtin functions: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
 // `if(cond, then, else)`, plus the total array/map helpers `sort`, `keys`,
-// `values`, `slice`, `sum`, `min`, `max`, `flatten`. The bounded higher-order
+// `values`, `slice`, `sum`, `min`, `max`, `flatten`, and the numeric
+// `floor`, `round` (a number to the int64 an `int` field expects: floor
+// towards negative infinity, round half away from zero). The bounded higher-order
 // combinators `map`, `filter`, `reduce` take a `=>` lambda whose parameter is a
 // local binding; the lambda is not a first-class value (it can only appear at a
 // combinator call site, applies once per element of a finite slice, and cannot
@@ -1362,6 +1366,8 @@ var builtins = map[string]func(args []any) (any, error){
 	"min":      builtinMin,
 	"max":      builtinMax,
 	"flatten":  builtinFlatten,
+	"floor":    builtinFloor,
+	"round":    builtinRound,
 }
 
 func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
@@ -1754,6 +1760,33 @@ func minMax(args []any, which string) (any, error) {
 		}
 	}
 	return best, nil
+}
+
+// builtinFloor / builtinRound turn a number into the int64 an `int` field
+// expects — floor towards negative infinity, round half away from zero — so
+// a division's rounding is written in the expression rather than guessed by
+// the engine when the compute output meets its schema. An integer passes
+// through; a non-number, or a float with no finite integer (NaN, ±Inf,
+// beyond the int64 range), is an error.
+func builtinFloor(args []any) (any, error) { return numberToInt(args, "floor", math.Floor) }
+func builtinRound(args []any) (any, error) { return numberToInt(args, "round", math.Round) }
+
+func numberToInt(args []any, name string, fn func(float64) float64) (any, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: %s() takes 1 argument, got %d", name, len(args))
+	}
+	if n, ok := toInt(args[0]); ok {
+		return n, nil
+	}
+	f, ok := toFloat(args[0])
+	if !ok {
+		return nil, fmt.Errorf("expr: %s() expects a number, got %T", name, args[0])
+	}
+	r := fn(f)
+	if math.IsNaN(r) || math.IsInf(r, 0) || r < math.MinInt64 || r >= math.MaxInt64 {
+		return nil, fmt.Errorf("expr: %s(%v) is not a finite integer", name, f)
+	}
+	return int64(r), nil
 }
 
 // builtinFlatten concatenates one level of nesting: each array element is

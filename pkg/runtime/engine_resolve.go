@@ -327,8 +327,8 @@ func renderMappingValue(v any) string {
 }
 
 // resolveRef resolves a single Ref to a concrete value. The runState
-// (sc.rs) is required for `loop` and `run` namespace resolution; pass
-// nil to skip those (they'll resolve to nil).
+// (sc.rs) is required for `loop`, `each` and `run` namespace resolution;
+// pass nil to skip those (they'll resolve to nil).
 func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 	switch ref.Kind {
 	case ir.RefVars:
@@ -378,13 +378,14 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 		}
 		return e.resolveEachPath(ref.Path, sc)
 	case ir.RefRun:
-		if sc.rs == nil || len(ref.Path) == 0 {
+		// The same lookup the expr path uses, so a member added to the
+		// namespace reaches a fail node's `message:`, an edge `with`, an
+		// `emit` payload and a subbot `with:` at once — this arm used to
+		// serve `id` alone and render every budget member empty (#791).
+		if sc.rs == nil {
 			return nil
 		}
-		switch ref.Path[0] {
-		case "id":
-			return sc.rs.runID
-		}
+		return resolveRunPath(sc.rs, ref.Path)
 	}
 	return nil
 }

@@ -322,18 +322,7 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *
 			}
 		}
 	case "outputs":
-		if td == nil {
-			return "", false
-		}
-		segs := strings.Split(key, ".")
-		nodeOut, ok := td.Outputs[segs[0]]
-		if !ok || nodeOut == nil {
-			return "", false
-		}
-		if len(segs) == 1 {
-			return formatValue(nodeOut), true
-		}
-		v, ok := drillTemplatePath(nodeOut, segs[1:])
+		v, ok := outputsTemplateValue(td, strings.Split(key, "."))
 		if !ok {
 			return "", false
 		}
@@ -425,6 +414,28 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *
 	}
 
 	return "", false
+}
+
+// outputsTemplateValue resolves one `outputs.<node>[.<field>…]` reference to
+// its RAW value from the template snapshot — the single lookup behind the
+// prompt path (resolveTemplateRef, which formats it) and the tool command /
+// script / postcondition path (resolveTemplateWith, which shell-escapes or
+// JSON-encodes it), so an output a prompt can read cannot stay a literal in
+// a command. Unresolved — no snapshot, a node that has not produced, a field
+// the output does not carry — is reported as such; each caller applies its
+// own missing-value rule.
+func outputsTemplateValue(td *TemplateData, segs []string) (any, bool) {
+	if td == nil || len(segs) == 0 {
+		return nil, false
+	}
+	nodeOut, ok := td.Outputs[segs[0]]
+	if !ok || nodeOut == nil {
+		return nil, false
+	}
+	if len(segs) == 1 {
+		return nodeOut, true
+	}
+	return drillTemplatePath(nodeOut, segs[1:])
 }
 
 // lookupRunTemplateRef resolves one `{{run.<key>}}` reference for a PROMPT

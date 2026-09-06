@@ -161,7 +161,7 @@ func ref(kind ir.RefKind, name, raw string, unquoted bool) *ir.Ref {
 func TestResolveCommandTemplate_BasicShellEscaping(t *testing.T) {
 	tmpl := "echo {{input.msg}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "msg", "{{input.msg}}", false)},
-		map[string]any{"msg": "hello world"}, nil)
+		map[string]any{"msg": "hello world"}, nil, nil)
 	if got != "echo 'hello world'" {
 		t.Errorf("got %q", got)
 	}
@@ -170,7 +170,7 @@ func TestResolveCommandTemplate_BasicShellEscaping(t *testing.T) {
 func TestResolveCommandTemplate_VarsLookup(t *testing.T) {
 	tmpl := "echo {{vars.name}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefVars, "name", "{{vars.name}}", false)},
-		nil, map[string]any{"name": "Iterion"})
+		nil, map[string]any{"name": "Iterion"}, nil)
 	if got != "echo 'Iterion'" {
 		t.Errorf("got %q", got)
 	}
@@ -179,7 +179,7 @@ func TestResolveCommandTemplate_VarsLookup(t *testing.T) {
 func TestResolveCommandTemplate_RawBangBypassesShellEscape(t *testing.T) {
 	tmpl := "{{!input.snippet}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "snippet", "{{!input.snippet}}", true)},
-		map[string]any{"snippet": "echo $HOME; ls"}, nil)
+		map[string]any{"snippet": "echo $HOME; ls"}, nil, nil)
 	// Raw form pastes verbatim — no shell-escaping.
 	if got != "echo $HOME; ls" {
 		t.Errorf("got %q", got)
@@ -190,10 +190,91 @@ func TestResolveCommandTemplate_MissingValueLeftAsRaw(t *testing.T) {
 	// substituteNil=false in shell context → unresolved refs stay literal.
 	tmpl := "echo {{input.missing}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "missing", "{{input.missing}}", false)},
-		map[string]any{}, nil)
+		map[string]any{}, nil, nil)
 	if got != "echo {{input.missing}}" {
 		t.Errorf("missing input should leave placeholder, got %q", got)
 	}
+}
+
+// A tool node's command resolves `{{outputs.<node>.<field>}}` from the same
+// template snapshot the prompts render from, shell-escaped exactly like
+// `{{input.*}}` (#797). Before, the literal braces reached sh -c on the
+// trunk and in a branch alike — a silent constant no diagnostic named,
+// since C029/C036 accept the reference.
+func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
+	td := &TemplateData{Outputs: map[string]map[string]any{
+		"prev": {
+			"branch": "x;touch /tmp/iterion-outputs-sentinel",
+			"n":      3.0,
+			"obj":    map[string]any{"k": "v"},
+			"text":   "{{outputs.prev.branch}}",
+		},
+	}}
+	outRef := func(raw string, path ...string) *ir.Ref {
+		return &ir.Ref{Kind: ir.RefOutputs, Path: path, Raw: raw}
+	}
+
+	t.Run("shell-escaped like an input", func(t *testing.T) {
+		got := resolveCommandTemplate("git checkout {{outputs.prev.branch}}",
+			[]*ir.Ref{outRef("{{outputs.prev.branch}}", "prev", "branch")}, nil, nil, td)
+		if want := "git checkout 'x;touch /tmp/iterion-outputs-sentinel'"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a deep path drills into a nested value", func(t *testing.T) {
+		got := resolveCommandTemplate("echo {{outputs.prev.obj.k}}",
+			[]*ir.Ref{outRef("{{outputs.prev.obj.k}}", "prev", "obj", "k")}, nil, nil, td)
+		if got != "echo 'v'" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("a number renders as its digits, a whole output as JSON", func(t *testing.T) {
+		got := resolveCommandTemplate("N={{outputs.prev.n}} ALL={{outputs.prev}}",
+			[]*ir.Ref{outRef("{{outputs.prev.n}}", "prev", "n"), outRef("{{outputs.prev}}", "prev")}, nil, nil, td)
+		if !strings.Contains(got, "N='3'") || !strings.Contains(got, `ALL='{"branch"`) {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("an output not yet produced behaves like a missing input", func(t *testing.T) {
+		// The placeholder stays, as it does for {{input.missing}}: sh -c
+		// sees it and fails informatively instead of running on an empty
+		// argument. With no snapshot at all the rule is the same.
+		refs := []*ir.Ref{outRef("{{outputs.absent.x}}", "absent", "x")}
+		for name, snapshot := range map[string]*TemplateData{"node has not produced": td, "no snapshot": nil} {
+			if got := resolveCommandTemplate("echo {{outputs.absent.x}}", refs, nil, nil, snapshot); got != "echo {{outputs.absent.x}}" {
+				t.Errorf("%s: got %q, want the placeholder kept", name, got)
+			}
+		}
+	})
+
+	t.Run("script body: JSON literal, null when not produced", func(t *testing.T) {
+		got := resolveScriptTemplate("const b = {{outputs.prev.branch}}; const m = {{outputs.absent.x}};",
+			[]*ir.Ref{outRef("{{outputs.prev.branch}}", "prev", "branch"), outRef("{{outputs.absent.x}}", "absent", "x")}, nil, nil, td)
+		if want := `const b = "x;touch /tmp/iterion-outputs-sentinel"; const m = null;`; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("the raw form bypasses escaping, by design", func(t *testing.T) {
+		got := resolveCommandTemplate("{{!outputs.prev.branch}}",
+			[]*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"prev", "branch"}, Raw: "{{!outputs.prev.branch}}", Unquoted: true}}, nil, nil, td)
+		if got != "x;touch /tmp/iterion-outputs-sentinel" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("an output value that looks like a template is not re-substituted", func(t *testing.T) {
+		got := resolveCommandTemplate("T={{!outputs.prev.text}} B={{outputs.prev.branch}}", []*ir.Ref{
+			{Kind: ir.RefOutputs, Path: []string{"prev", "text"}, Raw: "{{!outputs.prev.text}}", Unquoted: true},
+			outRef("{{outputs.prev.branch}}", "prev", "branch"),
+		}, nil, nil, td)
+		if !strings.Contains(got, "T={{outputs.prev.branch}} ") {
+			t.Errorf("cascade replay rewrote an output value: %q", got)
+		}
+	})
 }
 
 func TestResolveRunRefs_CommandAndScript(t *testing.T) {
@@ -227,7 +308,7 @@ func TestResolveScriptTemplate_NilBecomesJSONNull(t *testing.T) {
 	// substituteNil=true in script context — nil renders as JSON "null".
 	tmpl := "const v = {{input.missing}};"
 	got := resolveScriptTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "missing", "{{input.missing}}", false)},
-		map[string]any{"missing": nil}, nil)
+		map[string]any{"missing": nil}, nil, nil)
 	if got != "const v = null;" {
 		t.Errorf("got %q", got)
 	}
@@ -236,7 +317,7 @@ func TestResolveScriptTemplate_NilBecomesJSONNull(t *testing.T) {
 func TestResolveScriptTemplate_StringJSONQuoted(t *testing.T) {
 	tmpl := "console.log({{input.s}});"
 	got := resolveScriptTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "s", "{{input.s}}", false)},
-		map[string]any{"s": `he said "hi"`}, nil)
+		map[string]any{"s": `he said "hi"`}, nil, nil)
 	if got != `console.log("he said \"hi\"");` {
 		t.Errorf("got %q", got)
 	}
@@ -250,14 +331,14 @@ func TestResolveScriptTemplate_ObjectAndArray(t *testing.T) {
 	}, map[string]any{
 		"obj": map[string]any{"k": "v"},
 		"arr": []any{1.0, 2.0, 3.0},
-	}, nil)
+	}, nil, nil)
 	if !strings.Contains(got, `{"k":"v"}`) || !strings.Contains(got, "[1,2,3]") {
 		t.Errorf("got %q", got)
 	}
 }
 
 func TestResolveTemplateWith_NoRefsPassthrough(t *testing.T) {
-	got := resolveTemplateWith("plain text {no template}", nil, nil, nil, nil, shellEscapeValue, false)
+	got := resolveTemplateWith("plain text {no template}", nil, nil, nil, nil, nil, shellEscapeValue, false)
 	if got != "plain text {no template}" {
 		t.Errorf("got %q", got)
 	}
@@ -271,7 +352,7 @@ func TestResolveCommandTemplate_FileSecretPath(t *testing.T) {
 	}}, secretguard.DefaultConfig())
 	got := resolveCommandTemplate("kubectl --kubeconfig {{secrets.kubeconfig.path}} get pods", []*ir.Ref{
 		ref(ir.RefSecrets, "kubeconfig", "{{secrets.kubeconfig.path}}", false),
-	}, nil, nil, guard)
+	}, nil, nil, nil, guard)
 	if got != "kubectl --kubeconfig '/run/iterion/secrets/kubeconfig' get pods" {
 		t.Fatalf("got %q", got)
 	}
@@ -288,7 +369,7 @@ func TestResolveTemplateWith_NoCascadeReplay(t *testing.T) {
 	}, map[string]any{
 		"a": "{{input.b}}", // literal that looks like a template
 		"b": "shouldNotLeak",
-	}, nil)
+	}, nil, nil)
 	// Expected: X gets the raw literal text; Y gets escaped 'shouldNotLeak'.
 	if !strings.Contains(got, "X={{input.b}}") {
 		t.Errorf("cascade replay corrupted input.a value: %q", got)

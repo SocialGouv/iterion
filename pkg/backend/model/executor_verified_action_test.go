@@ -77,6 +77,33 @@ func TestVerifiedAction_RecipeOK(t *testing.T) {
 	}
 }
 
+// A postcondition resolves `{{outputs.<node>.<field>}}` from the template
+// snapshot the run attached, exactly as it resolves `{{input.*}}` (#797).
+// Before, the literal braces reached `test -f`, so the oracle could never
+// be met — a silent constant in the one command that decides success.
+func TestVerifiedAction_PostconditionResolvesOutputsRef(t *testing.T) {
+	dir := t.TempDir()
+	exec := vaExecutor(t, dir)
+
+	node := &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "pc_outputs"},
+		Command:       "touch marker",
+		Postcondition: "test -f {{outputs.prev.marker}}",
+		Policy:        ir.PolicyRequired,
+	}
+	node.PostcondRefs = mustRefs(node.Postcondition)
+	ctx := WithTemplateData(context.Background(), &TemplateData{
+		Outputs: map[string]map[string]any{"prev": {"marker": "marker"}},
+	})
+	out, err := exec.Execute(ctx, node, map[string]any{})
+	if err != nil {
+		t.Fatalf("Execute: %v — the postcondition did not resolve {{outputs.prev.marker}}", err)
+	}
+	if m := vaMeta(t, out); m["rung"] != "recipe" || m["postcondition_met"] != true {
+		t.Fatalf("rung = %v, want recipe met=true", m)
+	}
+}
+
 // The postcondition is truth, NOT the exit code: a recipe that exits
 // non-zero but achieves the goal is a success ("nothing to commit" lies).
 func TestVerifiedAction_ExitCodeLies(t *testing.T) {

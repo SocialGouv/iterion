@@ -31,7 +31,9 @@ compute plan_budget_gate:
   expr:
     ## A cap of 0 means UNBOUNDED, so the guard checks for one first —
     ## without that, an unbudgeted run divides by zero and reads +Inf.
-    used_pct: "if(run.max_duration_seconds > 0, run.elapsed_seconds * 100 / run.max_duration_seconds, 0)"
+    ## `used_pct` is declared `int`: the division is floored explicitly,
+    ## because a fractional result under an `int` field fails the node.
+    used_pct: "if(run.max_duration_seconds > 0, floor(run.elapsed_seconds * 100 / run.max_duration_seconds), 0)"
     exhausted: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.33"
 
 agent implement:
@@ -42,7 +44,9 @@ agent implement:
 fail plan_exhausted:
   description: "the plan phase outgrew its share of the budget"
   code: PLAN_BUDGET_EXHAUSTED
-  message: "planning used {{outputs.plan_budget_gate.used_pct}}% of max_duration — raise --max-duration and resume"
+  ## `run.*` resolves here too, at fail time: the ceiling reported is the one
+  ## the run actually had, not the `budget:` literal.
+  message: "planning used {{outputs.plan_budget_gate.used_pct}}% of max_duration ({{run.elapsed_seconds}}s of {{run.max_duration_seconds}}s) — raise --max-duration and resume"
   resumable: true
 
 workflow phase_budget_guard:
