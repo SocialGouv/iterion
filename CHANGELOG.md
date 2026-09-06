@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.14](https://github.com/SocialGouv/iterion/compare/v3.112.13...v3.112.14) (2026-09-06)
+
+### Bug Fixes
+
+* **billy:** a delivery reserve out of the duration cap, a typed decline the platform honours, a structural drift gate, and no masked exit status in verify.sh ([#830](https://github.com/SocialGouv/iterion/issues/830)) ([5166823](https://github.com/SocialGouv/iterion/commit/51668231d8704c8af6d5466a1a3970ff176227f3)), closes [#789](https://github.com/SocialGouv/iterion/issues/789) [#779](https://github.com/SocialGouv/iterion/issues/779) [#705](https://github.com/SocialGouv/iterion/issues/705) [#706](https://github.com/SocialGouv/iterion/issues/706), references [#770](https://github.com/SocialGouv/iterion/issues/770) [#705](https://github.com/SocialGouv/iterion/issues/705) [#706](https://github.com/SocialGouv/iterion/issues/706) [#779](https://github.com/SocialGouv/iterion/issues/779) [#789](https://github.com/SocialGouv/iterion/issues/789)
+
+    <details><summary>why</summary>
+
+    has_drift_gate read the verify script one line at a time and counted a quiet diff only when the failing exit appeared on the SAME line, so the commonest real shape -- a multiline "if ! git diff --quiet ...; then ... exit 1; fi", which is what this repo's own openapi:check target writes -- was rejected. Run 01a072b5 delivered eight commits, logged VERIFY OK, and still returned exit 3 / DRIFT GATE MISSING, leaving the merge gate red on a green tree.
+
+    </details>
+* **forge,webhooks:** one App client per connection with its real slug, tokens minted from the recorded grant, a 403 that arms the preflight, a connection-first reply gate, and a GitLab fork MR that names its source ([#846](https://github.com/SocialGouv/iterion/issues/846)) ([e2b5fe7](https://github.com/SocialGouv/iterion/commit/e2b5fe70a695ac2e78dfd22992f08ba612878496)), closes [#711](https://github.com/SocialGouv/iterion/issues/711) [#710](https://github.com/SocialGouv/iterion/issues/710) [#717](https://github.com/SocialGouv/iterion/issues/717) [#708](https://github.com/SocialGouv/iterion/issues/708) [#728](https://github.com/SocialGouv/iterion/issues/728), references [#711](https://github.com/SocialGouv/iterion/issues/711)
+
+    <details><summary>why</summary>
+
+    Two AppClient gaps that share a fix site.
+
+    </details>
+* **golden-master:** the harness reverts a mutant an interrupted gate left applied, at the start of the next ([#807](https://github.com/SocialGouv/iterion/issues/807)) ([7a70bbc](https://github.com/SocialGouv/iterion/commit/7a70bbc53d082e4356c9441f866ced1b6a940d61)), references [#799](https://github.com/SocialGouv/iterion/issues/799)
+
+    <details><summary>why</summary>
+
+    A stream cut, a SIGTERM or a pod kill between apply.sh and revert.sh leaves a mutant in the tree. The next gate on that tree judged a mutated program and called it the lot's: measured on a verify node retried on the same tree after its exec stream broke at 7 676 s — the oracle reported the mutant's file as "not committed", the build gate went red on a package that exists on the bank, and the run finished not converged with hours of budget left.
+
+    </details>
+* **server:** a publish grant must belong to the run that carries it ([#849](https://github.com/SocialGouv/iterion/issues/849)) ([0aab3d2](https://github.com/SocialGouv/iterion/commit/0aab3d2b583017a70e9ac103a0555e8c998bc434)), closes [#825](https://github.com/SocialGouv/iterion/issues/825)
+
+    <details><summary>why</summary>
+
+    The publish token is a launch VAR, and injectForgePublishVars honours a caller-pinned one. Every reader then proved the grant SELF-consistent — its connection belongs to its team, its repo matches the pull request, its host matches the connection — and a grant minted for another tenant passed all of them. None asked whether that tenant was the run's. So an authenticated operator of team B holding a team-A token could have iterion comment on team A's pull request, write team A's REQUIRED commit…
+
+    </details>
+
 ## [3.112.13](https://github.com/SocialGouv/iterion/compare/v3.112.12...v3.112.13) (2026-09-06)
 
 ### Bug Fixes
