@@ -3477,9 +3477,20 @@ tool sync_harness:
                 saved["apply_mutant"](lmeta, tmp)
                 shutil.rmtree(mdir)
                 left = revert_leftover_mutant(tmp)
-                check("un mutant dont revert.sh a disparu est signale, pas tu", (left or {}).get("code"), None)
+                # Porte sur l'IDENTITE rapportee et sur le message, jamais sur le
+                # seul `code`. `(left or {}).get("code")` vaut None dans les DEUX
+                # cas : le leftover correctement signale (dict, code None) ET la
+                # fonction qui le tait en renvoyant None — l'oubli meme que ce test
+                # existe pour interdire. Mesure : un `return None` a la place de ce
+                # bras laissait passer les 126 verifications.
+                check("un mutant dont revert.sh a disparu est signale, pas tu",
+                      [(left or {}).get("id"), left is not None and left.get("code") is None,
+                       "revert.sh" in ((left or {}).get("out") or "")],
+                      ["leftover-1", True, True])
                 check("et son marqueur SURVIT : irrevertible n'est pas oublie",
                       os.path.isfile(applied_marker_for(tmp)), True)
+                check("et la porte REFUSE de juger un arbre qu'elle ne peut pas rendre a HEAD",
+                      leftover_verdict(left)[0], True)
 
                 # Ce que la porte en FAIT. Les trois sorties de
                 # revert_leftover_mutant sont toutes des dicts VRAIS : decider sur
