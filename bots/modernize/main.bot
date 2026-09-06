@@ -920,15 +920,17 @@ tool lot_verify:
 
         lines = (text or "").splitlines()[-2000:]
         col = [len(ln) - len(ln.lstrip()) for ln in lines]
-        net = [0] * len(lines)
+        # Brace balance BEFORE each line. Two ends can be one object only when
+        # theirs are equal — the O(1) test below — so an opening is filed under
+        # its own, and a closing looks its candidates up instead of scanning
+        # every line before it for them.
         depth = [0] * (len(lines) + 1)
         opens_at = {}
         for i, ln in enumerate(lines):
             up, down = braces(ln)
-            net[i] = up - down
-            if net[i] > 0 and ln.lstrip().startswith("{"):
+            if up > down and ln.lstrip().startswith("{"):
                 opens_at.setdefault(depth[i], []).append(i)
-            depth[i + 1] = depth[i] + net[i]
+            depth[i + 1] = depth[i] + up - down
         joins = 0
         for j in range(len(lines) - 1, -1, -1):
             tail = lines[j].strip()
@@ -947,7 +949,7 @@ tool lot_verify:
             # had its say on it above. Keeping such a line out of the join
             # scan is what stops chatter from SPENDING the budget: a cap
             # consumed by noise discards the verdict printed underneath it.
-            if net[j] >= 0 or joins >= 32:
+            if depth[j + 1] >= depth[j] or joins >= 32:
                 continue
             # The openings this line can close are those its brace balance
             # points at; among them, the one in this line's own column comes
