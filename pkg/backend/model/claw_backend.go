@@ -1323,10 +1323,11 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			_ = hostStore.SaveSnapshot(hostRunID, task.NodeID, snapshot)
 		},
 		OnEvent: func(eventType string, payload map[string]any) {
-			// The runner's per-step LLM observations (llm_request,
-			// llm_step_finished), re-fired through THIS process's hooks so
-			// a sandboxed claw node is persisted, priced and metered like
-			// an in-process one — see sandbox_relay.go.
+			// What the in-container loop observed — its LLM steps, the
+			// tools it ran, its retries and compactions, its per-turn
+			// anchors — re-fired through THIS process's hooks so a
+			// sandboxed claw node is persisted, priced, metered and
+			// forkable like an in-process one — see sandbox_relay.go.
 			handled, err := ApplyRelayedEvent(b.hooks, task.NodeID, eventType, payload)
 			if b.logger == nil {
 				return

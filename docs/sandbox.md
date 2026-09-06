@@ -637,9 +637,60 @@ across the channel.
   with the steps relayed, the delegation total is a summary and is not
   counted again — see [quotas-and-limits.md](quotas-and-limits.md#per-credential-usage--what-did-this-key-cost)
   for what a run whose container carries an older, non-relaying runner
-  is charged. Not relayed: `tool_started` / `tool_called` for the
-  builtins executed inside the container, `llm_retry`, and the per-turn
-  `llm_turn_capture` checkpoints — those stay in the container.
+  is charged.
+- ✅ **Tool, retry, compaction and turn observability.** The same relay
+  carries everything else the in-container loop observes, so a sandboxed
+  claw node is not a blind spot on any consumer:
+  `tool_started` / `tool_called` for the builtins it executes **inside**
+  the container (tool name, correlation id, input, result, duration —
+  and, for a failed call, `tool_error` carrying the reason, which is what
+  makes an in-container permission denial auditable); `llm_retry`
+  (including the context-window force-compaction recovery, which the
+  in-process path also reports as a retry); `llm_compacted`; and the
+  per-turn `llm_turn_capture` checkpoints, so the studio timeline and
+  `iterion fork --turn` anchor on a sandboxed node exactly as on an
+  in-process one. Every one of them re-fires the launcher's own hooks, so
+  the studio timeline, the `EventObservers` a supervisor's `tool_*`
+  monitors ride, and the permission audit see what the in-process path
+  produces.
+
+  Two properties of that channel are worth knowing:
+
+  - **Nothing is dropped in silence.** A relayed NDJSON line over
+    `delegate.MaxEnvelopeLineBytes` (4 MiB) would fail the launcher's
+    reader and with it the whole IPC, so the relay cuts *before* it
+    writes, always visibly: a text field over 1 MiB (a tool result, an
+    assistant text) is truncated with a marker naming the byte count that
+    stayed in the container, and a JSON field over it (a `write_file`
+    input) is replaced by a `{"_iterion_sandbox_relay_omitted_bytes":N}`
+    marker — a document cut mid-way would not be JSON the host can
+    decode. `input_size` keeps the size the container measured, so the
+    honest number always travels beside the cut. An event whose fields
+    are each in budget but whose SUM is not (a step dispatching six large
+    `write_file` calls at once) keeps its **numbers** and loses its bulk,
+    every cut marked — the token counts are what the run is metered on. A
+    payload still over the cap after that (thousands of short strings,
+    nothing left to cut) is refused and reported on the runner's stderr,
+    which the launcher folds into the node's error: one lost
+    observation, never a dead channel, and never a silent one.
+  - **A turn's conversation crosses whole or not at all.** The snapshot a
+    fork replays is relayed up to 2 MiB (a full 200k-token context, with
+    room under the line cap); a larger one is left out and the turn
+    crosses carrying its size, which the launcher logs as a warning
+    naming the node and the turn. The turn still anchors the timeline; a
+    fork from it starts that node fresh. It crosses on the wire rather
+    than being written to a run directory the host reads back because
+    there is no such directory to rely on: the kubernetes driver refuses
+    `host_state: auto` (no host filesystem in a pod), `host_state: none`
+    is the recommended posture for a multi-tenant runner, a store nested
+    in the workspace is skipped by the host-state bind, and a cloud run's
+    store is Mongo + S3, which no bind-mount reaches.
+
+  One observation of the in-container loop deliberately stays there:
+  `OnLLMResponse` (per-call latency). The host's own store hooks leave
+  that callback nil — the same numbers reach `llm_step_finished` with
+  per-step detail — so relaying it would fire nothing; its single
+  optional consumer is the `--metrics` Prometheus latency histogram.
 
 ### MCP tools in a sandbox
 

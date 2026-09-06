@@ -763,6 +763,13 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 		// user + every tool result) and feeds the Fork API — scrub
 		// secrets before it lands on disk.
 		turn.Messages = h.guard.RedactBytes(conv)
+	} else if info.ConversationOmittedBytes > 0 {
+		// A sandboxed node whose snapshot was too large for one IPC
+		// line: the turn anchors the timeline, a fork from it starts
+		// the node fresh. Said here, where the size is known, rather
+		// than discovered as an empty conversation at fork time.
+		h.logger.Warn("turn capture [%s] step %d: the sandbox runner could not relay the %d-byte conversation — this turn anchors the timeline, but forking from it replays no conversation",
+			nodeID, info.Step, info.ConversationOmittedBytes)
 	}
 	if err := h.turnSink.WriteTurn(h.ctx, turn); err != nil {
 		h.logger.Warn("turn capture [%s] step %d: %v", nodeID, info.Step, err)

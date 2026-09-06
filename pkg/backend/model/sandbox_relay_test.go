@@ -20,6 +20,21 @@ import (
 // events the studio, the report and the runner's metering read.
 func relayHost(t *testing.T, runID string) (*ClawBackend, func() []*store.Event) {
 	t.Helper()
+	b, st := relayHostStore(t, runID)
+	return b, func() []*store.Event {
+		evts, err := st.LoadEvents(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("LoadEvents: %v", err)
+		}
+		return evts
+	}
+}
+
+// relayHostStore is relayHost with the run store itself, for the
+// assertions whose oracle is not events.jsonl (the turn checkpoints the
+// Fork API reads).
+func relayHostStore(t *testing.T, runID string, observers ...func(store.Event)) (*ClawBackend, *store.FilesystemRunStore) {
+	t.Helper()
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
@@ -28,15 +43,40 @@ func relayHost(t *testing.T, runID string) (*ClawBackend, func() []*store.Event)
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil)
-	b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{})
-	return b, func() []*store.Event {
-		evts, err := st.LoadEvents(ctx, runID)
-		if err != nil {
-			t.Fatalf("LoadEvents: %v", err)
-		}
-		return evts
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil, observers...)
+	return NewClawBackend(NewRegistry(), hooks, RetryPolicy{}), st
+}
+
+// runRelay drives one full runner→launcher exchange: fire builds the
+// runner-side hooks' calls, the real Multiplexer carries their envelopes,
+// and the launcher's handler re-fires the host's own hooks. Returns
+// whatever the runner-side relay reported as a failed write.
+func runRelay(t *testing.T, b *ClawBackend, task delegate.Task, fire func(EventHooks)) []error {
+	t.Helper()
+	handler := b.multiplexerHandler(context.Background(), task)
+	if handler.OnEvent == nil {
+		t.Fatal("the launcher's multiplexer handler has no OnEvent: every event envelope the runner emits is dropped")
 	}
+	_, runnerStdinW := io.Pipe()
+	runnerStdoutR, runnerStdoutW := io.Pipe()
+	mux := delegate.NewMultiplexer(runnerStdoutR, runnerStdinW, handler)
+
+	var relayErrs []error
+	writer := delegate.NewEnvelopeWriter(runnerStdoutW)
+	relay := SandboxRelayHooks(writer.Write, func(err error) { relayErrs = append(relayErrs, err) })
+	go func() {
+		defer runnerStdoutW.Close()
+		fire(relay)
+		resEnv, _ := delegate.NewResultEnvelope(delegate.IOResult{})
+		_ = writer.Write(resEnv)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := mux.Run(ctx); err != nil {
+		t.Fatalf("multiplexer: %v", err)
+	}
+	return relayErrs
 }
 
 func eventsOfType(evts []*store.Event, typ store.EventType) []*store.Event {
@@ -168,7 +208,7 @@ func TestApplyRelayedEvent_UnknownIsDroppedMalformedIsAnError(t *testing.T) {
 	var fired int
 	hooks := EventHooks{OnLLMStepFinish: func(string, LLMStepInfo) { fired++ }}
 
-	handled, err := ApplyRelayedEvent(hooks, "n", "tool_called", map[string]any{"name": "bash"})
+	handled, err := ApplyRelayedEvent(hooks, "n", "an_event_a_newer_runner_relays", map[string]any{"name": "bash"})
 	if handled || err != nil {
 		t.Fatalf("unknown type: handled=%v err=%v, want dropped without error", handled, err)
 	}
