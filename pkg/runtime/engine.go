@@ -117,55 +117,56 @@ type Engine struct {
 	executor                 NodeExecutor
 	logger                   *iterlog.Logger
 	onNodeFinished           func(runID, nodeID string, output map[string]any)
-	onEvent                  func(evt store.Event)    // optional observer fired after every successful append
-	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
-	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
-	workflowSource           string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
-	workspaceTracker         workspacetrack.Tracker   // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
-	filePath                 string                   // absolute .bot source path, set via WithFilePath
-	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
-	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
-	preset                   string                   // in-source preset name selected at launch, set via WithPreset
-	runName                  string                   // deterministic human-friendly run label, set via WithRunName
-	source                   *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
-	mergeInto                string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName               string                   // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
-	mergeStrategy            string                   // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
-	autoMerge                bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
-	modelOverrides           []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
-	routingPolicy            *store.RoutingPolicy     // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
-	budgetAsk                *ir.BudgetOverrides      // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
-	validateOutputs          bool                     // when true, validate node outputs against declared schemas
-	forceResume              bool                     // when true, skip workflow hash check on resume
-	workDir                  string                   // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
-	workDirDelegated         bool                     // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
-	repoRoot                 string                   // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
-	containerWorkspace       string                   // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
-	workspaceIntegrity       WorkspaceIntegrity       // sandbox-side HEAD captured at teardown for export-based drivers (zero when not applicable); read via SandboxWorkspaceIntegrity after Run/Resume returns
-	attachmentsContainerDir  string                   // in-container path the run's attachments dir is bind-mounted at; empty when nodes must read them from the host (no sandbox, degraded sandbox, or a driver that drops host binds). Authoritative only once sandboxSettled is true
-	sandboxSettled           bool                     // true once startSandbox has run: attachmentsContainerDir is then a FACT, not a forecast. Before that, attachmentPath falls back to a pre-flight prediction (the resume path resolves file answers before the bootstrap)
-	sandboxOverride          string                   // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
-	sandboxDefault           string                   // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
-	sandboxDefaultImage      string                   // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
-	sandboxHostStateOverride string                   // CLI/Launch-level override for sandbox.host_state ("auto"|"none"|""); set via WithSandboxHostStateOverride
-	sandboxHostStateDefault  string                   // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
-	loopBudgetGuardOverride  string                   // CLI/Launch-level loop_budget_guard override ("on"|"off"|""); highest precedence, above the workflow block; set via WithLoopBudgetGuard
-	repoDevboxOverride       string                   // CLI/Launch-level repo_devbox override ("on"|"off"|""); highest precedence, above the workflow block; set via WithRepoDevbox
-	attachmentPromote        AttachmentPromoteFunc    // optional: invoked after CreateRun to materialise attachments
-	bundle                   *bundle.Bundle           // optional: bundle backing this run; nil for plain .bot runs
-	contributions            *Contributions           // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
-	pauseSignal              <-chan struct{}          // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
-	overrideCh               <-chan *OverrideMsg      // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
-	dailyCap                 *DailyCapGuard           // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
-	callbackURL              string                   // optional: run-completion webhook target persisted on the run; set via WithCallback
-	callbackToken            string                   // optional: opaque correlation token echoed in the completion payload; set via WithCallback
-	callbackAnswerNode       string                   // optional: node whose latest artifact holds the run's final answer; set via WithCallback
-	boardMCPHandler          http.Handler             // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
-	subbotRunner             SubbotRunner             // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
-	sandboxRunObserver       func(sandbox.Run)        // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
-	sharedSandbox            *SharedSandbox           // optional: a PARENT run's live sandbox this engine executes in, instead of starting its own (a subbot child). Set via WithSharedSandbox; nil = this engine decides its own sandbox.
-	activeShare              *SharedSandbox           // the facts of the sandbox this run executes in (own or shared), handed to subbot children through SubbotRequest.ParentSandbox; nil when the run has no sandbox
-	answersBell              answersDoorbell          // in-process fast-path waking await_answers nodes when an async interaction is answered (ADR-081); rung via NotifyInteractionAnswered
+	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
+	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
+	workflowHash             string                               // SHA-256 of the .bot source, set via WithWorkflowHash
+	workflowSource           string                               // .bot text at launch, set via WithWorkflowSource (else read from filePath)
+	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
+	filePath                 string                               // absolute .bot source path, set via WithFilePath
+	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
+	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
+	preset                   string                               // in-source preset name selected at launch, set via WithPreset
+	runName                  string                               // deterministic human-friendly run label, set via WithRunName
+	source                   *store.RunSource                     // originating action metadata (dispatcher → issue ref), set via WithSource
+	mergeInto                string                               // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
+	mergeStrategy            string                               // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge                bool                                 // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
+	modelOverrides           []store.RunModelOverride             // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	routingPolicy            *store.RoutingPolicy                 // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
+	budgetAsk                *ir.BudgetOverrides                  // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
+	validateOutputs          bool                                 // when true, validate node outputs against declared schemas
+	forceResume              bool                                 // when true, skip workflow hash check on resume
+	workDir                  string                               // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
+	workDirDelegated         bool                                 // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
+	repoRoot                 string                               // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
+	containerWorkspace       string                               // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
+	workspaceIntegrity       WorkspaceIntegrity                   // sandbox-side HEAD captured at teardown for export-based drivers (zero when not applicable); read via SandboxWorkspaceIntegrity after Run/Resume returns
+	attachmentsContainerDir  string                               // in-container path the run's attachments dir is bind-mounted at; empty when nodes must read them from the host (no sandbox, degraded sandbox, or a driver that drops host binds). Authoritative only once sandboxSettled is true
+	sandboxSettled           bool                                 // true once startSandbox has run: attachmentsContainerDir is then a FACT, not a forecast. Before that, attachmentPath falls back to a pre-flight prediction (the resume path resolves file answers before the bootstrap)
+	sandboxOverride          string                               // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
+	sandboxDefault           string                               // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
+	sandboxDefaultImage      string                               // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
+	sandboxDrivers           map[string]sandbox.DriverConstructor // the driver set the factory selects from; nil = the shipped registry (registry.Default()). Set via WithSandboxDrivers — the seam a composition test uses to drive a REAL sandbox lifecycle against a driver it controls
+	sandboxHostStateOverride string                               // CLI/Launch-level override for sandbox.host_state ("auto"|"none"|""); set via WithSandboxHostStateOverride
+	sandboxHostStateDefault  string                               // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
+	loopBudgetGuardOverride  string                               // CLI/Launch-level loop_budget_guard override ("on"|"off"|""); highest precedence, above the workflow block; set via WithLoopBudgetGuard
+	repoDevboxOverride       string                               // CLI/Launch-level repo_devbox override ("on"|"off"|""); highest precedence, above the workflow block; set via WithRepoDevbox
+	attachmentPromote        AttachmentPromoteFunc                // optional: invoked after CreateRun to materialise attachments
+	bundle                   *bundle.Bundle                       // optional: bundle backing this run; nil for plain .bot runs
+	contributions            *Contributions                       // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
+	pauseSignal              <-chan struct{}                      // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
+	overrideCh               <-chan *OverrideMsg                  // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
+	dailyCap                 *DailyCapGuard                       // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
+	callbackURL              string                               // optional: run-completion webhook target persisted on the run; set via WithCallback
+	callbackToken            string                               // optional: opaque correlation token echoed in the completion payload; set via WithCallback
+	callbackAnswerNode       string                               // optional: node whose latest artifact holds the run's final answer; set via WithCallback
+	boardMCPHandler          http.Handler                         // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
+	subbotRunner             SubbotRunner                         // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
+	sandboxRunObserver       func(sandbox.Run)                    // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
+	sharedSandbox            *SharedSandbox                       // optional: a PARENT run's live sandbox this engine executes in, instead of starting its own (a subbot child). Set via WithSharedSandbox; nil = this engine decides its own sandbox.
+	activeShare              *SharedSandbox                       // the facts of the sandbox this run executes in (own or shared), handed to subbot children through SubbotRequest.ParentSandbox; nil when the run has no sandbox
+	answersBell              answersDoorbell                      // in-process fast-path waking await_answers nodes when an async interaction is answered (ADR-081); rung via NotifyInteractionAnswered
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an
