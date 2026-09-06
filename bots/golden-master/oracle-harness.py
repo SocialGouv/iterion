@@ -2084,6 +2084,18 @@ def apply_mutant(meta, ws):
     # failed, and O_EXCL would then refuse to record the NEXT mutant and leave
     # the previous one's id standing for it.
     marker = applied_marker_for(ws)
+    # The directory is frozen ABSOLUTE, here, in the frame of the process that
+    # still knows what a relative path meant. `load_mutants` derives it from
+    # `gm_dir`, so it is relative whenever GM_WORKSPACE is — and the emitted
+    # verify-oracle.sh defaults GM_WORKSPACE to `.`. The reader is a DIFFERENT
+    # process, whose cwd nobody promised: it resolves `./.golden-master/...`
+    # against its own, finds the mutant outside the net, and refuses. Measured:
+    # apply under GM_WORKSPACE=. then read with the workspace named absolutely
+    # from another cwd — "its revert.sh lives outside the net and the sealed
+    # pile", the gate bails, and the tree stays mutated. The marker's NAME is
+    # already keyed on os.path.abspath(ws) for the same reason; its contents
+    # have to live in that same frame or the two disagree about one workspace.
+    d = meta.get("dir")
     try:
         # The root may not exist yet: GM_SCRATCH is chosen by the operator and
         # only the SEAL creates it, which a record run — or any run with no
@@ -2093,7 +2105,8 @@ def apply_mutant(meta, ws):
                      os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
                      0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
+            json.dump({"id": meta.get("id"),
+                       "dir": os.path.abspath(d) if d else d}, f)
     except OSError as e:
         # Swallowed in silence, this disarms the leftover guard for the whole
         # run with nobody told — and the operator most likely to hit it is the
@@ -3474,6 +3487,36 @@ def _selftest():
             saved["apply_mutant"](lmeta, tmp)
             check("un mutant DU filet reste, lui, revertible",
                   (revert_leftover_mutant(tmp) or {}).get("code"), 0)
+
+            # Le marqueur est relu par un AUTRE processus, dont personne n'a
+            # promis le repertoire courant. `load_mutants` derive `dir` de
+            # gm_dir, donc il est relatif des que GM_WORKSPACE l'est — et le
+            # verify-oracle.sh emis met GM_WORKSPACE=. par defaut. Mesure : pose
+            # sous GM_WORKSPACE=., relu depuis un autre cwd avec le workspace
+            # nomme absolument, « its revert.sh lives outside the net » — la
+            # porte accuse un mutant parfaitement legitime, refuse de juger, et
+            # l'arbre reste mute. Le NOM du marqueur est deja cle sur
+            # os.path.abspath(ws) ; son contenu doit vivre dans le meme repere.
+            here = os.getcwd()
+            os.chdir(tmp)
+            try:
+                abs_ws = os.getcwd()
+                saved["apply_mutant"](
+                    {"id": "leftover-1",
+                     "dir": os.path.join(gm_dir_for("."), "mutants", "m1")}, ".")
+                with open(applied_marker_for("."), encoding="utf-8") as f:
+                    posed = json.load(f)
+            finally:
+                os.chdir(here)
+            check("un ws relatif fige quand meme un chemin absolu dans le marqueur",
+                  os.path.isabs(posed.get("dir") or ""), True)
+            left = revert_leftover_mutant(abs_ws)
+            with open(os.path.join(abs_ws, "f.txt"), encoding="utf-8") as f:
+                relu = f.read()
+            check("pose sous ws relatif, relu d'ailleurs : reverti, pas accuse",
+                  [(left or {}).get("code"), relu,
+                   os.path.isfile(applied_marker_for(abs_ws))],
+                  [0, "original\n", False])
 
             # Et le marqueur est ecrit pour nous seuls : 0644 le laissait
             # reecrire par n'importe qui sur un hote partage.
