@@ -172,7 +172,7 @@ func TestPostconditionRecipe_PreEncodesJSONFields(t *testing.T) {
 
 	expanded := expandBracedEnv(node.Postcondition)
 	got := resolveCommandTemplate(expanded, node.PostcondRefs,
-		e.jsonFieldsAsText(node, map[string]any{"ids": []any{"T-1", "T-2"}}), nil)
+		e.jsonFieldsAsText(node, map[string]any{"ids": []any{"T-1", "T-2"}}), nil, nil)
 
 	if want := `IDS='["T-1","T-2"]'`; !strings.Contains(got, want) {
 		t.Errorf("postcondition resolved to %q, want it to contain %q", got, want)

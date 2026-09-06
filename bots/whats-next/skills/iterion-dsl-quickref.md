@@ -458,9 +458,10 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 Inside a fan-out branch every form resolves as on the trunk;
 `{{outputs.*}}` reads the branch's own view (its upstream trunk
 outputs + what this branch produced + a `fan_out_each` item),
-never a sibling's. `{{outputs.*}}` stays prompt-side: a tool
-`command:`/`script:` resolves `input`/`vars`/`secrets`/`run`
-only — thread an output through an edge `with` mapping instead.
+never a sibling's. A tool `command:`/`script:`/`postcondition:`
+resolves `input`/`vars`/`secrets`/`run` AND `outputs.<node>.<field>`
+(shell-escaped like an input; an output not yet produced keeps its
+`{{…}}` placeholder in a shell body, renders `null` in a script).
 
 `{{...}}` is parsed in every prompt block. Even literal examples
 inside markdown code-fences trigger validation. Avoid example

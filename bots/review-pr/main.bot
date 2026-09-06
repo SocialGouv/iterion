@@ -953,9 +953,8 @@ schema pr_gate_output:
 schema publish_input:
   pr_url: string
   ## reviewed_sha: the worktree HEAD the findings anchor to. Comes in on the
-  ## EDGE: a tool `command:` resolves {{input.X}}, {{vars.X}}, {{secrets.X}}
-  ## and {{run.id}} — an {{outputs.…}} ref written there is NOT one of them and
-  ## stays literal text, so every comparison against it is meaningless.
+  ## EDGE so the publish tool reads it as a typed `{{input.X}}` of its own
+  ## schema, with the same value on every path that reaches it.
   reviewed_sha: string
   ## Same EDGE-injection rule as reviewed_sha above, and for the same
   ## reason: the topology REPORTING needs to say "dual" whenever audit

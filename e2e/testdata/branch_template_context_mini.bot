@@ -7,11 +7,12 @@
 ##   - a `fan_out_each` body (`each_probe` / `each_agent`), once per item;
 ##   - a `fan_out_all` branch (`all_probe` / `all_agent`).
 ##
-## A tool node renders `{{run.*}}` through its `command:`; an agent node
-## renders `{{run.*}}` and `{{outputs.*}}` through its `user:` prompt. The
-## per-item agent additionally reads `{{outputs.spread.it}}`, which exists
-## only in the BRANCH's own outputs view — so it is the one ref that also
-## proves whose view the snapshot was taken from.
+## A tool node renders `{{run.*}}` and `{{outputs.*}}` through its
+## `command:`; an agent node renders the same two through its `user:`
+## prompt. The per-item tool and agent additionally read
+## `{{outputs.spread.it}}`, which exists only in the BRANCH's own outputs
+## view — so it is the one ref that also proves whose view the snapshot was
+## taken from.
 
 schema seed_out:
   value: string
@@ -20,6 +21,13 @@ schema seed_out:
 schema probe_out:
   run_id: string
   elapsed: string
+  seed: string
+
+schema item_probe_out:
+  run_id: string
+  elapsed: string
+  seed: string
+  item: string
 
 schema note:
   text: string
@@ -41,7 +49,7 @@ tool seed:
   output: seed_out
 
 tool trunk_probe:
-  command: `printf '{"run_id":"%s","elapsed":"%s"}' {{run.id}} {{run.elapsed_seconds}}`
+  command: `printf '{"run_id":"%s","elapsed":"%s","seed":"%s"}' {{run.id}} {{run.elapsed_seconds}} {{outputs.seed.value}}`
   output: probe_out
 
 agent trunk_agent:
@@ -60,8 +68,8 @@ router spread:
 ## workspace guard requires; this probe only prints.
 tool each_probe:
   parallel_safe: true
-  command: `printf '{"run_id":"%s","elapsed":"%s"}' {{run.id}} {{run.elapsed_seconds}}`
-  output: probe_out
+  command: `printf '{"run_id":"%s","elapsed":"%s","seed":"%s","item":"%s"}' {{run.id}} {{run.elapsed_seconds}} {{outputs.seed.value}} {{outputs.spread.it}}`
+  output: item_probe_out
 
 agent each_agent:
   backend: "claude_code"
@@ -80,7 +88,7 @@ router fork:
   mode: fan_out_all
 
 tool all_probe:
-  command: `printf '{"run_id":"%s","elapsed":"%s"}' {{run.id}} {{run.elapsed_seconds}}`
+  command: `printf '{"run_id":"%s","elapsed":"%s","seed":"%s"}' {{run.id}} {{run.elapsed_seconds}} {{outputs.seed.value}}`
   output: probe_out
 
 agent all_agent:
