@@ -2298,9 +2298,22 @@ tool sync_harness:
                            % (prior.get("id") or "?", prior.get("dir") or marker))
         try:
             fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except OSError as e:
+            return False, "cannot create the marker %s: %s" % (marker, e.strerror or e)
+        try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
         except OSError as e:
+            # The empty shell a failed write leaves behind records NOTHING — apply.sh
+            # will not run — but the NEXT gate reads it as a corrupt marker: kind
+            # `unusable`, a bail, and every application refused until a human deletes
+            # it. A scratch root full for one instant would wedge the gate for good,
+            # over a mutant that was never applied. The open above is O_EXCL, so this
+            # file is ours to remove and removing it takes no record with it.
+            try:
+                os.unlink(marker)
+            except OSError:
+                pass
             return False, "cannot write the marker %s: %s" % (marker, e.strerror or e)
         return True, ""
 
@@ -3693,6 +3706,27 @@ tool sync_harness:
                       [False, False])
                 check("un revert sale arrete le classement meme sans enregistrement",
                       scoring_must_stop({"revert_clean": False}, tmp), True)
+                # Une ECRITURE qui echoue ne laisse pas de coquille. O_CREAT a
+                # reussi, l'ecriture non (racine scratch pleine) : le fichier vide
+                # reste, et la porte suivante le lit comme un marqueur corrompu —
+                # `unusable`, bail, toute application refusee — pour un mutant qui
+                # n'a JAMAIS ete applique. Une racine pleine un instant coincait la
+                # porte definitivement. RLIMIT_FSIZE=0 tient lieu d'ENOSPC.
+                # Import local : `resource` est POSIX-seulement et seul l'autotest
+                # s'en sert — en tete de fichier il ferait echouer l'IMPORT du
+                # harnais la ou il manque, au lieu d'un seul controle.
+                import resource
+                soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                try:
+                    resource.setrlimit(resource.RLIMIT_FSIZE, (0, hard))
+                    ok_w, why_w = write_applied_marker(tmp, lmeta)
+                finally:
+                    resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+                check("une ecriture de marqueur qui echoue refuse l'application",
+                      [ok_w, "cannot write" in why_w], [False, True])
+                check("et ne laisse aucune coquille derriere elle",
+                      [os.path.exists(applied_marker_for(tmp)), leftover_on_record(tmp)],
+                      [False, False])
                 check("arbre sain, verdicts sains : le revert est annonce propre",
                       overall_revert_clean([{"revert_clean": True}, {}], None, tmp), True)
                 check("un seul verdict sale suffit a le nier",
