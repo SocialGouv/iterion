@@ -24,7 +24,7 @@ vi.mock("@/api/bots", async () => {
   return { ...actual, listBots: vi.fn(async () => []) };
 });
 
-import { ApiError } from "@/api/client";
+import { apiErrorFrom } from "@/api/client";
 import * as forgeApi from "@/api/forgeConnections";
 import IntegrationsTab from "../IntegrationsTab";
 
@@ -136,12 +136,13 @@ describe("ConnectionCard — iterion-bot avatar", () => {
   it("refetches AND keeps the reason when the apply fails", async () => {
     vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: "bot" })]);
     vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
-      new ApiError(502, "gitlab: avatar rejected (HTTP 400): boom"),
+      apiErrorFrom(502, { message: "gitlab: avatar rejected (HTTP 400): boom" }),
     );
     renderTab();
     const before = vi.mocked(forgeApi.listForgeConnections).mock.calls.length;
     fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
-    await screen.findByText(/avatar rejected \(HTTP 400\): boom/);
+    await screen.findByText(/^gitlab: avatar rejected \(HTTP 400\): boom$/);
+    expect(screen.queryByText(/API error/)).toBeNull();
     await waitFor(() =>
       expect(vi.mocked(forgeApi.listForgeConnections).mock.calls.length).toBeGreaterThan(before),
     );
@@ -150,7 +151,10 @@ describe("ConnectionCard — iterion-bot avatar", () => {
   it("tries an account of unknown kind as-is, and vouches only on a 409", async () => {
     vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: undefined })]);
     vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
-      new ApiError(409, "gitlab.example.com does not flag @group_1_bot_x as a bot account"),
+      apiErrorFrom(409, {
+        message:
+          "gitlab.example.com does not flag @group_1_bot_x as a bot account; if it is a dedicated account for iterion (not a person's), apply with force",
+      }),
     );
     renderTab();
     fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
@@ -167,15 +171,19 @@ describe("ConnectionCard — iterion-bot avatar", () => {
   it("offers the vouch when the forge would not describe the account, naming the reason", async () => {
     vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: undefined })]);
     vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
-      new ApiError(
-        409,
-        "gitlab.example.com would not say whether @group_1_bot_x is a bot account (gitlab: HTTP 403); if it is a dedicated account for iterion (not a person's), apply with force",
-      ),
+      apiErrorFrom(409, {
+        message:
+          "gitlab.example.com would not say whether @group_1_bot_x is a bot account (forge: insufficient scope); if it is a dedicated account for iterion (not a person's), apply with force",
+      }),
     );
     renderTab();
     fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
-    // The dialog carries the forge's own answer, and is the forced retry itself.
-    await screen.findByText(/would not say whether @group_1_bot_x is a bot account \(gitlab: HTTP 403\)\./);
+    // The dialog carries the forge's own answer — without the transport's
+    // "API error 409:" prefix or the CLI wording — and is the forced retry.
+    await screen.findByText(
+      /^gitlab.example.com would not say whether @group_1_bot_x is a bot account \(forge: insufficient scope\)\./,
+    );
+    expect(screen.queryByText(/API error/)).toBeNull();
     expect(screen.queryByText(/apply with force/)).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Apply the avatar" }));
     await waitFor(() =>
