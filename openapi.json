@@ -2481,6 +2481,12 @@
       },
       "botSourceMetaView": {
         "properties": {
+          "baked_version": {
+            "type": "string"
+          },
+          "bundle_version": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -2502,6 +2508,9 @@
           },
           "origin": {
             "type": "string"
+          },
+          "shadows_newer_bake": {
+            "type": "boolean"
           },
           "slug": {
             "type": "string"

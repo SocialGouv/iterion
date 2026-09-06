@@ -8,6 +8,78 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-05 — what a Revi review COSTS: 33 production reviews, and the model that fits them
+- Status: validated (measurement, not a dogfood run — 33 organic
+  webhook-launched reviews on this repo, 11:57Z → 16:42Z, no run launched
+  for the purpose)
+- Versions: bot **0.7.0 throughout** · iterion `d57851fb` then `2defa1a0`
+  (v3.103.0 → v3.104.0). The dataset is homogeneous *because* of the
+  override described in the entry below: 0.8.0's tiers never served during
+  the window, so no bot-version change straddles these numbers.
+- Method: default guard-shaped run — `reviewer_claude` (opus-5, effort
+  high), `converge` on sonnet, `severity_threshold: medium`,
+  `max_cost_usd: 12`. Cost read from each run's checkpoint (the run's
+  `budget_cost_usd` field reads 0); diff sizes from `gh pr view --json
+  additions`.
+
+### The model
+
+Not linear. **It saturates.**
+
+| added lines | rule | evidence |
+|---|---|---|
+| < ~500 | `$2.24 + $0.00072 × added`, ±15% on a SHORT pass (1–2 findings, <8 min) | #754 −8.6%, #756 −13.8%, #757 +4.1% |
+| ~500–1500 | same rule, +6% to +29% | #758 +7.6% / +5.9%, #760 +29% |
+| > ~1500 | **predict $3.5–$6.0 and ignore size** | see below |
+
+Above ~1500 lines the line count stops carrying information — it does not
+even order the plateaus:
+
+| PR | added | hand-written | observed |
+|---|---|---|---|
+| #764 | +1598 | — | $4.81, $4.81, $4.28, $5.36 |
+| #761 | +2738 | — | $4.47, $5.82 |
+| #745 | +10078 | 4804 | $3.96, $3.99, $4.01 |
+
+**The largest PR is the cheapest.** The cause is the 0.7.0 frugality
+contract working as designed: `review_system` tells the reviewer to read
+`git diff --stat` first, prioritise the risky hunks and stop sweeping, so a
+10k-line diff becomes a triage rather than a linear read. The findings
+support that reading — all four on #745 were `medium` and all four sat in
+the files carrying the new logic (`board_project.go` ×2,
+`board_binding_store.go`, `projects_app.go`).
+
+The floor is ~**$1.95–2.00** (#766 at 4.4 min), and `converge` is the most
+stable quantity in the whole dataset: **$0.61–$0.71** across all 33 runs.
+
+### Two claims of mine that did NOT survive more data
+
+- *"Cost is a stable property of a given PR"* — I measured #764 twice at
+  0.12% apart and said so publicly. Two further passes landed at $4.28 and
+  $5.36: the real spread is **25%**, and the 0.12% was a two-point
+  coincidence. Keep **±30%** as the per-PR predictor's band.
+- *"Excellent reproducibility"* — withdrawn outright. **There is no
+  same-sha pair anywhere in this dataset**; every repeat straddles at least
+  one commit (#758 gained `3f27d71c5`, #745 four commits, #761
+  `2c9c06385`). Nothing here measures run-to-run variance on identical
+  input. Measuring it needs two reviews launched on the same head.
+
+### Open question — do NOT close it with cost
+
+Does frugality cost *coverage* on very large PRs? Cost alone cannot answer
+it: absence of findings is not evidence of absence of defects. The
+experiment that would answer it: re-review #745 with the frugality clause
+disabled and diff the two finding sets.
+
+### Lessons for next run
+- Read cost from the checkpoint, not `budget_cost_usd` (which reads 0).
+- Predict from a prior review of the SAME PR when one exists — it beats any
+  function of the diff, but only to ±30%.
+- Before attributing a cost shift to a bot change, verify which bundle
+  actually served (`GET /api/admin/bots`, and look for the version-specific
+  nodes in the run's checkpoint outputs). That check is what turned this
+  window's apparent version straddle into a homogeneous dataset.
+
 ## 2026-09-05 — review tiers shipped (0.8.0, SocialGouv/iterion#685) — design note, live measurement pending
 - Status: implemented + covered by DSL-level tests (stub executor + expr-level
   unit tests); **not yet dogfooded live** — no LLM credentials in this
@@ -17,8 +89,22 @@ commit-status gate. Never edits or commits. See
   baseline documented in the 2026-09-03/04 entry below.
 - Versions: bot 0.7.0 → 0.8.0 · iterion `c6f8bac0f` (v3.102.1) at write time
 - Landed: SocialGouv/iterion#742 (merged 2026-09-05 11:54Z, in v3.102.6);
-  prod runners carry it since 12:25Z (`edd5b9dcf`). The next real PR review
-  on this repo is the first tier measurement — record it here.
+  prod runners carry the ENGINE since 12:25Z (`edd5b9dcf`).
+- **Correction (2026-09-06 16:50Z): the tiers did not serve a single
+  production review for the first 29 hours.** Carrying the engine is not
+  carrying the bot. A platform bot override for `review-pr`, pushed
+  2026-09-04 06:52Z for the 0.7.0 cost pass, still held the 0.7.0 bundle —
+  and a platform override outranks the baked catalog at every launch
+  surface, by design. Measured: prod review graphs on both 09-05 and 09-06
+  ran `diff_precheck → topology → reviewer_claude → merge_reviews →
+  converge → pr_gate` with **no `tier_expand` node**, and
+  `GET /api/admin/bots/review-pr` returned manifest version `0.7.0` whose
+  `main.bot` contained `TOKEN FRUGALITY` and `supervisor pacer` but none of
+  `tier_expand` / `review_tier` / `reviewer_claude_glance`. The override was
+  deleted at 17:00Z after verifying the repo's 0.8.0 is a strict superset
+  (it carries all three 0.7.0 markers plus #758 and #816); the effective
+  bundle then read `version 0.8.0` from `/opt/iterion/bots/review-pr`. The
+  first real tier measurement is still owed — record it here.
 - What shipped: `review_tier` (glance/guard/audit), a deterministic
   `tier_expand` compute node resolving severity_threshold/max_findings/
   post_to_board/effective_review_mode from sentinel-defaulted vars (any

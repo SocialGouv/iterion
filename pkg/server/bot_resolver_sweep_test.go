@@ -25,6 +25,11 @@ var resolverSweepAllowed = map[string]string{
 	"server_dsl.go":           "studio Home display walker over FS load names (cosmetic; /bots gallery is the covered surface)",
 	"catalog_regen.go":        "regenerates the FS catalog skill from the FS manifests by design",
 	"config_shares_routes.go": "botManifest's baked-FS FALLBACK, reached after platformBotManifest",
+	// The inversion the rest of this allowlist guards against IS this file's
+	// job: it reads the baked bundle PAST the override, on purpose, to report
+	// an override that shadows a newer bake. Routing it through the authority
+	// would return the override and always compare a version with itself.
+	"bot_override_staleness.go": "reads the baked catalog deliberately, to compare it AGAINST the override",
 }
 
 func TestBotResolutionSweep_NoRawRegistryReads(t *testing.T) {

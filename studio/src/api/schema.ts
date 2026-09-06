@@ -6169,6 +6169,8 @@ export interface components {
             from: string;
         };
         botSourceMetaView: {
+            baked_version?: string;
+            bundle_version?: string;
             /** Format: date-time */
             created_at: string;
             created_by?: string;
@@ -6178,6 +6180,7 @@ export interface components {
             };
             id: string;
             origin?: string;
+            shadows_newer_bake?: boolean;
             slug: string;
             tenant_id: string;
             /** Format: date-time */

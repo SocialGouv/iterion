@@ -86,16 +86,42 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 	views := make([]botSourceMetaView, 0, len(list))
 	for _, b := range list {
 		digest := botsource.Digest(b.Files)
+		bundleVersion := ""
+		if m := b.Manifest(); m != nil {
+			bundleVersion = strings.TrimSpace(m.Version)
+		}
+		baked, shadowed := s.overrideShadowsNewerBake(b.Slug, bundleVersion)
 		b.Files = nil
-		views = append(views, botSourceMetaView{BotSource: b, Digest: digest})
+		views = append(views, botSourceMetaView{
+			BotSource:        b,
+			Digest:           digest,
+			BundleVersion:    bundleVersion,
+			BakedVersion:     baked,
+			ShadowsNewerBake: shadowed,
+		})
 	}
 	s.writeJSONFor(w, r, map[string]any{"bot_sources": views})
 }
 
 // botSourceMetaView is one list row: the metadata plus the content digest.
+//
+// It also answers the question this inventory exists to answer — "what is
+// actually serving?" — because an override outranks the baked catalog
+// forever, so a row that looks current can be holding back a newer bundle the
+// deployment already ships. BundleVersion/BakedVersion are the two sides;
+// ShadowsNewerBake is the comparison, omitted unless true so a healthy
+// inventory stays quiet.
 type botSourceMetaView struct {
 	botsource.BotSource
 	Digest string `json:"digest,omitempty"`
+	// BundleVersion is the stored manifest's version ("" when it carries none).
+	BundleVersion string `json:"bundle_version,omitempty"`
+	// BakedVersion is what THIS image ships for the same slug ("" when the
+	// slug is stored-only, which shadows nothing).
+	BakedVersion string `json:"baked_version,omitempty"`
+	// ShadowsNewerBake reports a stored bundle strictly older than the baked
+	// one. Never an error: pinning an older bundle is a legitimate choice.
+	ShadowsNewerBake bool `json:"shadows_newer_bake,omitempty"`
 }
 
 func (s *Server) handleGetBotSource(w http.ResponseWriter, r *http.Request) {
