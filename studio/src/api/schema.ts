@@ -5758,6 +5758,7 @@ export interface components {
             state: string;
             /** Format: date-time */
             state_at?: string;
+            state_reason?: string;
             title: string;
             /** Format: date-time */
             updated_at: string;

@@ -1121,6 +1121,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "state_reason": {
+            "type": "string"
+          },
           "title": {
             "type": "string"
           },
