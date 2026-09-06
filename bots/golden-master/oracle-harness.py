@@ -2143,19 +2143,65 @@ def read_applied_marker(ws):
     return meta, ""
 
 
+def dirty_fingerprint(ws, path):
+    """What a dirty path's CONTENT is, so a later sweep can tell a mutant's
+    edit on an already-dirty path from the operator's untouched work: the
+    sha1 of a file; for a directory (`?? dir/`, an untracked tree collapsed
+    to one line) the sha1 of its recursive listing of (path, size, mtime) —
+    a file a mutant creates inside moves it, an untouched build tree does
+    not; "?" when the path cannot be read or the listing is unreasonably
+    large: undecidable, which is not "unchanged"."""
+    full = os.path.join(ws, path)
+    try:
+        if os.path.isdir(full) and not os.path.islink(full):
+            h, n = hashlib.sha1(), 0
+            for root, dirs, files in os.walk(full):
+                dirs.sort()
+                for name in sorted(files):
+                    n += 1
+                    if n > 20000:
+                        return "?"
+                    fp = os.path.join(root, name)
+                    st = os.lstat(fp)
+                    h.update(("%s\0%d\0%d\n" % (os.path.relpath(fp, full), st.st_size, st.st_mtime_ns)).encode("utf-8", "replace"))
+            return h.hexdigest()
+        with open(full, "rb") as f:
+            return hashlib.sha1(f.read()).hexdigest()
+    except OSError:
+        return "?"
+
+
 def dirty_paths_before_apply(ws):
     """The paths `git status --porcelain` lists right before a mutant goes
-    down, recorded in the marker so a later sweep can tell the mutant's
-    residue from work that was already uncommitted (an operator's, in record
-    mode). None when git did not answer — unknown, which is not "clean".
-    Bounded and guarded like every git call that runs before the report, and
-    without the optional index refresh: a status that rewrites the index is a
-    write into the tree it is only meant to read (under a full disk or a size
-    limit it left a corrupt index behind, and every later checkout failed)."""
+    down, each with its content fingerprint ("<sha1>:<path>"), recorded in
+    the marker so a later sweep can tell the mutant's residue from work that
+    was already uncommitted (an operator's, in record mode) — by content,
+    not by name: a mutant editing a file the operator had already edited is
+    residue too. None when git did not answer — unknown, which is not
+    "clean". Bounded and guarded like every git call that runs before the
+    report, and without the optional index refresh: a status that rewrites
+    the index is a write into the tree it is only meant to read (under a
+    full disk or a size limit it left a corrupt index behind, and every
+    later checkout failed)."""
     code, out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
     if code != 0:
         return None
-    return sorted({l[3:] for l in (out or "").splitlines() if l.strip()})
+    paths = sorted({l[3:] for l in (out or "").splitlines() if l.strip()})
+    return ["%s:%s" % (dirty_fingerprint(ws, q), q) for q in paths]
+
+
+def split_dirty_record(entries):
+    """{path: fingerprint} from a marker's dirty_before; an entry without a
+    fingerprint (a marker written before fingerprints were recorded) maps
+    to "?": its content then is unknown, so a change cannot be ruled out."""
+    rec = {}
+    for e in entries or []:
+        fp, sep, q = e.partition(":")
+        if sep and q:
+            rec[q] = fp
+        else:
+            rec[e] = "?"
+    return rec
 
 
 def write_applied_marker(ws, meta):
@@ -2382,12 +2428,22 @@ def revert_leftover_mutant(ws, gm_dir=None):
             after = sorted({l[3:] for l in st_out.splitlines() if l.strip()})
             if before is not None:
                 # What is still modified now and was NOT when the mutant went
-                # down is the mutant's residue: revert.sh's exit 0 is the
-                # script's word, this is the tree's. An operator's own
-                # uncommitted work was there before and is not residue —
-                # record mode is where the difference matters, since nothing
-                # else stops references from being sealed over a leftover.
-                residue = sorted(set(after) - set(before))
+                # down is the mutant's residue — and so is a path that was
+                # already dirty but whose CONTENT moved since: revert.sh's
+                # exit 0 is the script's word, this is the tree's. An
+                # operator's own uncommitted work, untouched, is not residue
+                # — record mode is where the difference matters, since
+                # nothing else stops references from being sealed over a
+                # leftover. A path whose earlier content is unknown ("?")
+                # cannot be cleared: undecidable.
+                rec = split_dirty_record(before)
+                for q in after:
+                    if q not in rec:
+                        residue.append(q)
+                    elif rec[q] == "?" or dirty_fingerprint(ws, q) != rec[q]:
+                        residue.append(q)
+                        if rec[q] == "?":
+                            residue_undecided = True
             elif after:
                 # No record of what was dirty before the mutant went down
                 # (git did not answer then, or the marker predates the
@@ -3553,7 +3609,12 @@ def _selftest():
             sub("git", "config", "user.name", "t")
             with open(os.path.join(tmp, "f.txt"), "w", encoding="utf-8") as f:
                 f.write("original\n")
-            sub("git", "add", "f.txt")
+            # Les repertoires de mutants de ce test vivent DANS l'arbre, non suivis :
+            # ignores des le depart, sinon leur listing (que le test reecrit) lit
+            # comme un chemin modifie.
+            with open(os.path.join(tmp, ".gitignore"), "w", encoding="utf-8") as f:
+                f.write("m1/\nm2/\n")
+            sub("git", "add", "f.txt", ".gitignore")
             sub("git", "commit", "-qm", "seed")
             mdir = os.path.join(tmp, "m1")
             os.makedirs(mdir)
@@ -3939,7 +4000,7 @@ def _selftest():
             apply_mutant(lmeta, tmp)
             db = (read_applied_marker(tmp)[0] or {}).get("dirty_before")
             check("le marqueur enregistre ce qui etait deja modifie avant l'application (pas f.txt)",
-                  [isinstance(db, list), "f.txt" in (db or [])], [True, False])
+                  [isinstance(db, list), any(e.endswith(":f.txt") for e in (db or []))], [True, False])
             left = revert_leftover_mutant(tmp)
             check("un revert.sh a 0 qui ne restaure pas laisse un residu nomme, marqueur garde",
                   [(left or {}).get("code"), (left or {}).get("residue"), (left or {}).get("kept"),
@@ -3955,8 +4016,9 @@ def _selftest():
                 f.write("operator work\n")
             scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
             apply_mutant(lmeta, tmp)
-            check("le travail deja non committe est enregistre comme tel",
-                  "g.txt" in ((read_applied_marker(tmp)[0] or {}).get("dirty_before") or []), True)
+            check("le travail deja non committe est enregistre comme tel, avec son empreinte",
+                  any(e.endswith(":g.txt") and len(e.split(":")[0]) == 40
+                      for e in ((read_applied_marker(tmp)[0] or {}).get("dirty_before") or [])), True)
             left = revert_leftover_mutant(tmp)
             check("un revert propre au milieu du travail de l'operateur : pas de residu, note, marqueur efface",
                   [(left or {}).get("residue"), "g.txt" in ((left or {}).get("dirty") or ""),
@@ -3966,12 +4028,6 @@ def _selftest():
             # Un marqueur SANS dirty_before (git muet a l'application, ou harnais
             # d'avant) et un arbre encore modifie apres le revert : INDECIDABLE,
             # donc pas propre — marqueur garde, porte arretee. Arbre propre : reverti.
-            # Baseline VRAIMENT propre d'abord : les repertoires de mutants de ce
-            # test sont des fichiers non suivis, donc « modifies » pour git.
-            with open(os.path.join(tmp, ".gitignore"), "w", encoding="utf-8") as f:
-                f.write("m1/\nm2/\n")
-            sub("git", "add", ".gitignore")
-            sub("git", "commit", "-qm", "ignore the mutant dirs")
             scripts("printf 'mutant\\n' >> f.txt", "true")
             apply_mutant(lmeta, tmp)
             mpath = applied_marker_for(tmp)
@@ -3994,8 +4050,6 @@ def _selftest():
                   [[], "reverted", False])
             # Un `git status` qui ne repond pas apres le revert : inconnu, pas propre —
             # marqueur garde, porte arretee (doublure de run() sur cette commande seule).
-            os.remove(os.path.join(tmp, ".gitignore"))
-            sub("git", "checkout", "--", ".gitignore")
             scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
             apply_mutant(lmeta, tmp)
             real_run = g["run"]
@@ -4015,6 +4069,59 @@ def _selftest():
                    leftover_disposition(left or {})[0]],
                   [True, True, True, True, "still_mutated"])
             os.remove(applied_marker_for(tmp))
+            # Le CONTENU, pas le nom : un chemin deja modifie par l'operateur ET
+            # edite par le mutant est un residu si son contenu a bouge ; le meme
+            # chemin intact ne l'est pas ; un fichier cree par le mutant dans un
+            # repertoire deja non suivi bouge la liste du repertoire.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' >> f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            db = (read_applied_marker(tmp)[0] or {}).get("dirty_before") or []
+            check("dirty_before porte une empreinte par chemin",
+                  all(":" in e and len(e.split(":")[0]) == 40 for e in db) and any(e.endswith(":f.txt") for e in db), True)
+            left = revert_leftover_mutant(tmp)
+            check("un mutant sur un chemin deja modifie laisse un residu par CONTENU : still_mutated, marqueur garde",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [["f.txt"], "still_mutated", True])
+            os.remove(applied_marker_for(tmp))
+            scripts("printf 'mutant\\n' >> g.txt", "rm -f g.txt")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("le travail intact de l'operateur sur f.txt n'est pas un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [[], "reverted", False])
+            sub("git", "checkout", "--", "f.txt")
+            os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
+            with open(os.path.join(tmp, "build", "a.o"), "w", encoding="utf-8") as f:
+                f.write("artefact\n")
+            scripts("printf 'mutant\\n' > build/injected.txt", "true")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un fichier cree par le mutant dans un repertoire deja non suivi est un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [["build/"], "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            os.remove(os.path.join(tmp, "build", "injected.txt"))
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un repertoire non suivi intact n'est pas un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            shutil.rmtree(os.path.join(tmp, "build"), ignore_errors=True)
+            # Une entree sans empreinte (marqueur d'avant) sur un chemin encore modifie : indecidable.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' >> f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            mpath = applied_marker_for(tmp)
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"id": "leftover-1", "dir": mdir, "dirty_before": ["f.txt"]}, f)
+            left = revert_leftover_mutant(tmp)
+            check("une entree sans empreinte sur un chemin encore modifie est indecidable",
+                  [(left or {}).get("residue"), (left or {}).get("residue_undecided"), leftover_disposition(left or {})[0]],
+                  [["f.txt"], True, "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            sub("git", "checkout", "--", "f.txt")
             # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
             mpath = applied_marker_for(tmp)
             os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
