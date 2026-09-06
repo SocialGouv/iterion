@@ -2197,21 +2197,41 @@ tool sync_harness:
         """Where the harness notes the mutant it has applied and not yet reverted.
 
         Outside the tree (the tree is what is judged), keyed on the workspace's
-        absolute path (sibling worktrees share a basename), in the same temp root
-        as the sealed held-out set.
+        absolute path (sibling worktrees share a basename), under the same
+        scratch root as the sealed held-out set (GM_SCRATCH, else the system
+        temp dir) — one rule, so a root that makes the sealed pile survive makes
+        the marker survive too. In a private directory of its own: the marker
+        names a script the next gate will execute.
         """
         key = hashlib.sha256(os.path.abspath(ws).encode("utf-8")).hexdigest()[:12]
-        return os.path.join(tempfile.gettempdir(), "gm-applied-%s.json" % key)
+        root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+        return os.path.join(root, "gm-applied", "gm-applied-%s.json" % key)
+
+
+    def write_applied_marker(ws, meta):
+        """Record the mutant about to be applied. Private directory, exclusive
+        create, no symlink following: a marker is an instruction to run a script,
+        and a shared temp root must not let anyone else write one."""
+        marker = applied_marker_for(ws)
+        d = os.path.dirname(marker)
+        try:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
+        except OSError:
+            pass
 
 
     def apply_mutant(meta, ws):
         # The marker goes down BEFORE apply.sh runs: an interruption between the
         # two leaves a tree that is mutated and a note that says by what.
-        try:
-            with open(applied_marker_for(ws), "w", encoding="utf-8") as f:
-                json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
-        except OSError:
-            pass
+        write_applied_marker(ws, meta)
         return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
@@ -2225,6 +2245,14 @@ tool sync_harness:
         return code, out
 
 
+    def _under(path, root):
+        """True when path (realpath'd) sits under root (realpath'd)."""
+        if not root:
+            return False
+        p, r = os.path.realpath(path), os.path.realpath(root)
+        return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
     def revert_leftover_mutant(ws):
         """Revert the mutant a previous, interrupted run left applied — if any.
 
@@ -2233,8 +2261,19 @@ tool sync_harness:
         judge a mutated program and call it the lot's. Measured: a tool node
         retried on the same tree after its exec stream broke — the build gate
         went red on a file the mutant had edited, and the oracle reported that
-        file as "not committed". Returns None when there is nothing to revert,
-        else what was reverted and how revert.sh exited.
+        file as "not committed".
+
+        Returns None when there is nothing to revert. Otherwise a dict with the
+        mutant's id and dir, `code` (revert.sh's exit; None when the script is
+        gone), and `marker`. The marker is dropped only when the revert
+        demonstrably succeeded — a leftover the harness could not revert stays
+        recorded, so the next gate reports it again instead of forgetting it;
+        an operator who reverts by hand clears it by deleting the marker.
+
+        A marker whose directory is not under the workspace or the scratch root
+        is REFUSED, dropped and reported without executing anything: the marker
+        is an instruction to run a script, and only the harness's own mutants
+        may write it.
         """
         marker = applied_marker_for(ws)
         if not os.path.isfile(marker):
@@ -2244,16 +2283,51 @@ tool sync_harness:
                 meta = json.load(f)
         except (OSError, ValueError):
             meta = {}
-        script = os.path.join(meta.get("dir") or "", "revert.sh")
-        if meta.get("dir") and os.path.isfile(script):
+        mdir = meta.get("dir") or ""
+        root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+        if not mdir or not (_under(mdir, ws) or _under(mdir, root)):
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
+            return {"id": meta.get("id"), "dir": mdir, "code": None, "out": "",
+                    "marker": marker, "refused": True}
+        script = os.path.join(mdir, "revert.sh")
+        if os.path.isfile(script):
             code, out = run_script(script, ws)
         else:
-            code, out = None, "the mutant's revert.sh is no longer there"
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
-        return {"id": meta.get("id"), "dir": meta.get("dir"), "code": code, "out": (out or "")[-300:]}
+            code, out = None, "the mutant's revert.sh is no longer there: %s" % script
+        if code == 0:
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
+        return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
+                "marker": marker, "refused": False}
+
+
+    def leftover_disposition(left):
+        """What the gate says about a leftover, and whether it may proceed.
+
+        Returns (kind, text): "reverted" — the tree is HEAD again, a note;
+        "refused" — a foreign marker was dropped, a note; "still_mutated" — the
+        revert failed or its script is gone, the tree is NOT HEAD, the gate must
+        refuse rather than judge a program nobody wrote.
+        """
+        if left.get("refused"):
+            return "refused", (
+                "a stale application marker named a directory outside this workspace and "
+                "its scratch root (%s): dropped, nothing executed." % (left.get("dir") or "?"))
+        if left.get("code") == 0:
+            return "reverted", (
+                "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
+                "(revert.sh exit 0). The tree below is HEAD again; the interrupted attempt's "
+                "verdict, if any, judged a mutated program." % left.get("id"))
+        how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
+        return "still_mutated", (
+            "a mutant left APPLIED by an interrupted gate could NOT be reverted at start: %s (%s). "
+            "The tree is still mutated and will not be judged. Revert by hand (git checkout -- "
+            "<the mutant's paths>), then delete the marker %s." % (left.get("id"), how, left.get("marker")))
 
 
     # ─── Comparison ─────────────────────────────────────────────────────────────
@@ -2330,6 +2404,11 @@ tool sync_harness:
 
         code, out = apply_mutant(meta, ws)
         if code != 0:
+            # A failed apply may have half-edited the tree, and the marker is
+            # down: revert now, within this run, so neither outlives it — a
+            # marker left here would have the NEXT gate run this revert.sh over
+            # whatever the operator wrote since.
+            revert_mutant(meta, ws)
             return dict(base, valid=False, detected=False,
                         reason="apply.sh exited %s: %s" % (code, out[-300:])), "failed"
 
@@ -3293,9 +3372,15 @@ tool sync_harness:
                 if v is not None:
                     os.environ[k] = v
             # ── Un mutant laisse APPLIQUE par une porte interrompue est reverti au
-            # demarrage de la suivante. Les VRAIS apply/revert, sur un vrai depot :
-            # c'est le marqueur et le nettoyage qui sont juges, pas leur doublure.
+            # demarrage de la suivante. Les VRAIS apply/revert et empreintes, sur un
+            # vrai depot : c'est le marqueur et le nettoyage qui sont juges, pas leur
+            # doublure.
+            g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
+                     tree_fingerprint=saved["tree_fingerprint"], data_fingerprint=saved["data_fingerprint"])
             tmp = tempfile.mkdtemp(prefix="gm-leftover-")
+            outside = tempfile.mkdtemp(prefix="gm-outside-")
+            saved_scratch = os.environ.get("GM_SCRATCH")
+            os.environ["GM_SCRATCH"] = tempfile.mkdtemp(prefix="gm-scratch-")
             try:
                 def sub(*a):
                     subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
@@ -3308,30 +3393,83 @@ tool sync_harness:
                 sub("git", "commit", "-qm", "seed")
                 mdir = os.path.join(tmp, "m1")
                 os.makedirs(mdir)
-                with open(os.path.join(mdir, "apply.sh"), "w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\n")
-                with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+
+                def scripts(apply_body, revert_body):
+                    with open(os.path.join(mdir, "apply.sh"), "w", encoding="utf-8") as f:
+                        f.write("#!/bin/sh\n" + apply_body + "\n")
+                    with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
+                        f.write("#!/bin/sh\n" + revert_body + "\n")
+
+                def tree():
+                    with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
+                        return f.read()
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
                 lmeta = {"id": "leftover-1", "dir": mdir}
-                code, _out = saved["apply_mutant"](lmeta, tmp)
+                code, _out = apply_mutant(lmeta, tmp)
                 check("apply.sh tourne", code, 0)
                 check("le marqueur d'application est pose", os.path.isfile(applied_marker_for(tmp)), True)
+                check("le marqueur vit sous GM_SCRATCH, comme la pile scellee",
+                      applied_marker_for(tmp).startswith(os.environ["GM_SCRATCH"]), True)
                 # Interruption ici : pas de revert. La porte suivante nettoie.
                 left = revert_leftover_mutant(tmp)
                 check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
-                with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
-                    check("l'arbre est revenu a HEAD", f.read(), "original\n")
-                check("le marqueur est efface", os.path.isfile(applied_marker_for(tmp)), False)
+                check("l'arbre est revenu a HEAD", tree(), "original\n")
+                check("le marqueur est efface apres un revert propre", os.path.isfile(applied_marker_for(tmp)), False)
                 check("rien a revertir la seconde fois", revert_leftover_mutant(tmp), None)
-                saved["apply_mutant"](lmeta, tmp)
-                saved["revert_mutant"](lmeta, tmp)
+                check("disposition d'un revert propre", leftover_disposition(left)[0], "reverted")
+                # Le chemin nominal efface aussi le marqueur.
+                apply_mutant(lmeta, tmp)
+                revert_mutant(lmeta, tmp)
                 check("le revert nominal efface le marqueur", os.path.isfile(applied_marker_for(tmp)), False)
-                saved["apply_mutant"](lmeta, tmp)
-                shutil.rmtree(mdir)
+                # Un revert qui ECHOUE garde le marqueur : la porte suivante le redira.
+                scripts("printf 'mutant\\n' >> f.txt", "exit 3")
+                apply_mutant(lmeta, tmp)
                 left = revert_leftover_mutant(tmp)
-                check("un mutant dont revert.sh a disparu est signale, pas tu", (left or {}).get("code"), None)
+                check("un revert en echec est signale avec son code", (left or {}).get("code"), 3)
+                check("le marqueur reste tant que rien n'est reverti", os.path.isfile(applied_marker_for(tmp)), True)
+                check("disposition d'un revert en echec : l'arbre est encore mute",
+                      leftover_disposition(left)[0], "still_mutated")
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                left = revert_leftover_mutant(tmp)
+                check("le revert repare nettoie et efface", [tree(), os.path.isfile(applied_marker_for(tmp))],
+                      ["original\n", False])
+                # Un revert.sh disparu est signale, pas tu — et le marqueur reste.
+                apply_mutant(lmeta, tmp)
+                os.remove(os.path.join(mdir, "revert.sh"))
+                left = revert_leftover_mutant(tmp)
+                check("un mutant dont revert.sh a disparu est signale, pas tu",
+                      [(left or {}).get("id"), left is not None and left.get("code") is None,
+                       "revert.sh" in ((left or {}).get("out") or "")],
+                      ["leftover-1", True, True])
+                check("son marqueur reste", os.path.isfile(applied_marker_for(tmp)), True)
+                check("disposition d'un revert.sh disparu", leftover_disposition(left)[0], "still_mutated")
+                os.remove(applied_marker_for(tmp))
+                sub("git", "checkout", "--", "f.txt")
+                # Une application qui ECHOUE nettoie l'arbre et le marqueur dans son propre run.
+                scripts("printf 'half\\n' >> f.txt; exit 1", "git checkout -- f.txt")
+                verdict, state = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+                check("une application en echec est un mutant 'failed'", state, "failed")
+                check("elle a reverti l'arbre", tree(), "original\n")
+                check("et efface son marqueur", os.path.isfile(applied_marker_for(tmp)), False)
+                # Un marqueur qui nomme un repertoire etranger est refuse, rien n'est execute.
+                canary = os.path.join(outside, "ran")
+                os.makedirs(os.path.join(outside, "evil"))
+                with open(os.path.join(outside, "evil", "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
+                write_applied_marker(tmp, {"id": "evil", "dir": os.path.join(outside, "evil")})
+                left = revert_leftover_mutant(tmp)
+                check("un marqueur etranger est refuse", (left or {}).get("refused"), True)
+                check("rien n'a ete execute", os.path.exists(canary), False)
+                check("le marqueur etranger est jete", os.path.isfile(applied_marker_for(tmp)), False)
+                check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
+                shutil.rmtree(outside, ignore_errors=True)
+                shutil.rmtree(os.environ["GM_SCRATCH"], ignore_errors=True)
+                if saved_scratch is None:
+                    os.environ.pop("GM_SCRATCH", None)
+                else:
+                    os.environ["GM_SCRATCH"] = saved_scratch
         finally:
             g.update(saved)
 
@@ -3491,10 +3629,10 @@ tool sync_harness:
         # program nobody wrote.
         left = revert_leftover_mutant(ws)
         if left:
-            note(report, (
-                "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
-                "(revert.sh exit %s). The tree below is HEAD again; the interrupted attempt's "
-                "verdict, if any, judged a mutated program." % (left.get("id"), left.get("code"))))
+            kind, text = leftover_disposition(left)
+            if kind == "still_mutated":
+                bail(text)
+            note(report, text)
 
         if mode != "record":
             dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
