@@ -408,6 +408,50 @@ kubectl -n iterion get deploy iterion iterion-runner \
 A scheduled sync-liveness probe (config-repo HEAD vs the app's
 `status.sync.revision` age) is tracked in SocialGouv/iterion#733.
 
+### Bumping the chart dependency (a template change reaches a deployment)
+
+A deployment does not follow the chart: infra-apps pins the `iterion` OCI
+dependency to an exact version in `iterion/Chart.yaml`, so a template change
+released on main (a new values key, a new env passthrough) is inert until that
+pin moves. The chart `version` tracks the binary's `appVersion`, so the bump
+is "to the release that carries the change", never "to latest" — and it drags
+every template change released in between. The procedure that keeps that
+honest, as run on 2026-09-06 for the `priorityClassName` keys (chart 3.102.0
+→ 3.112.2):
+
+```bash
+# 1. What changed in the templates between the pinned version and the target?
+git log --oneline v3.102.0..origin/main -- charts/iterion/
+git diff --stat v3.102.0 origin/main -- charts/iterion/ ':!charts/iterion/Chart.yaml'
+
+# 2. Render the umbrella chart BEFORE touching anything (deps as committed).
+cd /path/to/infra-apps
+helm template iterion ./iterion -n iterion -f iterion/values.yaml -f iterion/values.ovh-prod.yaml > /tmp/render-before.yaml
+
+# 3. Bump the pin + refresh the vendored archive and Chart.lock.
+#    (edit iterion/Chart.yaml: dependencies[iterion].version, with a dated
+#     comment naming what the bump brings, in the file's existing style)
+helm dependency update ./iterion      # pulls iterion-<v>.tgz, rewrites Chart.lock, deletes the outdated archive
+
+# 4. Set the new values, render AFTER, and read the diff of the RENDERED manifests.
+helm template iterion ./iterion -n iterion -f iterion/values.yaml -f iterion/values.ovh-prod.yaml > /tmp/render-after.yaml
+diff -u /tmp/render-before.yaml /tmp/render-after.yaml | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | sort | uniq -c | sort -rn
+```
+
+The rendered diff is the review: it must contain the lines you meant (here
+two `priorityClassName:` lines), the chart labels (`helm.sh/chart`,
+`app.kubernetes.io/version` — on every object, so BOTH Deployments roll), and
+nothing else. A `checksum/config` change on the Deployments is expected when
+the chart label is part of the hashed ConfigMap metadata; an unexplained line
+in a ConfigMap or Secret is a template change from an intermediate release
+that step 1 should have named. Commit the four files together — `Chart.yaml`,
+`Chart.lock`, the new `charts/iterion-<v>.tgz`, the deleted old archive, plus
+the values — with explicit paths, push, then verify by the Deployments'
+generation (see the section above), never by pods.
+
+A helm plugin that breaks `helm dependency update` on this host is
+side-stepped with `HELM_PLUGINS=/tmp/no-helm-plugins helm …`.
+
 ### Generation-aware rollout
 
 The chart uses `RollingUpdate` with `maxSurge: 100%` and
