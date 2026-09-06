@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.15](https://github.com/SocialGouv/iterion/compare/v3.112.14...v3.112.15) (2026-09-06)
+
+### Bug Fixes
+
+* **server:** a refused launch gives the board card back and retries with a backoff; the attempt cap files it blocked with the reason ([#840](https://github.com/SocialGouv/iterion/issues/840)) ([558325b](https://github.com/SocialGouv/iterion/commit/558325ba7a00c61d6062416f63a898a30af02a5c)), closes [#814](https://github.com/SocialGouv/iterion/issues/814), references [#839](https://github.com/SocialGouv/iterion/issues/839)
+
+    <details><summary>why</summary>
+
+    Issue.LaunchRefusal (attempts, last reason, last instant, not_before) is the cloud dispatcher's retry bound for a claimed card whose launch the run service refused before any run started. Written fenced (SetLaunchRefusalOwned, a BoardStore contract method on both twins), kept across the give-back transition, cleared by a stamped run (SetLastRun / SetLastRunOwned - a launch happened) and by an operator Reopen. Coordinator.ListDispatchable skips a card until its not_before, in the query, for the…
+
+    </details>
+
 ## [3.112.14](https://github.com/SocialGouv/iterion/compare/v3.112.13...v3.112.14) (2026-09-06)
 
 ### Bug Fixes
