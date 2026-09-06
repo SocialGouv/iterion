@@ -882,21 +882,57 @@ tool lot_verify:
         harness prints it, or a pretty-printed block: the wrapper prints
         exactly one, after the harness has logged to stderr. A format is not
         a verdict, so both shapes read the same."""
+        # Bounded AND lossless. Every line that opens with a "{" is a
+        # candidate start, tried ONCE, in place, with `raw_decode` — which
+        # parses one object and stops. So a one-line report costs one parse
+        # wherever it sits, and a pretty-printed block, an `indent=0` dump
+        # (whose list objects sit at column 0) and a block a wrapper
+        # indented all read the same: no candidate start is ever dropped.
+        # At most one parse per line of the window — never a re-join of the
+        # slice above every closing line, which was quadratic on the very
+        # path this reader exists to type (a chatty stdout with no report),
+        # and never a global budget, which noise printed AFTER the report
+        # could spend to type a green oracle ORACLE_NOT_RUN.
+        # A candidate whose first token is neither a key string nor "}" is
+        # not a JSON object: refused in O(1), so the dict reprs a chatty
+        # harness logs (`{'line': 0, …}`) never reach the parser. That
+        # refusal is what keeps the bound — a FAILED parse is the expensive
+        # one, `json` re-deriving line:column over the whole blob for the
+        # error it raises.
+        # The report is the object whose parse ENDS last, so an inner
+        # fragment never shadows the report that contains it.
+        # And only a REPORT is handed back — an object carrying at least one
+        # of the harness's verdict fields (an older harness writes no
+        # `mode`, it always writes `invalid`/`stable`/`ok`). A `{}` or a
+        # fragment `{"name": …}` printed after the report is skipped, not
+        # read as a mode-less gate verdict with an empty `invalid` list.
+        def is_report(obj):
+            return isinstance(obj, dict) and any(
+                k in obj for k in ("mode", "stable", "ok", "invalid", "blind_lanes", "holdout_total"))
+
         lines = (text or "").splitlines()[-2000:]
-        for j in range(len(lines) - 1, -1, -1):
-            tail = lines[j].strip()
-            if not tail.endswith("}"):
+        blob = "\n".join(lines)
+        decode = json.JSONDecoder().raw_decode
+        found, found_end = None, -1
+        at = 0
+        for line in lines:
+            head = line.lstrip()
+            start = at + len(line) - len(head)  # the "{" itself, its indent skipped
+            at += len(line) + 1                 # the next line, past the "\n" the join put back
+            if not head.startswith("{"):
                 continue
-            candidates = [j] if tail.startswith("{") else []
-            candidates += [i for i in range(j - 1, -1, -1) if lines[i].lstrip().startswith("{")]
-            for i in candidates:
-                try:
-                    obj = json.loads("\n".join(lines[i:j + 1]))
-                except ValueError:
-                    continue
-                if isinstance(obj, dict):
-                    return obj
-        return None
+            probe = start + 1
+            while probe < len(blob) and blob[probe] in " \t\r\n":
+                probe += 1
+            if probe >= len(blob) or blob[probe] not in ('"', '}'):
+                continue
+            try:
+                obj, end = decode(blob, start)
+            except ValueError:
+                continue
+            if end > found_end and is_report(obj):
+                found, found_end = obj, end
+        return found
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True
@@ -960,6 +996,10 @@ tool lot_verify:
                 else:
                     report["oracle_report"] = {"mode": oracle_report.get("mode"),
                                                "truncated": True, "bytes": len(as_text)}
+            # An older harness's report carries no `mode` and is a gate; the
+            # default is safe only because the reader above hands back
+            # nothing but reports (an object carrying a verdict field) — a
+            # `{}` or a fragment never reaches this line.
             mode = (oracle_report or {}).get("mode") or "gate"
             if code is None:
                 timed_out("the behavioural oracle", verify, log)
