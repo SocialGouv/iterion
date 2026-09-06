@@ -68,6 +68,18 @@ func codedRefusals() []codedRefusal {
 				"{{outputs.plan_budget_gate.duration_share_seconds}}",
 			},
 		},
+		// The fixer read the diff (and the premise of its own mission) and
+		// concluded there is nothing attributable to this branch to fix.
+		// TERMINAL: resuming re-runs a campaign whose answer was "no work
+		// here" — what has to change is the dispatch, not the budget. The
+		// typed code is the whole point: it is what lets an unattended lane
+		// tell "the fixer declined" from "the fixer died", without either
+		// side naming the other.
+		codedRefusal{
+			bot: "branch-improve-loop", from: "decline_probe", condition: "honoured",
+			failNode: "campaign_declined", code: "DECLINED",
+			messageRefs: []string{"{{outputs.decline_probe.reason}}"},
+		},
 		// An explicit only_lot request naming a done / blocked / absent
 		// lot. Terminal: the contract has to change before the answer can.
 		codedRefusal{

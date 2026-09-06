@@ -63,8 +63,11 @@ func stubBranchCampaign(exec *scenarioExecutor, st *branchCampaignState) {
 			"human_note":        "",
 			"summary":           "reviewed + improved the branch diff this pass",
 			// The pass stopped on its own judgement, not on the delivery
-			// reserve's closing instant.
+			// reserve's closing instant, and it did the work rather than
+			// refusing the task.
 			"stopped_on_reserve": false,
+			"declined":           false,
+			"decline_reason":     "",
 			"_tokens":            10,
 		}, nil
 	})

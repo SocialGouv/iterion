@@ -112,6 +112,20 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	if s == nil || d.run == nil || s.forgeIntegrations == nil || s.webhookConfigs == nil || s.webhookDeliveries == nil {
 		return // local mode: no integrations/webhook spine to relaunch through
 	}
+	// A run that DECLINED is not a dead run (#706): it read its task and
+	// refused it on the merits, deliberately changing nothing. Relaunching it
+	// re-runs exactly that decision against exactly the same premise, so the
+	// second run reaches the same refusal — at full price, and once per head
+	// for as long as the trigger keeps firing. This is the single point every
+	// relaunch crosses, so the refusal is made once, here, and keyed on the
+	// typed code ALONE: any bot may decline, and this lane never learns which.
+	if d.run.FailureCode == declinedFailureCode {
+		if s.logger != nil {
+			s.logger.Info("gate relaunch: run %s declined its task on %s#%d — not relaunching (a refusal is an answer, not a failure to repair): %s",
+				d.run.ID, d.repo, d.number, strings.TrimSpace(d.run.Error))
+		}
+		return
+	}
 	if d.pr.State != "" && d.pr.State != "open" {
 		return
 	}

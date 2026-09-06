@@ -124,6 +124,17 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		run.RetryState != nil && run.RetryState.RetryAfter != nil {
 		return nil
 	}
+	// A DECLINED run is an ANSWER, not a failure to repair (#706): the bot
+	// read its task and refused it on the merits, changing nothing. Nothing
+	// downstream may act on it — the head has not moved, so a launch here
+	// re-derives the same refusal for as long as the trigger keeps firing —
+	// and the reason has to reach the author, because a run that changed
+	// nothing leaves no other trace on the pull request. Keyed on the typed
+	// code alone: any bot may decline, and the engine never learns which.
+	if run.FailureCode == declinedFailureCode {
+		s.noticeFixerDeclined(ctx, run)
+		return nil
+	}
 
 	token := runInputString(run, forgePublishVarToken)
 	prURL := runInputString(run, "pr_url")

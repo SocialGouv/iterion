@@ -511,6 +511,41 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
+	// A run that DECLINED did not die (#706): it read its task, concluded the
+	// task's premise was wrong, and deliberately changed nothing. Relaunching
+	// it re-runs that decision against the same premise, so the recovery run
+	// reaches the same refusal — once per head, at full price, for as long as
+	// the trigger keeps firing. Keyed on the typed code alone, so any bot may
+	// decline without this lane learning which.
+	t.Run("a declined run is an answer, not a dead run to relaunch", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedDeadRun(t, w.s)
+		run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Same shape as the "dead gating run" case above, which DOES relaunch
+		// — only the typed code differs, so the assertion cannot pass for an
+		// unrelated reason.
+		run.Status = store.RunStatusFailed
+		run.FailureCode = declinedFailureCode
+		run.Error = "the queue ejected this PR on an unrelated flaky test; the diff introduces no defect"
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main", HeadRepoFullName: repo},
+			gateCtx: gateNm, prURL: prURL,
+		})
+		if *w.launched != 0 {
+			t.Fatalf("relaunched a run that declined its task — the recovery run re-derives the same refusal (%d launches)", *w.launched)
+		}
+	})
+
 	// The relaunch pair — CloneURLFor(base) + d.pr.SourceBranch — is the
 	// same fork-unsafe pair the auto-launch and autofix lanes guard against.
 	// #642: SameRepoAs is false on a different owner AND on

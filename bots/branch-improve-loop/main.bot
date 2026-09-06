@@ -396,6 +396,28 @@ prompt campaign_system:
        it overrides your own judgement on any point it covers, and you decide
        the rest yourself. Ask ONCE — this is an arbitration, not a dialogue.
 
+  YOU MAY DECLINE — "there is nothing to fix here" is an ANSWER, not a
+  preamble to doing it anyway. Your mission can presume a defect that is not
+  there: a pull request ejected from a merge queue by an unrelated flaky test,
+  a diff that is already correct, a "fix" for behaviour that is intentional.
+  Pushing anyway is the worst available outcome — it moves the head, cancels
+  whatever the forge had in flight on the old one, and puts your name on a
+  change nobody needed. (That is not hypothetical: a fixer once recorded, as
+  its own step 0, that a queue build was in flight and that pushing would
+  cancel it, then read its mission and pushed.)
+  So when a careful read of the diff — and of your mission's own premise —
+  concludes there is NOTHING attributable to this branch to fix: set
+  declined=true, put in decline_reason what you checked and what you concluded
+  (the author reads this), leave the repository exactly as you found it, and
+  stop. The run then ends with the typed code DECLINED and your reason reaches
+  the pull request.
+  A decline is EARNED, not asserted: a deterministic check compares the
+  repository to the state you were handed and REFUSES a decline from a pass
+  that committed anything or left the tree dirty (that run ships its work
+  normally instead). And it is not an exit from hard work — "this is
+  difficult", "I ran low on window" and "I could not reproduce it" are
+  issues_remaining with branch_clean=false, never a decline.
+
   DELIVERY RESERVE — stop working in time to SHIP. Your working window is
   deliberately SHORTER than the run's duration cap: the run holds a reserve
   back for the delivery tail — the deterministic build/test gate, the in-loop
@@ -471,6 +493,10 @@ prompt campaign_system:
     - commits_this_pass: how many commits you landed this pass.
     - issues_remaining: a concise note of what real issues still need work
       (empty when branch_clean).
+    - declined / decline_reason: the no-op terminal above. declined=true means
+      "nothing attributable to this branch to fix; I pushed nothing"; the
+      reason states what you checked and what you concluded. Leave it false on
+      any pass that made a change.
     - stopped_on_reserve: true when you stopped because your working window
       closed, not because the branch was clean. Say so plainly — it is how the
       operator learns the cap is too small for this branch, and it costs you
@@ -812,6 +838,13 @@ schema campaign_output:
   ## reserve existed. Costs the agent nothing to admit: branch_clean=false
   ## already routes another pass.
   stopped_on_reserve: bool
+  ## The NO-OP TERMINAL: the mission presumed a defect that is not there,
+  ## so this run pushes nothing and says why. Verified deterministically by
+  ## decline_probe (the run must have left the repository exactly as it
+  ## found it) and stamped on the RUN as DECLINED, which is what lets an
+  ## unattended lane tell a refusal from a crash.
+  declined: bool
+  decline_reason: string
   ## finding_ledger: what happened to each finding of the PRIOR REVIEW, keyed by
   ## the stable id it was shown under (on the PR comment and in prior_review).
   ## Empty when no prior review was handed over.
@@ -1082,6 +1115,25 @@ schema workspace_probe_state:
   ok: bool
   code: string
   reason: string
+  ## HEAD as the run was handed it. The oracle a decline is checked
+  ## against: a pass that claims it changed nothing must be comparable to
+  ## the state it started from, and nothing else in the run records it.
+  entry_head: string
+
+## decline_probe's I/O. Both inputs are mapped ON THE EDGE and read as
+## {{input.X}}: a tool command substitutes only input/vars/secrets/run.id,
+## so an {{outputs.X}} ref inside the body would reach the shell as literal
+## text — and this probe would then refuse every decline for want of an
+## entry head, which is a guard that looks like it works.
+schema decline_input:
+  entry_head: string
+  decline_reason: string
+
+## Was the campaign's refusal EARNED? honoured only when the run left the
+## repository exactly as it found it.
+schema decline_state:
+  honoured: bool
+  reason: string
 
 schema plan_topology_state:
   do_plan: bool
@@ -1198,7 +1250,7 @@ ws = (os.environ.get('WS') or '').strip()
 base = (os.environ.get('BASE') or '').strip()
 def refuse(reason):
     sys.stderr.write('WORKSPACE_NOT_A_REPO: ' + reason + chr(10))
-    print(json.dumps({'ok': False, 'code': 'WORKSPACE_NOT_A_REPO', 'reason': reason}))
+    print(json.dumps({'ok': False, 'code': 'WORKSPACE_NOT_A_REPO', 'reason': reason, 'entry_head': ''}))
     raise SystemExit(0)
 def git(*a):
     return subprocess.run(['git', '-C', ws] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
@@ -1221,7 +1273,9 @@ if base:
     m = git('merge-base', resolved, 'HEAD')
     if m.returncode != 0:
         refuse('base_ref ' + repr(base) + ' (resolved as ' + resolved + ') shares no history with HEAD in ' + ws + ' (git merge-base: ' + (m.stderr or '').strip()[-300:] + ')')
-print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (repr(base) + ' resolved as ' + resolved + ' and' if base else '(none)') + ' reachable'}))
+h = git('rev-parse', 'HEAD')
+entry_head = (h.stdout or '').strip() if h.returncode == 0 else ''
+print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (repr(base) + ' resolved as ' + resolved + ' and' if base else '(none)') + ' reachable', 'entry_head': entry_head}))
 "`
   output: workspace_probe_state
 
@@ -1481,6 +1535,61 @@ agent campaign:
   user: campaign_user
   session: fresh
   interaction: human
+
+## decline_probe — the deterministic half of the NO-OP TERMINAL. A fixer
+## may conclude its mission presumed a defect that is not there (a queue
+## eject caused by an unrelated flaky test, a PR whose diff is already
+## correct) and refuse to push. That refusal has to be EARNED, not
+## asserted: this node compares the repository to the state the run was
+## handed — HEAD unmoved since workspace_probe, and nothing staged or
+## dirty — and REFUSES a decline that comes with work. A pass that
+## changed the repo and then declined would strand its own commits
+## behind a terminal failure, which is worse than either outcome alone.
+## Refused → the run continues down the ordinary verify/ship tail, so the
+## banked work still lands. python3 for safe JSON (mirrors the sibling
+## probes); read-only.
+tool decline_probe:
+  description: "Was the campaign's refusal earned? (repository untouched by this run)"
+  input: decline_input
+  command: `WS={{vars.workspace_dir}} ENTRY={{input.entry_head}} REASON={{input.decline_reason}} python3 -c "
+import os, subprocess, json
+ws = (os.environ.get('WS') or '').strip()
+entry = (os.environ.get('ENTRY') or '').strip()
+reason = (os.environ.get('REASON') or '').strip()
+def git(*a):
+    return subprocess.run(['git', '-C', ws] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+if not reason:
+    print(json.dumps({'honoured': False, 'reason': 'declined with no reason: a refusal the author cannot read is not one'}))
+    raise SystemExit(0)
+h = git('rev-parse', 'HEAD')
+head = (h.stdout or '').strip() if h.returncode == 0 else ''
+if not entry or not head:
+    print(json.dumps({'honoured': False, 'reason': 'cannot compare HEAD to the state this run was handed (entry ' + repr(entry) + ', now ' + repr(head) + '); the decline is not verifiable, so the run ships what it has instead'}))
+    raise SystemExit(0)
+if head != entry:
+    print(json.dumps({'honoured': False, 'reason': 'declined but HEAD moved from ' + entry[:12] + ' to ' + head[:12] + ': the pass committed work, so it did have something to fix'}))
+    raise SystemExit(0)
+st = git('status', '--porcelain')
+dirty = [l for l in (st.stdout or '').splitlines() if l.strip()]
+if st.returncode != 0:
+    print(json.dumps({'honoured': False, 'reason': 'declined but the working tree could not be read: ' + (st.stderr or '').strip()[-200:]}))
+    raise SystemExit(0)
+if dirty:
+    print(json.dumps({'honoured': False, 'reason': 'declined but left ' + str(len(dirty)) + ' uncommitted change(s) in the tree: ' + ', '.join(d[3:] for d in dirty[:10])}))
+    raise SystemExit(0)
+print(json.dumps({'honoured': True, 'reason': reason + ' [verified: HEAD unmoved at ' + head[:12] + ', working tree clean — this run pushed nothing]'}))
+"`
+  output: decline_state
+
+## campaign_declined — the no-op terminal. NOT resumable: nothing about
+## this run changes by resuming it, because what the bot refused is the
+## PREMISE of its dispatch, not a budget. The operator (or the lane that
+## dispatched it) acts on the reason; a fresh launch is the retry.
+fail campaign_declined:
+  description: "the fixer found nothing attributable to this branch to fix"
+  code: DECLINED
+  message: "{{outputs.decline_probe.reason}}"
+  resumable: false
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
@@ -2271,7 +2380,28 @@ workflow branch_improve_loop:
 
   ## Each pass: the campaign reviews+improves the branch diff (committing each
   ## fix in stride), then the deterministic build/test gate re-checks the tree.
-  campaign -> verify_probe with {
+  ## Unless it DECLINED — then the deterministic decline_probe decides whether
+  ## the refusal was earned (the run left the repository untouched) before any
+  ## of the verify/ship tail is paid for.
+  ##
+  ## The ship path is the `else` FALLBACK, not `when not declined`: an absent
+  ## field matches neither form of the condition, so a pass whose output omits
+  ## `declined` — an older checkpoint resumed onto this graph, a model that
+  ## drops an optional bool — would leave the campaign with no outgoing edge
+  ## and kill the run outright. Falling through to the tail is the safe
+  ## direction: silence means ship, never decline.
+  campaign -> decline_probe when declined with {
+    entry_head:     "{{outputs.workspace_probe.entry_head}}",
+    decline_reason: "{{outputs.campaign.decline_reason}}"
+  }
+  campaign -> verify_probe else with {
+    iteration: "{{loop.continuation_loop.iteration}}"
+  }
+  ## Earned → the run ends typed DECLINED, pushing nothing. Refused → the pass
+  ## DID change the repository, so it ships through the ordinary tail and its
+  ## commits land rather than dying behind a terminal failure.
+  decline_probe -> campaign_declined when honoured
+  decline_probe -> verify_probe when not honoured with {
     iteration: "{{loop.continuation_loop.iteration}}"
   }
   ## verify_probe reuses an already-valid verify.sh (skipping the LLM
