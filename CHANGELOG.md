@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.111.1](https://github.com/SocialGouv/iterion/compare/v3.111.0...v3.111.1) (2026-09-06)
+
+### Bug Fixes
+
+* **server:** a connection older than account_kind learns it before the avatar gate ([#800](https://github.com/SocialGouv/iterion/issues/800)) ([d7e4138](https://github.com/SocialGouv/iterion/commit/d7e41384ad7862a65badf81e6c5859f08c359e9f))
+
+    <details><summary>why</summary>
+
+    Revi's gate on #794: the runbook handed the PIC operator the non-forced avatar command for connections that predate AccountKind — every one of them answered 409 needs_force, because the field is written at connect time only. The apply now asks the forge who the token is when the field is empty and records what it learns, so the bot gate judges the account and a group-token bot user needs no --force; a person's PAT still does.
+
+    </details>
+
 ## [3.111.0](https://github.com/SocialGouv/iterion/compare/v3.110.0...v3.111.0) (2026-09-05)
 
 ### Features
