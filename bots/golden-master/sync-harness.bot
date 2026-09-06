@@ -2226,6 +2226,27 @@ tool sync_harness:
         return run("sh %s" % shlex.quote(path), ws, timeout)
 
 
+    def dirty_paths(ws):
+        """The paths git reports as not committed. None when git does not answer.
+
+        THE one parse of `git status --porcelain`. It writes `XY <path>`, and X is
+        ' ' for an unstaged modification, so a strip() on the WHOLE output eats the
+        leading space of the first line only: that line shifts by one and loses its
+        first character (`build.gradle` -> `uild.gradle`) while the rest stay
+        intact — a list in which exactly one entry is wrong, and when a single file
+        is dirty it is the only one named. Hence the slice per line, before any
+        global strip.
+
+        None (git did not answer) is NOT [] (git answered "clean"): a caller says
+        different things about a workspace it cannot read and one it read as clean.
+        """
+        p = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            return None
+        return [l[3:] for l in p.stdout.splitlines() if l.strip()]
+
+
     def applied_marker_for(ws):
         """Where the harness notes the mutant it has applied and not yet reverted.
 
@@ -2369,6 +2390,7 @@ tool sync_harness:
             return {"id": meta.get("id"), "dir": meta.get("dir"), "code": None,
                     "out": refused, "marker": marker}
         script = os.path.join(meta.get("dir") or "", "revert.sh")
+        restored = []
         if not meta.get("dir"):
             # Empty or corrupt: it names no mutant, so this cannot revert one — and
             # cannot claim a mutant is applied either. Kept distinct from the
@@ -2377,7 +2399,20 @@ tool sync_harness:
             code, out = None, ("the marker is empty or corrupt — it names no mutant "
                                "directory, so nothing here can say what was applied")
         elif os.path.isfile(script):
+            # WHAT this revert is about to take back to HEAD. revert.sh is
+            # canonically `git checkout -- <path>`, so anything the operator had
+            # uncommitted in those paths dies with the mutant — and the sibling
+            # WORKSPACE NOT COMMITTED notice cannot name them, because by the time
+            # it looks they are clean again and gone from `git status`. Measured:
+            # ' M f.txt' before the sweep, '' after, and a report naming only the
+            # mutant id. That is verbatim the incident this guard exists for, whose
+            # own account ends "naming only the mutant id and never the path".
+            # Reverting is still right; being silent about what it cost is not.
+            was = dirty_paths(ws)
             code, out = run_script(script, ws)
+            now = dirty_paths(ws)
+            if was is not None and now is not None:
+                restored = sorted(set(was) - set(now))
         else:
             code, out = None, "the mutant's revert.sh is no longer there"
         # The marker is the ONLY record that a mutant is applied. Dropping it after
@@ -2388,12 +2423,9 @@ tool sync_harness:
         # by deleting the path named in the report once they have restored HEAD by
         # hand — which is why that path travels back in the result.
         if code == 0:
-            try:
-                os.remove(marker)
-            except OSError:
-                pass
+            forget_applied_marker(ws)
         return {"id": meta.get("id"), "dir": meta.get("dir"), "code": code,
-                "out": (out or "")[-300:], "marker": marker}
+                "out": (out or "")[-300:], "marker": marker, "restored": restored}
 
 
     def leftover_verdict(left):
@@ -2414,10 +2446,22 @@ tool sync_harness:
         if not left:
             return False, None
         if left.get("code") == 0:
+            # NAMING what the revert took back. Those paths were not committed a
+            # moment ago and are at HEAD now; the mutant's own file is among them,
+            # but so is anything the operator had in flight there — and nothing
+            # downstream can still see it, since `git status` is clean on them by
+            # the time the WORKSPACE NOT COMMITTED notice looks. A bare count, or
+            # the mutant id alone, is what made the measured incident silent.
+            gone = left.get("restored") or []
             return False, (
                 "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
                 "(revert.sh exit 0). The tree below is HEAD again; the interrupted "
-                "attempt's verdict, if any, judged a mutated program." % left.get("id"))
+                "attempt's verdict, if any, judged a mutated program.%s"
+                % (left.get("id"),
+                   "" if not gone else
+                   " That revert took %d path(s) back to HEAD: %s — they were NOT "
+                   "committed, so any work you had in flight there is gone."
+                   % (len(gone), ", ".join(gone[:12]))))
         # A marker that names no mutant is a THIRD outcome, and it must not borrow
         # the sentence below. That one asserts "THE TREE IS STILL MUTATED" — true
         # when a mutant is known to have been applied and not put back, but here
@@ -3573,9 +3617,21 @@ tool sync_harness:
                 code, _out = saved["apply_mutant"](lmeta, tmp)
                 check("apply.sh tourne", code, 0)
                 check("le marqueur d'application est pose", os.path.isfile(applied_marker_for(tmp)), True)
-                # Interruption ici : pas de revert. La porte suivante nettoie.
+                # Interruption ici : pas de revert. La porte suivante nettoie — et
+                # l'operateur, entre-temps, a ecrit SON travail dans ce fichier.
+                # Le revert le reprend a HEAD ; il faut donc que le chemin soit
+                # NOMME. Sinon la perte est muette : `git status` est propre sur ce
+                # chemin quand la notice « WORKSPACE NOT COMMITTED » regarde, donc
+                # plus rien en aval ne peut le citer. Mesure : ' M f.txt' avant la
+                # passe, '' apres, et un rapport ne nommant que l'id du mutant.
+                with open(os.path.join(tmp, "f.txt"), "w", encoding="utf-8") as f:
+                    f.write("original\nMON TRAVAIL NON COMMITTE\n")
                 left = revert_leftover_mutant(tmp)
                 check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
+                sweep_refuse, sweep_msg = leftover_verdict(left)
+                check("ce que le revert a repris a HEAD est NOMME, pas seulement compte",
+                      [sweep_refuse, "f.txt" in sweep_msg, (left or {}).get("restored")],
+                      [False, True, ["f.txt"]])
                 with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
                     check("l'arbre est revenu a HEAD", f.read(), "original\n")
                 check("le marqueur est efface", os.path.isfile(applied_marker_for(tmp)), False)
@@ -4050,17 +4106,12 @@ tool sync_harness:
             note(report, leftover_msg)
 
         if mode != "record":
-            dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
-                                   capture_output=True, text=True)
-            if dirty.returncode == 0 and dirty.stdout.strip():
-                # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
-                # `XY <chemin>`, et X vaut ' ' pour une modification non indexee :
-                # strip() sur la sortie entiere mange alors l'espace de tete de la
-                # PREMIERE ligne seulement, qui se decale d'un cran et perd son
-                # premier caractere (`build.gradle` -> `uild.gradle`). Les suivantes,
-                # intactes, donnent une liste ou une seule entree est fausse — et
-                # quand un seul fichier est sale, c'est la seule nommee.
-                paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
+            # Le decoupage per-ligne (et pourquoi il ne peut pas etre un strip
+            # global) vit dans `dirty_paths` — la garde du mutant laisse applique
+            # lit la MEME sortie pour nommer ce que son revert a repris, et deux
+            # analyseurs de `git status --porcelain` finiraient par diverger.
+            paths = dirty_paths(ws)
+            if paths:
                 note(report, (
                     "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                     "these changes are destroyed during the run and the verdict below describes "
