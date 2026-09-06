@@ -975,6 +975,32 @@ script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
     print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
     raise SystemExit(0)
+def sh_uncommented(text):
+    # The script and the CI config, read with comments removed -- shared by
+    # every structural check below so a commented-out gate never counts as
+    # one and a commented-out pipeline never accuses.
+    out_lines = []
+    for raw in text.splitlines():
+        cut = len(raw)
+        i = 0
+        while i < len(raw):
+            if raw[i] == chr(35) and (i == 0 or raw[i - 1] in (chr(32), chr(9))):
+                cut = i
+                break
+            i = i + 1
+        out_lines.append(raw[:cut])
+    return out_lines
+def ends_nonzero(s):
+    # A statement that ENDS the script non-zero: exit/return with a non-zero
+    # (or inherited) status, or a bare false.
+    for kw in ('exit ', 'return '):
+        p = s.find(kw)
+        while p >= 0:
+            rest = s[p + len(kw):].lstrip()
+            if rest[:1] in ('1', '2', '3', '4', '5', '6', '7', '8', '9') or rest[:1] == chr(36):
+                return True
+            p = s.find(kw, p + 1)
+    return s == 'false' or s.endswith(' false') or s.endswith(';false')
 def tree_state():
     try:
         p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
@@ -1003,16 +1029,61 @@ except Exception as e:
 if rc == 0:
     import glob
     def has_drift_gate(text):
-        for l in text.splitlines():
-            # git diff --exit-code is the canonical build-failing gate.
-            if 'diff' in l and '--exit-code' in l:
+        # STRUCTURAL detection: a drift gate is a drift PROBE whose failure ENDS
+        # the script. Read one line at a time the commonest shape was invisible --
+        # the exit 1 of an  if ! git diff --quiet ...; then  sits on a LATER line
+        # -- so a genuinely green verify was refused with DRIFT GATE MISSING.
+        # Comments are stripped first: a comment can DESCRIBE a gate, only a
+        # command can BE one.
+        lines = sh_uncommented(text)
+        fail_fast = False
+        for i, l in enumerate(lines):
+            s = l.strip()
+            if s.startswith('set -'):
+                flags = (s.split() + [''])[1]
+                if 'e' in flags[1:] or 'errexit' in s:
+                    fail_fast = True
+            probe = ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or ('status --porcelain' in l)
+            if not probe:
+                continue
+            # 1. --exit-code IS the gate: the command's own status is the verdict.
+            if '--exit-code' in l:
                 return True
-            # --quiet / status --porcelain also appear as commit-if-changed
-            # control flow in updater workflows (e.g. a Homebrew tap bump) --
-            # only count them when the same line actually fails the build.
-            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
-            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
+            # 2. the verdict on the SAME line.
+            if ('exit 1' in l) or ('|| exit' in l) or ('|| return' in l) or ('test -z' in l) or ('[ -z' in l):
                 return True
+            # 3. NEGATED conditional -- if ! <probe>; then ... exit 1 ... fi. The
+            #    branch runs WHEN THE TREE DRIFTED, so a non-zero exit anywhere in
+            #    it is the gate; scan to the matching else/fi. A body that COMMITS
+            #    the drift instead (the updater shape) never reaches an exit and
+            #    is still correctly rejected.
+            if (s.startswith('if ') or s.startswith('elif ')) and '!' in s.split(';')[0]:
+                depth = 0
+                j = i + 1
+                while j < len(lines):
+                    b = lines[j].strip()
+                    if b == 'fi' or b.startswith('fi '):
+                        if depth == 0:
+                            break
+                        depth = depth - 1
+                    elif depth == 0 and (b == 'else' or b.startswith('elif ')):
+                        break
+                    elif b.startswith('if ') or b == 'if':
+                        depth = depth + 1
+                    if ends_nonzero(b):
+                        return True
+                    j = j + 1
+                continue
+            # 4. FAIL-FAST script -- a bare  git diff --quiet  under set -e aborts
+            #    on drift, so the mode itself is the gate. Restricted to the diff
+            #    form on purpose: git status --porcelain exits 0 with output, so a
+            #    bare one gates nothing. Never a condition, a captured value or a
+            #    swallowed status.
+            if fail_fast and 'diff' in l and '--quiet' in l:
+                bare = not (s.startswith('if ') or s.startswith('elif ') or s.startswith('while ')
+                            or s.startswith('until ') or s.startswith('!'))
+                if bare and '||' not in s and '&&' not in s and (chr(36) + '(') not in s:
+                    return True
         return False
     ci_hit = ''
     for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):

@@ -113,12 +113,24 @@ part of the work — the gate is here to force it. (iterion specifically:
 `task openapi:check` + the helm chart drift check are CI gates; a new
 `/api/...` route needs `task openapi:gen` committed.)
 
-This section is **deterministically enforced** by the verify gate: when the
-repo's CI config contains a drift gate and your `verify.sh` has no
-`git diff --exit-code`/`--quiet` line, the gate fails with a DRIFT GATE
-MISSING error; and a green verify that leaves new changes in the tree fails
-with UNCOMMITTED REGEN OUTPUT. Writing the gate here is cheaper than being
-bounced by the enforcement.
+This section is **deterministically enforced** by the verify gate, and the
+check is STRUCTURAL: it reads the script with comments stripped (a comment can
+describe a gate; only a command can be one) and accepts any shape that really
+fails the build on drift —
+
+```sh
+<regen> && git diff --exit-code                     # the probe's own status
+if ! git diff --quiet -- <paths>; then exit 1; fi   # negated conditional,
+                                                    # on one line or many
+set -e; <regen>; git diff --quiet                   # fail-fast: it aborts
+```
+
+— and rejects a *commit-if-changed* block (`if ! git diff --quiet; then git
+commit …; fi`), which ships the drift instead of failing on it. When the repo's
+CI enforces a drift gate and `verify.sh` carries none of these, the gate fails
+with DRIFT GATE MISSING (exit 3); a green verify that leaves new changes in the
+tree fails with UNCOMMITTED REGEN OUTPUT (exit 4). Writing the gate here is
+cheaper than being bounced by the enforcement.
 
 ## 2. Write the verify script to the scratch dir
 

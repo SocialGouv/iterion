@@ -155,6 +155,80 @@ func TestVerifyRunDriftTail(t *testing.T) {
 		}
 	})
 
+	t.Run("multiline_negated_quiet_gate_in_verify_sh_passes", func(t *testing.T) {
+		// The shape this repo's own Taskfile writes (`openapi:check`), and
+		// the one a line-at-a-time reading rejected: the failing `exit` sits
+		// on a LATER line than the probe, so the gate is real and invisible.
+		// A green verify was refused with exit 3 and the merge gate left red
+		// on a genuinely clean tree (issue #789).
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\nset -e\nif ! git diff --quiet -- openapi.json; then\n  echo 'drift' >&2\n  git --no-pager diff --stat\n  exit 1\nfi\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a multiline `if ! git diff --quiet; then … exit 1; fi` IS a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("failfast_bare_quiet_gate_in_verify_sh_passes", func(t *testing.T) {
+		// `set -e` + a bare `git diff --quiet`: the probe's own non-zero
+		// status ends the script, so the gate is the fail-fast mode itself.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\nset -eu\ngit diff --quiet\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a bare `git diff --quiet` in a fail-fast script IS a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("commented_out_gate_in_verify_sh_is_not_a_gate", func(t *testing.T) {
+		// A comment can DESCRIBE a gate; only a command can BE one. Counting
+		// the comment is how the detector is gamed by an agent that copies
+		// the skill's example prose without the command under it.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\n# git diff --exit-code -- openapi.json\nexit 0\n")
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatalf("a commented-out gate must not satisfy the drift assertion: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "DRIFT GATE MISSING") {
+			t.Fatalf("log_tail must carry the drift message, got %q", res.LogTail)
+		}
+	})
+
+	t.Run("commit_if_changed_verify_sh_is_not_a_gate", func(t *testing.T) {
+		// The negative that keeps the acceptance honest: an updater snippet
+		// that COMMITS the drift instead of failing on it never gates.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\nset -e\nif ! git diff --quiet; then\n  git add -A\n  git commit -m regen\nfi\n")
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatalf("a commit-if-changed block never fails the build — it is not a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("commented_out_gate_in_ci_does_not_demand_one", func(t *testing.T) {
+		// The mirror of the clause above, on the CI side: a commented-out
+		// gate in a workflow must not force every verify.sh to carry one.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		dir := filepath.Join(ws, ".github", "workflows")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		yml := "jobs:\n  test:\n    steps:\n      - run: |\n          # git diff --exit-code openapi.json\n          echo skipped\n"
+		if err := os.WriteFile(filepath.Join(dir, "ci.yml"), []byte(yml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		writeVerifySh(t, scratch, "#!/bin/sh\nexit 0\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a commented-out CI gate must not demand a mirror: %+v", res)
+		}
+	})
+
 	t.Run("clean_green_verify_passes", func(t *testing.T) {
 		ws, scratch := gitWorkspace(t), t.TempDir()
 		writeVerifySh(t, scratch, "#!/bin/sh\nexit 0\n")
