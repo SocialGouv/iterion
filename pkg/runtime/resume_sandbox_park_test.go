@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -301,6 +302,194 @@ func TestParkResumeSandboxFailure_PlainErrorStaysResumableAndUntyped(t *testing.
 	}
 	if !strings.Contains(r.Error, "sandbox start") || !strings.Contains(r.Error, "connection reset") {
 		t.Fatalf("Error = %q, want the phase and the cause", r.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #723: the composition, not the parts.
+//
+// Every arm above hands parkResumeSandboxFailure an outcome by hand, so
+// they certify the consumer only. The failure #669 measured was a
+// COMPOSITION failure — a setup-phase timeout landing untyped on a
+// RESUMED run — and it stayed invisible because the driver came from the
+// process-global registry and nothing could inject one. The engine's
+// WithSandboxDrivers seam closes that: the test below drives a REAL
+// resume through selectSandboxDriver → Prepare → Start against a driver
+// whose setup phase stalls, and asserts what the operator and the runner
+// then see.
+// ---------------------------------------------------------------------------
+
+// stallingSetupDriver is a sandbox driver whose Start never completes its
+// setup phase. It bounds itself the way the real drivers bound theirs
+// (runWithPhaseTimeout): a CHILD deadline strikes while the run ctx stays
+// live, and the error carries sandbox.ErrPhaseTimeout +
+// context.DeadlineExceeded + the callee's own cause. Shared with the
+// post_create bound (#719) — the phase is a field, because both phases
+// must land on the same code.
+type stallingSetupDriver struct {
+	phase    string
+	budget   time.Duration
+	prepared int
+	started  int
+}
+
+func (d *stallingSetupDriver) Name() string { return "docker" }
+
+func (d *stallingSetupDriver) Capabilities() sandbox.Capabilities {
+	return sandbox.Capabilities{
+		SupportsImage:          true,
+		SupportsMounts:         true,
+		SupportsHostBindMounts: true,
+		SupportsPostCreate:     true,
+		SupportsRemoteUser:     true,
+	}
+}
+
+func (d *stallingSetupDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {
+	d.prepared++
+	return stallingPrepared{spec: spec}, nil
+}
+
+func (d *stallingSetupDriver) Start(ctx context.Context, _ sandbox.PreparedSpec, _ sandbox.RunInfo) (sandbox.Run, error) {
+	d.started++
+	phaseCtx, cancel := context.WithTimeout(ctx, d.budget)
+	defer cancel()
+	start := time.Now()
+	<-phaseCtx.Done()
+	if ctx.Err() != nil {
+		// An outer cancellation is a cooperative stop, not a stall.
+		return nil, ctx.Err()
+	}
+	return nil, fmt.Errorf("fake: %s phase timed out after %s (deadline %s exceeded): %w",
+		d.phase, time.Since(start).Round(time.Millisecond), d.budget,
+		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed")))
+}
+
+type stallingPrepared struct{ spec sandbox.Spec }
+
+func (stallingPrepared) DriverName() string   { return "docker" }
+func (p stallingPrepared) Spec() sandbox.Spec { return p.spec }
+
+// A resumed run whose sandbox setup stalls must park failed_resumable
+// with the TYPED code — that code is what the gate notice reads and what
+// keeps the runner's ack policy on the delayed-nak lane
+// (pkg/runner/loop.go's sandbox.ErrPhaseTimeout arm) instead of burning
+// the delivery. Driven end-to-end: the engine selects the driver, the
+// driver stalls its setup, and the run's own status is the oracle.
+func TestResume_StalledSandboxSetupParksTypedThroughTheRealDriverPath(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local") // pin the factory's preference order to docker,podman,noop
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-resume-sandbox-composition"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{NodeID: "campaign", Outputs: map[string]map[string]any{"plan": {"steps": 3}}}
+	if err := s.FailRunResumable(ctx, runID, cp, "runner drained", store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.WorkDir = t.TempDir()
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	wf := &ir.Workflow{
+		Name:  "wf",
+		Entry: "campaign",
+		Nodes: map[string]ir.Node{
+			"campaign": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "campaign"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "campaign", To: "done"}},
+		// An ACTIVE spec: the driver is selected and started for real.
+		Sandbox: &ir.SandboxSpec{Mode: "inline", Image: "example.invalid/iterion-sandbox:test", HostState: "none"},
+	}
+	driver := &stallingSetupDriver{phase: "workspace copy", budget: 50 * time.Millisecond}
+	eng := New(wf, s, newStubExecutor(),
+		WithLogger(iterlog.Nop()),
+		WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+			"docker": func() (sandbox.Driver, error) { return driver, nil },
+		}),
+	)
+
+	err = eng.Resume(ctx, runID, nil)
+	if err == nil {
+		t.Fatal("a stalled sandbox setup let the resume through — the run would execute nodes with no sandbox")
+	}
+	if driver.started == 0 {
+		t.Fatal("the injected driver was never started — the resume did not go through selectSandboxDriver, so this test proves nothing")
+	}
+	// The shape the runner's ack policy keys on: a phase timeout NAKs for
+	// redelivery (a fresh pod routinely clears the stall) and must not be
+	// dressed up as an interruption or a cancel, which take other lanes.
+	if !errors.Is(err, sandbox.ErrPhaseTimeout) {
+		t.Fatalf("resume error = %v, want it to carry sandbox.ErrPhaseTimeout (the runner classifies the delivery on it)", err)
+	}
+	if errors.Is(err, ErrRunInterrupted) || errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("resume error = %v, want the phase-timeout shape alone — an interruption skips the DLQ park, a cancel acks", err)
+	}
+
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after resume: %v", err)
+	}
+	if got.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable — a stalled setup executed nothing and must come back", got.Status)
+	}
+	if got.FailureCode != store.FailureSandboxSetupTimeout {
+		t.Fatalf("FailureCode = %q, want %s — this is the untyped landing #669 measured on a RESUMED run", got.FailureCode, store.FailureSandboxSetupTimeout)
+	}
+	if got.Checkpoint == nil || got.Checkpoint.NodeID != "campaign" {
+		t.Fatalf("checkpoint = %+v, want the resumed run's own checkpoint kept", got.Checkpoint)
+	}
+}
+
+// The same seam on the post_create phase (#719's arm): a stall there must
+// be indistinguishable, downstream, from a copy stall — same sentinel,
+// same typed park, same delivery lane.
+func TestResume_StalledPostCreateParksLikeAStalledCopy(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-resume-postcreate-composition"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "campaign"}, "runner drained", store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.WorkDir = t.TempDir()
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	wf := &ir.Workflow{
+		Name:    "wf",
+		Entry:   "campaign",
+		Nodes:   map[string]ir.Node{"campaign": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "campaign"}}},
+		Sandbox: &ir.SandboxSpec{Mode: "inline", Image: "example.invalid/iterion-sandbox:test", HostState: "none", PostCreate: "apt-get install -y the-world"},
+	}
+	driver := &stallingSetupDriver{phase: "post_create", budget: 50 * time.Millisecond}
+	eng := New(wf, s, newStubExecutor(), WithLogger(iterlog.Nop()),
+		WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+			"docker": func() (sandbox.Driver, error) { return driver, nil },
+		}))
+
+	err = eng.Resume(ctx, runID, nil)
+	if !errors.Is(err, sandbox.ErrPhaseTimeout) {
+		t.Fatalf("resume error = %v, want sandbox.ErrPhaseTimeout for a post_create stall", err)
+	}
+	got, _ := s.LoadRun(ctx, runID)
+	if got.FailureCode != store.FailureSandboxSetupTimeout {
+		t.Fatalf("FailureCode = %q, want %s — a post_create stall must be classified like a copy stall", got.FailureCode, store.FailureSandboxSetupTimeout)
 	}
 }
 

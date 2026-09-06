@@ -593,7 +593,18 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", r.ID)
 	}
 	e.consumePausePointer(ctx, r, cp)
-	return e.emit(ctx, r.ID, store.EventRunResumed, "", data)
+	return e.markResumed(ctx, r.ID, data)
+}
+
+// markResumed is the tail every resume claim shares once the CAS names
+// this engine the owner: refresh the doc's effective-caps snapshot for
+// the attempt about to run (the budget is re-resolved per attempt, and
+// the platform ceiling is only known here — see stampEffectiveBudget),
+// then emit run_resumed. One tail, so a second resume path cannot ship
+// without the stamp the first one needs.
+func (e *Engine) markResumed(ctx context.Context, runID string, data map[string]any) error {
+	e.stampEffectiveBudget(ctx, runID)
+	return e.emit(ctx, runID, store.EventRunResumed, "", data)
 }
 
 // consumePausePointer clears the interaction evidence off the persisted
@@ -986,7 +997,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 	if cp == nil {
 		resumeData["from_entry"] = true
 	}
-	return e.emit(ctx, runID, store.EventRunResumed, "", resumeData)
+	return e.markResumed(ctx, runID, resumeData)
 }
 
 // restoreResumeWorkspace re-establishes the per-run working environment on

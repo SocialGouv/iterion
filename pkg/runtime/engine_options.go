@@ -122,6 +122,23 @@ func WithSandboxDefaultImage(ref string) EngineOption {
 	return func(e *Engine) { e.sandboxDefaultImage = ref }
 }
 
+// WithSandboxDrivers replaces the driver set the sandbox factory selects
+// from. Nil (the default) means the shipped registry, so production
+// wiring is unchanged.
+//
+// The seam exists because the driver was read from a process-global
+// (registry.Default()), which left the sandbox arms of a run — the setup
+// phases, their typed failures, the resume park — testable only by
+// handing the consumer an outcome by hand. A test that supplies what
+// production must produce certifies the consumer alone, and the arm that
+// failed in #669 was a COMPOSITION failure: a phase timeout landing
+// untyped on a resumed run. With this, a test drives the real
+// selectSandboxDriver → Prepare → Start sequence against a driver whose
+// setup it controls.
+func WithSandboxDrivers(drivers map[string]sandbox.DriverConstructor) EngineOption {
+	return func(e *Engine) { e.sandboxDrivers = drivers }
+}
+
 // WithSandboxHostStateOverride sets the CLI / Launch-modal level
 // override for sandbox.host_state. Highest precedence. Value is one
 // of "", "auto", or "none". An empty string means "no override".

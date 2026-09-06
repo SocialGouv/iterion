@@ -606,6 +606,29 @@ schema validation, edge/routing failures, budget and timeout errors, fan-out
 failures, and resumable sandbox startup failures. A recovery policy may retry,
 repair, or ask a human before the final status is written.
 
+### What a resume rebuilds
+
+A resume does not inherit the previous attempt's environment — the
+sandbox went away with the process that owned it. Before the checkpoint
+node re-executes, the engine re-runs the whole setup: it re-mirrors the
+bundle's skills and plugin contributions into `.claude/` (so a bundle
+upgraded between the two attempts takes effect), re-resolves the run's
+vars from its persisted inputs, and **starts a fresh sandbox** — a new
+container or pod, going through the same phases as a launch (image pull
+/ pod Ready, workspace copy, git fixup, `post_create`). On the
+kubernetes driver a resume force-deletes and re-creates the pod, under
+the scheduling policy of the runner that claims it.
+
+Which means the setup timeouts apply identically to a resumed run — the
+point where iterion used to differ, and where the operator noticed it:
+the same stall that parked a launched run with a typed cause left a
+resumed one parked with none. The caps and the environment override are
+in [sandbox](sandbox.md#setup-phases-and-their-timeouts).
+
+What the resume does NOT redo: the nodes already recorded in the
+checkpoint. See [what the checkpoint
+preserves](#what-the-checkpoint-preserves).
+
 ### Sandbox startup — which failures are resumable
 
 A failure at `sandbox start` happens before the first node runs, so it is
@@ -617,7 +640,7 @@ would re-hit it identically and only spend a pod per attempt.
 
 | Failure | Code | Status |
 |---|---|---|
-| A bounded setup phase that RAN and stalled (workspace copy, git fixup) | `SANDBOX_SETUP_TIMEOUT` | `failed_resumable` — a fresh pod routinely clears the stall |
+| A bounded setup phase that RAN and stalled (workspace copy, git fixup, `post_create`) | `SANDBOX_SETUP_TIMEOUT` | `failed_resumable` — a fresh pod routinely clears the stall |
 | The pod is still `Pending` past the deadline, unscheduled (`Unschedulable`, `Insufficient cpu`: the fleet is at its request ceiling) | `SANDBOX_CAPACITY` | `failed_resumable` — the run executed nothing; a later attempt re-places it |
 | The pod is still `Pending`, scheduled, its node not having started the container (`ContainerCreating`, `PodInitializing`, or no container status reported yet) | `SANDBOX_CAPACITY` | `failed_resumable` — same: `Pending` IS the API's guarantee that no container was created |
 | A broken image reference (`ErrImagePull`, `ImagePullBackOff`, `InvalidImageName`) | — | `failed` — every pod re-hits it; the operator fixes the reference. Overrides the phase: such a pod is `Pending` too |
@@ -625,12 +648,26 @@ would re-hit it identically and only spend a pod per attempt.
 | The pod reached `Running` (or `Unknown`) but never Ready | — | `failed` — a container came up; nothing says the run did nothing |
 | The pod could not be inspected at all (RBAC, apiserver blip) | — | `failed` — no evidence, nothing claimed |
 
-The cloud runner re-offers a `SANDBOX_CAPACITY` delivery after a delay
-long enough for a cluster autoscaler to add a node; a fleet that stays
-full through every permitted delivery parks the run on the DLQ like any
-other repeated failure. The start deadline itself is
-`ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` — see
-[sandbox](sandbox.md#scheduling-requests-and-node-spread).
+Both resumable codes are re-offered by the cloud runner on a DELAY
+rather than at once: 2 minutes for `SANDBOX_SETUP_TIMEOUT` (the stall is
+usually infrastructure catching its breath, and a bare re-offer would
+burn the whole delivery budget as back-to-back pods — 8 × a 15-minute
+phase ≈ 2 hours — with nothing on the run's timeline in between), and
+longer for `SANDBOX_CAPACITY` (the cure is a cluster autoscaler adding a
+node, not the pod retrying). Each redelivery is recorded on the run's
+timeline. A condition that persists through every permitted delivery
+ends parked on the DLQ like any other repeated failure — announced,
+rather than re-offered forever. A one-off stall needs no operator action
+at all; `iterion resume` on the parked run is the same recovery, taken
+by hand, when you would rather not wait for the redelivery.
+
+The deadlines are per phase: the pod-Ready wait is
+`ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` (see
+[sandbox](sandbox.md#scheduling-requests-and-node-spread)), the copy and
+the `post_create` snippet have their own — see [setup phases and their
+timeouts](sandbox.md#setup-phases-and-their-timeouts). Raise the one the
+error names: the message says which phase timed out, how long it ran and
+what its budget was.
 
 Cancellation saves state with a detached, bounded store context so Ctrl-C can
 still persist after the execution context is cancelled. If checkpoint writing

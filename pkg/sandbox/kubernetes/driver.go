@@ -83,27 +83,59 @@ const workspaceCopyTimeoutEnv = "ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT"
 // override that never took, with nothing saying so.
 var workspaceCopyTimeoutWarnOnce sync.Once
 
-// resolveWorkspaceCopyTimeout returns the effective per-phase timeout,
-// honouring the env override with a fail-safe fallback: a garbage or
+// DefaultPostCreateTimeout bounds the post_create snippet — the setup
+// phase that follows the copy and the git fixup. A hung snippet (a
+// package install waiting on a dead mirror, a command that reads stdin)
+// held the run in setup with no typed failure and no redelivery: the
+// same shape the copy bound closed, one phase later.
+//
+// Thirty minutes because a post_create legitimately outlasts a copy —
+// it is where a devcontainer installs its toolchain — so it carries its
+// own budget rather than sharing the copy's. Overridable per host via
+// ITERION_SANDBOX_POST_CREATE_TIMEOUT (a Go duration).
+const DefaultPostCreateTimeout = 30 * time.Minute
+
+// postCreateTimeoutEnv is the post_create override key.
+const postCreateTimeoutEnv = "ITERION_SANDBOX_POST_CREATE_TIMEOUT"
+
+// postCreateTimeoutWarnOnce is the post_create half of the
+// once-per-process unparseable-override warning: each knob warns for
+// itself, or a bad value on one is silenced by a bad value on the other.
+var postCreateTimeoutWarnOnce sync.Once
+
+// resolveWorkspaceCopyTimeout returns the effective copy/fixup budget.
+func resolveWorkspaceCopyTimeout() time.Duration {
+	return resolvePhaseTimeout(workspaceCopyTimeoutEnv, DefaultWorkspaceCopyTimeout, &workspaceCopyTimeoutWarnOnce)
+}
+
+// resolvePostCreateTimeout returns the effective post_create budget.
+func resolvePostCreateTimeout() time.Duration {
+	return resolvePhaseTimeout(postCreateTimeoutEnv, DefaultPostCreateTimeout, &postCreateTimeoutWarnOnce)
+}
+
+// resolvePhaseTimeout returns a setup phase's effective timeout,
+// honouring its env override with a fail-safe fallback: a garbage or
 // non-positive value ("banana", "0", "-5m", or "5" — which Go parses as
 // five NANOseconds, not the five minutes the operator meant) falls back
-// to the default (a copy phase left unbounded is exactly the bug this
-// exists to close) and warns once, naming the value and the default.
-func resolveWorkspaceCopyTimeout() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(workspaceCopyTimeoutEnv))
+// to the default (a setup phase left unbounded is exactly the bug this
+// exists to close) and warns once, naming the key, the value and the
+// default. One resolver for every phase, so a knob added later cannot
+// come with different failure semantics.
+func resolvePhaseTimeout(envKey string, def time.Duration, warnOnce *sync.Once) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(envKey))
 	if raw == "" {
-		return DefaultWorkspaceCopyTimeout
+		return def
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d <= 0 {
-		workspaceCopyTimeoutWarnOnce.Do(func() {
+		warnOnce.Do(func() {
 			// Stderr, not the driver logger: a leaf helper with no
 			// logger in reach.
 			fmt.Fprintf(os.Stderr,
 				"iterion: %s=%q is not a positive Go duration (use e.g. 5m, 15m, 2h) — using the default %s\n",
-				workspaceCopyTimeoutEnv, raw, DefaultWorkspaceCopyTimeout)
+				envKey, raw, def)
 		})
-		return DefaultWorkspaceCopyTimeout
+		return def
 	}
 	return d
 }
@@ -137,8 +169,9 @@ var phaseTimeoutWarnRatio = 0.5
 //
 // The halfway warning (phaseTimeoutWarnRatio × timeout) runs on a side
 // goroutine that fn's return cancels; on an early return it emits
-// nothing.
-func runWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase string, timeout time.Duration, fn func(context.Context) error) error {
+// nothing. Both warnings name envKey — the knob of THIS phase — so an
+// operator reading them raises the bound that actually applies.
+func runWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase, envKey string, timeout time.Duration, fn func(context.Context) error) error {
 	if logger == nil {
 		logger = iterlog.Nop()
 	}
@@ -154,8 +187,8 @@ func runWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase stri
 		select {
 		case <-done:
 		case <-time.After(warnAfter):
-			logger.Warn("sandbox: %s phase still running after %s of its %s budget — a stall from here on fails the phase (ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT raises the bound)",
-				phase, time.Since(start).Round(time.Second), timeout)
+			logger.Warn("sandbox: %s phase still running after %s of its %s budget — a stall from here on fails the phase (%s raises the bound)",
+				phase, time.Since(start).Round(time.Second), timeout, envKey)
 		}
 	}()
 
@@ -164,8 +197,8 @@ func runWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase stri
 
 	if err == nil {
 		if phaseCtx.Err() != nil {
-			logger.Warn("sandbox: %s phase completed at or past its %s budget (elapsed %s) — raise ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT or investigate the delay",
-				phase, timeout, time.Since(start).Round(time.Millisecond))
+			logger.Warn("sandbox: %s phase completed at or past its %s budget (elapsed %s) — raise %s or investigate the delay",
+				phase, timeout, time.Since(start).Round(time.Millisecond), envKey)
 		}
 		return nil
 	}
@@ -833,13 +866,13 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// overrides).
 	if info.WorkspacePath != "" {
 		copyTimeout := resolveWorkspaceCopyTimeout()
-		if err := runWithPhaseTimeout(ctx, d.logger, "workspace copy", copyTimeout, func(ctx context.Context) error {
+		if err := runWithPhaseTimeout(ctx, d.logger, "workspace copy", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
 			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
 		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
 		}
-		if err := runWithPhaseTimeout(ctx, d.logger, "workspace git fixup", copyTimeout, func(ctx context.Context) error {
+		if err := runWithPhaseTimeout(ctx, d.logger, "workspace git fixup", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
 			return r.fixupWorkspaceGit(ctx, p.workspace)
 		}); err != nil {
 			_ = r.Cleanup(ctx)
@@ -1077,10 +1110,22 @@ func (r *Run) Cleanup(_ context.Context) error {
 }
 
 // runPostCreate executes the spec's post-create command inside the
-// freshly started pod.
+// freshly started pod, BOUNDED like the copy and the git fixup before
+// it: a snippet that never returns (a package install waiting on a dead
+// mirror, a command reading stdin) would otherwise hold the run in setup
+// until the outer max_duration fires — no typed failure, no redelivery,
+// the pod sitting on the run lease. The bound lives here rather than at
+// the Start call site so every caller inherits it. Budget:
+// resolvePostCreateTimeout (ITERION_SANDBOX_POST_CREATE_TIMEOUT); the
+// expiry carries sandbox.ErrPhaseTimeout, so the engine parks the run
+// failed_resumable with SANDBOX_SETUP_TIMEOUT exactly as a copy stall
+// does.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand in pod %s", r.podName)
-	return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+	return runWithPhaseTimeout(ctx, r.driver.logger, "post_create", postCreateTimeoutEnv, resolvePostCreateTimeout(),
+		func(ctx context.Context) error {
+			return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+		})
 }
 
 // populateWorkspace copies the run's host workspace into the pod's

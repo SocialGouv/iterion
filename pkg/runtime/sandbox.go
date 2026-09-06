@@ -189,6 +189,12 @@ type SandboxParams struct {
 	// block, then ITERION_REPO_DEVBOX, then on. See resolveRepoDevbox.
 	RepoDevboxOverride string
 
+	// Drivers is the set the factory selects the run's driver from.
+	// Nil — every production caller — means the shipped registry
+	// (registry.Default()). The engine fills it from
+	// WithSandboxDrivers; see selectSandboxDriver.
+	Drivers map[string]sandbox.DriverConstructor
+
 	EmitEvent func(store.EventType, map[string]any) error
 	Logger    *iterlog.Logger
 	// AttachmentsHostDir, when non-empty, is bind-mounted read-only
@@ -338,7 +344,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// off spec.Mode + host availability only (not the mounts), so it's
 	// safe here; the mounts still land before driver.Prepare below, which
 	// is what the "configure mounts first" invariant requires.
-	driver, err := selectSandboxDriver(spec, logger)
+	driver, err := selectSandboxDriver(spec, logger, p.Drivers)
 	if err != nil {
 		// A sandbox chosen by the built-in default must not brick runs on
 		// hosts with no container runtime — degrade to unsandboxed with a
@@ -1586,6 +1592,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		DefaultImage:             e.sandboxDefaultImage,
 		HostStateOverride:        e.sandboxHostStateOverride,
 		HostStateDefault:         e.sandboxHostStateDefault,
+		Drivers:                  e.sandboxDrivers,
 		RepoDevboxOverride:       e.repoDevboxOverride,
 		EmitEvent:                emitForSandbox,
 		Logger:                   e.logger,

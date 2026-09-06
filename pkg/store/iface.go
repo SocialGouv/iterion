@@ -109,10 +109,11 @@ type RunStore interface {
 	// SetRunBudgetSnapshot updates the persisted EFFECTIVE caps
 	// (Run.Budget, the studio Overview's denominator) — the display twin
 	// of the ask above. Written by every resume surface that raises a
-	// cap, right after its own status transition: the engine stamps
-	// Run.Budget only at launch (runResolveDoc), so without this write
-	// the doc keeps showing the launch-time figure that just killed the
-	// run. Nil clears the field. Granular for the same reason as
+	// cap, right after its own status transition — so the doc stops
+	// showing the launch-time figure before a pod even claims the
+	// attempt — and by the engine itself once the attempt begins
+	// (stampEffectiveBudget), which is the only reading that includes
+	// the pod-side platform ceiling. Nil clears the field. Granular for the same reason as
 	// SetRunBudgetOverrides: the doc copy a resume loaded at its top is
 	// stale by the time the caps are known, and a whole-doc SaveRun from
 	// it would revert any transition (a cancel, a runner's terminal

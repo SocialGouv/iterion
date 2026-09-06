@@ -141,7 +141,7 @@ func (e *Engine) predictAttachmentsDir() string {
 	if err != nil || spec == nil || !spec.Mode.IsActive() {
 		return ""
 	}
-	driver, err := selectSandboxDriver(spec, nil)
+	driver, err := selectSandboxDriver(spec, nil, e.sandboxDrivers)
 	if err != nil || driver == nil {
 		return ""
 	}

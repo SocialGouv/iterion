@@ -16,18 +16,26 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// selectSandboxDriver picks the driver via the global factory and
-// wraps it with the engine's logger when it's the docker or kubernetes
-// driver — so `docker run`, `kubectl apply`, postCreate execution and
-// container start messages land in the run.log alongside the rest of
-// the run. Without this swap the factory hands back a sandbox.Driver
-// whose default logger discards output, and silent-failure modes
-// (postCreate skipped because spec was empty, image pull stalled, a
-// defaulted sandbox.user, the pod scheduling policy in force) become
-// impossible to debug from logs alone.
-func selectSandboxDriver(spec *sandbox.Spec, logger *iterlog.Logger) (sandbox.Driver, error) {
+// selectSandboxDriver picks the driver from the given driver set — nil
+// means the shipped registry, which is what every production caller
+// passes — and wraps it with the engine's logger when it's the docker or
+// kubernetes driver, so `docker run`, `kubectl apply`, postCreate
+// execution and container start messages land in the run.log alongside
+// the rest of the run. Without this swap the factory hands back a
+// sandbox.Driver whose default logger discards output, and
+// silent-failure modes (postCreate skipped because spec was empty, image
+// pull stalled, a defaulted sandbox.user, the pod scheduling policy in
+// force) become impossible to debug from logs alone.
+//
+// drivers is the engine's WithSandboxDrivers seam: the registry used to
+// be read here as a process global, which is why no test could drive a
+// real run against a sandbox whose setup it controls.
+func selectSandboxDriver(spec *sandbox.Spec, logger *iterlog.Logger, drivers map[string]sandbox.DriverConstructor) (sandbox.Driver, error) {
+	if drivers == nil {
+		drivers = registry.Default()
+	}
 	factory := sandbox.NewFactory(sandbox.FactoryOptions{
-		AvailableDrivers: registry.Default(),
+		AvailableDrivers: drivers,
 	})
 	driver, err := factory.DriverForSpec(spec)
 	if err != nil {
