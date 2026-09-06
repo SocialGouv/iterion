@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The wrapper the net materialises, reduced to what these tests pin: it
@@ -154,6 +155,21 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 		if !strings.Contains(res.BlockReason, "Directory nonexistent") {
 			t.Fatalf("the typed message kept the oldest output instead of the cause: %q", res.BlockReason)
+		}
+	})
+
+	t.Run("a chatty stdout with no report is typed in seconds, not minutes", func(t *testing.T) {
+		noisy := scratchWrapperHead +
+			"i=0; while [ $i -lt 6000 ]; do echo \"{'line': $i, 'note': 'a python dict repr the harness logged, brace first, no JSON anywhere'}\"; i=$((i+1)); done\n" +
+			"exit 2\n"
+		ws, base := scratchWorkspace(t, noisy)
+		started := time.Now()
+		res := scratchVerify(t, script, ws, base)
+		if d := time.Since(started); d > 8*time.Second {
+			t.Fatalf("typing a no-report stdout of 6000 brace-first lines took %s — the report search is not bounded", d)
+		}
+		if !res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a chatty wrapper death read as something else: %+v", res)
 		}
 	})
 
