@@ -679,6 +679,11 @@ func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.cfg.Bots.Paths = []string{botsDir}
+	// The launch proves the PR same-repo through the team connection before
+	// it grants anything; the stub forge answers "same repo".
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+		return &fakeGateClient{headSHA: "abc"}, nil
+	}
 
 	rs, err := store.New(t.TempDir())
 	if err != nil {
@@ -786,12 +791,21 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Every PR-bound launch is proven same-repo before it is granted; the
+	// stub forge answers "same repo" so the precedence under test is reached.
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+		return &fakeGateClient{headSHA: "abc"}, nil
+	}
+
 	vars := map[string]string{
 		"pr_url":        "https://github.com/o/r/pull/7",
 		"gate_severity": "medium", // pinned on the launch — must survive
 		"gate_context":  "",       // cleared field: absent, not a decision
 	}
-	out := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	if err != nil {
+		t.Fatalf("applyPRLaunchContext: %v", err)
+	}
 	if out["gate_severity"] != "medium" {
 		t.Errorf("repo policy overwrote a launch pin: %q", out["gate_severity"])
 	}
@@ -819,8 +833,11 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/7"}, nil)
+	if err != nil {
+		t.Fatalf("applyPRLaunchContext: %v", err)
+	}
 	if g, ok := s.forgePublishTokens.lookup(out[forgePublishVarToken]); !ok || g.ConnectionID != "conn1" {
 		t.Errorf("the stale provisioning won the grant: ok=%v g=%+v", ok, g)
 	}
@@ -828,9 +845,13 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Errorf("the stale provisioning won the policy: %q", out["gate_context"])
 	}
 
-	// Same slug on another forge is a different repo: no policy, no grant.
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	// Same slug on another forge is a different repo: no policy, no grant —
+	// and no connection to prove anything through, so no refusal either.
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://gitlab.example/o/r/-/merge_requests/7"}, nil)
+	if err != nil {
+		t.Fatalf("a host no connection covers has no pair to guard: %v", err)
+	}
 	if _, ok := out["gate_context"]; ok {
 		t.Errorf("policy applied across forge hosts: %v", out)
 	}
@@ -838,7 +859,10 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Error("grant minted for a repo on a host no connection covers")
 	}
 
-	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	if err != nil {
+		t.Fatalf("no pr_url: %v", err)
+	}
 	if _, ok := out[forgePublishVarToken]; ok {
 		t.Error("no pr_url: nothing to grant")
 	}
@@ -2712,5 +2736,128 @@ func TestCloudSweep_GateOffReleasesAnAbandonedRecoveryHold(t *testing.T) {
 	}
 	if state != native.StateInProgress {
 		t.Fatalf("state = %q — a release restores the card, it must never ROUTE an operator-cancelled run", state)
+	}
+}
+
+// prLaunchGuardFixture: a team provisioned on o/r through conn1 and a stub
+// forge whose GetPullRequest answers with the head repo the test chooses —
+// the seam the fork guard reads through.
+func prLaunchGuardFixture(t *testing.T, gc forgeGateClient) *Server {
+	t.Helper()
+	s, _ := newForgePublishTestServer(t)
+	s.cfg.PublicURL = "https://iterion.example"
+	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
+	s.webhookConfigs = webhooks.NewMemoryConfigStore()
+	if err := s.forgeIntegrations.Create(context.Background(), forge.RepoIntegration{
+		ID: "ri1", TenantID: "team1", ConnectionID: "conn1", RepoFullName: "o/r",
+		LaunchVars: map[string]string{"gate_context": "iterion/review"},
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	return s
+}
+
+// TestApplyPRLaunchContextForkGuard: the studio/API and board lanes stamp the
+// same launch pair the webhook lanes do — <base>.CloneURL + the PR's head
+// branch — so they inherit the same fail-CLOSED fork guard. A head branch that
+// is not PROVEN to live in the base repo is refused with the webhook lanes'
+// own wording (forkGuardRefusal), never checked out against a same-named
+// branch of the base repo; a resolution failure is an explicit refusal, not
+// a silent launch. Same-repo (case-insensitively) is admitted and granted.
+func TestApplyPRLaunchContextForkGuard(t *testing.T) {
+	const prURL = "https://github.com/o/r/pull/7"
+
+	t.Run("a fork PR is refused with the webhook lanes' wording", func(t *testing.T) {
+		s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", headRepo: "someone/r"})
+		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		if !errors.Is(err, errPRLaunchForkGuard) {
+			t.Fatalf("a fork PR must be refused by the fork guard, got err=%v", err)
+		}
+		if want := forkGuardRefusal(false, false, "someone/r"); !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal must carry the webhook lanes' own wording:\n got %q\nwant %q", err, want)
+		}
+		if tok := out[forgePublishVarToken]; tok != "" {
+			t.Fatalf("a refused launch must not be granted: grant %q minted", tok)
+		}
+	})
+
+	t.Run("an unnamed head repo is refused too — same-repo is proven, never assumed", func(t *testing.T) {
+		s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", noHeadRepo: true})
+		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		if !errors.Is(err, errPRLaunchForkGuard) {
+			t.Fatalf("an unverifiable head repo must be refused by the fork guard, got err=%v", err)
+		}
+		if want := forkGuardRefusal(false, false, ""); !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal must carry the webhook lanes' own wording:\n got %q\nwant %q", err, want)
+		}
+		if tok := out[forgePublishVarToken]; tok != "" {
+			t.Fatalf("a refused launch must not be granted: grant %q minted", tok)
+		}
+	})
+
+	t.Run("a PR the forge cannot resolve is refused, not launched blind", func(t *testing.T) {
+		s := prLaunchGuardFixture(t, &fakeGateClient{getErr: errors.New("502 from the forge")})
+		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		if err == nil || !strings.Contains(err.Error(), "502 from the forge") {
+			t.Fatalf("a resolution failure must surface as the refusal, got err=%v", err)
+		}
+		if errors.Is(err, errPRLaunchForkGuard) {
+			t.Fatalf("a forge outage is not a fork verdict — the HTTP lane must answer 502, not 422: %v", err)
+		}
+		if tok := out[forgePublishVarToken]; tok != "" {
+			t.Fatalf("an unresolved PR must not be granted a launch: grant %q minted", tok)
+		}
+	})
+
+	t.Run("a same-repo PR is admitted, case-insensitively, and granted", func(t *testing.T) {
+		s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", headRepo: "O/R"})
+		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		if err != nil {
+			t.Fatalf("a same-repo PR must be admitted: %v", err)
+		}
+		if out[forgePublishVarToken] == "" {
+			t.Fatal("a same-repo PR must be granted")
+		}
+		if out["gate_context"] != "iterion/review" {
+			t.Errorf("the repo's policy must still apply: %q", out["gate_context"])
+		}
+	})
+}
+
+// TestProcessBoardCardRefusesAForkPR: the cloud board coordinator is the
+// second door into the same launch pair. A card whose pull request turns out
+// to be a fork (or whose head repo vanished since carding) is refused at
+// claim time — the error files the card blocked with the reason — and no run
+// is created against the base repo.
+func TestProcessBoardCardRefusesAForkPR(t *testing.T) {
+	s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", headRepo: "someone/r"})
+	botsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(botsDir, "fixer.bot"), []byte(
+		"schema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"yes\"}'`\n  output: probe_out\n\nworkflow board_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{botsDir}
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := runview.NewService("", runview.WithStore(rs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.runs = svc
+
+	err = s.processBoardCard(context.Background(), "team1", native.Issue{
+		ID: "card-fork", Bot: "fixer", State: native.StateReady,
+		BotArgs: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
+	})
+	if !errors.Is(err, errPRLaunchForkGuard) {
+		t.Fatalf("a fork PR card must be refused by the fork guard, got err=%v", err)
+	}
+	if ids, lerr := rs.ListRuns(context.Background()); lerr != nil || len(ids) != 0 {
+		t.Fatalf("a refused card must launch nothing, got runs=%v err=%v", ids, lerr)
 	}
 }

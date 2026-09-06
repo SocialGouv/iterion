@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -674,12 +675,17 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 // authenticated team surfaces, and the grant is scoped to the (team,
 // connection, repo) the team is provisioned on and re-enforced at the publish
 // endpoint.
-func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+//
+// The fork guard, however, IS shared with the webhook lanes: the launch pair
+// is the same (<base>.CloneURL + the PR's head branch), so a PR whose head
+// is not proven to live in the base repo is refused here too — the returned
+// error carries the refusal, and the caller launches nothing.
+func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars
+		return vars, nil
 	}
-	if host, repo, _, err := forge.ParsePullURL(prURL); err == nil {
+	if host, repo, number, err := forge.ParsePullURL(prURL); err == nil {
 		if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
 			if preferredConnID == "" {
 				// Pin the grant to the connection the policy came from.
@@ -687,8 +693,65 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 			}
 			fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
 		}
+		conn, proven, err := s.prLaunchForkGuard(ctx, teamID, preferredConnID, prURL, host, repo, number)
+		if err != nil {
+			return vars, err
+		}
+		if proven {
+			// The grant is minted on the connection the PR was proven
+			// through, so the identity that read the head is the one that
+			// posts the verdict.
+			preferredConnID = conn.ID
+		}
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r), nil
+}
+
+// errPRLaunchForkGuard marks a launch the fork guard refused — the operator's
+// pull request is not admissible, as opposed to a forge that could not be
+// asked — so the HTTP lane answers 422 rather than 502.
+var errPRLaunchForkGuard = errors.New("fork guard")
+
+// prLaunchForkGuard is the fork guard of the launch surfaces that hold no
+// webhook payload — the studio/API launch and the cloud board coordinator —
+// over the same launch pair the webhook lanes guard: <base>.CloneURL + the
+// PR's head branch. It reads the PR through the team connection covering the
+// PR's host+repo (the one the publish grant is minted on) and requires the
+// head branch to be PROVEN to live in the base repo, refused with the webhook
+// lanes' own wording (forkGuardRefusal): on a fork PR the checkout misses, or
+// worse hits a same-named branch of the BASE repo and a code-pushing bot
+// commits onto it. Fail-CLOSED on resolution: a PR the forge cannot answer
+// for is refused, never launched on a guess.
+//
+// Returns the connection the proof was read through (proven=true), or
+// proven=false with no error when no team connection covers the PR's host:
+// the server then makes no launch pair for that host — a repo-targeted
+// launch needs a connection on the repo's host, and a board card's repo rides
+// the webhook lane that already guarded it — so there is nothing to decide
+// and the launch keeps its shape (no policy, no grant), said at Debug.
+func (s *Server) prLaunchForkGuard(ctx context.Context, teamID, preferredConnID, prURL, host, repo string, number int) (forge.Connection, bool, error) {
+	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
+	if !ok {
+		if s.logger != nil {
+			s.logger.Debug("fork guard: no team %s connection covers %s/%s — nothing to prove for %s", teamID, host, repo, prURL)
+		}
+		return forge.Connection{}, false, nil
+	}
+	gc, err := s.gateClientFor(ctx, conn)
+	if err != nil {
+		return conn, false, fmt.Errorf("fork guard: %s: cannot read the pull request through connection %s: %w", prURL, conn.ID, err)
+	}
+	if gc == nil {
+		return conn, false, fmt.Errorf("fork guard: %s: provider %s cannot read pull requests, so same-repo cannot be proven", prURL, conn.Provider)
+	}
+	pr, err := gc.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		return conn, false, fmt.Errorf("fork guard: %s: PR resolution: %w", prURL, err)
+	}
+	if reason := forkGuardRefusal(pr.SameRepoAs(repo), false, pr.HeadRepoFullName); reason != "" {
+		return conn, false, fmt.Errorf("%w: %s: %s", errPRLaunchForkGuard, prURL, reason)
+	}
+	return conn, true, nil
 }
 
 // repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the

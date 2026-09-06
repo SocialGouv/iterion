@@ -436,7 +436,21 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		req.Vars = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		vars, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		if err != nil {
+			// The fork guard refuses the operator's pull request (422); a
+			// forge that could not be asked is an upstream failure (502).
+			// Either way nothing launches: the same door the webhook lanes
+			// keep closed is not left open for a hand-picked PR.
+			code := http.StatusBadGateway
+			if errors.Is(err, errPRLaunchForkGuard) {
+				code = http.StatusUnprocessableEntity
+			}
+			s.httpErrorFor(w, r, code, "%v", err)
+			span.SetStatus(codes.Error, "pr launch refused")
+			return
+		}
+		req.Vars = vars
 	}
 
 	// Detach lifecycle from the HTTP request context so a client
