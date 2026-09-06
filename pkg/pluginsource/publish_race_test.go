@@ -85,7 +85,7 @@ func TestPublish_LostRenameReadsTheFinalPath(t *testing.T) {
 		// replaceExisting=false is the immutable case: the peer's tree stands,
 		// untouched — asserted by WHOSE tree is there, since "still a checkout"
 		// would also hold after a swap.
-		if err := publish(staging, dest, false); err != nil {
+		if err := (&Fetcher{}).publish(staging, dest, false); err != nil {
 			t.Fatalf("a complete final path is the tree this publish wanted: %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(dest, "the-peers")); err != nil {
@@ -103,13 +103,99 @@ func TestPublish_LostRenameReadsTheFinalPath(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dest, "half-written"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := publish(staging, dest, false); err != nil {
+		if err := (&Fetcher{}).publish(staging, dest, false); err != nil {
 			t.Fatalf("publish over an incomplete final: %v", err)
 		}
 		if !isPublished(dest) {
 			t.Fatal("an incomplete final path must be replaced by the staged checkout, not kept")
 		}
 	})
+}
+
+// Retiring a tree makes `dest` ABSENT for an instant, and that absence is what
+// #854's loser read. So a publish of an IMMUTABLE ref must never rename a
+// complete tree aside — not even one that appeared after it looked. Deciding on
+// a read cannot promise that (the read is stale one syscall later); only making
+// the rename itself the test-and-set can.
+//
+// Both subtests drive the interleaving through the beforeRetire seam, so the
+// window is scripted rather than wagered on a `-count` stress run.
+func TestPublish_NeverRetiresACompleteImmutableTree(t *testing.T) {
+	t.Run("an absent final is taken by the rename, not by a read then a retire", func(t *testing.T) {
+		root := t.TempDir()
+		staging, dest := filepath.Join(root, "staging"), filepath.Join(root, "dest")
+		mkCheckout(t, staging, "ours")
+
+		// dest is absent — the one state a read-then-retire design re-decides
+		// on: it reads "nothing there", a peer publishes, and the retire that
+		// follows moves that complete tree aside. Reaching the retire AT ALL
+		// from here is the defect, so that is what is asserted; a rename that
+		// lands cannot have raced anyone.
+		f := &Fetcher{}
+		retired := false
+		f.beforeRetire = func(string) { retired = true }
+		if err := f.publish(staging, dest, false); err != nil {
+			t.Fatalf("publish onto an absent final: %v", err)
+		}
+		if retired {
+			t.Fatal("publish took a read and then retired: a peer publishing in that gap has its immutable tree renamed aside, and the next publisher's read finds the path ABSENT (#854)")
+		}
+		if _, err := os.Stat(filepath.Join(dest, "ours")); err != nil {
+			t.Fatalf("the staged tree did not land: %v", err)
+		}
+	})
+
+	t.Run("a peer that repairs an incomplete final is accepted, not retired", func(t *testing.T) {
+		root := t.TempDir()
+		staging, dest := filepath.Join(root, "staging"), filepath.Join(root, "dest")
+		mkCheckout(t, staging, "ours")
+		// The one state that still reaches the retire: dest exists and is NOT a
+		// checkout. A peer repairs it in that gap — what it published is
+		// byte-for-byte what we would have, so it must be kept.
+		if err := os.MkdirAll(filepath.Join(dest, "half-written"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := &Fetcher{}
+		f.beforeRetire = func(dest string) {
+			if err := os.RemoveAll(dest); err != nil {
+				t.Errorf("stand in for the peer's publish: %v", err)
+				return
+			}
+			mkCheckout(t, dest, "the-peers")
+		}
+		if err := f.publish(staging, dest, false); err != nil {
+			t.Fatalf("publish onto a final a peer repaired: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "the-peers")); err != nil {
+			t.Fatalf("a complete immutable tree was renamed aside anyway: %v", err)
+		}
+		assertNoLeftovers(t, root, "staging", "dest")
+	})
+}
+
+// assertNoLeftovers fails when dir holds anything but the named entries: a
+// retired or staging copy of a full checkout that nobody deletes is the cache
+// growing one clone per race. Names are matched WHOLE — a retired copy is
+// `<key>.retired-…`, which no prefix filter over "." can catch.
+func assertNoLeftovers(t *testing.T, dir string, want ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := map[string]bool{}
+	for _, w := range want {
+		keep[w] = true
+	}
+	var extra []string
+	for _, e := range entries {
+		if !keep[e.Name()] {
+			extra = append(extra, e.Name())
+		}
+	}
+	if len(extra) > 0 {
+		t.Errorf("left behind in %s: %s", dir, strings.Join(extra, ", "))
+	}
 }
 
 // mkCheckout builds a directory isPublished accepts, marked so a later
