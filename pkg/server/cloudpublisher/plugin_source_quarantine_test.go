@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -65,9 +66,13 @@ func TestSubmitLaunch_BrokenPluginSourceIsSkippedNotFatal(t *testing.T) {
 		t.Skip("git not available")
 	}
 	origin := t.TempDir()
+	// NoAutoMaintenance: `git commit` below otherwise detaches a
+	// `git maintenance run --auto` that writes under this origin's
+	// `.git/objects` after the command returned — into a directory
+	// t.TempDir()'s cleanup is about to remove.
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := exec.Command("git", gitlib.NoAutoMaintenance(args...)...)
 		cmd.Dir = origin
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
