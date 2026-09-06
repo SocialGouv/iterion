@@ -105,6 +105,11 @@ type pullMintRecorder struct {
 	bearers    []string
 	paths      []string
 	srv        *httptest.Server
+	// t reports a served path githubEndpointGrants does not know. The scope
+	// gate can only hold a call to a rule it HAS, so an unknown path would
+	// otherwise be served unchecked — the gate going quiet exactly where a
+	// new method or a new round trip needs it loudest.
+	t *testing.T
 }
 
 // scopeRefusal reports the grant an endpoint needs and the call's bearer was
@@ -177,7 +182,7 @@ func sortedGrantNames(m map[string]string) []string {
 
 func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 	t.Helper()
-	r := &pullMintRecorder{notAccessible: map[string]bool{}, tokenPerms: map[string]map[string]string{}}
+	r := &pullMintRecorder{t: t, notAccessible: map[string]bool{}, tokenPerms: map[string]map[string]string{}}
 	pr := map[string]any{
 		"number": 7, "title": "feat: x (closes #12)", "state": "open", "html_url": "https://gh/o/r/pull/7",
 		"head": map[string]any{"ref": "feat/x", "sha": "deadbeef", "repo": map[string]any{"full_name": "o/r"}},
@@ -193,10 +198,16 @@ func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			refused := r.refuseMint
-			for name, level := range body.Permissions {
-				got, ok := r.granted[name]
-				if r.granted != nil && (!ok || (level == "write" && got != "write" && got != "admin")) {
-					refused = true
+			if r.granted != nil {
+				// The production rule here too: the mint gate carried its own
+				// copy, with the same "a write needs write-or-admin, anything
+				// else passes" shortcut grantCovers replaced — so a requested
+				// `admin` was minted against a bare `read` grant and the
+				// withheld-grant path was never reached for it.
+				for name, level := range body.Permissions {
+					if !grantCovers(r.granted, name, level) {
+						refused = true
+					}
 				}
 			}
 			if refused {
@@ -241,6 +252,12 @@ func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 		// resource, whatever the path serves.
 		if short := r.scopeRefusal(req.Header.Get("Authorization"), line); short != "" {
 			refuse = true
+		}
+		// A rule the table does not have is a call nothing held to any scope,
+		// so say so rather than serve it: fail LOUD, never open.
+		if need, _ := grantsForRequestLine(line); need == nil {
+			r.t.Errorf("the fake served %q, which githubEndpointGrants has no row for — its permission rule went unchecked, "+
+				"and an unchecked endpoint is how a wrong profile ships green", line)
 		}
 		if refuse {
 			w.WriteHeader(http.StatusForbidden)
@@ -491,6 +508,31 @@ func TestTheFakeRefusesACallOutsideItsMintedScope(t *testing.T) {
 	}
 	if _, err := c.GetCIStatus(context.Background(), "o/r", "deadbeef"); err != nil {
 		t.Fatalf("the CI profile must serve its own endpoints: %v", err)
+	}
+}
+
+// The MINT gate holds the same level ordering as the scope gate. `admin` is
+// the level that separates a compared ordering from the "a write needs
+// write-or-admin, anything else passes" shortcut: under the shortcut this
+// mint is issued against an installation that holds the grant one level too
+// low, GitHub 422s it for real, and the withheld-grant diagnostic is never
+// exercised for the case.
+func TestTheFakeRefusesAMintAboveTheInstallationsLevel(t *testing.T) {
+	r := newPullMintRecorder(t)
+	r.granted = map[string]string{"organization_projects": "write", "metadata": "read"}
+	_, err := r.appClient(t).scopedREST(context.Background(),
+		map[string]string{"organization_projects": "admin", "metadata": "read"})
+	var pe *forge.PermissionError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err = %v (%T), want the mint refused: write does not cover a requested admin", err, err)
+	}
+	if !reflect.DeepEqual(pe.Missing, []string{"organization_projects:admin"}) {
+		t.Errorf("Missing = %v, want exactly [organization_projects:admin] — metadata:read IS granted", pe.Missing)
+	}
+	// The level the installation does hold is served.
+	if _, err := r.appClient(t).scopedREST(context.Background(),
+		map[string]string{"organization_projects": "write", "metadata": "read"}); err != nil {
+		t.Errorf("a mint at the granted level must be issued: %v", err)
 	}
 }
 
