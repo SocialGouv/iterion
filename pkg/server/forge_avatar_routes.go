@@ -42,6 +42,11 @@ type avatarRefusal struct {
 
 func (r *avatarRefusal) Error() string { return r.msg }
 
+// avatarForceHint closes every 409 message: "<why iterion cannot vouch>; <the
+// forced retry>". The studio dialog strips the clause and words the retry as
+// its own button, so the reason must stay a single clause before it.
+const avatarForceHint = "; if it is a dedicated account for iterion (not a person's), apply with force"
+
 // brandLogoPath is the public route serving a mascot variant, for the uploads
 // an operator has to do by hand.
 func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
@@ -158,8 +163,17 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		switch {
 		case err == nil:
 			conn.AccountKind, learned = ident.Kind, ident.Kind
-		case !force || ctx.Err() != nil:
+		case ctx.Err() != nil:
 			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
+		case !force:
+			// The forge would not describe the account (a token without the
+			// scope, a forge without the field): iterion cannot vouch for it,
+			// the operator can — the same rung as an unflagged account, so
+			// every surface offers the forced retry instead of a 502 that
+			// records nothing and repeats on the next attempt.
+			return conn, "", &avatarRefusal{status: http.StatusConflict,
+				msg:    fmt.Sprintf("%s would not say whether @%s is a bot account (%v)%s", conn.Host(), conn.AccountLogin, err, avatarForceHint),
+				fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
 		}
 	}
 	if conn.AccountKind != forge.AccountKindBot && !force {
@@ -170,7 +184,7 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 			}
 		}
 		return conn, "", &avatarRefusal{status: http.StatusConflict,
-			msg:    fmt.Sprintf("%s does not flag @%s as a bot account; if it is a dedicated account for iterion (not a person's), apply with force", conn.Host(), conn.AccountLogin),
+			msg:    fmt.Sprintf("%s does not flag @%s as a bot account%s", conn.Host(), conn.AccountLogin, avatarForceHint),
 			fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
 	}
 	avatarURL, err := setter.SetAvatar(ctx, brand.BotAvatar(variant))

@@ -164,6 +164,25 @@ describe("ConnectionCard — iterion-bot avatar", () => {
     );
   });
 
+  it("offers the vouch when the forge would not describe the account, naming the reason", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: undefined })]);
+    vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
+      new ApiError(
+        409,
+        "gitlab.example.com would not say whether @group_1_bot_x is a bot account (gitlab: HTTP 403); if it is a dedicated account for iterion (not a person's), apply with force",
+      ),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    // The dialog carries the forge's own answer, and is the forced retry itself.
+    await screen.findByText(/would not say whether @group_1_bot_x is a bot account \(gitlab: HTTP 403\)\./);
+    expect(screen.queryByText(/apply with force/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply the avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenNthCalledWith(2, "t1", "c1", { force: true }),
+    );
+  });
+
   it("shows the applied state and offers a re-apply", async () => {
     vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
       conn({ account_kind: "bot", avatar_applied_at: "2026-09-05T10:00:00Z" }),

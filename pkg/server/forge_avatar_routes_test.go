@@ -564,3 +564,42 @@ func TestForgeConnectionAvatar_ForcedApplyBailsWhenWhoAmIHangs(t *testing.T) {
 		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d error=%q applied=%v", uploads, stored.AvatarError, stored.AvatarAppliedAt)
 	}
 }
+
+// A forge that will not describe the account (a token without the scope, a
+// forge without the field) leaves iterion unable to vouch — but the operator
+// can: the same 409 rung as an unflagged account, so the studio card and the
+// CLI offer the forced retry instead of dead-ending on a 502 that recorded
+// nothing and would repeat on every click.
+func TestForgeConnectionAvatar_UnreadableAccountAsksForTheWord(t *testing.T) {
+	s := newForgeTestServer(t)
+	uploads := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) })
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		uploads++
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/u.png"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-unreadable", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL}) // AccountKind empty
+
+	w := avatarReq(s, "c-unreadable", "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("unforced apply on an unreadable account: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	msg, _ := body["error"].(string)
+	if body["needs_force"] != true || body["account_login"] != "svc" || !strings.Contains(msg, "would not say whether @svc") || !strings.Contains(msg, "insufficient scope") {
+		t.Fatalf("refusal must offer the forced retry, name the account and the forge's reason: %v", body)
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreadable")
+	if uploads != 0 || stored.AccountKind != "" || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
+		t.Fatalf("a refusal to vouch must upload and record nothing: uploads=%d stored=%+v", uploads, stored)
+	}
+	if w := avatarReq(s, "c-unreadable", `{"force":true}`); w.Code != http.StatusOK || uploads != 1 {
+		t.Fatalf("the operator's word carries the apply: code=%d uploads=%d body=%s", w.Code, uploads, w.Body.String())
+	}
+}
