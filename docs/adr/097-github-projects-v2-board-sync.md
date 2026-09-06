@@ -545,14 +545,42 @@ Everything else follows the shipped doctrine:
   truth from the board and the cards on every run, so a missed transition costs
   a delay of at most one interval, never a permanent divergence. That is why it
   has a named owner (§10) rather than a sentence in a doc.
-- **A machine-caused move still reaches the roadmap.** The trigger spine
-  declines `tracker.IsMachineReason` events (watchdog, state/field rename) for
-  *launches*, because they must not spend budget. The pass form needs no
-  exemption for that gate: it reads the card's CURRENT column, so a watchdog
-  filing a card in `blocked` is reflected like any other move — which is
-  precisely what the roadmap must show. The projection arm added by the
-  addendum below states that exemption explicitly instead of inheriting it,
-  since it *does* ride the shared admission prelude.
+- **A machine-caused move does NOT reach the roadmap** (superseded by the
+  #798 addendum below; the original text exempted the projection from the
+  `tracker.IsMachineReason` decline and let a watchdog park be reflected like
+  any other move). The roadmap follows people and run verdicts; iterion's own
+  bookkeeping — a watchdog park, a column rename, a card given back after a
+  launch that never happened — is left alone and counted (`reflect_machine`).
+
+#### Addendum (issue #798) — machine provenance is persisted on the card, and never projected
+
+The pilot on SocialGouv/203 moved 36 *Planned* tickets to `ready`; the cloud
+board dispatcher claimed every one, failed "card has no bot", parked them
+`blocked`, and the reflect pushed *Blocked* onto 30 roadmap tickets as if a
+human had moved them. Two decisions follow:
+
+1. **The reflect judges the CARD's provenance, not the event.** The store now
+   stamps `Issue.StateReason` at every transition on both twins — the same
+   value the state event's `reason` carries (`native.StateProvenance`, one
+   derivation), so the two cannot disagree — and `Issue.StateByMachine()` is
+   the enumerated `tracker.IsMachineReason` over it. `reflectNativeState`, the
+   ONE reflect both callers share, refuses such a card (counted, not warned,
+   like `reflect_no_column`); `projectionOwed` materializes no row for a
+   machine-caused event. The pass, which sees no event, needed the marker on
+   the card; the fast path reads the same marker so a row queued before the
+   card's provenance was known retires through the same answer.
+2. **What stays reflected is what the ADR was written for**: the dispatcher's
+   own fenced moves carry no machine reason — `in_progress` at launch, `done`
+   after a finished run, `blocked` after a failed one — and a person's move
+   never does. The Context's motivating case ("a bot moves a native card to
+   `done`; the board still shows *Planned*") still holds.
+
+The cause itself is closed upstream of the reflect: the dispatcher's candidate
+query requires a bot (`ListDispatchable`), its tick checks the launch
+preconditions before the claim, and a card that still cannot be launched after
+the claim is returned to its column under the machine `unlaunchable`
+provenance — never parked `blocked` (docs/dispatcher.md, *Claim selection on
+the cloud board*).
 
 ### 11. Permissions, stated up front
 
