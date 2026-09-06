@@ -2115,6 +2115,45 @@ def revert_leftover_mutant(ws):
             "out": (out or "")[-300:], "marker": marker}
 
 
+def leftover_verdict(left):
+    """What to DO about a leftover mutant: say it, or refuse to judge at all.
+
+    `revert_leftover_mutant` returns a TRUTHY dict on all three outcomes —
+    reverted (code 0), revert.sh failed (code != 0), revert.sh gone (code
+    None). Deciding on bare truthiness, as this did, announced "the tree below
+    is HEAD again" in the two cases where nothing was reverted: the run then
+    went on to name the mutant's file as the lot's uncommitted work and take
+    the build gate red on a mutated program — the very failure the guard
+    exists to prevent, now under a report line asserting the opposite.
+
+    Split out of main() so the self-test drives the code that actually runs,
+    not a second copy of the rule. Returns (refuse, message), with message
+    None only when there was no leftover at all.
+    """
+    if not left:
+        return False, None
+    if left.get("code") == 0:
+        return False, (
+            "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
+            "(revert.sh exit 0). The tree below is HEAD again; the interrupted "
+            "attempt's verdict, if any, judged a mutated program." % left.get("id"))
+    # Not a notice. Gating a knowingly-mutated tree is never legitimate — the
+    # sibling doctrine three lines from the call site says recording and
+    # iterating on a dirty tree is, GATING on it is not — and a leftover mutant
+    # is not even the operator's work, it is a program nobody wrote. In record
+    # mode the stake is higher still: references captured off a mutated tree
+    # bake the mutant in as truth, permanently.
+    return True, (
+        "a mutant left APPLIED by an interrupted gate (%s, from %s) could NOT be "
+        "reverted: revert.sh exit %s — %s. THE TREE IS STILL MUTATED, so every "
+        "verdict this run could produce would judge a program nobody wrote, and "
+        "any reference recorded from it would bake the mutant in as truth. Restore "
+        "HEAD by hand (that mutant's revert.sh is the script that knows how), then "
+        "delete the marker %s and re-run."
+        % (left.get("id"), left.get("dir"), left.get("code"), left.get("out"),
+           left.get("marker")))
+
+
 # ─── Comparison ─────────────────────────────────────────────────────────────
 
 def diverged(refs, captured, ids):
@@ -3274,6 +3313,29 @@ def _selftest():
             check("un mutant dont revert.sh a disparu est signale, pas tu", (left or {}).get("code"), None)
             check("et son marqueur SURVIT : irrevertible n'est pas oublie",
                   os.path.isfile(applied_marker_for(tmp)), True)
+
+            # Ce que la porte en FAIT. Les trois sorties de
+            # revert_leftover_mutant sont toutes des dicts VRAIS : decider sur
+            # la seule verite du dict annoncait « l'arbre est revenu a HEAD »
+            # dans les deux cas ou rien n'avait ete reverti.
+            check("rien de laisse -> rien a dire, rien a refuser",
+                  leftover_verdict(None), (False, None))
+            ok_refuse, ok_msg = leftover_verdict(
+                {"id": "leftover-1", "dir": mdir, "code": 0, "out": "", "marker": "/m"})
+            check("revert propre -> notice, et la porte continue",
+                  [ok_refuse, "HEAD again" in ok_msg, "leftover-1" in ok_msg],
+                  [False, True, True])
+            for bad_code in (3, None):
+                bad_refuse, bad_msg = leftover_verdict(
+                    {"id": "leftover-1", "dir": mdir, "code": bad_code,
+                     "out": "boom", "marker": "/tmp/gm-applied-x.json"})
+                check("revert impossible (exit %r) -> la porte REFUSE de juger" % bad_code,
+                      bad_refuse, True)
+                check("et le message dit l'arbre mute, la sortie et le marqueur (exit %r)"
+                      % bad_code,
+                      ["STILL MUTATED" in bad_msg, "HEAD again" in bad_msg,
+                       str(bad_code) in bad_msg, "/tmp/gm-applied-x.json" in bad_msg],
+                      [True, False, True, True])
         finally:
             # Le marqueur vit hors de l'arbre (c'est tout son interet) : le
             # dernier cas le laisse pose expres, donc c'est ici qu'il part.
@@ -3438,13 +3500,13 @@ def main():
     # A mutant left APPLIED by an interrupted gate is reverted BEFORE the tree
     # is looked at, and said: otherwise the dirty check below names the
     # mutant's file as the lot's uncommitted work, and the build gate judges a
-    # program nobody wrote.
-    left = revert_leftover_mutant(ws)
-    if left:
-        note(report, (
-            "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
-            "(revert.sh exit %s). The tree below is HEAD again; the interrupted attempt's "
-            "verdict, if any, judged a mutated program." % (left.get("id"), left.get("code"))))
+    # program nobody wrote. When it CANNOT be reverted, the run stops here
+    # rather than judging that program under a report line claiming otherwise.
+    refuse, leftover_msg = leftover_verdict(revert_leftover_mutant(ws))
+    if refuse:
+        bail(leftover_msg)
+    if leftover_msg:
+        note(report, leftover_msg)
 
     if mode != "record":
         dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
