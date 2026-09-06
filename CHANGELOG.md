@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.19](https://github.com/SocialGouv/iterion/compare/v3.112.18...v3.112.19) (2026-09-06)
+
+### Bug Fixes
+
+* **server,cloudpublisher:** the board dispatcher launches through the org gate, a run no credential tier can fund is refused at publish, and a launch give-up reaches the needs-attention lane ([#850](https://github.com/SocialGouv/iterion/issues/850)) ([0841f18](https://github.com/SocialGouv/iterion/commit/0841f182ffac421f535ad017421545ba00a00df2)), closes [#841](https://github.com/SocialGouv/iterion/issues/841)
+
+    <details><summary>why</summary>
+
+    A card the dispatcher gave up on before any run existed (the launch attempt cap) carried a give-up stamp with no run id, and GiveUp.Current was bound to a run id, so the pipeline board filed the card among the done tickets: a card nobody could launch was invisible. The stamp now carries a `launch` marker — current for the card in its state whatever run it points at, part of the stamp's identity, round-tripped by both store twins — and the ticket card (or the run card of an older attempt) takes…
+
+    </details>
+
 ## [3.112.18](https://github.com/SocialGouv/iterion/compare/v3.112.17...v3.112.18) (2026-09-06)
 
 ### Bug Fixes
