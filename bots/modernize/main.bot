@@ -881,25 +881,52 @@ tool lot_verify:
         """The report is the last JSON object on stdout — one line, as the
         harness prints it, or a pretty-printed block: the wrapper prints
         exactly one, after the harness has logged to stderr. A format is not
-        a verdict, so both shapes read the same."""
-        # Bounded: a block starts at a column-0 "{" and at most 32 parses are
-        # attempted, so a chatty stdout with no report stays linear — the
-        # no-report path is the one this reader exists to type, and it must
-        # not burn minutes saying so.
+        a verdict, so both shapes read the same, indented or not."""
+        # Bounded on the half that can blow up. A line whose braces BALANCE is
+        # a complete thing — parsed on its own, never joined to anything: that
+        # is what keeps a harness logging thousands of dict reprs to stdout out
+        # of the block scan entirely, and it leaves the single-line pass at one
+        # parse per line. That pass is UNBUDGETED, so a one-line report is read
+        # wherever it sits; only the block joins are capped, and the cap skips a
+        # candidate rather than ending the scan — a budget spent on noise must
+        # never discard a verdict that was there. The no-report path is the one
+        # this reader exists to type, and it must not burn minutes saying so.
         lines = (text or "").splitlines()[-2000:]
-        attempts = 0
+        col = [len(ln) - len(ln.lstrip()) for ln in lines]
+        opens = [i for i, ln in enumerate(lines)
+                 if ln.lstrip().startswith("{") and ln.count("{") > ln.count("}")]
+        k = len(opens) - 1
+        joins = 0
         for j in range(len(lines) - 1, -1, -1):
-            tail = lines[j].rstrip()
+            # opens ascends and j descends, so k only ever walks down: the
+            # openings before j are opens[:k + 1], for linear total cost.
+            while k >= 0 and opens[k] >= j:
+                k -= 1
+            tail = lines[j].strip()
             if not tail.endswith("}"):
                 continue
-            candidates = [j] if tail.startswith("{") else []
-            candidates += [i for i in range(j - 1, -1, -1) if lines[i].startswith("{")]
-            for i in candidates:
-                attempts += 1
-                if attempts > 32:
-                    return None
+            if tail.startswith("{") and tail.count("{") == tail.count("}"):
                 try:
-                    obj = json.loads("\n".join(lines[i:j + 1]))
+                    obj = json.loads(tail)
+                except ValueError:
+                    obj = None
+                if isinstance(obj, dict):
+                    return obj
+                continue
+            if k < 0 or joins >= 32:
+                continue
+            # A block's closing brace sits at its opening's column — that is
+            # what every pretty-printer emits — so the openings in that column
+            # are tried first. A PREFERENCE, not a filter: the rest still
+            # follow, newest-first, so a hand-rolled shape is read as before.
+            # Without it the 40 inner "{" of a pretty-printed 40-entry list
+            # spend the budget before the block's own opening is ever reached.
+            for n in sorted(range(k, -1, -1), key=lambda n: col[opens[n]] != col[j]):
+                if joins >= 32:
+                    break
+                joins += 1
+                try:
+                    obj = json.loads("\n".join(lines[opens[n]:j + 1]))
                 except ValueError:
                     continue
                 if isinstance(obj, dict):

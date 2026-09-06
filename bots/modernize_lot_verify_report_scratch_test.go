@@ -17,6 +17,15 @@ const scratchWrapperHead = "#!/bin/sh\nset -e\n" +
 	"[ -n \"$GM_REPORT_TMP\" ] || { echo 'GM_REPORT_TMP unset' >&2; exit 3; }\n" +
 	"[ -z \"$REPORT_PATH_MARKER\" ] || printf '%s' \"$GM_REPORT_TMP\" > \"$REPORT_PATH_MARKER\"\n"
 
+// A harness that keeps talking to stdout after it has printed its report —
+// brace-first dict reprs, the shape that made the search expensive in the
+// first place. Deliberately longer than any budget inside the reader: a bound
+// spent on what came AFTER the verdict must never discard the verdict itself,
+// which is the difference between an oracle RED and a typed ORACLE_NOT_RUN.
+const scratchTeardownChatter = "i=0; while [ $i -lt 60 ]; do " +
+	"echo \"{'teardown': $i, 'note': 'a dict repr the harness logged after its report'}\"; " +
+	"i=$((i+1)); done\n"
+
 func scratchWorkspace(t *testing.T, wrapper string) (ws, base string) {
 	t.Helper()
 	const plan = `version: 1
@@ -196,6 +205,72 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
 			t.Fatalf("the indented report's fields were not read: %+v", res)
+		}
+	})
+
+	// The four below pin what bounding the search must NOT cost. Each shape
+	// reads on an unbounded scan; each was silently dropped by a first bound
+	// that budgeted the whole scan instead of the quadratic half of it, and
+	// a dropped report is not "no verdict" — it routes the run to fail as
+	// ORACLE_NOT_RUN while the oracle had, in fact, delivered one.
+
+	t.Run("an indented one-line report is read: a format is not a verdict", func(t *testing.T) {
+		indented := scratchWrapperHead +
+			"printf '    {\"mode\": \"gate\", \"ok\": false, \"invalid\": [{\"id\": \"m11\", \"reason\": \"anchor gone\"}]}\\n' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\nexit 1\n"
+		ws, base := scratchWorkspace(t, indented)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a one-line report indented by its harness was not read as the oracle's RED: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the indented report's fields were not read: %+v", res)
+		}
+	})
+
+	t.Run("a report followed by the harness's teardown chatter is still the verdict", func(t *testing.T) {
+		trailing := scratchWrapperHead +
+			"echo '{\"mode\":\"gate\",\"ok\":false,\"invalid\":[{\"id\":\"m12\",\"reason\":\"anchor gone\"}]}' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\n" + scratchTeardownChatter + "exit 1\n"
+		ws, base := scratchWorkspace(t, trailing)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a verdict printed before the harness's last words was discarded: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the report's fields were lost to the trailing chatter: %+v", res)
+		}
+	})
+
+	t.Run("a pretty-printed report followed by teardown chatter is still the verdict", func(t *testing.T) {
+		trailing := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": false,\\n  \"invalid\": [\\n    {\"id\": \"m13\", \"reason\": \"anchor gone\"}\\n  ]\\n}\\n' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\n" + scratchTeardownChatter + "exit 1\n"
+		ws, base := scratchWorkspace(t, trailing)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a block verdict printed before the harness's last words was discarded: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the block report's fields were lost to the trailing chatter: %+v", res)
+		}
+	})
+
+	// Every entry of a pretty-printed list opens a brace of its own, so a
+	// scan that tries the newest opening first spends its whole budget inside
+	// the block and never reaches the block's own "{". A long RED — the one
+	// worth reading — is exactly where that bites.
+	t.Run("a pretty-printed report of many entries is read whole", func(t *testing.T) {
+		many := scratchWrapperHead +
+			"python3 -c 'import json; print(json.dumps({\"mode\": \"gate\", \"ok\": False, \"invalid\": [{\"id\": \"m%03d\" % i, \"reason\": \"anchor gone\"} for i in range(150)]}, indent=2))' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\nexit 1\n"
+		ws, base := scratchWorkspace(t, many)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a pretty-printed report of 150 entries was not read as the oracle's RED: %+v", res)
+		}
+		if len(res.OracleInvalid) != 150 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the block's own entries were not read: %d invalid, report %+v", len(res.OracleInvalid), res.OracleReport)
 		}
 	})
 
