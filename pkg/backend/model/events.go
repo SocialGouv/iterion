@@ -207,6 +207,13 @@ type LLMTurnCaptureInfo struct {
 	// passes it to `claude --resume <id> --fork-session` for the
 	// claude_code rehydration path.
 	SessionID string
+	// ConversationOmittedBytes is non-zero when the turn crossed the
+	// sandbox IPC without its snapshot, the snapshot being larger than
+	// one relayed line may carry (relayConversationBudget): the turn is
+	// still an anchor for the timeline, but a fork from it replays
+	// nothing, and this names how much stayed inside the container.
+	// Always zero on the in-process path.
+	ConversationOmittedBytes int
 	// conversation holds the unmarshalled message slice the runtime
 	// captures for the fork rehydration path. Kept unexported so
 	// observers must call MarshalConversation to materialise the JSON
