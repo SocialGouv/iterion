@@ -271,6 +271,7 @@ tool oracle_run:
     import re
     import shlex
     import shutil
+    import stat
     import subprocess
     import sys
     import tempfile
@@ -2245,6 +2246,9 @@ tool oracle_run:
         return run("sh %s" % shlex.quote(path), ws, timeout)
 
 
+    APPLY_REFUSED = -1  # apply_mutant's code when apply.sh was NOT run: no record could go down first
+
+
     def applied_marker_for(ws):
         """Where the harness notes the mutant it has applied and not yet reverted.
 
@@ -2260,40 +2264,128 @@ tool oracle_run:
         return os.path.join(root, "gm-applied", "gm-applied-%s.json" % key)
 
 
+    def _private_dir_of_ours(d):
+        """(ok, why): the marker directory is OURS and PRIVATE — a real directory,
+        not a symlink, owned by this uid, no group/other bits. On a shared temp
+        root anyone can pre-create the path; a directory that fails the test is
+        refused, never repaired: chmod on a foreign directory is EPERM anyway, and
+        repairing it would mean trusting what it already holds."""
+        try:
+            st = os.lstat(d)
+        except OSError as e:
+            return False, "%s: %s" % (d, e.strerror or e)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return False, "%s is not a directory of its own (a symlink?)" % d
+        if st.st_uid != os.geteuid():
+            return False, "%s is owned by uid %d, not %d" % (d, st.st_uid, os.geteuid())
+        if st.st_mode & 0o077:
+            return False, "%s is not private (mode %o)" % (d, stat.S_IMODE(st.st_mode))
+        return True, ""
+
+
+    def read_applied_marker(ws):
+        """(meta, why). meta is None when there is no marker. A marker that cannot
+        be trusted — a directory that is not ours, a symlink, a file of another
+        uid, unreadable content — comes back as ({}, why): the caller refuses,
+        executes nothing and deletes nothing. The write side keeps the file
+        private; the read side proves it, because the file is an instruction to
+        run a script."""
+        marker = applied_marker_for(ws)
+        if not os.path.lexists(marker):
+            return None, ""
+        ok, why = _private_dir_of_ours(os.path.dirname(marker))
+        if not ok:
+            return {}, "the marker directory is not the harness's own: %s" % why
+        try:
+            fd = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as e:
+            return {}, "cannot open the marker %s: %s" % (marker, e.strerror or e)
+        try:
+            st = os.fstat(fd)
+        except OSError as e:
+            os.close(fd)
+            return {}, "cannot stat the marker %s: %s" % (marker, e.strerror or e)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            os.close(fd)
+            return {}, "the marker %s is not a regular file of this uid" % marker
+        try:
+            with os.fdopen(fd, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as e:
+            return {}, "the marker %s is unreadable: %s" % (marker, e)
+        if not isinstance(meta, dict):
+            return {}, "the marker %s does not hold an object" % marker
+        return meta, ""
+
+
     def write_applied_marker(ws, meta):
-        """Record the mutant about to be applied. Private directory, exclusive
-        create, no symlink following: a marker is an instruction to run a script,
-        and a shared temp root must not let anyone else write one."""
+        """Record the mutant about to be applied. (True, "") — or (False, why),
+        and then apply.sh MUST NOT run.
+
+        Refused when a marker is already there: the mutant it names had its
+        revert fail in this run, or another harness is gating the same tree.
+        Either way the tree is not HEAD, and overwriting the record is the one
+        way to lose a leftover for good: the next mutant's clean revert would
+        then erase a record that was never its own. Refused, too, when the
+        record cannot be written (a read-only, full or foreign scratch root): a
+        mutant the harness cannot keep track of is a mutant it must not apply —
+        the silent alternative is a net behaving exactly as before this guard,
+        with nothing to say so.
+        """
         marker = applied_marker_for(ws)
         d = os.path.dirname(marker)
         try:
             os.makedirs(d, mode=0o700, exist_ok=True)
-            os.chmod(d, 0o700)
-            try:
-                os.remove(marker)
-            except OSError:
-                pass
+        except OSError as e:
+            return False, "cannot create the marker directory %s: %s" % (d, e.strerror or e)
+        ok, why = _private_dir_of_ours(d)
+        if not ok:
+            return False, "the marker directory is not usable: %s" % why
+        if os.path.lexists(marker):
+            prior, _why = read_applied_marker(ws)
+            prior = prior or {}
+            return False, ("a mutant is still recorded as applied: %s (%s) — its revert failed "
+                           "in this run, or another harness is gating this tree; the tree is not "
+                           "HEAD and nothing is applied on top of it"
+                           % (prior.get("id") or "?", prior.get("dir") or marker))
+        try:
             fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
+        except OSError as e:
+            return False, "cannot write the marker %s: %s" % (marker, e.strerror or e)
+        return True, ""
+
+
+    def drop_applied_marker(ws, meta=None):
+        """Remove the marker — only when it records THIS mutant (meta None: any
+        marker of ours). A revert of B must never erase the record of A, whose
+        revert failed: that record is the only trace of a tree that is not HEAD."""
+        prior, why = read_applied_marker(ws)
+        if prior is None or why:
+            return
+        if meta is not None and prior.get("id") is not None and prior.get("id") != meta.get("id"):
+            return
+        try:
+            os.remove(applied_marker_for(ws))
         except OSError:
             pass
 
 
     def apply_mutant(meta, ws):
         # The marker goes down BEFORE apply.sh runs: an interruption between the
-        # two leaves a tree that is mutated and a note that says by what.
-        write_applied_marker(ws, meta)
+        # two leaves a tree that is mutated and a note that says by what. A marker
+        # that cannot go down keeps apply.sh from running at all.
+        ok, why = write_applied_marker(ws, meta)
+        if not ok:
+            return APPLY_REFUSED, "apply.sh NOT run: %s" % why
         return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
     def revert_mutant(meta, ws):
         code, out = run_script(os.path.join(meta["dir"], "revert.sh"), ws)
         if code == 0:
-            try:
-                os.remove(applied_marker_for(ws))
-            except OSError:
-                pass
+            drop_applied_marker(ws, meta)
         return code, out
 
 
@@ -2305,6 +2397,15 @@ tool oracle_run:
         return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
 
+    def leftover_roots(ws):
+        """The only two places a mutant of this workspace's net can live: the
+        tree itself (visible mutants, an unsealed held-out) and the sealed
+        held-out pile (sealed_dir_for — GM_SEALED_DIR honoured). Never the whole
+        scratch root: on a shared host that is all of /tmp, and a marker naming
+        a directory there would have the gate run whatever script it found."""
+        return [ws, sealed_dir_for(ws)]
+
+
     def revert_leftover_mutant(ws):
         """Revert the mutant a previous, interrupted run left applied — if any.
 
@@ -2313,68 +2414,81 @@ tool oracle_run:
         judge a mutated program and call it the lot's. Measured: a tool node
         retried on the same tree after its exec stream broke — the build gate
         went red on a file the mutant had edited, and the oracle reported that
-        file as "not committed".
+        file as "not committed". Run in record mode too: references recorded
+        over a leftover would seal a program nobody wrote, which is worse than
+        an edit lost on a file the mutant had already overwritten.
 
         Returns None when there is nothing to revert. Otherwise a dict with the
         mutant's id and dir, `code` (revert.sh's exit; None when the script is
-        gone), and `marker`. The marker is dropped only when the revert
-        demonstrably succeeded — a leftover the harness could not revert stays
-        recorded, so the next gate reports it again instead of forgetting it;
-        an operator who reverts by hand clears it by deleting the marker.
+        gone), `marker`, and after a clean revert `dirty` — what `git status`
+        still shows, because the script's exit code is its word, not the tree's.
+        The marker is dropped only when the revert demonstrably succeeded — a
+        leftover the harness could not revert stays recorded, so the next gate
+        reports it again instead of forgetting it; an operator who reverts by
+        hand clears it by deleting the marker.
 
-        A marker whose directory is not under the workspace or the scratch root
-        is REFUSED, dropped and reported without executing anything: the marker
-        is an instruction to run a script, and only the harness's own mutants
-        may write it.
+        Refused, nothing executed: a marker whose directory is neither this
+        workspace nor its sealed held-out pile (dropped — it is ours and it is
+        not evidence), and a marker slot that is not the harness's own (kept —
+        not ours to delete; every application is refused until it is gone).
         """
         marker = applied_marker_for(ws)
-        if not os.path.isfile(marker):
+        meta, why = read_applied_marker(ws)
+        if meta is None:
             return None
-        try:
-            with open(marker, encoding="utf-8") as f:
-                meta = json.load(f)
-        except (OSError, ValueError):
-            meta = {}
+        if why:
+            return {"id": None, "dir": "", "code": None, "out": why, "marker": marker,
+                    "refused": True, "kept": True, "dirty": ""}
         mdir = meta.get("dir") or ""
-        root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
-        if not mdir or not (_under(mdir, ws) or _under(mdir, root)):
-            try:
-                os.remove(marker)
-            except OSError:
-                pass
+        if not mdir or not any(_under(mdir, r) for r in leftover_roots(ws)):
+            drop_applied_marker(ws)
             return {"id": meta.get("id"), "dir": mdir, "code": None, "out": "",
-                    "marker": marker, "refused": True}
+                    "marker": marker, "refused": True, "kept": False, "dirty": ""}
         script = os.path.join(mdir, "revert.sh")
         if os.path.isfile(script):
             code, out = run_script(script, ws)
         else:
             code, out = None, "the mutant's revert.sh is no longer there: %s" % script
+        dirty = ""
         if code == 0:
-            try:
-                os.remove(marker)
-            except OSError:
-                pass
+            drop_applied_marker(ws, meta)
+            st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                                capture_output=True, text=True)
+            dirty = (st.stdout or "").strip() if st.returncode == 0 else ""
         return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
-                "marker": marker, "refused": False}
+                "marker": marker, "refused": False, "kept": code != 0, "dirty": dirty[:400]}
 
 
     def leftover_disposition(left):
         """What the gate says about a leftover, and whether it may proceed.
 
-        Returns (kind, text): "reverted" — the tree is HEAD again, a note;
-        "refused" — a foreign marker was dropped, a note; "still_mutated" — the
-        revert failed or its script is gone, the tree is NOT HEAD, the gate must
-        refuse rather than judge a program nobody wrote.
+        Returns (kind, text): "reverted" — revert.sh exit 0, a note (with what
+        the tree still shows, if anything); "refused" — a marker of ours naming
+        a foreign directory was dropped, a note; "unusable" — the marker slot is
+        not the harness's own, the gate must stop: every application would be
+        refused; "still_mutated" — the revert failed or its script is gone, the
+        tree is NOT HEAD, the gate must refuse rather than judge a program
+        nobody wrote.
         """
         if left.get("refused"):
+            if left.get("kept"):
+                return "unusable", (
+                    "the application-marker slot %s is not the harness's own: %s. Nothing "
+                    "executed, nothing deleted. Every mutant application is refused until "
+                    "it is removed by hand or GM_SCRATCH points at a private root."
+                    % (left.get("marker"), left.get("out")))
             return "refused", (
                 "a stale application marker named a directory outside this workspace and "
-                "its scratch root (%s): dropped, nothing executed." % (left.get("dir") or "?"))
+                "its sealed held-out pile (%s): dropped, nothing executed." % (left.get("dir") or "?"))
         if left.get("code") == 0:
-            return "reverted", (
-                "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
-                "(revert.sh exit 0). The tree below is HEAD again; the interrupted attempt's "
-                "verdict, if any, judged a mutated program." % left.get("id"))
+            text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
+                    "(revert.sh exit 0). The interrupted attempt's verdict, if any, judged a "
+                    "mutated program." % left.get("id"))
+            if left.get("dirty"):
+                text += (" The tree still shows uncommitted changes after the revert — the "
+                         "script's exit is its word, not the tree's: %s"
+                         % " ".join(left["dirty"].split())[:300])
+            return "reverted", text
         how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
         return "still_mutated", (
             "a mutant left APPLIED by an interrupted gate could NOT be reverted at start: %s (%s). "
@@ -2455,6 +2569,11 @@ tool oracle_run:
         before_tree, before_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
 
         code, out = apply_mutant(meta, ws)
+        if code == APPLY_REFUSED:
+            # Nothing ran: no half-edit to undo, and the marker down there is
+            # another mutant's record of a tree that is not HEAD — this mutant's
+            # revert.sh over it would erase that record and half-restore the tree.
+            return dict(base, valid=False, detected=False, reason=out[-300:]), "failed"
         if code != 0:
             # A failed apply may have half-edited the tree, and the marker is
             # down: revert now, within this run, so neither outlives it — a
@@ -3517,6 +3636,91 @@ tool oracle_run:
                 check("rien n'a ete execute", os.path.exists(canary), False)
                 check("le marqueur etranger est jete", os.path.isfile(applied_marker_for(tmp)), False)
                 check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
+                # Un marqueur sous la racine scratch mais HORS de la pile scellee est
+                # etranger aussi : la racine, c'est tout /tmp sur un hote partage.
+                evil2 = os.path.join(os.environ["GM_SCRATCH"], "evil2")
+                os.makedirs(evil2)
+                with open(os.path.join(evil2, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
+                write_applied_marker(tmp, {"id": "evil2", "dir": evil2})
+                left = revert_leftover_mutant(tmp)
+                check("un marqueur sous la racine scratch, hors pile scellee, est refuse",
+                      [(left or {}).get("refused"), os.path.exists(canary)], [True, False])
+                # Un marqueur sous la pile scellee (GM_SEALED_DIR, hors arbre et hors
+                # scratch) est le held-out : il est reverti, pas refuse.
+                sealed = tempfile.mkdtemp(prefix="gm-sealed-")
+                saved_sealed = os.environ.get("GM_SEALED_DIR")
+                os.environ["GM_SEALED_DIR"] = sealed
+                try:
+                    hdir = os.path.join(sealed, "h1")
+                    os.makedirs(hdir)
+                    with open(os.path.join(hdir, "apply.sh"), "w", encoding="utf-8") as f:
+                        f.write("#!/bin/sh\nprintf 'held\\n' >> f.txt\n")
+                    with open(os.path.join(hdir, "revert.sh"), "w", encoding="utf-8") as f:
+                        f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                    code, _out = apply_mutant({"id": "h1", "dir": hdir}, tmp)
+                    check("le held-out scelle s'applique", [code, tree()], [0, "original\nheld\n"])
+                    left = revert_leftover_mutant(tmp)
+                    check("un marqueur sous la pile scellee est reverti, pas refuse",
+                          [(left or {}).get("refused"), (left or {}).get("code"), tree()],
+                          [False, 0, "original\n"])
+                    check("disposition du held-out reverti", leftover_disposition(left)[0], "reverted")
+                finally:
+                    os.environ.pop("GM_SEALED_DIR", None)
+                    if saved_sealed is not None:
+                        os.environ["GM_SEALED_DIR"] = saved_sealed
+                    shutil.rmtree(sealed, ignore_errors=True)
+                # Un revert en ECHEC garde son enregistrement face au mutant suivant :
+                # la seconde application est refusee, rien ne tourne, et le revert du
+                # second n'efface pas le marqueur du premier.
+                scripts("printf 'mutant\\n' >> f.txt", "exit 3")
+                code, _out = apply_mutant(lmeta, tmp)
+                check("A s'applique", code, 0)
+                code, out = revert_mutant(lmeta, tmp)
+                check("le revert de A echoue et A reste enregistre",
+                      [code, (read_applied_marker(tmp)[0] or {}).get("id")], [3, "leftover-1"])
+                bdir = os.path.join(tmp, "m2")
+                os.makedirs(bdir)
+                with open(os.path.join(bdir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nprintf 'B\\n' >> f.txt\n")
+                with open(os.path.join(bdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                bmeta = {"id": "leftover-2", "dir": bdir}
+                code, out = apply_mutant(bmeta, tmp)
+                check("l'application de B est refusee tant que A est enregistre",
+                      [code, "leftover-1" in out, tree()], [APPLY_REFUSED, True, "original\nmutant\n"])
+                verdict, state = probe_mutation(dict(bmeta, targets=["001"]), tmp)
+                check("la sonde de B est 'failed' sans rien reverter ni toucher au marqueur",
+                      [state, tree(), (read_applied_marker(tmp)[0] or {}).get("id")],
+                      ["failed", "original\nmutant\n", "leftover-1"])
+                code, _out = revert_mutant(bmeta, tmp)
+                check("le revert de B (exit 0) n'efface pas l'enregistrement de A",
+                      [code, (read_applied_marker(tmp)[0] or {}).get("id")], [0, "leftover-1"])
+                os.remove(applied_marker_for(tmp))
+                sub("git", "checkout", "--", "f.txt")
+                # Un repertoire de marqueur qui n'est pas prive n'est pas utilisable :
+                # l'application est refusee, la porte s'arrete (disposition 'unusable').
+                mdir_marker = os.path.dirname(applied_marker_for(tmp))
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                os.chmod(mdir_marker, 0o755)
+                try:
+                    code, out = apply_mutant(lmeta, tmp)
+                    check("un repertoire de marqueur non prive refuse l'application",
+                          [code, "not private" in out, tree()], [APPLY_REFUSED, True, "original\n"])
+                    os.chmod(mdir_marker, 0o700)
+                    apply_mutant(lmeta, tmp)
+                    os.chmod(mdir_marker, 0o755)
+                    left = revert_leftover_mutant(tmp)
+                    check("un marqueur dans un repertoire non prive est refuse et garde, rien n'est execute",
+                          [(left or {}).get("refused"), (left or {}).get("kept"), tree(),
+                           os.path.isfile(applied_marker_for(tmp))],
+                          [True, True, "original\nmutant\n", True])
+                    check("disposition d'un emplacement inutilisable", leftover_disposition(left)[0], "unusable")
+                finally:
+                    os.chmod(mdir_marker, 0o700)
+                left = revert_leftover_mutant(tmp)
+                check("le meme marqueur, l'emplacement redevenu prive : reverti",
+                      [(left or {}).get("code"), tree()], [0, "original\n"])
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
                 shutil.rmtree(outside, ignore_errors=True)
@@ -3685,7 +3889,7 @@ tool oracle_run:
         left = revert_leftover_mutant(ws)
         if left:
             kind, text = leftover_disposition(left)
-            if kind == "still_mutated":
+            if kind in ("still_mutated", "unusable"):
                 bail(text)
             note(report, text)
 
@@ -3993,11 +4197,20 @@ tool oracle_run:
                              % ", ".join(sorted(only)))
 
             verdicts, blind = [], []
+            # A revert that did not restore the baseline (revert.sh failed, or the
+            # captures still differ with the mutant gone) ends the scoring: every
+            # later measurement would describe a program nobody wrote, and every
+            # later apply is refused anyway while the leftover is on record. The
+            # gate is red on `revert_clean` either way; stopping keeps it legible.
+            stopped = None
             for seed, meta in enumerate(visible):
                 if only and meta["id"] not in only:
                     continue
                 v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
                 verdicts.append(v)
+                if not v.get("revert_clean", True):
+                    stopped = v
+                    break
                 if not v.get("valid"):
                     continue
                 if not v.get("detected"):
@@ -4014,9 +4227,19 @@ tool oracle_run:
             # it. Revealing `holdout_detected` to whoever runs the check is enough to
             # steer hardening: seeing 3/5 says "keep tuning" even with the files out
             # of reach. The held-out result belongs to the final gate alone.
-            held = [] if mode == "selfcheck" else [
-                score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
-                for i, m in enumerate(held_meta)]
+            held = []
+            if mode != "selfcheck" and stopped is None:
+                for i, m in enumerate(held_meta):
+                    v = score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
+                    held.append(v)
+                    if not v.get("revert_clean", True):
+                        stopped = v
+                        break
+            if stopped is not None:
+                note(report, "scoring stopped after mutant %s: %s. The tree or the app is no "
+                     "longer at baseline, so the mutants after it were not scored and are absent "
+                     "from the counts; a leftover, if any, is on record for the next gate."
+                     % (stopped.get("id"), stopped.get("reason") or "its revert did not restore the baseline"))
 
             valid = [v for v in verdicts if v.get("valid")]
             detected = [v for v in valid if v.get("detected")]
