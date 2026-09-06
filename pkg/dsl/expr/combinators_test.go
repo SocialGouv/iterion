@@ -147,6 +147,16 @@ func TestExpr_Helpers(t *testing.T) {
 		{"sum(input.floats)", 4.0},
 		{"min(input.nums)", int64(1)},
 		{"max(input.nums)", int64(3)},
+		// Variadic form. A budget guard clamping one figure between two
+		// others — `min(max(floor, cap * ratio), cap * 0.5)` — is the
+		// shape every author writes first, and the array-only form made it
+		// unwritable: the alternative is the same two subexpressions
+		// spelled out four times inside nested `if`s, which is how a
+		// deterministic guard becomes unreadable and then wrong.
+		{"min(3, 1, 2)", int64(1)},
+		{"max(3, 1, 2)", int64(3)},
+		{"min(1.5, 2)", 1.5},
+		{"max(input.nums, 7)", int64(7)},
 	}
 	for _, c := range cases {
 		got := evalOK(t, c.src, ctx)

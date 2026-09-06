@@ -1,5 +1,231 @@
 # Billy — branch-improvement validation
 
+## 2026-09-06 — the delivery reserve, the no-op terminal, and two gates that lied (no run; bot 1.6.0)
+
+- Status: **partial** — validated by the engine and by shell-level tests of
+  the real command bodies, NOT by a live run. Four issues closed in one
+  branch (#705, #706, #779, #789); every one of them was measured on a
+  production run, and three of the four change what the campaign is *told*,
+  which only a dogfood can confirm actually lands. The live checklist is at
+  the end of this entry.
+- Versions: bot `branch-improve-loop` 1.5.0 → **1.6.0** · iterion at
+  `3d7c46c1c841` (branch `fix/billy-delivery-reserve-decline-and-gates`).
+- Method: no LLM run. Each change is pinned by a test that was RED first:
+  the drift/masking gates by executing the real `verify_run` body against
+  fixture repositories (`bots/verify_run_drift_test.go`), the decline
+  oracle by executing the real `decline_probe` body
+  (`bots/decline_probe_test.go`), the reserve arithmetic and the decline
+  routing through the ENGINE with the scenario stub
+  (`e2e/branch_improve_delivery_reserve_test.go`,
+  `e2e/branch_improve_decline_test.go`), and the engine half of the decline
+  through the real webhook/gate lanes (`pkg/server/…_decline_notice_test.go`).
+
+### #705 — the delivery reserve, and why the cap moved
+
+Three runs died within 2 s of the same cap (9001/9000, 2h30m01s/2h30m,
+9001.86/9000) having pushed **nothing**. Landing in the last two seconds
+three times is not luck: the campaign spent the whole window and the tail
+that ships — verify gate, in-loop review, push, verdict, merge-gate status —
+was never scheduled, so the work existed only in the run's context.
+
+`delivery_reserve` is one deterministic `compute`, the single choke point
+every forward entry into `campaign` crosses (a `TestBranchImproveLoop_…IsTheOnlyWayIn`
+guard fails if a new entry bypasses it):
+
+    reserve = min( max(floor_minutes × 60, cap × ratio), cap / 2 )
+
+read from `run.max_duration_seconds` — the cap IN FORCE after any
+`--max-duration`, the recipe and the platform ceiling — exactly like
+`plan_budget_ratio`, because a literal mirroring the `budget:` block drifts
+from it in silence (the mistake 1.5.0 already paid for). A cap of 0 stays
+UNBOUNDED, and the `/2` clamp guarantees the campaign at least half the run
+whatever the knobs are set to.
+
+**The deadline is a constant of the run**, so the continuation loop needs no
+second copy of the arithmetic on its back-edge: the campaign's prompt pairs
+`{{outputs.delivery_reserve.work_deadline_seconds}}` with
+`{{run.elapsed_seconds}}`, which resolves fresh at every pass.
+
+`max_duration` **2h30m → 3h**, deliberately. Those three runs measure the
+campaign's appetite at *more* than 2h30m of pure campaign, so carving the
+reserve out of 2h30m would have traded "ships nothing" for "does less work" —
+not a fix. At 3h the default reserve is 27 min (against a ~16 min tail
+measured on this repo: verify ~10, in-loop review ~5, push + verdict ~1) and
+the campaign still gets **2h33m**, more working time than the dead runs had.
+`max_cost_usd` is untouched: all three died on duration, cost never binding.
+
+New knobs, both overridable per run: `delivery_reserve_ratio` (0.15),
+`delivery_reserve_floor_minutes` (10).
+
+### #706 — the no-op terminal
+
+The heal lane launched the fixer on a green PR a flaky test had ejected. The
+bot concluded "no code issue in the diff — this is a re-queue, not a fix",
+recorded that a queue build was in flight and that pushing would cancel it,
+and its mission said push anyway. `declined`/`decline_reason` make that an
+outcome; `decline_probe` makes it **earned** (HEAD unmoved since
+`workspace_probe`, tree clean) rather than asserted — a pass that committed
+anything ships through the ordinary tail instead of stranding its commits
+behind a terminal failure. Earned, the run ends `fail campaign_declined:
+code: DECLINED`, non-resumable.
+
+The engine half is generic and keyed on the code alone: `relaunchDeadGateRun`
+(the one point every relaunch crosses) stands down, the auto-fix lane does
+too and posts the reason on the PR, and the auto-heal mission now grants the
+refusal in as many words. Full contract: `docs/merge-gate.md` § `DECLINED`.
+
+### #779 / #789 — two gates that lied, fixed fleet-wide
+
+Both are in the `verify_run` body **shared by ten catalog bots**, so both
+were fixed at every site:
+
+- **#789** — `has_drift_gate` read the script one line at a time and only
+  counted a quiet diff when the failing exit was on the SAME line, so the
+  commonest real shape (`if ! git diff --quiet …; then … exit 1; fi`, which
+  is what this repo's own `openapi:check` writes) was rejected: run 01a072b5
+  delivered eight commits, logged `VERIFY OK`, and still returned exit 3 /
+  `DRIFT GATE MISSING`. Detection is now structural, comments are stripped
+  first (a commented-out gate used to count — that is how prose gamed it),
+  and a commit-if-changed block still counts for nothing.
+- **#779** — `… 2>&1 | tail -10; echo "EXIT=$?"` printed `EXIT=0` for a 127
+  (run 01a07283, a missing `tsc`). `pipefail` is not POSIX and these run
+  under `/bin/sh`, so the fix is not a reminder: `verify_run` now refuses a
+  verify.sh that pipes a top-level command into an output filter with
+  **MASKED EXIT STATUS** (exit 5) *before* running it and moves the script
+  aside so it is regenerated, and every campaign contract carries the
+  CAPTURE THE STATUS, THEN FILTER clause (guarded fleet-wide by
+  `bots/status_capture_clause_test.go`).
+
+### Engine hardening found on the way
+
+- `min`/`max` were array-only, so a clamp had to be four nested `if`s. They
+  are now variadic (one array, or two or more values) — `pkg/dsl/expr`.
+- **The ship path had to become the `else` fallback.** With
+  `campaign -> verify_probe when not declined`, an output that OMITS
+  `declined` matches neither edge and the run dies `NO_OUTGOING_EDGE` —
+  caught by the existing e2e stubs, and it would have hit any resume of an
+  older checkpoint. Silence must mean ship, never decline.
+- `{{outputs.X}}` is **not** substituted in a tool command body (only
+  `input`/`vars`/`secrets`/`run.id`). `decline_probe` had two, which would
+  have made it refuse every decline for want of an entry head — a guard that
+  looks like it works. Caught by `bots/catalog_command_refs_test.go`.
+- `DECLINED` must NOT be a `store.FailureCode` constant: that block is the
+  set a workflow may not mint (C248), so declaring it there would have made
+  the bot's own `code: DECLINED` a compile error. Caught by
+  `pkg/store/lifecycle_reserved_test.go`.
+
+### Review round on PR #830 (Revi, mono topology)
+
+Three findings, all **reproduced before fixing** — each one a real defect the
+tests did not cover:
+
+- **R69a603** [high] — the decline notice was posted from `autofixForRun`,
+  which the reconciliation sweep re-enters once a minute for a 60-minute
+  lookback. A declined run is terminal, so its `updated_at` never moves and it
+  stays in the window the whole hour: ~57 identical comments per replica.
+  Reproduced at 3 comments from 3 offers. Fixed with the subsystem's own
+  discriminator — `autofixForRunID(ctx, runID, via)`, the shape
+  `reconcileGateForRunID` already has, with the notice on `gateTriggerEvent`
+  only. Revi suggested `ev.Kind != ""`; that works but is incidental (the
+  sweep's event just happens to have no kind), so the discriminator is
+  explicit instead. NB the review's premise that the sibling notices dedup by
+  scanning their marker is **wrong**: `noticeGateDLQParked` /
+  `noticeGatePausedForRetry` carry no marker check — they are wrapped in
+  `via == gateTriggerEvent`, and `forgeIssueCommenter` deliberately cannot
+  list comments. One mechanism, and it is that one.
+- **R8f498c** [high] — `bots/app-dev` was the **11th** verify.sh carrier and
+  was in neither the port list nor the fleet guard's hardcoded map, so its
+  skill promised a structural drift gate and MASKED EXIT STATUS its own
+  `verify_run` did not implement. Ported, and the root cause fixed with it:
+  the guard now **discovers** carriers (any bot whose tool command contains
+  `subprocess.run(['sh', script]` — the executor, not `verify_probe`'s
+  `sh -n`), so a 12th cannot be forgotten, and a second guard cross-checks
+  each `skills/verify-build.md` promise against its own bot.
+- **Rce6c53** [medium] — the campaign was handed `work_deadline_seconds` /
+  `elapsed_seconds`, resolved once when the prompt was built. `run.*` has no
+  `started_at` and a tool body substitutes only `run.id`, so the agent had no
+  way to convert `date` into run time: "check it again" had nothing to check.
+  Relying on an agent's unaided sense of elapsed time is the exact failure the
+  reserve exists to remove. New `delivery_deadline` tool node stamps the window
+  as a **UTC instant** (python3, not GNU `date -d`), the contract tells the
+  agent to compare it with `date -u` after every fix, and being absolute it
+  stays correct across continuation passes without re-running.
+
+Both open questions answered, with code:
+
+- **Does anything clamp the 3h cap on the pod?** Yes, potentially:
+  `pkg/runner/loop.go:2415` `applyCloudBudgetCeiling` reads
+  `ITERION_CLOUD_MAX_DURATION` (with `_MAX_ITERATIONS` / `_MAX_TOKENS` /
+  `_MAX_COST_USD` / `_MAX_PARALLEL_BRANCHES`) and calls
+  `ir.Budget.ClampToCeiling`, which sets `CapImposed` — and an imposed cap
+  **refuses the budget exit grace**. The actual values live in the infra repo,
+  not here. Pod `activeDeadlineSeconds` is k8s, also out of tree; the
+  `ITERION_CLOUD_RETRY_*` ceiling only lowers a retry policy, never the
+  duration cap. The reserve is unaffected by construction: the clamp mutates
+  `wf.Budget` at `loop.go:1867`, before `runtime.New` builds the tracker from
+  that same budget (`engine.go:631` `newSharedBudget(e.workflow.Budget, …)`),
+  so `run.max_duration_seconds` is the POST-clamp cap. Pinned by
+  `TestBranchImproveLoop_DeliveryReserveFollowsAPlatformClamp`, which drives
+  the real `ClampToCeiling`: at a clamped 2h30m the reserve is 22.5 min, still
+  over the ~16 min tail. On a clamped pod the reserve is in fact the only
+  protection left, since the grace is refused there.
+- **Does a `stopped_on_reserve` pass leave the loop?** It did not — reproduced
+  at 9 passes. `branch_clean` is honestly false, so the back-edge re-entered
+  and the next pass's verify+review tail came out of the reserve; the loop
+  budget guard is a backstop (it declines a back-edge it cannot FUND, a
+  different question) and is switchable off. `gate` now carries a separate
+  `ship_now` = converged ∨ `stopped_on_reserve`, and the exit edge reads it.
+  `converged` is deliberately NOT widened: `publish_verdict` posts it as the
+  merge gate's build verdict, so a pass that ran out of time must not green it.
+
+Also worth recording from the review's non-blocking questions, answered but
+not changed: `entry_head` is captured at RUN start, so a pass-3 decline after
+passes 1–2 committed is refused — run-level granularity is intended (the run
+as a whole did change the branch, and shipping it is the safe outcome); and
+the decline notice fires regardless of `AutoFixOnGateFailure` on purpose — it
+is not an unattended action, it is telling a developer what a bot they
+themselves triggered decided.
+
+### Lessons for next run
+
+- Write the differential, not just the assertion. The first version of the
+  "a declined run launches nothing" test passed *without the change* — the
+  auto-fix lane already refuses to relaunch a fixer off its own verdict. The
+  fix was to assert, on the same fixture, that a non-declined failure DOES
+  launch.
+- A fleet-shared body is a class: `verify_run` is copy-pasted into ten bots,
+  and the presence guard (`TestVerifyRunDriftTailPresentInAllBots`) is the
+  only thing that keeps them from diverging. Both fixes were scripted across
+  all ten rather than applied to Billy alone.
+
+### How to verify live (next dogfood)
+
+1. **Reserve, on the happy path.** `/billy` on a real PR here. In the run
+   view, check the campaign's task prompt carries three non-zero figures
+   (cap 10800, window closes at 9180, elapsed) and that
+   `outputs.delivery_reserve.reserve_seconds` is 1620. The run must reach
+   `publish_verdict` — the whole point is that the tail happens.
+2. **Reserve, under pressure.** Re-launch with `--max-duration 40m` on a
+   substantial diff: the reserve should read 600 (the floor beats the 360 s
+   proportional slice), the campaign should report
+   `stopped_on_reserve: true` with a populated `issues_remaining`, and it
+   must still push and post its verdict. That is the case the three dead
+   runs failed.
+3. **Decline.** Comment `/billy` on a PR with nothing to fix (or let the
+   heal lane fire on a flaky-test eject). Expect: run `failed` with
+   `failure_code: DECLINED` in `iterion remote runs list`, the reason
+   verbatim in `run.error`, a `<!-- iterion:fixer-declined -->` comment on
+   the PR, and **no** relaunch and **no** push. Confirm `git log` on the PR
+   branch is unchanged.
+4. **Decline refused.** Harder to stage; if a run ever reports `declined`
+   after committing, the run must finish normally and its commits must land.
+   Check the `decline_probe` output says `HEAD moved`.
+5. **The two gates.** On a pass whose `verify.sh` mirrors `task
+   openapi:check`, the gate must go green (before 1.6.0 it returned exit 3).
+   If a pass ever returns exit 5, read `verify.sh.rejected` in the scratch
+   dir — that is the masked pipeline it was refused for.
+6. Then: cost, duration and where the commits landed, as usual.
+
 ## 2026-09-05 — the plan-budget guard reads the run, and both refusals are typed (no run; bot 1.5.0)
 
 - Status: **validated** by the engine, not by a live run — this is a bot

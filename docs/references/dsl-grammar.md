@@ -371,7 +371,7 @@ lambda_call = ( "map" | "filter" ) "(" expr "," lambda ")"
 lambda = ( IDENT | "(" IDENT { "," IDENT } ")" ) "=>" expr ;
 ```
 
-Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, `round`, `map`, `filter`, and `reduce`. Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
+Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, `round`, `map`, `filter`, and `reduce`. `min`/`max` accept either one array or two or more values (arguments are flattened one level). Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
 
 ## Template references
 

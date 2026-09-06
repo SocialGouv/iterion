@@ -389,9 +389,41 @@ properties worth knowing:
 Note what auto-heal cannot tell on its own: `CI_FAILURE` covers both "this
 branch genuinely breaks when combined with the base" and "an unrelated flaky
 test failed on the queue branch". In the second case the bot is dispatched
-against a PR with nothing to fix; it should report that and push nothing, but
-it still costs a run. If a flaky test is ejecting PRs, fix the test — the heal
-lane is not the place to absorb it.
+against a PR with nothing to fix. If a flaky test is ejecting PRs, fix the
+test — the heal lane is not the place to absorb it.
+
+##### `DECLINED` — a bot refusing its task on the merits
+
+That second case is why a dispatched bot may **refuse**, and why the mission
+the heal hands it says so explicitly. Without that permission the refusal is
+un-returnable: measured on #682, a fixer concluded "no code issue in the diff,
+this is a re-queue not a fix", recorded that a queue build was in flight and
+that pushing would cancel it — and its mission still said push. Run to
+completion it would have destroyed the merge it was dispatched to protect.
+
+The contract is one typed code, and it is **bot-agnostic**: a bot opts in by
+ending on a `fail <name>:` node carrying `code: DECLINED`, with its reason in
+the `message:`; nothing on the platform learns which bot did. `DECLINED` is
+deliberately not one of the engine's own `FailureCode`s — that set is the one
+a workflow may *not* mint (C248) — so any bot may adopt it.
+
+What the platform does with it:
+
+- **Nothing is relaunched.** A refusal is an answer, not a failure to repair:
+  the recovery run would re-derive it against the same premise, once per head,
+  for as long as the trigger keeps firing. Refused at the one point every
+  relaunch crosses (`relaunchDeadGateRun`), and in the auto-fix lane.
+- **The reason reaches the pull request** (`<!-- iterion:fixer-declined -->`).
+  A declined run changed nothing, so without the notice the PR carries no
+  trace of the decision at all — a red check and a bot that appears to have
+  done nothing.
+
+The bot's side has to make the refusal **earned**, not asserted, or the
+decline becomes an exit from hard work. Billy's `decline_probe` is the
+reference: a deterministic node comparing the repository to the state the run
+was handed (HEAD unmoved, working tree clean) that refuses a decline from any
+pass which committed or edited anything — that run ships its work through the
+ordinary tail instead. See `bots/branch-improve-loop/main.bot`.
 
 ## One gate, several bots
 

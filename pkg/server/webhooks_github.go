@@ -195,13 +195,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 			return
 		}
 		healIdem := healIdempotencyKey(cfg, p)
-		mission := fmt.Sprintf(
-			"This PR was ejected from the merge queue (reason: %s). Rebase the branch on `%s`, "+
-				"resolve any conflicts, and fix whatever breaks the build when the branch is combined "+
-				"with the current `%s` (a compile break, a stale generated file, a test broken by an "+
-				"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
-				"Push so the PR can re-enter the merge queue.\n\n%s",
-			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
+		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
@@ -388,6 +382,43 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
+}
+
+// autoHealMission is the task the merge-queue auto-heal hands whichever bot
+// serves the brancher role. It names a ROLE and an OUTCOME, never a bot.
+//
+// The second paragraph is the whole of #706. The first one presumes the defect
+// exists — "rebase, resolve, fix whatever breaks" — and a mission that presumes
+// its own premise leaves "there is nothing to fix" un-returnable: a bot that
+// reaches that conclusion can only state it and then act against it. Measured
+// on #682, a GREEN pull request a flaky test had ejected: the fixer concluded
+// "no code issue in the diff, this is a re-queue not a fix", recorded that a
+// queue build was in flight and that pushing would cancel it — and its mission
+// said push. Run to completion it would have destroyed the merge it was sent to
+// protect.
+//
+// The queue cannot tell "this branch breaks combined with the base" from "an
+// unrelated flaky test failed on the queue branch" (docs/merge-gate.md), so a
+// fixer dispatched on the second case will keep happening; the refusal is what
+// makes that harmless. The engine's half is generic: a run ending DECLINED is a
+// no-op nothing relaunches, and its reason is posted on the pull request
+// (forge_gate_decline_notice.go).
+func autoHealMission(dequeueReason, targetBranch, title, description string) string {
+	return fmt.Sprintf(
+		"This PR was ejected from the merge queue (reason: %s). Rebase the branch on `%s`, "+
+			"resolve any conflicts, and fix whatever breaks the build when the branch is combined "+
+			"with the current `%s` (a compile break, a stale generated file, a test broken by an "+
+			"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
+			"Push so the PR can re-enter the merge queue.\n\n"+
+			"An eject is not proof that this branch is at fault: the queue cannot distinguish a real "+
+			"combined-build break from an unrelated flaky test on the queue branch. So if you find "+
+			"nothing attributable to this branch — the diff is sound, the failure is elsewhere, or the "+
+			"pull request has meanwhile been taken back into the queue and a build is in flight — then "+
+			"DECLINE: push nothing, change nothing, and report what you checked and why you concluded "+
+			"there is nothing to fix. A needless push moves the head and cancels whatever the forge is "+
+			"building on the old one, which is strictly worse than doing nothing. Declining is a "+
+			"first-class outcome here, not a failure.\n\n%s",
+		dequeueReason, targetBranch, targetBranch, strings.TrimSpace(title+"\n\n"+description))
 }
 
 // handleGitHubIssues handles a verified inbound GitHub `issues` delivery. Two

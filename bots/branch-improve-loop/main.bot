@@ -257,6 +257,26 @@ vars:
   ## (--var plan_budget_ratio=0.5). See docs/bot-runs/branch-improve-loop.md.
   plan_budget_ratio: float = 0.3
 
+  ## DELIVERY RESERVE. Three production runs died at the duration cap
+  ## within two seconds of it -- 9001s/9000s, 2h30m01s/2h30m,
+  ## 9001.86s/9000s -- and NONE had pushed a commit: the campaign spent
+  ## the whole window and the delivery tail (verify gate, in-loop review,
+  ## push onto the PR, verdict comment, merge-gate status) was never
+  ## scheduled. Landing in the last two seconds three times is not luck;
+  ## it is a window sized for analysis with nothing left to ship with.
+  ## The reserve is the slice of the run's cap the campaign is told to
+  ## stop BEFORE, so the tail always has room:
+  ##   reserve = min( max(floor_minutes x 60, cap x ratio), cap / 2 )
+  ## The clamp is the arithmetic guarantee that the campaign keeps at
+  ## least half the run however the two knobs are set. Read from the caps
+  ## IN FORCE (run.max_duration_seconds -- after any --max-duration
+  ## override, the recipe and the platform ceiling), exactly like
+  ## plan_budget_ratio: a literal mirroring the budget: block drifts from
+  ## it in silence. A cap of 0 is UNBOUNDED, so the reserve is 0 too.
+  ## Overridable per run (--var delivery_reserve_ratio=0.25).
+  delivery_reserve_ratio: float = 0.15
+  delivery_reserve_floor_minutes: int = 10
+
   ## Above this many added lines in the branch diff (git diff --shortstat
   ## insertions), the plan phase reads a git diff --stat footprint +
   ## per-file hunks instead of the full unified diff, and the
@@ -332,6 +352,18 @@ prompt campaign_system:
      reads `git log`, re-diffs the branch, and continues where you left off.
      Do NOT keep a separate worklist / cursor file — the todo list lives in
      your working memory, the commits are the record.
+     CAPTURE THE STATUS, THEN FILTER — never let a pipe decide
+     whether a check passed. A pipeline exits with its LAST command's
+     status, so `<check> 2>&1 | tail -10` reports `tail`: a missing
+     compiler returned 127 and the run recorded EXIT=0 for a check that
+     never ran. `pipefail` is not POSIX and these commands run under
+     `sh`, so redirect the check's output to a file, gate on the
+     CHECK's own status, and filter the file afterwards —
+     `<check> >step.log 2>&1 || { tail -50 step.log; exit 1; }`. Read
+     `$?` from the command itself, never from an `echo` after a
+     pipeline. A check whose tool is missing is UNAVAILABLE, not
+     passed: report each one as passed, failed or unavailable, and
+     never let a successful filter stand in for a successful check.
      END EVERY PASS ON A CLEAN TREE: if you must stop mid-fix, either
      finish it to committable or discard the in-progress edits — `git
      restore --staged --worktree -- <the paths you touched>` and
@@ -363,6 +395,48 @@ prompt campaign_system:
        fixing, and anything you are unsure about. Then follow their answer:
        it overrides your own judgement on any point it covers, and you decide
        the rest yourself. Ask ONCE — this is an arbitration, not a dialogue.
+
+  YOU MAY DECLINE — "there is nothing to fix here" is an ANSWER, not a
+  preamble to doing it anyway. Your mission can presume a defect that is not
+  there: a pull request ejected from a merge queue by an unrelated flaky test,
+  a diff that is already correct, a "fix" for behaviour that is intentional.
+  Pushing anyway is the worst available outcome — it moves the head, cancels
+  whatever the forge had in flight on the old one, and puts your name on a
+  change nobody needed. (That is not hypothetical: a fixer once recorded, as
+  its own step 0, that a queue build was in flight and that pushing would
+  cancel it, then read its mission and pushed.)
+  So when a careful read of the diff — and of your mission's own premise —
+  concludes there is NOTHING attributable to this branch to fix: set
+  declined=true, put in decline_reason what you checked and what you concluded
+  (the author reads this), leave the repository exactly as you found it, and
+  stop. The run then ends with the typed code DECLINED and your reason reaches
+  the pull request.
+  A decline is EARNED, not asserted: a deterministic check compares the
+  repository to the state you were handed and REFUSES a decline from a pass
+  that committed anything or left the tree dirty (that run ships its work
+  normally instead). And it is not an exit from hard work — "this is
+  difficult", "I ran low on window" and "I could not reproduce it" are
+  issues_remaining with branch_clean=false, never a decline.
+
+  DELIVERY RESERVE — stop working in time to SHIP. Your working window is
+  deliberately SHORTER than the run's duration cap: the run holds a reserve
+  back for the delivery tail — the deterministic build/test gate, the in-loop
+  review, the push onto the pull request, the verdict comment and the
+  merge-gate status. Your task below gives you STOP WORKING AT: one UTC
+  wall-clock instant. Read the clock with `date -u` after every fix and compare
+  — that is the only measure of your own elapsed time you actually have, and an
+  agent's unaided sense of it is exactly what let three runs spend a whole
+  2h30m cap without noticing.
+  When you reach that instant: finish the fix in your hands to a committable
+  state (or discard it, per the clean-tree rule), COMMIT, and REPORT with
+  stopped_on_reserve=true. Do NOT open an issue you cannot finish before it —
+  check `date -u` BEFORE picking the next one, and take the next-smallest, or
+  stop.
+  This is not headroom you may spend. Three production runs died exactly at
+  the cap with NOTHING delivered: no push, no verdict, no comment, and every
+  uncommitted fix lost with the pod. Under-using the window costs one pass;
+  overrunning it costs the whole run. (An EMPTY instant means the run is
+  unbounded on time — then work to the task, not to a clock.)
 
   KEEP GOING, one issue at a time, until this pass has resolved every real
   issue you can find in the branch diff within your budget. Then STOP and
@@ -421,6 +495,15 @@ prompt campaign_system:
     - commits_this_pass: how many commits you landed this pass.
     - issues_remaining: a concise note of what real issues still need work
       (empty when branch_clean).
+    - declined / decline_reason: the no-op terminal above. declined=true means
+      "nothing attributable to this branch to fix; I pushed nothing"; the
+      reason states what you checked and what you concluded. Leave it false on
+      any pass that made a change.
+    - stopped_on_reserve: true when you stopped because your working window
+      closed, not because the branch was clean. Say so plainly — it is how the
+      operator learns the cap is too small for this branch, and it costs you
+      nothing (branch_clean=false already routes another pass). issues_remaining
+      then names what the next pass should pick up first.
     - needs_human / human_note: set if you paused or need an operator decision.
     - summary: what you reviewed and what you improved, and how it relates to
       the branch's changes.
@@ -462,6 +545,17 @@ prompt campaign_user:
   is your scope — do NOT flag pre-existing code the branch didn't touch.
 
   Piloting for this run: {{vars.pilot}}
+
+  WORKING WINDOW — everything after this instant is the delivery reserve (the
+  build/test gate, the review, the push, the verdict comment and the merge-gate
+  status):
+    STOP WORKING AT (UTC): {{outputs.delivery_deadline.deadline_at}}
+  That is a wall-clock time, so you can check it: run `date -u` whenever you
+  finish a fix and compare. Do NOT start an issue you cannot finish before it.
+  (An empty instant = the run is unbounded on time; then work to the task, not
+  to a clock. For context only, and stale the moment it is printed: the run's
+  duration cap is {{run.max_duration_seconds}}s and it had used
+  {{run.elapsed_seconds}}s when this pass started.)
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
@@ -741,6 +835,20 @@ schema campaign_output:
   needs_human: bool
   human_note: string
   summary: string
+  ## Did the pass stop because its WORKING WINDOW closed rather than
+  ## because the branch was clean? Without it the two are indistinguishable
+  ## on the run, and the operator never learns the cap is too small for
+  ## this branch -- which is exactly what three dead runs cost before the
+  ## reserve existed. Costs the agent nothing to admit: branch_clean=false
+  ## already routes another pass.
+  stopped_on_reserve: bool
+  ## The NO-OP TERMINAL: the mission presumed a defect that is not there,
+  ## so this run pushes nothing and says why. Verified deterministically by
+  ## decline_probe (the run must have left the repository exactly as it
+  ## found it) and stamped on the RUN as DECLINED, which is what lets an
+  ## unattended lane tell a refusal from a crash.
+  declined: bool
+  decline_reason: string
   ## finding_ledger: what happened to each finding of the PRIOR REVIEW, keyed by
   ## the stable id it was shown under (on the PR comment and in prior_review).
   ## Empty when no prior review was handed over.
@@ -758,6 +866,38 @@ schema campaign_output:
   ## topology nothing cross-confirms a finding, so the refusal channel is the
   ## only place a wrong finding can be contested in the open.
   finding_ledger: json
+
+## delivery_reserve's contract: the deterministic working window, plus the
+## plan-phase relay it sits on. cap/reserve/deadline are SECONDS OF RUN
+## TIME, not wall-clock instants — the campaign compares them against
+## `run.elapsed_seconds`, which its own prompt resolves fresh on every pass.
+schema delivery_reserve_state:
+  cap_seconds: float
+  reserve_seconds: float
+  work_deadline_seconds: float
+  ## The window still open RIGHT NOW, which is what a wall-clock instant is
+  ## built from. Clamped at 0: a plan phase that overran its share leaves a
+  ## negative remainder, and "the deadline was 20 minutes ago" is a clearer
+  ## thing to hand an agent than a negative duration.
+  work_seconds_left: float
+  fail_log: string
+  plan: string
+  plan_critique: string
+  plan_responses: string
+  plan_provenance: string
+
+## delivery_deadline's I/O — the run-relative window turned into an instant
+## the agent can actually READ. Seconds on the run clock are resolved once,
+## when the prompt is built, and the agent has no way to re-read them
+## mid-pass; a UTC instant it compares with `date -u` after every fix is
+## observable, and being absolute it stays correct on every continuation
+## pass without the node re-running.
+schema delivery_deadline_input:
+  work_seconds_left: float
+
+schema delivery_deadline_state:
+  deadline_at: string
+  seconds_left: float
 
 ## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
 schema verify_plan:
@@ -792,7 +932,15 @@ schema verify_probe_state:
 ## green AND the campaign reported the branch diff clean. fail_log relays the
 ## real build failure to the campaign on a RED pass (empty when green).
 schema gate_state:
+  ## The VERDICT: green tree, clean branch, clean review. publish_verdict
+  ## posts it as the merge gate's build half, so it never widens to mean
+  ## "we stopped" — a pass that ran out of window is not a green build.
   converged: bool
+  ## The ROUTING question, which is a different one: should this pass leave
+  ## the loop? Converged, or out of working window — in the second case
+  ## another pass would spend the delivery reserve on its own verify+review
+  ## tail, which is the reserve's whole purpose.
+  ship_now: bool
   fail_log: string
 
 ## review is the in-loop adversarial self-review (ADR: push the downstream
@@ -997,6 +1145,25 @@ schema workspace_probe_state:
   ok: bool
   code: string
   reason: string
+  ## HEAD as the run was handed it. The oracle a decline is checked
+  ## against: a pass that claims it changed nothing must be comparable to
+  ## the state it started from, and nothing else in the run records it.
+  entry_head: string
+
+## decline_probe's I/O. Both inputs are mapped ON THE EDGE and read as
+## {{input.X}}: a tool command substitutes only input/vars/secrets/run.id,
+## so an {{outputs.X}} ref inside the body would reach the shell as literal
+## text — and this probe would then refuse every decline for want of an
+## entry head, which is a guard that looks like it works.
+schema decline_input:
+  entry_head: string
+  decline_reason: string
+
+## Was the campaign's refusal EARNED? honoured only when the run left the
+## repository exactly as it found it.
+schema decline_state:
+  honoured: bool
+  reason: string
 
 schema plan_topology_state:
   do_plan: bool
@@ -1113,7 +1280,7 @@ ws = (os.environ.get('WS') or '').strip()
 base = (os.environ.get('BASE') or '').strip()
 def refuse(reason):
     sys.stderr.write('WORKSPACE_NOT_A_REPO: ' + reason + chr(10))
-    print(json.dumps({'ok': False, 'code': 'WORKSPACE_NOT_A_REPO', 'reason': reason}))
+    print(json.dumps({'ok': False, 'code': 'WORKSPACE_NOT_A_REPO', 'reason': reason, 'entry_head': ''}))
     raise SystemExit(0)
 def git(*a):
     return subprocess.run(['git', '-C', ws] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
@@ -1136,7 +1303,9 @@ if base:
     m = git('merge-base', resolved, 'HEAD')
     if m.returncode != 0:
         refuse('base_ref ' + repr(base) + ' (resolved as ' + resolved + ') shares no history with HEAD in ' + ws + ' (git merge-base: ' + (m.stderr or '').strip()[-300:] + ')')
-print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (repr(base) + ' resolved as ' + resolved + ' and' if base else '(none)') + ' reachable'}))
+h = git('rev-parse', 'HEAD')
+entry_head = (h.stdout or '').strip() if h.returncode == 0 else ''
+print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + ', base ' + (repr(base) + ' resolved as ' + resolved + ' and' if base else '(none)') + ' reachable', 'entry_head': entry_head}))
 "`
   output: workspace_probe_state
 
@@ -1343,6 +1512,74 @@ fail workspace_not_a_repo:
   message: "{{outputs.workspace_probe.reason}}"
   resumable: false
 
+## delivery_reserve — the SINGLE choke point every entry into `campaign`
+## crosses, so no path can start a pass with no working window by
+## omission. One deterministic compute: no shell, no clock of its own —
+## `run.max_duration_seconds` is the cap IN FORCE, and the campaign's own
+## prompt reads `run.elapsed_seconds` at the instant it executes, which is
+## what keeps the window fresh on every continuation pass without a second
+## copy of this arithmetic on the back-edge (the deadline is a CONSTANT of
+## the run; only the elapsed side moves).
+##
+## Like plan_budget_gate it is also the relay: it hands the plan-phase
+## fields on to the campaign exactly as the pre-reserve edges did.
+compute delivery_reserve:
+  description: "The campaign's working window: the cap minus the delivery tail's reserve"
+  input: campaign_input
+  output: delivery_reserve_state
+  expr:
+    cap_seconds: "run.max_duration_seconds"
+    ## Repeated rather than referenced: a compute's fields are evaluated
+    ## against the node's input and the run, never against its own
+    ## siblings, so reading `reserve_seconds` here would be nil.
+    ## A cap of 0 is UNBOUNDED on that axis, never "no allowance left" —
+    ## an unbudgeted run must not be told its window is already shut.
+    reserve_seconds: "if(run.max_duration_seconds > 0, min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0)"
+    work_deadline_seconds: "if(run.max_duration_seconds > 0, run.max_duration_seconds - min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0)"
+    ## What is left of the window at this instant, clamped at 0 — the
+    ## quantity delivery_deadline turns into a wall-clock time.
+    work_seconds_left: "max(0, if(run.max_duration_seconds > 0, run.max_duration_seconds - min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0) - run.elapsed_seconds)"
+    fail_log: "input.fail_log"
+    plan: "input.plan"
+    plan_critique: "input.plan_critique"
+    plan_responses: "input.plan_responses"
+    plan_provenance: "input.plan_provenance"
+
+## delivery_deadline — the window as an instant the agent can OBSERVE.
+## Seconds on the run clock are resolved once, when the campaign's prompt is
+## built, and nothing refreshes them while it works: `{{run.elapsed_seconds}}`
+## is a template ref, not a tool, and the agent is never told the run's
+## wall-clock start, so it cannot convert `date` into run time. Handing it a
+## duration and asking it to "check again" is the unaided sense of elapsed
+## time that let three runs spend the whole cap without noticing.
+##
+## So the window is stamped ONCE as a UTC instant, which the contract tells
+## the agent to compare with `date -u` after every fix. Absolute is also what
+## makes it survive the continuation loop: the same instant is still correct
+## on pass 3, so this node stays outside the loop with the reserve.
+## python3, not `date -d`: the -d form is GNU-only and these bots run in
+## whatever image the target repo brings.
+tool delivery_deadline:
+  description: "Stamp the working window as a UTC instant the campaign can re-read"
+  input: delivery_deadline_input
+  command: `LEFT={{input.work_seconds_left}} python3 -c "
+import os, json
+from datetime import datetime, timedelta, timezone
+try:
+    left = float(os.environ.get('LEFT', '0') or '0')
+except ValueError:
+    left = 0.0
+if left <= 0:
+    # No cap on this axis (or the window is already spent): an empty instant
+    # is the contract's 'unbounded, work to the task' signal, never a
+    # deadline in the past that would read as stop now.
+    print(json.dumps({'deadline_at': '', 'seconds_left': 0}))
+else:
+    at = datetime.now(timezone.utc) + timedelta(seconds=left)
+    print(json.dumps({'deadline_at': at.strftime('%Y-%m-%dT%H:%M:%SZ'), 'seconds_left': left}))
+"`
+  output: delivery_deadline_state
+
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native Claude
 ## Code session: read the branch diff, a living todo list of real issues, one
@@ -1366,6 +1603,61 @@ agent campaign:
   user: campaign_user
   session: fresh
   interaction: human
+
+## decline_probe — the deterministic half of the NO-OP TERMINAL. A fixer
+## may conclude its mission presumed a defect that is not there (a queue
+## eject caused by an unrelated flaky test, a PR whose diff is already
+## correct) and refuse to push. That refusal has to be EARNED, not
+## asserted: this node compares the repository to the state the run was
+## handed — HEAD unmoved since workspace_probe, and nothing staged or
+## dirty — and REFUSES a decline that comes with work. A pass that
+## changed the repo and then declined would strand its own commits
+## behind a terminal failure, which is worse than either outcome alone.
+## Refused → the run continues down the ordinary verify/ship tail, so the
+## banked work still lands. python3 for safe JSON (mirrors the sibling
+## probes); read-only.
+tool decline_probe:
+  description: "Was the campaign's refusal earned? (repository untouched by this run)"
+  input: decline_input
+  command: `WS={{vars.workspace_dir}} ENTRY={{input.entry_head}} REASON={{input.decline_reason}} python3 -c "
+import os, subprocess, json
+ws = (os.environ.get('WS') or '').strip()
+entry = (os.environ.get('ENTRY') or '').strip()
+reason = (os.environ.get('REASON') or '').strip()
+def git(*a):
+    return subprocess.run(['git', '-C', ws] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+if not reason:
+    print(json.dumps({'honoured': False, 'reason': 'declined with no reason: a refusal the author cannot read is not one'}))
+    raise SystemExit(0)
+h = git('rev-parse', 'HEAD')
+head = (h.stdout or '').strip() if h.returncode == 0 else ''
+if not entry or not head:
+    print(json.dumps({'honoured': False, 'reason': 'cannot compare HEAD to the state this run was handed (entry ' + repr(entry) + ', now ' + repr(head) + '); the decline is not verifiable, so the run ships what it has instead'}))
+    raise SystemExit(0)
+if head != entry:
+    print(json.dumps({'honoured': False, 'reason': 'declined but HEAD moved from ' + entry[:12] + ' to ' + head[:12] + ': the pass committed work, so it did have something to fix'}))
+    raise SystemExit(0)
+st = git('status', '--porcelain')
+dirty = [l for l in (st.stdout or '').splitlines() if l.strip()]
+if st.returncode != 0:
+    print(json.dumps({'honoured': False, 'reason': 'declined but the working tree could not be read: ' + (st.stderr or '').strip()[-200:]}))
+    raise SystemExit(0)
+if dirty:
+    print(json.dumps({'honoured': False, 'reason': 'declined but left ' + str(len(dirty)) + ' uncommitted change(s) in the tree: ' + ', '.join(d[3:] for d in dirty[:10])}))
+    raise SystemExit(0)
+print(json.dumps({'honoured': True, 'reason': reason + ' [verified: HEAD unmoved at ' + head[:12] + ', working tree clean — this run pushed nothing]'}))
+"`
+  output: decline_state
+
+## campaign_declined — the no-op terminal. NOT resumable: nothing about
+## this run changes by resuming it, because what the bot refused is the
+## PREMISE of its dispatch, not a budget. The operator (or the lane that
+## dispatched it) acts on the reason; a fresh launch is the retry.
+fail campaign_declined:
+  description: "the fixer found nothing attributable to this branch to fix"
+  code: DECLINED
+  message: "{{outputs.decline_probe.reason}}"
+  resumable: false
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
@@ -1435,6 +1727,80 @@ script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
     print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
     raise SystemExit(0)
+def sh_uncommented(text):
+    # The script and the CI config, read with comments removed -- shared by
+    # every structural check below so a commented-out gate never counts as
+    # one and a commented-out pipeline never accuses.
+    out_lines = []
+    for raw in text.splitlines():
+        cut = len(raw)
+        i = 0
+        while i < len(raw):
+            if raw[i] == chr(35) and (i == 0 or raw[i - 1] in (chr(32), chr(9))):
+                cut = i
+                break
+            i = i + 1
+        out_lines.append(raw[:cut])
+    return out_lines
+def ends_nonzero(s):
+    # A statement that ENDS the script non-zero: exit/return with a non-zero
+    # (or inherited) status, or a bare false.
+    for kw in ('exit ', 'return '):
+        p = s.find(kw)
+        while p >= 0:
+            rest = s[p + len(kw):].lstrip()
+            if rest[:1] in ('1', '2', '3', '4', '5', '6', '7', '8', '9') or rest[:1] == chr(36):
+                return True
+            p = s.find(kw, p + 1)
+    return s == 'false' or s.endswith(' false') or s.endswith(';false')
+def masked_pipelines(text):
+    # A pipeline exits with its LAST command status, so a gating command piped
+    # into an output filter reports the FILTER: a missing compiler returned 127
+    # and the script printed EXIT=0. pipefail is not POSIX and verify.sh runs
+    # under /bin/sh, so the convention is to capture the status FIRST and
+    # filter the log afterwards. Three shapes are NOT this defect and are left
+    # alone: a text producer whose filter IS the assertion, a captured value
+    # the script checks itself, and a conditional whose test is the pipeline
+    # own status.
+    bad = []
+    filters = ('tail', 'head', 'tee', 'wc', 'less', 'more')
+    pipe = chr(124)
+    sub = chr(36) + '('
+    for line in sh_uncommented(text):
+        s = line.strip()
+        if not s or pipe not in s:
+            continue
+        if s.startswith('if ') or s.startswith('elif ') or s.startswith('while ') or s.startswith('until ') or s.startswith('case '):
+            continue
+        if sub in s or chr(96) in s:
+            continue
+        if (pipe + pipe + ' true') in s or (pipe + pipe + ' :') in s:
+            continue
+        idx = -1
+        i = 0
+        while i < len(s):
+            if s[i] == pipe:
+                if i + 1 < len(s) and s[i + 1] == pipe:
+                    i = i + 2
+                    continue
+                if i > 0 and s[i - 1] == pipe:
+                    i = i + 1
+                    continue
+                idx = i
+            i = i + 1
+        if idx < 0:
+            continue
+        producer = (s[:idx].strip().split() + [''])[0]
+        rest = s[idx + 1:].strip()
+        word = (rest.split() + [''])[0]
+        if producer in ('echo', 'printf', 'cat'):
+            continue
+        masked = word in filters
+        if word == 'grep' and ' -q' not in rest and ' -c' not in rest:
+            masked = True
+        if masked:
+            bad.append(s[:200])
+    return bad
 def tree_state():
     try:
         p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
@@ -1443,6 +1809,25 @@ def tree_state():
         return set(l for l in p.stdout.splitlines() if l.strip())
     except Exception:
         return None
+# Deterministic exit-status-masking precheck. A verify script whose gate is
+# piped into an output filter reports the filter, so a failing check reads as
+# success -- the one defect a GREEN verify can never reveal, which is why it is
+# caught before the script runs. The script is moved aside rather than left in
+# place: verify_probe would otherwise call it fresh and the loop would re-run
+# the same lie every pass.
+try:
+    script_src = open(script, encoding='utf-8', errors='replace').read()
+except OSError:
+    script_src = ''
+masked = masked_pipelines(script_src)
+if masked:
+    rejected = script + '.rejected'
+    try:
+        os.replace(script, rejected)
+    except OSError:
+        rejected = script
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 5, 'log_tail': 'MASKED EXIT STATUS: ' + str(len(masked)) + ' line(s) of ' + script + ' pipe a gating command into an output filter, so the pipeline reports the FILTER and a failed check reads as success (pipefail is not POSIX -- this runs under /bin/sh). Capture the status FIRST and filter the log after: <cmd> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; } -- or append  ' + chr(124) + chr(124) + ' true  to a pipeline that is deliberately not a gate. The script was moved to ' + rejected + ' and is regenerated next pass. Offending lines:' + chr(10) + chr(10).join(masked[:20])}))
+    raise SystemExit(0)
 pre = tree_state()
 rc = 0
 out = ''
@@ -1463,16 +1848,61 @@ except Exception as e:
 if rc == 0:
     import glob
     def has_drift_gate(text):
-        for l in text.splitlines():
-            # git diff --exit-code is the canonical build-failing gate.
-            if 'diff' in l and '--exit-code' in l:
+        # STRUCTURAL detection: a drift gate is a drift PROBE whose failure ENDS
+        # the script. Read one line at a time the commonest shape was invisible --
+        # the exit 1 of an  if ! git diff --quiet ...; then  sits on a LATER line
+        # -- so a genuinely green verify was refused with DRIFT GATE MISSING.
+        # Comments are stripped first: a comment can DESCRIBE a gate, only a
+        # command can BE one.
+        lines = sh_uncommented(text)
+        fail_fast = False
+        for i, l in enumerate(lines):
+            s = l.strip()
+            if s.startswith('set -'):
+                flags = (s.split() + [''])[1]
+                if 'e' in flags[1:] or 'errexit' in s:
+                    fail_fast = True
+            probe = ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or ('status --porcelain' in l)
+            if not probe:
+                continue
+            # 1. --exit-code IS the gate: the command's own status is the verdict.
+            if '--exit-code' in l:
                 return True
-            # --quiet / status --porcelain also appear as commit-if-changed
-            # control flow in updater workflows (e.g. a Homebrew tap bump) --
-            # only count them when the same line actually fails the build.
-            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
-            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
+            # 2. the verdict on the SAME line.
+            if ('exit 1' in l) or ('|| exit' in l) or ('|| return' in l) or ('test -z' in l) or ('[ -z' in l):
                 return True
+            # 3. NEGATED conditional -- if ! <probe>; then ... exit 1 ... fi. The
+            #    branch runs WHEN THE TREE DRIFTED, so a non-zero exit anywhere in
+            #    it is the gate; scan to the matching else/fi. A body that COMMITS
+            #    the drift instead (the updater shape) never reaches an exit and
+            #    is still correctly rejected.
+            if (s.startswith('if ') or s.startswith('elif ')) and '!' in s.split(';')[0]:
+                depth = 0
+                j = i + 1
+                while j < len(lines):
+                    b = lines[j].strip()
+                    if b == 'fi' or b.startswith('fi '):
+                        if depth == 0:
+                            break
+                        depth = depth - 1
+                    elif depth == 0 and (b == 'else' or b.startswith('elif ')):
+                        break
+                    elif b.startswith('if ') or b == 'if':
+                        depth = depth + 1
+                    if ends_nonzero(b):
+                        return True
+                    j = j + 1
+                continue
+            # 4. FAIL-FAST script -- a bare  git diff --quiet  under set -e aborts
+            #    on drift, so the mode itself is the gate. Restricted to the diff
+            #    form on purpose: git status --porcelain exits 0 with output, so a
+            #    bare one gates nothing. Never a condition, a captured value or a
+            #    swallowed status.
+            if fail_fast and 'diff' in l and '--quiet' in l:
+                bare = not (s.startswith('if ') or s.startswith('elif ') or s.startswith('while ')
+                            or s.startswith('until ') or s.startswith('!'))
+                if bare and '||' not in s and '&&' not in s and (chr(36) + '(') not in s:
+                    return True
         return False
     ci_hit = ''
     for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
@@ -1536,6 +1966,9 @@ compute gate:
   output: gate_state
   expr:
     converged: "outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean"
+    ## Repeated rather than referenced: a compute's fields are evaluated
+    ## against the node's input and the run, never against its own siblings.
+    ship_now: "(outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean) || outputs.campaign.stopped_on_reserve"
     fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
 
 ## mr_gate routes the post-convergence tail into at most ONE of two
@@ -1905,7 +2338,17 @@ workflow branch_improve_loop:
     max_parallel_branches: 1
     ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
     ## plan_review resolves on, ~3 LLM calls run before the campaign.
-    max_duration: "2h30m"
+    ##
+    ## 3h, not the historical 2h30m. Three runs spent all of 2h30m on the
+    ## campaign alone and delivered nothing, which measures the campaign's
+    ## appetite at MORE than 2h30m — so carving the delivery reserve out of
+    ## 2h30m would have traded "ships nothing" for "does less work". At 3h
+    ## the default reserve is 27 min (comfortably over the ~16 min tail
+    ## measured on this repo: verify ~10, in-loop review ~5, push + verdict
+    ## ~1) and the campaign still gets 2h33m — more working time than the
+    ## dead runs had. The COST cap is unchanged: all three died on duration
+    ## with cost never binding.
+    max_duration: "3h"
     max_cost_usd: 75
 
   compaction:
@@ -1917,12 +2360,13 @@ workflow branch_improve_loop:
   workspace_probe -> plan_topology when ok
   workspace_probe -> workspace_not_a_repo when not ok
 
-  ## Plan phase: on by default; plan_phase off → straight to the campaign.
+  ## Plan phase: on by default; plan_phase off → straight to the reserve,
+  ## which is the single choke point before the campaign either way.
   plan_topology -> plan_scope_probe when do_plan
   ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
-  plan_topology -> campaign when not do_plan with {
+  plan_topology -> delivery_reserve when not do_plan with {
     fail_log: "", plan: "", plan_critique: "", plan_responses: "",
     plan_provenance: ""
   }
@@ -1983,7 +2427,7 @@ workflow branch_improve_loop:
   ## the studio and the alert sinks read it) instead of spending
   ## campaign's reserve (native:695). The refusal is resumable: widen the
   ## caps, resume, and this guard is re-evaluated.
-  plan_budget_gate -> campaign when not exhausted with {
+  plan_budget_gate -> delivery_reserve when not exhausted with {
     fail_log:        "",
     plan:            "{{outputs.plan_budget_gate.plan}}",
     plan_critique:   "{{outputs.plan_budget_gate.plan_critique}}",
@@ -1992,9 +2436,50 @@ workflow branch_improve_loop:
   }
   plan_budget_gate -> plan_exhausted when exhausted
 
+  ## The working window, stamped as an instant, then the campaign. Every
+  ## FORWARD entry crosses this pair, so no launch shape can start a pass
+  ## with an unbounded window by omission; the loop back-edge is exempt by
+  ## construction — it re-enters the same campaign, whose prompt reads an
+  ## ABSOLUTE deadline off delivery_deadline, and an absolute instant is
+  ## as true on pass 3 as on pass 1.
+  delivery_reserve -> delivery_deadline with {
+    work_seconds_left: "{{outputs.delivery_reserve.work_seconds_left}}"
+  }
+  ## The relay reads delivery_reserve directly: an edge mapping resolves any
+  ## node's outputs, so the stamp node carries no plan-phase plumbing of its
+  ## own.
+  delivery_deadline -> campaign with {
+    fail_log:        "{{outputs.delivery_reserve.fail_log}}",
+    plan:            "{{outputs.delivery_reserve.plan}}",
+    plan_critique:   "{{outputs.delivery_reserve.plan_critique}}",
+    plan_responses:  "{{outputs.delivery_reserve.plan_responses}}",
+    plan_provenance: "{{outputs.delivery_reserve.plan_provenance}}"
+  }
+
   ## Each pass: the campaign reviews+improves the branch diff (committing each
   ## fix in stride), then the deterministic build/test gate re-checks the tree.
-  campaign -> verify_probe with {
+  ## Unless it DECLINED — then the deterministic decline_probe decides whether
+  ## the refusal was earned (the run left the repository untouched) before any
+  ## of the verify/ship tail is paid for.
+  ##
+  ## The ship path is the `else` FALLBACK, not `when not declined`: an absent
+  ## field matches neither form of the condition, so a pass whose output omits
+  ## `declined` — an older checkpoint resumed onto this graph, a model that
+  ## drops an optional bool — would leave the campaign with no outgoing edge
+  ## and kill the run outright. Falling through to the tail is the safe
+  ## direction: silence means ship, never decline.
+  campaign -> decline_probe when declined with {
+    entry_head:     "{{outputs.workspace_probe.entry_head}}",
+    decline_reason: "{{outputs.campaign.decline_reason}}"
+  }
+  campaign -> verify_probe else with {
+    iteration: "{{loop.continuation_loop.iteration}}"
+  }
+  ## Earned → the run ends typed DECLINED, pushing nothing. Refused → the pass
+  ## DID change the repository, so it ships through the ordinary tail and its
+  ## commits land rather than dying behind a terminal failure.
+  decline_probe -> campaign_declined when honoured
+  decline_probe -> verify_probe when not honoured with {
     iteration: "{{loop.continuation_loop.iteration}}"
   }
   ## verify_probe reuses an already-valid verify.sh (skipping the LLM
@@ -2011,10 +2496,16 @@ workflow branch_improve_loop:
   }
   review -> gate
 
-  ## Converged (green AND the campaign reports the branch diff clean) → ship
-  ## what is banked (optional PR, else finish).
-  gate -> mr_gate when converged
-  ## Not converged → another campaign pass. RED carries the failure log so the
+  ## Ship what is banked (optional PR, else finish) on EITHER exit: converged
+  ## — green and the branch diff clean — or the pass stopped because its
+  ## working window closed. The second is the delivery reserve's own exit: a
+  ## further pass would spend that reserve on its verify+review tail, which is
+  ## precisely what it is held back to prevent, and `issues_remaining` already
+  ## carries what the next RUN should pick up. The engine's loop budget guard
+  ## stays the backstop, not the router — it declines a back-edge it cannot
+  ## FUND, a different question, and it can be switched off.
+  gate -> mr_gate when ship_now
+  ## Not shipping → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
   ## agent simply keeps reviewing the diff. This closes the single declared
   ## loop (campaign→verify_build→verify_run→gate→campaign); the loop-back reads

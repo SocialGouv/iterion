@@ -155,6 +155,80 @@ func TestVerifyRunDriftTail(t *testing.T) {
 		}
 	})
 
+	t.Run("multiline_negated_quiet_gate_in_verify_sh_passes", func(t *testing.T) {
+		// The shape this repo's own Taskfile writes (`openapi:check`), and
+		// the one a line-at-a-time reading rejected: the failing `exit` sits
+		// on a LATER line than the probe, so the gate is real and invisible.
+		// A green verify was refused with exit 3 and the merge gate left red
+		// on a genuinely clean tree (issue #789).
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\nset -e\nif ! git diff --quiet -- openapi.json; then\n  echo 'drift' >&2\n  git --no-pager diff --stat\n  exit 1\nfi\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a multiline `if ! git diff --quiet; then … exit 1; fi` IS a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("failfast_bare_quiet_gate_in_verify_sh_passes", func(t *testing.T) {
+		// `set -e` + a bare `git diff --quiet`: the probe's own non-zero
+		// status ends the script, so the gate is the fail-fast mode itself.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\nset -eu\ngit diff --quiet\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a bare `git diff --quiet` in a fail-fast script IS a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("commented_out_gate_in_verify_sh_is_not_a_gate", func(t *testing.T) {
+		// A comment can DESCRIBE a gate; only a command can BE one. Counting
+		// the comment is how the detector is gamed by an agent that copies
+		// the skill's example prose without the command under it.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\n# git diff --exit-code -- openapi.json\nexit 0\n")
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatalf("a commented-out gate must not satisfy the drift assertion: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "DRIFT GATE MISSING") {
+			t.Fatalf("log_tail must carry the drift message, got %q", res.LogTail)
+		}
+	})
+
+	t.Run("commit_if_changed_verify_sh_is_not_a_gate", func(t *testing.T) {
+		// The negative that keeps the acceptance honest: an updater snippet
+		// that COMMITS the drift instead of failing on it never gates.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		ciWithDriftGate(t, ws)
+		writeVerifySh(t, scratch, "#!/bin/sh\nset -e\nif ! git diff --quiet; then\n  git add -A\n  git commit -m regen\nfi\n")
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatalf("a commit-if-changed block never fails the build — it is not a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("commented_out_gate_in_ci_does_not_demand_one", func(t *testing.T) {
+		// The mirror of the clause above, on the CI side: a commented-out
+		// gate in a workflow must not force every verify.sh to carry one.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		dir := filepath.Join(ws, ".github", "workflows")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		yml := "jobs:\n  test:\n    steps:\n      - run: |\n          # git diff --exit-code openapi.json\n          echo skipped\n"
+		if err := os.WriteFile(filepath.Join(dir, "ci.yml"), []byte(yml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		writeVerifySh(t, scratch, "#!/bin/sh\nexit 0\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a commented-out CI gate must not demand a mirror: %+v", res)
+		}
+	})
+
 	t.Run("clean_green_verify_passes", func(t *testing.T) {
 		ws, scratch := gitWorkspace(t), t.TempDir()
 		writeVerifySh(t, scratch, "#!/bin/sh\nexit 0\n")
@@ -201,32 +275,261 @@ func TestVerifyRunDriftTail(t *testing.T) {
 	})
 }
 
-// TestVerifyRunDriftTailPresentInAllBots asserts every catalog bot carrying a
-// verify_run-style gate ships the deterministic drift tail (the body is
-// copy-pasted per bot — no DSL include — so a new bot or an edit can silently
-// drop it).
-func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
-	bots := map[string]string{
-		"feature-dev/main.bot":         "verify_run",
-		"whole-improve-loop/main.bot":  "verify_run",
-		"branch-improve-loop/main.bot": "verify_run",
-		"feature-gap-fill/main.bot":    "verify_run",
-		"test-coverage/main.bot":       "verify_run",
-		"e2e-coverage/main.bot":        "verify_run",
-		"dep-update-guard/main.bot":    "verify_run",
-		"adr-cartograph/main.bot":      "verify_run",
-		"instrument/main.bot":          "verify_run",
-		// docs-refresh dropped the build-verify apparatus (a docs-only
-		// campaign can't break the build) — commit 8aee22894, converges on
-		// scope_ok ∧ docs_aligned alone. No verify_run node to guard.
-		"secured-renovacy/main.bot": "p2_verify_run",
+// TestVerifyRunMaskedPipeline guards the second way a verify script can lie:
+// a gating command piped into an output filter. A pipeline exits with its LAST
+// command's status, so `<gate> 2>&1 | tail -10` reports tail — measured live on
+// PR #770 (run 01a07283), where a missing tsc returned 127 and the campaign
+// printed EXIT=0 (issue #779). `pipefail` is not POSIX and verify.sh runs under
+// /bin/sh, so the convention is to capture the status FIRST and filter after.
+//
+// The refusal moves the script aside so verify_probe re-authors it on the next
+// pass instead of re-running the same lie forever.
+func TestVerifyRunMaskedPipeline(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
 	}
-	for rel, node := range bots {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	command := verifyRunCommand(t, "feature-dev/main.bot")
+
+	type verifyResult struct {
+		Passed   bool   `json:"passed"`
+		Skipped  bool   `json:"skipped"`
+		ExitCode int    `json:"exit_code"`
+		LogTail  string `json:"log_tail"`
+	}
+	run := func(t *testing.T, ws, scratch string) verifyResult {
+		t.Helper()
+		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
+		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
+		out, err := exec.Command("sh", "-c", cmd).Output()
+		if err != nil {
+			t.Fatalf("verify_run command failed to execute: %v (out %q)", err, out)
+		}
+		var res verifyResult
+		if uerr := json.Unmarshal(out, &res); uerr != nil {
+			t.Fatalf("verify_run output is not the verify_result JSON: %v (out %q)", uerr, out)
+		}
+		return res
+	}
+	setup := func(t *testing.T, body string) (string, string) {
+		t.Helper()
+		ws, scratch := t.TempDir(), t.TempDir()
+		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v (%s)", err, out)
+		}
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return ws, scratch
+	}
+
+	t.Run("gate_piped_into_tail_is_refused", func(t *testing.T) {
+		// The exact observed shape: a failing command whose status is eaten
+		// by the filter, then reported as EXIT=0.
+		ws, scratch := setup(t, "#!/bin/sh\nset -e\nfalse 2>&1 | tail -10\necho EXIT=0\n")
+		res := run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 5 {
+			t.Fatalf("a gate piped into tail must be refused (exit 5), got %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "MASKED EXIT STATUS") || !strings.Contains(res.LogTail, "tail") {
+			t.Fatalf("log_tail must name the defect and the offending line, got %q", res.LogTail)
+		}
+		if _, err := os.Stat(filepath.Join(scratch, "verify.sh")); err == nil {
+			t.Error("the rejected verify.sh is still in place — verify_probe would call it fresh and re-run the same lie")
+		}
+		if _, err := os.Stat(filepath.Join(scratch, "verify.sh.rejected")); err != nil {
+			t.Errorf("the rejected script must be kept for inspection: %v", err)
+		}
+	})
+
+	t.Run("gate_piped_into_grep_is_refused", func(t *testing.T) {
+		ws, scratch := setup(t, "#!/bin/sh\nset -e\nfalse | grep -v skip\n")
+		res := run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 5 {
+			t.Fatalf("a gate piped into a filtering grep must be refused, got %+v", res)
+		}
+	})
+
+	t.Run("legitimate_pipelines_pass", func(t *testing.T) {
+		// Four shapes that are NOT the defect: a text producer whose filter
+		// IS the assertion, a captured value the script checks itself, a
+		// conditional whose test is the pipeline's own status, and a
+		// pipeline explicitly declared not to be a gate.
+		body := "#!/bin/sh\nset -e\nprintf 'ok\\n' | grep -q ok\nV=$(printf 'a\\nb\\n' | head -1)\n" +
+			"[ -n \"$V\" ]\nif printf 'x\\n' | grep -q x; then :; fi\nfalse | tail -1 || true\n"
+		ws, scratch := setup(t, body)
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("legitimate pipelines must not be refused: %+v", res)
+		}
+	})
+
+	t.Run("commented_pipeline_does_not_accuse", func(t *testing.T) {
+		ws, scratch := setup(t, "#!/bin/sh\nset -e\n# go test ./... 2>&1 | tail -10\ntrue\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a commented-out pipeline is not a masked gate: %+v", res)
+		}
+	})
+}
+
+// TestVerifyRunDriftTailPresentInAllBots asserts every catalog bot carrying a
+// verify.sh gate ships the deterministic tail. The body is copy-pasted per bot
+// — no DSL include — so a new bot, or an edit, can silently drop it.
+//
+// The carriers are DISCOVERED, not listed. A hand-written roster is exactly
+// how this drifted: the list omitted app-dev, so app-dev kept the
+// line-at-a-time drift detector while its own skill documented the structural
+// one (R8f498c) — a bot promising an enforcement it does not have, which is
+// worse than not promising it. The discriminator is the node that EXECUTES the
+// script (`subprocess.run(['sh', script]`), which is precisely the gate:
+// verify_probe reads the same path with `sh -n` and is deliberately excluded,
+// and the name is irrelevant (secured-renovacy's is `p2_verify_run`).
+//
+// docs-refresh has no gate at all — a docs-only campaign cannot break the
+// build (commit 8aee22894) — and is correctly absent from the discovery.
+func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
+	const executesTheScript = "subprocess.run(['sh', script]"
+
+	mains, err := filepath.Glob("*/main.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	carriers := 0
+	for _, rel := range mains {
+		src, err := os.ReadFile(rel)
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if !strings.Contains(string(src), executesTheScript) {
+			continue // not a verify.sh gate carrier
+		}
+		carriers++
 		t.Run(rel, func(t *testing.T) {
-			cmd := toolCommand(t, rel, node)
-			for _, marker := range []string{"tree_state", "DRIFT GATE MISSING", "UNCOMMITTED REGEN OUTPUT"} {
-				if !strings.Contains(cmd, marker) {
-					t.Errorf("%s %s lacks the deterministic drift tail (missing %q)", rel, node, marker)
+			for _, marker := range []string{"tree_state", "DRIFT GATE MISSING", "UNCOMMITTED REGEN OUTPUT",
+				"MASKED EXIT STATUS", "sh_uncommented", "ends_nonzero", "masked_pipelines"} {
+				if !strings.Contains(string(src), marker) {
+					t.Errorf("%s runs a verify.sh gate but lacks the deterministic tail (missing %q) — "+
+						"its skills/verify-build.md documents enforcement this bot does not implement", rel, marker)
+				}
+			}
+		})
+	}
+	if carriers < 10 {
+		t.Fatalf("discovered %d verify.sh gate carriers — the discriminator %q is stale and the guard is near-vacuous",
+			carriers, executesTheScript)
+	}
+}
+
+// A marker check proves the tail was pasted, not that it works: the body is
+// re-indented per bot and a bad splice compiles fine and answers wrong. This
+// runs app-dev's OWN command against the two shapes R8f498c named — the
+// multiline gate it used to reject, and the piped gate it used to let through.
+func TestAppDevVerifyRunEnforcesTheSameTail(t *testing.T) {
+	for _, bin := range []string{"python3", "git"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not on PATH", bin)
+		}
+	}
+	command := verifyRunCommand(t, "app-dev/main.bot")
+
+	var res struct {
+		Passed   bool   `json:"passed"`
+		ExitCode int    `json:"exit_code"`
+		LogTail  string `json:"log_tail"`
+	}
+	run := func(t *testing.T, ws, scratch string) {
+		t.Helper()
+		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
+		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
+		out, err := exec.Command("sh", "-c", cmd).Output()
+		if err != nil {
+			t.Fatalf("verify_run failed to execute: %v (out %q)", err, out)
+		}
+		if uerr := json.Unmarshal(out, &res); uerr != nil {
+			t.Fatalf("output is not verify_result JSON: %v (out %q)", uerr, out)
+		}
+	}
+	workspace := func(t *testing.T, ci bool) (string, string) {
+		t.Helper()
+		ws, scratch := t.TempDir(), t.TempDir()
+		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v (%s)", err, out)
+		}
+		if ci {
+			dir := filepath.Join(ws, ".github", "workflows")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			yml := "jobs:\n  test:\n    steps:\n      - run: |\n          task gen\n          git diff --exit-code openapi.json\n"
+			if err := os.WriteFile(filepath.Join(dir, "ci.yml"), []byte(yml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return ws, scratch
+	}
+	write := func(t *testing.T, scratch, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("multiline_gate_accepted", func(t *testing.T) {
+		ws, scratch := workspace(t, true)
+		write(t, scratch, "#!/bin/sh\nset -e\nif ! git diff --quiet -- openapi.json; then\n  exit 1\nfi\n")
+		run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("app-dev still rejects the multiline gate its own skill documents: %+v", res)
+		}
+	})
+
+	t.Run("masked_pipeline_refused", func(t *testing.T) {
+		ws, scratch := workspace(t, false)
+		write(t, scratch, "#!/bin/sh\nset -e\nfalse 2>&1 | tail -10\necho EXIT=0\n")
+		run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 5 {
+			t.Fatalf("app-dev still lets a masked gate report green: %+v", res)
+		}
+	})
+}
+
+// The skill is the CONTRACT the authoring agent writes verify.sh against, so a
+// bundle shipping the enforcement wording must ship the enforcement. This is
+// the other half of R8f498c: the promise and the gate are in different files,
+// and only a test can hold them together.
+func TestVerifyBuildSkillPromiseMatchesItsBot(t *testing.T) {
+	skills, err := filepath.Glob("*/skills/verify-build.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) == 0 {
+		t.Fatal("no verify-build skill discovered — the glob is stale")
+	}
+	for _, skill := range skills {
+		t.Run(skill, func(t *testing.T) {
+			body, err := os.ReadFile(skill)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mainBot := filepath.Join(filepath.Dir(filepath.Dir(skill)), "main.bot")
+			bot, err := os.ReadFile(mainBot)
+			if err != nil {
+				t.Fatalf("read %s: %v", mainBot, err)
+			}
+			// Each promise the skill makes, and the marker in the bot that
+			// makes it true. A skill may say LESS than its bot enforces;
+			// it may never say more.
+			for promise, marker := range map[string]string{
+				"MASKED EXIT STATUS":  "masked_pipelines",
+				"on one line or many": "ends_nonzero",
+			} {
+				if strings.Contains(string(body), promise) && !strings.Contains(string(bot), marker) {
+					t.Errorf("%s promises %q but %s implements no %s — the authoring agent writes a verify.sh "+
+						"against a gate that is not there", skill, promise, mainBot, marker)
 				}
 			}
 		})
