@@ -2041,40 +2041,97 @@ def applied_marker_for(ws):
     return os.path.join(root, "gm-applied", "gm-applied-%s.json" % key)
 
 
+def read_applied_marker(marker):
+    """The marker's contents, or {} — a marker that will not parse records
+    nothing, and neither does one that is not an object."""
+    try:
+        with open(marker, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
 def write_applied_marker(ws, meta):
-    """Record the mutant about to be applied. Private directory, exclusive
-    create, no symlink following: a marker is an instruction to run a script,
-    and a shared temp root must not let anyone else write one."""
+    """Record the mutant about to be applied. Returns None on success, else the
+    reason no record could be made — and a mutant that cannot be recorded must
+    NOT be applied.
+
+    Private directory, exclusive create, no symlink following: a marker is an
+    instruction to run a script, and a shared temp root must not let anyone
+    else write one.
+
+    The exclusive create is also what protects an ARMED marker, and nothing
+    else did: a mutant whose revert.sh failed keeps its record on purpose, the
+    loop moved on to the next one, and an unconditional rewrite replaced that
+    record with the newcomer's — whose own clean revert then deleted it
+    outright. The first mutant stayed applied to the tree with nothing naming
+    it, and the next gate found nothing to revert. So: no overwrite, and the
+    refusal to apply on top is what keeps them from stacking.
+    """
     marker = applied_marker_for(ws)
     d = os.path.dirname(marker)
     try:
         os.makedirs(d, mode=0o700, exist_ok=True)
         os.chmod(d, 0o700)
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
-    except OSError:
-        pass
+    except FileExistsError:
+        return ("an application marker is already armed (%s, mutant %s): a previous "
+                "mutant is still applied to this tree, so this one was NOT applied on "
+                "top of it. Revert that one by hand, then delete the marker."
+                % (marker, read_applied_marker(marker).get("id") or "?"))
+    except OSError as exc:
+        return ("the application marker could not be written (%s): %s. Applying "
+                "without one would leave a mutant no later gate can find."
+                % (marker, exc))
+    return None
 
 
 def apply_mutant(meta, ws):
     # The marker goes down BEFORE apply.sh runs: an interruption between the
-    # two leaves a tree that is mutated and a note that says by what.
-    write_applied_marker(ws, meta)
+    # two leaves a tree that is mutated and a note that says by what. And when
+    # the record cannot be made, apply.sh does NOT run — an unrecorded mutant
+    # is the whole failure this marker exists to prevent, so arriving at it
+    # silently through a swallowed OSError was self-defeating.
+    #
+    # `None` for the exit code, never a non-zero one: it says apply.sh never
+    # ran, which is what tells the caller there is nothing to revert AND that
+    # the marker on disk is not its to drop.
+    why = write_applied_marker(ws, meta)
+    if why:
+        return None, why
     return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
+
+
+def drop_applied_marker(ws, meta=None):
+    """Clear the record of an applied mutant.
+
+    With `meta`, only when the record is THAT mutant's: a marker naming
+    another one is that other one's leftover — it survived precisely because
+    its revert failed — and clearing it here would strand it in the tree with
+    nothing recording it. Matched on id AND dir, because a held-out set and
+    the visible set can both hold a directory of the same name.
+
+    Without `meta`, unconditionally: the caller has REFUSED the record and it
+    is not to be trusted, let alone acted on.
+    """
+    marker = applied_marker_for(ws)
+    if meta is not None:
+        on_disk = read_applied_marker(marker)
+        if (on_disk.get("id"), on_disk.get("dir")) != (meta.get("id"), meta.get("dir")):
+            return
+    try:
+        os.remove(marker)
+    except OSError:
+        pass
 
 
 def revert_mutant(meta, ws):
     code, out = run_script(os.path.join(meta["dir"], "revert.sh"), ws)
     if code == 0:
-        try:
-            os.remove(applied_marker_for(ws))
-        except OSError:
-            pass
+        drop_applied_marker(ws, meta)
     return code, out
 
 
@@ -2131,17 +2188,10 @@ def revert_leftover_mutant(ws):
     marker = applied_marker_for(ws)
     if not os.path.isfile(marker):
         return None
-    try:
-        with open(marker, encoding="utf-8") as f:
-            meta = json.load(f)
-    except (OSError, ValueError):
-        meta = {}
+    meta = read_applied_marker(marker)
     mdir = meta.get("dir") or ""
     if not mdir or not any(_under(mdir, r) for r in mutant_roots(ws)):
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
+        drop_applied_marker(ws)
         return {"id": meta.get("id"), "dir": mdir, "code": None, "out": "",
                 "marker": marker, "refused": True}
     script = os.path.join(mdir, "revert.sh")
@@ -2150,10 +2200,7 @@ def revert_leftover_mutant(ws):
     else:
         code, out = None, "the mutant's revert.sh is no longer there: %s" % script
     if code == 0:
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
+        drop_applied_marker(ws, meta)
     return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
             "marker": marker, "refused": False}
 
@@ -2256,6 +2303,11 @@ def probe_mutation(meta, ws):
     before_tree, before_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
 
     code, out = apply_mutant(meta, ws)
+    if code is None:
+        # apply.sh never ran, so there is nothing to revert — and the marker
+        # on disk records an EARLIER mutant, so running THIS one's revert.sh
+        # would delete that record on exit 0 and strand the mutant it names.
+        return dict(base, valid=False, detected=False, reason=out), "failed"
     if code != 0:
         # A failed apply may have half-edited the tree, and the marker is
         # down: revert now, within this run, so neither outlives it — a
@@ -3285,6 +3337,37 @@ def _selftest():
             check("le marqueur reste tant que rien n'est reverti", os.path.isfile(applied_marker_for(tmp)), True)
             check("disposition d'un revert en echec : l'arbre est encore mute",
                   leftover_disposition(left)[0], "still_mutated")
+            # ── Le mutant SUIVANT n'ecrase pas ce marqueur arme, et n'est pas
+            # applique par-dessus. Sans ce refus : son marqueur remplacait celui
+            # du premier, son propre revert propre effacait le tout, et le
+            # premier restait dans l'arbre sans rien qui le nomme — la porte
+            # suivante ne trouvait plus rien a revertir.
+            m2dir = os.path.join(tmp, ".golden-master", "mutants", "m2")
+            os.makedirs(m2dir)
+            with open(os.path.join(m2dir, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nprintf 'second\\n' >> f.txt\n")
+            with open(os.path.join(m2dir, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+            code2, why2 = apply_mutant({"id": "m2", "dir": m2dir}, tmp)
+            check("un second mutant n'est pas applique sur un marqueur arme",
+                  [code2, "second" in tree()], [None, False])
+            check("le refus nomme le mutant encore applique", "leftover-1" in why2, True)
+            check("le marqueur arme decrit toujours le premier",
+                  read_applied_marker(applied_marker_for(tmp)).get("id"), "leftover-1")
+            v2, s2 = probe_mutation({"id": "m2", "dir": m2dir, "targets": ["001"]}, tmp)
+            check("le mutant refuse est 'failed', et n'a pas reverti le premier",
+                  [s2, v2.get("valid"), os.path.isfile(applied_marker_for(tmp))],
+                  ["failed", False, True])
+            check("la porte suivante nomme encore le PREMIER mutant",
+                  read_applied_marker(applied_marker_for(tmp)).get("id"), "leftover-1")
+            # Et un revert reussi d'un AUTRE mutant n'efface pas ce marqueur-la :
+            # sinon il suffisait qu'un mutant suivant se reverte proprement pour
+            # que le record du premier disparaisse, ce qui etait le second
+            # maillon de la meme panne.
+            check("un revert propre d'un autre mutant n'efface pas ce marqueur",
+                  [revert_mutant({"id": "m2", "dir": m2dir}, tmp)[0],
+                   read_applied_marker(applied_marker_for(tmp)).get("id")],
+                  [0, "leftover-1"])
             scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
             left = revert_leftover_mutant(tmp)
             check("le revert repare nettoie et efface", [tree(), os.path.isfile(applied_marker_for(tmp))],
@@ -3361,6 +3444,26 @@ def _selftest():
                 os.environ.pop("GM_SEALED_DIR", None)
                 if saved_sealed is not None:
                     os.environ["GM_SEALED_DIR"] = saved_sealed
+            # ── Un marqueur QU'ON NE PEUT PAS ECRIRE refuse l'application. La
+            # version precedente avalait l'OSError et appliquait quand meme :
+            # un mutant dans l'arbre qu'aucune porte ulterieure ne peut trouver,
+            # c'est-a-dire exactement la panne que ce marqueur existe pour eviter.
+            scratch_ok = os.environ["GM_SCRATCH"]
+            blocked = os.path.join(scratch_ok, "not-a-directory")
+            with open(blocked, "w", encoding="utf-8") as f:
+                f.write("")
+            os.environ["GM_SCRATCH"] = os.path.join(blocked, "sub")
+            try:
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                code3, why3 = apply_mutant(lmeta, tmp)
+                check("un marqueur impossible a ecrire refuse l'application",
+                      [code3, tree()], [None, "original\n"])
+                check("et le dit", "marker could not be written" in why3, True)
+                v3, s3 = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+                check("cette application refusee est un mutant 'failed'",
+                      [s3, v3.get("valid"), tree()], ["failed", False, "original\n"])
+            finally:
+                os.environ["GM_SCRATCH"] = scratch_ok
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             shutil.rmtree(outside, ignore_errors=True)
