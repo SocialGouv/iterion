@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.18](https://github.com/SocialGouv/iterion/compare/v3.112.17...v3.112.18) (2026-09-06)
+
+### Bug Fixes
+
+* **runner,runtime,sandbox:** a stale launch redelivery never restarts a requeued run, the resumed budget is re-stamped post-clamp, and the kubernetes post_create phase is bounded ([#822](https://github.com/SocialGouv/iterion/issues/822)) ([193585f](https://github.com/SocialGouv/iterion/commit/193585f531981e17c715c89caecd9628979ba8a0)), closes [#714](https://github.com/SocialGouv/iterion/issues/714) [#718](https://github.com/SocialGouv/iterion/issues/718) [#719](https://github.com/SocialGouv/iterion/issues/719) [#723](https://github.com/SocialGouv/iterion/issues/723) [#720](https://github.com/SocialGouv/iterion/issues/720)
+
+    <details><summary>why</summary>
+
+    A `queued` doc is the one status runResolveDoc restarts from the entry node, so a redelivery that reaches it from an earlier life of the run re-spends everything the checkpoint exists to save. The admission gauntlet now reads the queued arm explicitly: a launch message published before the doc's current QueuedAt belongs to a finished attempt and is dropped (the attempt now queued carries its own delivery), and a queued doc holding a checkpoint resumes instead of restarting.
+
+    </details>
+
 ## [3.112.17](https://github.com/SocialGouv/iterion/compare/v3.112.16...v3.112.17) (2026-09-06)
 
 ### Bug Fixes
