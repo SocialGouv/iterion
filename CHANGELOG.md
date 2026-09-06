@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.0](https://github.com/SocialGouv/iterion/compare/v3.111.1...v3.112.0) (2026-09-06)
+
+### Features
+
+* **chart:** a priorityClassName for the server and runner Deployments ([#802](https://github.com/SocialGouv/iterion/issues/802)) ([8a22cc7](https://github.com/SocialGouv/iterion/commit/8a22cc71ca8d3bfbdf578d434a21022bab315cbf))
+
+    <details><summary>why</summary>
+
+    The platform pods (server, runner) and the sandboxed run pods carried no PriorityClass, so a run pod bursting on a node committed at 99 % of its requests was a peer of the runner that owns its run for the scheduler and for eviction. `server.priorityClassName` / `runner.priorityClassName` (empty = the cluster default) let a deployment rank the platform above the run pods it starts (SocialGouv/iterion#732: prod sets both to the cluster's `resource-burstable`; the run pods stay unclassed).
+
+    </details>
+
+### Bug Fixes
+
+* **board:** derive the degraded readout from the binding, not from one pass ([#787](https://github.com/SocialGouv/iterion/issues/787)) ([cfaaa62](https://github.com/SocialGouv/iterion/commit/cfaaa629957b6b8d0ed89090d4857d59578e4cc4)), closes [#775](https://github.com/SocialGouv/iterion/issues/775), references [#793](https://github.com/SocialGouv/iterion/issues/793)
+
+    <details><summary>why</summary>
+
+    ReconcileStatusOptions reported a LostColumn only on the pass that observed the loss: both append sites were guarded by `id != ""` and that same pass dropped the cached id. From the next pass on the state had no id, so `rep.Lost` was empty and `rep.Reason()` was "" — and the caller, reading "nothing lost", cleared `degraded` on the first unrelated adoption. The lost column then read healthy forever while every reflect onto it still refused, counted in `reflect_no_column` and invisible…
+
+    </details>
+* **runtime:** the loop budget guard's warning says its rule ([#801](https://github.com/SocialGouv/iterion/issues/801)) ([1dfe7ec](https://github.com/SocialGouv/iterion/commit/1dfe7ecd0a676bbeeb2f9725d2b0f91d8b08a76f))
+
+    <details><summary>why</summary>
+
+    A declined back-edge emitted budget_warning {remaining, needed, used, limit}; read on a run with more remaining than needed, it did not say why the loop stopped — the rule is that the next iteration would land at or past the 90 % threshold where the engine refuses to start any node, and remaining > needed does not contradict it. Measured on a run whose repair loop was declined with remaining 15 644 s and needed 13 154 s: used 13 156 + needed 13 154 = 26 310 ≥ 25 920 (90 % of 28 800). The event…
+
+    </details>
+
 ## [3.111.1](https://github.com/SocialGouv/iterion/compare/v3.111.0...v3.111.1) (2026-09-06)
 
 ### Bug Fixes
