@@ -17,12 +17,25 @@ import (
 // rotated server-side before its access_token expires.
 //
 // The values are the documented endpoints at the time of writing
-// (2026-05). Operators can override via env on a per-deployment
-// basis when an OEM repackages the CLI.
+// (2026-05).
 const (
-	anthropicTokenURL = "https://console.anthropic.com/v1/oauth/token"
-	codexTokenURL     = "https://auth.openai.com/oauth/token"
+	defaultAnthropicTokenURL = "https://console.anthropic.com/v1/oauth/token"
+	defaultCodexTokenURL     = "https://auth.openai.com/oauth/token"
 )
+
+// anthropicTokenURL is the endpoint both halves of the Anthropic flow
+// POST to — the auth-code exchange and the server-side refresh. It goes
+// through envOr like its three siblings (authorize URL, redirect URI,
+// scopes) so an OEM-repackaged CLI or a proxying deployment moves the
+// whole flow, not three quarters of it.
+func anthropicTokenURL() string {
+	return envOr("ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", defaultAnthropicTokenURL)
+}
+
+// codexTokenURL is the Codex half of the same override family.
+func codexTokenURL() string {
+	return envOr("ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL", defaultCodexTokenURL)
+}
 
 // ErrNotRefreshable marks a credential whose sealed payload carries no
 // refresh token: no refresh exchange can ever succeed for it, so callers
@@ -58,7 +71,7 @@ func RefreshAnthropic(ctx context.Context, hc *http.Client, clientID, refreshTok
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicTokenURL(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return RefreshResult{}, fmt.Errorf("secrets: build refresh req: %w", err)
 	}
@@ -251,7 +264,7 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexTokenURL(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return RefreshResult{}, fmt.Errorf("secrets: build codex refresh req: %w", err)
 	}

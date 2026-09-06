@@ -365,6 +365,28 @@ Semantics worth knowing:
   leisure. An empty platform store keeps today's behaviour byte-identical.
 - Every mutation lands in the platform audit log (`/api/admin/audit`).
 
+## Re-pointing the OAuth endpoints (OEM CLI, proxy, air-gapped IdP)
+
+The forfait flow talks to a reverse-engineered vendor surface, so every
+endpoint it uses is env-overridable per deployment. **Move them as a set** —
+the first three drive the browser connect, the fourth drives what happens
+after it, and a deployment that moves three of four connects against one host
+and refreshes against another (each is read at the call site through
+[`envOr`](../pkg/secrets/oauth_authcode.go), so nothing is cached across a
+restart):
+
+| Env var | Default |
+| --- | --- |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_AUTHORIZE_URL` | `https://claude.ai/oauth/authorize` |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | `https://platform.claude.com/oauth/code/callback` |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | `user:profile user:inference user:sessions:claude_code user:mcp_servers` |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL` | `https://console.anthropic.com/v1/oauth/token` — the auth-code exchange **and** the refresh worker |
+| `ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL` | `https://auth.openai.com/oauth/token` |
+
+The two client ids (`ITERION_OAUTH_FORFAIT_{ANTHROPIC,CODEX}_CLIENT_ID`) ride
+the config loader rather than the call site; full table in
+[oauth-forfait.md](oauth-forfait.md#configuration).
+
 ## Related
 
 - Backends + provider routing + the OpenAI-via-ChatGPT-forfait section:
