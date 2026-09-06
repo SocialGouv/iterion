@@ -4121,7 +4121,13 @@ tool emit_runner:
         "import json,sys\n"
         "r=json.load(open(sys.argv[1]))\n"
         "mode=(r.get(\"mode\") or \"gate\")\n"
+        # A non-gate report under a GATE run is a subset (an ambient GM_MUTANTS)
+        # and exits 3: "no verdict" must never read as green to the CI or the
+        # human running this entry point. --record and --self-check keep their
+        # own modes and their exit 0.
         "if mode!=\"gate\":\n"
+        "    if sys.argv[2]==\"gate\":\n"
+        "        sys.stderr.write(\"MODE=\"+mode+\" under a gate run -- a subset is not a verdict (GM_MUTANTS set?).\\n\"); sys.exit(3)\n"
         "    sys.stderr.write(\"MODE=\"+mode+\" -- not a gate; no verdict.\\n\"); sys.exit(0)\n"
         "ok=(r.get(\"stable\") and r.get(\"noop_silent\") and r.get(\"revert_clean\")\n"
         "    and r.get(\"collateral\")==0 and not r.get(\"uncontrolled\")\n"
@@ -4222,12 +4228,17 @@ tool emit_runner:
         # stdout ONLY into the report: the harness logs to stderr and prints
         # one JSON verdict. Merging stderr feeds the progress log into the
         # JSON this runner re-reads, and the gate dies parsing itself.
+        # VERDICT_RC=0 first: inherited, an ambient value turned a green gate
+        # red once the harness succeeded and `|| VERDICT_RC=$?` never ran.
+        'VERDICT_RC=0',
         'python3 "$GM_WORKSPACE/$GM_DIR/harness.py" > "$GM_REPORT_TMP" || VERDICT_RC=$?',
-        '[ -n "$VERDICT_RC" ] || VERDICT_RC=0',
         'cat "$GM_REPORT_TMP"',
         'if [ "$VERDICT_RC" != "0" ]; then rm -f "$GM_REPORT_TMP"; exit "$VERDICT_RC"; fi',
-        'python3 -c \'' + RUNNER_VERDICT_PY + '\' "$GM_REPORT_TMP" "$GM_MODE"',
-        'GATE_RC=$?',
+        # `|| GATE_RC=$?`: under `set -e` a bare red verdict ends the script
+        # right here, before the report is removed — and a report left behind
+        # reads, at the next gate, as uncommitted work of whoever ran this one.
+        'GATE_RC=0',
+        'python3 -c \'' + RUNNER_VERDICT_PY + '\' "$GM_REPORT_TMP" "$GM_MODE" || GATE_RC=$?',
         'rm -f "$GM_REPORT_TMP"',
         'exit $GATE_RC',
     ]

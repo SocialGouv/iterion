@@ -12,16 +12,19 @@ import (
 
 // modernizeLotVerifyOut is the subset of lot_verify's report the tests read.
 type modernizeLotVerifyOut struct {
-	GatePassed      bool     `json:"gate_passed"`
-	OraclePassed    bool     `json:"oracle_passed"`
-	RefsUntouched   bool     `json:"refs_untouched"`
-	LotBlocked      bool     `json:"lot_blocked"`
-	DoneSelfWritten bool     `json:"done_self_written"`
-	ContractRewrite []string `json:"contract_rewritten"`
-	GateTimedOut    bool     `json:"gate_timed_out"`
-	BlockReason     string   `json:"block_reason"`
-	Unreadable      bool     `json:"contract_unreadable"`
-	LogTail         string   `json:"log_tail"`
+	GatePassed      bool           `json:"gate_passed"`
+	OraclePassed    bool           `json:"oracle_passed"`
+	RefsUntouched   bool           `json:"refs_untouched"`
+	LotBlocked      bool           `json:"lot_blocked"`
+	DoneSelfWritten bool           `json:"done_self_written"`
+	ContractRewrite []string       `json:"contract_rewritten"`
+	GateTimedOut    bool           `json:"gate_timed_out"`
+	BlockReason     string         `json:"block_reason"`
+	Unreadable      bool           `json:"contract_unreadable"`
+	LogTail         string         `json:"log_tail"`
+	OracleNotRun    bool           `json:"oracle_not_run"`
+	OracleInvalid   []any          `json:"oracle_invalid"`
+	OracleReport    map[string]any `json:"oracle_report"`
 }
 
 // modernizeNet drops the smallest net lot_verify accepts into ws: a runner
@@ -35,7 +38,9 @@ func modernizeNet(t *testing.T, ws string) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"verify-oracle.sh": "#!/bin/sh\nexit 0\n",
+		// A wrapper prints its report before it exits: one that says nothing
+		// is not a pass.
+		"verify-oracle.sh": "#!/bin/sh\nprintf '{\"mode\":\"gate\"}\\n'\nexit 0\n",
 		"refs/001.txt":     "STATUS 200\n",
 		"harness.py": `import json, os, sys
 mode = os.environ.get("GM_MODE", "gate")
