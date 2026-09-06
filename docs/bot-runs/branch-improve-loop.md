@@ -114,6 +114,78 @@ were fixed at every site:
   the bot's own `code: DECLINED` a compile error. Caught by
   `pkg/store/lifecycle_reserved_test.go`.
 
+### Review round on PR #830 (Revi, mono topology)
+
+Three findings, all **reproduced before fixing** — each one a real defect the
+tests did not cover:
+
+- **R69a603** [high] — the decline notice was posted from `autofixForRun`,
+  which the reconciliation sweep re-enters once a minute for a 60-minute
+  lookback. A declined run is terminal, so its `updated_at` never moves and it
+  stays in the window the whole hour: ~57 identical comments per replica.
+  Reproduced at 3 comments from 3 offers. Fixed with the subsystem's own
+  discriminator — `autofixForRunID(ctx, runID, via)`, the shape
+  `reconcileGateForRunID` already has, with the notice on `gateTriggerEvent`
+  only. Revi suggested `ev.Kind != ""`; that works but is incidental (the
+  sweep's event just happens to have no kind), so the discriminator is
+  explicit instead. NB the review's premise that the sibling notices dedup by
+  scanning their marker is **wrong**: `noticeGateDLQParked` /
+  `noticeGatePausedForRetry` carry no marker check — they are wrapped in
+  `via == gateTriggerEvent`, and `forgeIssueCommenter` deliberately cannot
+  list comments. One mechanism, and it is that one.
+- **R8f498c** [high] — `bots/app-dev` was the **11th** verify.sh carrier and
+  was in neither the port list nor the fleet guard's hardcoded map, so its
+  skill promised a structural drift gate and MASKED EXIT STATUS its own
+  `verify_run` did not implement. Ported, and the root cause fixed with it:
+  the guard now **discovers** carriers (any bot whose tool command contains
+  `subprocess.run(['sh', script]` — the executor, not `verify_probe`'s
+  `sh -n`), so a 12th cannot be forgotten, and a second guard cross-checks
+  each `skills/verify-build.md` promise against its own bot.
+- **Rce6c53** [medium] — the campaign was handed `work_deadline_seconds` /
+  `elapsed_seconds`, resolved once when the prompt was built. `run.*` has no
+  `started_at` and a tool body substitutes only `run.id`, so the agent had no
+  way to convert `date` into run time: "check it again" had nothing to check.
+  Relying on an agent's unaided sense of elapsed time is the exact failure the
+  reserve exists to remove. New `delivery_deadline` tool node stamps the window
+  as a **UTC instant** (python3, not GNU `date -d`), the contract tells the
+  agent to compare it with `date -u` after every fix, and being absolute it
+  stays correct across continuation passes without re-running.
+
+Both open questions answered, with code:
+
+- **Does anything clamp the 3h cap on the pod?** Yes, potentially:
+  `pkg/runner/loop.go:2415` `applyCloudBudgetCeiling` reads
+  `ITERION_CLOUD_MAX_DURATION` (with `_MAX_ITERATIONS` / `_MAX_TOKENS` /
+  `_MAX_COST_USD` / `_MAX_PARALLEL_BRANCHES`) and calls
+  `ir.Budget.ClampToCeiling`, which sets `CapImposed` — and an imposed cap
+  **refuses the budget exit grace**. The actual values live in the infra repo,
+  not here. Pod `activeDeadlineSeconds` is k8s, also out of tree; the
+  `ITERION_CLOUD_RETRY_*` ceiling only lowers a retry policy, never the
+  duration cap. The reserve is unaffected by construction: the clamp mutates
+  `wf.Budget` at `loop.go:1867`, before `runtime.New` builds the tracker from
+  that same budget (`engine.go:631` `newSharedBudget(e.workflow.Budget, …)`),
+  so `run.max_duration_seconds` is the POST-clamp cap. Pinned by
+  `TestBranchImproveLoop_DeliveryReserveFollowsAPlatformClamp`, which drives
+  the real `ClampToCeiling`: at a clamped 2h30m the reserve is 22.5 min, still
+  over the ~16 min tail. On a clamped pod the reserve is in fact the only
+  protection left, since the grace is refused there.
+- **Does a `stopped_on_reserve` pass leave the loop?** It did not — reproduced
+  at 9 passes. `branch_clean` is honestly false, so the back-edge re-entered
+  and the next pass's verify+review tail came out of the reserve; the loop
+  budget guard is a backstop (it declines a back-edge it cannot FUND, a
+  different question) and is switchable off. `gate` now carries a separate
+  `ship_now` = converged ∨ `stopped_on_reserve`, and the exit edge reads it.
+  `converged` is deliberately NOT widened: `publish_verdict` posts it as the
+  merge gate's build verdict, so a pass that ran out of time must not green it.
+
+Also worth recording from the review's non-blocking questions, answered but
+not changed: `entry_head` is captured at RUN start, so a pass-3 decline after
+passes 1–2 committed is refused — run-level granularity is intended (the run
+as a whole did change the branch, and shipping it is the safe outcome); and
+the decline notice fires regardless of `AutoFixOnGateFailure` on purpose — it
+is not an unattended action, it is telling a developer what a bot they
+themselves triggered decided.
+
 ### Lessons for next run
 
 - Write the differential, not just the assertion. The first version of the
