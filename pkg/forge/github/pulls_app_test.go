@@ -122,12 +122,46 @@ func (r *pullMintRecorder) scopeRefusal(authz, line string) string {
 	}
 	need, _ := grantsForRequestLine(line)
 	for _, name := range sortedGrantNames(need) {
-		level := need[name]
-		if got, ok := perms[name]; !ok || (level == "write" && got != "write" && got != "admin") {
-			return name + ":" + level
+		// The production rule, not a fourth copy of it: what the client uses
+		// to decide a grant is withheld is what the fake uses to withhold it.
+		if !grantCovers(perms, name, need[name]) {
+			return name + ":" + need[name]
 		}
 	}
 	return ""
+}
+
+// grantCovers is the one rule the mint, the withheld-grant diagnostic and this
+// fake all read, so its ordering is worth pinning: read < write < admin, a
+// grant covering every level at or below its own. The `admin` rows are what a
+// "write needs write-or-admin, anything else passes" shortcut gets wrong.
+func TestGrantCoversOrdersTheLevels(t *testing.T) {
+	for _, tc := range []struct {
+		granted, requested string
+		want               bool
+	}{
+		{"read", "read", true},
+		{"write", "read", true},
+		{"admin", "read", true},
+		{"read", "write", false},
+		{"write", "write", true},
+		{"admin", "write", true},
+		{"read", "admin", false},
+		{"write", "admin", false},
+		{"admin", "admin", true},
+		// An unfamiliar level the installation holds covers what is asked of
+		// it; an unfamiliar level we ask for is satisfied by no level we know.
+		{"maintain", "write", true},
+		{"admin", "maintain", false},
+	} {
+		got := grantCovers(map[string]string{"p": tc.granted}, "p", tc.requested)
+		if got != tc.want {
+			t.Errorf("grantCovers(granted %s, want %s) = %v, want %v", tc.granted, tc.requested, got, tc.want)
+		}
+	}
+	if grantCovers(map[string]string{"other": "write"}, "p", "read") {
+		t.Error("a permission the installation does not hold at all is never covered")
+	}
 }
 
 // sortedGrantNames keeps the refusal deterministic when a call is short of

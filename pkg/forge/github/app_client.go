@@ -786,17 +786,38 @@ func (a *AppClient) withheldGrant(ctx context.Context, perms map[string]string, 
 }
 
 // grantCovers reports whether an installation's grant serves a requested
-// permission at the requested level: a write needs write (or admin), a read
-// is served by any level.
+// permission at the requested level, on GitHub's own read < write < admin
+// ordering: a grant covers every level at or below its own.
+//
+// The ordering is compared, not special-cased on "write": `admin` is a real
+// level in GitHub's model (the organization_* permissions take it), so a rule
+// written as "a write needs write-or-admin, anything else passes" reports a
+// requested `admin` as served by a bare `read` — and withheldGrant would then
+// stay silent about the one grant it exists to name.
 func grantCovers(granted map[string]string, name, level string) bool {
 	got, ok := granted[name]
 	if !ok {
 		return false
 	}
-	if level == "write" {
-		return got == "write" || got == "admin"
+	return grantRank(got) >= grantRank(level)
+}
+
+// grantRank orders a GitHub permission level. An unrecognised level ranks
+// above admin, which cuts the right way at both ends: an unfamiliar level the
+// INSTALLATION holds covers what is asked of it (naming it missing would
+// accuse the wrong grant on the one path whose job is to name the right one),
+// while an unfamiliar level we REQUEST is not satisfied by any level we know.
+func grantRank(level string) int {
+	switch level {
+	case "read":
+		return 1
+	case "write":
+		return 2
+	case "admin":
+		return 3
+	default:
+		return 4
 	}
-	return true
 }
 
 // permissionSetKey renders a grant set as a stable string, so two calls asking
