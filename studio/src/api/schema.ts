@@ -5711,6 +5711,7 @@ export interface components {
             /** Format: date-time */
             at: string;
             attempts?: number;
+            launch?: boolean;
             reason?: string;
             run_id?: string;
             state?: string;

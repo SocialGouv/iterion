@@ -812,6 +812,17 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	} else if !got.GaveUp.Current(got.State, "run-1") {
 		t.Errorf("stamp does not describe the issue it was written on: state=%q stamp=%+v", got.State, got.GaveUp)
 	}
+	// A LAUNCH give-up (the launch attempt cap) names no run; the marker must
+	// round-trip too, or the stamp reads as run-bound and the needs-attention
+	// lane loses the card on the next read.
+	if err := store.SetGaveUp(created.ID, &native.GiveUp{State: current.State, Attempts: 8, Reason: "refused 8 times", Launch: true}); err != nil {
+		t.Errorf("SetGaveUp(launch): %v", err)
+	}
+	if got, err := store.Get(created.ID); err != nil {
+		t.Errorf("Get after SetGaveUp(launch): %v", err)
+	} else if got.GaveUp == nil || !got.GaveUp.Launch || !got.GaveUp.Current(got.State, "") {
+		t.Errorf("launch give-up not persisted as such: %+v", got.GaveUp)
+	}
 	// Moving the ticket expires the stamp for good — both stores enforce it
 	// on their write path, or a returning ticket would resurrect a give-up.
 	if _, err := store.SetState(created.ID, native.StateBlocked); err != nil {
