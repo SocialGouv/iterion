@@ -12,8 +12,14 @@ import (
 
 // apiErrorResultStatusRe extracts the HTTP-ish status code the claude CLI
 // prints when it renders an upstream API failure AS its result text, e.g.
-// "API Error: 529 Overloaded" or "API Error: 503 {...}".
-var apiErrorResultStatusRe = regexp.MustCompile(`(?i)^api error:?\s+(\d{3})\b`)
+// "API Error: 529 Overloaded" or "API Error: 503 {...}" — and the bracketed
+// form an Anthropic-shaped facade relays, "API Error: [500][Operation
+// failed][<request id>]". The bracketed status went unparsed once, so the
+// render fell through to the connectivity markers, matched none, and became
+// the node's output: the graph continued on an error message for 283
+// minutes. Exactly three digits, closed by a bracket or a word boundary — a
+// longer number is not a status and still falls through.
+var apiErrorResultStatusRe = regexp.MustCompile(`(?i)^api error:?\s*\[?(\d{3})(?:\]|\b)`)
 
 // isTransientAPIErrorResult reports whether a claude CLI "successful" result
 // string is actually a rendered upstream API failure of a TRANSIENT class

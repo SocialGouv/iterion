@@ -25,6 +25,12 @@ func TestIsTransientAPIErrorResult(t *testing.T) {
 		{"leading/trailing space", "  API Error: 503 Service Unavailable\n", true},
 		{"no code but connectivity marker", "API Error: Connection error.", true},
 		{"case-insensitive prefix", "api error: 500 boom", true},
+		// The bracketed render of an Anthropic-shaped facade: measured as a
+		// node's "answer" once, the graph continued on it.
+		{"facade bracketed 500", "API Error: [500][Operation failed][2026090610430471b2ed5a5eaa4de7]", true},
+		{"facade bracketed 429", "API Error: [429][Rate limit reached][2026090610430471b2ed5a5eaa4de7]", true},
+		{"facade bracketed 529", "API Error: [529][Overloaded][abc]", true},
+		{"facade bracketed, no space", "API Error:[503][Service unavailable]", true},
 
 		// Non-transient client/auth errors — must surface, not loop.
 		{"400 bad request", "API Error: 400 Bad Request", false},
@@ -32,6 +38,9 @@ func TestIsTransientAPIErrorResult(t *testing.T) {
 		{"403 forbidden", "API Error: 403 Forbidden", false},
 		{"404 not found", "API Error: 404 Not Found", false},
 		{"422 unprocessable", "API Error: 422 Unprocessable Entity", false},
+		{"facade bracketed 400", "API Error: [400][Invalid request][abc]", false},
+		{"facade bracketed 401", "API Error: [401][Unauthorized][abc]", false},
+		{"four digits are not a status", "API Error: [5000][x]", false},
 
 		// Genuine assistant output — must never be mistaken for an error.
 		{"empty", "", false},
