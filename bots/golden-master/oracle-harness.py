@@ -3986,21 +3986,38 @@ def main():
         wanted = [i.strip() for i in os.environ.get("GM_MUTANTS", "").split(",") if i.strip()]
         chosen = [m for m in visible if not wanted or m["id"] in wanted]
         report["missing"] = sorted(set(wanted) - {m["id"] for m in chosen})
-        verdicts = []
+        verdicts, stopped_at = [], None
         for m in chosen:
             v, state = probe_mutation(m, ws)
             if state != "failed":
                 revert_mutant(m, ws)
             verdicts.append(v)
+            # The gate's rule, here too. One mutant whose revert failed leaves
+            # the record armed; without this, every LATER mutant came back
+            # invalid quoting that one, while the tail still announced them all
+            # "applied, fingerprinted and reverted" and the tree stayed mutated.
+            # This is the mode the campaign uses to accept a RE-ANCHORED mutant,
+            # so the cascade sent it to repair mutants that were fine.
+            if leftover_on_record(ws):
+                stopped_at = v
+                break
         report["total"] = len(verdicts)
         report["valid"] = len([v for v in verdicts if v.get("valid")])
         report["invalid"] = [{"id": v["id"], "reason": v.get("reason", "")}
                              for v in verdicts if not v.get("valid")]
+        done = len(verdicts) - (1 if stopped_at is not None else 0)
         report["log_tail"] = (
             "MODE=validate — %d mutant(s) applied, fingerprinted and reverted. This says "
             "each one CHANGES something; it says NOTHING about whether the net sees it. "
             "Only the gate captures and compares, and the zeroed fields above are defaults, "
-            "not a verdict." % len(verdicts))
+            "not a verdict." % done)
+        if stopped_at is not None:
+            report["log_tail"] += (
+                " STOPPED at mutant %s: it is still recorded as applied, so the tree is not "
+                "at baseline and the %d mutant(s) after it were NOT validated — every "
+                "application there would be refused, not measured. Revert by hand, delete "
+                "the marker %s, then re-run."
+                % (stopped_at.get("id"), len(chosen) - len(verdicts), applied_marker_for(ws)))
         if report["missing"]:
             report["log_tail"] += (" %d requested mutant(s) do not exist: %s."
                                    % (len(report["missing"]), ", ".join(report["missing"])))
