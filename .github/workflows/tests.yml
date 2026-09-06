@@ -164,7 +164,7 @@ jobs:
     # surfaces here too, so no `needs:` ordering. ~2-3x slower than the plain
     # test job, hence the wider -timeout and job budget.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       CGO_ENABLED: "1"
     steps:
@@ -190,13 +190,16 @@ jobs:
           yq --version
 
       - name: Race tests (unit + e2e)
+        # 1800s: -race runs the e2e package 2-3x slower than the plain job —
+        # measured 862 s on a green merge-group build and over 900 s (panic) on
+        # 2026-09-06 as the suite grew; the structural fix is #842. Old note:
         # 900s, not the plain job's 600s: -race runs the e2e package 2-3x
         # slower (~170-200s plain → 400-600s under -race), so 600s left ZERO
         # headroom and a loaded runner crossed it — a 10m panic dump naming
         # whichever test happened to be in flight (seen on main 2026-08-25
         # and on the pr-523 merge-group). The number bounds a HANG, not a
         # slow machine; the 20-minute job budget still caps the whole run.
-        run: go test -race -mod=vendor -timeout 900s ./...
+        run: go test -race -mod=vendor -timeout 1800s ./...
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
