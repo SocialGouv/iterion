@@ -46,8 +46,16 @@ bug until you know it is a decision:
 2. **It never reopens a closed card.** Leaving a terminal column (`done`,
    `blocked`) is a *reopen* — an operator gesture with a dependents check and
    an audit trail. Dragging a card out of *Done* on GitHub is reported
-   (`refused_terminal`) and the two boards stay divergent until a human reopens
-   the card in iterion.
+   (`refused_terminal`, and the log line `project import: state write refused
+   … is terminal — leaving it requires an explicit reopen`) and the two boards
+   stay divergent until a human reopens the card in iterion. **The sanctioned
+   reopen is the API transition** — `iterion remote issues transition
+   <card-id> <state>`, or the studio move — because `SetStateOrReopen`
+   treats a transition OUT of a terminal state through the HTTP surface as
+   the explicit reopen the sink demands, while the project import
+   deliberately does not take that path. Whether a human's move on the
+   GitHub board should count as that reopen is an open decision:
+   [#839](https://github.com/SocialGouv/iterion/issues/839).
 3. **Unmapped states are inert.** A card in `review` or `waiting_deps` leaves
    the board showing the last true thing it was told, rather than being
    collapsed onto *In progress* — which the next pass would read back and undo.
@@ -253,17 +261,26 @@ The roadmap follows two kinds of native move and ignores a third:
 |---|---|
 | a **person** (studio, CLI, a bot's `board.move` tool) | yes |
 | a **run's verdict** — the dispatcher filing `in_progress` at launch, `done` after a finished run, `blocked` after a failed one, `awaiting_input` on a pause | yes |
-| **iterion on its own authority** — the claim watchdog parking a card, a column rename/delete, the dispatcher giving back a card it could not launch | **no** |
+| **iterion on its own authority** — the claim watchdog parking a card, a column rename/delete, the dispatcher giving back a card it could not launch or whose launch the run service refused | **no** |
 
 The third kind is *machine provenance*: the store stamps it on the card
 (`state_reason`, the same value the card's state event carries — `watchdog`,
-`state_rename`, `unlaunchable`, …) at every transition, on both the filesystem
-and the Mongo board, and both reflect paths read it off the card. Such a
-column says nothing about the card's work, so pushing it would show on the
-operator's board as if someone had decided it. The pass counts what it left
-alone as `reflect_machine`; the fast path materializes no projection row for
-a machine-caused move at all. The trigger spine applies the same
-`tracker.IsMachineReason` set to *launches*, for the same reason.
+`state_rename`, `unlaunchable`, `launch_refused`, …) at every transition, on
+both the filesystem and the Mongo board, and both reflect paths read it off
+the card. Such a column says nothing about the card's work, so pushing it
+would show on the operator's board as if someone had decided it. The pass
+counts what it left alone as `reflect_machine`; the fast path materializes no
+projection row for a machine-caused move at all. The trigger spine applies
+the same `tracker.IsMachineReason` set to *launches*, for the same reason.
+
+One machine-caused sequence ends in a move the roadmap DOES show: a card
+whose launch the run service keeps refusing is given back and retried with a
+backoff (`launch_refused`, machine), and once the attempts run out it is
+filed `blocked` under `launch_given_up` — **descriptive**, reflected on
+purpose, because the retries are over and a human has to decide. The card
+carries the last refusal (`launch_refusal.last_reason`) and a give-up stamp;
+reopening it in iterion starts the retries afresh. See
+[dispatcher.md](dispatcher.md#claim-selection-on-the-cloud-board--what-is-never-claimed).
 
 The card and the board therefore stay legitimately divergent after a machine
 park — a watchdog-filed `blocked` while GitHub still says *Planned* — until a
@@ -401,7 +418,9 @@ repository under a supported one is the fix.
 Check the column is in the map (`iterion remote board show` — a `!` marks a
 mapped column the board lacks). Then check it is not a terminal card:
 `refused_terminal > 0` means automation declined to resurrect a closed card,
-which is by design — reopen it in iterion.
+which is by design — reopen it in iterion: `iterion remote issues transition
+<card-id> <state>` (or the studio move) is the explicit reopen the terminal
+sink accepts; see [What syncs](#what-syncs-and-which-way), item 2, and #839.
 
 **A card moved in iterion but not on GitHub.**
 Five causes, in order of likelihood: the state is unmapped (`review`,

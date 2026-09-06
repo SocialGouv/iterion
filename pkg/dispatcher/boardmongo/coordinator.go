@@ -122,6 +122,15 @@ func (c *Coordinator) ListDispatchable(ctx context.Context, eligible []string, l
 		"issue.state": bson.M{"$in": eligible},
 		"issue.claim": bson.M{"$in": bson.A{"", nil}},
 		"issue.bot":   bson.M{"$gt": ""},
+		// A card inside its launch-refusal backoff is not a candidate until
+		// NotBefore has passed — in the query for the same starvation
+		// reason as the bot filter. Measured against this replica's clock:
+		// a backoff is a pacing, not a lease, so a few seconds of skew
+		// between pods only moves a retry slightly.
+		"$or": bson.A{
+			bson.M{"issue.launchrefusal": nil},
+			bson.M{"issue.launchrefusal.notbefore": bson.M{"$lte": time.Now().UTC()}},
+		},
 	}, opt)
 	if err != nil {
 		return nil, fmt.Errorf("boardmongo: list dispatchable: %w", err)
@@ -207,6 +216,12 @@ func (c *Coordinator) ReleaseOwned(_ context.Context, tenant, id string, tok tra
 // a filing was ITS decision (a pruned pointer), not a human's.
 func (c *Coordinator) SetGaveUpOwned(_ context.Context, tenant, id string, g *native.GiveUp, tok tracker.ClaimToken) error {
 	return c.StoreFor(tenant).SetGaveUpOwned(id, g, tok)
+}
+
+// SetLaunchRefusalOwned is the fenced launch-refusal ledger write — the
+// dispatcher's retry bound on a launch the run service refused.
+func (c *Coordinator) SetLaunchRefusalOwned(_ context.Context, tenant, id string, r *native.LaunchRefusal, tok tracker.ClaimToken) error {
+	return c.StoreFor(tenant).SetLaunchRefusalOwned(id, r, tok)
 }
 
 // ExpiredCandidate is one cross-tenant reap candidate.

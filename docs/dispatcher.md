@@ -288,14 +288,37 @@ column it was taken from under the machine provenance `unlaunchable`
 it), and the claim is freed. It is never parked `blocked` — that column
 is a verdict on the card's work, and reaching it here parked 36 roadmap
 tickets in one pass and pushed *Blocked* onto the operator's GitHub
-board. Real launch failures — the publisher refusing the run (quota,
-sealing), a run that started and failed — keep filing `blocked`.
+board. A run that started and failed keeps filing `blocked`: that is
+the run's verdict.
 
-Each refusal is logged **once per card and reason** (the card is listed
-again every tick for as long as it stays broken), and every watchdog
+**A launch the run service refuses is a third class — transient, and
+retried with a backoff.** Every error out of `runs.Launch` means no run
+was started (a credential-sealing failure, a queue outage, the server
+draining, a bot that does not compile, an invalid spec), so the card is
+returned to its column under the machine provenance `launch_refused`
+and its **launch-refusal ledger** (`launch_refusal` on the card:
+attempts, last reason, last instant, `not_before`) is advanced. The
+dispatch listing skips a card until its `not_before` — 1m after the
+first refusal, then 2m, 4m, … capped at 30m — so a refused card costs
+one attempt per backoff, not one per 5s tick, and queues behind the
+cards not tried yet (its `updated_at` moves). The server draining
+consumes no attempt: another replica claims the card on its next tick.
+
+After `ITERION_BOARD_LAUNCH_ATTEMPTS` consecutive refusals (default 8,
+about an hour and a half of retries; an unparsable value keeps the
+default and is logged once at startup) the card is filed `blocked` under
+the **descriptive** provenance `launch_given_up`, with the last refusal
+on its ledger and a give-up stamp naming it — reflected onto a bound
+external board on purpose: a human has to decide now. A successful
+launch (any run stamped on the card) clears the ledger, and so does an
+operator's *Reopen*, so a card reopened after the cap starts its retries
+afresh.
+
+Each verdict is logged **once per card and reason**, and every watchdog
 pass logs one tally line — `N refused at admission, M returned to their
-column after a claim` — so the ongoing cost of a broken card stays
-visible after its first line.
+column after a claim, K launches refused by the run service, G filed
+blocked after the launch attempt cap` — so the ongoing cost of a broken
+card stays visible after its first line.
 
 ## Retry queue
 

@@ -250,6 +250,103 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Fatalf("StateReason: restore state: %v", err)
 	}
 
+	// Issue.LaunchRefusal is the dispatcher's retry ledger for a launch the
+	// run service refused before any run started (#814). Both twins owe:
+	// a fenced write (a foreign token is refused), a faithful round trip,
+	// survival across the give-back transition, and the two clears — a run
+	// stamped on the card (a launch happened) and an operator Reopen.
+	// On its OWN card: the scenario stamps runs, and the run-history rows
+	// further down read `created`'s history from empty.
+	lrCard, err := store.Create(native.Issue{Title: "launch-refusal ledger", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("LaunchRefusal: create: %v", err)
+	}
+	ledgerOf := func(what string) *native.LaunchRefusal {
+		got, err := store.Get(lrCard.ID)
+		if err != nil {
+			t.Fatalf("LaunchRefusal/%s: Get: %v", what, err)
+		}
+		return got.LaunchRefusal
+	}
+	dispTok, err := store.Claim(lrCard.ID, "board-dispatcher:pod-1")
+	if err != nil {
+		t.Fatalf("LaunchRefusal: claim: %v", err)
+	}
+	notBefore := time.Now().UTC().Add(4 * time.Minute).Truncate(time.Millisecond)
+	ledger := &native.LaunchRefusal{Attempts: 2, LastAt: notBefore.Add(-2 * time.Minute), NotBefore: notBefore, LastReason: "queue unavailable"}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, tracker.ClaimToken{Marker: "somebody-else", Epoch: dispTok.Epoch}); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Errorf("LaunchRefusal: a foreign token wrote the ledger: err=%v, want ErrClaimConflict", err)
+	}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: owned write: %v", err)
+	}
+	if got := ledgerOf("after the owned write"); got == nil || got.Attempts != 2 || !got.NotBefore.Equal(notBefore) || got.LastReason != "queue unavailable" {
+		t.Fatalf("LaunchRefusal round trip = %+v, want %+v", got, ledger)
+	}
+	// The give-back transition keeps the ledger — it is what bounds the
+	// NEXT attempt.
+	if _, err := store.SetStateOwned(lrCard.ID, native.StateInProgress, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: start: %v", err)
+	}
+	if _, err := store.SetStateOwnedReason(lrCard.ID, native.StateReady, dispTok, tracker.ReasonLaunchRefused); err != nil {
+		t.Fatalf("LaunchRefusal: give back: %v", err)
+	}
+	if got := ledgerOf("after a give-back"); got == nil || got.Attempts != 2 {
+		t.Errorf("LaunchRefusal after the give-back transition = %+v, want it kept", got)
+	}
+	if !mustGetIssue(t, store, lrCard.ID).StateByMachine() {
+		t.Error("StateByMachine after a launch_refused give-back = false, want true")
+	}
+	// A run stamped on the card means a launch happened: the ledger is over.
+	if err := store.SetLastRunOwned(lrCard.ID, "run-after-refusals", "/wt/x", dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: SetLastRunOwned: %v", err)
+	}
+	if got := ledgerOf("after SetLastRunOwned"); got != nil {
+		t.Errorf("LaunchRefusal survived a stamped run: %+v — a launch happened, the retry ledger no longer describes the card", got)
+	}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: re-write: %v", err)
+	}
+	if err := store.SetLastRun(lrCard.ID, "run-after-refusals-2", "/wt/y"); err != nil {
+		t.Fatalf("LaunchRefusal: SetLastRun: %v", err)
+	}
+	if got := ledgerOf("after SetLastRun"); got != nil {
+		t.Errorf("LaunchRefusal survived an unfenced run stamp: %+v", got)
+	}
+	// nil clears explicitly too.
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: re-write: %v", err)
+	}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, nil, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: clear: %v", err)
+	}
+	if got := ledgerOf("after an explicit clear"); got != nil {
+		t.Errorf("LaunchRefusal after nil = %+v, want cleared", got)
+	}
+	// An operator Reopen clears it: the card filed blocked after the cap
+	// starts its retries afresh when a human reopens it.
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: re-write: %v", err)
+	}
+	if _, err := store.SetStateOwnedReason(lrCard.ID, native.StateBlocked, dispTok, tracker.ReasonLaunchGivenUp); err != nil {
+		t.Fatalf("LaunchRefusal: file blocked: %v", err)
+	}
+	if mustGetIssue(t, store, lrCard.ID).StateByMachine() {
+		t.Error("StateByMachine after launch_given_up = true, want false — the roadmap must show the filing")
+	}
+	if err := store.ReleaseOwned(lrCard.ID, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: release: %v", err)
+	}
+	if _, err := store.Reopen(lrCard.ID, native.StateReady); err != nil {
+		t.Fatalf("LaunchRefusal: Reopen: %v", err)
+	}
+	if got := ledgerOf("after Reopen"); got != nil {
+		t.Errorf("LaunchRefusal survived an operator Reopen: %+v", got)
+	}
+	if err := store.Delete(lrCard.ID); err != nil {
+		t.Fatalf("LaunchRefusal: delete: %v", err)
+	}
+
 	// Claim: idempotent same marker; conflict on a different marker; release.
 	if _, err := store.Claim(created.ID, "runner-A"); err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -1347,6 +1444,58 @@ func TestMongoStore_Conformance(t *testing.T) {
 	}
 	if !dispTitles["ready-a"] || !dispTitles["ready-b"] {
 		t.Errorf("ListDispatchable must list the launchable ready cards: %v", dispTitles)
+	}
+	// A card inside its launch-refusal backoff is not dispatchable until
+	// NotBefore has passed (#814) — the predicate is in the query, like the
+	// bot filter, for the same batch-starvation reason.
+	{
+		st := coord.StoreFor("ca")
+		held, cerr := st.Create(native.Issue{Title: "held-back", State: native.StateReady, Bot: "feature-dev"})
+		if cerr != nil {
+			t.Fatalf("coord create held-back: %v", cerr)
+		}
+		tok, cerr := st.Claim(held.ID, "board-dispatcher:pod-1")
+		if cerr != nil {
+			t.Fatalf("claim held-back: %v", cerr)
+		}
+		listed := func(what string) bool {
+			t.Helper()
+			d, derr := coord.ListDispatchable(ctx, []string{native.StateReady}, 50)
+			if derr != nil {
+				t.Fatalf("ListDispatchable (%s): %v", what, derr)
+			}
+			for _, c := range d {
+				if c.Issue.ID == held.ID {
+					return true
+				}
+			}
+			return false
+		}
+		if err := st.SetLaunchRefusalOwned(held.ID, &native.LaunchRefusal{Attempts: 1, LastAt: time.Now().UTC(), NotBefore: time.Now().UTC().Add(time.Hour), LastReason: "x"}, tok); err != nil {
+			t.Fatalf("ledger held-back: %v", err)
+		}
+		if err := st.ReleaseOwned(held.ID, tok); err != nil {
+			t.Fatalf("release held-back: %v", err)
+		}
+		if listed("inside the backoff") {
+			t.Error("ListDispatchable listed a card inside its launch-refusal backoff")
+		}
+		tok, cerr = st.Claim(held.ID, "board-dispatcher:pod-1")
+		if cerr != nil {
+			t.Fatalf("re-claim held-back: %v", cerr)
+		}
+		if err := st.SetLaunchRefusalOwned(held.ID, &native.LaunchRefusal{Attempts: 1, LastAt: time.Now().UTC(), NotBefore: time.Now().UTC().Add(-time.Second), LastReason: "x"}, tok); err != nil {
+			t.Fatalf("ledger held-back (expired): %v", err)
+		}
+		if err := st.ReleaseOwned(held.ID, tok); err != nil {
+			t.Fatalf("release held-back: %v", err)
+		}
+		if !listed("after the backoff") {
+			t.Error("ListDispatchable must list a card once its NotBefore has passed")
+		}
+		if err := st.Delete(held.ID); err != nil {
+			t.Fatalf("delete held-back: %v", err)
+		}
 	}
 	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50, false)
 	if eerr != nil {

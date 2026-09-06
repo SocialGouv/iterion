@@ -138,6 +138,12 @@ func TestMachineCaused_EnumeratedSet(t *testing.T) {
 		// ran, so the return to the column is machinery — a subscription
 		// armed on that column must not re-fire on it (#798).
 		tracker.ReasonUnlaunchable: true,
+		// A launch the run service refused before any run started, given
+		// back to retry after a backoff: machinery too (#814) — while the
+		// filing that ends the retries is a decision for a human, so it is
+		// descriptive and reaches the roadmap.
+		tracker.ReasonLaunchRefused: true,
+		tracker.ReasonLaunchGivenUp: false,
 		// Descriptive provenance — the cascade of an operator gesture —
 		// keeps its triggers. This row is what died under `reason != ""`.
 		tracker.ReasonUnblocked: false,

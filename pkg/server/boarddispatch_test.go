@@ -49,6 +49,10 @@ type fakeBoardCoord struct {
 	reasons map[string]string
 	// gaveUps records the fenced give-up stamps, keyed by issue id.
 	gaveUps map[string]*native.GiveUp
+	// refusals records the fenced launch-refusal ledgers, keyed by issue
+	// id; ListDispatchable honours their NotBefore like the real query,
+	// and hands the recorded ledger back on the candidate.
+	refusals map[string]*native.LaunchRefusal
 	// renewHook, when set, runs at the start of RenewClaim OUTSIDE the
 	// lock — a test parks a heartbeat in flight with it while the owner's
 	// own release lands.
@@ -98,8 +102,20 @@ func (f *fakeBoardCoord) ListDispatchable(ctx context.Context, states []string, 
 		return nil, err
 	}
 	var out []boardmongo.Candidate
+	now := time.Now()
 	for _, c := range all {
 		if c.Issue.Bot == "" {
+			continue
+		}
+		// A recorded ledger wins over the seeded one, like a SetState wins
+		// over the seeded state — and a card inside its backoff is not
+		// listed, the real query's $or on not_before.
+		f.mu.Lock()
+		if rec, ok := f.refusals[c.Issue.ID]; ok {
+			c.Issue.LaunchRefusal = rec
+		}
+		f.mu.Unlock()
+		if r := c.Issue.LaunchRefusal; r != nil && r.NotBefore.After(now) {
 			continue
 		}
 		if limit > 0 && len(out) == limit {
@@ -108,6 +124,28 @@ func (f *fakeBoardCoord) ListDispatchable(ctx context.Context, states []string, 
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// SetLaunchRefusalOwned honours the fence and records the ledger (nil
+// clears), like the real twins.
+func (f *fakeBoardCoord) SetLaunchRefusalOwned(ctx context.Context, _, id string, r *native.LaunchRefusal, tok tracker.ClaimToken) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claimed[id] != tok.Marker {
+		return tracker.ErrClaimConflict
+	}
+	if f.refusals == nil {
+		f.refusals = map[string]*native.LaunchRefusal{}
+	}
+	if r == nil {
+		delete(f.refusals, id)
+		return nil
+	}
+	f.refusals[id] = r.Clone()
+	return nil
 }
 
 func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) (tracker.ClaimToken, error) {

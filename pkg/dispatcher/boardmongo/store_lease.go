@@ -364,10 +364,11 @@ func (s *Store) SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToke
 	now := time.Now().UTC()
 	runs := native.AppendRunRef(iss.Runs, runID, workdir, now)
 	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), bson.M{"$set": bson.M{
-		"issue.lastrunid":   runID,
-		"issue.lastworkdir": workdir,
-		"issue.runs":        runs,
-		"issue.updatedat":   now,
+		"issue.lastrunid":     runID,
+		"issue.lastworkdir":   workdir,
+		"issue.runs":          runs,
+		"issue.launchrefusal": nil, // a launch happened: the retry ledger no longer describes the card
+		"issue.updatedat":     now,
 	}})
 	if err != nil {
 		return fmt.Errorf("boardmongo: set last run owned: %w", err)
@@ -401,6 +402,27 @@ func (s *Store) SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken)
 	}
 	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id,
 		Payload: map[string]any{"awaiting_input": v}})
+}
+
+// SetLaunchRefusalOwned — see native.BoardStore. ONE conditional write:
+// the ownership check and the ledger ride the same UpdateOne.
+func (s *Store) SetLaunchRefusalOwned(id string, r *native.LaunchRefusal, tok tracker.ClaimToken) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	stamped := r.Clone()
+	res, err := s.issues.UpdateOne(ctx, s.ownedFilter(id, tok), bson.M{"$set": bson.M{
+		"issue.launchrefusal": stamped,
+		// UpdatedAt moves on purpose: the dispatch listing is oldest-updated
+		// first, so a refused card queues behind the cards not tried yet.
+		"issue.updatedat": time.Now().UTC(),
+	}})
+	if err != nil {
+		return fmt.Errorf("boardmongo: set launch refusal owned: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return s.ownedRefused(ctx, id, tok)
+	}
+	return s.emit(native.Event{Type: native.EvtIssueLaunchRefused, IssueID: id, Payload: native.LaunchRefusalPayload(stamped)})
 }
 
 // SetGaveUpOwned is SetGaveUp fenced on the claim token. The stamp's
@@ -672,9 +694,13 @@ func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
 	// back to the caller (SetStateOrReopen, via the board HTTP handlers) —
 	// so returning the snapshot read above told the studio the reopened
 	// card still carried the give-up flag that "Needs attention" reads.
+	// An operator gesture: the park's provenance no longer describes the
+	// card, and its launch retries start afresh.
+	reopenSet := stateSet(toState, "")
+	reopenSet["issue.launchrefusal"] = nil
 	res := s.issues.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": iss.State},
-		bson.M{"$set": stateSet(toState, "")}, // an operator gesture: the park's provenance no longer describes the card
+		bson.M{"$set": reopenSet},
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {

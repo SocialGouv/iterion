@@ -119,7 +119,7 @@ func TestMaterializeEffects_ProjectionOnlyWhereItIsOwed(t *testing.T) {
 // column of rows that each retire with nothing to write sits FIFO ahead of
 // the next genuine reflect. The launch rows stay declined too.
 func TestMaterializeEffects_MachineCausedOwesNoProjection(t *testing.T) {
-	for _, reason := range []string{tracker.ReasonWatchdog, tracker.ReasonStateRename, tracker.ReasonUnlaunchable} {
+	for _, reason := range []string{tracker.ReasonWatchdog, tracker.ReasonStateRename, tracker.ReasonUnlaunchable, tracker.ReasonLaunchRefused} {
 		t.Run(reason, func(t *testing.T) {
 			ev := movedEvent()
 			ev.Payload = map[string]any{"reason": reason}

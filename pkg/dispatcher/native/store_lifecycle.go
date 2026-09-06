@@ -136,6 +136,53 @@ func (s *Store) SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) (er
 	return s.setGaveUpLocked(iss, g)
 }
 
+// SetLaunchRefusalOwned — see BoardStore.
+func (s *Store) SetLaunchRefusalOwned(id string, r *LaunchRefusal, tok tracker.ClaimToken) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetLaunchRefusalOwned", &err)
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return err
+	}
+	return s.setLaunchRefusalLocked(iss, r)
+}
+
+func (s *Store) setLaunchRefusalLocked(iss *Issue, r *LaunchRefusal) error {
+	if r == nil && iss.LaunchRefusal == nil {
+		return nil
+	}
+	iss.LaunchRefusal = r.Clone()
+	// UpdatedAt moves on purpose: the dispatch listing is oldest-updated
+	// first, so a refused card takes its place behind the cards that have
+	// not been tried yet.
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueLaunchRefused,
+		IssueID: iss.ID,
+		Payload: LaunchRefusalPayload(iss.LaunchRefusal),
+	})
+}
+
+// LaunchRefusalPayload is the EvtIssueLaunchRefused body, shared by both
+// twins: {refused: false} for a clear, else the ledger's attempts, next
+// instant and reason.
+func LaunchRefusalPayload(r *LaunchRefusal) map[string]any {
+	if r == nil {
+		return map[string]any{"refused": false}
+	}
+	return map[string]any{
+		"refused":    true,
+		"attempts":   r.Attempts,
+		"not_before": r.NotBefore,
+		"reason":     r.LastReason,
+	}
+}
+
 // ReleaseOwned is Release fenced on the claim token. Idempotent when
 // the claim is already gone (an unclaimed issue is the desired state);
 // a claim held by ANOTHER epoch or marker refuses — releasing someone
@@ -186,6 +233,7 @@ func (s *Store) setLastRunLocked(iss *Issue, runID, workdir string) error {
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
 	iss.Runs = AppendRunRef(iss.Runs, runID, workdir, now)
+	iss.LaunchRefusal = nil // a launch happened: the retry ledger no longer describes the card
 	iss.UpdatedAt = now
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err

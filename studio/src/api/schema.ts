@@ -5752,6 +5752,7 @@ export interface components {
             labels?: string[];
             last_run_id?: string;
             last_workdir?: string;
+            launch_refusal?: components["schemas"]["LaunchRefusal"];
             parent_id?: string;
             priority?: number;
             runs?: components["schemas"]["RunRef"][];
@@ -5762,6 +5763,14 @@ export interface components {
             title: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        LaunchRefusal: {
+            attempts: number;
+            /** Format: date-time */
+            last_at: string;
+            last_reason?: string;
+            /** Format: date-time */
+            not_before?: string;
         };
         MembershipView: {
             personal?: boolean;
