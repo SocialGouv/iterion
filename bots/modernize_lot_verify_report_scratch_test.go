@@ -19,9 +19,10 @@ const scratchWrapperHead = "#!/bin/sh\nset -e\n" +
 
 // A harness that keeps talking to stdout after it has printed its report —
 // brace-first dict reprs, the shape that made the search expensive in the
-// first place. Deliberately longer than any budget inside the reader: a bound
-// spent on what came AFTER the verdict must never discard the verdict itself,
-// which is the difference between an oracle RED and a typed ORACLE_NOT_RUN.
+// first place. Each line balances its own braces, so it ends no block and
+// must cost the search NOTHING: what came after the verdict may never be
+// what discards it, which is the difference between an oracle RED and a
+// typed ORACLE_NOT_RUN.
 const scratchTeardownChatter = "i=0; while [ $i -lt 60 ]; do " +
 	"echo \"{'teardown': $i, 'note': 'a dict repr the harness logged after its report'}\"; " +
 	"i=$((i+1)); done\n"
@@ -236,12 +237,15 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 	})
 
 	// The eight below pin what bounding the search must NOT cost. Every one of
-	// them reads on an unbounded scan, and every one was dropped by some
-	// bound written to make the no-report path fast — whether by ending the
-	// scan outright, by letting chatter spend the budget, or by counting a
-	// brace inside a string as structure. A dropped report is not "no
-	// verdict": it routes the run to fail as ORACLE_NOT_RUN while the oracle
-	// had, in fact, delivered one.
+	// them reads on an unbounded scan, and every one was lost to some bound
+	// written to make the no-report path fast — by ending the scan outright,
+	// by letting chatter spend the budget (in parses, then in join attempts),
+	// by counting a brace inside a string as structure, or by handing a close
+	// the block ABOVE the one that matched it. Both ways of losing it are
+	// failures of the same kind: a report DROPPED routes the run to fail as
+	// ORACLE_NOT_RUN while the oracle had in fact delivered a verdict, and a
+	// report read WRONG — one entry of its own list — carries no "mode", so a
+	// subset run, which is no verdict at all, reads as a pass.
 
 	t.Run("an indented one-line report is read: a format is not a verdict", func(t *testing.T) {
 		indented := scratchWrapperHead +
