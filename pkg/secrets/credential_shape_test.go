@@ -102,3 +102,99 @@ func TestValidateAPIKeyShape_PerProvider(t *testing.T) {
 		t.Fatal("bearer providers must not be JSON-credential providers")
 	}
 }
+
+const testPEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZS1rZXktbWF0ZXJpYWw=\n-----END OPENSSH PRIVATE KEY-----\n"
+
+// The generic secret store holds PEM keys and JSON documents as well as
+// bearer tokens, so the shape read off a value decides which gate runs.
+func TestInferSecretShapeKind(t *testing.T) {
+	cases := []struct {
+		value string
+		want  SecretShapeKind
+	}{
+		{"sk-ant-0123456789", SecretShapeToken},
+		{testPEM, SecretShapePEM},
+		{"  " + testPEM, SecretShapePEM},
+		{`{"type":"service_account"}`, SecretShapeJSON},
+		{"\n[\"a\",\"b\"]", SecretShapeJSON},
+		// A transcript is not a document, and must fall to the token rule
+		// that refuses it — never to raw.
+		{"Welcome to Claude Code\nsk-ant-0123", SecretShapeToken},
+	}
+	for _, tc := range cases {
+		if got := InferSecretShapeKind(tc.value); got != tc.want {
+			t.Errorf("InferSecretShapeKind(%.20q) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestParseSecretShapeKind(t *testing.T) {
+	for _, want := range SecretShapeKinds {
+		got, err := ParseSecretShapeKind(strings.ToUpper(string(want)))
+		if err != nil || got != want {
+			t.Errorf("ParseSecretShapeKind(%q) = (%q, %v), want %q", want, got, err, want)
+		}
+	}
+	// An unknown kind is a typo, never a silent pass-through to no check.
+	_, err := ParseSecretShapeKind("tokne")
+	if err == nil {
+		t.Fatal("an unknown kind was accepted")
+	}
+	for _, k := range SecretShapeKinds {
+		if !strings.Contains(err.Error(), string(k)) {
+			t.Fatalf("error %q must list %q so the typo is fixable from the message", err, k)
+		}
+	}
+	// The empty string is "infer" — the caller's business, not an error
+	// this function invents a default for.
+	if _, err := ParseSecretShapeKind(""); err == nil {
+		t.Fatal("the empty kind must be rejected here; inference is the caller's decision")
+	}
+}
+
+func TestValidateSecretShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		kind    SecretShapeKind
+		value   string
+		wantErr string
+	}{
+		{"token: clean", SecretShapeToken, "sk-ant-0123456789", ""},
+		{"token: transcript", SecretShapeToken, "Welcome\nsk-ant-0123", "newline"},
+		{"json: object", SecretShapeJSON, `{"type":"service_account"}`, ""},
+		{"json: array", SecretShapeJSON, `["a"]`, ""},
+		{"json: truncated", SecretShapeJSON, `{"tokens":{"acce`, "not a JSON document"},
+		{"json: empty object", SecretShapeJSON, `{}`, "empty JSON document"},
+		{"json: empty array", SecretShapeJSON, `[]`, "empty JSON document"},
+		{"json: a bare token", SecretShapeJSON, "sk-ant-0123", "not a JSON document"},
+		{"pem: block", SecretShapePEM, testPEM, ""},
+		{"pem: truncated", SecretShapePEM, "-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZQ==", "not a PEM block"},
+		// raw is the explicit opt-out: it must accept what every other
+		// gate refuses, or it is not an escape hatch.
+		{"raw: a whole transcript", SecretShapeRaw, "\x1b[32mWelcome\x1b[0m\nanything at all", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateSecretShape(tc.kind, "MY_SECRET", tc.value)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			var se *ShapeError
+			if !errors.As(err, &se) {
+				t.Fatalf("got %v (%T), want a *ShapeError", err, err)
+			}
+			if se.Field != "MY_SECRET" {
+				t.Errorf("field = %q, want the secret's name so the operator knows which one", se.Field)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q, want it to mention %q", err, tc.wantErr)
+			}
+			if strings.Contains(err.Error(), tc.value) {
+				t.Fatalf("the refusal echoed the value: %q", err)
+			}
+		})
+	}
+}

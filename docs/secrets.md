@@ -314,9 +314,33 @@ never from `argv`, and never printed back):
 iterion secret set GITHUB_TOKEN                 # masked prompt
 iterion secret set STRIPE_KEY --from-env SK     # import from an env var
 iterion secret set DB_URL --project --hosts db.internal
+iterion secret set DB_PASSPHRASE --kind raw     # not a token / JSON / PEM
 iterion secret list                             # names + last4 + scope only
 iterion secret rm GITHUB_TOKEN
 ```
+
+#### Ingestion shape gate (`--kind`)
+
+`secret set` refuses, at the paste, a value that could not possibly
+authenticate — the same rule the cloud API runs on BYOK keys and OAuth blobs
+([`pkg/secrets/credential_shape.go`](../pkg/secrets/credential_shape.go)), so
+a terminal transcript pasted into the prompt fails here instead of surfacing
+as a provider `401` in the middle of a run.
+
+The local store is name-keyed and carries no kind of its own, so the shape is
+either **read off the value** — a `-----BEGIN ` header → `pem`, a leading `{`
+or `[` → `json`, anything else → `token` — or **named with `--kind`**:
+
+| `--kind` | Rule |
+| --- | --- |
+| `token` | One run of visible characters: no white-space (ASCII or not), no control/format/non-printing rune, valid UTF-8. |
+| `json` | Parses as a top-level JSON object or array, and carries at least one member. |
+| `pem` | At least one complete `-----BEGIN`/`-----END` block decodes. |
+| `raw` | No check — the explicit opt-out for a passphrase, a connection string, a blob. |
+
+The refusal names the secret, the reason and the kind it was read as, and
+never the value; `--kind raw` is in the message, so the remedy travels with
+it. An unknown `--kind` is an error, not a silent pass-through to no checking.
 
 Studio: the **Secrets** view (gated on `server_info.secrets_enabled`) offers
 the same CRUD over `/api/local/secrets` (unauthenticated single-operator

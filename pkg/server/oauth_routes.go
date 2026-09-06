@@ -123,15 +123,31 @@ func (s *Server) handleDeleteOAuth(w http.ResponseWriter, r *http.Request) {
 // to check on admins must not lie). Placed inside the shared helpers,
 // after the write, so team AND platform surfaces audit identically:
 // keeping the audit at each caller meant it fired even on a 400/404/500
-// return from the helper. A personal (/me) owner key is not audited —
-// unchanged from the per-user endpoints, which never did. verb is
-// "connected" or "deleted".
+// return from the helper. verb is "connected", "deleted" or "refused".
+//
+// A personal (/me) owner key is audited for a REFUSAL only, on the
+// caller's active team — pkg/audit has no user scope, and the sibling
+// personal credential door already writes there (/api/me/api-keys
+// refuses through refuseApiKey -> auditApiKey(r, id.TeamID, "refused")).
+// A refusal is an operational signal an org admin needs: a personal
+// forfait can be pledged to the org's credential pool, and a refused
+// rotation of it stops funding runs the org depends on. The row names
+// the field and the reason class, never the material — and a successful
+// personal connect stays the user's own business, unaudited. With no
+// active team there is no tenant to key the row on (a tenant-less row is
+// readable by nobody), so the Warn at the refusal site is the trace.
 func (s *Server) auditOAuthByOwner(r *http.Request, ownerKey, verb string, kind secrets.OAuthKind, meta map[string]any) {
 	switch {
 	case ownerKey == secrets.PlatformOwnerKey:
 		s.auditPlatform(r, "", "platform.llm_oauth."+verb, "platform_llm_oauth", string(kind), meta)
 	case strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix):
 		s.auditTenant(r, strings.TrimPrefix(ownerKey, secrets.OrgOwnerPrefix), "oauth.org."+verb, "oauth_forfait", string(kind), meta)
+	case verb == "refused":
+		id, _ := auth.FromContext(r.Context())
+		if id.TeamID == "" {
+			return
+		}
+		s.auditTenant(r, id.TeamID, "oauth.personal.refused", "oauth_forfait", string(kind), meta)
 	}
 }
 

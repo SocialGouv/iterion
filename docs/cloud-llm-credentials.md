@@ -141,10 +141,29 @@ was found (#627). The gate is
   expiry or a scope).
 - **Codex `auth.json`**: the token-shape check on `tokens.access_token`.
 
+The **local** store has the same door: `iterion secret set` runs the matching
+rule for the value's shape (token / JSON / PEM), with `--kind` to name it and
+`--kind raw` to opt out — see
+[secrets.md](secrets.md#ingestion-shape-gate---kind).
+
 A refusal answers `400` with the reason, and leaves a trace an operator can
-find after the fact: a `Warn` in the server log and an audit event
-(`byok.refused`, `oauth.org.refused`, `platform.llm_*.refused`) naming the
-field and the reason — never the value. Nothing is stored on a refusal.
+find after the fact: a `Warn` in the server log and an audit event naming the
+field and the reason — never the value. Nothing is stored on a refusal. Which
+log the event lands in follows the credential's owner:
+
+| Owner | Action | Readable by |
+| --- | --- | --- |
+| Team / org credential | `byok.refused`, `oauth.org.refused` | the team's admins (`/api/teams/{id}/audit`) |
+| Platform fallback | `platform.llm_key.refused`, `platform.llm_oauth.refused` | super-admins (`/api/admin/audit`) |
+| **Personal (`/me`)** | `byok.refused`, `oauth.personal.refused` | the admins of the **caller's active team** |
+
+A personal refusal crosses into the team's log on purpose: a personal forfait
+can be pledged to the org's [credential pool](credential-pool.md), so a
+refused rotation of it stops funding runs the org depends on. Only the
+refusal crosses — a successful personal connect is never audited — and the
+row carries the field and the reason class, never the material. With no
+active team on the session there is no tenant to key the row on, and the
+server-log `Warn` is the only trace.
 
 ## Provisioning cookbook (via `iterion remote`, authenticated)
 
@@ -364,6 +383,28 @@ Semantics worth knowing:
   commands above, then the env vars become a pure backstop you can empty at
   leisure. An empty platform store keeps today's behaviour byte-identical.
 - Every mutation lands in the platform audit log (`/api/admin/audit`).
+
+## Re-pointing the OAuth endpoints (OEM CLI, proxy, air-gapped IdP)
+
+The forfait flow talks to a reverse-engineered vendor surface, so every
+endpoint it uses is env-overridable per deployment. **Move them as a set** —
+the first three drive the browser connect, the fourth drives what happens
+after it, and a deployment that moves three of four connects against one host
+and refreshes against another (each is read at the call site through
+[`envOr`](../pkg/secrets/oauth_authcode.go), so nothing is cached across a
+restart):
+
+| Env var | Default |
+| --- | --- |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_AUTHORIZE_URL` | `https://claude.ai/oauth/authorize` |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | `https://platform.claude.com/oauth/code/callback` |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | `user:profile user:inference user:sessions:claude_code user:mcp_servers` |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL` | `https://console.anthropic.com/v1/oauth/token` — the auth-code exchange **and** the refresh worker |
+| `ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL` | `https://auth.openai.com/oauth/token` |
+
+The two client ids (`ITERION_OAUTH_FORFAIT_{ANTHROPIC,CODEX}_CLIENT_ID`) ride
+the config loader rather than the call site; full table in
+[oauth-forfait.md](oauth-forfait.md#configuration).
 
 ## Related
 

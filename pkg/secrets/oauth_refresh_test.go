@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -459,5 +460,82 @@ func TestDoWithRetry_ClosesAbandoned5xxBodyOnRetrySuccess(t *testing.T) {
 	}
 	if atomic.LoadInt32(&secondClosed) != 1 {
 		t.Error("successful response body was not closed")
+	}
+}
+
+// -----------------------------------------------------------------
+// Token-endpoint env override
+// -----------------------------------------------------------------
+
+// hostPinnedTransport refuses any request aimed somewhere other than
+// want, so a test asserting that an endpoint override reaches a local
+// server never leaves the machine when the override is not honoured: it
+// fails naming the host that was actually dialled.
+type hostPinnedTransport struct {
+	want string
+	base http.RoundTripper
+}
+
+func (t *hostPinnedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host != t.want {
+		return nil, fmt.Errorf("request went to %q, want the overridden endpoint %q", req.URL.Host, t.want)
+	}
+	return t.base.RoundTrip(req)
+}
+
+// pinnedClient dials host and nothing else.
+func pinnedClient(t *testing.T, rawURL string) *http.Client {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", rawURL, err)
+	}
+	return &http.Client{Transport: &hostPinnedTransport{want: u.Host, base: http.DefaultTransport}}
+}
+
+// The three sibling Anthropic endpoints (authorize URL, redirect URI,
+// scopes) are env-overridable; the token endpoint the refresh POSTs to
+// must be too, or an OEM-repackaged CLI moves three of four and the
+// refresh worker keeps hitting the vendor's host.
+func TestRefreshAnthropic_HonoursTokenURLOverride(t *testing.T) {
+	freshRetrySchedule(t)
+	body := `{"access_token":"sk-ant-newaccess1234567890abcdef","refresh_token":"rf-new","expires_in":3600}`
+	srv := newFakeOAuthServer(body, http.StatusOK)
+	defer srv.Close()
+	t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", srv.URL+"/v1/oauth/token")
+
+	if _, err := RefreshAnthropic(context.Background(), pinnedClient(t, srv.URL), "client-id", "rf-old"); err != nil {
+		t.Fatalf("RefreshAnthropic: %v", err)
+	}
+	if got := atomic.LoadInt32(&srv.hits); got != 1 {
+		t.Fatalf("overridden endpoint hits = %d, want 1", got)
+	}
+}
+
+// Same promise for the Codex token endpoint, which shares the comment.
+func TestRefreshCodex_HonoursTokenURLOverride(t *testing.T) {
+	freshRetrySchedule(t)
+	body := `{"access_token":"codex-newaccess1234567890","refresh_token":"rf-new","expires_in":3600}`
+	srv := newFakeOAuthServer(body, http.StatusOK)
+	defer srv.Close()
+	t.Setenv("ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL", srv.URL+"/oauth/token")
+
+	if _, err := RefreshCodex(context.Background(), pinnedClient(t, srv.URL), "client-id", "rf-old"); err != nil {
+		t.Fatalf("RefreshCodex: %v", err)
+	}
+	if got := atomic.LoadInt32(&srv.hits); got != 1 {
+		t.Fatalf("overridden endpoint hits = %d, want 1", got)
+	}
+}
+
+// Unset env keeps the published endpoint: the override is opt-in.
+func TestTokenURLs_DefaultToThePublishedEndpoints(t *testing.T) {
+	t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", "")
+	t.Setenv("ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL", "")
+	if got := anthropicTokenURL(); got != defaultAnthropicTokenURL {
+		t.Errorf("anthropicTokenURL() = %q, want %q", got, defaultAnthropicTokenURL)
+	}
+	if got := codexTokenURL(); got != defaultCodexTokenURL {
+		t.Errorf("codexTokenURL() = %q, want %q", got, defaultCodexTokenURL)
 	}
 }
