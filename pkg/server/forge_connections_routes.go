@@ -155,6 +155,12 @@ type forgeConnectionHealth struct {
 	// hasn't approved it — the fix is the ManageInstallURL page.
 	SecurityReadEnabled        bool     `json:"security_read_enabled"`
 	MissingSecurityPermissions []string `json:"missing_security_permissions,omitempty"`
+	// MissingCIPermissions names the grants the board card's CI panel reads
+	// through this connection (checks, statuses) that the installation has
+	// not approved. An installation approved before `checks: read` was
+	// requested shows exactly that here — and the panel answers 422 naming
+	// it — until an owner approves the pending request on ManageInstallURL.
+	MissingCIPermissions []string `json:"missing_ci_permissions,omitempty"`
 }
 
 // syncGrantedPermissions persists the installation's live grant onto the
@@ -193,6 +199,16 @@ func missingDeliveryFor(conn forge.Connection, granted map[string]string) []stri
 		return nil
 	}
 	return forgegithub.MissingDeliveryPermissions(granted)
+}
+
+// missingCIFor is missingDeliveryFor's twin for the card CI panel's grants: a
+// watch-only connection never serves a card, so its absent checks/statuses
+// are not a defect either.
+func missingCIFor(conn forge.Connection, granted map[string]string) []string {
+	if conn.IsSecurityReadOnly() {
+		return nil
+	}
+	return forgegithub.MissingCIPermissions(granted)
 }
 
 func samePermissions(a, b map[string]string) bool {
@@ -247,6 +263,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				h.GrantedPermissions = inst.Permissions
 				h.MissingPermissions = missingDeliveryFor(conn, inst.Permissions)
 				h.MissingSecurityPermissions = forgegithub.MissingSecurityPermissions(inst.Permissions)
+				h.MissingCIPermissions = missingCIFor(conn, inst.Permissions)
 				// Keep the stored grant in step with the live one: the mint
 				// reads it, and an owner may approve (or revoke) a permission
 				// long after the install.

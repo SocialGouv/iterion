@@ -78,6 +78,19 @@ func TestBuildAppManifest(t *testing.T) {
 	if _, ok := m.DefaultPermissions["vulnerability_alerts"]; ok {
 		t.Fatalf("vulnerability_alerts must NOT be in the baseline: %+v", m.DefaultPermissions)
 	}
+	// checks:read serves the board card's CI panel (GET /commits/{ref}/check-runs
+	// is gated on it). Requested at App creation so a fresh installation grants
+	// it up front; an installation approved before it was requested has to
+	// re-approve, and the CI profile names the gap when its mint is refused.
+	if m.DefaultPermissions["checks"] != "read" {
+		t.Fatalf("checks perm must be read (the card CI panel reads check-runs), got %q: %+v", m.DefaultPermissions["checks"], m.DefaultPermissions)
+	}
+	// statuses:write is what the merge gate posts its verdict with — requested
+	// by the manifest, never part of the runtime baseline (the management mint
+	// falls back without it).
+	if m.DefaultPermissions["statuses"] != "write" {
+		t.Fatalf("statuses perm must be write (merge-gate verdict), got %q", m.DefaultPermissions["statuses"])
+	}
 }
 
 func TestBuildAppManifest_AllowSecurityRead(t *testing.T) {

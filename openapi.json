@@ -2754,6 +2754,12 @@
           "manage_install_url": {
             "type": "string"
           },
+          "missing_ci_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "missing_permissions": {
             "items": {
               "type": "string"

@@ -7,6 +7,8 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -68,6 +70,62 @@ func (c *AdminClient) do(ctx context.Context, method, path string, body any, out
 
 func statusErr(op string, code int) error {
 	return forge.StatusErr("github", op, code)
+}
+
+// doErr is do that also hands back a non-2xx body, for the calls whose
+// refusal has to name its cause.
+func (c *AdminClient) doErr(ctx context.Context, method, path string, body any, out any) (int, []byte, error) {
+	return c.http().DoErrBody(ctx, method, path, body, out)
+}
+
+// refusal maps a non-2xx answer onto an error. A 403 whose body is GitHub's
+// "Resource not accessible by integration" (an installation token) or "… by
+// personal access token" (a fine-grained PAT) is a credential short of a
+// permission, not a forge outage: it becomes a *forge.PermissionError naming
+// need — the grants GitHub gates the endpoint on, per its published
+// per-endpoint permission data — and the step that fits the credential kind
+// the body names. Any other 403 keeps its ErrForbidden identity with GitHub's
+// message attached; every other status maps as statusErr does.
+func refusal(op string, code int, errBody []byte, need ...string) error {
+	if code != http.StatusForbidden {
+		return statusErr(op, code)
+	}
+	msg := githubErrorMessage(errBody)
+	grants := strings.Join(need, ", ")
+	switch {
+	case strings.Contains(msg, "not accessible by integration"):
+		return &forge.PermissionError{
+			Provider: forge.ProviderGitHub, Op: op, Missing: need,
+			Remedy: "approve " + grants + " on the GitHub App installation — an org owner reviews the App's pending " +
+				"permission request; an App that does not request it yet adds it under its Permissions & events settings first",
+			Cause: fmt.Errorf("%w: %s", forge.ErrForbidden, msg),
+		}
+	case strings.Contains(msg, "not accessible by personal access token"):
+		return &forge.PermissionError{
+			Provider: forge.ProviderGitHub, Op: op, Missing: need,
+			Remedy: "grant the fine-grained token " + grants + " on this repository",
+			Cause:  fmt.Errorf("%w: %s", forge.ErrForbidden, msg),
+		}
+	case msg != "":
+		return fmt.Errorf("%w: github: %s: %s", forge.ErrForbidden, op, msg)
+	default:
+		return statusErr(op, code)
+	}
+}
+
+// githubErrorMessage extracts the `message` of a GitHub error body; empty
+// when the body is empty or not GitHub's shape.
+func githubErrorMessage(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var e struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
 }
 
 func (c *AdminClient) WhoAmI(ctx context.Context) (forge.Identity, error) {

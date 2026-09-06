@@ -53,17 +53,18 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 	s.syncGrantedPermissions(r.Context(), conn, inst.Permissions, inst.Login)
 
 	out := forgeConnectionHealth{
-		Status:              string(conn.Status),
-		StatusReason:        conn.StatusReason,
-		Provider:            string(conn.Provider),
-		Kind:                string(conn.Kind),
-		AccountLogin:        conn.AccountLogin,
-		AppSlug:             conn.AppSlug,
-		InstallationID:      conn.InstallationID,
-		InstallationAccount: inst.Login,
-		ManageInstallURL:    inst.HTMLURL,
-		GrantedPermissions:  inst.Permissions,
-		MissingPermissions:  missingDeliveryFor(conn, inst.Permissions),
+		Status:               string(conn.Status),
+		StatusReason:         conn.StatusReason,
+		Provider:             string(conn.Provider),
+		Kind:                 string(conn.Kind),
+		AccountLogin:         conn.AccountLogin,
+		AppSlug:              conn.AppSlug,
+		InstallationID:       conn.InstallationID,
+		InstallationAccount:  inst.Login,
+		ManageInstallURL:     inst.HTMLURL,
+		GrantedPermissions:   inst.Permissions,
+		MissingPermissions:   missingDeliveryFor(conn, inst.Permissions),
+		MissingCIPermissions: missingCIFor(conn, inst.Permissions),
 	}
 	// Force a fresh token mint so the observability reflects the new grants
 	// (forgeAdminFor builds a fresh client → rest() mints on first use).

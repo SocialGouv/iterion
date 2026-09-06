@@ -6256,6 +6256,7 @@ export interface components {
             kind: string;
             live_error?: string;
             manage_install_url?: string;
+            missing_ci_permissions?: string[];
             missing_permissions?: string[];
             missing_security_permissions?: string[];
             provider: string;

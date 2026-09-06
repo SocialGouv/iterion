@@ -59,6 +59,7 @@ func TestForgeAdminForGitHubAppCapabilityMatrix(t *testing.T) {
 	}
 	served := map[string]bool{
 		"IssueClient":        assertsAs[forge.IssueClient](admin),
+		"PullClient":         assertsAs[forge.PullClient](admin),
 		"PermissionClient":   assertsAs[forge.PermissionClient](admin),
 		"ReviewClient":       assertsAs[forge.ReviewClient](admin),
 		"CommitStatusClient": assertsAs[forge.CommitStatusClient](admin),
@@ -71,21 +72,26 @@ func TestForgeAdminForGitHubAppCapabilityMatrix(t *testing.T) {
 			t.Errorf("a github_app connection must serve forge.%s; %T does not", name, admin)
 		}
 	}
-	// PullClient is the KNOWN App-connection gap, asserted so it cannot
-	// change in either direction unnoticed. The App client serves
-	// GetPullRequest but not the list/create/merge/CI half, so the board
-	// card's PR panel (GET|POST /api/v1/native/issues/{id}/pulls,
-	// .../pulls/{n}/ci, .../pulls/{n}/merge) answers 501 on a github_app
-	// connection while it works on a PAT one.
-	//
-	// It is not the same shape of fix as IssueClient: GetCIStatus reads
-	// /commits/{ref}/check-runs, which needs `checks: read` — a permission
-	// neither the runtime baseline nor the App manifest requests, so closing
-	// the gap means a manifest change and an org re-approval per
-	// installation, not a delegation. When that lands, delete this assertion.
-	if assertsAs[forge.PullClient](admin) {
-		t.Errorf("forge.PullClient is now served on github_app (%T) — the gap closed: "+
-			"drop this assertion and the 501 note it pins", admin)
+	// Two capabilities are deliberate non-implementations on an App, not gaps:
+	// forge.ReviewerAssigner (an App cannot be asked to review a PR) and
+	// forge.AvatarSetter (GitHub has no App-logo API; the studio hands the file
+	// over). Both callers treat the miss as a documented degrade, never a 501.
+}
+
+// The card's PR panel — GET|POST /api/v1/native/issues/{id}/pulls,
+// .../pulls/{n}/ci, .../pulls/{n}/merge — reads forge.PullClient through
+// pullClientForConn. A github_app connection must serve it: it is the shape
+// the connect wizard creates by default, and answering 501 there left the
+// panel dead on the ordinary connection kind while a PAT connection worked.
+func TestForgeAdminForGitHubAppIsAPullClient(t *testing.T) {
+	s, conn := appConnectionFixture(t)
+	admin, err := s.forgeAdminFor(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("forgeAdminFor: %v", err)
+	}
+	if _, ok := admin.(forge.PullClient); !ok {
+		t.Fatalf("a %s connection yields %T, which does not implement forge.PullClient: "+
+			"the card's PR/CI panel answers 501 on this connection kind", conn.Kind, admin)
 	}
 }
 

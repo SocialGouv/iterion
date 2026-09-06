@@ -84,12 +84,34 @@ Prefer narrowing the *connection*, not the user:
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
   permissions in its manifest (`contents:write`, `pull_requests:write`,
   `issues:write` for posting the PR/MR back-link on the source issue,
-  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook),
-  scoped to the repos the App is installed on. It deliberately does **not**
+  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook,
+  `statuses:write` for the merge-gate verdict, `checks:read` for the board
+  card's CI panel — it lists a ref's check-runs), scoped to the repos the App
+  is installed on. It deliberately does **not**
   request `administration` (repo deletion/settings/teams/branch-protection) —
   that is over-privileged, and per GitHub docs webhooks require
   `repository_hooks`, not `administration`. The right answer for production: bots get only
   what they need, and PRs are authored by a clearly-non-human bot identity.
+  Tokens are minted **per call family**, each narrowed to the grants its
+  endpoint is gated on ([`pkg/forge/github/app_client.go`](../pkg/forge/github/app_client.go),
+  the `*InstallationPermissions` profiles): the token a bot pushes with never
+  carries `checks`, and the token the CI panel reads with never carries a
+  write.
+
+  **Existing installations must re-approve a permission added after they
+  were installed.** GitHub never widens an installation silently: when the
+  App's requested set grows (`statuses:write` for the merge gate,
+  `checks:read` for the CI panel), every installation shows a *pending
+  permission request* that an org owner approves — org **Settings → GitHub
+  Apps → Configure** on the App, the page the connection health view returns
+  as `manage_install_url` — and an App created before the permission existed
+  must first add it under **Permissions & events** in its own settings. Until
+  then the surface that needs it says so instead of failing silently: the
+  card's CI panel answers `422` naming `checks:read` and the page to approve
+  it on, the health view lists it under `missing_ci_permissions`
+  (`iterion remote forge connections refresh <id>` prints the same line), and
+  nothing else on the connection is affected — the runtime token is never
+  minted with it.
   **Self-service** (no platform App, no manual registration): Integrations →
   "+ Register an OAuth app" → github → **"Create a GitHub App"** (iterion builds
   the scoped App via manifest and captures its private key), then the **"Install"**
