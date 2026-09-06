@@ -134,12 +134,16 @@ jobs:
 
       - name: E2E tests
         # Same budget as the Taskfile's test:e2e. The number bounds a HANG, not
-        # a slow machine: the suite legitimately runs ~170s on a dev box, so the
-        # old 240s left barely 1.4x headroom and a loaded shared runner crossed
-        # it — a 4m panic dump naming whichever test happened to be in flight,
-        # which reads as "that test is broken" and is not. A true hang still
-        # trips this; only the coin flip is gone.
-        run: go test -mod=vendor -v -timeout 600s ./e2e/...
+        # a slow machine: a timeout that a healthy run can reach is a coin flip
+        # that ejects PRs from the merge queue with a panic dump naming
+        # whichever test happened to be in flight. Measured on green
+        # merge-group builds: 568-572 s for the whole package (2026-09-06,
+        # five groups building in parallel on shared runners), so 600 s left
+        # 5 % of headroom and one build crossed it. 900 s = the race job's
+        # budget for the same package; the structural fix — sharding or
+        # t.Parallel() so the wall-clock stops tracking the suite's size — is
+        # SocialGouv/iterion#842. A true hang still trips this.
+        run: go test -mod=vendor -v -timeout 900s ./e2e/...
 
   race:
     # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no
