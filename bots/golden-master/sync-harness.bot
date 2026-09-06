@@ -2259,10 +2259,22 @@ tool sync_harness:
         try:
             with os.fdopen(fd, encoding="utf-8") as f:
                 meta = json.load(f)
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:
+            # RecursionError too: that is what json.load raises on a deeply nested
+            # document, not ValueError, and it would escape as a traceback.
             return {}, "the marker %s is unreadable: %s" % (marker, e)
         if not isinstance(meta, dict):
             return {}, "the marker %s does not hold an object" % marker
+        # The TYPES, not only the shape. `dir` goes straight into os.path.realpath
+        # and os.path.join: a number, a list or a string with an embedded NUL raises
+        # out of main(), and the harness prints a traceback where the campaign
+        # expects its one JSON verdict — read as "the harness is broken" rather than
+        # "the gate is red". Measured on the real binary with `{"id": "x", "dir": 5}`:
+        # exit 1, empty stdout, TypeError on stderr.
+        for k in ("id", "dir"):
+            v = meta.get(k)
+            if v is not None and (not isinstance(v, str) or "\0" in v):
+                return {}, "the marker %s holds a %s that is not a usable string" % (marker, k)
         return meta, ""
 
 
@@ -3727,6 +3739,26 @@ tool sync_harness:
                 check("et ne laisse aucune coquille derriere elle",
                       [os.path.exists(applied_marker_for(tmp)), leftover_on_record(tmp)],
                       [False, False])
+                # Un marqueur dont les CHAMPS ne sont pas des chaines : `dir` part
+                # directement dans realpath et os.path.join. Un nombre, une liste,
+                # une chaine avec un NUL -> exception hors de main(), et le harnais
+                # imprime une trace de pile la ou la campagne attend son unique
+                # verdict JSON. Refuse comme un marqueur illisible, pas subi.
+                os.makedirs(os.path.dirname(applied_marker_for(tmp)), mode=0o700, exist_ok=True)
+                for label, payload in (("un nombre", '{"id": "x", "dir": 5}'),
+                                       ("une liste", '{"id": "x", "dir": ["a"]}'),
+                                       ("un NUL", '{"id": "x", "dir": "/a\\u0000b"}'),
+                                       ("un id non-chaine", '{"id": 7, "dir": "%s"}' % mdir)):
+                    with open(applied_marker_for(tmp), "w", encoding="utf-8") as f:
+                        f.write(payload)
+                    try:
+                        got, raised = revert_leftover_mutant(tmp), ""
+                    except Exception as e:                  # noqa: BLE001 - c'est le test
+                        got, raised = None, "%s: %s" % (type(e).__name__, e)
+                    check("marqueur dont un champ est %s : refuse, pas subi" % label,
+                          [raised, (got or {}).get("refused"),
+                           leftover_disposition(got or {})[0]], ["", "slot", "unusable"])
+                    clear_marker()
                 check("arbre sain, verdicts sains : le revert est annonce propre",
                       overall_revert_clean([{"revert_clean": True}, {}], None, tmp), True)
                 check("un seul verdict sale suffit a le nier",
