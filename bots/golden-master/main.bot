@@ -3495,7 +3495,10 @@ tool oracle_run:
                       ["leftover-1", True, True])
                 check("son marqueur reste", os.path.isfile(applied_marker_for(tmp)), True)
                 check("disposition d'un revert.sh disparu", leftover_disposition(left)[0], "still_mutated")
-                os.remove(applied_marker_for(tmp))
+                try:
+                    os.remove(applied_marker_for(tmp))
+                except OSError:
+                    pass
                 sub("git", "checkout", "--", "f.txt")
                 # Une application qui ECHOUE nettoie l'arbre et le marqueur dans son propre run.
                 scripts("printf 'half\\n' >> f.txt; exit 1", "git checkout -- f.txt")
