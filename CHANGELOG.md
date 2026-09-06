@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.3](https://github.com/SocialGouv/iterion/compare/v3.112.2...v3.112.3) (2026-09-06)
+
+### Bug Fixes
+
+* **server:** a forced apply bails when /user never answers; the card vouches only on a 409 ([#804](https://github.com/SocialGouv/iterion/issues/804)) ([66e63b5](https://github.com/SocialGouv/iterion/commit/66e63b5674318528632b4d63e47a83bc83c4eda5)), references [#803](https://github.com/SocialGouv/iterion/issues/803)
+
+    <details><summary>why</summary>
+
+    Revi's gate on #803 (R77fadf, R4a0ce8) and its assumptions: - Under force, a WhoAmI failure was swallowed even when it was the apply's own deadline expiring — the upload then ran on a dead context and stamped "context deadline exceeded" on the connection, blaming the avatar for a forge that does not answer. A genuine refusal is still tolerated; a spent budget bails with the accurate reason and records nothing. - The card sent force:true for every account not flagged as a bot, so the 409 branch…
+
+    </details>
+
 ## [3.112.2](https://github.com/SocialGouv/iterion/compare/v3.112.1...v3.112.2) (2026-09-06)
 
 ### Bug Fixes
