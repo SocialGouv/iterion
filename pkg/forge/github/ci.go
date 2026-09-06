@@ -389,7 +389,10 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 // returned ref reflects the merged state. When opts.DeleteBranch is set, the
 // source branch (read off the re-fetched ref) is best-effort deleted afterwards
 // — a failure there does not fail the merge. GitHub gates the merge on
-// contents write (it writes the base branch), not on pull_requests write.
+// contents write (it writes the base branch), not on pull_requests write: the
+// row under Pull requests for this path is the GET ("check if a pull request
+// has been merged"), a different endpoint — see
+// PullMergeInstallationPermissions for the two rows side by side.
 func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
 	body := map[string]any{"merge_method": forge.MergeMethodWire(opts.Method)}
 	if opts.CommitTitle != "" {

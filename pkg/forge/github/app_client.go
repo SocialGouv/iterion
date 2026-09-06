@@ -234,6 +234,21 @@ func PullWriteInstallationPermissions() map[string]string {
 // merge writes the base branch), not on pull_requests write; the
 // pull_requests read serves the re-fetch that returns the merged ref, and
 // contents write also covers the optional source-branch deletion.
+//
+// The METHOD is what carries the rule, and the two methods of this one path
+// sit under different permissions — which is the trap. GitHub's published
+// per-endpoint data lists them as two separate rows:
+//
+//	put …/pulls/{pull_number}/merge  "merge-a-pull-request"                  → Contents, write
+//	get …/pulls/{pull_number}/merge  "check-if-a-pull-request-has-been-merged" → Pull requests, read
+//
+// so reading "…/pulls/{n}/merge appears under Pull requests" as licence to
+// add pull_requests:write here is reading the GET's row. Neither row carries
+// the "additional permissions" marker, i.e. neither is a conjunction — unlike
+// GET …/pulls/{n} three functions up, which IS dual-listed (Contents read AND
+// Pull requests read, both marked) and is why that profile takes both. The
+// two profiles apply the same rule to two differently-shaped rows; they do
+// not apply opposite readings to one.
 func PullMergeInstallationPermissions() map[string]string {
 	return map[string]string{
 		"contents":      "write",
