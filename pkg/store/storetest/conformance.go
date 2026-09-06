@@ -1307,6 +1307,13 @@ func testEndReasonLifecycle(t *testing.T, s store.RunStore) {
 		}
 		return r
 	}
+	// The twins start a run differently on purpose — the filesystem store goes
+	// straight to running, the cloud one to queued (Opts.InitialStatus models
+	// it) — so the row states the status it CASes from instead of inheriting
+	// either default. What is under test is the end reason, not CreateRun.
+	if err := s.UpdateRunStatus(ctx, "run_er", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
 	// The cancel writes reason and status in ONE outcome write.
 	changed, err := s.UpdateRunOutcome(ctx, "run_er", store.RunStatusCancelled,
 		store.RunEndReasonPRClosed.Message(),
