@@ -112,13 +112,15 @@ func isAuthErrorResult(s string) bool {
 	if t == "" || len(t) > 200 {
 		return false
 	}
-	// A 401 status is the provider's own verdict on the credential, whatever
-	// prose (or none) follows it: a facade renders "API Error:
+	// A 401/403 status is the provider's own verdict on the credential,
+	// whatever prose (or none) follows it: a facade renders "API Error:
 	// [401][Unauthorized][<id>]", which matches no signature below and would
 	// otherwise flow on as the node's answer. Prefix-anchored by the regex,
-	// short by the cap. A 403 is a refusal, not a credential verdict — see
-	// isRefusedRequestResult.
-	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil && m[1] == "401" {
+	// short by the cap. 403 is in the class as the pi backend mints it from
+	// the upstream status: a permission error is per-key and the pool's
+	// rotation is the right first move; a facade block fails the next key
+	// the same way and surfaces then, no worse than surfacing now.
+	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil && (m[1] == "401" || m[1] == "403") {
 		return true
 	}
 	low := strings.ToLower(t)
@@ -141,20 +143,6 @@ func isAuthErrorResult(s string) bool {
 		}
 	}
 	return false
-}
-
-// isRefusedRequestResult detects a 403 render, bare or bracketed: the
-// upstream refused the request — a facade or CDN block, a policy refusal —
-// which a retry will not change, but which is not a verdict on the
-// credential either (a dead token renders 401). Same brevity and prefix
-// guards as the transient classifier.
-func isRefusedRequestResult(s string) bool {
-	t := strings.TrimSpace(s)
-	if t == "" || len(t) >= 400 {
-		return false
-	}
-	m := apiErrorResultStatusRe.FindStringSubmatch(t)
-	return m != nil && m[1] == "403"
 }
 
 // redactAuthRender strips the quoted credential out of an auth render:

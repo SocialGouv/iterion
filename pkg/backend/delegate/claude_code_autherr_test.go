@@ -19,9 +19,11 @@ func TestIsAuthErrorResult(t *testing.T) {
 		"invalid api key",
 		"OAuth token has expired",
 		"Not logged in \u00b7 Please run /login",
-		// A facade's bracketed 401: the status is the provider's verdict on
-		// the credential, whatever prose follows it.
+		// A facade's bracketed 401 and a bare 403: the status is the
+		// provider's verdict on the credential, whatever prose follows it.
 		"API Error: [401][Unauthorized][2026090610430471b2ed5a5eaa4de7]",
+		"API Error: 403 Forbidden",
+		"API Error: [403][Request blocked][abc]",
 	}
 	for _, s := range authy {
 		if !isAuthErrorResult(s) {
@@ -43,9 +45,6 @@ func TestIsAuthErrorResult(t *testing.T) {
 		"You've hit your weekly limit · resets 9pm (Europe/Paris)",
 		// A server error is the transient class, never a credential verdict.
 		"API Error: [500][Operation failed][2026090610430471b2ed5a5eaa4de7]",
-		// A 403 is a refusal (isRefusedRequestResult), not a dead token.
-		"API Error: 403 Forbidden",
-		"API Error: [403][Request blocked][abc]",
 	}
 	for _, s := range notAuthy {
 		if isAuthErrorResult(s) {

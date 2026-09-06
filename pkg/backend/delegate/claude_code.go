@@ -527,10 +527,14 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	if rm == nil || rm.Result == nil {
 		return nil
 	}
-	// A result that carries a structured object is an answer, whatever its
-	// text says: the CLI never renders an upstream failure alongside one,
-	// and a short JSON answer about quotas must not read as a quota notice.
-	if obj, ok := rm.StructuredOutput.(map[string]any); ok && len(obj) > 0 {
+	// A result that already yields a structured answer — the SDK's object,
+	// or a JSON object in the text — is an answer whatever else its text
+	// says: a short JSON answer about quotas must not read as a quota notice
+	// on any pass. structuredObject is the one definition of that answer
+	// (parseSDKOutput ships exactly it), so the two cannot diverge. No
+	// evidence is filed from a shipped answer: a false bench of the
+	// credential costs more than a reading the next pass files anyway.
+	if obj, _, found := structuredObject(rm.Result, rm.StructuredOutput); found && len(obj) > 0 {
 		return nil
 	}
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
@@ -571,17 +575,6 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 		b.Logger.Error("[%s#%d/claude-code %s] authentication failed — failing fast: %.160s",
 			task.NodeID, task.Iteration, pass, redactAuthRender(strings.TrimSpace(*rm.Result)))
 		return authErr
-	}
-
-	// Refusal guard. A 403 is the upstream refusing the request — a facade
-	// or CDN block, a policy refusal — which a retry will not change, but
-	// which is no verdict on the credential either (a dead token renders
-	// 401): fail fast, legibly, without the credential remedy.
-	if isRefusedRequestResult(*rm.Result) {
-		detail := strings.TrimSpace(*rm.Result)
-		b.Logger.Error("[%s#%d/claude-code %s] upstream refused the request — failing fast: %.160s",
-			task.NodeID, task.Iteration, pass, detail)
-		return fmt.Errorf("claude-code: upstream refused the request (403) — not transient, not retried, not a credential verdict: %s", detail)
 	}
 
 	// Model-unavailable guard. An invalid/unauthorized `--model` does NOT fail
@@ -625,13 +618,20 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 }
 
 // renderRetryable reports whether a rendered failure is one a repeat of the
-// same pass can recover from: only the transient class (5xx, overload, a
-// bare throttle, connectivity). A credential, model or window verdict is
-// terminal for this delegation — retrying it re-spends the pass against a
+// same pass can recover from: the transient class (5xx, overload,
+// connectivity) and a bare throttle. The throttle is safe by construction —
+// classifyRateLimit returns RateLimitKindTransient only together with an
+// empty window, and the usagecap write is gated on a named window, so a
+// repeat cannot re-file evidence. A credential, model or usage-window verdict
+// is terminal for this delegation — retrying it re-spends the pass against a
 // provider that just refused and re-files the same usage evidence.
 func renderRetryable(err error) bool {
 	var tr *ErrTransient
-	return errors.As(err, &tr)
+	if errors.As(err, &tr) {
+		return true
+	}
+	var rl *ErrRateLimited
+	return errors.As(err, &rl) && rl.Kind == RateLimitKindTransient
 }
 
 // annotateCost stamps `_tokens` / `_model` / `_cost_usd` on the delegation
@@ -788,6 +788,14 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
 		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
 		if fmtErr == nil {
+			// The pass ran and was billed, whatever its result says: its
+			// usage counts on every path out of here, the typed ones too.
+			if fmtRM.Usage != nil {
+				*totalIn += fmtRM.Usage.InputTokens
+				*totalOut += fmtRM.Usage.OutputTokens
+				result.Tokens = *totalIn + *totalOut
+			}
+			result.FormattingPassUsed = true
 			// The formatter's result is read through the same predicate as
 			// pass 1: a render here would otherwise be parsed as the output.
 			if rerr := b.renderedFailure(fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts)); rerr != nil {
@@ -795,6 +803,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 					// A credential, model or window verdict is terminal: a
 					// second attempt re-spends the pass against a provider
 					// that just refused and re-files the same evidence.
+					annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
 					return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr)
 				}
 				fmtErr = rerr
@@ -806,32 +815,14 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 				b.Logger.Warn("claude-code [formatting pass %d/%d] failed, retrying: %v", attempt, maxFmtAttempts, fmtErr)
 				continue
 			}
-			// Both attempts exhausted. Before failing the whole delegation,
-			// try parsing Pass 1's free-form output: agents typically emit
-			// a fenced ```json block matching the schema as their final
-			// message, and parseSDKOutput already extracts that. This
-			// recovers from the common infra failure where the sandbox
-			// container dies mid-formatting (observed: container SIGKILL
-			// at formatting-pass invocation → claude exits 137 →
-			// "container is not running" on retry → whole delegation
-			// fails despite Pass 1 having produced shippable output).
-			output, rawLen, fallback := parseSDKOutput(rm.Result, rm.StructuredOutput, task.OutputSchema)
-			if len(output) > 0 && !fallback {
-				b.Logger.Warn("claude-code [formatting pass] failed (%v); recovered structured output from Pass 1 free-form result", fmtErr)
-				result.Output = output
-				result.RawOutputLen = rawLen
-				result.ParseFallback = false
-				annotateCost(&result, task, *totalIn, *totalOut, rm)
-				return true, result, nil
+			// Both attempts exhausted. Pass 1's own output was already tried
+			// by the fast path above with the same arguments, so there is
+			// nothing left to recover from it: the delegation fails typed.
+			if fmtRM != nil {
+				annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
 			}
 			return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
 		}
-		if fmtRM.Usage != nil {
-			*totalIn += fmtRM.Usage.InputTokens
-			*totalOut += fmtRM.Usage.OutputTokens
-			result.Tokens = *totalIn + *totalOut
-		}
-		result.FormattingPassUsed = true
 
 		output, rawLen, fallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
 		if fallback && attempt < maxFmtAttempts {

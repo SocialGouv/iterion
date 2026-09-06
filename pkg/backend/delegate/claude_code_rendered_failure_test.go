@@ -74,7 +74,7 @@ func TestRenderedFailure(t *testing.T) {
 			t.Fatalf("want ErrAuthFailed, got %v", err)
 		}
 	})
-	t.Run("a structured answer is an answer, whatever its text says", func(t *testing.T) {
+	t.Run("an answer is an answer, whatever its text says — the SDK object or JSON text", func(t *testing.T) {
 		rm := &claudesdk.ResultMessage{
 			Result:           str("quota exceeded"),
 			StructuredOutput: map[string]any{"status": "quota exceeded", "ok": false},
@@ -82,31 +82,44 @@ func TestRenderedFailure(t *testing.T) {
 		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
 			t.Fatalf("structured answer re-typed: %v", err)
 		}
-		rm.StructuredOutput = map[string]any{}
+		// The formatting pass may deliver its answer as JSON in the text
+		// with an empty structured object: the same definition applies.
+		rm = &claudesdk.ResultMessage{
+			Result:           str(`{"status": "usage limit reached", "ok": false}`),
+			StructuredOutput: map[string]any{},
+		}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+			t.Fatalf("JSON-text answer re-typed: %v", err)
+		}
+		rm = &claudesdk.ResultMessage{Result: str("quota exceeded"), StructuredOutput: map[string]any{}}
 		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err == nil {
-			t.Fatalf("an empty structured object is not an answer: want the quota verdict")
+			t.Fatalf("a bare quota notice with an empty object is not an answer: want the quota verdict")
 		}
 	})
-	t.Run("a 403 is a refusal: terminal, not transient, not a credential verdict", func(t *testing.T) {
+	t.Run("a 403 is a credential verdict, as the pi backend mints it — never retried", func(t *testing.T) {
 		for _, text := range []string{"API Error: 403 Forbidden", "API Error: [403][Request blocked][abc]"} {
 			rm := &claudesdk.ResultMessage{Result: str(text)}
 			err := b.renderedFailure(rm, task, "pass 1")
-			var tr *ErrTransient
 			var auth *ErrAuthFailed
-			if err == nil || errors.As(err, &tr) || errors.As(err, &auth) {
-				t.Fatalf("%q: want a terminal refusal, got %v", text, err)
+			if !errors.As(err, &auth) {
+				t.Fatalf("%q: want ErrAuthFailed, got %v", text, err)
 			}
 			if renderRetryable(err) {
-				t.Fatalf("%q: a refusal must not be retried", text)
+				t.Fatalf("%q: a credential verdict must not be retried", text)
 			}
 		}
 	})
-	t.Run("only the transient class is retried on a formatting attempt", func(t *testing.T) {
-		if !renderRetryable(&ErrTransient{Provider: BackendClaudeCode, Reason: "api_error_result"}) {
-			t.Fatal("transient not retryable")
+	t.Run("the transient class and a bare throttle are retried on a formatting attempt; verdicts are not", func(t *testing.T) {
+		for _, err := range []error{
+			&ErrTransient{Provider: BackendClaudeCode, Reason: "api_error_result"},
+			&ErrRateLimited{Provider: BackendClaudeCode, Kind: RateLimitKindTransient},
+		} {
+			if !renderRetryable(err) {
+				t.Fatalf("%v: retryable class treated as terminal", err)
+			}
 		}
 		for _, err := range []error{
-			&ErrRateLimited{Provider: BackendClaudeCode, Kind: "usage_window"},
+			&ErrRateLimited{Provider: BackendClaudeCode, Kind: RateLimitKindUsageWindow},
 			&ErrAuthFailed{Provider: BackendClaudeCode},
 			errors.New("claude-code: model unavailable"),
 		} {
