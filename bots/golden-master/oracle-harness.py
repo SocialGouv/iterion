@@ -2180,8 +2180,25 @@ def probe_mutation(meta, ws):
 
     code, out = apply_mutant(meta, ws)
     if code != 0:
-        return dict(base, valid=False, detected=False,
-                    reason="apply.sh exited %s: %s" % (code, out[-300:])), "failed"
+        # A FAILED apply still has to be cleaned up, here, inside the run that
+        # armed it. apply.sh may have edited the tree before it failed, and the
+        # marker went down BEFORE it ran — so returning now used to leave both
+        # behind, for the process lifetime and every later one. Measured: an
+        # apply.sh that appends then exits 1 left the marker armed; the operator
+        # then wrote their own line into that file; the next gate's leftover
+        # sweep ran the stale `git checkout -- f.txt` and their work was gone,
+        # with the report naming only the mutant id and never the path.
+        #
+        # It belongs HERE and not in score_mutant's shared `state == "failed"`
+        # return: the sibling no-targets failure above never reached
+        # apply_mutant, so reverting there would run `git checkout -- <path>`
+        # over a tree no mutant touched — the fix becoming the bug it closes.
+        rcode, rout = revert_mutant(meta, ws)
+        reason = "apply.sh exited %s: %s" % (code, out[-300:])
+        if rcode != 0:
+            reason += (" | revert.sh then exited %s (%s) — THE TREE MAY STILL CARRY "
+                       "A PARTIAL MUTATION" % (rcode, (rout or "")[-200:]))
+        return dict(base, valid=False, detected=False, reason=reason), "failed"
 
     after_tree, after_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
     mutated = (before_tree != after_tree) or (
@@ -3190,6 +3207,36 @@ def _selftest():
             saved["apply_mutant"](lmeta, tmp)
             saved["revert_mutant"](lmeta, tmp)
             check("le revert nominal efface le marqueur", os.path.isfile(applied_marker_for(tmp)), False)
+            # Un apply.sh qui ECHOUE nettoie DANS SON PROPRE PASSAGE. Sinon il
+            # laisse l'arbre mute et le marqueur arme : mesure, l'operateur
+            # ecrivait ensuite son propre travail dans ce fichier et la porte
+            # suivante le detruisait avec le `git checkout --` du mutant, en ne
+            # nommant que l'id du mutant, jamais le chemin efface.
+            bdir = os.path.join(tmp, "m2")
+            os.makedirs(bdir)
+            with open(os.path.join(bdir, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\nexit 1\n")
+            with open(os.path.join(bdir, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+            # Les VRAIS apply/revert (les doublures du bloc 6 sont encore
+            # posees) ; seules les empreintes sont doublees, elles n'ont rien a
+            # dire sur un apply qui a echoue.
+            stubbed = {k: g[k] for k in ("apply_mutant", "revert_mutant",
+                                         "tree_fingerprint", "data_fingerprint")}
+            g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
+                     tree_fingerprint=lambda _w: "x", data_fingerprint=lambda _m, _w: None)
+            try:
+                v, state = probe_mutation({"id": "m2", "dir": bdir, "targets": ["001"]}, tmp)
+            finally:
+                g.update(stubbed)
+            with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
+                tree_after_failed_apply = f.read()
+            check("un apply.sh en echec nettoie arbre ET marqueur dans son passage",
+                  [state, tree_after_failed_apply, os.path.isfile(applied_marker_for(tmp))],
+                  ["failed", "original\n", False])
+            check("et la cause de l'echec reste dite",
+                  "apply.sh exited 1" in (v.get("reason") or ""), True)
+
             saved["apply_mutant"](lmeta, tmp)
             shutil.rmtree(mdir)
             left = revert_leftover_mutant(tmp)
