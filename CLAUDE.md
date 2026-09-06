@@ -190,7 +190,10 @@ the hours this one spent.
   with one call instead of a k8s-secret edit + redeploy — and the
   one-credential activation of the campaign bots' **cross-model plan
   review** (provision the codex OAuth forfait → `plan_review` resolves
-  `on` at the next launch, nothing else to configure).
+  `on` at the next launch, nothing else to configure) — and
+  `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, which refuses at publish (HTTP
+  `422`, a board give-back) a run no tier can fund instead of queueing one
+  that dies at its first call.
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising

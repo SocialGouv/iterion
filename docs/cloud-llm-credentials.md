@@ -115,6 +115,25 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   `tokens.account_id`, and when it is false the forfait is silently skipped.
   Re-run `codex login` with "Sign in with ChatGPT" and upload the file
   unedited.
+- **A run with no credential at all is QUEUED, not refused, by default.**
+  The publisher logs one Warn (`no credential resolved for run=… tiers
+  consulted: byok, oauth-forfait, pool, platform`) and the runner falls
+  back to its pod's ambient env — or fails at the first LLM call, a pod
+  and some minutes after the launch was accepted.
+  `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL=1` (server env) refuses such a
+  run at publish time instead: HTTP `422` with `error_code:
+  NO_LLM_CREDENTIAL` naming the providers to provision, and on the board
+  a launch refusal retried with the dispatcher's backoff
+  ([dispatcher.md](dispatcher.md)). The rule is **per route**, read
+  through the same walk the credential stamp uses: only a run whose
+  EVERY LLM route pins a provider the deployment knows (a `provider/`
+  model prefix or a `provider:` hint) and NONE of them is funded by any
+  tier is refused; one funded pinned provider is enough, and a route the
+  walk cannot attribute (a `claude_code` node with no `model:`, `auto`, a
+  hint outside the vocabulary such as `kimi-code/…`) is never refused,
+  because the runner may still fund it from its env. Turn it on when the
+  runner deployment carries no ambient LLM env — then a credential-less
+  run can never start, and refusing it early is free information.
 
 ## Ingestion gate — what a `400` on provisioning means
 

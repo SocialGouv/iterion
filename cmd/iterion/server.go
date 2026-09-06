@@ -378,22 +378,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("server: %w", err)
 	}
+	// Refuse at publish a run no credential tier can fund, instead of
+	// queueing one that fails at its first LLM call. Off by default: the
+	// runner may still fund a run from its pod's ambient env.
+	requireLLMCredential, err := envBoolStrict("ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL")
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
-		NATS:             natsConn,
-		Store:            st,
-		MongoColl:        st.RunsCollection(),
-		Logger:           logger,
-		Metrics:          mreg,
-		ApiKeys:          stores.apiKeys,
-		GenericSecrets:   stores.genericSecrets,
-		BotBindings:      stores.botBindings,
-		RunSecrets:       stores.runSecrets,
-		Sealer:           sealer,
-		OAuthForfait:     stores.oauth,
-		ForgeConnections: stores.forgeConn,
-		Identity:         authStack.identityStore,
-		PluginSources:    newPluginSourceResolver(stores, pluginFetcher, logger),
-		CredPool:         credBroker,
+		RequireLLMCredential: requireLLMCredential,
+		NATS:                 natsConn,
+		Store:                st,
+		MongoColl:            st.RunsCollection(),
+		Logger:               logger,
+		Metrics:              mreg,
+		ApiKeys:              stores.apiKeys,
+		GenericSecrets:       stores.genericSecrets,
+		BotBindings:          stores.botBindings,
+		RunSecrets:           stores.runSecrets,
+		Sealer:               sealer,
+		OAuthForfait:         stores.oauth,
+		ForgeConnections:     stores.forgeConn,
+		Identity:             authStack.identityStore,
+		PluginSources:        newPluginSourceResolver(stores, pluginFetcher, logger),
+		CredPool:             credBroker,
 		// The fleet's shared meter: a forfait the provider has refused is
 		// skipped at launch so the run falls through to the next
 		// credential tier instead of parking for a reset it could have
@@ -1204,4 +1212,18 @@ func buildOIDCRegistry(cfg iterconfig.Config) *oidc.Registry {
 		registry.Register(oidc.NewGenericConnector(cfg.Auth.OIDC.Generic.IssuerURL, cfg.Auth.OIDC.Generic.ClientID, cfg.Auth.OIDC.Generic.ClientSecret, cfg.Auth.OIDC.Generic.DisplayName, cfg.Auth.OIDC.Generic.Scopes))
 	}
 	return registry
+}
+
+// envBoolStrict reads a boolean env knob: unset or empty is false, and a
+// value strconv cannot parse refuses the boot rather than reading as off.
+func envBoolStrict(name string) (bool, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: want a boolean (1/0, true/false)", name, v)
+	}
+	return b, nil
 }
