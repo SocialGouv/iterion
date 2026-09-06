@@ -382,7 +382,7 @@ func SameGiveUp(a, b *GiveUp) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts && a.Reason == b.Reason
+	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts && a.Reason == b.Reason && a.Launch == b.Launch
 }
 
 // AddComment appends a note to the issue's discussion thread and returns

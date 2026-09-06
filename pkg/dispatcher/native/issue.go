@@ -207,6 +207,11 @@ type GiveUp struct {
 	// is gone. Operator-facing (rendered on the pipeline board); a
 	// retry-budget give-up leaves it empty and reads by Attempts.
 	Reason string `json:"reason,omitempty"`
+	// Launch marks a give-up written before any run existed: the launch
+	// attempt cap (see LaunchRefusal). Such a stamp names no run, so it is
+	// current for the card in its state whatever run — if any — the card
+	// points at; a run give-up stays bound to its RunID.
+	Launch bool `json:"launch,omitempty"`
 	// At is when the give-up was stamped (UTC).
 	At time.Time `json:"at"`
 }
@@ -241,10 +246,15 @@ func (r *LaunchRefusal) Clone() *LaunchRefusal {
 // A stamp with no run id never matches: it cannot be attributed to the card
 // being rendered, and guessing is how the lane got confusing in the first place.
 func (g *GiveUp) Current(issueState, runID string) bool {
-	if g == nil || g.RunID == "" {
+	if g == nil || g.State != issueState {
 		return false
 	}
-	return g.State == issueState && g.RunID == runID
+	// A launch give-up names no run: the card in its state is the whole
+	// subject, whatever run — if any — it points at.
+	if g.Launch {
+		return true
+	}
+	return g.RunID != "" && g.RunID == runID
 }
 
 // ExternalRef links a board card to an issue on an external forge. Set by

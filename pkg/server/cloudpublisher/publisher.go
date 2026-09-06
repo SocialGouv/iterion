@@ -135,6 +135,16 @@ type Config struct {
 	// back to the team key and an org-level monthly cost cap can never
 	// accumulate against the org document.
 	Identity TeamResolver
+	// RequireLLMCredential refuses, at publish time, a run that cannot
+	// possibly start: one whose every LLM route pins a provider iterion
+	// knows and for which no tier (BYOK, OAuth forfait, pool, platform)
+	// holds a credential. Off by default: the runner legitimately proceeds
+	// on its pod's ambient env when the bundle carries nothing (see
+	// runner.Config.SecretsRef semantics), so refusing is a deployment
+	// decision — ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL. A route the walk
+	// cannot attribute (no model prefix, no provider hint, `auto`, a hint
+	// outside the vocabulary) is never refused, on or off.
+	RequireLLMCredential bool
 }
 
 // TeamResolver is the slice of the identity store the publisher needs
@@ -154,26 +164,27 @@ type Publisher struct {
 	// maxPayload reports the NATS server-negotiated max message size so
 	// the offload path can size a RunMessage against it. Nil (the default
 	// in unit tests) disables IR offload — the message is published as-is.
-	maxPayload     func() int64
-	store          store.RunStore
-	runs           *mongo.Collection
-	logger         *iterlog.Logger
-	metrics        *metrics.Registry
-	apiKeys        secrets.ApiKeyStore
-	genericSecrets secrets.GenericSecretStore
-	botBindings    secrets.BotSecretBindingStore
-	runSecrets     secrets.RunSecretsStore
-	sealer         secrets.Sealer
-	oauthForfait   secrets.OAuthStore
-	forgeConns     forge.ConnectionStore
-	pluginSources  *pluginsource.Resolver
-	sandboxImage   func(context.Context) string
-	credPool       *credpool.Broker
-	usageCaps      usagecap.Store
-	capPolicy      usagecap.PolicySource
-	trust          usagecap.Trust
-	usageProbe     UsageProbe
-	identity       TeamResolver
+	maxPayload           func() int64
+	store                store.RunStore
+	runs                 *mongo.Collection
+	logger               *iterlog.Logger
+	metrics              *metrics.Registry
+	apiKeys              secrets.ApiKeyStore
+	genericSecrets       secrets.GenericSecretStore
+	botBindings          secrets.BotSecretBindingStore
+	runSecrets           secrets.RunSecretsStore
+	sealer               secrets.Sealer
+	oauthForfait         secrets.OAuthStore
+	forgeConns           forge.ConnectionStore
+	pluginSources        *pluginsource.Resolver
+	sandboxImage         func(context.Context) string
+	credPool             *credpool.Broker
+	usageCaps            usagecap.Store
+	capPolicy            usagecap.PolicySource
+	trust                usagecap.Trust
+	usageProbe           UsageProbe
+	identity             TeamResolver
+	requireLLMCredential bool
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
 	// add a Mongo read per launch (team/org membership changes are
@@ -249,27 +260,28 @@ func New(cfg Config) (*Publisher, error) {
 			_, err := cfg.NATS.PublishRun(ctx, msg)
 			return err
 		},
-		cancelRun:      cfg.NATS.CancelRun,
-		maxPayload:     cfg.NATS.MaxPayload,
-		store:          cfg.Store,
-		runs:           cfg.MongoColl,
-		logger:         cfg.Logger,
-		metrics:        cfg.Metrics,
-		apiKeys:        cfg.ApiKeys,
-		genericSecrets: cfg.GenericSecrets,
-		botBindings:    cfg.BotBindings,
-		runSecrets:     cfg.RunSecrets,
-		sealer:         cfg.Sealer,
-		oauthForfait:   cfg.OAuthForfait,
-		forgeConns:     cfg.ForgeConnections,
-		pluginSources:  cfg.PluginSources,
-		sandboxImage:   cfg.SandboxImage,
-		credPool:       cfg.CredPool,
-		usageCaps:      cfg.UsageCaps,
-		capPolicy:      cfg.CapPolicy,
-		trust:          cfg.UsageCapTrust.Normalized(),
-		usageProbe:     cfg.UsageProbe,
-		identity:       cfg.Identity,
+		cancelRun:            cfg.NATS.CancelRun,
+		maxPayload:           cfg.NATS.MaxPayload,
+		store:                cfg.Store,
+		runs:                 cfg.MongoColl,
+		logger:               cfg.Logger,
+		metrics:              cfg.Metrics,
+		apiKeys:              cfg.ApiKeys,
+		genericSecrets:       cfg.GenericSecrets,
+		botBindings:          cfg.BotBindings,
+		runSecrets:           cfg.RunSecrets,
+		sealer:               cfg.Sealer,
+		oauthForfait:         cfg.OAuthForfait,
+		forgeConns:           cfg.ForgeConnections,
+		pluginSources:        cfg.PluginSources,
+		sandboxImage:         cfg.SandboxImage,
+		credPool:             cfg.CredPool,
+		usageCaps:            cfg.UsageCaps,
+		capPolicy:            cfg.CapPolicy,
+		trust:                cfg.UsageCapTrust.Normalized(),
+		usageProbe:           cfg.UsageProbe,
+		identity:             cfg.Identity,
+		requireLLMCredential: cfg.RequireLLMCredential,
 	}, nil
 }
 
@@ -744,6 +756,20 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
 			runID, tenantID)
 	}
+	// The deployment may REFUSE what the Warn only reports. Per route, on
+	// the walk the stamp above reads: refused only when every LLM route
+	// pins a provider the vocabulary knows and none of the pinned providers
+	// is funded by any tier. One funded provider is enough — the other
+	// route's failure is the run's to report — and a route the walk cannot
+	// attribute may still be funded by the pod's env, so it is never
+	// refused. Returned WITH res: a pool grant acquired above must reach
+	// the caller's release.
+	if p.requireLLMCredential && wf != nil && wf.UsesLLM() {
+		if unfunded := unfundedPinnedProviders(spend, bundle); len(unfunded) > 0 {
+			return res, fmt.Errorf("cloudpublisher: %w: every LLM route of run %s pins %s and no tier (byok, oauth-forfait, pool, platform) holds a credential for any of them — provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
+				runview.ErrNoLLMCredential, runID, strings.Join(unfunded, ", "), tenantID)
+		}
+	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
 		return res, nil
 	}
@@ -841,6 +867,35 @@ func spendableProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFall
 		pinned[p] = true
 	}
 	return spendable{pinned: pinned}
+}
+
+// unfundedPinnedProviders returns the run's pinned providers, sorted, when
+// NONE of them is funded by the bundle — an API key of that provider, or an
+// OAuth credential whose kind authenticates against it. Nil when the run has
+// an unattributable route (a nil spendable set allows everything) or when at
+// least one pinned provider is funded: such a run can start.
+func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string {
+	if spend.pinned == nil {
+		return nil
+	}
+	funded := make(map[string]bool, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
+	for prov := range bundle.APIKeys {
+		funded[strings.ToLower(string(prov))] = true
+	}
+	for kind := range bundle.OAuthCredentials {
+		if prov := providerOfOAuthKind(kind); prov != "" {
+			funded[prov] = true
+		}
+	}
+	out := make([]string, 0, len(spend.pinned))
+	for prov := range spend.pinned {
+		if funded[prov] {
+			return nil
+		}
+		out = append(out, prov)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // providerOfOAuthKind maps an OAuth slot to the provider its credential

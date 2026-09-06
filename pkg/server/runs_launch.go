@@ -534,6 +534,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "queue unavailable")
 			return
 		}
+		if s.writeNoLLMCredentialError(w, r, "launch", err) {
+			span.SetStatus(codes.Error, "no llm credential")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "launch failed")
@@ -726,6 +730,9 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeQueueOutageError(w, r, "resume", err) {
 		return
 	}
+	if s.writeNoLLMCredentialError(w, r, "resume", err) {
+		return
+	}
 	if runtime.IsWorkflowSourceChanged(err) {
 		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
 			"error":      fmt.Sprintf("resume: %v", err),
@@ -734,6 +741,22 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		return
 	}
 	s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+}
+
+// writeNoLLMCredentialError answers a launch or resume the cloud publisher
+// refused for want of an LLM credential (runview.ErrNoLLMCredential): 422 —
+// the request is well-formed and the instance healthy; the same request
+// succeeds once a credential is provisioned — with the stable code and the
+// publisher's own sentence, which names the providers to provision.
+func (s *Server) writeNoLLMCredentialError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
+	if !errors.Is(err, runview.ErrNoLLMCredential) {
+		return false
+	}
+	s.writeJSONError(w, r, http.StatusUnprocessableEntity, map[string]any{
+		"error":      fmt.Sprintf("%s: %v", operation, err),
+		"error_code": runview.NoLLMCredentialErrorCode,
+	})
+	return true
 }
 
 // writeQueueOutageError is shared by launch and both resume error sites

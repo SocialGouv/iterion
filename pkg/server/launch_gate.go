@@ -35,6 +35,34 @@ type launchDenial struct {
 	resetAt    time.Time
 }
 
+// launchDeniedError is a gate denial as an error, for the launch surfaces
+// that record a refusal on a ledger instead of answering an HTTP request
+// (the board dispatcher, whose card keeps the rule that refused it).
+// Reason is the stable denial token below; Detail the sentence the HTTP
+// envelope carries; RetryAfter / ResetAt the hints it would have sent.
+type launchDeniedError struct {
+	Reason     string
+	Detail     string
+	RetryAfter time.Duration
+	ResetAt    time.Time
+}
+
+func (e *launchDeniedError) Error() string {
+	if e.Detail == "" {
+		return "launch gate: " + e.Reason
+	}
+	return "launch gate: " + e.Reason + ": " + e.Detail
+}
+
+// err converts a denial for a caller that reports through an error chain.
+// Nil-safe: an allowed launch has no error.
+func (d *launchDenial) err() error {
+	if d == nil {
+		return nil
+	}
+	return &launchDeniedError{Reason: d.reason, Detail: d.detail, RetryAfter: d.retryAfter, ResetAt: d.resetAt}
+}
+
 // Stable denial reason tokens (API contract — documented in
 // docs/quotas-and-limits.md).
 const (
@@ -95,7 +123,9 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // gateLaunch is the shared run-launch admission gate: suspend →
 // concurrency → launch rate → monthly cost cap → monthly run quota
 // (the last one is also the metering increment). Called by
-// handleLaunchRun, handleResumeRun and the inbound webhook handlers.
+// handleLaunchRun, handleResumeRun, the inbound webhook handlers, the retry
+// sweeper and the board dispatcher (processBoardCard) — every cloud launch
+// surface (the table in docs/quotas-and-limits.md).
 // On allow it returns the admission handle for the metered increment
 // (nil when nothing was metered).
 //
