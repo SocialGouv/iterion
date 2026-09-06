@@ -2204,7 +2204,9 @@ def revert_leftover_mutant(ws):
     Returns None when there is nothing to revert. Otherwise a dict with the
     mutant's id and dir, `code` (revert.sh's exit; None when the script is
     gone), `marker`, and after a clean revert `dirty` — what `git status`
-    still shows, because the script's exit code is its word, not the tree's.
+    still shows, because the script's exit code is its word, not the tree's
+    — or `dirty_unknown`, the reason git could not be asked, which is not
+    the same fact as an empty `dirty`.
     The marker is dropped only when the revert demonstrably succeeded — a
     leftover the harness could not revert stays recorded, so the next gate
     reports it again instead of forgetting it; an operator who reverts by
@@ -2236,14 +2238,24 @@ def revert_leftover_mutant(ws):
         code, out = run_script(script, ws)
     else:
         code, out = None, "the mutant's revert.sh is no longer there: %s" % script
-    dirty = ""
+    dirty, unknown = "", ""
     if code == 0:
         drop_applied_marker(ws, meta)
-        st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
-                            capture_output=True, text=True)
-        dirty = (st.stdout or "").strip() if st.returncode == 0 else ""
+        # Through run(), and on a short leash. This sweep runs in EVERY mode,
+        # record included, and the harness's contract is to answer with a
+        # verdict: a `git` that is absent must not replace the JSON report with
+        # a traceback the campaign reads as "the harness is broken", and a
+        # wedged one must not hang the gate the way the incident behind this
+        # whole guard hung it. Unanswered is reported as UNKNOWN, never as
+        # clean — an empty porcelain and an absent git are not the same fact.
+        st, st_out = run("git status --porcelain", ws, timeout=120)
+        if st == 0:
+            dirty = st_out.strip()
+        else:
+            unknown = "`git status` did not answer (exit %s)" % st
     return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
-            "marker": marker, "refused": False, "kept": code != 0, "dirty": dirty[:400]}
+            "marker": marker, "refused": False, "kept": code != 0,
+            "dirty": dirty[:400], "dirty_unknown": unknown}
 
 
 # The dispositions on which the gate STOPS rather than judges. Only "reverted"
@@ -2292,6 +2304,9 @@ def leftover_disposition(left):
             text += (" The tree still shows uncommitted changes after the revert — the "
                      "script's exit is its word, not the tree's: %s"
                      % " ".join(left["dirty"].split())[:300])
+        elif left.get("dirty_unknown"):
+            text += (" Whether the tree actually came back could not be checked: %s. "
+                     "Unknown, not clean." % left["dirty_unknown"])
         return "reverted", text
     how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
     return "still_mutated", (
@@ -3530,6 +3545,34 @@ def _selftest():
                 if saved_sealed is not None:
                     os.environ["GM_SEALED_DIR"] = saved_sealed
                 shutil.rmtree(sealed, ignore_errors=True)
+            # Un `git` hors d'atteinte doit donner un VERDICT, pas une trace de
+            # pile : ce balayage tourne dans TOUS les modes, `record` compris, ou
+            # rien d'autre n'appelle git — et la campagne lit du JSON sur la
+            # sortie standard. PATH reduit a `sh` : git est absent, le script de
+            # revert (un `exit 0`, une primitive du shell) tourne encore.
+            scripts("exit 0", "exit 0")
+            apply_mutant(lmeta, tmp)
+            saved_path, shbin = os.environ.get("PATH", ""), shutil.which("sh")
+            bindir = tempfile.mkdtemp(prefix="gm-bin-")
+            try:
+                os.symlink(shbin, os.path.join(bindir, "sh"))
+                os.environ["PATH"] = bindir
+                try:
+                    nogit = revert_leftover_mutant(tmp)
+                    raised = ""
+                except Exception as e:                      # noqa: BLE001 - c'est le test
+                    nogit, raised = None, "%s: %s" % (type(e).__name__, e)
+            finally:
+                os.environ["PATH"] = saved_path
+                shutil.rmtree(bindir, ignore_errors=True)
+            check("git absent : un verdict, pas une exception",
+                  [raised, (nogit or {}).get("code")], ["", 0])
+            check("l'etat de l'arbre est INCONNU, pas propre",
+                  [(nogit or {}).get("dirty"), bool((nogit or {}).get("dirty_unknown"))],
+                  ["", True])
+            check("et la note le dit au lieu de laisser croire a un arbre propre",
+                  "Unknown, not clean" in leftover_disposition(nogit or {})[1], True)
+            clear_marker()
             # Un revert en ECHEC garde son enregistrement face au mutant suivant :
             # la seconde application est refusee, rien ne tourne, et le revert du
             # second n'efface pas le marqueur du premier.
