@@ -117,10 +117,32 @@ type BoardBinding struct {
 	// five, or the operator's own. Stored so what a deployment actually runs
 	// is readable, not inferred.
 	StatusMapping []StatusMapping `bson:"status_mapping,omitempty" json:"status_mapping,omitempty"`
-	// MissingStatuses are mapped columns the board does not carry. A binding
-	// is not refused over them — it is REPORTED, so a half-covered board is a
-	// visible fact rather than a silently inert half of the sync.
+	// MissingStatuses are mapped columns the board does not carry RIGHT NOW. A
+	// binding is not refused over them — it is REPORTED, so a half-covered
+	// board is a visible fact rather than a silently inert half of the sync.
+	// Recomputed by every reconciliation.
 	MissingStatuses []string `bson:"missing_statuses,omitempty" json:"missing_statuses,omitempty"`
+	// UnresolvedAtBind is the partial coverage the OPERATOR accepted when the
+	// board was bound: the mapped columns BindBoard could not resolve and did
+	// not refuse the bind over. It is written by the BIND — never by a
+	// reconciliation, save the one-off reconstruction below — because it is a
+	// statement about the PAST, and a column outside it that stops resolving is
+	// a column that BROKE, which is what `DegradedReason` reports.
+	//
+	// It is half of that test, not all of it: the exemption it grants holds
+	// only while the column has never resolved (no cached option id). A column
+	// absent at bind and ADOPTED later has worked, so its next disappearance is
+	// a break like any other — see ReconcileStatusOptions.
+	//
+	// NOT `omitempty` in BSON: an empty set and a never-recorded one are
+	// different answers, and only the stored shape can tell them apart (see
+	// ReconcileStatusOptions, which reconstructs the set for a binding written
+	// before this field existed). The JSON form DOES drop an empty set, which
+	// is safe only because nothing re-materialises a binding from it — the API
+	// and `iterion remote board show` decode to PRINT, never to re-`Upsert`.
+	// Wire a JSON round-trip back into the store and this asymmetry becomes a
+	// bug: an empty set would decode to nil and re-trigger the reconstruction.
+	UnresolvedAtBind []string `bson:"unresolved_at_bind" json:"unresolved_at_bind,omitempty"`
 
 	// SyncEvery is the reconciliation interval. Zero = OFF (no periodic pass;
 	// the reflect's fast path still runs, with no net under it).
@@ -184,7 +206,16 @@ func (b BoardBinding) Fields() []LabelField {
 	return out
 }
 
-// OptionForState returns the board option id to write for a native state.
+// OptionForState returns the board option id CACHED for a native state.
+//
+// It is NOT an answer to "does the board still carry this column". The
+// reconciliation deliberately KEEPS a lost column's id — that is the evidence
+// that keeps the loss re-derivable on the next pass — so this returns
+// `(id, true)` for a column the board no longer has, and writing that id 422s.
+// A caller that writes must also consult the pass's
+// `StatusVocabularyRepair.LostStates`; one that only wants to know whether the
+// board carries the column should read `MissingStatuses`, which every
+// reconciliation recomputes.
 func (b BoardBinding) OptionForState(state string) (string, bool) {
 	id, ok := b.StatusOptions[state]
 	return id, ok && id != ""
@@ -520,6 +551,7 @@ func (s *MongoBoardBindingStore) Upsert(ctx context.Context, b BoardBinding) err
 		"status_field_id": b.StatusFieldID, "status_options": b.StatusOptions,
 		"label_fields": b.LabelFields, "status_mapping": b.StatusMapping,
 		"missing_statuses":   b.MissingStatuses,
+		"unresolved_at_bind": b.UnresolvedAtBind,
 		"sync_every_seconds": b.SyncEverySeconds, "updated_at": b.UpdatedAt,
 	}
 	if !b.LastSyncedAt.IsZero() {
@@ -556,7 +588,12 @@ func (s *MongoBoardBindingStore) SaveStatusVocabulary(ctx context.Context, tenan
 			"status_options":   v.Options,
 			"status_field_id":  v.StatusFieldID,
 			"missing_statuses": v.MissingStatuses,
-			"updated_at":       time.Now().UTC(),
+			// Written unconditionally, INCLUDING an empty slice: a
+			// reconstructed-as-empty set and a never-recorded one are
+			// different answers, and only the stored shape can tell them
+			// apart on the next pass.
+			"unresolved_at_bind": v.UnresolvedAtBind,
+			"updated_at":         time.Now().UTC(),
 		}})
 	if err != nil {
 		return fmt.Errorf("forge: save board status vocabulary: %w", err)

@@ -172,10 +172,42 @@ the binding — `iterion remote board show`, or
 `GET /api/teams/{id}/board-binding` — and is logged **once**, when it starts,
 not on every pass.
 
-It clears by itself the moment the column exists again. Re-binding the board
-(`iterion remote board bind …`) also clears it, and is the way out when the
-column is gone for good: bind with a `--status-map` matching what the board
-actually carries.
+It stands for exactly as long as the column is missing: each pass re-asks the
+question, so nothing else happening on the board can clear it. It clears by
+itself the moment that column exists again. Re-binding the board (`iterion
+remote board bind …`) also clears it, and is the way out when the column is
+gone for good: bind with a `--status-map` matching what the board actually
+carries.
+
+Partial coverage is **not** a degradation. A column your map names and the
+board never had is reported as `missing_statuses` (a `!` in `board show`) and
+its cards count `reflect_no_column`, but the binding reads healthy — binding a
+three-column board with the five-column default map is a choice, not a break.
+The bind records that choice (`unresolved_at_bind`), which is how a later pass
+tells "never there" from "broke". **That exemption discharges the moment the
+column works**: if you later add the column, the pass adopts it and it starts
+taking cards — deleting it after that is a break like any other, and the
+binding degrades. Only something that worked can break.
+
+A binding created before `unresolved_at_bind` existed has it reconstructed on
+its first pass **from its own cached option ids** — a mapped column the binding
+holds no id for is one the bind never resolved — and not from what the board
+happens to carry that day, which would fold a column that broke in the upgrade
+window into the accepted set. One that is already degraded keeps its
+degradation through the upgrade rather than being cleared by the gap in its own
+record.
+
+One population that upgrade cannot recover: a binding the previous release
+degraded, whose flag an *unrelated* repair then cleared before the upgrade. It
+arrives reading healthy with no cached id for the missing column — from the
+outside, indistinguishable from partial coverage accepted at bind — so it
+reconstructs as exempt and keeps reading healthy. The visible signal is
+`reflect_no_column` climbing on a binding with no `degraded_reason`; the
+recovery is a re-bind, which re-reads the board and records the accepted set
+afresh. For the same reason, a binding degraded by the previous release with
+*both* a broken column and a genuinely-accepted one will name both after the
+upgrade: the record cannot tell them apart, and over-reporting is the side to
+fail on. A re-bind is the reset there too.
 
 ---
 

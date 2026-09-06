@@ -174,18 +174,67 @@ has already read for the label fields, so the repair costs no API call
 (`BoardBinding.ReconcileStatusOptions`). Per mapped state, in order: the cached
 **id** still on the field ⇒ adopt the board's current name (rename repaired);
 else the mapped **name** still on the field ⇒ adopt its id (re-created column,
-or one added since the bind); else **lost**. The `Status` field's own id is
-re-resolved the same way, by name.
+or one added since the bind); else **lost** — unless the column has never
+resolved for this binding, which is the accepted partial coverage below. The
+`Status` field's own id is re-resolved the same way, by name.
 
 A LOST column is the only unrepairable case, and it becomes an explicit state
-rather than a retry loop (the `pluginsource` quarantine precedent): the dead id
-is dropped so nothing writes it, those cards are counted `reflect_no_column`,
-and the binding carries a `degraded_reason` NAMING the column — surfaced on
+rather than a retry loop (the `pluginsource` quarantine precedent): those cards
+are counted `reflect_no_column` and skipped, and the binding carries a
+`degraded_reason` NAMING the column — surfaced on
 `GET /api/teams/{id}/board-binding` and logged once, on the transition, not on
 every pass. It is a partial outage: every column that still resolves keeps
 syncing. It clears itself when the column reappears, and a re-bind clears it
 too — which is what makes "re-bind the board" a real remedy rather than the
 only one.
+
+**That readout is a LEVEL, re-derived from the binding's current shape on every
+pass — never an event.** "Lost" is defined as *a mapped column the board serves
+under neither its cached option id nor its name, and that has NEVER resolved for
+this binding*; only an EMPTY lost set clears the flag. Three consequences shape
+the code:
+
+- **the bind-time accepted set is recorded separately** (`unresolved_at_bind`,
+  written by `BindBoard` and — save the one-off reconstruction below — never by
+  a reconciliation, unlike `missing_statuses`, which every pass recomputes as
+  "what the board lacks right now"). It is what distinguishes *this column was
+  never there* from *this column broke*. Only something that worked can break: a
+  three-column board bound with the five-column default map is partial coverage,
+  not a degradation;
+- **"never resolved" is a CONJUNCTION, and the rule may not rest on either
+  oracle alone** — the bind accepted the column as absent, AND the binding still
+  holds no option id for it. Each half covers what the other misses.
+
+  *The accepted set alone never discharges.* A column absent at bind and later
+  ADOPTED earns a real option id and starts taking cards; its next
+  disappearance is a genuine break, which a rule keyed on the bind-time NAME
+  would go on exempting forever — the binding reading healthy while every card
+  of that column is refused.
+
+  *The cached id alone misreads the upgrade.* The first release to ship this
+  deleted that id on the pass that observed the loss, so a binding degraded by
+  it has no id, no column, and a standing `degraded_reason` — "the binding holds
+  an id" finds nothing lost there, and a readout that clears when it finds
+  nothing lost would clear a still-true degradation permanently, since the id
+  never comes back. The same two shapes meet during a rolling deploy, in either
+  order.
+
+  A binding stored before `unresolved_at_bind` existed has the set
+  RECONSTRUCTED **from the binding, never from the live board** — a mapped
+  column the binding holds no id for is one the bind could not resolve. Reading
+  the board instead would fold a column that broke in the upgrade window into
+  the accepted set, and would persist "the operator accepted all five columns"
+  the day the `Status` field itself vanishes. The reconstruction is asymmetric
+  on the binding's own health: a healthy one accepted every column it never
+  resolved; a **degraded** one accepted nothing, because from the outside its
+  two possible histories are indistinguishable and the only safe reading of "I
+  cannot tell" is to keep the degradation it declared. *A health flag is never
+  cleared by the absence of the evidence that would have kept it.* The stored
+  shape therefore has to tell an empty set from an unrecorded one — which is why
+  the field is persisted even when empty;
+- **the dead option id is nevertheless KEPT**, as the pass's `LostStates` set —
+  what refuses the reflect for those cards — and as the half of the conjunction
+  that keeps the loss re-derivable once the bind-time exemption has discharged.
 
 The repaired vocabulary is persisted through a store method narrow enough to
 touch nothing else (`SaveStatusVocabulary`): a reconciliation may correct what
@@ -466,6 +515,19 @@ pass; the projection declines and leaves the record stale, which is exactly
 what makes the pass re-derive and arbitrate §9's conflict with real timestamps.
 A previous state the map does not carry is inert (§2), so it is not a
 divergence and the reflect proceeds.
+
+The other thing a board read would have told it is **which columns the board
+still carries**, and §5's repair makes that answerable without one: a lost
+column KEEPS its cached option id, so the option map alone would hand the fast
+path a dead id to fire at the forge — once per move of every card in that
+column, each burning an outbox row's whole retry budget for a column no retry
+can bring back. Both callers therefore build the reflect's column knowledge
+through one constructor, whose lost set is a UNION: the binding's persisted
+`missing_statuses` (all a path with no board read can know, and enough) plus,
+for the pass alone, the live repair it has just computed. `nil` there means
+"this call observed nothing about the board" — never "the board is fine". A
+card the fast path cannot reflect is counted, logged once for that event, and
+its row RETIRES rather than retries.
 
 The pass is unchanged and remains the net. Both orders are idempotent and
 tested as such: after a projection the next pass writes nothing (to the forge

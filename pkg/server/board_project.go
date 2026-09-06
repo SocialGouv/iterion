@@ -188,7 +188,7 @@ func ImportProjectBoard(
 	if err != nil {
 		return res, fmt.Errorf("project import: get project %s: %w", ref, err)
 	}
-	renamed := repairBinding(ctx, project, opts)
+	repair := repairBinding(ctx, project, opts)
 
 	missing := map[string]int{}
 	cursor := ""
@@ -198,7 +198,7 @@ func ImportProjectBoard(
 			return res, fmt.Errorf("project import: list items of %s: %w", ref, err)
 		}
 		for _, it := range page.Items {
-			if err := applyProjectItem(ctx, bc, project, ref, provider, board, it, opts, &res, missing, renamed); err != nil {
+			if err := applyProjectItem(ctx, bc, project, ref, provider, board, it, opts, &res, missing, repair); err != nil {
 				res.MissingRepos = rankMissingRepos(missing)
 				return res, err
 			}
@@ -224,18 +224,33 @@ func ImportProjectBoard(
 //
 // Persisting is best-effort: a store outage must not abandon the reconciliation
 // the operator is watching. The repair still applies in memory for this pass.
-func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImportOptions) map[string]string {
+//
+// The health readout is decided here too, and from the binding's CURRENT shape
+// rather than from what this pass happened to observe. A flag derived from an
+// EVENT ("we noticed the column go") only holds while the evidence survives:
+// the first pass reports the loss, and every pass after it — reading a binding
+// where nothing changed — reports nothing, so the next unrelated repair reads
+// as "it resolves again" and clears a degradation that is still true. Level,
+// not edge: `reason` is recomputed each pass, and only an EMPTY one clears.
+func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImportOptions) bindingRepair {
 	binding := opts.binding()
 	if binding == nil {
-		return nil // read-only pass: nothing is cached, so nothing is stale
+		return bindingRepair{} // read-only pass: nothing is cached, so nothing is stale
+	}
+	if binding.StatusFieldID == "" {
+		// A labels-only binding has no status vocabulary, so this pass
+		// re-derived NOTHING about it. `ReconcileStatusOptions` would hand back
+		// the zero repair, whose empty `Reason()` is indistinguishable from
+		// "every column resolves" — and the clear arm below would act on it.
+		// Nothing reaches here degraded today, but the switch must never be
+		// able to clear a flag on the absence of the evidence that would have
+		// kept it: that is the whole thesis of the level-triggered readout.
+		return bindingRepair{}
 	}
 	was := binding.DegradedReason
 	rep := binding.ReconcileStatusOptions(project)
-	if !rep.Changed() {
-		return nil
-	}
 	store := opts.bindingStore()
-	if store != nil {
+	if rep.Changed() && store != nil {
 		if err := store.SaveStatusVocabulary(ctx, binding.TenantID, binding.Vocabulary()); err != nil {
 			logProjectWarn(opts, "project board: the repaired status vocabulary could not be persisted",
 				"team", binding.TenantID, "error", err.Error())
@@ -244,24 +259,26 @@ func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImpo
 
 	switch reason := rep.Reason(); {
 	case reason != "":
-		if was != reason {
-			// ONCE, on the transition. The state itself lives on the binding
-			// (GET /api/teams/{id}/board-binding), which is where an operator
-			// can act on it — a Warn repeated every two minutes is not a
-			// signal, it is noise that buries the pass's real lines.
-			logProjectWarn(opts, "project board: a bound status column no longer exists on the board",
-				"team", binding.TenantID, "board", binding.Ref().String(), "reason", reason)
-		}
 		binding.DegradedReason = reason
+		if was == reason {
+			break // unchanged standing state: no store write, no second Warn
+		}
+		// ONCE, on the transition. The state itself lives on the binding
+		// (GET /api/teams/{id}/board-binding), which is where an operator can
+		// act on it — a Warn repeated every two minutes is not a signal, it is
+		// noise that buries the pass's real lines.
+		logProjectWarn(opts, "project board: a bound status column no longer exists on the board",
+			"team", binding.TenantID, "board", binding.Ref().String(), "reason", reason)
 		if store != nil {
 			if err := store.MarkDegraded(ctx, binding.TenantID, reason); err != nil {
 				logProjectWarn(opts, "project board: the binding could not be flagged degraded",
 					"team", binding.TenantID, "error", err.Error())
 			}
 		}
-	case was != "" && len(rep.Adopted)+len(rep.Rebound) > 0:
-		// A column the last pass could not resolve resolves again — the flag
-		// is a readout of the LAST resolution, so it clears without a re-bind.
+	case was != "":
+		// Nothing is lost any more — every mapped column the binding resolved
+		// answers again. Only THAT clears the flag; an unrelated adoption
+		// elsewhere on the board never did mean the missing column came back.
 		binding.DegradedReason, binding.DegradedAt = "", nil
 		if store != nil {
 			if err := store.ClearDegraded(ctx, binding.TenantID); err != nil {
@@ -270,8 +287,72 @@ func repairBinding(ctx context.Context, project forge.Project, opts *ProjectImpo
 			}
 		}
 	}
-	return rep.Renames()
+	return newBindingRepair(binding, &rep)
 }
+
+// bindingRepair is what the item loop — and the projection fast path — are
+// told about the board's columns: the renames a card's recorded status must be
+// read through, and the states no card can be reflected onto.
+type bindingRepair struct {
+	renamed map[string]string
+	lost    map[string]bool
+}
+
+// newBindingRepair builds that answer for BOTH reflect callers, which is the
+// point: they disagree about nothing.
+//
+// The lost set is a UNION of two sources, and the second is what lets a caller
+// that never reads the board still refuse a write:
+//
+//   - the binding's own `MissingStatuses` — every mapped column the board did
+//     not carry as of the last reconciliation, persisted. Always consulted,
+//     because it is the only source available to a path with no board read;
+//   - the live repair, when the caller HAS just read the board (the periodic
+//     pass). Fresher, and the one that lets a re-created column resolve again
+//     within the same pass.
+//
+// `rep == nil` means "this call observed nothing about the board" — not "the
+// board is fine". The consequence has to be safe, and is: a lost column keeps
+// its cached option id (that id is the evidence the degradation is re-derived
+// from), so `OptionForState` still answers it and only this set refuses the
+// write. Reading the persisted set is what keeps the fast path from firing a
+// dead option id at the forge on every card of a broken column.
+func newBindingRepair(b *forge.BoardBinding, rep *forge.StatusVocabularyRepair) bindingRepair {
+	out := bindingRepair{}
+	if rep != nil {
+		out.renamed = rep.Renames()
+		out.lost = rep.LostStates()
+	}
+	if b == nil || len(b.MissingStatuses) == 0 {
+		return out
+	}
+	absent := make(map[string]bool, len(b.MissingStatuses))
+	for _, s := range b.MissingStatuses {
+		absent[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+	for _, m := range b.Mapping() {
+		if !absent[strings.ToLower(strings.TrimSpace(m.Status))] {
+			continue
+		}
+		if out.lost == nil {
+			out.lost = map[string]bool{}
+		}
+		out.lost[m.State] = true
+	}
+	return out
+}
+
+// rename resolves a recorded status name through this pass's renames.
+func (r bindingRepair) rename(status string) (string, bool) {
+	if len(r.renamed) == 0 {
+		return "", false
+	}
+	to, ok := r.renamed[strings.ToLower(strings.TrimSpace(status))]
+	return to, ok
+}
+
+// lostState reports whether the board carries no column for this native state.
+func (r bindingRepair) lostState(state string) bool { return r.lost[state] }
 
 // rankMissingRepos orders the skipped repositories most-missing first, ties
 // broken by name, so the operator's first move is the first line.
@@ -311,7 +392,7 @@ func applyProjectItem(
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
 	missing map[string]int,
-	renamed map[string]string,
+	repair bindingRepair,
 ) error {
 	res.Items++
 	if it.Archived {
@@ -348,7 +429,7 @@ func applyProjectItem(
 	// longer knows. Reading the record through the rename keeps ONE operator
 	// edit from reading as "the board moved to an unknown column" on every
 	// card of that column at once.
-	if to, ok := renamed[strings.ToLower(strings.TrimSpace(sync.Status))]; ok {
+	if to, ok := repair.rename(sync.Status); ok {
 		sync.Status = to
 	}
 	statusName, statusAt := projectStatusValue(it)
@@ -449,7 +530,7 @@ func applyProjectItem(
 		// OBSERVED closes it, and is not a false claim: the board says this
 		// value now, and it is exactly what "the status last synchronized"
 		// means. A FAILED write is the exception — the next pass must retry it.
-		if out := reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res); out == reflectNothingToWrite &&
+		if out := reflectNativeState(ctx, bc, card, it, &sync, statusName, opts, res, repair); out == reflectNothingToWrite &&
 			decision == projectStatusConflictNative {
 			sync.Status = statusName
 			sync.StatusAt = statusAt
@@ -506,6 +587,7 @@ func reflectNativeState(
 	boardStatus string,
 	opts *ProjectImportOptions,
 	res *ProjectImportResult,
+	repair bindingRepair,
 ) reflectOutcome {
 	binding := opts.binding()
 	if binding == nil {
@@ -528,12 +610,15 @@ func reflectNativeState(
 		return reflectNothingToWrite // already there — the idempotence that keeps a pass free
 	}
 	option, ok := binding.OptionForState(card.State)
-	if !ok {
+	if !ok || repair.lostState(card.State) {
 		// No column for this state: one the map named and the board never had
 		// (reported as `missing_statuses` at bind time), or one deleted since —
-		// which the pass's reconciliation already flagged on the binding, once.
-		// Counted, not warned: this card is unreflectable on EVERY pass until
-		// the binding is repaired, and a per-card Warn buries the rest.
+		// which this pass's reconciliation flagged on the binding, once. The
+		// second case still HAS a cached id (kept as the evidence that keeps
+		// the degradation re-derivable), so the lost set is what refuses it;
+		// writing that id would 422 on every card of that column, every pass.
+		// Counted, not warned: these cards are unreflectable on EVERY pass
+		// until the binding is repaired, and a per-card Warn buries the rest.
 		res.ReflectNoColumn++
 		return reflectNothingToWrite
 	}

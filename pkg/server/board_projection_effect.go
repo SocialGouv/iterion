@@ -121,15 +121,43 @@ func (p *boardProjectionEffect) ReflectCard(ctx context.Context, ev trigger.Even
 	// The recorded status IS what the board says, under the precondition
 	// checked just above — which is exactly what the pass passes after
 	// establishing the same fact by reading the board.
+	//
+	// The repair is built with NO live observation (`nil`), because this path
+	// deliberately does not read the board — that is what makes it fast. It
+	// still gets the column knowledge the last reconciliation persisted on the
+	// binding, so a card whose state maps to a column the board no longer
+	// carries is refused here exactly as it is in the pass, instead of firing
+	// a dead option id at the forge and burning this row's retry budget. The
+	// pass remains the only thing that can DISCOVER a column coming or going.
 	var res ProjectImportResult
 	opts := &ProjectImportOptions{Binding: &binding, Now: p.Now, Logger: p.Logger}
-	switch reflectNativeState(ctx, bc, card, forge.ProjectItem{ID: sync.ItemID}, &sync, sync.Status, opts, &res) {
+	repair := newBindingRepair(&binding, nil)
+	switch reflectNativeState(ctx, bc, card, forge.ProjectItem{ID: sync.ItemID}, &sync, sync.Status, opts, &res, repair) {
 	case reflectFailed:
 		return fmt.Errorf("board projection: the forge refused the status write for card %s on board %s (see the logged reason)", cardID, binding.Ref())
 	case reflectWrote:
 		return p.recordReflected(cards, card, sync)
 	}
+	if res.ReflectNoColumn > 0 {
+		// The bound board has no column for this state — one the map named and
+		// the board never carried, or one a reconciliation found gone (the
+		// binding's `degraded_reason` says which, and how to repair it).
+		//
+		// The row RETIRES rather than retries: nothing about this card will
+		// make the column exist, so a retry budget spent here buys nothing.
+		// But a single-card effect that quietly does nothing is invisible —
+		// the pass folds this into a per-pass counter it logs anyway, and the
+		// fast path has no such line — so it says so once, here, per event.
+		p.warn("board projection: team=%s board=%s card=%s: the board carries no %s column for state %q; repair the board binding (see its degraded reason)",
+			tenantID, binding.Ref(), cardID, forge.ProjectStatusFieldName, card.State)
+	}
 	return nil // already there, unmapped state, or no column for it — all inert
+}
+
+func (p *boardProjectionEffect) warn(format string, args ...any) {
+	if p.Logger != nil {
+		p.Logger.Warn(format, args...)
+	}
 }
 
 // boardStillHoldsWhatWeRecorded is the precondition reflectNativeState rests

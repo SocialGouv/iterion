@@ -1,13 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -277,6 +280,54 @@ func TestBoardProjection_ForgeRefusalIsAnError(t *testing.T) {
 	// write: that is what makes the retry (and the next pass) try again.
 	if rec := mustGet(t, board, id).External.Project.Status; rec != "Planned" {
 		t.Fatalf("recorded status = %q after a failed write, want it untouched at %q", rec, "Planned")
+	}
+}
+
+// TestBoardProjection_RefusesACardWhoseColumnIsGone: the fast path never reads
+// the board, so everything it knows about the board's columns it reads off the
+// binding — including the ones the last reconciliation found MISSING.
+//
+// That matters because a lost column KEEPS its cached option id (the evidence
+// the degradation is re-derived from), so `OptionForState` still answers one.
+// A fast path that consulted only the binding's option map would fire that
+// dead id at the forge on every move of every card in that column, get a 422,
+// and burn the outbox row's whole retry budget — for a column no retry can
+// bring back.
+func TestBoardProjection_RefusesACardWhoseColumnIsGone(t *testing.T) {
+	board := newTestBoard(t)
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	id := seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
+	bc := &fakeBoardClient{project: deletedColumn(t, "In progress")}
+	p, binds := projectionEffectWorld(t, bc, board)
+	var logs bytes.Buffer
+	p.Logger = iterlog.New(iterlog.LevelWarn, &logs)
+	ctx := context.Background()
+
+	// The shape a reconciliation leaves behind when a bound column is deleted.
+	lost := testBinding()
+	lost.MissingStatuses = []string{"In progress"}
+	lost.UnresolvedAtBind = []string{} // the bind resolved it; the board lost it
+	if err := binds.Upsert(ctx, *lost); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+	if err := binds.MarkDegraded(ctx, "team-a", `the Status field no longer carries "In progress" (in_progress)`); err != nil {
+		t.Fatalf("mark degraded: %v", err)
+	}
+
+	if err := p.ReflectCard(ctx, movedCardEvent(id, native.StateReady)); err != nil {
+		t.Fatalf("ReflectCard = %v, want nil — no retry can make a deleted column exist, so the row retires", err)
+	}
+	if len(bc.writes) != 0 {
+		t.Fatalf("writes = %+v, want none — the cached id names a column the board no longer carries", bc.writes)
+	}
+	// The record stays as it was: nothing was pushed, so nothing may claim it.
+	if rec := mustGet(t, board, id).External.Project.Status; rec != "Planned" {
+		t.Errorf("recorded status = %q, want it untouched at %q", rec, "Planned")
+	}
+	// And it is not silent: the pass folds this into a per-pass counter it
+	// logs anyway, the fast path has no such line, so it says so once.
+	if got := strings.Count(logs.String(), "carries no Status column"); got != 1 {
+		t.Errorf("logged %d times, want exactly 1 — a single-card effect that quietly does nothing is invisible: %q", got, logs.String())
 	}
 }
 

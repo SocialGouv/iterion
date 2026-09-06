@@ -167,6 +167,12 @@ func bindStatus(b *BoardBinding, project Project, mapping []StatusMapping) error
 	}
 	sort.Strings(missing) // stable report
 	b.MissingStatuses = missing
+	// The SAME set, recorded separately and never rewritten by a
+	// reconciliation: it is what later tells "this column was never on the
+	// board" from "this column broke". Always non-nil, because "the operator
+	// accepted nothing missing" and "nobody ever recorded this" are different
+	// answers and only the stored shape can tell them apart.
+	b.UnresolvedAtBind = append([]string{}, missing...)
 	return nil
 }
 
