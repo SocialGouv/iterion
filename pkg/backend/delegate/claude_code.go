@@ -480,81 +480,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		}
 	}
 
-	// Overload/5xx guard. The claude CLI sometimes completes the stream
-	// "successfully" (subtype=success, IsError=false) but renders an
-	// unrecoverable upstream API failure AS the result text — e.g.
-	// "API Error: 529 Overloaded". Left untouched, that string becomes the
-	// node's output AND poisons any downstream session that inherits this
-	// one (observed in a test-coverage dogfood: a 529 on the `plan` node
-	// flowed a non-plan into `act`). Re-type it as ErrTransient so the
-	// executor's retry loop rides the outage out — exactly as it does for a
-	// connectivity drop surfaced on stderr (retypeNetworkError). Only
-	// transient classes (429/5xx/overload/connectivity) retry; a 4xx
-	// client/auth error falls through as the visible node output.
-	if rm.Result != nil && isTransientAPIErrorResult(*rm.Result) {
-		detail := strings.TrimSpace(*rm.Result)
-		b.Logger.Warn("[%s#%d/claude-code] upstream API-error result text detected — flagging for retry: %.120s",
-			task.NodeID, task.Iteration, detail)
-		return result, &ErrTransient{Provider: BackendClaudeCode, Reason: "api_error_result", Detail: detail}
-	}
-
-	// Model-unavailable guard. An invalid/unauthorized `--model` does NOT fail
-	// the stream (subtype=success, IsError=false): the claude CLI renders its
-	// model-error sentence AS the result text (e.g. "There's an issue with the
-	// selected model (openai/gpt-5.5). It may not exist or you may not have
-	// access to it."). Left untouched that prose flows into the formatting
-	// passes and finally surfaces as an opaque "missing required field" schema
-	// error, masking the real cause. Fail fast with a legible error naming the
-	// offending model. Non-transient (unlike the API-error guard above) — a
-	// retry can't fix a bad/unauthorized model; the usual cause is a
-	// claude_code node pinned to a non-Anthropic model (e.g. the shared
-	// ITERION_SEC_AUDIT_BACKEND/MODEL override dragging detect_tech onto
-	// openai/gpt-5.5).
-	if rm.Result != nil && isModelUnavailableResult(*rm.Result) {
-		detail := strings.TrimSpace(*rm.Result)
-		b.Logger.Error("[%s#%d/claude-code] model %q unavailable to the CLI — failing fast: %.160s",
-			task.NodeID, task.Iteration, task.Model, detail)
-		return result, fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
-	}
-
-	// Auth-failure guard. A dead/expired forfait token (or a rejected API key)
-	// does NOT fail the stream (subtype=success, IsError=true): the claude CLI
-	// renders the auth error AS the result text (e.g. "Failed to authenticate.
-	// API Error: 401 Invalid bearer token"). Left untouched it flows into the
-	// formatting passes and finally surfaces as an opaque "missing required
-	// field" schema error — the exact masking that turns a dead credential into
-	// a wild goose chase through the structured-output machinery. Fail fast with
-	// a legible auth error. Non-transient (a retry can't revive a dead token).
-	if authErr := authFailureFast(rm.Result, task); authErr != nil {
-		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
-			task.NodeID, task.Iteration, redactAuthRender(strings.TrimSpace(*rm.Result)))
-		return result, authErr
-	}
-
-	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
-	// 5h caps can come back as the result text (subtype=success, IsError=true)
-	// with no assistant text block for the stream classifier to catch — re-check
-	// here so the notice becomes a typed, resumable rate-limit error instead of
-	// flowing into structured-output validation as a misleading "missing
-	// required field". Usage-window → resumable after reset; a plain throttle →
-	// the executor's transient retry.
-	if rm.Result != nil && isRateLimitMessage(*rm.Result) {
-		detail := strings.TrimSpace(*rm.Result)
-		kind, window, resetAt := classifyRateLimit(detail, time.Now())
-		b.Logger.Warn("[%s#%d/claude-code] provider quota/rate-limit result (%s) — failing: %.120s",
-			task.NodeID, task.Iteration, kind, detail)
-		// Same evidence duty as the stream path: a text-relayed refusal
-		// that names a meter window must reach the store, or the
-		// credential-tier skip stays blind to it.
-		if window != "" && task.Hooks.OnUsageWindow != nil {
-			_ = task.Hooks.OnUsageWindow(usagecap.Reading{
-				Window:     window,
-				Status:     usagecap.StatusRejected,
-				ObservedAt: time.Now().UTC(),
-				ResetsAt:   resetAt,
-			})
-		}
-		return result, &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
+	// Every guard on the result TEXT lives in renderedFailure, shared with
+	// the formatting passes: a render is never an answer, on any pass.
+	if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
+		return result, err
 	}
 
 	if needsTwoPass && rm.SessionID != "" {
@@ -573,11 +502,108 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// try one recovery formatting pass via session resume (see helper).
 	var recoveryRM *claudesdk.ResultMessage
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
-		recoveryRM = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut)
+		var rerr error
+		if recoveryRM, rerr = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut); rerr != nil {
+			return result, rerr
+		}
 	}
 
 	annotateCost(&result, task, totalIn, totalOut, rm, recoveryRM)
 	return result, nil
+}
+
+// renderedFailure re-types a result whose TEXT is the CLI's render of an
+// upstream failure — a quota window, a rejected credential, an unavailable
+// model, a transient API error — into the typed error the executor knows how
+// to route. One predicate for every result message the delegation reads:
+// pass 1, each formatting pass, the recovery pass. A render that reaches
+// parseSDKOutput becomes the node's answer, and the graph continues on it
+// (measured: a campaign node "rendered" an upstream 500 and the next node
+// spent 283 minutes on it). Order is the most specific verdict first: a
+// window notice carries evidence the generic retry would lose, and a dead
+// credential must not be retried at all.
+func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Task, pass string) error {
+	if rm == nil || rm.Result == nil {
+		return nil
+	}
+	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
+	// 5h caps can come back as the result text (subtype=success, IsError=true)
+	// with no assistant text block for the stream classifier to catch — re-check
+	// here so the notice becomes a typed, resumable rate-limit error instead of
+	// flowing into structured-output validation as a misleading "missing
+	// required field". Usage-window → resumable after reset; a plain throttle →
+	// the executor's transient retry.
+	if rm.Result != nil && isRateLimitMessage(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		kind, window, resetAt := classifyRateLimit(detail, time.Now())
+		b.Logger.Warn("[%s#%d/claude-code %s] provider quota/rate-limit result (%s) — failing: %.120s",
+			task.NodeID, task.Iteration, pass, kind, detail)
+		// Same evidence duty as the stream path: a text-relayed refusal
+		// that names a meter window must reach the store, or the
+		// credential-tier skip stays blind to it.
+		if window != "" && task.Hooks.OnUsageWindow != nil {
+			_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+				Window:     window,
+				Status:     usagecap.StatusRejected,
+				ObservedAt: time.Now().UTC(),
+				ResetsAt:   resetAt,
+			})
+		}
+		return &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
+	}
+
+	// Auth-failure guard. A dead/expired forfait token (or a rejected API key)
+	// does NOT fail the stream (subtype=success, IsError=true): the claude CLI
+	// renders the auth error AS the result text (e.g. "Failed to authenticate.
+	// API Error: 401 Invalid bearer token"). Left untouched it flows into the
+	// formatting passes and finally surfaces as an opaque "missing required
+	// field" schema error — the exact masking that turns a dead credential into
+	// a wild goose chase through the structured-output machinery. Fail fast with
+	// a legible auth error. Non-transient (a retry can't revive a dead token).
+	if authErr := authFailureFast(rm.Result, task); authErr != nil {
+		b.Logger.Error("[%s#%d/claude-code %s] authentication failed — failing fast: %.160s",
+			task.NodeID, task.Iteration, pass, redactAuthRender(strings.TrimSpace(*rm.Result)))
+		return authErr
+	}
+
+	// Model-unavailable guard. An invalid/unauthorized `--model` does NOT fail
+	// the stream (subtype=success, IsError=false): the claude CLI renders its
+	// model-error sentence AS the result text (e.g. "There's an issue with the
+	// selected model (openai/gpt-5.5). It may not exist or you may not have
+	// access to it."). Left untouched that prose flows into the formatting
+	// passes and finally surfaces as an opaque "missing required field" schema
+	// error, masking the real cause. Fail fast with a legible error naming the
+	// offending model. Non-transient (unlike the API-error guard above) — a
+	// retry can't fix a bad/unauthorized model; the usual cause is a
+	// claude_code node pinned to a non-Anthropic model (e.g. the shared
+	// ITERION_SEC_AUDIT_BACKEND/MODEL override dragging detect_tech onto
+	// openai/gpt-5.5).
+	if rm.Result != nil && isModelUnavailableResult(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		b.Logger.Error("[%s#%d/claude-code %s] model %q unavailable to the CLI — failing fast: %.160s",
+			task.NodeID, task.Iteration, pass, task.Model, detail)
+		return fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
+	}
+
+	// Overload/5xx guard. The claude CLI sometimes completes the stream
+	// "successfully" (subtype=success, IsError=false) but renders an
+	// unrecoverable upstream API failure AS the result text — e.g.
+	// "API Error: 529 Overloaded". Left untouched, that string becomes the
+	// node's output AND poisons any downstream session that inherits this
+	// one (observed in a test-coverage dogfood: a 529 on the `plan` node
+	// flowed a non-plan into `act`). Re-type it as ErrTransient so the
+	// executor's retry loop rides the outage out — exactly as it does for a
+	// connectivity drop surfaced on stderr (retypeNetworkError). Only
+	// transient classes (429/5xx/overload/connectivity) retry; a 4xx
+	// client/auth error falls through as the visible node output.
+	if rm.Result != nil && isTransientAPIErrorResult(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		b.Logger.Warn("[%s#%d/claude-code %s] upstream API-error result text detected — flagging for retry: %.120s",
+			task.NodeID, task.Iteration, pass, detail)
+		return &ErrTransient{Provider: BackendClaudeCode, Reason: "api_error_result", Detail: detail}
+	}
+
+	return nil
 }
 
 // annotateCost stamps `_tokens` / `_model` / `_cost_usd` on the delegation
@@ -733,6 +759,11 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
 		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
+		if fmtErr == nil {
+			// The formatter's result is read through the same predicate as
+			// pass 1: a render here would otherwise be parsed as the output.
+			fmtErr = b.renderedFailure(fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts))
+		}
 		if fmtErr != nil {
 			lastFmtErr = fmtErr
 			if attempt < maxFmtAttempts {
@@ -820,12 +851,17 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // are logged and left non-fatal (the caller keeps Pass 1's output). Returns
 // the pass's own ResultMessage (nil on failure) so the caller's cost
 // annotation sees its CLI-reported cost, not just Pass 1's.
-func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) *claudesdk.ResultMessage {
+func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) (*claudesdk.ResultMessage, error) {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
 	fmtRM, fmtErr := b.formatOutput(ctx, task, sessionID)
 	if fmtErr != nil {
 		b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
-		return nil
+		return nil, nil
+	}
+	// A render on the recovery pass is typed and returned, never parsed as
+	// the output nor swallowed into an opaque schema failure.
+	if rerr := b.renderedFailure(fmtRM, task, "recovery formatting pass"); rerr != nil {
+		return nil, rerr
 	}
 	if fmtRM.Usage != nil {
 		*totalIn += fmtRM.Usage.InputTokens
@@ -841,7 +877,7 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	} else {
 		b.Logger.Warn("claude-code: recovery formatting pass also produced empty output")
 	}
-	return fmtRM
+	return fmtRM, nil
 }
 
 // hostSpawnEnv returns the process environment with the per-task env entries

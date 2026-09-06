@@ -12,8 +12,14 @@ import (
 
 // apiErrorResultStatusRe extracts the HTTP-ish status code the claude CLI
 // prints when it renders an upstream API failure AS its result text, e.g.
-// "API Error: 529 Overloaded" or "API Error: 503 {...}".
-var apiErrorResultStatusRe = regexp.MustCompile(`(?i)^api error:?\s+(\d{3})\b`)
+// "API Error: 529 Overloaded" or "API Error: 503 {...}" — and the bracketed
+// form an Anthropic-shaped facade relays, "API Error: [500][Operation
+// failed][<request id>]". The bracketed status went unparsed once, so the
+// render fell through to the connectivity markers, matched none, and became
+// the node's output: the graph continued on an error message for 283
+// minutes. Exactly three digits, closed by a bracket or a word boundary — a
+// longer number is not a status and still falls through.
+var apiErrorResultStatusRe = regexp.MustCompile(`(?i)^api error:?\s*\[?(\d{3})(?:\]|\b)`)
 
 // isTransientAPIErrorResult reports whether a claude CLI "successful" result
 // string is actually a rendered upstream API failure of a TRANSIENT class
@@ -25,10 +31,12 @@ var apiErrorResultStatusRe = regexp.MustCompile(`(?i)^api error:?\s+(\d{3})\b`)
 // Precision matters — a genuine assistant answer must not be mistaken for an
 // error. Two guards keep false positives near-zero: the text must be SHORT
 // (the CLI's bare error render is; a real answer that merely discusses an API
-// error is longer and embedded) and must BEGIN with "api error". A parseable
-// 4xx client/auth status returns false so it surfaces as the visible output
-// (a retry won't fix a misconfig); 429/5xx/529 and bare connectivity markers
-// return true.
+// error is longer and embedded) and must BEGIN with "api error". Every 5xx
+// and the retryable 4xx (408/409/425/429) return true; another 4xx
+// client/auth status returns false so it surfaces as the visible output (a
+// retry won't fix a misconfig) — unless its text carries a connectivity
+// marker, which classified it before the status was parsed; a render with no
+// status at all falls back to those markers.
 func isTransientAPIErrorResult(s string) bool {
 	t := strings.TrimSpace(s)
 	if t == "" || len(t) >= 400 {
@@ -39,12 +47,20 @@ func isTransientAPIErrorResult(s string) bool {
 		return false
 	}
 	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil {
-		switch m[1] {
-		case "408", "409", "425", "429", "500", "502", "503", "504", "529":
+		switch {
+		case m[1][0] == '5':
+			// Every 5xx, not an allow-list: a CDN or proxy in front of a
+			// facade renders 520-530 and the like, and an unlisted server
+			// status that fell out of an allow-list here became the node's
+			// answer.
 			return true
-		default:
-			return false // 4xx client/auth error — a retry won't fix it
+		case m[1] == "408" || m[1] == "409" || m[1] == "425" || m[1] == "429":
+			return true
 		}
+		// A 4xx client/auth error — a retry won't fix it — unless the text
+		// itself carries a connectivity marker ("[499][Connection error]"):
+		// parsing the status must not lose what the marker already said.
+		return MatchesNetworkSignature(low)
 	}
 	// No parseable status code (e.g. "API Error: Connection error.") → fall
 	// back to the shared connectivity-marker classifier.
@@ -95,6 +111,14 @@ func isAuthErrorResult(s string) bool {
 	// keeps an agent discussing auth in a long answer from false-positiving.
 	if t == "" || len(t) > 200 {
 		return false
+	}
+	// A 401/403 status is the provider's own verdict on the credential,
+	// whatever prose (or none) follows it: a facade renders "API Error:
+	// [401][Unauthorized][<id>]", which matches no signature below and would
+	// otherwise flow on as the node's answer. Prefix-anchored by the regex,
+	// short by the cap.
+	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil && (m[1] == "401" || m[1] == "403") {
+		return true
 	}
 	low := strings.ToLower(t)
 	for _, sig := range []string{
