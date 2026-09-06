@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.5](https://github.com/SocialGouv/iterion/compare/v3.112.4...v3.112.5) (2026-09-06)
+
+### Bug Fixes
+
+* **runner:** a sandboxed claw node meters from its relayed steps, on the credential that served it ([#810](https://github.com/SocialGouv/iterion/issues/810)) ([dc76093](https://github.com/SocialGouv/iterion/commit/dc760935d1c283aac79edf10a00b666699074d1b)), closes [#805](https://github.com/SocialGouv/iterion/issues/805), references [#805](https://github.com/SocialGouv/iterion/issues/805)
+
+    <details><summary>why</summary>
+
+    A sandboxed claw node prices its call inside the container, from a cold process where neither the live registry nor the aggregator has a cache yet, so the committed table is what it falls back to — and gpt-5.6-sol, the model the campaign bots' cross-family plan review runs on, had no entry: 24 of the 33 plan reviews served on ovh-prod in the last week carried no cost_usd at all (#805).
+
+    </details>
+
 ## [3.112.4](https://github.com/SocialGouv/iterion/compare/v3.112.3...v3.112.4) (2026-09-06)
 
 ### Bug Fixes
