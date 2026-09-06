@@ -208,6 +208,17 @@ func PullListInstallationPermissions() map[string]string {
 	}
 }
 
+// PRReviewCommentsInstallationPermissions is the grant set minted for
+// reading a pull request's review-thread comments (the reply gate's thread
+// fetch): pull_requests read plus the metadata baseline — the same set as
+// the listing profile, so the two reads share one cached token by key.
+func PRReviewCommentsInstallationPermissions() map[string]string {
+	return map[string]string{
+		"pull_requests": "read",
+		"metadata":      "read",
+	}
+}
+
 // PullGetInstallationPermissions is the grant set minted for reading ONE pull
 // request. GitHub gates GET /repos/{owner}/{repo}/pulls/{number} on contents
 // read as well as pull_requests read — the object carries content-derived

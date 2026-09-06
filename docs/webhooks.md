@@ -220,7 +220,9 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   threads launches the converse bot, which answers **in the same
   thread**. Loop-guarded (the bot's own answer echoes back as this
   event), thread-classified (a human↔human thread never triggers), and
-  replier-gated like every comment lane. Requires the converse bot in
+  replier-gated like every comment lane — through the same client
+  resolution as the other lanes: the team connection covering the PR
+  first, the webhook's `forge_token` binding as the fallback. Requires the converse bot in
   `bot_ids` and the event in `event_allowlist` (a re-provision
   regenerates both from the converse bot's own manifest event
   `pull_request_review_comment` — deliberately separate from

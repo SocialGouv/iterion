@@ -701,6 +701,9 @@ type fakeGitHubForge struct {
 	// counts those probes.
 	slug       string
 	appLookups int
+	// reviewComments is what the PR's review-comments listing answers
+	// (newest first, as GitHub serves direction=desc).
+	reviewComments []map[string]any
 }
 
 // appLookupCount returns how many times the App identity was probed.
@@ -833,6 +836,19 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		f.statuses = append(f.statuses, body)
 		f.mu.Unlock()
 		reply(w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		seen("review_comments", r)
+		if f.revoked(w, r) {
+			return
+		}
+		f.mu.Lock()
+		comments := f.reviewComments
+		f.mu.Unlock()
+		if comments == nil {
+			comments = []map[string]any{}
+		}
+		reply(w, http.StatusOK, comments)
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		seen("comment", r)

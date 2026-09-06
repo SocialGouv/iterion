@@ -126,6 +126,19 @@ func (a *AppClient) CreatePullReview(ctx context.Context, repo string, number in
 	return rest.CreatePullReview(ctx, repo, number, in)
 }
 
+// ListPRReviewComments on an App connection reads the thread under the
+// pull_requests:read profile — the review-thread reply gate resolves its
+// client through the covering connection, which is an App connection by
+// default, so the fetch has to exist here or the lane is dead on the
+// ordinary integration shape.
+func (a *AppClient) ListPRReviewComments(ctx context.Context, repo string, number int) ([]forge.PRReviewComment, error) {
+	c, err := a.scopedREST(ctx, PRReviewCommentsInstallationPermissions())
+	if err != nil {
+		return nil, err
+	}
+	return c.ListPRReviewComments(ctx, repo, number)
+}
+
 // prReviewCommentWire is the list shape of GET /repos/{repo}/pulls/{n}/comments.
 type prReviewCommentWire struct {
 	ID        int64  `json:"id"`
