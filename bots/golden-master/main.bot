@@ -2473,9 +2473,19 @@ tool oracle_run:
         Empty when the tree is clean — AND when git does not answer, which is not
         the same claim. So this is evidence FOR dirtiness only: a caller may refuse
         on a non-empty list, never conclude "clean" from an empty one.
+
+        "Does not answer" covers all three ways it can happen, not just a non-zero
+        exit: git absent from PATH raises, and a cold index on a slow filesystem
+        can sit there. Both were a traceback and a hang on the path that runs
+        BEFORE the report is printed — and this report is the product, so dying
+        there leaves the campaign parsing a stack trace instead of reading a
+        verdict. Every other subprocess in this harness is already bounded.
         """
-        out = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
-                             capture_output=True, text=True)
+        try:
+            out = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                                 capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return []
         if out.returncode != 0:
             return []
         # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
@@ -3650,6 +3660,18 @@ tool oracle_run:
                 # l'indice 3, pas par un strip global qui mangerait le premier
                 # caractere du chemin de la premiere ligne seulement.
                 check("un arbre mute est vu comme non committe", "f.txt" in dirty_paths(tmp), True)
+                # `dirty_paths` promet une liste vide quand git NE REPOND PAS, et git
+                # absent du PATH est la facon la plus totale de ne pas repondre. Sans
+                # le garde c'est une trace de pile, sur le chemin qui s'execute AVANT
+                # l'impression du rapport — la campagne lit alors un backtrace la ou
+                # elle attend un verdict JSON.
+                saved_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = os.path.join(tmp, "aucun-binaire-ici")
+                try:
+                    check("git absent du PATH rend une liste vide, pas une trace",
+                          dirty_paths(tmp), [])
+                finally:
+                    os.environ["PATH"] = saved_path
                 # Interruption ici : pas de revert. La porte suivante nettoie.
                 left = revert_leftover_mutant(tmp)
                 check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
