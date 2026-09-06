@@ -917,7 +917,8 @@ tool lot_verify:
         at = 0
         for line in lines:
             head = line.lstrip()
-            start, at = at + len(line) - len(head), at + len(line) + 1
+            start = at + len(line) - len(head)  # the "{" itself, its indent skipped
+            at += len(line) + 1                 # the next line, past the "\n" the join put back
             if not head.startswith("{"):
                 continue
             probe = start + 1
