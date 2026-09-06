@@ -2327,6 +2327,32 @@ def leftover_verdict(left):
            left.get("marker")))
 
 
+def boot_after_leftover(config, ws, reverted):
+    """Bring the application up — RESTARTING it when the guard moved code.
+
+    The other half of what the gate does about a leftover. Reverting it changes
+    the code on disk; `config.up` is entitled to be idempotent-on-running
+    (`docker compose up -d` is the archetype, and the interruption this guard
+    exists for — a tool node whose exec stream broke — kills the harness while
+    leaving a detached app alive). So `up` alone returns to an application
+    still serving the mutant this run just took out of the tree, and every
+    capture reads it. Measured: disk back at HEAD, app still answering MUTANT
+    after app_up; correct after app_restart. Downstream the mismatch surfaces
+    as capture non-determinism, i.e. as the campaign's canonicaliser being
+    blamed for drift the guard itself introduced.
+
+    Restarting is what all four other post-apply/post-revert sites already do.
+    `app_down` is a no-op when config declares no `down`, so a config without
+    one behaves exactly as before. A function rather than an `if` at the call
+    site, for the reason `leftover_verdict` is one: so the self-test drives the
+    code that actually runs, not a second copy of the rule.
+    """
+    if reverted:
+        app_restart(config, ws)
+    else:
+        app_up(config, ws)
+
+
 # ─── Comparison ─────────────────────────────────────────────────────────────
 
 def diverged(refs, captured, ids):
@@ -3744,6 +3770,59 @@ def _selftest():
             except OSError:
                 pass
 
+            # Reverter un leftover DEPLACE LE CODE SUR LE DISQUE. `config.up` a
+            # le droit d'etre idempotent sur une app deja lancee (`docker
+            # compose up -d` est l'archetype), et l'interruption que cette garde
+            # traite — un noeud outil dont le flux d'exec casse — tue le harnais
+            # en laissant vivre une app detachee. `up` seul rend donc la main a
+            # une application qui sert ENCORE le mutant qu'on vient de retirer
+            # de l'arbre, et toutes les captures le lisent. En aval cela sort en
+            # « capture non deterministe », c'est-a-dire en accusant le
+            # canonicaliseur de la campagne d'une derive creee par la garde.
+            # Les VRAIS app_up/app_restart : seule la sonde de readiness est
+            # doublee, et c'est l'app bidon qui dit ce qu'elle sert.
+            adir = os.path.join(tmp, "app")
+            os.makedirs(adir)
+            with open(os.path.join(adir, "up.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n[ -f pid ] && exit 0\ncp code.txt served.txt\necho 1 > pid\n")
+            with open(os.path.join(adir, "down.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nrm -f pid\n")
+            with open(os.path.join(adir, "code.txt"), "w", encoding="utf-8") as f:
+                f.write("MUTANT\n")
+            acfg = {"up": "sh up.sh", "down": "sh down.sh", "base_url": "http://x"}
+
+            class _Pret:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_a):
+                    return False
+
+            # app_restart est double par le bloc 6 : c'est justement lui qu'on
+            # juge ici, donc le VRAI est repose le temps de ce controle.
+            vrai_open, vrai_log2 = g["urllib"].request.urlopen, g["log"]
+            double_restart = g["app_restart"]
+            g["urllib"].request.urlopen = lambda *_a, **_k: _Pret()
+            g["log"] = lambda *_a: None
+            g["app_restart"] = saved["app_restart"]
+            try:
+                app_up(acfg, adir)          # la porte interrompue avait booté sur le mutant
+                with open(os.path.join(adir, "code.txt"), "w", encoding="utf-8") as f:
+                    f.write("original\n")   # <- le revert de la garde
+                boot_after_leftover(acfg, adir, False)
+                with open(os.path.join(adir, "served.txt"), encoding="utf-8") as f:
+                    sans_garde = f.read()
+                boot_after_leftover(acfg, adir, True)
+                with open(os.path.join(adir, "served.txt"), encoding="utf-8") as f:
+                    avec_garde = f.read()
+            finally:
+                g["urllib"].request.urlopen, g["log"] = vrai_open, vrai_log2
+                g["app_restart"] = double_restart
+            check("apres un revert de leftover, l'app est RELANCEE, pas juste 'up'",
+                  [sans_garde, avec_garde], ["MUTANT\n", "original\n"])
+
             # Ce que la porte en FAIT. Les trois sorties de
             # revert_leftover_mutant sont toutes des dicts VRAIS : decider sur
             # la seule verite du dict annoncait « l'arbre est revenu a HEAD »
@@ -3935,6 +4014,10 @@ def main():
     refuse, leftover_msg = leftover_verdict(revert_leftover_mutant(ws))
     if refuse:
         bail(leftover_msg)
+    # Not refused AND something to say = a revert that exited 0, i.e. code on
+    # disk just moved under whatever application survived the interrupted gate.
+    # `boot_after_leftover` is what that costs at boot time, below.
+    reverted_leftover = leftover_msg is not None
     if leftover_msg:
         note(report, leftover_msg)
 
@@ -4103,7 +4186,7 @@ def main():
                  % (len(pending_ext), json.dumps(pending_ext, ensure_ascii=False)))
 
     try:
-        app_up(config, ws)
+        boot_after_leftover(config, ws, reverted_leftover)
     except SystemExit as e:
         bail(str(e))
 
