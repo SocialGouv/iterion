@@ -84,6 +84,12 @@ func (s *Server) gateNoticeTarget(ctx context.Context, run *store.Run, what stri
 		s.gateNoticeDebug(run, what, "its publish grant is expired or revoked")
 		return gateNoticeTarget{}, false
 	}
+	// The grant must be the RUN's own: every scope check below proves the
+	// grant self-consistent, and one minted for another tenant passes them
+	// all. runOwnsGrant speaks for itself (Warn + audit).
+	if !s.runOwnsGrant(run, grant, what) {
+		return gateNoticeTarget{}, false
+	}
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		s.gateNoticeDebug(run, what, "its pr_url does not parse: %v", err)

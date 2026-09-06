@@ -140,6 +140,13 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	if !ok {
 		return nil
 	}
+	// The grant must be the RUN's own. This lane's blast radius is the widest
+	// of the three readers: it launches a code-pushing bot INTO grant.TeamID,
+	// on that team's budget and against that team's repo — so a run carrying
+	// another tenant's grant would spend and push as that tenant.
+	if !s.runOwnsGrant(run, grant, "gate auto-fix") {
+		return nil
+	}
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		return nil

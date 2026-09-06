@@ -279,6 +279,15 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// longer than that, or the token store lost it.
 		return abstain("its publish grant is expired or revoked")
 	}
+	// The grant must be the RUN's own before any of its scope is trusted: the
+	// checks below prove it self-consistent, and one minted for another tenant
+	// passes every one of them while aiming this repair — a REQUIRED commit
+	// status — at that tenant's pull request under that tenant's identity.
+	// Not routed through abstain(): a tenant crossing is a security refusal,
+	// always loud, never quieted to Debug on a sweep pass.
+	if !s.runOwnsGrant(run, grant, "gate reconcile") {
+		return nil
+	}
 
 	// Holding a grant is NOT owing a verdict. The server mints one for any bot
 	// launched with a pr_url — the brancher, the docs amender, the implementer

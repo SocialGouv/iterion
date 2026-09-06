@@ -240,14 +240,20 @@ func TestInjectForgePublishVars(t *testing.T) {
 
 	// No pr_url → untouched.
 	vars := map[string]string{"base_ref": "main"}
-	out := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil)
+	out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil)
+	if err != nil {
+		t.Fatalf("no pr_url: %v", err)
+	}
 	if _, ok := out[forgePublishVarToken]; ok {
 		t.Fatal("no pr_url: nothing must be injected")
 	}
 
 	// pr_url on the connection's host → grant minted + vars injected.
 	vars = map[string]string{"pr_url": "https://github.com/o/r/pull/42"}
-	out = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil)
+	out, err = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
 	if out[forgePublishVarURL] != "https://iterion.example/api/v1/forge/publish-review" {
 		t.Fatalf("url var = %q", out[forgePublishVarURL])
 	}
@@ -261,13 +267,19 @@ func TestInjectForgePublishVars(t *testing.T) {
 	}
 
 	// Another team without a matching connection → untouched.
-	out = s.injectForgePublishVars(context.Background(), "team2", "", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42"}, nil)
+	out, err = s.injectForgePublishVars(context.Background(), "team2", "", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42"}, nil)
+	if err != nil {
+		t.Fatalf("no matching team connection: %v", err)
+	}
 	if _, ok := out[forgePublishVarToken]; ok {
 		t.Fatal("no matching team connection: nothing must be injected")
 	}
 
 	// A PR on a host no connection covers → untouched.
-	out = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", map[string]string{"pr_url": "https://gitlab.example/g/p/-/merge_requests/1"}, nil)
+	out, err = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", map[string]string{"pr_url": "https://gitlab.example/g/p/-/merge_requests/1"}, nil)
+	if err != nil {
+		t.Fatalf("host mismatch: %v", err)
+	}
 	if _, ok := out[forgePublishVarToken]; ok {
 		t.Fatal("host mismatch: nothing must be injected")
 	}
