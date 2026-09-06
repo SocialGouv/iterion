@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.6](https://github.com/SocialGouv/iterion/compare/v3.112.5...v3.112.6) (2026-09-06)
+
+### Bug Fixes
+
+* **dsl,runtime:** three silent constants — run.* in every data mapping, a typed compute int, outputs.* in tool commands ([#816](https://github.com/SocialGouv/iterion/issues/816)) ([0b2138c](https://github.com/SocialGouv/iterion/commit/0b2138ce5c7817229a5c7ffb5a375600eac3efd9)), closes [#791](https://github.com/SocialGouv/iterion/issues/791) [#792](https://github.com/SocialGouv/iterion/issues/792) [#797](https://github.com/SocialGouv/iterion/issues/797)
+
+    <details><summary>why</summary>
+
+    resolveRef's RefRun arm served `id` and nothing else, so a fail node's `message:` (and an edge `with`, an `emit` payload, a subbot `with:`) rendered `{{run.max_cost_usd}}` / `{{run.elapsed_seconds}}` as an empty string with no diagnostic — C029/C036 accept the reference, the resolver dropped it. The very message a budget guard wants ("planning used X of Y, raise --max-duration and resume") could not be written from `run.*`.
+
+    </details>
+* **server:** a forge that will not describe the account asks for the operator's word, not a 502 dead end ([#808](https://github.com/SocialGouv/iterion/issues/808)) ([bd94b5a](https://github.com/SocialGouv/iterion/commit/bd94b5a1781d2d73776f920cfc8c10c95da422af))
+
+    <details><summary>why</summary>
+
+    An avatar apply on a connection of unknown kind asks the forge who the token is. When the forge refuses to say (a token without the scope, a forge without the field), the unforced apply answered a bare 502 that recorded nothing — so the studio card, which now only offers the vouch on a 409, repeated the identical 502 on every click and the forced apply the server still supports was unreachable from it.
+
+    </details>
+
 ## [3.112.5](https://github.com/SocialGouv/iterion/compare/v3.112.4...v3.112.5) (2026-09-06)
 
 ### Bug Fixes
