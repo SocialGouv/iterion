@@ -65,18 +65,24 @@ func TestFetcher_PeerPublishedTheSamePinnedCheckoutFirst(t *testing.T) {
 	assertNoLeftovers(t, cache, filepath.Base(got))
 }
 
-// The loser's own read of the final path is the second half of the rule: a
-// rename that lost to a peer is success when the path holds a complete
-// checkout, and an error — carrying the rename's own cause — when it does not.
-func TestPublish_LostRenameReadsTheFinalPath(t *testing.T) {
-	t.Run("complete final is kept, not swapped", func(t *testing.T) {
+// Once the rename has lost, WHAT IS AT the final path decides — and the two
+// answers differ by whether a reader could be handed it, never by who got
+// there first. A complete checkout of the same key is the tree this publish
+// wanted, so it is accepted and the staged copy dropped; anything else is
+// replaced, so a half-written tree is repaired rather than served forever.
+//
+// `replaceExisting` is what splits those from the moving-ref rule, and each arm
+// is taken below — the true one has no other test in the package.
+func TestPublish_WhatIsAtTheFinalPathDecides(t *testing.T) {
+	t.Run("a lost rename onto a complete final keeps that tree", func(t *testing.T) {
 		root := t.TempDir()
 		staging, dest := filepath.Join(root, "staging"), filepath.Join(root, "dest")
 		mkCheckout(t, staging, "ours")
 		mkCheckout(t, dest, "the-peers")
-		// replaceExisting=false is the immutable case: the peer's tree stands,
-		// untouched — asserted by WHOSE tree is there, since "still a checkout"
-		// would also hold after a swap.
+		// replaceExisting=false is the immutable case: the rename cannot land
+		// on a non-empty dest, and the peer's tree then stands untouched —
+		// asserted by WHOSE tree is there, since "still a checkout" would also
+		// hold after a swap.
 		if err := (&Fetcher{}).publish(staging, dest, false); err != nil {
 			t.Fatalf("a complete final path is the tree this publish wanted: %v", err)
 		}
@@ -85,22 +91,45 @@ func TestPublish_LostRenameReadsTheFinalPath(t *testing.T) {
 		}
 	})
 
-	t.Run("incomplete final keeps the rename's cause", func(t *testing.T) {
+	t.Run("an incomplete final is replaced, never accepted", func(t *testing.T) {
 		root := t.TempDir()
 		staging, dest := filepath.Join(root, "staging"), filepath.Join(root, "dest")
 		mkCheckout(t, staging, "ours")
 		// A directory that exists and holds something, but is NOT a checkout:
-		// the retire moves it aside, the rename then wins, and the tree that
-		// gets published is ours — never a silent accept of a partial tree.
+		// the rename loses, the read finds nothing a reader could use, so the
+		// retire moves it aside and ours lands. Never a silent accept of a
+		// partial tree — the loader would then report "no plugin.yaml" and name
+		// the wrong cause.
 		if err := os.MkdirAll(filepath.Join(dest, "half-written"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := (&Fetcher{}).publish(staging, dest, false); err != nil {
 			t.Fatalf("publish over an incomplete final: %v", err)
 		}
-		if !isPublished(dest) {
-			t.Fatal("an incomplete final path must be replaced by the staged checkout, not kept")
+		if _, err := os.Stat(filepath.Join(dest, "ours")); err != nil {
+			t.Fatalf("an incomplete final path must be replaced by the staged checkout, not kept: %v", err)
 		}
+		assertNoLeftovers(t, root, "dest")
+	})
+
+	t.Run("a moving ref replaces the tree that is there, and parks no copy", func(t *testing.T) {
+		root := t.TempDir()
+		staging, dest := filepath.Join(root, "staging"), filepath.Join(root, "dest")
+		mkCheckout(t, staging, "ours")
+		mkCheckout(t, dest, "the-old")
+		// replaceExisting=true is the MOVING ref: the content under this key
+		// changed, so a complete tree already there is exactly what must NOT be
+		// kept — the opposite of the immutable rule, and the arm every other
+		// test in this file leaves untaken.
+		if err := (&Fetcher{}).publish(staging, dest, true); err != nil {
+			t.Fatalf("publish a moving ref over its older tree: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "ours")); err != nil {
+			t.Fatalf("a moving ref must publish the new tree, not keep the old one: %v", err)
+		}
+		// The old tree is renamed aside first — so a failed rename leaves it
+		// serving — and deleted after the swap, never parked.
+		assertNoLeftovers(t, root, "dest")
 	})
 }
 
