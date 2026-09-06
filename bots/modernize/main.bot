@@ -944,12 +944,14 @@ tool lot_verify:
                 # worth trying, and the noise costs nothing at all.
                 last_open[depth] = i if ln.lstrip().startswith("{") else -1
             depth += up - down
-        # One candidate per close already makes chatter cheap, so what is left
-        # to bound is the SIZE of the joins, not their number: a "k": { … } / }
-        # alternation pairs every close with the same far-back opening. Hence a
-        # budget counted in LINES joined, and generous against the window —
-        # room for the report and every block of noise around it, never enough
-        # to be slow.
+        # One candidate per close already makes chatter cheap — at a given
+        # balance the pairs are disjoint, so a tail of noise costs its own
+        # length once. What is left to bound is the SIZE of the joins, not
+        # their number: pairs NEST, and braces closing outwards give a run of
+        # joins whose lengths grow with the depth — quadratic in the window.
+        # Hence a budget counted in LINES joined, and generous against that
+        # window: room for the report and every block of noise around it,
+        # never enough to be slow.
         joined = 0
         budget = 8 * len(lines) + 64
         for j in range(len(lines) - 1, -1, -1):
