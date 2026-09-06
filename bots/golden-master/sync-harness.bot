@@ -2144,7 +2144,7 @@ tool sync_harness:
         au moins aussi discriminante que `git status` pour ce qu'on lui demande —
         savoir si un fichier a bouge. Si les DEUX echouent, on s'arrete.
         """
-        code, out = run("git status --porcelain", ws, timeout=120)
+        code, out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
         if code == 0:
             return "git:" + out
         h = hashlib.sha256()
@@ -2304,7 +2304,25 @@ tool sync_harness:
             v = meta.get(k)
             if v is not None and (not isinstance(v, str) or "\0" in v):
                 return {}, "the marker %s holds a %s that is not a usable string" % (marker, k)
+        db = meta.get("dirty_before")
+        if db is not None and (not isinstance(db, list) or any(not isinstance(q, str) for q in db)):
+            return {}, "the marker %s holds a dirty_before that is not a list of paths" % marker
         return meta, ""
+
+
+    def dirty_paths_before_apply(ws):
+        """The paths `git status --porcelain` lists right before a mutant goes
+        down, recorded in the marker so a later sweep can tell the mutant's
+        residue from work that was already uncommitted (an operator's, in record
+        mode). None when git did not answer — unknown, which is not "clean".
+        Bounded and guarded like every git call that runs before the report, and
+        without the optional index refresh: a status that rewrites the index is a
+        write into the tree it is only meant to read (under a full disk or a size
+        limit it left a corrupt index behind, and every later checkout failed)."""
+        code, out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
+        if code != 0:
+            return None
+        return sorted({l[3:] for l in (out or "").splitlines() if l.strip()})
 
 
     def write_applied_marker(ws, meta):
@@ -2343,7 +2361,8 @@ tool sync_harness:
             return False, "cannot create the marker %s: %s" % (marker, e.strerror or e)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
+                json.dump({"id": meta.get("id"), "dir": meta.get("dir"),
+                           "dirty_before": dirty_paths_before_apply(ws)}, f)
         except OSError as e:
             # The empty shell a failed write leaves behind records NOTHING — apply.sh
             # will not run — but the NEXT gate reads it as a corrupt marker: kind
@@ -2514,9 +2533,8 @@ tool sync_harness:
             code, out = run_script(script, ws)
         else:
             code, out = None, "the mutant's revert.sh is no longer there: %s" % script
-        dirty, unknown = "", ""
+        dirty, unknown, residue = "", "", []
         if code == 0:
-            drop_applied_marker(ws, meta)
             # Through run(), and on a short leash. This sweep runs in EVERY mode,
             # record included, and the harness's contract is to answer with a
             # verdict: a `git` that is absent must not replace the JSON report with
@@ -2524,14 +2542,26 @@ tool sync_harness:
             # wedged one must not hang the gate the way the incident behind this
             # whole guard hung it. Unanswered is reported as UNKNOWN, never as
             # clean — an empty porcelain and an absent git are not the same fact.
-            st, st_out = run("git status --porcelain", ws, timeout=120)
+            st, st_out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
             if st == 0:
                 dirty = st_out.strip()
+                before = meta.get("dirty_before")
+                if before is not None:
+                    # What is still modified now and was NOT when the mutant went
+                    # down is the mutant's residue: revert.sh's exit 0 is the
+                    # script's word, this is the tree's. An operator's own
+                    # uncommitted work was there before and is not residue —
+                    # record mode is where the difference matters, since nothing
+                    # else stops references from being sealed over a leftover.
+                    after = {l[3:] for l in st_out.splitlines() if l.strip()}
+                    residue = sorted(after - set(before))
             else:
                 unknown = "`git status` did not answer (exit %s)" % st
+            if not residue:
+                drop_applied_marker(ws, meta)
         return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
-                "marker": marker, "refused": False, "kept": code != 0,
-                "dirty": dirty[:400], "dirty_unknown": unknown}
+                "marker": marker, "refused": False, "kept": code != 0 or bool(residue),
+                "dirty": dirty[:400], "dirty_unknown": unknown, "residue": residue[:50]}
 
 
     # The dispositions on which the gate STOPS rather than judges. Only "reverted"
@@ -2572,6 +2602,13 @@ tool sync_harness:
                 "marker %s."
                 % (left.get("id") or "?", left.get("dir") or "?", left.get("out") or "?",
                    left.get("marker")))
+        if left.get("code") == 0 and left.get("residue"):
+            return "still_mutated", (
+                "a mutant left APPLIED by an interrupted gate was NOT fully reverted at start: %s "
+                "— revert.sh exited 0, but these paths are still modified and were clean when the "
+                "mutant went down: %s. The tree is still mutated and will be neither judged nor "
+                "recorded. Revert by hand (git checkout -- <those paths>), then delete the marker %s."
+                % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
         if left.get("code") == 0:
             text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
                     "(revert.sh exit 0). The interrupted attempt's verdict, if any, judged a "
@@ -4028,6 +4065,50 @@ tool sync_harness:
                 check("une application tuee par un signal est revertie, pas lue comme refusee",
                       [state, tree(), os.path.isfile(applied_marker_for(tmp))],
                       ["failed", "original\n", False])
+                # ── Le residu d'un revert qui dit « 0 » sans tout restaurer : ce qui
+                # est encore modifie ET etait propre quand le mutant est descendu.
+                try:
+                    os.remove(applied_marker_for(tmp))
+                except OSError:
+                    pass
+                sub("git", "checkout", "--", "f.txt")
+                scripts("printf 'mutant\\n' >> f.txt", "true")
+                apply_mutant(lmeta, tmp)
+                db = (read_applied_marker(tmp)[0] or {}).get("dirty_before")
+                check("le marqueur enregistre ce qui etait deja modifie avant l'application (pas f.txt)",
+                      [isinstance(db, list), "f.txt" in (db or [])], [True, False])
+                left = revert_leftover_mutant(tmp)
+                check("un revert.sh a 0 qui ne restaure pas laisse un residu nomme, marqueur garde",
+                      [(left or {}).get("code"), (left or {}).get("residue"), (left or {}).get("kept"),
+                       os.path.isfile(applied_marker_for(tmp))],
+                      [0, ["f.txt"], True, True])
+                check("disposition d'un residu : la porte s'arrete",
+                      [leftover_disposition(left or {})[0], leftover_disposition(left or {})[0] in LEFTOVER_BAIL_KINDS],
+                      ["still_mutated", True])
+                os.remove(applied_marker_for(tmp))
+                sub("git", "checkout", "--", "f.txt")
+                # Le travail non committe d'AVANT le mutant n'est pas un residu.
+                with open(os.path.join(tmp, "g.txt"), "w", encoding="utf-8") as f:
+                    f.write("operator work\n")
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                apply_mutant(lmeta, tmp)
+                check("le travail deja non committe est enregistre comme tel",
+                      "g.txt" in ((read_applied_marker(tmp)[0] or {}).get("dirty_before") or []), True)
+                left = revert_leftover_mutant(tmp)
+                check("un revert propre au milieu du travail de l'operateur : pas de residu, note, marqueur efface",
+                      [(left or {}).get("residue"), "g.txt" in ((left or {}).get("dirty") or ""),
+                       leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                      [[], True, "reverted", False])
+                os.remove(os.path.join(tmp, "g.txt"))
+                # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
+                mpath = applied_marker_for(tmp)
+                os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
+                with open(mpath, "w", encoding="utf-8") as f:
+                    json.dump({"id": "x", "dir": mdir, "dirty_before": 5}, f)
+                os.chmod(mpath, 0o600)
+                check("un dirty_before qui n'est pas une liste est refuse",
+                      bool(read_applied_marker(tmp)[1]), True)
+                os.remove(mpath)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
                 shutil.rmtree(outside, ignore_errors=True)
