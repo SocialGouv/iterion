@@ -2322,6 +2322,30 @@ tool sync_harness:
             pass
 
 
+    def leftover_on_record(ws):
+        """True when a mutant is still recorded as applied — the tree is no longer
+        KNOWN to be at baseline.
+
+        The single signal, whatever armed it, and that is the point: `revert_clean`
+        only exists on a verdict that reached the full apply→capture→revert path.
+        Two other ways a revert fails to restore the baseline never set it — the
+        inert branch and the failed-apply branch each call revert_mutant and drop
+        its exit code on the floor. The record is what all three leave behind, so
+        the scoring reads the record and not one verdict's field.
+        """
+        meta, _why = read_applied_marker(ws)
+        return meta is not None
+
+
+    def scoring_must_stop(verdict, ws):
+        """The scoring ends after this verdict: the tree is no longer known to be
+        at baseline, so every later measurement would describe a program nobody
+        wrote — and every later application is refused anyway while the record
+        stands. Named, rather than inline in each of the two scoring loops, so the
+        rule is one expression and the self-test can drive the decision itself."""
+        return (not verdict.get("revert_clean", True)) or leftover_on_record(ws)
+
+
     def apply_mutant(meta, ws):
         # The marker goes down BEFORE apply.sh runs: an interruption between the
         # two leaves a tree that is mutated and a note that says by what. A marker
@@ -3616,6 +3640,31 @@ tool sync_harness:
                 check("une application en echec est un mutant 'failed'", state, "failed")
                 check("elle a reverti l'arbre", tree(), "original\n")
                 check("et efface son marqueur", os.path.isfile(applied_marker_for(tmp)), False)
+                # LE SIGNAL D'ARRET EST L'ENREGISTREMENT, PAS `revert_clean`. Un
+                # mutant INERTE — son point d'appui a disparu sous une modernisation
+                # legitime, apply.sh ne mute plus rien — dont le revert.sh echoue
+                # (`git checkout` d'un fichier que le lot a supprime) laisse un
+                # enregistrement arme, et sa branche ne pose JAMAIS `revert_clean` :
+                # la boucle continuait, chaque mutant suivant revenait INVALIDE en
+                # nommant le coupable, et les comptes decrivaient un lot que
+                # personne n'avait mesure.
+                scripts("exit 0", "exit 1")
+                v_inert, state = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+                check("un mutant qui ne mute rien est 'inert'", state, "inert")
+                revert_mutant(lmeta, tmp)   # ce que fait la branche inerte de score_mutant
+                check("son revert en echec laisse l'enregistrement arme",
+                      [("revert_clean" in v_inert), leftover_on_record(tmp)], [False, True])
+                check("et le classement S'ARRETE dessus, sans `revert_clean`",
+                      scoring_must_stop(v_inert, tmp), True)
+                check("l'application suivante est de toute facon refusee",
+                      apply_mutant(lmeta, tmp)[0], APPLY_REFUSED)
+                clear_marker()
+                check("rien d'enregistre, un verdict propre : le classement continue",
+                      [leftover_on_record(tmp), scoring_must_stop({"revert_clean": True}, tmp)],
+                      [False, False])
+                check("un revert sale arrete le classement meme sans enregistrement",
+                      scoring_must_stop({"revert_clean": False}, tmp), True)
+                sub("git", "checkout", "--", "f.txt")
                 # Seule la disposition « reverti » laisse passer la porte. Le lien entre
                 # la decision et son consommateur est CETTE constante, pas trois lignes
                 # de main() que rien ne conduit.
@@ -3720,9 +3769,10 @@ tool sync_harness:
                 scripts("exit 0", "exit 0")
                 apply_mutant(lmeta, tmp)
                 saved_path, shbin = os.environ.get("PATH", ""), shutil.which("sh")
+                check("`sh` est sur le PATH (tout le harnais passe par lui)", bool(shbin), True)
                 bindir = tempfile.mkdtemp(prefix="gm-bin-")
                 try:
-                    os.symlink(shbin, os.path.join(bindir, "sh"))
+                    os.symlink(shbin or "/bin/sh", os.path.join(bindir, "sh"))
                     os.environ["PATH"] = bindir
                     try:
                         nogit = revert_leftover_mutant(tmp)
@@ -4267,18 +4317,27 @@ tool sync_harness:
                              % ", ".join(sorted(only)))
 
             verdicts, blind = [], []
-            # A revert that did not restore the baseline (revert.sh failed, or the
-            # captures still differ with the mutant gone) ends the scoring: every
+            # A revert that did not restore the baseline ends the scoring: every
             # later measurement would describe a program nobody wrote, and every
-            # later apply is refused anyway while the leftover is on record. The
-            # gate is red on `revert_clean` either way; stopping keeps it legible.
+            # later apply is refused anyway while the leftover is on record.
+            #
+            # TWO signals, because one does not cover the rule. `revert_clean` is
+            # written only on the full apply→capture→revert path — revert.sh
+            # exited non-zero, or the captures still differ with the mutant gone.
+            # The inert branch and the failed-apply branch also run a revert and
+            # also ignore its exit code, and a leftover armed there used to let the
+            # loop run on: every remaining mutant came back INVALID naming the
+            # culprit, the counts described a lot nobody measured, and the operator
+            # was told to revert a tree by hand. `leftover_on_record` is what all
+            # three leave behind. The gate is red either way; stopping keeps it
+            # legible.
             stopped = None
             for seed, meta in enumerate(visible):
                 if only and meta["id"] not in only:
                     continue
                 v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
                 verdicts.append(v)
-                if not v.get("revert_clean", True):
+                if scoring_must_stop(v, ws):
                     stopped = v
                     break
                 if not v.get("valid"):
@@ -4302,12 +4361,12 @@ tool sync_harness:
                 for i, m in enumerate(held_meta):
                     v = score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
                     held.append(v)
-                    if not v.get("revert_clean", True):
+                    if scoring_must_stop(v, ws):
                         stopped = v
                         break
             if stopped is not None:
-                note(report, "scoring stopped after mutant %s: %s. The tree or the app is no "
-                     "longer at baseline, so the mutants after it were not scored and are absent "
+                note(report, "scoring stopped after mutant %s: %s. The tree or the app is no longer "
+                     "KNOWN to be at baseline, so the mutants after it were not scored and are absent "
                      "from the counts; a leftover, if any, is on record for the next gate."
                      % (stopped.get("id"), stopped.get("reason") or "its revert did not restore the baseline"))
 
