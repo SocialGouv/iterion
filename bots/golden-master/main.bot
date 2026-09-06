@@ -2344,8 +2344,12 @@ tool oracle_run:
         judge a mutated program and call it the lot's. Measured: a tool node
         retried on the same tree after its exec stream broke — the build gate
         went red on a file the mutant had edited, and the oracle reported that
-        file as "not committed". Returns None when there is nothing to revert,
-        else what was reverted and how revert.sh exited.
+        file as "not committed". Returns None ONLY when there is no marker at all;
+        otherwise a dict carrying what was found and `code` — 0 when the tree is
+        demonstrably back at HEAD, and anything else (a non-zero exit, a vanished
+        revert.sh, a marker refused as untrustworthy) meaning it is NOT. Callers
+        decide through `leftover_verdict`; branching on truthiness alone reads all
+        four as success.
         """
         marker = applied_marker_for(ws)
         # lstat, not isfile: isfile FOLLOWS a symlink, so a link planted at the
