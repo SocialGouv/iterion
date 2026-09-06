@@ -132,7 +132,11 @@ Prefer narrowing the *connection*, not the user:
   plus `statuses:write` when the grant carries it; an installation approved
   with less than the baseline still mints the intersection, and what it
   withholds is known before any write (`PreflightFor`) rather than
-  discovered as a 403.
+  discovered as a 403. A 403 the forge does answer on a commit-status call —
+  a grant revoked after the mint — is recorded on that token too, so the next
+  preflight reports `statuses` withheld and the lane takes its fallback
+  (the webhook's `forge_token` binding) instead of failing the same write
+  for the rest of the token's life.
   **Self-service** (no platform App, no manual registration): Integrations →
   "+ Register an OAuth app" → github → **"Create a GitHub App"** (iterion builds
   the scoped App via manifest and captures its private key), then the **"Install"**

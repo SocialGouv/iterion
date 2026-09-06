@@ -682,9 +682,13 @@ type fakeGitHubForge struct {
 	// granted, when set, is the installation's approved permission set: a
 	// mint asking for anything outside it (or above its level) is refused
 	// with GitHub's permissions-not-granted 422.
-	granted       map[string]string
-	mints         int
-	mintsBaseline int // mints that did NOT ask for statuses
+	granted map[string]string
+	// statusForbidden refuses the commit-status write for every MINTED token
+	// with GitHub's 403 "Resource not accessible by integration" — a grant
+	// revoked after the mint — while a hand-owned binding still writes.
+	statusForbidden bool
+	mints           int
+	mintsBaseline   int // mints that did NOT ask for statuses
 	// bearers records, per endpoint, the Authorization values the forge
 	// saw — the proof of WHICH credential served a call: the minted
 	// installation token (ghs_…) or the webhook's hand-owned binding.
@@ -814,7 +818,11 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		if f.revoked(w, r) {
 			return
 		}
-		if r.Header.Get("Authorization") == bearerNoStatuses {
+		f.mu.Lock()
+		statusForbidden := f.statusForbidden
+		f.mu.Unlock()
+		bearer := r.Header.Get("Authorization")
+		if bearer == bearerNoStatuses || (statusForbidden && strings.HasPrefix(bearer, "Bearer ghs_")) {
 			reply(w, http.StatusForbidden, map[string]any{"message": "Resource not accessible by integration"})
 			return
 		}

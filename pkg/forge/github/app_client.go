@@ -939,6 +939,20 @@ func permissionSetKey(perms map[string]string) string {
 // without comparing maps.
 func PermissionSetKey(perms map[string]string) string { return permissionSetKey(perms) }
 
+// noteDenied records that the cached management token was refused a
+// permission at a call — a grant revoked after the mint, a repository the
+// installation lost — so PreflightFor reports it withheld for the rest of
+// the token's life, instead of every write failing the same way while a
+// fallback credential sits unused. The next mint starts clean.
+func (a *AppClient) noteDenied(perm string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.denied == nil {
+		a.denied = map[string]bool{}
+	}
+	a.denied[perm] = true
+}
+
 // PreflightFor mints (or reuses) the installation token and nothing else,
 // then reports whether that token carries every permission in need. A caller
 // learns BEFORE acting whether the installation can serve: the client is
