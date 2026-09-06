@@ -882,51 +882,85 @@ tool lot_verify:
         harness prints it, or a pretty-printed block: the wrapper prints
         exactly one, after the harness has logged to stderr. A format is not
         a verdict, so both shapes read the same, indented or not."""
-        # Bounded on the half that can blow up. A line whose braces BALANCE is
-        # a complete thing — parsed on its own, never joined to anything: that
-        # is what keeps a harness logging thousands of dict reprs to stdout out
-        # of the block scan entirely, and it leaves the single-line pass at one
-        # parse per line. That pass is UNBUDGETED, so a one-line report is read
-        # wherever it sits; only the block joins are capped, and the cap skips a
-        # candidate rather than ending the scan — a budget spent on noise must
-        # never discard a verdict that was there. The no-report path is the one
-        # this reader exists to type, and it must not burn minutes saying so.
+        # Bounded, because the no-report path is the one this reader exists to
+        # type and it must not burn minutes saying so. The cheap half is never
+        # budgeted: every "}"-terminated line is parsed ON ITS OWN, one parse
+        # each, so a one-line report is read wherever it sits and whatever the
+        # harness prints after it. Only the multi-line joins — the quadratic
+        # half — are capped, and a join is attempted only where the braces
+        # between its two ends BALANCE, settled in O(1) off a prefix sum. That
+        # is what keeps noise from SPENDING the budget rather than merely
+        # surviving it: a cap consumed by chatter would discard the verdict
+        # underneath it, which is how a bound turns a report into ORACLE_NOT_RUN.
+        def braces(ln):
+            # Outside of strings only. A brace inside one is text, and reading
+            # it as structure makes a report quoting `if err != nil {`
+            # unpairable — JSON strings never span lines, so per line is sound.
+            if '"' not in ln:
+                # No string can be open, so counting cannot be fooled — and
+                # this is the shape of the chatter that made the search
+                # expensive: a python dict repr quotes with apostrophes.
+                return ln.count("{"), ln.count("}")
+            up = down = 0
+            in_str = esc = False
+            for ch in ln:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = in_str
+                elif ch == '"':
+                    in_str = not in_str
+                elif in_str:
+                    continue
+                elif ch == "{":
+                    up += 1
+                elif ch == "}":
+                    down += 1
+            return up, down
+
         lines = (text or "").splitlines()[-2000:]
         col = [len(ln) - len(ln.lstrip()) for ln in lines]
-        opens = [i for i, ln in enumerate(lines)
-                 if ln.lstrip().startswith("{") and ln.count("{") > ln.count("}")]
-        k = len(opens) - 1
+        net = [0] * len(lines)
+        depth = [0] * (len(lines) + 1)
+        opens_at = {}
+        for i, ln in enumerate(lines):
+            up, down = braces(ln)
+            net[i] = up - down
+            if net[i] > 0 and ln.lstrip().startswith("{"):
+                opens_at.setdefault(depth[i], []).append(i)
+            depth[i + 1] = depth[i] + net[i]
         joins = 0
         for j in range(len(lines) - 1, -1, -1):
-            # opens ascends and j descends, so k only ever walks down: the
-            # openings before j are opens[:k + 1], for linear total cost.
-            while k >= 0 and opens[k] >= j:
-                k -= 1
             tail = lines[j].strip()
             if not tail.endswith("}"):
                 continue
-            if tail.startswith("{") and tail.count("{") == tail.count("}"):
+            if tail.startswith("{"):
                 try:
                     obj = json.loads(tail)
                 except ValueError:
                     obj = None
                 if isinstance(obj, dict):
                     return obj
+            # Only a line closing MORE braces than it opens can END a block.
+            # One that balances is complete in itself — the report, or a
+            # harness's "[INFO] mutant 7 applied {ok}" — and json has already
+            # had its say on it above. Keeping such a line out of the join
+            # scan is what stops chatter from SPENDING the budget: a cap
+            # consumed by noise discards the verdict printed underneath it.
+            if net[j] >= 0 or joins >= 32:
                 continue
-            if k < 0 or joins >= 32:
-                continue
-            # A block's closing brace sits at its opening's column — that is
-            # what every pretty-printer emits — so the openings in that column
-            # are tried first. A PREFERENCE, not a filter: the rest still
-            # follow, newest-first, so a hand-rolled shape is read as before.
-            # Without it the 40 inner "{" of a pretty-printed 40-entry list
-            # spend the budget before the block's own opening is ever reached.
-            for n in sorted(range(k, -1, -1), key=lambda n: col[opens[n]] != col[j]):
+            # The openings this line can close are those its brace balance
+            # points at; among them, the one in this line's own column comes
+            # first — that is the pair every pretty-printer emits, and without
+            # it the inner "{" of a pretty-printed list would spend the budget
+            # before the block's own opening is ever reached.
+            for i in sorted((o for o in opens_at.get(depth[j + 1], ()) if o < j),
+                            key=lambda o: (col[o] != col[j], -o)):
                 if joins >= 32:
                     break
                 joins += 1
                 try:
-                    obj = json.loads("\n".join(lines[opens[n]:j + 1]))
+                    obj = json.loads("\n".join(lines[i:j + 1]))
                 except ValueError:
                     continue
                 if isinstance(obj, dict):

@@ -274,6 +274,43 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
+	// Not every trailing line is brace-FIRST: "[INFO] mutant 7 applied {ok}"
+	// ends with a brace and opens one of its own. A scan that lets any
+	// "}"-terminated line spend the join budget loses the block underneath —
+	// only a line closing MORE braces than it opens can end one.
+	t.Run("log-prefixed teardown chatter does not cost the block its verdict", func(t *testing.T) {
+		prefixed := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": false,\\n  \"invalid\": [\\n    {\"id\": \"m14\", \"reason\": \"anchor gone\"}\\n  ]\\n}\\n' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\n" +
+			"i=0; while [ $i -lt 80 ]; do echo \"[INFO] mutant $i applied {ok}\"; i=$((i+1)); done\n" +
+			"exit 1\n"
+		ws, base := scratchWorkspace(t, prefixed)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a block verdict was discarded by the harness's log chatter: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the block's fields were lost to the log chatter: %+v", res)
+		}
+	})
+
+	// A mutation report names the anchor that vanished, and an anchor is
+	// source: its braces are text, not structure. Counting them as structure
+	// makes the block unpairable and types a RED as ORACLE_NOT_RUN.
+	t.Run("a report whose reason quotes a brace is still one object", func(t *testing.T) {
+		quoting := scratchWrapperHead +
+			"python3 -c 'import json; print(json.dumps({\"mode\": \"gate\", \"ok\": False, \"invalid\": [{\"id\": \"m15\", \"reason\": \"anchor `if err != nil {` gone\"}]}, indent=2))' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\n" + scratchTeardownChatter + "exit 1\n"
+		ws, base := scratchWorkspace(t, quoting)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a report quoting a brace in its reason was not read as the oracle's RED: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the quoted-brace report's fields were not read: %+v", res)
+		}
+	})
+
 	t.Run("an oversized report is bounded in the verdict, its fields still read", func(t *testing.T) {
 		huge := scratchWrapperHead +
 			"python3 -c 'import json; print(json.dumps({\"mode\": \"gate\", \"ok\": False, \"invalid\": [{\"id\": \"m09\", \"reason\": \"anchor gone\"}], \"blind_lanes\": [\"lane-%d\" % i for i in range(20000)]}))' > \"$GM_REPORT_TMP\"\n" +
