@@ -47,16 +47,6 @@ func (a *AppClient) SetCommitStatus(ctx context.Context, repo, sha string, st fo
 	return rest.SetCommitStatus(ctx, repo, sha, st)
 }
 
-// GetPullRequest on an App connection delegates to a fresh-token AdminClient —
-// the merge gate needs the head SHA to anchor the commit status.
-func (a *AppClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
-	rest, err := a.rest(ctx)
-	if err != nil {
-		return forge.PullRef{}, err
-	}
-	return rest.GetPullRequest(ctx, repo, number)
-}
-
 // githubCommitState maps the normalized CommitState onto GitHub's wire
 // vocabulary (error|failure|pending|success). An unknown value fails closed to
 // "error" so a miswired gate blocks rather than silently passes.

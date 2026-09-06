@@ -181,6 +181,119 @@ func IssueReadOrPullInstallationPermissions() map[string]string {
 	}
 }
 
+// PermissionChecks is the grant the board card's CI panel lists a ref's
+// check-runs with. It is requested at App creation (BuildAppManifest) and
+// minted ONLY into the CI profiles below — never into the runtime baseline:
+// the management and run tokens are minted from that baseline, and an
+// installation approved before the grant existed (every one, until its owner
+// approves the pending request) would then fail EVERY mint, not just the CI
+// read.
+const PermissionChecks = "checks"
+
+// PullListInstallationPermissions is the grant set minted for listing pull
+// requests: pull_requests read plus the mandatory metadata baseline.
+//
+// The pull profiles exist for the same reason the issue profiles do: a
+// PullClient method implemented on *AdminClient alone is invisible to the
+// `admin.(forge.PullClient)` the card's PR/CI panel asserts, and the App
+// client is the connection shape the connect wizard creates by default. Each
+// profile is the endpoint's own rule (GitHub's published per-endpoint
+// permission data), no wider — a read never acquires a write, and none of
+// them rides the runtime baseline, whose contents/pull_requests/issues/hooks
+// WRITES no read here has a use for.
+func PullListInstallationPermissions() map[string]string {
+	return map[string]string{
+		"pull_requests": "read",
+		"metadata":      "read",
+	}
+}
+
+// PullGetInstallationPermissions is the grant set minted for reading ONE pull
+// request. GitHub gates GET /repos/{owner}/{repo}/pulls/{number} on contents
+// read as well as pull_requests read — the object carries content-derived
+// fields (mergeability, diff stats) — which the collection read does not.
+func PullGetInstallationPermissions() map[string]string {
+	return map[string]string{
+		"pull_requests": "read",
+		"contents":      "read",
+		"metadata":      "read",
+	}
+}
+
+// PullWriteInstallationPermissions is the grant set minted for opening or
+// updating a pull request: pull_requests write plus the metadata baseline.
+func PullWriteInstallationPermissions() map[string]string {
+	return map[string]string{
+		"pull_requests": "write",
+		"metadata":      "read",
+	}
+}
+
+// PullMergeInstallationPermissions is the grant set minted for merging a pull
+// request. GitHub gates PUT .../pulls/{number}/merge on contents WRITE (the
+// merge writes the base branch), not on pull_requests write; the
+// pull_requests read serves the re-fetch that returns the merged ref, and
+// contents write also covers the optional source-branch deletion.
+//
+// The METHOD is what carries the rule, and the two methods of this one path
+// sit under different permissions — which is the trap. GitHub's published
+// per-endpoint data lists them as two separate rows:
+//
+//	put …/pulls/{pull_number}/merge  "merge-a-pull-request"                  → Contents, write
+//	get …/pulls/{pull_number}/merge  "check-if-a-pull-request-has-been-merged" → Pull requests, read
+//
+// so reading "…/pulls/{n}/merge appears under Pull requests" as licence to
+// add pull_requests:write here is reading the GET's row. Neither row carries
+// the "additional permissions" marker, i.e. neither is a conjunction — unlike
+// GET …/pulls/{n} three functions up, which IS dual-listed (Contents read AND
+// Pull requests read, both marked) and is why that profile takes both. The
+// two profiles apply the same rule to two differently-shaped rows; they do
+// not apply opposite readings to one.
+func PullMergeInstallationPermissions() map[string]string {
+	return map[string]string{
+		"contents":      "write",
+		"pull_requests": "read",
+		"metadata":      "read",
+	}
+}
+
+// CIStatusInstallationPermissions is the grant set minted for the CURRENT CI
+// state of a ref: checks read for the check-runs list, statuses read for the
+// legacy combined commit status, plus the metadata baseline.
+func CIStatusInstallationPermissions() map[string]string {
+	return map[string]string{
+		PermissionChecks:   "read",
+		PermissionStatuses: "read",
+		"metadata":         "read",
+	}
+}
+
+// CIHistoryInstallationPermissions is the grant set minted for the CI history
+// of a ref, which reads check-runs alone.
+func CIHistoryInstallationPermissions() map[string]string {
+	return map[string]string{
+		PermissionChecks: "read",
+		"metadata":       "read",
+	}
+}
+
+// MissingCIPermissions lists the grants the board card's CI panel needs and
+// an installation does NOT have, so the connection health view names them
+// before a card shows a dead panel. Empty when nothing is missing, or when
+// the grant set is unknown (absence of data is not evidence of a gap).
+func MissingCIPermissions(granted map[string]string) []string {
+	if len(granted) == 0 {
+		return nil
+	}
+	var missing []string
+	for _, name := range []string{PermissionChecks, PermissionStatuses} { // sorted: stable output
+		if _, ok := granted[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
 // MissingProjectPermissions lists the project-board grants an installation does
 // NOT have, so a board binding fails at BIND time naming the missing permission
 // rather than hours later on the first status write. Empty when nothing is
@@ -616,6 +729,9 @@ func (a *AppClient) scopedREST(ctx context.Context, perms map[string]string) (*A
 	tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
 		&InstallationTokenOptions{Permissions: perms})
 	if err != nil {
+		if errors.Is(err, forge.ErrPermissionsNotGranted) {
+			return nil, a.withheldGrant(ctx, perms, err)
+		}
 		return nil, err
 	}
 	if a.scoped == nil {
@@ -623,6 +739,85 @@ func (a *AppClient) scopedREST(ctx context.Context, perms map[string]string) (*A
 	}
 	a.scoped[key] = scopedToken{token: tok, exp: exp}
 	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: tok}, nil
+}
+
+// withheldGrant turns a scoped mint GitHub refused for want of a grant into
+// the typed refusal naming WHICH grant. GitHub's 422 body names none, so the
+// installation's live grant is read (one App-JWT probe, on the failure path
+// only) and the requested set is resolved against it: what the installation
+// lacks — or holds at a lower level than requested — is named, with the
+// installation page where an owner approves it. When the probe cannot say
+// (it fails, or reports no permissions), the whole requested set is named
+// rather than nothing. The mint sentinel stays reachable through the cause,
+// so the refresh worker's classification is unchanged.
+func (a *AppClient) withheldGrant(ctx context.Context, perms map[string]string, cause error) error {
+	names := make([]string, 0, len(perms))
+	for name := range perms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var missing []string
+	page := ""
+	if inst, perr := InstallationInfo(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock()); perr == nil {
+		page = inst.HTMLURL
+		if len(inst.Permissions) > 0 {
+			for _, name := range names {
+				if !grantCovers(inst.Permissions, name, perms[name]) {
+					missing = append(missing, name+":"+perms[name])
+				}
+			}
+		}
+	}
+	if len(missing) == 0 {
+		for _, name := range names {
+			missing = append(missing, name+":"+perms[name])
+		}
+	}
+	remedy := "approve " + strings.Join(missing, ", ") + " on the GitHub App installation"
+	if page != "" {
+		remedy += " (" + page + ")"
+	}
+	remedy += " — an org owner reviews the App's pending permission request; an App that does not " +
+		"request it yet adds it under its Permissions & events settings first"
+	return &forge.PermissionError{
+		Provider: forge.ProviderGitHub, Op: "mint installation token",
+		Missing: missing, Remedy: remedy, Cause: cause,
+	}
+}
+
+// grantCovers reports whether an installation's grant serves a requested
+// permission at the requested level, on GitHub's own read < write < admin
+// ordering: a grant covers every level at or below its own.
+//
+// The ordering is compared, not special-cased on "write": `admin` is a real
+// level in GitHub's model (the organization_* permissions take it), so a rule
+// written as "a write needs write-or-admin, anything else passes" reports a
+// requested `admin` as served by a bare `read` — and withheldGrant would then
+// stay silent about the one grant it exists to name.
+func grantCovers(granted map[string]string, name, level string) bool {
+	got, ok := granted[name]
+	if !ok {
+		return false
+	}
+	return grantRank(got) >= grantRank(level)
+}
+
+// grantRank orders a GitHub permission level. An unrecognised level ranks
+// above admin, which cuts the right way at both ends: an unfamiliar level the
+// INSTALLATION holds covers what is asked of it (naming it missing would
+// accuse the wrong grant on the one path whose job is to name the right one),
+// while an unfamiliar level we REQUEST is not satisfied by any level we know.
+func grantRank(level string) int {
+	switch level {
+	case "read":
+		return 1
+	case "write":
+		return 2
+	case "admin":
+		return 3
+	default:
+		return 4
+	}
 }
 
 // permissionSetKey renders a grant set as a stable string, so two calls asking

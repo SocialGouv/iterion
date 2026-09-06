@@ -565,7 +565,7 @@ func (s *Server) handleListIssuePulls(w http.ResponseWriter, r *http.Request) {
 	}
 	all, err := pc.ListPullRequests(r.Context(), repo, forge.PullListOptions{State: "all", PerPage: 100})
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "list pull requests: %v", err)
+		writeForgePullError(w, "list pull requests", err)
 		return
 	}
 	// Keep only PRs that reference this card's forge issue number.
@@ -638,7 +638,7 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 		Draft:        req.Draft,
 	})
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "create pull request: %v", err)
+		writeForgePullError(w, "create pull request", err)
 		return
 	}
 	writeJSON(w, ref)
@@ -686,7 +686,7 @@ func (s *Server) handleMergeIssuePull(w http.ResponseWriter, r *http.Request) {
 		DeleteBranch:  req.DeleteBranch,
 	})
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "merge pull request: %v", err)
+		writeForgePullError(w, "merge pull request", err)
 		return
 	}
 	writeJSON(w, ref)
@@ -756,7 +756,7 @@ func (s *Server) handleIssuePullCI(w http.ResponseWriter, r *http.Request) {
 	}
 	pr, err := pc.GetPullRequest(r.Context(), repo, number)
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "get pull request: %v", err)
+		writeForgePullError(w, "get pull request", err)
 		return
 	}
 	ref := pr.HeadSHA
@@ -765,7 +765,7 @@ func (s *Server) handleIssuePullCI(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := pc.GetCIStatus(r.Context(), repo, ref)
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "get ci status: %v", err)
+		writeForgePullError(w, "get ci status", err)
 		return
 	}
 	history, _ := pc.ListCIHistory(r.Context(), repo, ref, 20)
@@ -850,6 +850,22 @@ func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, t
 		return nil, forge.Connection{}, false
 	}
 	return pc, conn, true
+}
+
+// writeForgePullError answers a failed PullClient call on the card's PR/CI
+// panel. A *forge.PermissionError is a configuration gap on the connection —
+// its credential lacks a named grant (an App installation approved before
+// `checks: read` was requested, a fine-grained PAT short of a permission) —
+// so it is answered 422 with the permission and the operator step, the same
+// mapping the create-repo and security-read routes give a withheld
+// installation grant. Anything else is the upstream failure it always was.
+func writeForgePullError(w http.ResponseWriter, op string, err error) {
+	var pe *forge.PermissionError
+	if errors.As(err, &pe) {
+		httpError(w, http.StatusUnprocessableEntity, "%s: %v", op, err)
+		return
+	}
+	httpError(w, http.StatusBadGateway, "%s: %v", op, err)
 }
 
 // forgeLinkOf extracts a card's forge linkage from its typed External ref.

@@ -102,7 +102,14 @@ func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOpti
 	// statuses:write lets Revi post its revi/review merge-gate commit status.
 	// Optional at runtime (the mint falls back without it — see AppClient.rest),
 	// but requested at App creation so new installations grant it up front.
-	perms["statuses"] = "write"
+	perms[PermissionStatuses] = "write"
+	// checks:read lets the board card's CI panel list a ref's check-runs
+	// through an App connection. Minted only into the CI profiles
+	// (CIStatusInstallationPermissions), never into the runtime baseline;
+	// requested here so a new installation grants it up front. An
+	// installation approved before it was requested has to approve the
+	// pending request, and the panel names that gap until it does.
+	perms[PermissionChecks] = "read"
 	for _, o := range opts {
 		if o.AllowRepoCreation {
 			perms["administration"] = "write"
@@ -143,7 +150,9 @@ func newAppManifest(name, homeURL, redirectURL string, perms map[string]string) 
 		// The App's granted permissions are iterion's least-privilege
 		// runtime set (contents: clone + diff + push; pull_requests:
 		// open + comment; metadata: baseline; repository_hooks: per-repo
-		// inbound webhook), plus administration:write ONLY when the
+		// inbound webhook), the two per-call read/verdict grants
+		// (statuses: the merge-gate status; checks: the card CI panel's
+		// check-runs read), plus administration:write ONLY when the
 		// create-repo capability was opted in — minted tokens always
 		// narrow to the subset a call needs. A SecurityReadOnly App instead
 		// carries metadata:read + vulnerability_alerts:read and nothing else.
