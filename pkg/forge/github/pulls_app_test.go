@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -20,11 +22,73 @@ import (
 // the runtime baseline.
 var _ forge.PullClient = (*AppClient)(nil)
 
+// githubEndpointGrants is GitHub's OWN rule for every endpoint the PullClient
+// calls, transcribed row-for-row from its published per-endpoint permission
+// data (the source behind "Permissions required for GitHub Apps"). It is the
+// ONE place an endpoint's requirement is written down: the fake gates each
+// REST call on it, and TestPullPermissionProfiles derives every profile's
+// expected shape from it — so a profile is checked against GitHub's rule, not
+// against a second hand-written copy of itself.
+//
+// Note the two rows of .../pulls/{n}/merge: the PUT (merge) is Contents write,
+// the GET (check if merged, which iterion does not call) is Pull requests read.
+// Only GET .../pulls/{n} is dual-listed, and that is why its row carries two.
+var githubEndpointGrants = []struct {
+	method string
+	path   *regexp.Regexp
+	grants map[string]string
+	// slug is GitHub's own operation id for the row, so a failure names the
+	// documentation row to re-read rather than a bare path.
+	slug string
+}{
+	{"GET", regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls$`),
+		map[string]string{"pull_requests": "read"}, "list-pull-requests"},
+	{"POST", regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls$`),
+		map[string]string{"pull_requests": "write"}, "create-a-pull-request"},
+	{"GET", regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls/\d+$`),
+		map[string]string{"pull_requests": "read", "contents": "read"}, "get-a-pull-request (dual-listed)"},
+	{"PATCH", regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls/\d+$`),
+		map[string]string{"pull_requests": "write"}, "update-a-pull-request"},
+	{"PUT", regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls/\d+/merge$`),
+		map[string]string{"contents": "write"}, "merge-a-pull-request"},
+	{"DELETE", regexp.MustCompile(`^/repos/[^/]+/[^/]+/git/refs/.+$`),
+		map[string]string{"contents": "write"}, "delete-a-reference"},
+	{"GET", regexp.MustCompile(`^/repos/[^/]+/[^/]+/commits/[^/]+/check-runs$`),
+		map[string]string{"checks": "read"}, "list-check-runs-for-a-git-reference"},
+	{"GET", regexp.MustCompile(`^/repos/[^/]+/[^/]+/commits/[^/]+/status$`),
+		map[string]string{"statuses": "read"}, "get-the-combined-status-for-a-specific-reference"},
+}
+
+// grantsForRequestLine returns GitHub's rule for one recorded request line
+// ("GET /api/v3/repos/o/r/pulls?state=all") and the row's slug, or nil for a
+// path no PullClient method calls. The API-base prefix and the query string
+// are stripped so the table stays the endpoint shapes GitHub publishes.
+func grantsForRequestLine(line string) (map[string]string, string) {
+	method, rest, ok := strings.Cut(line, " ")
+	if !ok {
+		return nil, ""
+	}
+	path, _, _ := strings.Cut(rest, "?")
+	path = strings.TrimPrefix(path, "/api/v3")
+	for _, e := range githubEndpointGrants {
+		if e.method == method && e.path.MatchString(path) {
+			return e.grants, e.slug
+		}
+	}
+	return nil, ""
+}
+
 // pullMintRecorder is a fake GitHub serving the installation-token mint, the
 // installation probe and the pull/CI endpoints. It records the permission set
 // of every mint, the bearer of every REST call and the full request line, and
-// applies GitHub's two refusals on demand: a mint outside the installation's
-// grant (422) and a call the bearer lacks the permission for (403).
+// applies GitHub's two refusals: a mint outside the installation's grant
+// (422), and a call whose BEARER was minted without the grant the endpoint is
+// gated on (403 "Resource not accessible by integration").
+//
+// That second rule is what makes a permission profile falsifiable here. While
+// the fake served every REST call 2xx whatever the token carried, a profile
+// that omitted a grant its endpoint requires passed the whole suite; now the
+// call fails exactly as GitHub would fail it.
 type pullMintRecorder struct {
 	mu sync.Mutex
 	// granted is what the installation approved; nil = accept every mint.
@@ -34,15 +98,52 @@ type pullMintRecorder struct {
 	// notAccessible names URL-path suffixes refused with GitHub's 403
 	// "Resource not accessible by integration" whatever the mint carried.
 	notAccessible map[string]bool
-	mints         []map[string]string
-	bearers       []string
-	paths         []string
-	srv           *httptest.Server
+	// tokenPerms maps an issued installation token to the permission set it
+	// was minted with — the scope every REST call is then held to.
+	tokenPerms map[string]map[string]string
+	mints      []map[string]string
+	bearers    []string
+	paths      []string
+	srv        *httptest.Server
+}
+
+// scopeRefusal reports the grant an endpoint needs and the call's bearer was
+// not minted with, or "" when the call is within scope. A bearer the fake
+// never issued (the PAT client) is unrestricted: a fine-grained PAT's scope is
+// not a mint this fake can see, and the PAT half of these tests is about the
+// wire shape, not about scoping.
+func (r *pullMintRecorder) scopeRefusal(authz, line string) string {
+	tok := strings.TrimPrefix(authz, "Bearer ")
+	r.mu.Lock()
+	perms, minted := r.tokenPerms[tok]
+	r.mu.Unlock()
+	if !minted {
+		return ""
+	}
+	need, _ := grantsForRequestLine(line)
+	for _, name := range sortedGrantNames(need) {
+		level := need[name]
+		if got, ok := perms[name]; !ok || (level == "write" && got != "write" && got != "admin") {
+			return name + ":" + level
+		}
+	}
+	return ""
+}
+
+// sortedGrantNames keeps the refusal deterministic when a call is short of
+// more than one grant.
+func sortedGrantNames(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 	t.Helper()
-	r := &pullMintRecorder{notAccessible: map[string]bool{}}
+	r := &pullMintRecorder{notAccessible: map[string]bool{}, tokenPerms: map[string]map[string]string{}}
 	pr := map[string]any{
 		"number": 7, "title": "feat: x (closes #12)", "state": "open", "html_url": "https://gh/o/r/pull/7",
 		"head": map[string]any{"ref": "feat/x", "sha": "deadbeef", "repo": map[string]any{"full_name": "o/r"}},
@@ -71,8 +172,10 @@ func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 			}
 			r.mints = append(r.mints, body.Permissions)
 			n := len(r.mints)
+			tok := "ghs_scoped_" + string(rune('a'+n-1))
+			r.tokenPerms[tok] = body.Permissions
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"token":      "ghs_scoped_" + string(rune('a'+n-1)),
+				"token":      tok,
 				"expires_at": "2099-01-01T00:00:00Z",
 			})
 			return
@@ -88,9 +191,10 @@ func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 			})
 			return
 		}
+		line := req.Method + " " + req.URL.RequestURI()
 		r.mu.Lock()
 		r.bearers = append(r.bearers, req.Header.Get("Authorization"))
-		r.paths = append(r.paths, req.Method+" "+req.URL.RequestURI())
+		r.paths = append(r.paths, line)
 		refuse := false
 		for suffix := range r.notAccessible {
 			if strings.HasSuffix(req.URL.Path, suffix) {
@@ -98,6 +202,12 @@ func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 			}
 		}
 		r.mu.Unlock()
+		// GitHub's own gate: the endpoint's rule against the scope the
+		// bearer was minted with. A token short of it never sees the
+		// resource, whatever the path serves.
+		if short := r.scopeRefusal(req.Header.Get("Authorization"), line); short != "" {
+			refuse = true
+		}
 		if refuse {
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Resource not accessible by integration", "documentation_url": "https://docs.github.com/rest"})
@@ -224,51 +334,129 @@ func TestAppClientPullMethodsMintTheirOwnProfile(t *testing.T) {
 	}
 }
 
-// The profiles are their own, exactly as narrow as the endpoint's rule, and
-// every one of them is REQUESTABLE by an App the manifest creates today —
-// a profile the manifest does not cover could never be minted on a fresh
-// installation. `checks` stays out of the runtime baseline on purpose: the
-// management and run tokens are minted from it, and a baseline the
-// installation cannot serve fails EVERY mint for that installation (422),
-// not just the CI panel.
+// Every profile is pinned from BOTH sides against GitHub's own rule, never
+// against a second copy of itself: it must COVER each grant the endpoints its
+// method actually calls are gated on (else the call 403s in production), and
+// carry NOTHING beyond them but the mandatory metadata baseline (else a read
+// acquires a privilege it has no use for). Which endpoints a method calls is
+// observed, not declared — the call runs against the fake and its request
+// lines are read back — so a method that grows a round trip re-derives its own
+// requirement instead of drifting from a frozen literal.
 func TestPullPermissionProfiles(t *testing.T) {
-	exact := map[string]map[string]string{
-		"list":    {"pull_requests": "read", "metadata": "read"},
-		"get":     {"pull_requests": "read", "contents": "read", "metadata": "read"},
-		"write":   {"pull_requests": "write", "metadata": "read"},
-		"merge":   {"contents": "write", "pull_requests": "read", "metadata": "read"},
-		"ci":      {"checks": "read", "statuses": "read", "metadata": "read"},
-		"history": {"checks": "read", "metadata": "read"},
+	for _, tc := range pullCalls {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPullMintRecorder(t)
+			if err := tc.call(context.Background(), r.appClient(t)); err != nil {
+				t.Fatalf("%s against a fully-granted installation: %v", tc.name, err)
+			}
+			mints, _, paths := r.snapshot()
+			if len(mints) != 1 {
+				t.Fatalf("mints = %d, want exactly 1", len(mints))
+			}
+			got := mints[0]
+
+			// What GitHub gates this method's own request sequence on, and
+			// which published row demands each grant.
+			need, by := map[string]string{}, map[string]string{}
+			covered := 0
+			for _, line := range paths {
+				g, slug := grantsForRequestLine(line)
+				if g == nil {
+					t.Errorf("request %q is not in githubEndpointGrants: its rule is unknown, so no profile can be checked against it", line)
+					continue
+				}
+				covered++
+				for perm, level := range g {
+					if level == "write" || need[perm] == "" {
+						need[perm], by[perm] = level, slug
+					}
+				}
+			}
+			if covered == 0 {
+				t.Fatalf("%s issued no recognised request: %v", tc.name, paths)
+			}
+			for perm, level := range need {
+				if cur, ok := got[perm]; !ok || (level == "write" && cur != "write") {
+					t.Errorf("%s profile %v is short of %s:%s, which GitHub gates %q on", tc.name, got, perm, level, by[perm])
+				}
+			}
+			for perm, level := range got {
+				if perm == "metadata" {
+					if level != "read" {
+						t.Errorf("%s profile: metadata is the mandatory baseline and a read, got %q", tc.name, level)
+					}
+					continue
+				}
+				want, ok := need[perm]
+				if !ok {
+					t.Errorf("%s profile %v carries %s:%s, which none of its endpoints (%v) is gated on", tc.name, got, perm, level, paths)
+					continue
+				}
+				if want == "read" && level == "write" {
+					t.Errorf("%s profile takes %s:write where its endpoints only need read — a read must not acquire a write", tc.name, perm)
+				}
+			}
+			if got["metadata"] != "read" {
+				t.Errorf("%s profile = %v, want the mandatory metadata:read baseline", tc.name, got)
+			}
+		})
 	}
-	got := map[string]map[string]string{
+
+	// Every profile must also be REQUESTABLE by an App the manifest creates
+	// today — one the manifest does not cover could never be minted on a fresh
+	// installation.
+	manifest := BuildAppManifest("it", "https://x", "https://x/cb").DefaultPermissions
+	for name, profile := range map[string]map[string]string{
 		"list":    PullListInstallationPermissions(),
 		"get":     PullGetInstallationPermissions(),
 		"write":   PullWriteInstallationPermissions(),
 		"merge":   PullMergeInstallationPermissions(),
 		"ci":      CIStatusInstallationPermissions(),
 		"history": CIHistoryInstallationPermissions(),
-	}
-	manifest := BuildAppManifest("it", "https://x", "https://x/cb").DefaultPermissions
-	for name, want := range exact {
-		if !reflect.DeepEqual(got[name], want) {
-			t.Errorf("%s profile = %v, want exactly %v", name, got[name], want)
-		}
-		for perm, level := range got[name] {
+	} {
+		for perm, level := range profile {
 			granted, ok := manifest[perm]
 			if !ok || (level == "write" && granted != "write") {
 				t.Errorf("%s profile needs %s:%s, which the App manifest does not request (%v): no fresh installation could mint it", name, perm, level, manifest)
 			}
 		}
 	}
-	for _, ro := range []string{"list", "get", "ci", "history"} {
-		for perm, level := range got[ro] {
-			if level != "read" {
-				t.Errorf("the %s profile is a read: it must carry no write grant, got %s:%s", ro, perm, level)
-			}
-		}
-	}
+
+	// `checks` stays out of the runtime baseline on purpose: the management
+	// and run tokens are minted from it, and a baseline the installation
+	// cannot serve fails EVERY mint for that installation (422), not just the
+	// CI panel.
 	if _, ok := RuntimeInstallationPermissions()["checks"]; ok {
 		t.Error("checks must NOT join the runtime baseline: every existing installation lacks it, and a baseline mint that asks for it 422s the management and run tokens alike")
+	}
+}
+
+// The gate above is only worth its lines if a wrong profile actually fails:
+// mint the CI profile without `checks` and the check-runs read must be
+// refused exactly as GitHub refuses it. Without this, a profile short of a
+// grant its endpoint requires passes the whole suite — which is how one
+// shipped green once already.
+func TestTheFakeRefusesACallOutsideItsMintedScope(t *testing.T) {
+	r := newPullMintRecorder(t)
+	c, err := r.appClient(t).scopedREST(context.Background(), map[string]string{
+		"statuses": "read", "metadata": "read", // deliberately short of checks:read
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.GetCIStatus(context.Background(), "o/r", "deadbeef")
+	var pe *forge.PermissionError
+	if !errors.As(err, &pe) || !reflect.DeepEqual(pe.Missing, []string{"checks:read"}) {
+		t.Fatalf("err = %v, want the check-runs read refused for want of checks:read", err)
+	}
+	// ...and the very same call succeeds once the mint carries it, so the
+	// refusal is the scope and not the path.
+	c, err = r.appClient(t).scopedREST(context.Background(), CIStatusInstallationPermissions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetCIStatus(context.Background(), "o/r", "deadbeef"); err != nil {
+		t.Fatalf("the CI profile must serve its own endpoints: %v", err)
 	}
 }
 
