@@ -2302,14 +2302,27 @@ tool oracle_run:
         # than O_EXCL on purpose: a marker legitimately survives a revert that
         # failed, and O_EXCL would then refuse to record the NEXT mutant and leave
         # the previous one's id standing for it.
+        marker = applied_marker_for(ws)
         try:
-            fd = os.open(applied_marker_for(ws),
+            # The root may not exist yet: GM_SCRATCH is chosen by the operator and
+            # only the SEAL creates it, which a record run — or any run with no
+            # held-out set — never reaches before the first apply.
+            os.makedirs(os.path.dirname(marker) or ".", exist_ok=True)
+            fd = os.open(marker,
                          os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
                          0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
-        except OSError:
-            pass
+        except OSError as e:
+            # Swallowed in silence, this disarms the leftover guard for the whole
+            # run with nobody told — and the operator most likely to hit it is the
+            # one who set GM_SCRATCH precisely so the state would survive. A guard
+            # that is absent must SAY it is absent; the apply still proceeds,
+            # because refusing here would break gates on hosts whose temp root has
+            # always been unwritable and where the harness worked fine.
+            log("WARNING: could not write the applied-mutant marker %s (%s). If this run "
+                "is interrupted between apply.sh and revert.sh, the next gate will NOT "
+                "know a mutant is applied and will judge a mutated tree." % (marker, e))
         return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
@@ -3649,6 +3662,21 @@ tool oracle_run:
                 check("le marqueur est ecrit en 0600",
                       stat.S_IMODE(os.lstat(applied_marker_for(tmp)).st_mode), 0o600)
                 saved["revert_mutant"](lmeta, tmp)
+
+                # Une racine GM_SCRATCH pas encore creee ne doit pas desarmer la
+                # garde en silence : seul le SCELLEMENT cree ce repertoire, et un
+                # run en record — ou sans jeu held-out — applique avant d'y passer.
+                # Mesure : le marqueur n'etait pas ecrit, apply.sh tournait quand
+                # meme, et la garde etait absente sans que personne le sache.
+                os.environ["GM_SCRATCH"] = os.path.join(tmp, "pas-encore", "cree")
+                try:
+                    saved["apply_mutant"](lmeta, tmp)
+                    check("racine GM_SCRATCH absente : elle est creee, la garde reste armee",
+                          [os.path.isfile(applied_marker_for(tmp)),
+                           (revert_leftover_mutant(tmp) or {}).get("id")],
+                          [True, "leftover-1"])
+                finally:
+                    os.environ.pop("GM_SCRATCH", None)
 
                 # Ce que la porte en FAIT. Les trois sorties de
                 # revert_leftover_mutant sont toutes des dicts VRAIS : decider sur
