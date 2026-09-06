@@ -251,6 +251,18 @@ const (
 	// an audit surface must not sign it with the assignee's name, and an
 	// external roadmap must not read it as a move.
 	ReasonUnlaunchable = "unlaunchable"
+	// ReasonLaunchRefused is the dispatcher returning a card whose launch
+	// the run service refused before any run started (sealing, a queue
+	// outage, a bot that does not compile, …) to the column it took it
+	// from, to try again after a backoff. Machine provenance for the same
+	// reasons as ReasonUnlaunchable: nothing about the card's work was
+	// judged.
+	ReasonLaunchRefused = "launch_refused"
+	// ReasonLaunchGivenUp is the dispatcher filing a card whose launch was
+	// refused on every attempt it allows itself: a decision a human now has
+	// to take, so DESCRIPTIVE, not machine — the external roadmap shows
+	// it, and the card carries the last refusal for the operator to read.
+	ReasonLaunchGivenUp = "launch_given_up"
 )
 
 // IsMachineReason reports whether a board-event `reason` names iterion
@@ -261,7 +273,8 @@ const (
 // field's mere presence silently disarmed them.
 func IsMachineReason(reason string) bool {
 	switch reason {
-	case ReasonWatchdog, ReasonStateRename, ReasonStateDelete, ReasonFieldRename, ReasonFieldDelete, ReasonUnlaunchable:
+	case ReasonWatchdog, ReasonStateRename, ReasonStateDelete, ReasonFieldRename, ReasonFieldDelete,
+		ReasonUnlaunchable, ReasonLaunchRefused:
 		return true
 	}
 	return false

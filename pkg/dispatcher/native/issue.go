@@ -84,6 +84,15 @@ type Issue struct {
 	// construction (see GiveUp.Current). The one case that needs an explicit
 	// clear is an operator filing the ticket into the state it is already in.
 	GaveUp *GiveUp `json:"gave_up,omitempty"`
+	// LaunchRefusal is the cloud dispatcher's record of a claimed card whose
+	// launch the run service REFUSED before any run started (a sealing
+	// failure, a queue outage, a bot that does not compile, …): nothing ran,
+	// so no verdict belongs on the card and it went back to its column. It
+	// is what bounds the retry — the dispatch listing skips the card until
+	// NotBefore, and the attempt cap turns a permanent refusal into a
+	// `blocked` filing the operator can read (LastReason). Cleared when a
+	// launch succeeds (SetLastRun) and when an operator reopens the card.
+	LaunchRefusal *LaunchRefusal `json:"launch_refusal,omitempty"`
 	// LastWorkdir is the absolute filesystem path the last run
 	// executed in — either the per-issue dispatcher workspace or,
 	// when `worktree: auto` was used, the run's git worktree path.
@@ -200,6 +209,27 @@ type GiveUp struct {
 	Reason string `json:"reason,omitempty"`
 	// At is when the give-up was stamped (UTC).
 	At time.Time `json:"at"`
+}
+
+// LaunchRefusal is the retry ledger of a card whose launch keeps being
+// refused before a run exists (see Issue.LaunchRefusal). Attempts counts
+// the consecutive refusals; NotBefore is the earliest instant the dispatch
+// tick may claim the card again; LastAt / LastReason say when and why, for
+// the operator who finds the card filed blocked once the attempts run out.
+type LaunchRefusal struct {
+	Attempts   int       `json:"attempts"`
+	LastAt     time.Time `json:"last_at"`
+	NotBefore  time.Time `json:"not_before,omitempty"`
+	LastReason string    `json:"last_reason,omitempty"`
+}
+
+// Clone returns a copy, nil-safe.
+func (r *LaunchRefusal) Clone() *LaunchRefusal {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	return &c
 }
 
 // Current reports whether the stamp still describes the issue as it stands:

@@ -797,8 +797,9 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
 	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
+	iss.LaunchRefusal = nil // a launch happened: the retry ledger no longer describes the card
 	iss.UpdatedAt = now
-	if err := s.replace(ctx, iss, "lastrunid", "lastworkdir", "runs"); err != nil {
+	if err := s.replace(ctx, iss, "lastrunid", "lastworkdir", "runs", "launchrefusal"); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})

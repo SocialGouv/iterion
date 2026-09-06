@@ -191,6 +191,7 @@ func cloneIssue(in *Issue) *Issue {
 		g := *in.GaveUp
 		c.GaveUp = &g
 	}
+	c.LaunchRefusal = in.LaunchRefusal.Clone()
 	if in.Labels != nil {
 		c.Labels = append([]string(nil), in.Labels...)
 	}
@@ -501,7 +502,8 @@ func (s *Store) Reopen(id, toState string) (updated *Issue, err error) {
 	}
 	old := iss.State
 	iss.State = toState
-	iss.StateReason = "" // an operator gesture: whatever parked the card no longer describes it
+	iss.StateReason = ""    // an operator gesture: whatever parked the card no longer describes it
+	iss.LaunchRefusal = nil // …and its launch retries start afresh
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err

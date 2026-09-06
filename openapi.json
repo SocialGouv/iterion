@@ -1102,6 +1102,9 @@
           "last_workdir": {
             "type": "string"
           },
+          "launch_refusal": {
+            "$ref": "#/components/schemas/LaunchRefusal"
+          },
           "parent_id": {
             "type": "string"
           },
@@ -1138,6 +1141,29 @@
           "state",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "LaunchRefusal": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_reason": {
+            "type": "string"
+          },
+          "not_before": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "last_at"
         ],
         "type": "object"
       },

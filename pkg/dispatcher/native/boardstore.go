@@ -79,6 +79,12 @@ type BoardStore interface {
 	SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
 	SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
 	SetGaveUpOwned(id string, g *GiveUp, tok tracker.ClaimToken) error
+	// SetLaunchRefusalOwned writes (nil clears) the launch-refusal ledger
+	// of a card the token owns — the dispatcher's own record, so fenced
+	// like every owner write. Both twins clear it themselves when a run is
+	// stamped (SetLastRun / SetLastRunOwned: a launch happened) and on
+	// Reopen (an operator gesture).
+	SetLaunchRefusalOwned(id string, r *LaunchRefusal, tok tracker.ClaimToken) error
 	// The reaper half — MANDATORY for the same reason as the lease: an
 	// optional watchdog is silently inert exactly where it matters (the
 	// cloud). ListExpiredClaimCandidates never lists a legacy claim;
