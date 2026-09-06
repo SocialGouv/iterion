@@ -3661,7 +3661,7 @@ tool oracle_run:
                 code2, why2 = apply_mutant({"id": "m2", "dir": m2dir}, tmp)
                 check("un second mutant n'est pas applique sur un marqueur arme",
                       [code2, "second" in tree()], [None, False])
-                check("le refus nomme le mutant encore applique", "leftover-1" in why2, True)
+                check("le refus nomme le mutant encore applique", "leftover-1" in (why2 or ""), True)
                 check("le marqueur arme decrit toujours le premier",
                       read_applied_marker(applied_marker_for(tmp)).get("id"), "leftover-1")
                 v2, s2 = probe_mutation({"id": "m2", "dir": m2dir, "targets": ["001"]}, tmp)
@@ -3777,7 +3777,7 @@ tool oracle_run:
                     code3, why3 = apply_mutant(lmeta, tmp)
                     check("un marqueur impossible a ecrire refuse l'application",
                           [code3, tree()], [None, "original\n"])
-                    check("et le dit", "marker could not be written" in why3, True)
+                    check("et le dit", "marker could not be written" in (why3 or ""), True)
                     v3, s3 = probe_mutation(dict(lmeta, targets=["001"]), tmp)
                     check("cette application refusee est un mutant 'failed'",
                           [s3, v3.get("valid"), tree()], ["failed", False, "original\n"])
