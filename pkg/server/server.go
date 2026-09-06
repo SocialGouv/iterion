@@ -171,6 +171,8 @@ type Server struct {
 	credPoolLeases  credpool.LeaseStore
 	credPoolLedger  credpool.Ledger
 	auditStore      audit.Store
+	// avatarApplyTimeout overrides defaultAvatarApplyTimeout when > 0 (tests).
+	avatarApplyTimeout time.Duration
 	// usageCapSettings + usageCapSource are the platform runtime-settings
 	// store and its TTL-cached resolver (nil in env-only deployments):
 	// the admin settings routes mutate the former, /healthz and the

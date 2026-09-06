@@ -24,6 +24,7 @@ vi.mock("@/api/bots", async () => {
   return { ...actual, listBots: vi.fn(async () => []) };
 });
 
+import { ApiError } from "@/api/client";
 import * as forgeApi from "@/api/forgeConnections";
 import IntegrationsTab from "../IntegrationsTab";
 
@@ -129,6 +130,37 @@ describe("ConnectionCard — iterion-bot avatar", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
     await waitFor(() =>
       expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenCalledWith("t1", "c1", { force: false }),
+    );
+  });
+
+  it("refetches AND keeps the reason when the apply fails", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: "bot" })]);
+    vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
+      new ApiError(502, "gitlab: avatar rejected (HTTP 400): boom"),
+    );
+    renderTab();
+    const before = vi.mocked(forgeApi.listForgeConnections).mock.calls.length;
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    await screen.findByText(/avatar rejected \(HTTP 400\): boom/);
+    await waitFor(() =>
+      expect(vi.mocked(forgeApi.listForgeConnections).mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it("tries an account of unknown kind as-is, and vouches only on a 409", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: undefined })]);
+    vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
+      new ApiError(409, "gitlab.example.com does not flag @group_1_bot_x as a bot account"),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenNthCalledWith(1, "t1", "c1", { force: false }),
+    );
+    // The 409 asks for the operator's word; confirming vouches with force.
+    fireEvent.click(await screen.findByRole("button", { name: "Apply the avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenNthCalledWith(2, "t1", "c1", { force: true }),
     );
   });
 

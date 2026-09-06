@@ -46,13 +46,21 @@ func (r *avatarRefusal) Error() string { return r.msg }
 // an operator has to do by hand.
 func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
 
-// avatarApplyTimeout bounds one apply's forge round-trips (a WhoAmI for a
-// connection older than AccountKind, then the upload). The apply rides its
-// own context, detached from the caller's: the connection exists, so a caller
-// that gives up must not leave its avatar state half-written, and a hanging
-// forge must not hold a connect or a click for longer than this. A variable
-// so a test can shorten it against a forge that hangs.
-var avatarApplyTimeout = 20 * time.Second
+// defaultAvatarApplyTimeout bounds one apply's forge round-trips (a WhoAmI
+// for a connection older than AccountKind, then the upload). The apply rides
+// its own context, detached from the caller's: the connection exists, so a
+// caller that gives up must not leave its avatar state half-written, and a
+// hanging forge must not hold a connect or a click for longer than this.
+// Server.avatarApplyTimeout overrides it (a test shortens it against a forge
+// that hangs).
+const defaultAvatarApplyTimeout = 20 * time.Second
+
+func (s *Server) avatarApplyDeadline() time.Duration {
+	if s.avatarApplyTimeout > 0 {
+		return s.avatarApplyTimeout
+	}
+	return defaultAvatarApplyTimeout
+}
 
 // avatarRecordTimeout bounds one write of the outcome onto the connection —
 // on a budget of its OWN: the failure worth recording is a slow forge, i.e.
@@ -102,7 +110,7 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s rejected this connection's token (status %s) — reconnect it first", conn.Host(), conn.Status)}
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), avatarApplyTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), s.avatarApplyDeadline())
 	defer cancel()
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
@@ -143,12 +151,14 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 	if conn.AccountKind == "" {
 		// Older than the field: ask the forge who the token is, and remember.
 		// A forced apply is the operator vouching for the account — it does
-		// not hang on /user being readable.
+		// not hang on /user REFUSING to answer. A /user that does not answer
+		// at all has spent the apply's budget: the upload would only fail on
+		// the dead context and stamp a misleading reason on the connection.
 		ident, err := admin.WhoAmI(ctx)
 		switch {
 		case err == nil:
 			conn.AccountKind, learned = ident.Kind, ident.Kind
-		case !force:
+		case !force || ctx.Err() != nil:
 			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
 		}
 	}

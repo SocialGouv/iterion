@@ -1,6 +1,8 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useState } from "react";
 
+import { ApiError } from "@/api/client";
+
 import { Link } from "wouter";
 
 import type { BotEntryWithSchema } from "@/api/bots";
@@ -231,22 +233,34 @@ function AvatarRow({
   }
 
   const isBot = conn.account_kind === "bot";
+  const vouch = () =>
+    confirm({
+      title: "Rebrand this account?",
+      message: (
+        <span>
+          {conn.forge_base_url ?? conn.provider} does not flag{" "}
+          <span className="font-mono">@{conn.account_login}</span> as a bot. Apply the
+          iterion-bot avatar only if this is a dedicated account for iterion — never a
+          person&apos;s.
+        </span>
+      ),
+      confirmLabel: "Apply the avatar",
+    });
+  // A refusal still taught the server something (the account's kind, a forge
+  // error kept on the record): refetch, then show the reason. onChanged clears
+  // the banner synchronously and onError re-sets it in the same batch — keep
+  // this order.
+  const fail = (e: unknown) => {
+    onChanged();
+    onError(errorMessage(e));
+  };
   const apply = async () => {
+    // A known non-bot account needs the operator's word up front. An account
+    // of UNKNOWN kind (a connection older than the field) is tried as-is: the
+    // server learns the kind from the forge and only a 409 asks for the word.
     let force = false;
-    if (!isBot) {
-      const ok = await confirm({
-        title: "Rebrand this account?",
-        message: (
-          <span>
-            {conn.forge_base_url ?? conn.provider} does not flag{" "}
-            <span className="font-mono">@{conn.account_login}</span> as a bot. Apply the
-            iterion-bot avatar only if this is a dedicated account for iterion — never a
-            person&apos;s.
-          </span>
-        ),
-        confirmLabel: "Apply the avatar",
-      });
-      if (!ok) return;
+    if (conn.account_kind && !isBot) {
+      if (!(await vouch())) return;
       force = true;
     }
     setBusy(true);
@@ -254,10 +268,20 @@ function AvatarRow({
       await applyForgeConnectionAvatar(teamID, conn.id, { force });
       onChanged();
     } catch (e) {
-      // A refusal still taught the server something (the account's kind, a
-      // forge error kept on the record): refetch, then show the reason.
-      onChanged();
-      onError(errorMessage(e));
+      if (!force && e instanceof ApiError && e.status === 409) {
+        if (!(await vouch())) {
+          onChanged(); // the server recorded the learned kind
+          return;
+        }
+        try {
+          await applyForgeConnectionAvatar(teamID, conn.id, { force: true });
+          onChanged();
+        } catch (e2) {
+          fail(e2);
+        }
+        return;
+      }
+      fail(e);
     } finally {
       setBusy(false);
     }

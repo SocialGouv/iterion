@@ -152,9 +152,9 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 		// account exists for iterion (a group/project token created for it),
 		// and every comment it will post is signed by that avatar. A failure
 		// is recorded on the connection (AvatarError) and never fails the
-		// connect — the studio names it and offers a retry. The apply owns a
-		// bounded context of its own, so a slow forge cannot hold the connect
-		// past avatarApplyTimeout.
+		// connect — the studio names it and offers a retry. The apply owns
+		// bounded contexts of its own, so a slow forge cannot hold the connect
+		// past the apply budget plus the record's (20 s + 10 s).
 		updated, _, err := s.applyBotAvatar(r.Context(), conn, brand.VariantPlain, false)
 		if err != nil && s.logger != nil {
 			s.logger.Warn("forge connect: iterion-bot avatar not applied on @%s (%s): %v", conn.AccountLogin, conn.Host(), err)

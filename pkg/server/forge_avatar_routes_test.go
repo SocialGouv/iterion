@@ -488,9 +488,7 @@ func TestForgeConnectionAvatar_RecordsWhenTheForgeHangs(t *testing.T) {
 	defer close(release) // runs first (LIFO), so Close never waits on the handler
 	seedAvatarConn(t, s, forge.Connection{ID: "c-hang", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
 
-	old := avatarApplyTimeout
-	avatarApplyTimeout = 200 * time.Millisecond
-	defer func() { avatarApplyTimeout = old }()
+	s.avatarApplyTimeout = 200 * time.Millisecond
 
 	w := avatarReq(s, "c-hang", "")
 	if w.Code != http.StatusBadGateway {
@@ -530,5 +528,39 @@ func TestForgeConnectionAvatar_RefusalRecordsOnlyTheKind(t *testing.T) {
 	seedAvatarConn(t, s, forge.Connection{ID: "c-nouser", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: noUser.URL})
 	if w := avatarReq(s, "c-nouser", `{"force":true}`); w.Code != http.StatusOK {
 		t.Fatalf("forced apply with an unreadable /user: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// A forced apply vouches for the account, but a /user that never answers has
+// spent the apply's budget: bail with the accurate reason and record nothing —
+// never an upload on a dead context that would blame the avatar.
+func TestForgeConnectionAvatar_ForcedApplyBailsWhenWhoAmIHangs(t *testing.T) {
+	s := newForgeTestServer(t)
+	release := make(chan struct{})
+	uploads := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		uploads++
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/u.png"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	defer close(release)
+	seedAvatarConn(t, s, forge.Connection{ID: "c-slow-user", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL}) // AccountKind empty
+	s.avatarApplyTimeout = 200 * time.Millisecond
+
+	w := avatarReq(s, "c-slow-user", `{"force":true}`)
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-slow-user")
+	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
+		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d error=%q applied=%v", uploads, stored.AvatarError, stored.AvatarAppliedAt)
 	}
 }
