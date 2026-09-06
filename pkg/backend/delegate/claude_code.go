@@ -49,6 +49,18 @@ type ClaudeCodeBackend struct {
 	Command string
 	// Logger is the leveled logger for diagnostic output.
 	Logger *iterlog.Logger
+	// formatOutputFn replaces the CLI-spawning formatting pass in tests: the
+	// loop around it — retry, terminal verdict, usage, cost — is where the
+	// accounting defects lived, and it had no seam to be exercised through.
+	formatOutputFn func(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error)
+}
+
+// formatPass runs one formatting pass: the CLI, or the test seam.
+func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error) {
+	if b.formatOutputFn != nil {
+		return b.formatOutputFn(ctx, task, sessionID)
+	}
+	return b.formatOutput(ctx, task, sessionID)
 }
 
 // Execute runs the claude CLI with the given task using the Claude Agent SDK.
@@ -505,6 +517,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
 		var rerr error
 		if recoveryRM, rerr = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut); rerr != nil {
+			if result.Output == nil {
+				result.Output = map[string]any{}
+			}
+			annotateCost(&result, task, totalIn, totalOut, rm, recoveryRM)
 			return result, rerr
 		}
 	}
@@ -534,8 +550,13 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	// (parseSDKOutput ships exactly it), so the two cannot diverge. No
 	// evidence is filed from a shipped answer: a false bench of the
 	// credential costs more than a reading the next pass files anyway.
-	if obj, _, found := structuredObject(rm.Result, rm.StructuredOutput); found && len(obj) > 0 {
-		return nil
+	// The CLI's render form ("API Error: …") is never an answer, whatever it
+	// carries after the prefix — a fenced JSON inside a relayed error body
+	// must not satisfy the exemption.
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(*rm.Result)), "api error") {
+		if obj, _, found := structuredObject(rm.Result, rm.StructuredOutput); found && len(obj) > 0 {
+			return nil
+		}
 	}
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
 	// 5h caps can come back as the result text (subtype=success, IsError=true)
@@ -786,7 +807,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	var lastFmtErr error
 	for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
-		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
+		fmtRM, fmtErr := b.formatPass(ctx, task, rm.SessionID)
 		if fmtErr == nil {
 			// The pass ran and was billed, whatever its result says: its
 			// usage counts on every path out of here, the typed ones too.
@@ -802,7 +823,13 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 				if !renderRetryable(rerr) {
 					// A credential, model or window verdict is terminal: a
 					// second attempt re-spends the pass against a provider
-					// that just refused and re-files the same evidence.
+					// that just refused and re-files the same evidence. The
+					// cost is stamped on the map (allocated: the annotation
+					// writes nothing into a nil one, and the spend of a node
+					// that failed here must still reach the caps).
+					if result.Output == nil {
+						result.Output = map[string]any{}
+					}
 					annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
 					return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr)
 				}
@@ -819,6 +846,9 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			// by the fast path above with the same arguments, so there is
 			// nothing left to recover from it: the delegation fails typed.
 			if fmtRM != nil {
+				if result.Output == nil {
+					result.Output = map[string]any{}
+				}
 				annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
 			}
 			return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
@@ -879,26 +909,29 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // output, which the schema then judges); a pass that RENDERS an upstream
 // failure is returned typed — the executor routes it, instead of shipping
 // Pass 1's fallback text to an opaque schema failure. Returns the pass's own
-// ResultMessage (nil when it did not run) so the caller's cost annotation
-// sees its CLI-reported cost, not just Pass 1's.
+// ResultMessage whenever it ran (with the verdict too — a billed pass is a
+// billed pass), nil when it did not, so the caller's cost annotation sees
+// its CLI-reported cost, not just Pass 1's.
 func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) (*claudesdk.ResultMessage, error) {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
-	fmtRM, fmtErr := b.formatOutput(ctx, task, sessionID)
+	fmtRM, fmtErr := b.formatPass(ctx, task, sessionID)
 	if fmtErr != nil {
 		b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
 		return nil, nil
 	}
-	// A render on the recovery pass is typed and returned, never parsed as
-	// the output nor swallowed into an opaque schema failure.
-	if rerr := b.renderedFailure(fmtRM, task, "recovery formatting pass"); rerr != nil {
-		return nil, rerr
-	}
+	// The pass ran and was billed, whatever its result says.
 	if fmtRM.Usage != nil {
 		*totalIn += fmtRM.Usage.InputTokens
 		*totalOut += fmtRM.Usage.OutputTokens
 		result.Tokens = *totalIn + *totalOut
 	}
 	result.FormattingPassUsed = true
+	// A render on the recovery pass is typed and returned, never parsed as
+	// the output nor swallowed into an opaque schema failure — with its
+	// message, so the caller's cost annotation sees the billed pass.
+	if rerr := b.renderedFailure(fmtRM, task, "recovery formatting pass"); rerr != nil {
+		return fmtRM, rerr
+	}
 	fmtOutput, fmtRawLen, fmtFallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
 	if len(fmtOutput) > 0 {
 		result.Output = fmtOutput
