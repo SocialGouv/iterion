@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.8](https://github.com/SocialGouv/iterion/compare/v3.112.7...v3.112.8) (2026-09-06)
+
+### Bug Fixes
+
+* **secrets,server,cli:** the OAuth token endpoints are env-overridable, a refused personal OAuth credential is audited, and `iterion secret set` shape-checks what it stores ([#819](https://github.com/SocialGouv/iterion/issues/819)) ([ca46d33](https://github.com/SocialGouv/iterion/commit/ca46d3331c7f7f69ba5d044240e21b0aea477243)), closes [#725](https://github.com/SocialGouv/iterion/issues/725) [#726](https://github.com/SocialGouv/iterion/issues/726) [#727](https://github.com/SocialGouv/iterion/issues/727)
+
+    <details><summary>why</summary>
+
+    The Anthropic forfait's authorize URL, redirect URI and scopes each read envOr("ITERION_OAUTH_FORFAIT_ANTHROPIC_...", default). The token endpoint the auth-code exchange and the refresh worker both POST to was a bare const, under a comment promising the same per-deployment override — so an OEM-repackaged CLI or a proxying deployment could move three endpoints of four and keep refreshing against the vendor's host, silently.
+
+    </details>
+
 ## [3.112.7](https://github.com/SocialGouv/iterion/compare/v3.112.6...v3.112.7) (2026-09-06)
 
 ### Bug Fixes
