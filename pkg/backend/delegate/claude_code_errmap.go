@@ -116,7 +116,10 @@ func isAuthErrorResult(s string) bool {
 	// whatever prose (or none) follows it: a facade renders "API Error:
 	// [401][Unauthorized][<id>]", which matches no signature below and would
 	// otherwise flow on as the node's answer. Prefix-anchored by the regex,
-	// short by the cap.
+	// short by the cap. 403 is in the class as the pi backend mints it from
+	// the upstream status: a permission error is per-key and the pool's
+	// rotation is the right first move; a facade block fails the next key
+	// the same way and surfaces then, no worse than surfacing now.
 	if m := apiErrorResultStatusRe.FindStringSubmatch(t); m != nil && (m[1] == "401" || m[1] == "403") {
 		return true
 	}
