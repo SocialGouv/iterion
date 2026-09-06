@@ -138,6 +138,10 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 
 `fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution. In a tool `command` or `script`, `{{!input.field}}` is the explicit raw-substitution form; ordinary `{{input.field}}` is shell-escaped. Use the raw form only when the value is intentionally executable shell syntax, because it crosses the command-injection boundary.
 
+**Inside a fan-out branch**, every namespace above resolves exactly as it does on the trunk — a node renders the same whether it was reached by a plain edge or by a `fan_out_all` / `fan_out_each` router. `{{outputs.*}}` resolves against the BRANCH's own view: its upstream trunk outputs plus what this branch has produced, plus the per-item binding a `fan_out_each` stamped. Sibling branches are invisible to each other, which is what makes the render deterministic; their outputs only become readable at the convergence node. `{{run.*}}` is the run's, not the branch's — the whole run's consumption and caps, shared by every branch.
+
+`{{outputs.*}}` is a prompt-side namespace: a tool `command:` / `script:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}` and `{{run.*}}`, and leaves an `{{outputs.*}}` reference untouched — on the trunk and in a branch alike. Reach a prior node's output from a tool node through an edge `with` mapping, then `{{input.<key>}}`.
+
 ## LLM nodes: `agent` and `judge`
 
 `agent` performs work; `judge` is the semantically evaluative twin. They accept the same properties.
@@ -370,9 +374,10 @@ expression is what fails, loudly, at the node.
 
 The members are available in `compute` expressions and quoted `when`
 conditions, in prompt bodies, and in tool `command:` / `script:` /
-`postcondition:` templates. An expression resolves them at **evaluation**
-time; a prompt or a command is rendered once at node dispatch, so those
-read the run as it was when the node started.
+`postcondition:` templates — on every dispatch path, a fan-out branch
+included. An expression resolves them at **evaluation** time; a prompt or
+a command is rendered once at node dispatch, so those read the run as it
+was when the node started.
 
 Alongside them, every executed node's output carries `_duration_ms` next
 to the `_tokens` / `_cost_usd` keys the backends write — the per-node

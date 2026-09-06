@@ -1,0 +1,119 @@
+## branch_template_context_mini.bot — fixture for the template snapshot
+## inside a fan-out branch (#763).
+##
+## The same two probes run on all three dispatch paths of one run:
+##
+##   - the TRUNK (`trunk_probe` / `trunk_agent`) — the reference rendering;
+##   - a `fan_out_each` body (`each_probe` / `each_agent`), once per item;
+##   - a `fan_out_all` branch (`all_probe` / `all_agent`).
+##
+## A tool node renders `{{run.*}}` through its `command:`; an agent node
+## renders `{{run.*}}` and `{{outputs.*}}` through its `user:` prompt. The
+## per-item agent additionally reads `{{outputs.spread.it}}`, which exists
+## only in the BRANCH's own outputs view — so it is the one ref that also
+## proves whose view the snapshot was taken from.
+
+schema seed_out:
+  value: string
+  items: json
+
+schema probe_out:
+  run_id: string
+  elapsed: string
+
+schema note:
+  text: string
+
+schema tally:
+  count: int
+
+## ONE prompt for the trunk agent and the fan_out_all branch agent: the
+## test's claim is that the same body renders the same on both paths, so
+## sharing it here is the claim's structure, not a shortcut.
+prompt probe_prompt:
+  run={{run.id}} elapsed={{run.elapsed_seconds}} seed={{outputs.seed.value}}
+
+prompt branch_item_prompt:
+  run={{run.id}} elapsed={{run.elapsed_seconds}} seed={{outputs.seed.value}} item={{outputs.spread.it}}
+
+tool seed:
+  command: `printf '{"value":"SEEDED","items":["alpha","beta"]}'`
+  output: seed_out
+
+tool trunk_probe:
+  command: `printf '{"run_id":"%s","elapsed":"%s"}' {{run.id}} {{run.elapsed_seconds}}`
+  output: probe_out
+
+agent trunk_agent:
+  backend: "claude_code"
+  model: "stub-model"
+  readonly: true
+  user: probe_prompt
+  output: note
+
+router spread:
+  mode: fan_out_each
+  over: "{{outputs.seed.items}}"
+  as: it
+
+## `parallel_safe:` is the item-keyed disjointness assertion the fan_out_each
+## workspace guard requires; this probe only prints.
+tool each_probe:
+  parallel_safe: true
+  command: `printf '{"run_id":"%s","elapsed":"%s"}' {{run.id}} {{run.elapsed_seconds}}`
+  output: probe_out
+
+agent each_agent:
+  backend: "claude_code"
+  model: "stub-model"
+  readonly: true
+  user: branch_item_prompt
+  output: note
+
+compute collect:
+  await: wait_all
+  output: tally
+  expr:
+    count: "1"
+
+router fork:
+  mode: fan_out_all
+
+tool all_probe:
+  command: `printf '{"run_id":"%s","elapsed":"%s"}' {{run.id}} {{run.elapsed_seconds}}`
+  output: probe_out
+
+agent all_agent:
+  backend: "claude_code"
+  model: "stub-model"
+  readonly: true
+  user: probe_prompt
+  output: note
+
+compute gather:
+  await: wait_all
+  output: tally
+  expr:
+    count: "2"
+
+workflow branch_template_context_mini:
+  worktree: none
+  sandbox: none
+
+  budget:
+    max_parallel_branches: 2
+
+  entry: seed
+
+  seed -> trunk_probe
+  trunk_probe -> trunk_agent
+  trunk_agent -> spread
+  spread -> each_probe
+  each_probe -> each_agent
+  each_agent -> collect
+  collect -> fork
+  fork -> all_probe
+  fork -> all_agent
+  all_probe -> gather
+  all_agent -> gather
+  gather -> done

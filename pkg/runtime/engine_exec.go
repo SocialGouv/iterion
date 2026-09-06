@@ -372,14 +372,10 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		rs.resumeBackend = resumeBackendState{}
 	}
 
-	// Thread the run ID into ctx so the executor can locate per-node
-	// session state (used by Compactor implementations to find the
-	// right messages list to compact + retry). Also attach a
-	// template-data snapshot so the executor can resolve `outputs.*`,
-	// `loop.*`, `artifacts.*`, and `run.*` refs in prompt bodies.
-	execCtx := model.WithRunID(ctx, rs.runID)
-	execCtx = model.WithNodeID(execCtx, currentNodeID)
-	execCtx = model.WithTemplateData(execCtx, e.buildTemplateData(rs))
+	// Run/node identity (a Compactor locates per-node session state by it)
+	// + the template snapshot prompts and tool commands render from. The
+	// trunk's share of execContext, which every dispatch path uses.
+	execCtx := e.execContext(ctx, rs, currentNodeID)
 	// Per-node span: inherits the runner-side or server-side root
 	// span via ctx (W3C trace propagated through NATS in cloud mode).
 	spanCtx, span := otel.Tracer(tracerName).Start(execCtx, "iterion.node.execute",

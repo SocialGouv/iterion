@@ -597,12 +597,22 @@ func coerceToInt(v any) (int, bool) {
 	return 0, false
 }
 
-// buildTemplateData assembles a model.TemplateData snapshot from the
-// current run state. It is attached to ctx before each node execution
-// so the executor can resolve `outputs.*`, `loop.*`, `artifacts.*`,
-// and `run.*` refs in prompt bodies. Maps are passed by reference —
-// the executor must treat them as read-only.
+// buildTemplateData assembles a model.TemplateData snapshot against the
+// run's trunk scope. For a node running inside a fan-out branch — which
+// must see branch-local outputs not yet merged into rs — use
+// buildTemplateDataScoped with the branch's merged scope, exactly as the
+// expr path splits exprContext / exprContextScoped.
 func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
+	return e.buildTemplateDataScoped(rs, rs.scope())
+}
+
+// buildTemplateDataScoped assembles a model.TemplateData snapshot from an
+// explicit resolveScope for `outputs.*` / `artifacts.*` and from rs for the
+// `loop.*` and `run.*` namespaces. It is attached to ctx before each node
+// execution so the executor can resolve those refs in prompt bodies, tool
+// commands, scripts and postconditions. Maps are passed by reference — the
+// executor must treat them as read-only.
+func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.TemplateData {
 	loopMax := make(map[string]int, len(e.workflow.Loops))
 	for name, l := range e.workflow.Loops {
 		if l != nil {
@@ -610,15 +620,56 @@ func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
 		}
 	}
 	return &model.TemplateData{
-		Outputs:            rs.outputs,
+		Outputs:            sc.outputs,
 		LoopCounters:       runStateIterationCounters(rs),
 		LoopMaxIterations:  loopMax,
 		LoopPreviousOutput: loopPreviousOutputView(rs),
-		Artifacts:          rs.artifacts,
+		Artifacts:          sc.artifacts,
 		RunID:              rs.runID,
 		Run:                runNamespace(rs),
 		Attachments:        rs.attachments,
 	}
+}
+
+// templateContext attaches the template snapshot that turns `{{run.*}}`,
+// `{{outputs.*}}`, `{{loop.*}}`, `{{artifacts.*}}` and `{{attachments.*}}`
+// into values instead of literals. The SINGLE wiring point for it: every
+// dispatch site goes through templateContext or execContext, so a namespace
+// added to TemplateData reaches all of them at once. A site that skips it
+// renders a literal `{{…}}` into a shell command, which is a silent
+// constant.
+//
+// sc supplies the outputs/artifacts view — rs.scope() on the trunk, the
+// branch's merged scope inside a fan-out, which is the SAME scope the expr
+// path resolves `outputs.*` against, so a prompt and a `when` condition
+// inside one branch read one set of upstream outputs, not two.
+//
+// The snapshot is all a fan-out branch gets. It carries the run id
+// (`{{run.id}}` renders from TemplateData), and deliberately not the ctx
+// RUN IDENTITY that execContext adds: see there.
+func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveScope) context.Context {
+	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
+}
+
+// execContext is templateContext plus the ctx run/node IDENTITY, which is
+// a key, not a value: every consumer of it addresses per-run-per-node state
+// — the compaction session store (`sessionKey(runID, nodeID)`), the
+// operator-chat inbox, the ADR-081 async-question binder. That key is
+// unique only where a node id executes once per run, i.e. on the trunk
+// (and on the resume/router paths, which are the trunk re-entered).
+//
+// It is NOT unique inside a fan-out: `fan_out_each` replays ONE node id
+// per item. Handing the identity to a branch would make N items share one
+// session slot — an item whose node fails leaves its transcript behind
+// (eviction happens on success only) for the next item executing that node
+// id to have prepended, and a sibling succeeding evicts the slot a
+// concurrent retry depends on. No data race, just another item's
+// conversation. Branches therefore call templateContext alone; give them
+// the identity only once those stores key on the branch too.
+func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
+	ctx = model.WithRunID(ctx, rs.runID)
+	ctx = model.WithNodeID(ctx, nodeID)
+	return e.templateContext(ctx, rs, rs.scope())
 }
 
 // loadAttachmentInfos populates the per-run attachment view consumed

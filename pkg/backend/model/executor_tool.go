@@ -751,25 +751,20 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 //
 // The members are the engine's `run.*` namespace — identity plus the run's
 // consumption and effective budget caps — read through the same
-// lookupRunTemplateRef the prompt path uses, so a shell guard on
+// runNamespaceValue the prompt path uses, so a shell guard on
 // `{{run.elapsed_seconds}}` cannot resolve in a prompt and stay literal in
-// a command. td may be nil (hosts that wire only WithRunID): `run.id` still
-// resolves, every other member renders empty rather than as its placeholder.
-// A run id and the budget figures are plain tokens with no `{{` of their
-// own, so the literal ReplaceAll cannot re-trigger on a substituted value.
+// a command. The snapshot answers for every member, `id` included, which is
+// what makes a command inside a fan-out branch render like the same command
+// on the trunk; runID is the fallback for hosts that wire only WithRunID.
+// An unknown member renders empty rather than as its placeholder. A run id
+// and the budget figures are plain tokens with no `{{` of their own, so the
+// literal ReplaceAll cannot re-trigger on a substituted value.
 func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, render func(any) string) string {
 	for _, r := range refs {
 		if r == nil || r.Kind != ir.RefRun || len(r.Path) == 0 {
 			continue
 		}
-		var val any
-		if r.Path[0] == "id" {
-			val = runID
-		} else if td != nil {
-			if v, ok := td.Run[r.Path[0]]; ok {
-				val = v
-			}
-		}
+		val, _ := runNamespaceValue(runID, td, r.Path[0])
 		rendered := render(val)
 		if r.Unquoted {
 			rendered = rawTemplateValue(val)
