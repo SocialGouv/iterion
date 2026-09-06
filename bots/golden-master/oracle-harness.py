@@ -2086,6 +2086,26 @@ def _under(path, root):
     return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
 
+def mutant_roots(ws):
+    """The only two directories a mutant of THIS workspace can be loaded from.
+
+    `load_mutants` stamps every `dir` from one of them: the visible set under
+    <gm_dir>/mutants (holdout/ and audit/ are inside it), and the SEALED
+    held-out set at `sealed_dir_for(ws)`.
+
+    Both halves matter, and each was a hole. The sealed pile has to be listed
+    because GM_SEALED_DIR may point outside the workspace AND outside the
+    scratch root — which is exactly the configuration the gate itself demands
+    when the default temp root is not stable across passes; a held-out mutant
+    left applied was then classified foreign, never reverted, and the gate
+    scored a mutated tree. And containment must be keyed on these roots rather
+    than on the scratch ROOT, which by default is the system temp dir — all of
+    /tmp, i.e. any directory anyone cares to create there.
+    """
+    return (os.path.join(ws, os.environ.get("GM_DIR", ".golden-master"), "mutants"),
+            sealed_dir_for(ws))
+
+
 def revert_leftover_mutant(ws):
     """Revert the mutant a previous, interrupted run left applied — if any.
 
@@ -2103,7 +2123,7 @@ def revert_leftover_mutant(ws):
     recorded, so the next gate reports it again instead of forgetting it;
     an operator who reverts by hand clears it by deleting the marker.
 
-    A marker whose directory is not under the workspace or the scratch root
+    A marker whose directory is not one of this workspace's `mutant_roots`
     is REFUSED, dropped and reported without executing anything: the marker
     is an instruction to run a script, and only the harness's own mutants
     may write it.
@@ -2117,8 +2137,7 @@ def revert_leftover_mutant(ws):
     except (OSError, ValueError):
         meta = {}
     mdir = meta.get("dir") or ""
-    root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
-    if not mdir or not (_under(mdir, ws) or _under(mdir, root)):
+    if not mdir or not any(_under(mdir, r) for r in mutant_roots(ws)):
         try:
             os.remove(marker)
         except OSError:
@@ -2149,8 +2168,9 @@ def leftover_disposition(left):
     """
     if left.get("refused"):
         return "refused", (
-            "a stale application marker named a directory outside this workspace and "
-            "its scratch root (%s): dropped, nothing executed." % (left.get("dir") or "?"))
+            "a stale application marker named a directory that is neither this "
+            "workspace's mutant set nor its sealed held-out pile (%s): dropped, "
+            "nothing executed." % (left.get("dir") or "?"))
     if left.get("code") == 0:
         return "reverted", (
             "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
@@ -3224,7 +3244,10 @@ def _selftest():
                 f.write("original\n")
             sub("git", "add", "f.txt")
             sub("git", "commit", "-qm", "seed")
-            mdir = os.path.join(tmp, "m1")
+            # Sous <ws>/.golden-master/mutants/, la seule racine visible d'ou
+            # `load_mutants` tire un `dir` : le confinement est juge sur les
+            # racines reelles, pas sur « quelque part dans l'arbre ».
+            mdir = os.path.join(tmp, ".golden-master", "mutants", "m1")
             os.makedirs(mdir)
 
             def scripts(apply_body, revert_body):
@@ -3298,6 +3321,46 @@ def _selftest():
             check("rien n'a ete execute", os.path.exists(canary), False)
             check("le marqueur etranger est jete", os.path.isfile(applied_marker_for(tmp)), False)
             check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
+            # ET un repertoire VOISIN sous la racine de scratch elle-meme. Le
+            # controle precedent passait deja quand tout /tmp etait « contenu » :
+            # il place son leurre hors de la racine, donc il ne prouvait pas le
+            # confinement que la valeur par defaut (GM_SCRATCH absent, racine =
+            # le repertoire temporaire du systeme) laissait grand ouvert.
+            neighbour = os.path.join(os.environ["GM_SCRATCH"], "evil-neighbour")
+            os.makedirs(neighbour)
+            with open(os.path.join(neighbour, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
+            write_applied_marker(tmp, {"id": "evil", "dir": neighbour})
+            left = revert_leftover_mutant(tmp)
+            check("un voisin sous la racine de scratch est refuse aussi",
+                  [(left or {}).get("refused"), os.path.exists(canary)], [True, False])
+            # La pile SCELLEE est une racine legitime, meme hors de l'arbre et
+            # hors du scratch — c'est la configuration que la porte elle-meme
+            # exige quand la racine temporaire par defaut ne survit pas d'une
+            # passe a l'autre. Un mutant tenu a l'ecart, laisse applique, doit
+            # etre REVERTI, pas classe etranger : sinon la porte juge un arbre mute.
+            saved_sealed = os.environ.get("GM_SEALED_DIR")
+            os.environ["GM_SEALED_DIR"] = sealed = tempfile.mkdtemp(prefix="gm-sealed-")
+            try:
+                hdir = os.path.join(sealed, "holdout-1")
+                os.makedirs(hdir)
+                with open(os.path.join(hdir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\n")
+                with open(os.path.join(hdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                check("la pile scellee est hors de l'arbre ET hors du scratch",
+                      [_under(hdir, tmp), _under(hdir, os.environ["GM_SCRATCH"])], [False, False])
+                apply_mutant({"id": "holdout-1", "dir": hdir}, tmp)
+                left = revert_leftover_mutant(tmp)
+                check("un mutant tenu a l'ecart laisse applique est reverti, pas refuse",
+                      [(left or {}).get("refused"), (left or {}).get("id"), tree()],
+                      [False, "holdout-1", "original\n"])
+                check("disposition d'un mutant scelle reverti", leftover_disposition(left)[0], "reverted")
+            finally:
+                shutil.rmtree(sealed, ignore_errors=True)
+                os.environ.pop("GM_SEALED_DIR", None)
+                if saved_sealed is not None:
+                    os.environ["GM_SEALED_DIR"] = saved_sealed
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             shutil.rmtree(outside, ignore_errors=True)
