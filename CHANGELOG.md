@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.10](https://github.com/SocialGouv/iterion/compare/v3.112.9...v3.112.10) (2026-09-06)
+
+### Bug Fixes
+
+* **forge:** the GitHub-App client serves the pull/CI API on scoped tokens — the card PR panel works on App connections ([#809](https://github.com/SocialGouv/iterion/issues/809)) ([89fafb5](https://github.com/SocialGouv/iterion/commit/89fafb512c774aa41ffb5027712af0da7524c80d)), closes [#777](https://github.com/SocialGouv/iterion/issues/777)
+
+    <details><summary>why</summary>
+
+    forgeAdminFor yields a forgegithub.AppClient for a github_app connection, and that type did not implement forge.PullClient, so pullClientForConn failed its assertion: GET|POST /api/v1/native/issues/{id}/pulls, …/pulls/{n}/ci and …/pulls/{n}/merge answered 501 on the connection kind the connect wizard creates by default, while the same card worked on a PAT connection.
+
+    </details>
+
 ## [3.112.9](https://github.com/SocialGouv/iterion/compare/v3.112.8...v3.112.9) (2026-09-06)
 
 ### Bug Fixes
