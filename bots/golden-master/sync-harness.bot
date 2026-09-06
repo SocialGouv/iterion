@@ -3861,7 +3861,15 @@ tool sync_harness:
                     check("disposition d'un repertoire de marqueurs non prive, marqueur intact",
                           [settle_leftover(tmp, left, [])[0], os.path.isfile(applied_marker_for(tmp))],
                           ["refused", True])
-                    check("et plus rien ne peut y etre enregistre, donc applique",
+                    # Et rien n'est applique tant qu'il est la. ATTENTION a ce que ce
+                    # check etablit vraiment : c'est l'O_EXCL sur le marqueur encore
+                    # present qui refuse ici, PAS la privacite du repertoire — le
+                    # chmod de `write_applied_marker` REPARE un repertoire qui est
+                    # deja le notre (mesure : 0o755 -> 0o700, ecriture acceptee).
+                    # Cote ecriture, seul un repertoire qui ne peut pas DEVENIR le
+                    # notre est refuse (autre uid, ou lien symbolique), et c'est le
+                    # check du lien, plus bas, qui garde ce controle-la.
+                    check("et rien n'est applique tant que ce marqueur est la",
                           apply_mutant(lmeta, tmp)[0], None)
                 finally:
                     os.chmod(mdir_of_marker, 0o700)
