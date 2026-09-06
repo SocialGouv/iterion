@@ -142,9 +142,23 @@ was found (#627). The gate is
 - **Codex `auth.json`**: the token-shape check on `tokens.access_token`.
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
-find after the fact: a `Warn` in the server log and an audit event
-(`byok.refused`, `oauth.org.refused`, `platform.llm_*.refused`) naming the
-field and the reason — never the value. Nothing is stored on a refusal.
+find after the fact: a `Warn` in the server log and an audit event naming the
+field and the reason — never the value. Nothing is stored on a refusal. Which
+log the event lands in follows the credential's owner:
+
+| Owner | Action | Readable by |
+| --- | --- | --- |
+| Team / org credential | `byok.refused`, `oauth.org.refused` | the team's admins (`/api/teams/{id}/audit`) |
+| Platform fallback | `platform.llm_key.refused`, `platform.llm_oauth.refused` | super-admins (`/api/admin/audit`) |
+| **Personal (`/me`)** | `byok.refused`, `oauth.personal.refused` | the admins of the **caller's active team** |
+
+A personal refusal crosses into the team's log on purpose: a personal forfait
+can be pledged to the org's [credential pool](credential-pool.md), so a
+refused rotation of it stops funding runs the org depends on. Only the
+refusal crosses — a successful personal connect is never audited — and the
+row carries the field and the reason class, never the material. With no
+active team on the session there is no tenant to key the row on, and the
+server-log `Warn` is the only trace.
 
 ## Provisioning cookbook (via `iterion remote`, authenticated)
 

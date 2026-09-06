@@ -735,6 +735,91 @@ func TestOAuthCredentialIngestion_RefusalLeavesATrace(t *testing.T) {
 	}
 }
 
+// A refusal on a PERSONAL connection is audited too, on the caller's
+// active team. There is no user-scoped audit log (pkg/audit has exactly
+// two scopes), and the sibling personal credential door already writes
+// there: /api/me/api-keys refuses a bad paste through refuseApiKey ->
+// auditApiKey(r, id.TeamID, "refused", ...). A personal forfait can also
+// be pledged to the org's credential pool, so an org admin has to be able
+// to see that a rotation of it was refused.
+func TestOAuthCredentialIngestion_PersonalRefusalIsAudited(t *testing.T) {
+	srv, hs, signer, oauthStore := oauthTestServer(t)
+	auditStore := audit.NewMemoryStore()
+	srv.auditStore = auditStore
+	tok, _, err := signer.IssueAccess(auth.Identity{UserID: "alice", Email: "alice@x", TeamID: "team-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good\nWelcome to Claude Code","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", tok, blob)
+	if code != http.StatusBadRequest {
+		t.Fatalf("upload = %d body=%s, want 400", code, body)
+	}
+	if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err == nil {
+		t.Fatal("a refused credential was stored")
+	}
+
+	// The audit insert is detached; poll briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := auditStore.ListByTenant(t.Context(), "team-a", audit.Page{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			if e.Action != "oauth.personal.refused" {
+				continue
+			}
+			if e.ActorID != "alice" || e.TargetID != string(secrets.OAuthKindClaudeCode) {
+				t.Fatalf("audit event = %+v, want the actor and the kind", e)
+			}
+			if e.Meta["field"] != "claudeAiOauth.accessToken" || e.Meta["reason"] == nil {
+				t.Fatalf("audit event = %+v, want the field and the reason class", e)
+			}
+			if strings.Contains(fmt.Sprint(e.Meta), "sk-ant-oat01-good") {
+				t.Fatalf("the audit row carried the material: %+v", e)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no oauth.personal.refused audit event; got %+v", events)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Only the REFUSAL crosses into the team's log: a personal connect that
+// succeeds stays the user's own business, as it always has.
+func TestOAuthCredentialIngestion_PersonalSuccessIsNotAudited(t *testing.T) {
+	srv, hs, signer, oauthStore := oauthTestServer(t)
+	auditStore := audit.NewMemoryStore()
+	srv.auditStore = auditStore
+	tok, _, err := signer.IssueAccess(auth.Identity{UserID: "alice", Email: "alice@x", TeamID: "team-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-clean-token","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", tok, blob)
+	if code != http.StatusOK {
+		t.Fatalf("upload = %d body=%s, want 200", code, body)
+	}
+	if _, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode); err != nil {
+		t.Fatalf("stored record: %v", err)
+	}
+	// The insert would be detached: give it the same window the refusal
+	// test gives, then require the log to still be empty.
+	time.Sleep(200 * time.Millisecond)
+	events, err := auditStore.ListByTenant(t.Context(), "team-a", audit.Page{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("a personal connect was audited on the team log: %+v", events)
+	}
+}
+
 // A whole terminal transcript pasted into the box is the shape #627 was
 // filed on. It fails to PARSE, which is not a ShapeError — so the refusal
 // branch let it through with no Warn and no audit entry, exactly the
