@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.13](https://github.com/SocialGouv/iterion/compare/v3.112.12...v3.112.13) (2026-09-06)
+
+### Bug Fixes
+
+* **server,store:** the pr_url launches pass the fork guard, a typed PR-closed end reason, a claimed launch_error retry, and gate notices that name a remedy that can reach the run ([#824](https://github.com/SocialGouv/iterion/issues/824)) ([463394b](https://github.com/SocialGouv/iterion/commit/463394bac887d7d9215e051503ff6e027556d166)), closes [#683](https://github.com/SocialGouv/iterion/issues/683) [#702](https://github.com/SocialGouv/iterion/issues/702) [#722](https://github.com/SocialGouv/iterion/issues/722) [#721](https://github.com/SocialGouv/iterion/issues/721) [#713](https://github.com/SocialGouv/iterion/issues/713) [#715](https://github.com/SocialGouv/iterion/issues/715) [#712](https://github.com/SocialGouv/iterion/issues/712), references [#713](https://github.com/SocialGouv/iterion/issues/713)
+
+    <details><summary>why</summary>
+
+    applyPRLaunchContext — the door the studio launch, the remote CLI/MCP launch and the cloud board coordinator use to stamp a PR onto a run — carried no fork guard, while the five webhook lanes were made fail-closed by #683. Same launch pair (<base>.CloneURL + the PR's head branch), so a head branch that does not live in the base repo could be checked out against a same-named branch of the base repo and a code-pushing bot would commit onto it.
+
+    </details>
+
 ## [3.112.12](https://github.com/SocialGouv/iterion/compare/v3.112.11...v3.112.12) (2026-09-06)
 
 ### Bug Fixes
