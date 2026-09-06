@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.16](https://github.com/SocialGouv/iterion/compare/v3.112.15...v3.112.16) (2026-09-06)
+
+### Bug Fixes
+
+* **delegate:** a terminal verdict on the formatting pass is returned, not retried; a structured answer is an answer; a 403 is a refusal ([#845](https://github.com/SocialGouv/iterion/issues/845)) ([8202bcf](https://github.com/SocialGouv/iterion/commit/8202bcffbc4706fcde475d52827ef4a95a836d4a))
+
+    <details><summary>why</summary>
+
+    Third review round of the facade-render fix. The formatting loop assigned every rendered verdict to fmtErr and retried the attempt once, so a dead credential, an unavailable model or an exhausted window bought a second CLI spawn against a provider that had just refused, and re-filed the same usage evidence. Only the transient class is retried now (renderRetryable); the rest returns typed at once, as the recovery pass already did.
+
+    </details>
+
 ## [3.112.15](https://github.com/SocialGouv/iterion/compare/v3.112.14...v3.112.15) (2026-09-06)
 
 ### Bug Fixes
