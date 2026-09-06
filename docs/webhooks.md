@@ -402,6 +402,68 @@ integration's launch vars): first review automatic on open, every re-review
 a button click or a `/revi` — see
 [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand).
 
+### <a name="two-identities"></a>Two identities: the App connection reads, a PAT binding writes
+
+An operator who wires BOTH a team **forge App connection** covering the
+repo AND a webhook **`forge_token` PAT binding** on the same webhook gets
+a bot that reads and writes under **two different logins**, and neither
+guard connects them by itself:
+
+- **the server-side read side** — the command gate, the author-trust
+  probe, the reply-thread gate, the PR fetch behind `/revi` — resolves
+  its client through `prforgeReplierAPIFor`
+  ([pkg/server/webhooks_prforge.go](../pkg/server/webhooks_prforge.go)):
+  the covering App connection FIRST (mints an installation token,
+  identity `<app_slug>[bot]`), the webhook's `forge_token` binding only
+  as fallback when the connection cannot serve. The merge-gate commit
+  status is App-only — it rides the connection the publish grant names,
+  with no binding fallback at all;
+- **the bot's runtime write side** — the review comments, the verdict,
+  a `/billy` push, the reply the bot posts inside its own review thread
+  — posts through the `forge_token` PAT the run resolves from its bot
+  binding, identity = whichever user owns that PAT.
+
+`iterionBotLogins` — the shared identity set the bot-author actor guard
+(`isIterionForgeBotAuthor`), the review-request predicate
+(`isIterionBotReviewRequest`) and the per-login classifier
+(`iterionBotAuthorPredicate`) all read
+([pkg/server/webhooks_common.go](../pkg/server/webhooks_common.go)) — is
+built from the connection alone: operator-configured
+`review_request_logins` first, then `<app_slug>[bot]` on GitHub/Forgejo
+Apps, then `AccountLogin` on GitLab only. **The PAT's login is NOT in
+that set unless you list it.** Symptom: on a delivery whose actor is the
+PAT — the bot's own review comment echoing back on the `note` /
+`issue_comment` lane, or a `review_requested` naming the PAT user — the
+actor guard reads the write as a human's and either loops (re-reacts to
+its own comment) or never fires (the reviewer-request button routes
+nowhere).
+
+**What to list.** Add the PAT's login to
+[`review_request_logins`](#other-config-keys-settable-through-the-crud-api)
+on the webhook (with or without the leading `@`). It joins the shared
+identity set both halves read: the actor guard skips the PAT's writes,
+and the "Re-request review" button relaunches when that user is added
+as reviewer.
+
+**How to check the identities.** For the App side,
+`iterion remote forge refresh <conn-id>` re-probes the installation and
+prints the account it acts as (`installation`; `installation_account`
+under `--json`); `iterion remote forge connections` lists every
+connection's `account_login`. For a `forge_token` PAT there is no
+built-in whoami: you named the account when you set the token, or you
+ask the forge directly with the token in hand (`GET /user` on
+GitHub / Forgejo, `GET /api/v4/user` on GitLab).
+
+The reply-thread gate compensates in one place: `reviewReplyGateWithAPI`
+issues a live `WhoAmI` on whatever client it resolved and unions the
+answer into its own bot-identity check, so an in-thread self-reply is
+caught even when the identity is not in `iterionBotLogins`. That union
+is scoped to that one gate; the actor guard on the delivery envelope and
+the reviewer-request predicate stay driven by `iterionBotLogins`, so
+`review_request_logins` remains the knob for those two — and, on a
+setup where the connection SERVES the read side, the WhoAmI returns the
+App login rather than the PAT's, so listing the PAT stays required.
+
 ### Generic (`POST /api/webhooks/generic/{id}`)
 
 Bot-agnostic: the caller picks which bot to launch by name (or relies
@@ -690,7 +752,7 @@ are accepted by `POST` / `PATCH`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. |
+| `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. Also the knob for the [mixed-identity setup](#two-identities) where a webhook rides an App connection for reads and a `forge_token` PAT for writes — list the PAT's login here so both guards recognise the bot's own posts. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). The lane is debounced (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default `3m`): a push volley costs one review of the final head — see the GitHub section above. |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
 | `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
