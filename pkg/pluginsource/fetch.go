@@ -43,11 +43,11 @@ type Fetcher struct {
 	// production.
 	beforePublish func(staging, dest string)
 
-	// beforeRetire runs inside publish, after this publisher has lost the
-	// rename onto `dest` and before it moves what is there aside. The seam a
-	// test uses to fill that gap the way a peer would — the interleaving that
-	// decides whether a complete tree can still be renamed aside. Nil in
-	// production.
+	// beforeRetire runs inside publish, immediately before it moves whatever is
+	// at `dest` aside — which for an immutable ref is only ever after its own
+	// rename has already lost. The seam a test uses to fill that gap the way a
+	// peer would: the interleaving that decides whether a complete tree can
+	// still be renamed aside. Nil in production.
 	beforeRetire func(dest string)
 
 	mu       sync.Mutex
