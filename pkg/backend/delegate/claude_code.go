@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -526,6 +527,12 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	if rm == nil || rm.Result == nil {
 		return nil
 	}
+	// A result that carries a structured object is an answer, whatever its
+	// text says: the CLI never renders an upstream failure alongside one,
+	// and a short JSON answer about quotas must not read as a quota notice.
+	if obj, ok := rm.StructuredOutput.(map[string]any); ok && len(obj) > 0 {
+		return nil
+	}
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
 	// 5h caps can come back as the result text (subtype=success, IsError=true)
 	// with no assistant text block for the stream classifier to catch — re-check
@@ -566,6 +573,17 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 		return authErr
 	}
 
+	// Refusal guard. A 403 is the upstream refusing the request — a facade
+	// or CDN block, a policy refusal — which a retry will not change, but
+	// which is no verdict on the credential either (a dead token renders
+	// 401): fail fast, legibly, without the credential remedy.
+	if isRefusedRequestResult(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		b.Logger.Error("[%s#%d/claude-code %s] upstream refused the request — failing fast: %.160s",
+			task.NodeID, task.Iteration, pass, detail)
+		return fmt.Errorf("claude-code: upstream refused the request (403) — not transient, not retried, not a credential verdict: %s", detail)
+	}
+
 	// Model-unavailable guard. An invalid/unauthorized `--model` does NOT fail
 	// the stream (subtype=success, IsError=false): the claude CLI renders its
 	// model-error sentence AS the result text (e.g. "There's an issue with the
@@ -604,6 +622,16 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	}
 
 	return nil
+}
+
+// renderRetryable reports whether a rendered failure is one a repeat of the
+// same pass can recover from: only the transient class (5xx, overload, a
+// bare throttle, connectivity). A credential, model or window verdict is
+// terminal for this delegation — retrying it re-spends the pass against a
+// provider that just refused and re-files the same usage evidence.
+func renderRetryable(err error) bool {
+	var tr *ErrTransient
+	return errors.As(err, &tr)
 }
 
 // annotateCost stamps `_tokens` / `_model` / `_cost_usd` on the delegation
@@ -762,7 +790,15 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		if fmtErr == nil {
 			// The formatter's result is read through the same predicate as
 			// pass 1: a render here would otherwise be parsed as the output.
-			fmtErr = b.renderedFailure(fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts))
+			if rerr := b.renderedFailure(fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts)); rerr != nil {
+				if !renderRetryable(rerr) {
+					// A credential, model or window verdict is terminal: a
+					// second attempt re-spends the pass against a provider
+					// that just refused and re-files the same evidence.
+					return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr)
+				}
+				fmtErr = rerr
+			}
 		}
 		if fmtErr != nil {
 			lastFmtErr = fmtErr
@@ -847,10 +883,13 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // wrapper, resume the session for one formatting pass to extract structured
 // output. Catches agents that did real work (tools, code changes) but whose
 // structured output the SDK didn't capture (e.g. backends where tools are
-// implicit). Mutates result and the running token totals in place; failures
-// are logged and left non-fatal (the caller keeps Pass 1's output). Returns
-// the pass's own ResultMessage (nil on failure) so the caller's cost
-// annotation sees its CLI-reported cost, not just Pass 1's.
+// implicit). Mutates result and the running token totals in place. A pass
+// that fails to run is logged and left non-fatal (the caller keeps Pass 1's
+// output, which the schema then judges); a pass that RENDERS an upstream
+// failure is returned typed — the executor routes it, instead of shipping
+// Pass 1's fallback text to an opaque schema failure. Returns the pass's own
+// ResultMessage (nil when it did not run) so the caller's cost annotation
+// sees its CLI-reported cost, not just Pass 1's.
 func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) (*claudesdk.ResultMessage, error) {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
 	fmtRM, fmtErr := b.formatOutput(ctx, task, sessionID)

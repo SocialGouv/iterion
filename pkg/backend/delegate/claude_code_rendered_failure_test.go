@@ -74,6 +74,47 @@ func TestRenderedFailure(t *testing.T) {
 			t.Fatalf("want ErrAuthFailed, got %v", err)
 		}
 	})
+	t.Run("a structured answer is an answer, whatever its text says", func(t *testing.T) {
+		rm := &claudesdk.ResultMessage{
+			Result:           str("quota exceeded"),
+			StructuredOutput: map[string]any{"status": "quota exceeded", "ok": false},
+		}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+			t.Fatalf("structured answer re-typed: %v", err)
+		}
+		rm.StructuredOutput = map[string]any{}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err == nil {
+			t.Fatalf("an empty structured object is not an answer: want the quota verdict")
+		}
+	})
+	t.Run("a 403 is a refusal: terminal, not transient, not a credential verdict", func(t *testing.T) {
+		for _, text := range []string{"API Error: 403 Forbidden", "API Error: [403][Request blocked][abc]"} {
+			rm := &claudesdk.ResultMessage{Result: str(text)}
+			err := b.renderedFailure(rm, task, "pass 1")
+			var tr *ErrTransient
+			var auth *ErrAuthFailed
+			if err == nil || errors.As(err, &tr) || errors.As(err, &auth) {
+				t.Fatalf("%q: want a terminal refusal, got %v", text, err)
+			}
+			if renderRetryable(err) {
+				t.Fatalf("%q: a refusal must not be retried", text)
+			}
+		}
+	})
+	t.Run("only the transient class is retried on a formatting attempt", func(t *testing.T) {
+		if !renderRetryable(&ErrTransient{Provider: BackendClaudeCode, Reason: "api_error_result"}) {
+			t.Fatal("transient not retryable")
+		}
+		for _, err := range []error{
+			&ErrRateLimited{Provider: BackendClaudeCode, Kind: "usage_window"},
+			&ErrAuthFailed{Provider: BackendClaudeCode},
+			errors.New("claude-code: model unavailable"),
+		} {
+			if renderRetryable(err) {
+				t.Fatalf("%v: terminal verdict retried", err)
+			}
+		}
+	})
 	t.Run("a model the CLI cannot use fails fast", func(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("There's an issue with the selected model (x/y). It may not exist or you may not have access to it.")}
 		err := b.renderedFailure(rm, task, "pass 1")
