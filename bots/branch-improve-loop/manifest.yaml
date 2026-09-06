@@ -1,7 +1,41 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.5.0
+version: 1.6.0
+## 1.6.0 — the run reaches its own DELIVERY, and may refuse the task.
+## Three production runs died within 2s of the 2h30m cap having pushed
+## NOTHING: the campaign spent the whole window and the delivery tail
+## (verify gate, in-loop review, push, verdict comment, merge-gate status)
+## was never scheduled. The new `delivery_reserve` compute — the single
+## choke point every forward entry into `campaign` crosses — carves
+## `min(max(floor_minutes x 60, cap x ratio), cap / 2)` out of the caps IN
+## FORCE (`run.max_duration_seconds`, like `plan_budget_ratio`; a cap of 0
+## stays unbounded) and hands the campaign a hard "stop working at"
+## instant, which its contract's DELIVERY RESERVE clause turns into
+## "finish to committable, commit, report". `stopped_on_reserve` makes
+## "the window closed" distinguishable from "the branch is clean" on the
+## run. New knobs `delivery_reserve_ratio` (0.15) /
+## `delivery_reserve_floor_minutes` (10); `max_duration` 2h30m → **3h**
+## (those runs measure the campaign's appetite ABOVE 2h30m, so carving the
+## reserve out of 2h30m would trade "ships nothing" for "does less work" —
+## at 3h the campaign keeps 2h33m and the tail gets 27 min against a ~16
+## min measured cost). Issue #705.
+## Second: the NO-OP TERMINAL (#706). A mission can presume a defect that
+## is not there — a queue eject caused by a flaky test — and pushing anyway
+## moves the head and cancels whatever the forge was building on the old
+## one. `declined`/`decline_reason` in the termination contract, verified
+## by the deterministic `decline_probe` (HEAD unmoved since
+## `workspace_probe`, tree clean — a pass that committed anything ships
+## normally instead), ending on `fail campaign_declined: code: DECLINED`.
+## The platform honours that code generically: no relaunch, and the reason
+## posted on the pull request. The ship path is the `else` fallback, so an
+## absent field means ship, never decline.
+## Also fleet-wide in this release: the verify gate's drift detection is
+## STRUCTURAL (a multiline `if ! git diff --quiet …; then … exit 1; fi` is
+## a gate; a comment is not — #789), and a verify.sh piping a gating
+## command into an output filter is refused with MASKED EXIT STATUS before
+## it runs (#779), with the CAPTURE THE STATUS, THEN FILTER clause in the
+## campaign contract.
 ## 1.5.0 — the plan-phase budget guard reads the run itself. ONE `compute`
 ## (`plan_budget_gate`) compares `run.elapsed_seconds` / `run.cost_usd`
 ## against `run.max_duration_seconds` / `run.max_cost_usd` — the caps IN
