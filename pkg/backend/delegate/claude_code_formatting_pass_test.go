@@ -17,6 +17,9 @@ import (
 // with both passes' usage; a transient render exhausts the attempts typed;
 // the recovery pass returns its message with the verdict.
 func TestFormattingPassVerdicts(t *testing.T) {
+	prevDelay := formatRetryDelay
+	formatRetryDelay = 0
+	t.Cleanup(func() { formatRetryDelay = prevDelay })
 	str := func(s string) *string { return &s }
 	f := func(v float64) *float64 { return &v }
 	schema := json.RawMessage(`{"type":"object","required":["answer","count"],"properties":{"answer":{"type":"string"},"count":{"type":"integer"}}}`)
@@ -101,6 +104,53 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		}
 		if *calls != 1 || res.Tokens != 165 || !res.FormattingPassUsed {
 			t.Fatalf("billed recovery pass not counted: calls=%d tokens=%d", *calls, res.Tokens)
+		}
+	})
+	t.Run("a pass that could not run still prices the delegation on the exhausted path", func(t *testing.T) {
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+		calls := 0
+		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
+			calls++
+			return nil, errors.New("container is not running")
+		}
+		in, out := 100, 10
+		handled, res, err := b.runTwoPassFormatting(context.Background(), task, pass1, Result{Tokens: 110}, &in, &out)
+		if !handled || err == nil || calls != 2 {
+			t.Fatalf("want handled + error after 2 attempts, got handled=%v err=%v calls=%d", handled, err, calls)
+		}
+		if res.Output == nil || res.Output["_cost_usd"] == nil {
+			t.Fatalf("Pass 1's cost dropped when the last attempt produced no message: %v", res.Output)
+		}
+	})
+	t.Run("a typed failure carries the delegation's spend", func(t *testing.T) {
+		res := Result{}
+		err := typedFailure(&res, task, 100, 10, errors.New("x"), pass1)
+		if err == nil || res.Output == nil || res.Output["_cost_usd"] == nil || res.Output["_tokens"] == nil {
+			t.Fatalf("typed failure without its spend: err=%v output=%v", err, res.Output)
+		}
+	})
+	t.Run("an SDK object beside a render is not an answer; beside plain prose it is", func(t *testing.T) {
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+		obj := map[string]any{"answer": "done", "count": 1}
+		rm := &claudesdk.ResultMessage{Result: str("API Error: [429][Usage limit reached for 5 hour. Your limit will reset at 3pm][abc]"), StructuredOutput: obj}
+		var rl *ErrRateLimited
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); !errors.As(err, &rl) {
+			t.Fatalf("window verdict shipped as an answer beside an echoed object: %v", err)
+		}
+		rm = &claudesdk.ResultMessage{Result: str("Claude AI usage limit reached|1757200000"), StructuredOutput: obj}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); !errors.As(err, &rl) {
+			t.Fatalf("non-bracketed refusal shipped as an answer beside an object: %v", err)
+		}
+		rm = &claudesdk.ResultMessage{Result: str("Done: the report lists the quota policy and the two remaining lots."), StructuredOutput: obj}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+			t.Fatalf("an object beside plain prose re-typed: %v", err)
+		}
+	})
+	t.Run("a raw error body is not an answer", func(t *testing.T) {
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+		rm := &claudesdk.ResultMessage{Result: str(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`)}
+		if err := b.renderedFailure(rm, task, "pass 1"); err == nil {
+			t.Fatalf("a raw error body shipped as an answer")
 		}
 	})
 	t.Run("a render carrying a fenced JSON is still a render", func(t *testing.T) {

@@ -19,17 +19,18 @@ import (
 // missing — a non-map structured value that round-trips to a non-empty
 // object, or a JSON object in the result text, direct or in a fenced block.
 // found is false when there is none; rawLen is the text's length when the
-// object came from the text.
-func structuredObject(resultText *string, structuredOutput any) (obj map[string]any, rawLen int, found bool) {
+// object came from the text, and fromText says so — the render guards trust
+// an object the text itself is more than one the SDK carried beside a text.
+func structuredObject(resultText *string, structuredOutput any) (obj map[string]any, rawLen int, found, fromText bool) {
 	if structuredOutput != nil {
 		if m, ok := structuredOutput.(map[string]any); ok {
 			if len(m) > 0 {
-				return m, 0, true
+				return m, 0, true, false
 			}
 		} else if b, err := json.Marshal(structuredOutput); err == nil {
 			var m map[string]any
 			if json.Unmarshal(b, &m) == nil && len(m) > 0 {
-				return m, len(b), true
+				return m, len(b), true, false
 			}
 		}
 	}
@@ -37,20 +38,20 @@ func structuredObject(resultText *string, structuredOutput any) (obj map[string]
 		text := *resultText
 		var m map[string]any
 		if json.Unmarshal([]byte(text), &m) == nil {
-			return m, len(text), true
+			return m, len(text), true, true
 		}
 		if extracted := extractJSONFromMarkdown(text); extracted != "" {
 			if json.Unmarshal([]byte(extracted), &m) == nil {
-				return m, len(text), true
+				return m, len(text), true, true
 			}
 		}
 	}
-	return nil, 0, false
+	return nil, 0, false, false
 }
 
 func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]any, rawLen int, fallback bool) {
 	// Priority 1 and 2: a structured answer, from the SDK object or the text.
-	if obj, n, found := structuredObject(resultText, structuredOutput); found {
+	if obj, n, found, _ := structuredObject(resultText, structuredOutput); found {
 		return obj, n, false
 	}
 

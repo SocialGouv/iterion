@@ -75,12 +75,19 @@ func TestRenderedFailure(t *testing.T) {
 		}
 	})
 	t.Run("an answer is an answer, whatever its text says — the SDK object or JSON text", func(t *testing.T) {
+		// An SDK object beside a text that is itself a quota render is NOT
+		// an answer (a resumed pass may echo a prior turn's object next to
+		// a refusal); beside plain prose it is.
 		rm := &claudesdk.ResultMessage{
 			Result:           str("quota exceeded"),
 			StructuredOutput: map[string]any{"status": "quota exceeded", "ok": false},
 		}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err == nil {
+			t.Fatalf("an SDK object beside a quota render shipped as an answer")
+		}
+		rm.Result = str("Here is the quota summary you asked for.")
 		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
-			t.Fatalf("structured answer re-typed: %v", err)
+			t.Fatalf("structured answer beside prose re-typed: %v", err)
 		}
 		// The formatting pass may deliver its answer as JSON in the text
 		// with an empty structured object: the same definition applies.

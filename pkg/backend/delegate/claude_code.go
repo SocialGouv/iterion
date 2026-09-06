@@ -494,9 +494,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	}
 
 	// Every guard on the result TEXT lives in renderedFailure, shared with
-	// the formatting passes: a render is never an answer, on any pass.
+	// the formatting passes: a render is never an answer, on any pass. The
+	// session was billed all the same: its cost goes out with the verdict.
 	if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
-		return result, err
+		return result, typedFailure(&result, task, totalIn, totalOut, err, rm)
 	}
 
 	if needsTwoPass && rm.SessionID != "" {
@@ -517,11 +518,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
 		var rerr error
 		if recoveryRM, rerr = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut); rerr != nil {
-			if result.Output == nil {
-				result.Output = map[string]any{}
-			}
-			annotateCost(&result, task, totalIn, totalOut, rm, recoveryRM)
-			return result, rerr
+			return result, typedFailure(&result, task, totalIn, totalOut, rerr, rm, recoveryRM)
 		}
 	}
 
@@ -543,20 +540,22 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	if rm == nil || rm.Result == nil {
 		return nil
 	}
-	// A result that already yields a structured answer — the SDK's object,
-	// or a JSON object in the text — is an answer whatever else its text
-	// says: a short JSON answer about quotas must not read as a quota notice
-	// on any pass. structuredObject is the one definition of that answer
-	// (parseSDKOutput ships exactly it), so the two cannot diverge. No
-	// evidence is filed from a shipped answer: a false bench of the
-	// credential costs more than a reading the next pass files anyway.
-	// The CLI's render form ("API Error: …") is never an answer, whatever it
-	// carries after the prefix — a fenced JSON inside a relayed error body
-	// must not satisfy the exemption.
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(*rm.Result)), "api error") {
-		if obj, _, found := structuredObject(rm.Result, rm.StructuredOutput); found && len(obj) > 0 {
-			return nil
-		}
+	// A structured answer is an answer — structuredObject is its one
+	// definition, the one parseSDKOutput ships — but on two conditions. An
+	// object the TEXT itself is (direct or fenced) is the answer, whatever
+	// words it contains: a short JSON answer about quotas must not read as a
+	// quota notice. An object the SDK carried BESIDE a text is trusted only
+	// when that text is not a render the guards below would recognise: a
+	// resumed pass could echo a prior turn's object next to a refusal, and
+	// a window verdict shipped as an answer is the class this predicate
+	// closes. The CLI's render form ("API Error: …") is never an answer,
+	// whatever it carries after the prefix; an object that is only an error
+	// body ({"error": …}) is not one either. No evidence is filed from a
+	// shipped answer: a false bench costs more than a reading the next pass
+	// files anyway.
+	if obj, _, found, fromText := structuredObject(rm.Result, rm.StructuredOutput); found && len(obj) > 0 &&
+		!errorBodyObject(obj) && (fromText || !looksRendered(*rm.Result)) && !hasRenderPrefix(*rm.Result) {
+		return nil
 	}
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
 	// 5h caps can come back as the result text (subtype=success, IsError=true)
@@ -637,6 +636,50 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 
 	return nil
 }
+
+// hasRenderPrefix reports the CLI's own render form of an upstream failure:
+// "API Error: …", whatever follows — a relayed body, fenced or not, is not an
+// answer.
+func hasRenderPrefix(text string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), "api error")
+}
+
+// looksRendered reports whether a result text is one of the renders the
+// guards recognise — a quota notice, a credential or model verdict, a
+// transient API error, the render prefix. Used to refuse the structured
+// exemption to an SDK object that sits beside such a text.
+func looksRendered(text string) bool {
+	return hasRenderPrefix(text) || isRateLimitMessage(text) || isAuthErrorResult(text) ||
+		isModelUnavailableResult(text) || isTransientAPIErrorResult(text)
+}
+
+// errorBodyObject reports an object that is only an error envelope — a raw
+// {"error": …} body a facade could relay as the result text — which is not
+// an answer even though it parses as one.
+func errorBodyObject(obj map[string]any) bool {
+	if len(obj) != 1 {
+		return false
+	}
+	_, ok := obj["error"]
+	return ok
+}
+
+// typedFailure returns err with the delegation's spend stamped on the result
+// first: a typed failure still spent Pass 1 and whatever passes ran, and the
+// caps, the fallback chain's carried spend and a donor's ledger read the
+// cost from the output map — an unallocated map records nothing.
+func typedFailure(result *Result, task Task, totalIn, totalOut int, err error, rms ...*claudesdk.ResultMessage) error {
+	if result.Output == nil {
+		result.Output = map[string]any{}
+	}
+	annotateCost(result, task, totalIn, totalOut, rms...)
+	return err
+}
+
+// formatRetryDelay is the pause before a formatting attempt is repeated after
+// a retryable render: a throttle answered immediately is a throttle again.
+// A variable so the seam tests run without it.
+var formatRetryDelay = 2 * time.Second
 
 // renderRetryable reports whether a rendered failure is one a repeat of the
 // same pass can recover from: the transient class (5xx, overload,
@@ -823,15 +866,9 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 				if !renderRetryable(rerr) {
 					// A credential, model or window verdict is terminal: a
 					// second attempt re-spends the pass against a provider
-					// that just refused and re-files the same evidence. The
-					// cost is stamped on the map (allocated: the annotation
-					// writes nothing into a nil one, and the spend of a node
-					// that failed here must still reach the caps).
-					if result.Output == nil {
-						result.Output = map[string]any{}
-					}
-					annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
-					return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr)
+					// that just refused and re-files the same evidence.
+					return true, result, typedFailure(&result, task, *totalIn, *totalOut,
+						fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr), rm, fmtRM)
 				}
 				fmtErr = rerr
 			}
@@ -840,18 +877,25 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			lastFmtErr = fmtErr
 			if attempt < maxFmtAttempts {
 				b.Logger.Warn("claude-code [formatting pass %d/%d] failed, retrying: %v", attempt, maxFmtAttempts, fmtErr)
+				// A throttle or an overload answered at once is the same
+				// answer again: a short pause before the repeat, bounded by
+				// the run's context.
+				if formatRetryDelay > 0 {
+					select {
+					case <-ctx.Done():
+						return true, result, typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), rm, fmtRM)
+					case <-time.After(formatRetryDelay):
+					}
+				}
 				continue
 			}
 			// Both attempts exhausted. Pass 1's own output was already tried
 			// by the fast path above with the same arguments, so there is
-			// nothing left to recover from it: the delegation fails typed.
-			if fmtRM != nil {
-				if result.Output == nil {
-					result.Output = map[string]any{}
-				}
-				annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
-			}
-			return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
+			// nothing left to recover from it: the delegation fails typed —
+			// with Pass 1's cost whether or not the last attempt produced a
+			// message (annotateCost skips a nil one).
+			return true, result, typedFailure(&result, task, *totalIn, *totalOut,
+				fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr), rm, fmtRM)
 		}
 
 		output, rawLen, fallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
