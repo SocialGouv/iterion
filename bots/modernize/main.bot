@@ -882,52 +882,56 @@ tool lot_verify:
         harness prints it, or a pretty-printed block: the wrapper prints
         exactly one, after the harness has logged to stderr. A format is not
         a verdict, so both shapes read the same."""
-        # Bounded by the window, never at the expense of a verdict that was
-        # there: a one-line report costs one parse wherever it sits; a
-        # pretty-printed block ends at a "}"-terminated line and starts at a
-        # column-0 "{" above it — the two nearest are tried, then the
-        # window's outermost (`indent=0` puts a list's objects at column 0,
-        # and the nearest open would hand back an inner fragment). At most
-        # three joins per closing line, never every "{" above (that scan was
-        # quadratic on a chatty stdout with no report), and never a global
-        # budget (one that noise printed AFTER the report could spend typed
-        # a green oracle ORACLE_NOT_RUN).
+        # Bounded AND lossless. Every line that opens with a "{" is a
+        # candidate start, tried ONCE, in place, with `raw_decode` — which
+        # parses one object and stops. So a one-line report costs one parse
+        # wherever it sits, and a pretty-printed block, an `indent=0` dump
+        # (whose list objects sit at column 0) and a block a wrapper
+        # indented all read the same: no candidate start is ever dropped.
+        # At most one parse per line of the window — never a re-join of the
+        # slice above every closing line, which was quadratic on the very
+        # path this reader exists to type (a chatty stdout with no report),
+        # and never a global budget, which noise printed AFTER the report
+        # could spend to type a green oracle ORACLE_NOT_RUN.
+        # A candidate whose first token is neither a key string nor "}" is
+        # not a JSON object: refused in O(1), so the dict reprs a chatty
+        # harness logs (`{'line': 0, …}`) never reach the parser. That
+        # refusal is what keeps the bound — a FAILED parse is the expensive
+        # one, `json` re-deriving line:column over the whole blob for the
+        # error it raises.
+        # The report is the object whose parse ENDS last, so an inner
+        # fragment never shadows the report that contains it.
         # And only a REPORT is handed back — an object carrying at least one
         # of the harness's verdict fields (an older harness writes no
         # `mode`, it always writes `invalid`/`stable`/`ok`). A `{}` or a
         # fragment `{"name": …}` printed after the report is skipped, not
         # read as a mode-less gate verdict with an empty `invalid` list.
-        import bisect
-
         def is_report(obj):
             return isinstance(obj, dict) and any(
                 k in obj for k in ("mode", "stable", "ok", "invalid", "blind_lanes", "holdout_total"))
 
         lines = (text or "").splitlines()[-2000:]
-        opens = [i for i, l in enumerate(lines) if l.startswith("{")]
-        for j in range(len(lines) - 1, -1, -1):
-            tail = lines[j].strip()
-            if not tail.endswith("}"):
+        blob = "\n".join(lines)
+        decode = json.JSONDecoder().raw_decode
+        found, found_end = None, -1
+        at = 0
+        for line in lines:
+            head = line.lstrip()
+            start, at = at + len(line) - len(head), at + len(line) + 1
+            if not head.startswith("{"):
                 continue
-            if tail.startswith("{"):
-                try:
-                    obj = json.loads(tail)
-                except ValueError:
-                    obj = None
-                if is_report(obj):
-                    return obj
-            k = bisect.bisect_left(opens, j)
-            starts = list(reversed(opens[max(0, k - 2):k]))
-            if k > 0 and opens[0] not in starts:
-                starts.append(opens[0])
-            for i in starts:
-                try:
-                    obj = json.loads("\n".join(lines[i:j + 1]))
-                except ValueError:
-                    continue
-                if is_report(obj):
-                    return obj
-        return None
+            probe = start + 1
+            while probe < len(blob) and blob[probe] in " \t\r\n":
+                probe += 1
+            if probe >= len(blob) or blob[probe] not in ('"', '}'):
+                continue
+            try:
+                obj, end = decode(blob, start)
+            except ValueError:
+                continue
+            if end > found_end and is_report(obj):
+                found, found_end = obj, end
+        return found
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True

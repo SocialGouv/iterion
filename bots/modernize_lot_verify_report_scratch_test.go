@@ -193,9 +193,9 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 	})
 
 	t.Run("a pretty-printed report buried under chatter and followed by noise is still read", func(t *testing.T) {
-		// The block starts at the nearest column-0 "{" above its closing
-		// line: forty brace-first lines above and two below must not push it
-		// out of reach, whatever the search spends on the noise.
+		// Every line that opens with a "{" is a candidate start: forty
+		// brace-first lines above and two below must not push the block out
+		// of reach, whatever the search spends on the noise.
 		buried := scratchWrapperHead +
 			"i=0; while [ $i -lt 40 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
 			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": true,\\n  \"invalid\": []\\n}\\n'\n" +
@@ -212,12 +212,18 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
-	t.Run("an indent=0 report whose list objects sit at column 0 is read whole, not as a fragment", func(t *testing.T) {
-		// json.dumps(indent=0) puts every object of a list at column 0; the
-		// nearest opening line above the closing brace then starts an inner
-		// object, and a fragment without a mode was read as a green gate.
+	t.Run("an indent=0 report buried under chatter is read whole, not as a fragment", func(t *testing.T) {
+		// json.dumps(indent=0) puts every object of a list at column 0, so the
+		// openings nearest the closing brace start INNER objects and the
+		// report's own is only reachable as a candidate in its own right. The
+		// chatter above is what makes this non-vacuous: a scan that fell back
+		// to the window's first column-0 "{" read the report only when
+		// nothing had been logged before it, and lost it behind one noise
+		// line — a whole RED/GREEN verdict typed ORACLE_NOT_RUN.
 		zero := scratchWrapperHead +
+			"i=0; while [ $i -lt 40 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
 			"printf '{\\n\"mode\": \"gate\",\\n\"invalid\": [\\n{\\n\"name\": \"m1\"\\n},\\n{\\n\"name\": \"m2\"\\n}\\n],\\n\"stable\": true\\n}\\n'\n" +
+			"echo \"{'teardown': 'one more brace-first line after the report'}\"\n" +
 			"exit 0\n"
 		ws, base := scratchWorkspace(t, zero)
 		res := scratchVerify(t, script, ws, base)
@@ -237,6 +243,23 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		res := scratchVerify(t, script, ws, base)
 		if res.OracleNotRun || !res.OraclePassed || res.OracleReport["mode"] != "gate" {
 			t.Fatalf("an indented one-line report was lost: %+v", res)
+		}
+	})
+
+	t.Run("a pretty-printed report a wrapper indented is read too", func(t *testing.T) {
+		// Nothing promises the block reaches stdout at column 0 — a tee, a
+		// textwrap.indent or a logger prefix shifts it. The indentation is a
+		// format, and a format is not a verdict: the block reads the same.
+		shifted := scratchWrapperHead +
+			"printf '  {\\n    \"mode\": \"gate\",\\n    \"ok\": true,\\n    \"invalid\": []\\n  }\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, shifted)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("an indented pretty-printed report was discarded: %+v", res)
+		}
+		if res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the indented pretty-printed report is not in the verdict: %+v", res)
 		}
 	})
 
