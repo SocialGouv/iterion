@@ -2241,36 +2241,73 @@ def revert_leftover_mutant(ws):
             "marker": marker, "refused": False}
 
 
-def leftover_disposition(left):
+def dirty_paths(ws):
+    """The paths git reports as not committed, in `git status --porcelain` order.
+
+    Empty when the tree is clean — AND when git does not answer, which is not
+    the same claim. So this is evidence FOR dirtiness only: a caller may refuse
+    on a non-empty list, never conclude "clean" from an empty one.
+    """
+    out = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return []
+    # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
+    # `XY <chemin>`, et X vaut ' ' pour une modification non indexee :
+    # strip() sur la sortie entiere mange alors l'espace de tete de la
+    # PREMIERE ligne seulement, qui se decale d'un cran et perd son
+    # premier caractere (`build.gradle` -> `uild.gradle`). Les suivantes,
+    # intactes, donnent une liste ou une seule entree est fausse — et
+    # quand un seul fichier est sale, c'est la seule nommee.
+    return [l[3:] for l in out.stdout.splitlines() if l.strip()]
+
+
+def leftover_disposition(left, dirty=()):
     """What the gate says about a leftover, and whether it may proceed.
 
     Returns (kind, text): "reverted" — the tree is HEAD again, a note;
-    "refused" — a foreign marker was dropped, a note; "still_mutated" — the
-    revert failed or its script is gone, the tree is NOT HEAD, the gate must
-    refuse rather than judge a program nobody wrote.
+    "refused" — nothing was read and nothing executed, a note; "still_mutated"
+    — the tree is not HEAD, or may not be, and the gate must refuse rather
+    than judge a program nobody wrote.
+
+    `dirty` is the workspace's uncommitted paths, and it turns a REFUSAL into
+    a refusal to gate. A refusal means nothing was reverted — and a marker the
+    harness wrote ITSELF becomes refused the moment GM_SEALED_DIR or GM_DIR
+    changes between passes, which is precisely the configuration the gate
+    demands. The dirty tree may then still BE that mutant, and nothing left on
+    disk can tell. An empty `dirty` is not proof of a clean tree (see
+    `dirty_paths`), so this only ever tightens the verdict, never softens one.
     """
     if left.get("untrusted_dir"):
-        return "refused", (
+        kind, text = "refused", (
             "the application marker's directory is not this user's own private one "
             "(%s): it was neither read nor deleted, and nothing was executed. No "
             "mutant can be recorded there either, so gating is refused for as long "
             "as it stands — point GM_SCRATCH at a directory you own."
             % os.path.dirname(left.get("marker") or "?"))
-    if left.get("refused"):
-        return "refused", (
+    elif left.get("refused"):
+        kind, text = "refused", (
             "a stale application marker named a directory that is neither this "
             "workspace's mutant set nor its sealed held-out pile (%s): dropped, "
             "nothing executed." % (left.get("dir") or "?"))
-    if left.get("code") == 0:
+    elif left.get("code") == 0:
         return "reverted", (
             "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
             "(revert.sh exit 0). The tree below is HEAD again; the interrupted attempt's "
             "verdict, if any, judged a mutated program." % left.get("id"))
-    how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
-    return "still_mutated", (
-        "a mutant left APPLIED by an interrupted gate could NOT be reverted at start: %s (%s). "
-        "The tree is still mutated and will not be judged. Revert by hand (git checkout -- "
-        "<the mutant's paths>), then delete the marker %s." % (left.get("id"), how, left.get("marker")))
+    else:
+        how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
+        return "still_mutated", (
+            "a mutant left APPLIED by an interrupted gate could NOT be reverted at start: %s (%s). "
+            "The tree is still mutated and will not be judged. Revert by hand (git checkout -- "
+            "<the mutant's paths>), then delete the marker %s." % (left.get("id"), how, left.get("marker")))
+    if dirty:
+        return "still_mutated", (
+            "%s The workspace is NOT clean (%d path(s): %s), so it may still carry the "
+            "mutant that marker recorded, and the harness can no longer tell. Revert by "
+            "hand (git checkout -- <the mutant's paths>), then gate."
+            % (text, len(dirty), ", ".join(sorted(dirty)[:12])))
+    return kind, text
 
 
 # ─── Comparison ─────────────────────────────────────────────────────────────
@@ -3361,13 +3398,22 @@ def _selftest():
             check("le marqueur d'application est pose", os.path.isfile(applied_marker_for(tmp)), True)
             check("le marqueur vit sous GM_SCRATCH, comme la pile scellee",
                   applied_marker_for(tmp).startswith(os.environ["GM_SCRATCH"]), True)
+            # `git status --porcelain` ecrit ` M f.txt` : la decoupe se fait a
+            # l'indice 3, pas par un strip global qui mangerait le premier
+            # caractere du chemin de la premiere ligne seulement.
+            check("un arbre mute est vu comme non committe", "f.txt" in dirty_paths(tmp), True)
             # Interruption ici : pas de revert. La porte suivante nettoie.
             left = revert_leftover_mutant(tmp)
             check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
             check("l'arbre est revenu a HEAD", tree(), "original\n")
             check("le marqueur est efface apres un revert propre", os.path.isfile(applied_marker_for(tmp)), False)
             check("rien a revertir la seconde fois", revert_leftover_mutant(tmp), None)
+            check("et l'arbre reverti ne l'est plus", "f.txt" in dirty_paths(tmp), False)
             check("disposition d'un revert propre", leftover_disposition(left)[0], "reverted")
+            # Un revert PROPRE reste propre meme si l'arbre est sale par ailleurs :
+            # le mutant a bien ete retire, le reste est le travail de l'operateur.
+            check("un revert propre n'est pas durci par un arbre sale",
+                  leftover_disposition(left, ["autre.txt"])[0], "reverted")
             # Le chemin nominal efface aussi le marqueur.
             apply_mutant(lmeta, tmp)
             revert_mutant(lmeta, tmp)
@@ -3447,6 +3493,15 @@ def _selftest():
             check("rien n'a ete execute", os.path.exists(canary), False)
             check("le marqueur etranger est jete", os.path.isfile(applied_marker_for(tmp)), False)
             check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
+            # Un REFUS n'a rien reverti. Si l'arbre est sale, il peut donc encore
+            # PORTER ce mutant — et un marqueur que le harnais a ecrit lui-meme
+            # devient refuse des que GM_SEALED_DIR ou GM_DIR change d'une passe a
+            # l'autre. La porte refuse plutot que de juger un programme que
+            # personne n'a ecrit.
+            kind_d, text_d = leftover_disposition(left, ["src/Api.java", "b.txt"])
+            check("un refus sur un arbre sale refuse la porte", kind_d, "still_mutated")
+            check("et nomme les chemins sales", ["src/Api.java" in text_d, "b.txt" in text_d],
+                  [True, True])
             # ET un repertoire VOISIN sous la racine de scratch elle-meme. Le
             # controle precedent passait deja quand tout /tmp etait « contenu » :
             # il place son leurre hors de la racine, donc il ne prouvait pas le
@@ -3709,29 +3764,21 @@ def main():
     # mutant's file as the lot's uncommitted work, and the build gate judges a
     # program nobody wrote.
     left = revert_leftover_mutant(ws)
+    # Read AFTER the leftover is reverted — a mutant still applied is exactly
+    # what would show up here, and it is not the lot's uncommitted work.
+    paths = dirty_paths(ws) if mode != "record" else []
     if left:
-        kind, text = leftover_disposition(left)
+        kind, text = leftover_disposition(left, paths)
         if kind == "still_mutated":
             bail(text)
         note(report, text)
 
-    if mode != "record":
-        dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
-                               capture_output=True, text=True)
-        if dirty.returncode == 0 and dirty.stdout.strip():
-            # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
-            # `XY <chemin>`, et X vaut ' ' pour une modification non indexee :
-            # strip() sur la sortie entiere mange alors l'espace de tete de la
-            # PREMIERE ligne seulement, qui se decale d'un cran et perd son
-            # premier caractere (`build.gradle` -> `uild.gradle`). Les suivantes,
-            # intactes, donnent une liste ou une seule entree est fausse — et
-            # quand un seul fichier est sale, c'est la seule nommee.
-            paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
-            note(report, (
-                "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
-                "these changes are destroyed during the run and the verdict below describes "
-                "a tree that never existed. Commit, then gate."
-                % (len(paths), ", ".join(sorted(paths)[:12]))))
+    if paths:
+        note(report, (
+            "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
+            "these changes are destroyed during the run and the verdict below describes "
+            "a tree that never existed. Commit, then gate."
+            % (len(paths), ", ".join(sorted(paths)[:12]))))
 
     visible = load_mutants(gm_dir, holdout=False)
 
