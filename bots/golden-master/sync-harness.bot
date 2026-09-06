@@ -219,6 +219,7 @@ tool sync_harness:
     import re
     import shlex
     import shutil
+    import stat
     import subprocess
     import sys
     import tempfile
@@ -1929,6 +1930,22 @@ tool sync_harness:
         return unmapped, stale, len(features), len(coverage.get("exclusions", []))
 
 
+    def gm_dir_for(ws):
+        """THE net's directory inside a workspace. Derived once, like the pile."""
+        return os.path.join(ws, os.environ.get("GM_DIR", ".golden-master"))
+
+
+    def _within(path, root):
+        """True when `path` is `root` or lives under it, symlinks resolved.
+
+        realpath on BOTH sides: comparing the literal strings would take
+        `<root>/../elsewhere` for contained, and a symlink under the root for
+        contained whatever it points at.
+        """
+        rp, rr = os.path.realpath(path), os.path.realpath(root)
+        return rp == rr or rp.startswith(rr.rstrip(os.sep) + os.sep)
+
+
     def scratch_root():
         """THE temp root the harness puts its OUT-OF-TREE state under.
 
@@ -2224,8 +2241,20 @@ tool sync_harness:
     def apply_mutant(meta, ws):
         # The marker goes down BEFORE apply.sh runs: an interruption between the
         # two leaves a tree that is mutated and a note that says by what.
+        #
+        # Written through os.open, not open(): the name is fully derivable from the
+        # workspace path, and on a shared host the temp root is world-writable, so
+        # a plain open() would follow a symlink someone else planted there (writing
+        # wherever it points) and would leave the marker 0644 for anyone to rewrite.
+        # O_NOFOLLOW refuses the symlink; 0600 keeps the file ours. O_TRUNC rather
+        # than O_EXCL on purpose: a marker legitimately survives a revert that
+        # failed, and O_EXCL would then refuse to record the NEXT mutant and leave
+        # the previous one's id standing for it.
         try:
-            with open(applied_marker_for(ws), "w", encoding="utf-8") as f:
+            fd = os.open(applied_marker_for(ws),
+                         os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                         0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
         except OSError:
             pass
@@ -2254,13 +2283,42 @@ tool sync_harness:
         else what was reverted and how revert.sh exited.
         """
         marker = applied_marker_for(ws)
-        if not os.path.isfile(marker):
-            return None
+        # lstat, not isfile: isfile FOLLOWS a symlink, so a link planted at the
+        # derivable name would have this read someone else's file as the record of
+        # what to run. And the marker must be OURS — see the ownership check below.
         try:
-            with open(marker, encoding="utf-8") as f:
-                meta = json.load(f)
-        except (OSError, ValueError):
-            meta = {}
+            st = os.lstat(marker)
+        except OSError:
+            return None
+        refused = None
+        if not stat.S_ISREG(st.st_mode):
+            refused = "the marker is not a regular file (a symlink or worse was planted at its name)"
+        elif hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+            refused = ("the marker is owned by uid %s, not by the user running the gate (%s)"
+                       % (st.st_uid, os.geteuid()))
+        meta = {}
+        if refused is None:
+            try:
+                with open(marker, encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                meta = {}
+            # WHERE the script may live. This runs `<dir>/revert.sh` through sh, as
+            # the gate's user, before any other harness logic — and `dir` comes from
+            # a file whose name is fully derivable from the workspace path, in a
+            # temp root that is world-writable on a shared host. Unchecked, planting
+            # a marker naming a directory you control is arbitrary execution as the
+            # gate. A real mutant only ever lives in the net or in the sealed pile
+            # (see load_mutants), so anything else is refused rather than run.
+            d = meta.get("dir")
+            if d and not any(_within(d, root) for root in (gm_dir_for(ws), sealed_dir_for(ws))):
+                refused = ("its revert.sh lives outside the net and the sealed pile (%s) — "
+                           "refused rather than executed" % d)
+        if refused is not None:
+            # Deliberately NOT removed: the tree may well be mutated, and a marker
+            # this process would not obey is exactly the one a human must look at.
+            return {"id": meta.get("id"), "dir": meta.get("dir"), "code": None,
+                    "out": refused, "marker": marker}
         script = os.path.join(meta.get("dir") or "", "revert.sh")
         if meta.get("dir") and os.path.isfile(script):
             code, out = run_script(script, ws)
@@ -3402,7 +3460,11 @@ tool sync_harness:
                     f.write("original\n")
                 sub("git", "add", "f.txt")
                 sub("git", "commit", "-qm", "seed")
-                mdir = os.path.join(tmp, "m1")
+                # Sous <ws>/.golden-master/mutants/ : la seule place ou vit un vrai
+                # mutant (cf. load_mutants), et c'est ce confinement que la garde
+                # verifie avant d'executer le moindre revert.sh.
+                mroot = os.path.join(gm_dir_for(tmp), "mutants")
+                mdir = os.path.join(mroot, "m1")
                 os.makedirs(mdir)
                 with open(os.path.join(mdir, "apply.sh"), "w", encoding="utf-8") as f:
                     f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\n")
@@ -3427,7 +3489,7 @@ tool sync_harness:
                 # ecrivait ensuite son propre travail dans ce fichier et la porte
                 # suivante le detruisait avec le `git checkout --` du mutant, en ne
                 # nommant que l'id du mutant, jamais le chemin efface.
-                bdir = os.path.join(tmp, "m2")
+                bdir = os.path.join(mroot, "m2")
                 os.makedirs(bdir)
                 with open(os.path.join(bdir, "apply.sh"), "w", encoding="utf-8") as f:
                     f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\nexit 1\n")
@@ -3492,6 +3554,50 @@ tool sync_harness:
                 check("et la porte REFUSE de juger un arbre qu'elle ne peut pas rendre a HEAD",
                       leftover_verdict(left)[0], True)
 
+                # ── Le marqueur DESIGNE un script que la porte lance en sh, sous son
+                # propre compte, avant toute autre logique — et son nom se derive
+                # entierement du chemin du workspace, dans un temp root partage. Un
+                # marqueur qui pointe hors du filet est REFUSE, pas execute.
+                outside = os.path.join(tmp, "planted")
+                os.makedirs(outside)
+                witness = os.path.join(tmp, "PWNED")
+                with open(os.path.join(outside, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(witness))
+                with open(applied_marker_for(tmp), "w", encoding="utf-8") as f:
+                    json.dump({"id": "planted", "dir": outside}, f)
+                left = revert_leftover_mutant(tmp)
+                check("un marqueur pointant hors du filet : refuse, JAMAIS execute",
+                      [os.path.exists(witness), (left or {}).get("code"),
+                       "outside the net" in ((left or {}).get("out") or ""),
+                       os.path.isfile(applied_marker_for(tmp))],
+                      [False, None, True, True])
+                check("et la porte refuse de juger sur un marqueur qu'elle n'obeit pas",
+                      leftover_verdict(left)[0], True)
+                # Tolerant : si la garde tombe, le marqueur a ete consomme et le
+                # nettoyage ne doit pas masquer l'echec par une exception.
+                try:
+                    os.remove(applied_marker_for(tmp))
+                except OSError:
+                    pass
+
+                # Un mutant du filet, lui, passe : la garde confine, elle ne casse
+                # pas le cas nominal.
+                os.makedirs(mdir, exist_ok=True)
+                with open(os.path.join(mdir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\n")
+                with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                saved["apply_mutant"](lmeta, tmp)
+                check("un mutant DU filet reste, lui, revertible",
+                      (revert_leftover_mutant(tmp) or {}).get("code"), 0)
+
+                # Et le marqueur est ecrit pour nous seuls : 0644 le laissait
+                # reecrire par n'importe qui sur un hote partage.
+                saved["apply_mutant"](lmeta, tmp)
+                check("le marqueur est ecrit en 0600",
+                      stat.S_IMODE(os.lstat(applied_marker_for(tmp)).st_mode), 0o600)
+                saved["revert_mutant"](lmeta, tmp)
+
                 # Ce que la porte en FAIT. Les trois sorties de
                 # revert_leftover_mutant sont toutes des dicts VRAIS : decider sur
                 # la seule verite du dict annoncait « l'arbre est revenu a HEAD »
@@ -3538,7 +3644,7 @@ tool sync_harness:
 
     def main():
         ws = os.environ.get("GM_WORKSPACE", ".")
-        gm_dir = os.path.join(ws, os.environ.get("GM_DIR", ".golden-master"))
+        gm_dir = gm_dir_for(ws)
         # The seal must be run-scoped, and campaign and gate must land on the SAME
         # directory. They are different processes and only one of them can be given
         # an environment, so the path is DERIVED rather than passed: the workspace
