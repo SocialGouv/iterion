@@ -329,7 +329,19 @@ compute summarize:
     ready: "input.approved && length(input.issues) == 0"
 ```
 
-Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, and `flatten`. They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
+Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, and `round`. They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
+
+**The output is typed by its schema.** A compute output is conformed to the declared field types where it is produced, on the trunk and inside a fan-out branch alike: an integral number under `int` is stored as the integer it reads as, an integer under `float` as a float, and a value that cannot be conformed fails the node with the field named — a fractional float under `int` (`10.58` from a division), a string under `bool`, a number under `string`. The engine never picks a rounding for you: write it, with `floor(x)` (towards negative infinity) or `round(x)` (half away from zero), both of which return an integer.
+
+```iter
+schema gauge:
+  used_pct: int
+
+compute plan_budget_gate:
+  output: gauge
+  expr:
+    used_pct: "floor(run.elapsed_seconds * 100 / run.max_duration_seconds)"
+```
 
 ### The `run` namespace
 
@@ -387,12 +399,21 @@ timing counterpart, stamped by the engine so tool and compute nodes get
 it too.
 
 ```iter
+schema gauge:
+  used_pct: int
+  exhausted: bool
+
 compute plan_budget_gate:
   output: gauge
   expr:
-    used_ratio: "run.elapsed_seconds / run.max_duration_seconds"
+    used_pct: "if(run.max_duration_seconds > 0, floor(run.elapsed_seconds * 100 / run.max_duration_seconds), 0)"
     exhausted: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.33"
 ```
+
+`used_pct` is declared `int`, so the division is wrapped in `floor(...)`:
+a compute output is [typed by its schema](#compute), and a fractional
+result under an `int` field fails the node rather than travelling on as a
+float with an integer's label.
 
 ### `emit` and `wait`
 

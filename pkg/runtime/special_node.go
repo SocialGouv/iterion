@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -183,6 +184,24 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 			}
 		}
 		output[ce.Key] = v
+	}
+	// The output is typed by the declared schema HERE, on the body the
+	// trunk and the fan-out branch share — not behind WithOutputValidation,
+	// which no product entry point enables. An expression's value is
+	// Go-shaped (an integer division yields an int64, a float one a
+	// float64), so the representation is normalised to the declared type
+	// and a value that cannot be — a fractional float under `int`, a
+	// string under `bool` — fails the node instead of travelling on under
+	// the wrong label.
+	if schema := e.workflow.Schemas[cn.OutputSchema]; schema != nil {
+		if err := model.ConformComputeOutput(output, schema); err != nil {
+			return nil, &RuntimeError{
+				Code:    ErrCodeSchemaValidation,
+				Message: fmt.Sprintf("compute %q: output does not conform to schema %q: %v", nodeID, cn.OutputSchema, err),
+				NodeID:  nodeID,
+				Hint:    "a compute output is typed by its schema: make a rounding explicit with floor(...) / round(...), or change the declared type",
+			}
+		}
 	}
 	return output, nil
 }

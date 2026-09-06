@@ -501,7 +501,10 @@ compute plan_budget_gate:
 - Indexing: `arr[0]`, `m["key"]`, `people[0].name` (OOB / missing key → nil).
 - Builtins: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
   `if(cond, then, else)`, `sort`, `keys`, `values`, `slice(arr, start, end)`,
-  `sum`, `min`, `max`, `flatten`.
+  `sum`, `min`, `max`, `flatten`, `floor(x)`, `round(x)`.
+- A compute output is TYPED by its schema: an integral number under `int`
+  is stored as an int, a fractional one (a division) FAILS the node — wrap
+  it in `floor(...)` / `round(...)`; a string under `bool`/`int` fails too.
 - Bounded combinators (lambda, applied once per element of a finite list):
   - `map(arr, x => x.field)`
   - `filter(arr, x => x.score > 5)`
