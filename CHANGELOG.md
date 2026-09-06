@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.1](https://github.com/SocialGouv/iterion/compare/v3.112.0...v3.112.1) (2026-09-06)
+
+### Bug Fixes
+
+* **runtime:** resolve the template snapshot on every dispatch path — a fan-out branch, the llm router and llm_or_human rendered {{run.*}} and {{outputs.*}} as literals ([#796](https://github.com/SocialGouv/iterion/issues/796)) ([72275c0](https://github.com/SocialGouv/iterion/commit/72275c0ff80a7af8cd398067f5060608239a4ba0)), closes [#763](https://github.com/SocialGouv/iterion/issues/763), references [#763](https://github.com/SocialGouv/iterion/issues/763) [#763](https://github.com/SocialGouv/iterion/issues/763)
+
+    <details><summary>why</summary>
+
+    `model.WithRunID` / `WithTemplateData` were attached on the trunk dispatch path only, so the SAME node rendered two ways depending on how it was reached. Inside a `fan_out_all` / `fan_out_each` body a prompt kept its literal `{{outputs.x.y}}` braces and a tool `command:` substituted an EMPTY string for `{{run.id}}` — a silent constant, not a visible failure. The llm router and the `llm_or_human` LLM half never had the snapshot either.
+
+    </details>
+
 ## [3.112.0](https://github.com/SocialGouv/iterion/compare/v3.111.1...v3.112.0) (2026-09-06)
 
 ### Features
