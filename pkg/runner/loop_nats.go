@@ -295,6 +295,10 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 		errors.Is(err, runtime.ErrRunPausedOperator) ||
 		errors.Is(err, runtime.ErrRunCancelled) ||
 		errors.Is(err, runtime.ErrRunInterrupted) ||
+		// An IR this runner cannot load is acked with its own verdict on the
+		// run (IR_UNLOADABLE); a park here on the last delivery would
+		// overwrite that diagnosis with DLQ_PARKED.
+		errors.Is(err, ErrIRUnloadable) ||
 		r.cfg.NATS == nil || delivery.NumDelivered() < r.cfg.NATS.MaxDeliver() {
 		return false, ""
 	}
@@ -319,7 +323,7 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 	if changed, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
 		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — replay via /api/admin/dlq)", err),
 		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal},
-		[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued, store.RunStatusFailedResumable}); serr != nil {
+		store.RunnerVerdictFromStatuses()); serr != nil {
 		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)
 	} else if !changed {
 		logger.Warn("runner: DLQ status flip for %s declined (status drifted) — the document does not carry DLQ_PARKED", msg.RunID)

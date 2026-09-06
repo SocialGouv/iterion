@@ -409,6 +409,10 @@ func TestClassifyExecResult(t *testing.T) {
 		{"interrupted naks for resume", runtime.ErrRunInterrupted, "interrupted", actionNak},
 		{"wrapped interrupted naks", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), "interrupted", actionNak},
 		{"generic failure naks", errors.New("boom"), "failed", actionNak},
+		// An IR this runner cannot load is deterministic for this runner:
+		// Ack (the run is failed_resumable + IR_UNLOADABLE), never a
+		// redelivery that reaches the same image and the same verdict.
+		{"unloadable IR acks (no redelivery)", fmt.Errorf("runner: %w: compile IR: 3 diagnostic(s)", ErrIRUnloadable), "ir_unloadable", actionAck},
 		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
 		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
 		// recordRunGitMeta clobbers the exported commits; run 019f8e08). It is
