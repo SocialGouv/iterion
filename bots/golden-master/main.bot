@@ -2260,6 +2260,30 @@ tool oracle_run:
         return os.path.join(root, "gm-applied", "gm-applied-%s.json" % key)
 
 
+    def marker_dir_is_ours(marker):
+        """True when the marker's directory is one only this user could have written.
+
+        A marker names a script the next gate will run, and its path is
+        PREDICTABLE: with GM_SCRATCH unset — the shipped default, the bot sets
+        nothing — it is <system temp dir>/gm-applied, on a root shared with every
+        other user of the machine. Whoever pre-creates that directory owns it: our
+        makedirs(exist_ok=True) succeeds on it, our chmod raises EPERM, and we
+        would go on to read THEIR marker and revert whatever it names. Containment
+        bounds WHICH directories a marker may name; this bounds who may name one.
+
+        lstat, not stat: a symlink in that position is never one we made, and its
+        own 0o777 mode fails the privacy test here without a separate branch.
+        """
+        getuid = getattr(os, "getuid", None)
+        if getuid is None:      # no POSIX ownership to read (Windows)
+            return True
+        try:
+            st = os.lstat(os.path.dirname(marker))
+        except OSError:
+            return False
+        return st.st_uid == getuid() and not st.st_mode & 0o077
+
+
     def read_applied_marker(marker):
         """The marker's contents, or {} — a marker that will not parse records
         nothing, and neither does one that is not an object."""
@@ -2292,7 +2316,11 @@ tool oracle_run:
         d = os.path.dirname(marker)
         try:
             os.makedirs(d, mode=0o700, exist_ok=True)
-            os.chmod(d, 0o700)
+            os.chmod(d, 0o700)      # the repair; the check below is the verdict
+            if not marker_dir_is_ours(marker):
+                return ("the application marker's directory is not this user's own "
+                        "private one (%s): refusing to record there, and so to apply. "
+                        "Point GM_SCRATCH at a directory you own." % d)
             fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
@@ -2399,14 +2427,22 @@ tool oracle_run:
         recorded, so the next gate reports it again instead of forgetting it;
         an operator who reverts by hand clears it by deleting the marker.
 
-        A marker whose directory is not one of this workspace's `mutant_roots`
-        is REFUSED, dropped and reported without executing anything: the marker
-        is an instruction to run a script, and only the harness's own mutants
-        may write it.
+        A marker is an instruction to run a script, so it is REFUSED — reported,
+        nothing executed — on either of two grounds: it names a directory that is
+        not one of this workspace's `mutant_roots` (dropped, it sits in our own
+        private directory), or it sits in a directory this user does not privately
+        own (left alone, it is not ours to touch).
         """
         marker = applied_marker_for(ws)
         if not os.path.isfile(marker):
             return None
+        if not marker_dir_is_ours(marker):
+            # Not ours to read — and not ours to delete either. Nothing is executed
+            # and nothing is dropped. No mutant of ours can be stranded by this:
+            # write_applied_marker refuses the same directory, so nothing was ever
+            # applied under it.
+            return {"id": None, "dir": "", "code": None, "out": "", "marker": marker,
+                    "refused": True, "untrusted_dir": True}
         meta = read_applied_marker(marker)
         mdir = meta.get("dir") or ""
         if not mdir or not any(_under(mdir, r) for r in mutant_roots(ws)):
@@ -2432,6 +2468,13 @@ tool oracle_run:
         revert failed or its script is gone, the tree is NOT HEAD, the gate must
         refuse rather than judge a program nobody wrote.
         """
+        if left.get("untrusted_dir"):
+            return "refused", (
+                "the application marker's directory is not this user's own private one "
+                "(%s): it was neither read nor deleted, and nothing was executed. No "
+                "mutant can be recorded there either, so gating is refused for as long "
+                "as it stands — point GM_SCRATCH at a directory you own."
+                % os.path.dirname(left.get("marker") or "?"))
         if left.get("refused"):
             return "refused", (
                 "a stale application marker named a directory that is neither this "
@@ -3683,6 +3726,42 @@ tool oracle_run:
                           [s3, v3.get("valid"), tree()], ["failed", False, "original\n"])
                 finally:
                     os.environ["GM_SCRATCH"] = scratch_ok
+                # ── Un repertoire de marqueurs QUE D'AUTRES PEUVENT ECRIRE n'est pas
+                # cru. Le chemin est previsible (<tmp>/gm-applied par defaut), donc
+                # qui le cree en premier le possede : notre makedirs(exist_ok) reussit
+                # dessus, notre chmod echoue, et on lirait SON marqueur.
+                scripts("printf 'mutant\\n' >> f.txt", "touch %s" % shlex.quote(canary))
+                apply_mutant(lmeta, tmp)
+                mdir_of_marker = os.path.dirname(applied_marker_for(tmp))
+                os.chmod(mdir_of_marker, 0o755)
+                try:
+                    left = revert_leftover_mutant(tmp)
+                    check("un repertoire de marqueurs ouvert aux autres n'est pas cru",
+                          [(left or {}).get("refused"), (left or {}).get("untrusted_dir")],
+                          [True, True])
+                    check("il n'est ni execute ni efface",
+                          [os.path.exists(canary), os.path.isfile(applied_marker_for(tmp))],
+                          [False, True])
+                    check("disposition d'un repertoire de marqueurs non prive",
+                          leftover_disposition(left)[0], "refused")
+                    check("et plus rien ne peut y etre enregistre, donc applique",
+                          apply_mutant(lmeta, tmp)[0], None)
+                finally:
+                    os.chmod(mdir_of_marker, 0o700)
+                drop_applied_marker(tmp)
+                sub("git", "checkout", "--", "f.txt")
+                # Un lien symbolique a la place du repertoire n'est jamais l'un des
+                # notres : refuse a l'ecriture, donc rien n'est applique.
+                elsewhere = os.path.join(outside, "redirected")
+                os.makedirs(elsewhere)
+                os.environ["GM_SCRATCH"] = linked = tempfile.mkdtemp(prefix="gm-linked-")
+                try:
+                    os.symlink(elsewhere, os.path.join(linked, "gm-applied"))
+                    check("un repertoire de marqueurs qui est un lien est refuse",
+                          [apply_mutant(lmeta, tmp)[0], tree()], [None, "original\n"])
+                finally:
+                    os.environ["GM_SCRATCH"] = scratch_ok
+                    shutil.rmtree(linked, ignore_errors=True)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
                 shutil.rmtree(outside, ignore_errors=True)
