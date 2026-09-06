@@ -464,3 +464,71 @@ func TestForgeConnect_AutoApplyIsAudited(t *testing.T) {
 		t.Fatalf("audit trail = %+v", events)
 	}
 }
+
+// A forge that hangs past the apply's deadline is the failure worth
+// recording; the record rides its own budget, so the reason lands on the
+// connection even though the round-trips' context has expired.
+func TestForgeConnectionAvatar_RecordsWhenTheForgeHangs(t *testing.T) {
+	s := newForgeTestServer(t)
+	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
+	s.forgeConnections = cs
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		// Drain the body first: with an unread body the server never starts
+		// the background read that would notice the client hanging up.
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()    // runs last: the handler must be released first
+	defer close(release) // runs first (LIFO), so Close never waits on the handler
+	seedAvatarConn(t, s, forge.Connection{ID: "c-hang", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+
+	old := avatarApplyTimeout
+	avatarApplyTimeout = 200 * time.Millisecond
+	defer func() { avatarApplyTimeout = old }()
+
+	w := avatarReq(s, "c-hang", "")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-hang")
+	if !strings.Contains(stored.AvatarError, "deadline exceeded") || cs.updates != 1 {
+		t.Fatalf("the timeout was not recorded: avatar_error=%q updates=%d", stored.AvatarError, cs.updates)
+	}
+}
+
+// A 409 on a legacy connection records the learned kind and nothing else: the
+// avatar fields stay whatever the fresh document holds.
+func TestForgeConnectionAvatar_RefusalRecordsOnlyTheKind(t *testing.T) {
+	s := newForgeTestServer(t)
+	gl := &mockGitLabAvatar{bot: false}
+	srv := gl.server()
+	defer srv.Close()
+	then := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	seedAvatarConn(t, s, forge.Connection{ID: "c-legacy2", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "iterion-bot", ForgeBaseURL: srv.URL, AvatarAppliedAt: &then, AvatarError: "kept as is"})
+	if w := avatarReq(s, "c-legacy2", ""); w.Code != http.StatusConflict {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-legacy2")
+	if stored.AccountKind != forge.AccountKindUser || stored.AvatarAppliedAt == nil || !stored.AvatarAppliedAt.Equal(then) || stored.AvatarError != "kept as is" {
+		t.Fatalf("refusal rewrote more than the kind: %+v", stored)
+	}
+	// Forced, with a forge whose /user is unreadable: the operator's word
+	// carries the apply, and the kind stays unknown rather than fatal.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) })
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/u.png"})
+	})
+	noUser := httptest.NewServer(mux)
+	defer noUser.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-nouser", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: noUser.URL})
+	if w := avatarReq(s, "c-nouser", `{"force":true}`); w.Code != http.StatusOK {
+		t.Fatalf("forced apply with an unreadable /user: code=%d body=%s", w.Code, w.Body.String())
+	}
+}

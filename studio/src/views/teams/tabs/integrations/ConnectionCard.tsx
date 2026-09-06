@@ -254,6 +254,9 @@ function AvatarRow({
       await applyForgeConnectionAvatar(teamID, conn.id, { force });
       onChanged();
     } catch (e) {
+      // A refusal still taught the server something (the account's kind, a
+      // forge error kept on the record): refetch, then show the reason.
+      onChanged();
       onError(errorMessage(e));
     } finally {
       setBusy(false);
