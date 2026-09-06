@@ -2506,6 +2506,18 @@ tool oracle_run:
         directory resolves to today, and dropping it would destroy the only
         evidence that the tree is not HEAD. Every application is refused while
         it is there, which is what makes the refusal stick.
+
+        ONE gate per tree is ASSUMED: the record carries no liveness, no pid and
+        no lock. A second gate starting while the first sits between its apply.sh
+        and its revert.sh reads that record as a leftover, reverts a LIVE mutant
+        and drops its owner's record; the first then captures against a reverted
+        tree and reports blind lanes it invented. write_applied_marker's refusal
+        ("another harness is gating this tree") does NOT cover this — the sweep
+        runs before any application, so it never reaches that refusal. Measured.
+        Two harnesses mutating one tree cannot measure anything either way, so
+        this is a limitation rather than a mode to support; the fix, if a real
+        case turns up, is an exclusive lock held for the gate's duration (an
+        flock dies with the process, unlike a recorded pid).
         """
         marker = applied_marker_for(ws)
         meta, why = read_applied_marker(ws)
