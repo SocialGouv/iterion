@@ -113,8 +113,8 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 		f.beforePublish(staging, dest)
 	}
 	// Only a MOVING ref publishes over an existing tree: its content changed,
-	// so the old one must go. A pinned ref's content cannot differ from what
-	// is already at its content-addressed path.
+	// so the old one must go. A pinned ref resolves to the same content every
+	// time, so a tree already under its key is what this fetch would put there.
 	if err := f.publish(staging, dest, !s.PinnedRef()); err != nil {
 		return "", fmt.Errorf("pluginsource: publish checkout for %q: %w", s.Name, err)
 	}
@@ -140,12 +140,17 @@ func isPublished(dest string) bool {
 // rename leaves it serving.
 //
 // For an immutable (pinned) ref a tree already there IS the tree being
-// published, so it is kept and the staging copy dropped. That is not only
-// cheaper: renaming it aside makes `dest` briefly ABSENT to every other
-// publisher, and that absence is the window a peer's "was it already
-// published?" read fell into — its own rename had lost, dest was then retired
-// by a third publisher, and it reported ENOTEMPTY for a tree that was there
-// (#854).
+// published, so it is kept and the staging copy dropped. The key is (git_url,
+// ref) — not a hash of the tree — so "immutable" is PinnedRef()'s reading of
+// the ref and nothing stronger; a re-pointed tag is served stale, exactly as
+// Fetch's cache hit above already serves it. Keeping a peer's tree therefore
+// adds no staleness this fetch did not already have.
+//
+// And keeping it is not only cheaper: renaming it aside makes `dest` briefly
+// ABSENT to every other publisher, and that absence is the window a peer's
+// "was it already published?" read fell into — its own rename had lost, dest
+// was then retired by a third publisher, and it reported ENOTEMPTY for a tree
+// that was there (#854).
 //
 // Closing that window takes the RENAME as the test-and-set, never a read: a
 // read is stale the syscall after it is taken, so deciding "nothing is there,

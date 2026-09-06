@@ -10,8 +10,8 @@ import (
 )
 
 // A peer that publishes the same PINNED checkout while this fetch is staging has
-// published exactly the tree this fetch wanted: the cache path is
-// content-addressed and the ref immutable. The loser must take it — and must
+// published exactly the tree this fetch wanted: same key, and a pinned ref
+// resolves to the same content every time. The loser must take it — and must
 // NOT swap its own copy in, because renaming the peer's tree aside leaves
 // `dest` ABSENT for an instant, and that instant is the window a THIRD
 // publisher's "was it already published?" read falls into: its own rename has
