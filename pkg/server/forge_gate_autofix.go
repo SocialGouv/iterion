@@ -89,13 +89,26 @@ func (s *Server) attachGateAutofix(bus eventbus.Bus) (func(), error) {
 // majority, and a genuine launch is deduped by the per-head idempotency key
 // plus the launch tail's atomic claim, so a double offer costs one read.
 func (s *Server) autofixOffer(ctx context.Context, runID string) {
-	_ = s.autofixForRun(ctx, trigger.Event{Subject: trigger.Subject{Type: "run", ID: runID}})
+	_ = s.autofixForRunID(ctx, runID, gateTriggerSweep)
 }
 
-// autofixForRun is the eventbus handler. Every refusal below is silent by
-// design: the overwhelming majority of runs are not gating runs at all.
+// autofixForRun is the eventbus handler.
 func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
-	runID := strings.TrimSpace(ev.Subject.ID)
+	return s.autofixForRunID(ctx, strings.TrimSpace(ev.Subject.ID), gateTriggerEvent)
+}
+
+// autofixForRunID is the lane itself, reachable from either of its two
+// triggers: the run-outcome event (immediate) and the periodic sweep (the net
+// under it). `via` names which one — the same discriminator the reconciler
+// carries, and for the same reason: the sweep re-offers every terminal run in
+// its lookback ONCE A MINUTE, per process, so anything here that is not
+// idempotent must be event-only. The launch path is idempotent by its
+// per-head claim; a COMMENT is not, and has no claim to hide behind.
+//
+// Every refusal below is silent by design: the overwhelming majority of runs
+// are not gating runs at all.
+func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
+	runID = strings.TrimSpace(runID)
 	if runID == "" || s.cfg.Store == nil || s.forgePublishTokens == nil || s.forgeIntegrations == nil ||
 		s.webhookConfigs == nil || s.webhookDeliveries == nil {
 		// The last two are dereferenced below, and this runs in a bus goroutine
@@ -131,8 +144,16 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	// and the reason has to reach the author, because a run that changed
 	// nothing leaves no other trace on the pull request. Keyed on the typed
 	// code alone: any bot may decline, and the engine never learns which.
+	//
+	// The notice is posted on the EVENT path only. A declined run is terminal
+	// and its updated_at never moves, so the sweep re-offers it every minute
+	// for the whole lookback — dozens of identical comments on one pull
+	// request, per replica. Same guard, for the same reason, as the pause and
+	// DLQ notices next door (R69a603).
 	if run.FailureCode == declinedFailureCode {
-		s.noticeFixerDeclined(ctx, run)
+		if via == gateTriggerEvent {
+			s.noticeFixerDeclined(ctx, run)
+		}
 		return nil
 	}
 

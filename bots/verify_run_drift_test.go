@@ -377,31 +377,159 @@ func TestVerifyRunMaskedPipeline(t *testing.T) {
 }
 
 // TestVerifyRunDriftTailPresentInAllBots asserts every catalog bot carrying a
-// verify_run-style gate ships the deterministic drift tail (the body is
-// copy-pasted per bot — no DSL include — so a new bot or an edit can silently
-// drop it).
+// verify.sh gate ships the deterministic tail. The body is copy-pasted per bot
+// — no DSL include — so a new bot, or an edit, can silently drop it.
+//
+// The carriers are DISCOVERED, not listed. A hand-written roster is exactly
+// how this drifted: the list omitted app-dev, so app-dev kept the
+// line-at-a-time drift detector while its own skill documented the structural
+// one (R8f498c) — a bot promising an enforcement it does not have, which is
+// worse than not promising it. The discriminator is the node that EXECUTES the
+// script (`subprocess.run(['sh', script]`), which is precisely the gate:
+// verify_probe reads the same path with `sh -n` and is deliberately excluded,
+// and the name is irrelevant (secured-renovacy's is `p2_verify_run`).
+//
+// docs-refresh has no gate at all — a docs-only campaign cannot break the
+// build (commit 8aee22894) — and is correctly absent from the discovery.
 func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
-	bots := map[string]string{
-		"feature-dev/main.bot":         "verify_run",
-		"whole-improve-loop/main.bot":  "verify_run",
-		"branch-improve-loop/main.bot": "verify_run",
-		"feature-gap-fill/main.bot":    "verify_run",
-		"test-coverage/main.bot":       "verify_run",
-		"e2e-coverage/main.bot":        "verify_run",
-		"dep-update-guard/main.bot":    "verify_run",
-		"adr-cartograph/main.bot":      "verify_run",
-		"instrument/main.bot":          "verify_run",
-		// docs-refresh dropped the build-verify apparatus (a docs-only
-		// campaign can't break the build) — commit 8aee22894, converges on
-		// scope_ok ∧ docs_aligned alone. No verify_run node to guard.
-		"secured-renovacy/main.bot": "p2_verify_run",
+	const executesTheScript = "subprocess.run(['sh', script]"
+
+	mains, err := filepath.Glob("*/main.bot")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for rel, node := range bots {
+	carriers := 0
+	for _, rel := range mains {
+		src, err := os.ReadFile(rel)
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if !strings.Contains(string(src), executesTheScript) {
+			continue // not a verify.sh gate carrier
+		}
+		carriers++
 		t.Run(rel, func(t *testing.T) {
-			cmd := toolCommand(t, rel, node)
-			for _, marker := range []string{"tree_state", "DRIFT GATE MISSING", "UNCOMMITTED REGEN OUTPUT", "MASKED EXIT STATUS"} {
-				if !strings.Contains(cmd, marker) {
-					t.Errorf("%s %s lacks the deterministic drift tail (missing %q)", rel, node, marker)
+			for _, marker := range []string{"tree_state", "DRIFT GATE MISSING", "UNCOMMITTED REGEN OUTPUT",
+				"MASKED EXIT STATUS", "sh_uncommented", "ends_nonzero", "masked_pipelines"} {
+				if !strings.Contains(string(src), marker) {
+					t.Errorf("%s runs a verify.sh gate but lacks the deterministic tail (missing %q) — "+
+						"its skills/verify-build.md documents enforcement this bot does not implement", rel, marker)
+				}
+			}
+		})
+	}
+	if carriers < 10 {
+		t.Fatalf("discovered %d verify.sh gate carriers — the discriminator %q is stale and the guard is near-vacuous",
+			carriers, executesTheScript)
+	}
+}
+
+// A marker check proves the tail was pasted, not that it works: the body is
+// re-indented per bot and a bad splice compiles fine and answers wrong. This
+// runs app-dev's OWN command against the two shapes R8f498c named — the
+// multiline gate it used to reject, and the piped gate it used to let through.
+func TestAppDevVerifyRunEnforcesTheSameTail(t *testing.T) {
+	for _, bin := range []string{"python3", "git"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not on PATH", bin)
+		}
+	}
+	command := verifyRunCommand(t, "app-dev/main.bot")
+
+	var res struct {
+		Passed   bool   `json:"passed"`
+		ExitCode int    `json:"exit_code"`
+		LogTail  string `json:"log_tail"`
+	}
+	run := func(t *testing.T, ws, scratch string) {
+		t.Helper()
+		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
+		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
+		out, err := exec.Command("sh", "-c", cmd).Output()
+		if err != nil {
+			t.Fatalf("verify_run failed to execute: %v (out %q)", err, out)
+		}
+		if uerr := json.Unmarshal(out, &res); uerr != nil {
+			t.Fatalf("output is not verify_result JSON: %v (out %q)", uerr, out)
+		}
+	}
+	workspace := func(t *testing.T, ci bool) (string, string) {
+		t.Helper()
+		ws, scratch := t.TempDir(), t.TempDir()
+		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v (%s)", err, out)
+		}
+		if ci {
+			dir := filepath.Join(ws, ".github", "workflows")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			yml := "jobs:\n  test:\n    steps:\n      - run: |\n          task gen\n          git diff --exit-code openapi.json\n"
+			if err := os.WriteFile(filepath.Join(dir, "ci.yml"), []byte(yml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return ws, scratch
+	}
+	write := func(t *testing.T, scratch, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("multiline_gate_accepted", func(t *testing.T) {
+		ws, scratch := workspace(t, true)
+		write(t, scratch, "#!/bin/sh\nset -e\nif ! git diff --quiet -- openapi.json; then\n  exit 1\nfi\n")
+		run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("app-dev still rejects the multiline gate its own skill documents: %+v", res)
+		}
+	})
+
+	t.Run("masked_pipeline_refused", func(t *testing.T) {
+		ws, scratch := workspace(t, false)
+		write(t, scratch, "#!/bin/sh\nset -e\nfalse 2>&1 | tail -10\necho EXIT=0\n")
+		run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 5 {
+			t.Fatalf("app-dev still lets a masked gate report green: %+v", res)
+		}
+	})
+}
+
+// The skill is the CONTRACT the authoring agent writes verify.sh against, so a
+// bundle shipping the enforcement wording must ship the enforcement. This is
+// the other half of R8f498c: the promise and the gate are in different files,
+// and only a test can hold them together.
+func TestVerifyBuildSkillPromiseMatchesItsBot(t *testing.T) {
+	skills, err := filepath.Glob("*/skills/verify-build.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) == 0 {
+		t.Fatal("no verify-build skill discovered — the glob is stale")
+	}
+	for _, skill := range skills {
+		t.Run(skill, func(t *testing.T) {
+			body, err := os.ReadFile(skill)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mainBot := filepath.Join(filepath.Dir(filepath.Dir(skill)), "main.bot")
+			bot, err := os.ReadFile(mainBot)
+			if err != nil {
+				t.Fatalf("read %s: %v", mainBot, err)
+			}
+			// Each promise the skill makes, and the marker in the bot that
+			// makes it true. A skill may say LESS than its bot enforces;
+			// it may never say more.
+			for promise, marker := range map[string]string{
+				"MASKED EXIT STATUS":  "masked_pipelines",
+				"on one line or many": "ends_nonzero",
+			} {
+				if strings.Contains(string(body), promise) && !strings.Contains(string(bot), marker) {
+					t.Errorf("%s promises %q but %s implements no %s — the authoring agent writes a verify.sh "+
+						"against a gate that is not there", skill, promise, mainBot, marker)
 				}
 			}
 		})

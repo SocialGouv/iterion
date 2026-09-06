@@ -422,18 +422,20 @@ prompt campaign_system:
   deliberately SHORTER than the run's duration cap: the run holds a reserve
   back for the delivery tail — the deterministic build/test gate, the in-loop
   review, the push onto the pull request, the verdict comment and the
-  merge-gate status. Your task below gives you three figures in seconds of RUN
-  time: the cap, the instant your window closes, and how much has elapsed so
-  far. Subtract and you have your remaining working time; check it again
-  whenever you finish a fix.
+  merge-gate status. Your task below gives you STOP WORKING AT: one UTC
+  wall-clock instant. Read the clock with `date -u` after every fix and compare
+  — that is the only measure of your own elapsed time you actually have, and an
+  agent's unaided sense of it is exactly what let three runs spend a whole
+  2h30m cap without noticing.
   When you reach that instant: finish the fix in your hands to a committable
   state (or discard it, per the clean-tree rule), COMMIT, and REPORT with
-  stopped_on_reserve=true. Do NOT open an issue you cannot finish inside the
-  window — pick the next-smallest one, or stop.
+  stopped_on_reserve=true. Do NOT open an issue you cannot finish before it —
+  check `date -u` BEFORE picking the next one, and take the next-smallest, or
+  stop.
   This is not headroom you may spend. Three production runs died exactly at
   the cap with NOTHING delivered: no push, no verdict, no comment, and every
   uncommitted fix lost with the pod. Under-using the window costs one pass;
-  overrunning it costs the whole run. (A closing instant of 0 means the run is
+  overrunning it costs the whole run. (An EMPTY instant means the run is
   unbounded on time — then work to the task, not to a clock.)
 
   KEEP GOING, one issue at a time, until this pass has resolved every real
@@ -544,14 +546,16 @@ prompt campaign_user:
 
   Piloting for this run: {{vars.pilot}}
 
-  WORKING WINDOW (seconds of RUN time — everything past the closing instant is
-  the delivery reserve: the build/test gate, the review, the push, the verdict
-  comment and the merge-gate status):
-    duration cap for this run: {{run.max_duration_seconds}}
-    your window closes at:     {{outputs.delivery_reserve.work_deadline_seconds}}
-    elapsed when you started:  {{run.elapsed_seconds}}
-  Commit and report by the closing instant. Both zero = the run is unbounded on
-  time; then work to the task, not to a clock.
+  WORKING WINDOW — everything after this instant is the delivery reserve (the
+  build/test gate, the review, the push, the verdict comment and the merge-gate
+  status):
+    STOP WORKING AT (UTC): {{outputs.delivery_deadline.deadline_at}}
+  That is a wall-clock time, so you can check it: run `date -u` whenever you
+  finish a fix and compare. Do NOT start an issue you cannot finish before it.
+  (An empty instant = the run is unbounded on time; then work to the task, not
+  to a clock. For context only, and stale the moment it is printed: the run's
+  duration cap is {{run.max_duration_seconds}}s and it had used
+  {{run.elapsed_seconds}}s when this pass started.)
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
@@ -871,11 +875,29 @@ schema delivery_reserve_state:
   cap_seconds: float
   reserve_seconds: float
   work_deadline_seconds: float
+  ## The window still open RIGHT NOW, which is what a wall-clock instant is
+  ## built from. Clamped at 0: a plan phase that overran its share leaves a
+  ## negative remainder, and "the deadline was 20 minutes ago" is a clearer
+  ## thing to hand an agent than a negative duration.
+  work_seconds_left: float
   fail_log: string
   plan: string
   plan_critique: string
   plan_responses: string
   plan_provenance: string
+
+## delivery_deadline's I/O — the run-relative window turned into an instant
+## the agent can actually READ. Seconds on the run clock are resolved once,
+## when the prompt is built, and the agent has no way to re-read them
+## mid-pass; a UTC instant it compares with `date -u` after every fix is
+## observable, and being absolute it stays correct on every continuation
+## pass without the node re-running.
+schema delivery_deadline_input:
+  work_seconds_left: float
+
+schema delivery_deadline_state:
+  deadline_at: string
+  seconds_left: float
 
 ## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
 schema verify_plan:
@@ -910,7 +932,15 @@ schema verify_probe_state:
 ## green AND the campaign reported the branch diff clean. fail_log relays the
 ## real build failure to the campaign on a RED pass (empty when green).
 schema gate_state:
+  ## The VERDICT: green tree, clean branch, clean review. publish_verdict
+  ## posts it as the merge gate's build half, so it never widens to mean
+  ## "we stopped" — a pass that ran out of window is not a green build.
   converged: bool
+  ## The ROUTING question, which is a different one: should this pass leave
+  ## the loop? Converged, or out of working window — in the second case
+  ## another pass would spend the delivery reserve on its own verify+review
+  ## tail, which is the reserve's whole purpose.
+  ship_now: bool
   fail_log: string
 
 ## review is the in-loop adversarial self-review (ADR: push the downstream
@@ -1506,11 +1536,49 @@ compute delivery_reserve:
     ## an unbudgeted run must not be told its window is already shut.
     reserve_seconds: "if(run.max_duration_seconds > 0, min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0)"
     work_deadline_seconds: "if(run.max_duration_seconds > 0, run.max_duration_seconds - min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0)"
+    ## What is left of the window at this instant, clamped at 0 — the
+    ## quantity delivery_deadline turns into a wall-clock time.
+    work_seconds_left: "max(0, if(run.max_duration_seconds > 0, run.max_duration_seconds - min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0) - run.elapsed_seconds)"
     fail_log: "input.fail_log"
     plan: "input.plan"
     plan_critique: "input.plan_critique"
     plan_responses: "input.plan_responses"
     plan_provenance: "input.plan_provenance"
+
+## delivery_deadline — the window as an instant the agent can OBSERVE.
+## Seconds on the run clock are resolved once, when the campaign's prompt is
+## built, and nothing refreshes them while it works: `{{run.elapsed_seconds}}`
+## is a template ref, not a tool, and the agent is never told the run's
+## wall-clock start, so it cannot convert `date` into run time. Handing it a
+## duration and asking it to "check again" is the unaided sense of elapsed
+## time that let three runs spend the whole cap without noticing.
+##
+## So the window is stamped ONCE as a UTC instant, which the contract tells
+## the agent to compare with `date -u` after every fix. Absolute is also what
+## makes it survive the continuation loop: the same instant is still correct
+## on pass 3, so this node stays outside the loop with the reserve.
+## python3, not `date -d`: the -d form is GNU-only and these bots run in
+## whatever image the target repo brings.
+tool delivery_deadline:
+  description: "Stamp the working window as a UTC instant the campaign can re-read"
+  input: delivery_deadline_input
+  command: `LEFT={{input.work_seconds_left}} python3 -c "
+import os, json
+from datetime import datetime, timedelta, timezone
+try:
+    left = float(os.environ.get('LEFT', '0') or '0')
+except ValueError:
+    left = 0.0
+if left <= 0:
+    # No cap on this axis (or the window is already spent): an empty instant
+    # is the contract's 'unbounded, work to the task' signal, never a
+    # deadline in the past that would read as stop now.
+    print(json.dumps({'deadline_at': '', 'seconds_left': 0}))
+else:
+    at = datetime.now(timezone.utc) + timedelta(seconds=left)
+    print(json.dumps({'deadline_at': at.strftime('%Y-%m-%dT%H:%M:%SZ'), 'seconds_left': left}))
+"`
+  output: delivery_deadline_state
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native Claude
@@ -1898,6 +1966,9 @@ compute gate:
   output: gate_state
   expr:
     converged: "outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean"
+    ## Repeated rather than referenced: a compute's fields are evaluated
+    ## against the node's input and the run, never against its own siblings.
+    ship_now: "(outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean) || outputs.campaign.stopped_on_reserve"
     fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
 
 ## mr_gate routes the post-convergence tail into at most ONE of two
@@ -2365,12 +2436,19 @@ workflow branch_improve_loop:
   }
   plan_budget_gate -> plan_exhausted when exhausted
 
-  ## The working window, then the campaign. Every FORWARD entry crosses
-  ## this node, so no launch shape can start a pass with an unbounded
-  ## window by omission; the loop back-edge is exempt by construction —
-  ## it re-enters the same campaign, whose prompt reads the deadline off
-  ## this node's persisted output and the elapsed side off the run.
-  delivery_reserve -> campaign with {
+  ## The working window, stamped as an instant, then the campaign. Every
+  ## FORWARD entry crosses this pair, so no launch shape can start a pass
+  ## with an unbounded window by omission; the loop back-edge is exempt by
+  ## construction — it re-enters the same campaign, whose prompt reads an
+  ## ABSOLUTE deadline off delivery_deadline, and an absolute instant is
+  ## as true on pass 3 as on pass 1.
+  delivery_reserve -> delivery_deadline with {
+    work_seconds_left: "{{outputs.delivery_reserve.work_seconds_left}}"
+  }
+  ## The relay reads delivery_reserve directly: an edge mapping resolves any
+  ## node's outputs, so the stamp node carries no plan-phase plumbing of its
+  ## own.
+  delivery_deadline -> campaign with {
     fail_log:        "{{outputs.delivery_reserve.fail_log}}",
     plan:            "{{outputs.delivery_reserve.plan}}",
     plan_critique:   "{{outputs.delivery_reserve.plan_critique}}",
@@ -2418,10 +2496,16 @@ workflow branch_improve_loop:
   }
   review -> gate
 
-  ## Converged (green AND the campaign reports the branch diff clean) → ship
-  ## what is banked (optional PR, else finish).
-  gate -> mr_gate when converged
-  ## Not converged → another campaign pass. RED carries the failure log so the
+  ## Ship what is banked (optional PR, else finish) on EITHER exit: converged
+  ## — green and the branch diff clean — or the pass stopped because its
+  ## working window closed. The second is the delivery reserve's own exit: a
+  ## further pass would spend that reserve on its verify+review tail, which is
+  ## precisely what it is held back to prevent, and `issues_remaining` already
+  ## carries what the next RUN should pick up. The engine's loop budget guard
+  ## stays the backstop, not the router — it declines a back-edge it cannot
+  ## FUND, a different question, and it can be switched off.
+  gate -> mr_gate when ship_now
+  ## Not shipping → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
   ## agent simply keeps reviewing the diff. This closes the single declared
   ## loop (campaign→verify_build→verify_run→gate→campaign); the loop-back reads

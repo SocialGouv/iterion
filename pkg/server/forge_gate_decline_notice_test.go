@@ -142,6 +142,42 @@ func TestFixerDeclineIsANoOpWithANotice(t *testing.T) {
 		}
 	})
 
+	// R69a603. autofixForRun is reached from TWO paths: the eventbus
+	// subscription, and the reconciliation sweep, which re-offers every
+	// terminal run in a 60-minute lookback ONCE A MINUTE, per process. A
+	// DECLINED run is terminal and its updated_at never moves, so it stays in
+	// the window for the whole hour: the notice would land ~57 times per
+	// replica on one pull request.
+	//
+	// The subsystem already answers this, and it is not a marker scan — the
+	// pause and DLQ notices are wrapped in `via == gateTriggerEvent`
+	// (forge_gate_reconcile.go), with a narrow commenter interface that
+	// deliberately cannot list comments. Same mechanism here, and the
+	// discriminator is EXPLICIT rather than an incidentally-empty event field.
+	t.Run("the sweep never re-posts the notice", func(t *testing.T) {
+		s, c, _ := newWorld(t)
+		run := seedRun(t, s, declinedFailureCode, reason)
+
+		// The event path posts once...
+		if err := s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFailed,
+			Subject: trigger.Subject{ID: run.ID},
+		}); err != nil {
+			t.Fatalf("autofixForRun: %v", err)
+		}
+		if len(c.bodies) != 1 {
+			t.Fatalf("the event path must post exactly one notice, got %d", len(c.bodies))
+		}
+		// ...and the sweep, which re-offers this same run every minute for an
+		// hour, must add nothing.
+		s.autofixOffer(context.Background(), run.ID)
+		s.autofixOffer(context.Background(), run.ID)
+		if len(c.bodies) != 1 {
+			t.Fatalf("the sweep re-posted the decline notice (%d comments): at one offer a minute for a 60-minute "+
+				"lookback that is ~57 identical comments per replica on one pull request", len(c.bodies))
+		}
+	})
+
 	t.Run("a plain failure is untouched by the decline branch", func(t *testing.T) {
 		// The negative that keeps the branch honest: a fixer that actually
 		// DIED still gets whatever the lane would normally do, and posts no
