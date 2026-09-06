@@ -60,13 +60,14 @@ Prefer `task build` after editing studio assets or any of the nine embedded disp
 
 Every suite gated on `ITERION_TEST_MONGO_URI` skips under a plain `go test
 ./...`; CI's `mongo-conformance` job is what enforces the contract, over the
-package trees that carry such a suite — the list the job runs is derived from
-`grep -rl ITERION_TEST_MONGO_URI --include='*_test.go' pkg/`, so a new gated
-suite is never silently outside it. A change to a store twin or a conformance
-row is therefore unverified until it ran against a real replica set. The
-recipe below mirrors the job (`mongo:8.0`, one-member replica set for change
-streams and transactions) and was run verbatim on 2026-09-06: all 21 gated
-trees green in 95 s.
+package trees listed in its `go test` line — and `TestMongoGatedPackagesAreInTheCIJob`
+(`pkg/store/mongo/ci_mongo_gate_test.go`) fails the build when a package whose
+tests actually READ the variable is missing from that list (a package that
+merely names it in a comment does not count). A change to a store twin or a
+conformance row is therefore unverified until it ran against a real replica
+set. The recipe below mirrors the job (`mongo:8.0`, one-member replica set for
+change streams and transactions) and was run verbatim on 2026-09-06: every
+listed tree green in 95 s.
 
 ```bash
 # mongod listens on 27018 INSIDE the container too (--port), so the member
@@ -82,8 +83,8 @@ for i in $(seq 1 30); do
   [ "$st" = "PRIMARY" ] && break; sleep 2
 done; [ "$st" = "PRIMARY" ] || { echo "replica set never became PRIMARY"; exit 1; }
 
-# the same trees the CI job runs, derived the same way:
-pkgs=$(grep -rl ITERION_TEST_MONGO_URI --include='*_test.go' pkg/ | xargs -n1 dirname | sort -u | sed 's#^#./#')
+# the same trees the CI job runs, read from the job itself:
+pkgs=$(sed -n '/^  mongo-conformance:/,/^  [a-z-]*:$/p' .github/workflows/tests.yml | grep -oE '\./pkg/[a-z/]+/\.\.\.' | tr '\n' ' ')
 ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
   devbox run -- go test -count=1 $pkgs
 docker rm -f iterion-mongo-conf

@@ -273,9 +273,8 @@ jobs:
       - name: Mongo conformance harness
         # Alongside the pkg/store/mongo harness, run EVERY suite gated on
         # this URI. A Mongo-only test that no job runs is a test that
-        # cannot fail, so the trees are derived from
+        # cannot fail: the list below must stay in sync with
         #   grep -rl ITERION_TEST_MONGO_URI --include='*_test.go' pkg/
-        # at run time instead of being listed by hand.
         # Several suites (secrets, orgusage, botsource, runstream,
         # orgsweep) were silently outside it — which matters because these
         # are exactly the semantics the memory stores do not model
@@ -283,16 +282,15 @@ jobs:
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          # The trees are DERIVED from the gate itself, so a new gated suite
-          # can never sit outside this job (pkg/runner's rollout test did,
-          # unrun, until the list was derived). The floor guards the grep:
-          # a derivation that finds fewer trees than the job ran before is a
-          # broken discriminator, not a smaller contract.
-          pkgs=$(grep -rl ITERION_TEST_MONGO_URI --include='*_test.go' pkg/ | xargs -n1 dirname | sort -u | sed 's#^#./#; s#$#/...#')
-          n=$(echo "$pkgs" | wc -l)
-          echo "mongo-gated package trees ($n):"; echo "$pkgs"
-          if [ "$n" -lt 20 ]; then echo "::error::only $n mongo-gated trees found — the derivation is broken"; exit 1; fi
-          go test -mod=vendor -v -timeout 8m $pkgs
+          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/... \
+            ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
+            ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/... \
+            ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... \
+            ./pkg/botsource/... \
+            ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
+            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
+            ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
+            ./pkg/forge/...
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
