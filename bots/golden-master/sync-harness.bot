@@ -2275,6 +2275,14 @@ tool sync_harness:
                 json.dump({"id": meta.get("id"),
                            "dir": os.path.abspath(d) if d else d}, f)
         except OSError as e:
+            # os.open may well have SUCCEEDED with the write failing after it (a
+            # full tmpfs /tmp is a documented incident on this repo), leaving a
+            # 0-byte file behind. An empty marker names no mutant, so no later gate
+            # can resolve it — and none of them removes a marker whose revert did
+            # not exit 0, so every gate from here on refuses, permanently, over a
+            # record of nothing. A marker we failed to write is not a record of an
+            # applied mutant: it goes, and the warning below is the whole truth.
+            forget_applied_marker(ws)
             # Swallowed in silence, this disarms the leftover guard for the whole
             # run with nobody told — and the operator most likely to hit it is the
             # one who set GM_SCRATCH precisely so the state would survive. A guard
@@ -2361,7 +2369,14 @@ tool sync_harness:
             return {"id": meta.get("id"), "dir": meta.get("dir"), "code": None,
                     "out": refused, "marker": marker}
         script = os.path.join(meta.get("dir") or "", "revert.sh")
-        if meta.get("dir") and os.path.isfile(script):
+        if not meta.get("dir"):
+            # Empty or corrupt: it names no mutant, so this cannot revert one — and
+            # cannot claim a mutant is applied either. Kept distinct from the
+            # vanished-script case below, which DOES know what was applied; folding
+            # the two made the report assert a mutated tree it had never looked at.
+            code, out = None, ("the marker is empty or corrupt — it names no mutant "
+                               "directory, so nothing here can say what was applied")
+        elif os.path.isfile(script):
             code, out = run_script(script, ws)
         else:
             code, out = None, "the mutant's revert.sh is no longer there"
@@ -2403,6 +2418,21 @@ tool sync_harness:
                 "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
                 "(revert.sh exit 0). The tree below is HEAD again; the interrupted "
                 "attempt's verdict, if any, judged a mutated program." % left.get("id"))
+        # A marker that names no mutant is a THIRD outcome, and it must not borrow
+        # the sentence below. That one asserts "THE TREE IS STILL MUTATED" — true
+        # when a mutant is known to have been applied and not put back, but here
+        # nothing was ever established: no id, no directory, no revert attempted.
+        # Stated anyway it accused a possibly pristine tree, named no mutant, and
+        # sent the operator after "that mutant's revert.sh" it could not identify.
+        # Still a refusal — an unreadable marker is exactly when the harness does
+        # not know — but the refusal now says what is actually the case.
+        if not left.get("dir"):
+            return True, (
+                "the applied-mutant marker %s cannot be read: %s. So this run cannot "
+                "tell whether a mutant is applied, nor which one, nor put it back — "
+                "and a gate that cannot rule that out would be judging a program "
+                "nobody can identify. Check the workspace against HEAD, then delete "
+                "that marker and re-run." % (left.get("marker"), left.get("out")))
         # Not a notice. Gating a knowingly-mutated tree is never legitimate — the
         # sibling doctrine three lines from the call site says recording and
         # iterating on a dirty tree is, GATING on it is not — and a leftover mutant
@@ -3779,6 +3809,51 @@ tool sync_harness:
                           [True, "leftover-1"])
                 finally:
                     os.environ.pop("GM_SCRATCH", None)
+
+                # Une ECRITURE de marqueur qui echoue APRES l'os.open laisse un
+                # fichier de 0 octet (un /tmp tmpfs plein, incident documente ici).
+                # Ce marqueur-la ne nomme aucun mutant : aucune porte ne peut le
+                # resoudre, et aucune n'efface un marqueur dont le revert n'est pas
+                # sorti 0 — donc toutes refusent, pour toujours, sur un registre de
+                # rien. Un marqueur qu'on n'a pas su ecrire n'est pas un registre.
+                def dump_qui_echoue(*_a, **_k):
+                    raise OSError(28, "No space left on device")
+
+                # `log` est capture, pas etouffe : l'avertissement fait partie du
+                # contrat (une garde absente doit le DIRE), donc il est verifie ici
+                # plutot que deverse sur stderr a chaque passage du harnais.
+                vrai_dump, vrai_log, dits = json.dump, g["log"], []
+                json.dump, g["log"] = dump_qui_echoue, dits.append
+                try:
+                    saved["apply_mutant"](lmeta, tmp)
+                finally:
+                    json.dump, g["log"] = vrai_dump, vrai_log
+                check("marqueur non ecrit : rien de pose, et l'absence de garde est DITE",
+                      [os.path.isfile(applied_marker_for(tmp)),
+                       any("could not write the applied-mutant marker" in d for d in dits)],
+                      [False, True])
+                subprocess.run(["git", "checkout", "--", "f.txt"], cwd=tmp,
+                               capture_output=True, text=True)
+
+                # Et s'il en traine un quand meme (ecrit par une version d'avant),
+                # la porte refuse SANS affirmer un arbre mute qu'elle n'a jamais
+                # regarde : elle ne connait ni mutant, ni repertoire, et n'a tente
+                # aucun revert. La phrase « THE TREE IS STILL MUTATED » accusait un
+                # arbre peut-etre intact et renvoyait l'operateur vers « that
+                # mutant's revert.sh » qu'elle etait incapable de nommer.
+                with open(applied_marker_for(tmp), "w", encoding="utf-8") as f:
+                    f.write("")
+                vide = revert_leftover_mutant(tmp)
+                vide_refuse, vide_msg = leftover_verdict(vide)
+                check("marqueur illisible : refus, mais sans affirmer l'arbre mute",
+                      [vide_refuse, "STILL MUTATED" in vide_msg,
+                       "cannot be read" in vide_msg,
+                       applied_marker_for(tmp) in vide_msg],
+                      [True, False, True, True])
+                try:
+                    os.remove(applied_marker_for(tmp))
+                except OSError:
+                    pass
 
                 # Ce que la porte en FAIT. Les trois sorties de
                 # revert_leftover_mutant sont toutes des dicts VRAIS : decider sur
