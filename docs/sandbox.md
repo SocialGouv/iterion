@@ -75,6 +75,48 @@ Kimi, Grok, or direct tool-node invocation. The container's PID 1 is
 iterion deliberately ignores the image's CMD/ENTRYPOINT in favour of
 treating the container as a long-lived "ssh-like" target.
 
+### Setup phases and their timeouts
+
+Everything between "the container/pod is up" and "the first node runs"
+is **setup**, and each phase is bounded on its own. An unbounded phase
+does not fail — it *waits*, and a run waiting in setup has no
+`sandbox_started` event, holds its queue lease, and only dies when the
+run's own `max_duration` fires hours later (measured: 2h 26m in a
+workspace copy). So every phase either carries a bound or is named
+below as one that does not.
+
+| Phase | Driver | Bound | Env override (Go duration) |
+|---|---|---|---|
+| Pod Ready wait | kubernetes | 10 min | `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` |
+| Workspace copy (host tar → `kubectl exec` tar) | kubernetes | 15 min | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
+| Workspace git fixup | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
+| `post_create` snippet | kubernetes | 30 min | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
+| Image pull | docker | 10 min | `ITERION_SANDBOX_PULL_TIMEOUT` |
+| `post_create` snippet | docker | **unbounded** — a hung snippet blocks the run until `max_duration` fires | — |
+
+`post_create` gets its own, larger budget because installing a toolchain
+legitimately outlasts a copy; raising one knob does not move the other.
+Both take a Go duration (`5m`, `45m`, `2h`), and both fail **closed**: a
+value that is not a positive duration — including `5`, which Go reads as
+five *nanoseconds*, not five minutes — is refused rather than honoured,
+the default applies, and one stderr line per process names the variable,
+the value and the default that replaced it.
+
+A phase that burns its budget fails with `sandbox.ErrPhaseTimeout`, which
+the engine classifies as `SANDBOX_SETUP_TIMEOUT`: the run parks
+**`failed_resumable`** with its checkpoint intact, on a launch and on a
+resume alike. In cloud mode the runner then re-offers the delivery to a
+fresh pod after 2 minutes (the stall is usually infrastructure catching
+its breath); a stall that repeats through every permitted delivery ends
+parked on the DLQ, announced, rather than naking into nothing. Halfway
+through a phase's budget the runner logs a warning naming that phase and
+its own knob, so a slow-but-healthy copy is visible before the bound
+strikes.
+
+See [resume](resume.md#sandbox-startup--which-failures-are-resumable) for
+the full classification table (which failures are resumable and which
+stay terminal).
+
 ### Workspace bind-mount
 
 The host worktree (when `worktree: auto`) or repo (when `worktree: none`)
@@ -368,6 +410,13 @@ iterion sandbox doctor                 # report driver + capabilities
   `~/.iterion` + `~/.claude` auto-mount (`""`, `auto`, or `none`).
   Defaults to `auto`. Set to `none` on multi-tenant / cloud runners
   to avoid leaking host OAuth credentials.
+- `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` — budget of the kubernetes
+  driver's workspace copy AND of the git fixup that follows, each
+  end-to-end. Unset → 15 min. See [setup phases and their
+  timeouts](#setup-phases-and-their-timeouts).
+- `ITERION_SANDBOX_POST_CREATE_TIMEOUT` — budget of the kubernetes
+  driver's `post_create` snippet. Unset → 30 min. Raise it for a
+  devcontainer that installs a large toolchain.
 - `ITERION_SANDBOX_OVERRIDE` — CLI-strength mode override (`""`,
   `none`, or `auto`), same precedence tier as `iterion run --sandbox`:
   `none` beats even a workflow's inline `sandbox:` block. Honoured by
