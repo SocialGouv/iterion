@@ -1981,6 +1981,22 @@ tool oracle_run:
         return unmapped, stale, len(features), len(coverage.get("exclusions", []))
 
 
+    def scratch_root():
+        """THE temp root the harness puts its OUT-OF-TREE state under.
+
+        One rule, one place. The sealed held-out pile and the applied-mutant marker
+        must land under the SAME root: an operator who sets GM_SCRATCH so the pile
+        survives a recreated container got a marker that did not — it stayed in
+        tempfile.gettempdir() — so the leftover guard silently never fired in
+        exactly the setup chosen to make state survive.
+
+        GM_SEALED_DIR is deliberately NOT folded in: it names the sealed directory
+        itself, not a root, and hanging other state off it would put the marker
+        inside the pile the seal moves around.
+        """
+        return os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+
+
     def sealed_dir_for(ws):
         """THE rule for where a held-out set lives once sealed. One implementation.
 
@@ -2003,7 +2019,7 @@ tool oracle_run:
         # The name hashes the ABSOLUTE path because sibling worktrees of one repo
         # share a basename; under a common root, basename alone would make two
         # campaigns seal into each other's pile.
-        root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+        root = scratch_root()
         ap = os.path.abspath(ws)
         tag = hashlib.sha256(ap.encode("utf-8")).hexdigest()[:10]
         return os.path.join(root, "gm-holdout-%s-%s" % (os.path.basename(ap) or "default", tag))
@@ -2249,11 +2265,12 @@ tool oracle_run:
         """Where the harness notes the mutant it has applied and not yet reverted.
 
         Outside the tree (the tree is what is judged), keyed on the workspace's
-        absolute path (sibling worktrees share a basename), in the same temp root
-        as the sealed held-out set.
+        absolute path (sibling worktrees share a basename), under the same root as
+        the sealed held-out set — through `scratch_root`, not a second copy of its
+        rule, which is the duplication `sealed_dir_for`'s own docstring warns about.
         """
         key = hashlib.sha256(os.path.abspath(ws).encode("utf-8")).hexdigest()[:12]
-        return os.path.join(tempfile.gettempdir(), "gm-applied-%s.json" % key)
+        return os.path.join(scratch_root(), "gm-applied-%s.json" % key)
 
 
     def apply_mutant(meta, ws):
@@ -3340,6 +3357,20 @@ tool oracle_run:
                   sealed_dir_for("/w/replay/app") == a, True)
             os.environ["GM_SEALED_DIR"] = "/elsewhere/pile"
             check("GM_SEALED_DIR impose sa pile", sealed_dir_for("/w/x"), "/elsewhere/pile")
+            # Le marqueur de mutant applique suit la MEME racine que la pile
+            # scellee. Un operateur qui pose GM_SCRATCH pour que la pile survive a
+            # un conteneur recree avait un marqueur qui, lui, ne survivait pas : la
+            # garde du mutant laisse applique ne se declenchait jamais, precisement
+            # dans le montage choisi pour faire durer l'etat.
+            os.environ.pop("GM_SEALED_DIR", None)
+            os.environ["GM_SCRATCH"] = "/persistent-root"
+            check("GM_SCRATCH deplace la pile ET le marqueur, sous la meme racine",
+                  [sealed_dir_for("/w/app").startswith("/persistent-root" + os.sep),
+                   applied_marker_for("/w/app").startswith("/persistent-root" + os.sep)],
+                  [True, True])
+            os.environ.pop("GM_SCRATCH", None)
+            check("sans GM_SCRATCH, le marqueur retombe sur le temp du systeme",
+                  applied_marker_for("/w/app").startswith(tempfile.gettempdir() + os.sep), True)
             for k, v in saved_env.items():
                 os.environ.pop(k, None)
                 if v is not None:
