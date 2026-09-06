@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.2](https://github.com/SocialGouv/iterion/compare/v3.112.1...v3.112.2) (2026-09-06)
+
+### Bug Fixes
+
+* **server:** the avatar record rides its own budget, not the round-trips' deadline ([#803](https://github.com/SocialGouv/iterion/issues/803)) ([75e8d0e](https://github.com/SocialGouv/iterion/commit/75e8d0e400bf2bb832f2b48ae09e50b2a6b576c2)), references [#800](https://github.com/SocialGouv/iterion/issues/800)
+
+    <details><summary>why</summary>
+
+    Revi's gate on #800 (R8b0bd7): giving the apply one bounded context put the outcome record under the same 20 s deadline as the upload — so the slow forge, the failure worth recording, expired the context first and the record never ran (and an upload landing near the deadline answered 502 for an avatar that was live). The record now takes a 10 s budget of its own, detached from the round-trips; a forge that hangs is proved to leave its reason on the connection.
+
+    </details>
+
 ## [3.112.1](https://github.com/SocialGouv/iterion/compare/v3.112.0...v3.112.1) (2026-09-06)
 
 ### Bug Fixes
