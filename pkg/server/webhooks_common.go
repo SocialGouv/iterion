@@ -1184,7 +1184,28 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
+	vars, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
+	if verr != nil {
+		// The only refusal here is a launch pinning another team's publish
+		// grant (errForgePublishGrantTenant): the run would carry a
+		// credential that speaks as that team. The delivery row is already
+		// claimed, so it is marked failed like a launch that could not
+		// start — a redelivery re-enters, and the operator's pin still
+		// refuses until it is corrected.
+		failedAt := s.gateNow()
+		delivery.Status = webhooks.StatusLaunchError
+		delivery.Error = verr.Error()
+		delivery.FailedAt = &failedAt
+		s.updateWebhookDelivery(ctx, delivery)
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
+		adm.rollback(s.logger)
+		out.Status = webhooks.StatusLaunchError
+		out.Error = verr.Error()
+		out.DeliveryID = delivery.ID
+		out.attempts = delivery.Attempts
+		out.httpStatus = http.StatusUnprocessableEntity
+		return out
+	}
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.

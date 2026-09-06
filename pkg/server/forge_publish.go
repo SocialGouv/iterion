@@ -69,12 +69,75 @@ type ForgePublishGrant struct {
 	TeamID       string `json:"team_id"`
 	ConnectionID string `json:"connection_id"`
 	Repo         string `json:"repo"`
-	// Bot identifies WHICH workflow this grant was minted for. The server
-	// mints a grant for any bot launched with a pr_url, so the bot id is what
-	// separates "this run owed a merge-gate verdict" from "this run merely
-	// carried a token it never used" — see forge_gate_reconcile.go.
+	// Bot names the bot this grant was minted for. It is the FALLBACK record
+	// of which bot to relaunch when a gating run dies: the recovery reads the
+	// run's own BotID first and falls back here (gateRelaunchBotID), because
+	// an inline .bot launch persists none — and the answer is part of the
+	// relaunch claim key, so it decides whether a second death on a head is
+	// the same bot's or a peer's.
+	//
+	// It is NOT what decides that a run owed a verdict: the reconciler anchors
+	// on the repo's pinned gate_context, because a repo shares one context
+	// across several gating bots on purpose (see forge_gate_reconcile.go).
 	Bot       string    `json:"bot,omitempty"`
 	ExpiresAt time.Time `json:"-"`
+}
+
+// grantTenantMismatchReason is the typed refusal a publish grant earns when
+// it does not belong to the run carrying it. Named so a log line, an audit
+// row and a test all say the same word.
+const grantTenantMismatchReason = "grant_tenant_mismatch"
+
+// auditActionGrantTenantMismatch is the audit action the refusal records on
+// the RUN's tenant — the tenant whose run tried to speak as another.
+const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
+
+// runOwnsGrant proves a publish grant belongs to the run that carries it, and
+// is the ONE place that decides it: every reader holding a run funnels through
+// here, so the rule cannot hold at one surface and not the next.
+//
+// It exists because the grant token is a launch VAR. The scope checks each
+// reader already performs prove the grant is SELF-consistent — its connection
+// belongs to its team, its repo matches the pull request, its host matches the
+// connection — and a grant minted for another tenant passes every one of them.
+// What none of them asks is whether that tenant is the run's. Unasked, a run
+// carrying another tenant's token has iterion comment on that tenant's pull
+// request, post its REQUIRED commit status, and — on the auto-fix lane —
+// launch a code-pushing bot into that tenant, all under that tenant's forge
+// identity and against its budget.
+//
+// A run that states NO tenant is not refused: only the Mongo store stamps one
+// (store/mongo.stampTenant), so a filesystem-backed single-tenant deployment
+// states none — and a deployment with one tenant has no second tenant to
+// protect. A run that DOES state one must match exactly; a grant that names no
+// tenant fails that comparison, which is correct, since a cloud connection
+// always has one.
+//
+// Loud on every refusal, on purpose: a Warn (never the token — an audit trail
+// that leaks the credential is a second incident) plus an audit row on the
+// run's own tenant, so the team whose run attempted the crossing sees it. The
+// sweep re-offers a dead run for its whole lookback, so an unresolved refusal
+// repeats; that is the intended shape — a crossing that persists must stay
+// visible — and the rows collapse in one query on the run id.
+func (s *Server) runOwnsGrant(run *store.Run, grant ForgePublishGrant, what string) bool {
+	if run == nil {
+		return false
+	}
+	runTenant := strings.TrimSpace(run.TenantID)
+	if runTenant == "" || strings.EqualFold(runTenant, strings.TrimSpace(grant.TeamID)) {
+		return true
+	}
+	if s.logger != nil {
+		s.logger.Warn("forge gate: %s for run %s refused (%s): the run belongs to tenant %q but its publish grant was minted for tenant %q — nothing posted",
+			what, run.ID, grantTenantMismatchReason, runTenant, grant.TeamID)
+	}
+	s.auditSystem(runTenant, "forge-gate", auditActionGrantTenantMismatch, "run", run.ID, map[string]any{
+		"reason":       grantTenantMismatchReason,
+		"grant_tenant": grant.TeamID,
+		"grant_repo":   grant.Repo,
+		"surface":      what,
+	})
+	return false
 }
 
 // ForgePublishTokenStore is the per-run forge-publish token registry. The
@@ -236,6 +299,11 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusUnauthorized, "unknown or expired run token")
 		return
 	}
+	// No runOwnsGrant here, and that is the contract rather than an omission:
+	// the request names no run — the token IS the authority on this endpoint —
+	// so there is no run tenant to compare the grant against. The crossing is
+	// refused where both facts exist instead, at injectForgePublishVars, which
+	// is why a run can never be handed a grant of another team to present here.
 
 	var req publishReviewRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
@@ -601,55 +669,72 @@ const (
 //
 // preferredConnID pins the connection (repo-targeted launches); empty falls
 // back to the team's repo integrations, then to a connection host match.
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+//
+// A caller-pinned token is honoured rather than overwritten — but only for the
+// launching team. The publish endpoint holds no run, so there the token IS the
+// authority and it cannot tell whose run presents it; this is the only place
+// the two facts (which team launches, which team the grant names) are both in
+// hand, which makes it the door. A pin resolving to ANOTHER team's grant is
+// refused and nothing launches.
+//
+// An UNRESOLVABLE pin is not a crossing and stays honoured: the default token
+// registry is in-memory, so a restart empties it, and refusing there would
+// turn a stale token into a failed launch instead of a run that merely cannot
+// publish (the endpoint answers 401).
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
-		return vars
+		return vars, nil
 	}
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars
+		return vars, nil
 	}
-	if strings.TrimSpace(vars[forgePublishVarToken]) != "" {
+	if pinned := strings.TrimSpace(vars[forgePublishVarToken]); pinned != "" {
+		if grant, ok := s.forgePublishTokens.lookup(pinned); ok &&
+			!strings.EqualFold(strings.TrimSpace(grant.TeamID), strings.TrimSpace(teamID)) {
+			return vars, fmt.Errorf("%w: the launch pins a forge publish grant minted for team %q, but this launch belongs to team %q",
+				errForgePublishGrantTenant, grant.TeamID, teamID)
+		}
 		// The caller pinned its own grant — don't overwrite.
-		return vars
+		return vars, nil
 	}
 	base := s.publicBaseURL(r)
 	if base == "" {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no public base URL (set PublicURL); deterministic review publishing disabled for this launch")
 		}
-		return vars
+		return vars, nil
 	}
 	host, repo, _, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %v; deterministic review publishing disabled for this launch", err)
 		}
-		return vars
+		return vars, nil
 	}
 	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
 	if !ok {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no team %s connection covers %s/%s; deterministic review publishing disabled for this launch", teamID, host, repo)
 		}
-		return vars
+		return vars, nil
 	}
 	token := newBoardMCPToken()
 	if token == "" {
-		return vars
+		return vars, nil
 	}
 	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
 		if s.logger != nil {
 			s.logger.Error("forge publish: %v; deterministic review publishing disabled for this launch", err)
 		}
-		return vars
+		return vars, nil
 	}
 	if vars == nil {
 		vars = map[string]string{}
 	}
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarToken] = token
-	return vars
+	return vars, nil
 }
 
 // applyPRLaunchContext gives a launch that targets a pull request the two
@@ -704,8 +789,13 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 			preferredConnID = conn.ID
 		}
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r), nil
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
 }
+
+// errForgePublishGrantTenant marks a launch that pinned a forge publish grant
+// belonging to another team — the operator's request is inadmissible, not a
+// forge that could not be asked, so the HTTP lane answers 422.
+var errForgePublishGrantTenant = errors.New("forge publish grant tenant mismatch")
 
 // errPRLaunchForkGuard marks a launch the fork guard refused — the operator's
 // pull request is not admissible, as opposed to a forge that could not be
