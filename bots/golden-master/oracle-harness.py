@@ -2092,6 +2092,15 @@ def write_applied_marker(ws, meta):
     outright. The first mutant stayed applied to the tree with nothing naming
     it, and the next gate found nothing to revert. So: no overwrite, and the
     refusal to apply on top is what keeps them from stacking.
+
+    Only that open may claim "already armed" — hence its own except. `makedirs`
+    raises the SAME FileExistsError when <scratch>/gm-applied is not a
+    directory at all, and one except for both told the operator a previous
+    mutant was still applied to the tree, to revert it by hand and delete a
+    marker that did not exist. On the shipped default (GM_SCRATCH unset) that
+    path is /tmp/gm-applied, so any local user can create the file that
+    provokes it: the gate stays loud, but every mutant is refused for a reason
+    the operator cannot act on and the real cause is never named.
     """
     marker = applied_marker_for(ws)
     d = os.path.dirname(marker)
@@ -2102,14 +2111,15 @@ def write_applied_marker(ws, meta):
             return ("the application marker's directory is not this user's own "
                     "private one (%s): refusing to record there, and so to apply. "
                     "Point GM_SCRATCH at a directory you own." % d)
-        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except FileExistsError:
+            return ("an application marker is already armed (%s, mutant %s): a previous "
+                    "mutant is still applied to this tree, so this one was NOT applied on "
+                    "top of it. Revert that one by hand, then delete the marker."
+                    % (marker, read_applied_marker(marker).get("id") or "?"))
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
-    except FileExistsError:
-        return ("an application marker is already armed (%s, mutant %s): a previous "
-                "mutant is still applied to this tree, so this one was NOT applied on "
-                "top of it. Revert that one by hand, then delete the marker."
-                % (marker, read_applied_marker(marker).get("id") or "?"))
     except OSError as exc:
         return ("the application marker could not be written (%s): %s. Applying "
                 "without one would leave a mutant no later gate can find."
@@ -3639,6 +3649,29 @@ def _selftest():
                       [s3, v3.get("valid"), tree()], ["failed", False, "original\n"])
             finally:
                 os.environ["GM_SCRATCH"] = scratch_ok
+            # ── Et le refus dit LEQUEL des deux il est. `makedirs` leve la meme
+            # FileExistsError quand <scratch>/gm-applied est un FICHIER : avec un
+            # seul except pour les deux, la porte annoncait « un mutant precedent
+            # est encore applique a cet arbre », demandait de le revertir a la
+            # main et d'effacer un marqueur qui n'existait pas. Chemin previsible
+            # (/tmp/gm-applied par defaut) : n'importe quel utilisateur local pose
+            # ce fichier, et l'operateur poursuit un mutant fantome pendant que la
+            # vraie cause n'est jamais nommee.
+            squatted = tempfile.mkdtemp(prefix="gm-squat-")
+            os.environ["GM_SCRATCH"] = squatted
+            try:
+                with open(os.path.join(squatted, "gm-applied"), "w", encoding="utf-8") as f:
+                    f.write("")
+                code4, why4 = apply_mutant(lmeta, tmp)
+                check("un chemin de marqueur squatte par un fichier refuse l'application",
+                      [code4, tree(), os.path.isfile(applied_marker_for(tmp))],
+                      [None, "original\n", False])
+                check("et ne pretend pas qu'un mutant est encore applique",
+                      ["could not be written" in (why4 or ""), "already armed" in (why4 or "")],
+                      [True, False])
+            finally:
+                os.environ["GM_SCRATCH"] = scratch_ok
+                shutil.rmtree(squatted, ignore_errors=True)
             # ── Un repertoire de marqueurs QUE D'AUTRES PEUVENT ECRIRE n'est pas
             # cru. Le chemin est previsible (<tmp>/gm-applied par defaut), donc
             # qui le cree en premier le possede : notre makedirs(exist_ok) reussit
