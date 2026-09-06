@@ -173,6 +173,10 @@ func (s *Server) githubAppClientFor(ctx context.Context, conn forge.Connection) 
 	client := &forgegithub.AppClient{
 		HTTP: s.forgeHTTPClient(), WebBaseURL: conn.BaseURL(),
 		Cfg: cfg, InstallationID: conn.InstallationID,
+		// The recorded grant narrows the management mint to what the
+		// installation approved; the fingerprint above rebuilds the client
+		// when the health probe syncs a new one.
+		Granted: conn.GrantedPermissions,
 	}
 	if cfg.AppSlug == "" {
 		client.OnSlugResolved = func(slug string) { s.recordForgeAppSlug(conn, slug) }

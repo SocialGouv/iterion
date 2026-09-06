@@ -679,8 +679,12 @@ type fakeGitHubForge struct {
 	// installation created before the merge gate, or one that declined
 	// statuses:write.
 	mintDenyStatuses bool
-	mints            int
-	mintsBaseline    int // mints that did NOT ask for statuses
+	// granted, when set, is the installation's approved permission set: a
+	// mint asking for anything outside it (or above its level) is refused
+	// with GitHub's permissions-not-granted 422.
+	granted       map[string]string
+	mints         int
+	mintsBaseline int // mints that did NOT ask for statuses
 	// bearers records, per endpoint, the Authorization values the forge
 	// saw — the proof of WHICH credential served a call: the minted
 	// installation token (ghs_…) or the webhook's hand-owned binding.
@@ -742,11 +746,20 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		if !asksStatuses {
 			f.mintsBaseline++
 		}
-		fail, denyStatuses := f.mintFail, f.mintDenyStatuses
+		fail, denyStatuses, granted := f.mintFail, f.mintDenyStatuses, f.granted
 		f.mu.Unlock()
 		if fail || (denyStatuses && asksStatuses) {
 			reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "The permissions requested are not granted to this installation."})
 			return
+		}
+		if granted != nil {
+			for name, level := range req.Permissions {
+				got, ok := granted[name]
+				if !ok || (level == "write" && got != "write" && got != "admin") {
+					reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "The permissions requested are not granted to this installation."})
+					return
+				}
+			}
 		}
 		token := "ghs_inst"
 		if denyStatuses {

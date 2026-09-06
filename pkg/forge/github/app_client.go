@@ -377,6 +377,32 @@ func RuntimePermissionsFor(granted map[string]string) map[string]string {
 	return out
 }
 
+// ManagementPermissionsFor narrows the management token — what the server's
+// own calls through a connection ride: hooks, repos, the commit status, the
+// PR review, the collaborator role — to the baseline grants the installation
+// approved. It is RuntimePermissionsFor without the delivery grants: those
+// belong to the token a RUN pushes with, and a management token carrying
+// workflows:write could rewrite CI from a server-side call. Same contract
+// otherwise: an unknown grant keeps the baseline, and a grant covering
+// nothing recognised keeps it too (an empty map would mint the
+// installation's FULL set).
+func ManagementPermissionsFor(granted map[string]string) map[string]string {
+	base := RuntimeInstallationPermissions()
+	if len(granted) == 0 {
+		return base
+	}
+	out := map[string]string{}
+	for name, level := range base {
+		if _, ok := granted[name]; ok {
+			out[name] = level
+		}
+	}
+	if len(out) == 0 {
+		return base
+	}
+	return out
+}
+
 // InstallationTokenOptions narrows a minted installation token below the
 // installation's full grant (least-privilege). Both fields are optional; a nil
 // field means "don't constrain that dimension" (GitHub returns the
@@ -669,6 +695,12 @@ type AppClient struct {
 	// connection record can persist it: iterionBotLogins reads the record,
 	// not this client.
 	OnSlugResolved func(slug string)
+	// Granted is the installation's approved permission set as the
+	// connection recorded it (nil = unknown). The management token is minted
+	// for the baseline this grant covers (ManagementPermissionsFor), so an
+	// installation approved with less than the baseline still mints — and
+	// what it withholds is denied up front, not discovered at the write.
+	Granted map[string]string
 
 	mu    sync.Mutex
 	token string
@@ -714,31 +746,47 @@ func (a *AppClient) clock() time.Time {
 
 func (a *AppClient) apiBase() string { return APIBaseFor(a.WebBaseURL) }
 
-// rest returns an AdminClient backed by a fresh installation token.
+// rest returns an AdminClient backed by the management token: the baseline
+// grants the connection's recorded grant covers (ManagementPermissionsFor) —
+// never the installation's full set — plus the OPTIONAL statuses:write the
+// merge gate posts its verdict with, asked for only when the grant is unknown
+// or carries it. What the token cannot do — the baseline grants the
+// installation withholds, statuses when it lacks or refuses it — is recorded
+// in denied, so PreflightFor answers without a round trip.
 func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.token == "" || a.clock().After(a.exp.Add(-60*time.Second)) {
-		// Least-privilege: pin the management token to iterion's minimal
-		// permission set (webhook + metadata + code + PR), never the
-		// installation's full grant — plus the OPTIONAL statuses:write the
-		// merge gate needs to post its revi/review commit status.
-		perms := map[string]string{PermissionStatuses: "write"}
-		for k, v := range RuntimeInstallationPermissions() {
-			perms[k] = v
+		base := ManagementPermissionsFor(a.Granted)
+		denied := map[string]bool{}
+		for name := range RuntimeInstallationPermissions() {
+			if _, ok := base[name]; !ok {
+				denied[name] = true
+			}
+		}
+		wantStatuses := len(a.Granted) == 0 || grantCovers(a.Granted, PermissionStatuses, "write")
+		perms := base
+		if wantStatuses {
+			perms = make(map[string]string, len(base)+1)
+			for k, v := range base {
+				perms[k] = v
+			}
+			perms[PermissionStatuses] = "write"
+		} else {
+			denied[PermissionStatuses] = true
 		}
 		tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
 			&InstallationTokenOptions{Permissions: perms})
-		var denied map[string]bool
-		if errors.Is(err, forge.ErrPermissionsNotGranted) {
+		if wantStatuses && errors.Is(err, forge.ErrPermissionsNotGranted) {
 			// An installation created before the merge gate (or one that
-			// declined statuses:write) still works — the gate then advises
-			// instead of blocking (SetCommitStatus 403s, non-fatal). Retry with
-			// the core baseline so every other capability keeps functioning,
-			// and remember what this token cannot do.
+			// declined statuses:write) whose recorded grant did not say so
+			// still works — the gate then advises instead of blocking
+			// (SetCommitStatus 403s, non-fatal). Retry with the covered
+			// baseline so every other capability keeps functioning, and
+			// remember what this token cannot do.
 			tok, exp, err = MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
-				&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
-			denied = map[string]bool{PermissionStatuses: true}
+				&InstallationTokenOptions{Permissions: base})
+			denied[PermissionStatuses] = true
 		}
 		if err != nil {
 			return nil, err
