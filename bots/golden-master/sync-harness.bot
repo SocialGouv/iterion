@@ -2287,13 +2287,24 @@ tool sync_harness:
         return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
+    def forget_applied_marker(ws):
+        """Drop the applied-mutant marker. THE one place that disarms the guard.
+
+        Three callers need it and each had its own copy of the try/except; the rule
+        for WHEN it is legitimate (the mutant is demonstrably no longer applied) is
+        subtle enough that three copies would eventually disagree — the duplication
+        `sealed_dir_for`'s docstring is about.
+        """
+        try:
+            os.remove(applied_marker_for(ws))
+        except OSError:
+            pass
+
+
     def revert_mutant(meta, ws):
         code, out = run_script(os.path.join(meta["dir"], "revert.sh"), ws)
         if code == 0:
-            try:
-                os.remove(applied_marker_for(ws))
-            except OSError:
-                pass
+            forget_applied_marker(ws)
         return code, out
 
 
@@ -2496,18 +2507,39 @@ tool sync_harness:
             # return: the sibling no-targets failure above never reached
             # apply_mutant, so reverting there would run `git checkout -- <path>`
             # over a tree no mutant touched — the fix becoming the bug it closes.
-            rcode, rout = revert_mutant(meta, ws)
+            #
+            # And that same rule binds HERE, which is why the revert is CONDITIONAL.
+            # The canonical invalid mutant is one whose anchor a modernisation lot
+            # removed: its apply.sh refuses and exits non-zero WITHOUT touching
+            # anything. Reverting then runs `git checkout -- <path>` over a tree
+            # this mutant never touched — and MODE=validate exists to be re-run
+            # while re-anchoring, i.e. precisely while the repair is uncommitted.
+            # Measured against the merge-base: half a day of uncommitted
+            # re-anchoring, destroyed, under a reason naming only "apply.sh exited
+            # 1". The predicate is the one the success path uses three lines down,
+            # not a second opinion about what counts as having moved.
+            touched = (tree_fingerprint(ws) != before_tree) or (
+                before_data is not None and data_fingerprint(meta, ws) != before_data)
             reason = "apply.sh exited %s: %s" % (code, out[-300:])
             extra = {}
-            if rcode != 0:
-                reason += (" | revert.sh then exited %s (%s) — THE TREE MAY STILL CARRY "
-                           "A PARTIAL MUTATION" % (rcode, (rout or "")[-200:]))
-                # Same term score_mutant sets when a revert fails under it (and for
-                # the same reason): an invalid mutant is dropped from the score, so
-                # without this the run would go on scoring the REST of the lot
-                # against a tree this one left half-mutated, and could still come
-                # out green. revert_clean is the gate's own conjunction term.
-                extra["revert_clean"] = False
+            if touched:
+                rcode, rout = revert_mutant(meta, ws)
+                if rcode != 0:
+                    reason += (" | revert.sh then exited %s (%s) — THE TREE MAY STILL CARRY "
+                               "A PARTIAL MUTATION" % (rcode, (rout or "")[-200:]))
+                    # Same term score_mutant sets when a revert fails under it (and
+                    # for the same reason): an invalid mutant is dropped from the
+                    # score, so without this the run would go on scoring the REST of
+                    # the lot against a tree this one left half-mutated, and could
+                    # still come out green. revert_clean is the gate's own
+                    # conjunction term.
+                    extra["revert_clean"] = False
+            else:
+                # Nothing to put back — but the marker went down BEFORE apply.sh, so
+                # it is armed and must still be disarmed here. Left standing, the
+                # next gate would run this mutant's revert.sh over whatever is on
+                # disk then: the very clobber this branch exists to stop.
+                forget_applied_marker(ws)
             return dict(base, valid=False, detected=False, reason=reason, **extra), "failed"
 
         after_tree, after_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
@@ -3532,13 +3564,15 @@ tool sync_harness:
                     f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\nexit 1\n")
                 with open(os.path.join(bdir, "revert.sh"), "w", encoding="utf-8") as f:
                     f.write("#!/bin/sh\ngit checkout -- f.txt\n")
-                # Les VRAIS apply/revert (les doublures du bloc 6 sont encore
-                # posees) ; seules les empreintes sont doublees, elles n'ont rien a
-                # dire sur un apply qui a echoue.
+                # Les VRAIS apply/revert ET les VRAIES empreintes (seules les
+                # doublures du bloc 6 restent posees). Les empreintes ont TOUT a
+                # dire sur un apply qui a echoue : ce sont elles qui etablissent
+                # s'il a touche quelque chose, donc si un revert est legitime.
                 stubbed = {k: g[k] for k in ("apply_mutant", "revert_mutant",
                                              "tree_fingerprint", "data_fingerprint")}
                 g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
-                         tree_fingerprint=lambda _w: "x", data_fingerprint=lambda _m, _w: None)
+                         tree_fingerprint=saved["tree_fingerprint"],
+                         data_fingerprint=saved["data_fingerprint"])
                 try:
                     v, state = probe_mutation({"id": "m2", "dir": bdir, "targets": ["001"]}, tmp)
                 finally:
@@ -3553,6 +3587,44 @@ tool sync_harness:
                 check("un apply en echec revertible ne salit pas revert_clean",
                       v.get("revert_clean", True), True)
 
+                # Un apply.sh qui echoue SANS RIEN TOUCHER ne doit rien revertir.
+                # C'est le mutant invalide canonique : un lot de modernisation a
+                # supprime son point d'appui, apply.sh refuse et sort non-zero sans
+                # ecrire une ligne. Revertir la, c'est passer `git checkout --` sur
+                # un arbre que ce mutant n'a pas touche — et MODE=validate existe
+                # pour etre relance PENDANT le re-ancrage, donc sur un arbre sale.
+                # Mesure contre la merge-base : une demi-journee de re-ancrage non
+                # committe, detruite, sous une raison qui ne disait que « apply.sh
+                # exited 1 ». Le marqueur, lui, est pose AVANT apply.sh : il doit
+                # partir quand meme, sans quoi la porte suivante lancerait ce
+                # revert.sh sur ce qui traine alors sur le disque.
+                ndir = os.path.join(mroot, "m3")
+                os.makedirs(ndir)
+                with open(os.path.join(ndir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nexit 1\n")
+                with open(os.path.join(ndir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                with open(os.path.join(tmp, "f.txt"), "w", encoding="utf-8") as f:
+                    f.write("original\nune demi-journee de travail non committe\n")
+                stubbed = {k: g[k] for k in ("apply_mutant", "revert_mutant",
+                                             "tree_fingerprint", "data_fingerprint")}
+                g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
+                         tree_fingerprint=saved["tree_fingerprint"],
+                         data_fingerprint=saved["data_fingerprint"])
+                try:
+                    v3, state3 = probe_mutation({"id": "m3", "dir": ndir, "targets": ["001"]}, tmp)
+                finally:
+                    g.update(stubbed)
+                with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
+                    garde = f.read()
+                check("un apply en echec qui n'a RIEN touche ne revertit pas le travail en cours",
+                      [state3, garde, os.path.isfile(applied_marker_for(tmp)),
+                       "apply.sh exited 1" in (v3.get("reason") or "")],
+                      ["failed", "original\nune demi-journee de travail non committe\n",
+                       False, True])
+                subprocess.run(["git", "checkout", "--", "f.txt"], cwd=tmp,
+                               capture_output=True, text=True)
+
                 # apply.sh ECHOUE et revert.sh AUSSI : l'arbre reste peut-etre
                 # a moitie mute. Un mutant invalide sort du score, donc sans
                 # revert_clean la porte noterait TOUT LE RESTE du lot sur cet
@@ -3562,7 +3634,8 @@ tool sync_harness:
                 stubbed = {k: g[k] for k in ("apply_mutant", "revert_mutant",
                                              "tree_fingerprint", "data_fingerprint")}
                 g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
-                         tree_fingerprint=lambda _w: "x", data_fingerprint=lambda _m, _w: None)
+                         tree_fingerprint=saved["tree_fingerprint"],
+                         data_fingerprint=saved["data_fingerprint"])
                 try:
                     v2, state2 = probe_mutation({"id": "m2", "dir": bdir, "targets": ["001"]}, tmp)
                 finally:
