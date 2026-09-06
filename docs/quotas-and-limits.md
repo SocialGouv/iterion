@@ -8,8 +8,11 @@ here come from real fields on real records — not aspirational settings.
 Iterion enforces five distinct limits at run launch and one at the
 webhook intake. They live behind a single decision function
 ([pkg/server/launch_gate.go:gateLaunch](../pkg/server/launch_gate.go))
-called by every code path that creates a run: launch / resume /
-inbound webhook.
+called by every code path that creates a run on a cloud instance: the
+HTTP launch and resume, the inbound webhooks, the retry sweeper's
+automatic resumes and the board dispatcher's launches — the table in
+[Which surfaces are gated](#which-surfaces-are-gated) is the exhaustive
+list, with the two paths that still launch outside it.
 
 ## The launch-admission order
 
@@ -36,6 +39,39 @@ wedge every launch — quotas are an operator policy, not a hard security
 boundary. The one nuance: when `AllowRun` errors at step 5 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
+
+## Which surfaces are gated
+
+Every launch a cloud instance performs passes `gateLaunch` with the
+identity of whoever is launching, meters one monthly run at step 5, and
+hands the slot back when the run service then refuses the launch (a
+sealing failure, a queue outage, a bot that does not compile — no run
+exists, so nothing was consumed):
+
+| Surface | Identity on the ctx | Gated | Metered |
+|---|---|---|---|
+| `POST /api/runs`, the studio, `iterion remote runs launch`, the MCP `remote_runs_launch` | the caller's | yes | yes, rolled back on a refused launch |
+| `POST /api/runs/{id}/resume`, the WS answer that resumes a run | the caller's | yes | yes |
+| Inbound webhooks, direct launch (`insertAndLaunchWebhook`) — including the merge-gate auto-fix and relaunch lanes, which reuse that tail | the token's synthetic `webhook` identity | yes | yes, rolled back on a refused launch and for the idempotency loser |
+| Inbound webhooks, **board mode** (the command creates a card; the dispatcher launches it) | the token's | pre-check only, at card creation | **no** — a card is not a run; the pre-check's slot is handed back at once and the dispatcher meters the launch when it claims the card |
+| **Board dispatcher** (`processBoardCard`) | `board-dispatcher` on the card's team | yes | yes, rolled back on a refused launch |
+| Retry sweeper (automatic resume of a `failed_resumable` run) | the run's owner | yes | yes, rolled back on a failed resume |
+| `POST /api/v1/triggers/emit` (custom event) | the caller's | once per request | once per request — the launches it fans out to go through the spine launcher below |
+| Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out) | store tenant only, no auth identity | **no** | no |
+| `cloudsched` scheduled launches (`launchScheduledBot`) | store tenant only, no auth identity | **no** | no |
+| Local mode (`iterion studio` / `iterion dispatch` with no identity store) | — | no gate exists | — |
+
+On the board dispatcher a denial is a **launch refusal** of the
+dispatcher's transient class, not a verdict on the card
+([dispatcher.md](dispatcher.md#claim-selection-on-the-cloud-board--what-is-never-claimed)):
+the card returns to its column under the machine provenance
+`launch_refused`, its ledger reads the rule that refused it — `launch
+gate: concurrency_cap_exceeded: org has 3 active runs (cap 3) …` — and
+the next attempt waits out the backoff, so an org at its cap retries its
+ready cards on the backoff schedule, not on every 5s tick. A cap that
+does not free within the attempt cap files the card `blocked` under
+`launch_given_up` with the rule on it, and the pipeline board shows it
+in its *Needs attention* lane.
 
 ## Limits, fields and platform defaults
 

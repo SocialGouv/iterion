@@ -304,6 +304,19 @@ one attempt per backoff, not one per 5s tick, and queues behind the
 cards not tried yet (its `updated_at` moves). The server draining
 consumes no attempt: another replica claims the card on its next tick.
 
+The **org launch gate** is one of these refusals. The board launch passes
+the same admission as an HTTP launch — `gateLaunch`: suspend →
+concurrency → launch rate → monthly caps
+([quotas-and-limits.md](quotas-and-limits.md#which-surfaces-are-gated)) —
+under the `board-dispatcher` identity on the card's team, and is metered
+the same way (the monthly slot is handed back when the run service then
+refuses). A denial reads on the ledger as `launch gate: <rule>:
+<detail>` — `concurrency_cap_exceeded` while the org is at its cap,
+`monthly_run_quota_exceeded` once the month's runs are spent — and costs
+one attempt like any other refusal. So does a run the publisher refuses
+for want of an LLM credential (`ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`,
+[cloud-llm-credentials.md](cloud-llm-credentials.md#gotchas-that-cost-real-time)).
+
 After `ITERION_BOARD_LAUNCH_ATTEMPTS` consecutive refusals (default 8,
 about an hour and a half of retries; an unparsable value keeps the
 default and is logged once at startup) the card is filed `blocked` under
@@ -312,7 +325,10 @@ on its ledger and a give-up stamp naming it — reflected onto a bound
 external board on purpose: a human has to decide now. A successful
 launch (any run stamped on the card) clears the ledger, and so does an
 operator's *Reopen*, so a card reopened after the cap starts its retries
-afresh.
+afresh. The pipeline board shows a card filed this way in its **Needs
+attention** lane — the give-up stamp carries `launch: true`, so it needs
+no run to be current, and a card nobody could launch is not filed among
+the done ones.
 
 Each verdict is logged **once per card and reason**, and every watchdog
 pass logs one tally line — `N refused at admission, M returned to their

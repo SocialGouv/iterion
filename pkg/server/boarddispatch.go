@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -98,9 +99,12 @@ var errCardContinuable = errors.New("board dispatcher: run continuable")
 //     bot the resolver cannot find, carries malformed reserved bot-args, or
 //     the run service is not wired. Card back to its column, claim freed,
 //     one Warn per (card, reason) edge.
-//   - errCardLaunchRefused — the run service refused the launch before any
-//     run existed (a sealing failure, a queue outage, the server draining,
-//     a bot that does not compile, an invalid spec): transient, retryable.
+//   - errCardLaunchRefused — the launch was refused before any run existed:
+//     by the org launch gate (`launch gate: <rule>: <detail>` — the same
+//     admission every other surface passes) or by the run service (a
+//     sealing failure, a queue outage, the server draining, a bot that does
+//     not compile, an invalid spec, a run no credential tier can fund):
+//     transient, retryable.
 //     Card back to its column under the machine ReasonLaunchRefused, the
 //     card's launch-refusal ledger advanced (the dispatch listing skips it
 //     for a backoff), one Warn per (card, reason) edge — and past the
@@ -114,9 +118,14 @@ var errCardContinuable = errors.New("board dispatcher: run continuable")
 //     card stays where it is; the retry machinery or the operator continues.
 //   - a cancelled parent context — this replica is draining → the card
 //     stays where it is, the claim is released.
-//   - anything else — the run was launched and ended in a terminal failure,
-//     or the publisher refused the launch (quota, sealing, …) → `blocked`.
+//   - anything else — the run was launched and ended in a terminal failure
+//     → `blocked`: the run's verdict.
 var errCardUnlaunchable = errors.New("board dispatcher: card cannot be launched")
+
+// boardDispatcherActor is the identity the cloud dispatcher launches under:
+// the store owner on every ctx it stamps and the auth principal the launch
+// gate meters on the card's team.
+const boardDispatcherActor = "board-dispatcher"
 
 // errCardLaunchRefused marks a launch the run service refused before any run
 // started — see the taxonomy above. Typed at the ONE boundary where it is
@@ -422,6 +431,7 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 					State:    d.blockedState,
 					Attempts: ledger.Attempts,
 					Reason:   fmt.Sprintf("the launch was refused %d times; last refusal: %s", ledger.Attempts, ledger.LastReason),
+					Launch:   true,
 				}
 				kind = heldLaunchGivenUp
 			}
@@ -1729,7 +1739,7 @@ func (s *Server) boardRunStatus(ctx context.Context, tenant, runID string) (stor
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
-	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
 	run, err := s.runs.LoadRunCtx(ctx, runID)
 	if err != nil {
 		return "", err
@@ -1744,7 +1754,7 @@ func (s *Server) boardRun(ctx context.Context, tenant, runID string) (*store.Run
 	if s.runs == nil {
 		return nil, errors.New("run service unavailable")
 	}
-	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
 	return s.runs.LoadRunCtx(ctx, runID)
 }
 
@@ -1759,7 +1769,7 @@ func (s *Server) boardIssueRuns(ctx context.Context, tenant, issueID string) ([]
 	if rs == nil {
 		return nil, errors.New("run store unavailable")
 	}
-	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
 	ids, err := rs.ListRunsBySourceIssue(ctx, issueID)
 	if err != nil {
 		return nil, err
@@ -1790,7 +1800,7 @@ func (s *Server) boardLaunchPreconditions(ctx context.Context, tenant string, is
 	if iss.Bot == "" {
 		return nil, boardLaunchContext{}, fmt.Errorf("card %s has no bot: %w", iss.ID, errCardUnlaunchable)
 	}
-	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
 	lb, err := s.resolveBotSource(ctx, iss.Bot)
 	if err != nil {
 		return nil, boardLaunchContext{}, fmt.Errorf("card %s names bot %q: %w: %w", iss.ID, iss.Bot, err, errCardUnlaunchable)
@@ -1828,7 +1838,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		return err
 	}
 	defer lb.Cleanup()
-	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself — and it
 	// passes the fork guard at CLAIM time: a head repo can vanish between
@@ -1858,8 +1868,21 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		},
 	}
 	lb.Stamp(&spec)
+	// The SAME admission every other launch surface passes — suspend →
+	// concurrency → launch rate → monthly caps — under the dispatcher's own
+	// identity on the card's team (the gate reads the team from it). A
+	// denial is a launch refusal of the class below: no run exists, the
+	// card goes back under machine provenance with the rule on its ledger,
+	// and the retry waits out the backoff. The metered admission is handed
+	// back when the run service then refuses, as the HTTP handler does: a
+	// run that never started consumes no monthly slot.
+	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}))
+	if deny != nil {
+		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
+	}
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
+		adm.rollback(s.logger)
 		// Every error out of Launch means no run was started — the class is
 		// decidable here, at the boundary, without reading the error's text.
 		return &launchRefusal{cardID: iss.ID, cause: err}

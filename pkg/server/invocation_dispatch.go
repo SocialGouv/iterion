@@ -139,25 +139,30 @@ func (s *Server) dispatchInvocation(
 	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
-			// Dispatcher active: gate (per-org quota), create the card in the
-			// eligible state, and let the dispatcher own execution + state
+			// Dispatcher active: pre-check the org gate, create the card in
+			// the eligible state, and let the dispatcher own execution + state
 			// transitions — no direct launch (else the card would run twice).
 			//
-			// Idempotency BEFORE metering: gateLaunch performs the per-org
+			// Idempotency BEFORE the gate: gateLaunch performs the per-org
 			// quota CAS increment, and ensureBoardCard is idempotent on the
-			// per-comment label only AFTER that. So a webhook redelivery would
-			// re-charge the quota while creating no new card. Short-circuit to
-			// a "carded" replay when the card already exists, before gating.
+			// per-comment label only AFTER that. Short-circuit to a "carded"
+			// replay when the card already exists, before gating.
 			if s.boardCardExists(cfg, meta) {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID})
 				return
 			}
-			if _, d := s.gateLaunch(ctx); d != nil {
+			adm, d := s.gateLaunch(ctx)
+			if d != nil {
 				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 				s.writeLaunchDenial(w, r, d)
 				return
 			}
+			// A pre-check, not the metering: a card is not a run. The
+			// dispatcher passes the same gate — and meters — when it claims
+			// the card (processBoardCard), so the slot taken here is handed
+			// back at once; keeping it would charge one command two runs.
+			adm.rollback(s.logger)
 			seed()
 			s.ensureBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef)
 			s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
