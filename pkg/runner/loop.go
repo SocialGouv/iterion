@@ -273,6 +273,12 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // in-memory dispatch to Resume so JetStream redelivery actually uses
 // the checkpoint it exists to protect. A pre-pickup user-cancelled run
 // has no checkpoint and remains a stale delivery to ack/drop.
+//
+// `queued` is the one status runResolveDoc DOES restart, so it is the
+// status where a redelivery from an earlier life of the run costs the
+// most: the arm below tells the message apart from the doc's current
+// attempt (QueuedAt) and from its history (the checkpoint) before
+// letting a launch through.
 func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
 	switch run.Status {
 	case store.RunStatusCancelled:
@@ -353,10 +359,49 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			logFmt:      "runner: run %s already in status %s — dropping stale delivery",
 			logArgs:     []any{msg.RunID, run.Status},
 		}
+	case store.RunStatusQueued:
+		// The publisher's pre-flip — of THIS attempt, or of a LATER one.
+		// A resume publication names itself and proceeds; a LAUNCH message
+		// has to be told apart from the run's own history first, because
+		// Engine.Run restarts it at the entry node.
+		if msg.Resume != nil {
+			break
+		}
+		// Identity: every transition into `queued` refreshes QueuedAt, so
+		// a delivery published BEFORE the marker belongs to an attempt
+		// that is over. The attempt now queued has its own message in
+		// flight (a publish failure rolls the status back), so this one is
+		// dropped rather than converted.
+		if publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC); perr == nil &&
+			run.QueuedAt != nil && run.QueuedAt.After(publishedAt) {
+			return preconditionOutcome{
+				finalStatus: "stale_attempt",
+				op:          "ack-stale-attempt",
+				action:      actionAck,
+				level:       logWarn,
+				logFmt:      "runner: run %s was re-queued at %s, after this launch message was published (%s) — dropping the stale delivery (the current attempt carries its own; re-running this one would restart the run from its entry node)",
+				logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC},
+			}
+		}
+		// Evidence, when identity is unavailable (a publication with no
+		// usable published_at) or the message is the current attempt's:
+		// a queued doc carrying a checkpoint has already executed, so
+		// running it as a launch would re-spend exactly what the
+		// checkpoint exists to save.
+		if run.Checkpoint != nil {
+			msg.Resume = &queue.ResumeSpec{}
+			return preconditionOutcome{
+				proceed: true,
+				preRun:  run,
+				level:   logInfo,
+				logFmt:  "runner: run %s is queued with a checkpoint from an earlier life — resuming instead of restarting (launch delivery, published_at=%q)",
+				logArgs: []any{msg.RunID, msg.PublishedAtRFC},
+			}
+		}
 	}
-	// running (a live owner, or an orphan — told apart under the lock),
-	// queued (the publisher's pre-flip of this very attempt), and any
-	// status this switch does not know: proceed.
+	// running (a live owner, or an orphan — told apart under the lock), a
+	// queued first attempt, and any status this switch does not know:
+	// proceed.
 	return preconditionOutcome{proceed: true, preRun: run}
 }
 

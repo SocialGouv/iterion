@@ -705,6 +705,131 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	}
 }
 
+// #714: a stale LAUNCH redelivery on a run that lived a second life must
+// not restart it from node 1. The sequence is the live one: the run is
+// cancelled with its checkpoint kept, an operator resumes it (the
+// publisher CASes the doc back to `queued`, refreshing QueuedAt, and
+// publishes a RESUME message), and JetStream redelivers the ORIGINAL
+// LAUNCH message first. That message carries no Resume and meets a
+// `queued` doc, so the admission gauntlet used to wave it through:
+// runResolveDoc flips queued → running and Engine.Run starts at the entry
+// node, re-spending the tokens the checkpoint exists to save and
+// re-posting whatever the first pass already posted — while the real
+// RESUME message then finds a `running` doc.
+//
+// QueuedAt is the fence: every transition into `queued` refreshes it, so
+// a delivery published BEFORE it belongs to an earlier attempt.
+func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+
+	// Life 1: launched, executed, checkpointed, then cancelled — the
+	// checkpoint survives the cancel by contract.
+	const runID = "run-requeued"
+	if err := st.SaveRun(ctx, &store.Run{ID: runID, WorkflowName: "wf", Status: store.RunStatusRunning}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := st.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "implement"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := st.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "operator cancelled"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	launchedAt := time.Now().UTC().Add(-time.Hour)
+
+	// Life 2: the operator's resume claims the doc back to `queued`,
+	// which refreshes QueuedAt — the durable attempt marker.
+	changed, err := st.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled})
+	if err != nil || !changed {
+		t.Fatalf("resume claim = (%t, %v), want (true, nil)", changed, err)
+	}
+	requeued, err := st.LoadRun(ctx, runID)
+	if err != nil || requeued.QueuedAt == nil {
+		t.Fatalf("LoadRun after requeue = (%+v, %v), want a QueuedAt marker", requeued, err)
+	}
+	if requeued.Checkpoint == nil {
+		t.Fatal("the requeue dropped the checkpoint — the premise of this test no longer holds")
+	}
+
+	t.Run("stale launch redelivery is dropped", func(t *testing.T) {
+		msg := &queue.RunMessage{
+			RunID:          runID,
+			TenantID:       "team-1",
+			PublishedAtRFC: launchedAt.Format(time.RFC3339Nano),
+		}
+		out := r.resolveDeliveryPreconditions(msg)
+		if out.proceed && msg.Resume == nil {
+			t.Fatal("a launch message published before the current attempt proceeded as a LAUNCH — Engine.Run restarts it from the entry node with the checkpoint on the doc ignored")
+		}
+		if out.proceed {
+			t.Fatalf("the stale delivery proceeded (as a resume) — the run's own resume message is already in flight, so this one must be dropped: %+v", out)
+		}
+		if out.action != actionAck {
+			t.Errorf("action = %v, want actionAck (a stale delivery is dropped, not redelivered)", out.action)
+		}
+		if out.finalStatus != "stale_attempt" {
+			t.Errorf("finalStatus = %q, want stale_attempt", out.finalStatus)
+		}
+	})
+
+	t.Run("the attempt's own resume message proceeds", func(t *testing.T) {
+		msg := &queue.RunMessage{
+			RunID:          runID,
+			TenantID:       "team-1",
+			Resume:         &queue.ResumeSpec{},
+			PublishedAtRFC: requeued.QueuedAt.Add(time.Millisecond).Format(time.RFC3339Nano),
+		}
+		out := r.resolveDeliveryPreconditions(msg)
+		if !out.proceed {
+			t.Fatalf("the resume publication of the CURRENT attempt was refused: %+v", out)
+		}
+		if msg.Resume == nil {
+			t.Fatal("msg.Resume was cleared")
+		}
+	})
+
+	// A message with no published_at (a legacy publication, or a store
+	// that never stamped one) cannot be told apart by identity. The
+	// checkpoint on the doc is then the evidence: a queued doc that
+	// carries one has already executed, so the delivery resumes rather
+	// than restarting.
+	t.Run("undatable launch honours the checkpoint", func(t *testing.T) {
+		msg := &queue.RunMessage{RunID: runID, TenantID: "team-1"}
+		out := r.resolveDeliveryPreconditions(msg)
+		if !out.proceed {
+			t.Fatalf("an undatable delivery on a resumable queued doc was dropped: %+v", out)
+		}
+		if msg.Resume == nil {
+			t.Fatal("no resume synthesised — Engine.Run would restart the run from its entry node, ignoring the checkpoint")
+		}
+	})
+
+	// The fence must not swallow a FIRST attempt: a freshly queued doc
+	// with no checkpoint is exactly what the queued arm exists to admit.
+	t.Run("a first launch still proceeds as a launch", func(t *testing.T) {
+		const freshID = "run-fresh"
+		if _, err := st.CreateQueuedRun(ctx, freshID, "wf", "", "", nil); err != nil {
+			t.Fatalf("CreateQueuedRun: %v", err)
+		}
+		msg := &queue.RunMessage{
+			RunID:          freshID,
+			TenantID:       "team-1",
+			PublishedAtRFC: time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano),
+		}
+		out := r.resolveDeliveryPreconditions(msg)
+		if !out.proceed {
+			t.Fatalf("a first launch was refused: %+v", out)
+		}
+		if msg.Resume != nil {
+			t.Fatal("a first launch was converted to a resume — it has no checkpoint to resume from")
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // injectCredentials / deleteRunSecrets
 // ---------------------------------------------------------------------------
