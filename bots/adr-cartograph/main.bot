@@ -1001,6 +1001,54 @@ def ends_nonzero(s):
                 return True
             p = s.find(kw, p + 1)
     return s == 'false' or s.endswith(' false') or s.endswith(';false')
+def masked_pipelines(text):
+    # A pipeline exits with its LAST command status, so a gating command piped
+    # into an output filter reports the FILTER: a missing compiler returned 127
+    # and the script printed EXIT=0. pipefail is not POSIX and verify.sh runs
+    # under /bin/sh, so the convention is to capture the status FIRST and
+    # filter the log afterwards. Three shapes are NOT this defect and are left
+    # alone: a text producer whose filter IS the assertion, a captured value
+    # the script checks itself, and a conditional whose test is the pipeline
+    # own status.
+    bad = []
+    filters = ('tail', 'head', 'tee', 'wc', 'less', 'more')
+    pipe = chr(124)
+    sub = chr(36) + '('
+    for line in sh_uncommented(text):
+        s = line.strip()
+        if not s or pipe not in s:
+            continue
+        if s.startswith('if ') or s.startswith('elif ') or s.startswith('while ') or s.startswith('until ') or s.startswith('case '):
+            continue
+        if sub in s or chr(96) in s:
+            continue
+        if (pipe + pipe + ' true') in s or (pipe + pipe + ' :') in s:
+            continue
+        idx = -1
+        i = 0
+        while i < len(s):
+            if s[i] == pipe:
+                if i + 1 < len(s) and s[i + 1] == pipe:
+                    i = i + 2
+                    continue
+                if i > 0 and s[i - 1] == pipe:
+                    i = i + 1
+                    continue
+                idx = i
+            i = i + 1
+        if idx < 0:
+            continue
+        producer = (s[:idx].strip().split() + [''])[0]
+        rest = s[idx + 1:].strip()
+        word = (rest.split() + [''])[0]
+        if producer in ('echo', 'printf', 'cat'):
+            continue
+        masked = word in filters
+        if word == 'grep' and ' -q' not in rest and ' -c' not in rest:
+            masked = True
+        if masked:
+            bad.append(s[:200])
+    return bad
 def tree_state():
     try:
         p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
@@ -1009,6 +1057,25 @@ def tree_state():
         return set(l for l in p.stdout.splitlines() if l.strip())
     except Exception:
         return None
+# Deterministic exit-status-masking precheck. A verify script whose gate is
+# piped into an output filter reports the filter, so a failing check reads as
+# success -- the one defect a GREEN verify can never reveal, which is why it is
+# caught before the script runs. The script is moved aside rather than left in
+# place: verify_probe would otherwise call it fresh and the loop would re-run
+# the same lie every pass.
+try:
+    script_src = open(script, encoding='utf-8', errors='replace').read()
+except OSError:
+    script_src = ''
+masked = masked_pipelines(script_src)
+if masked:
+    rejected = script + '.rejected'
+    try:
+        os.replace(script, rejected)
+    except OSError:
+        rejected = script
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 5, 'log_tail': 'MASKED EXIT STATUS: ' + str(len(masked)) + ' line(s) of ' + script + ' pipe a gating command into an output filter, so the pipeline reports the FILTER and a failed check reads as success (pipefail is not POSIX -- this runs under /bin/sh). Capture the status FIRST and filter the log after: <cmd> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; } -- or append  ' + chr(124) + chr(124) + ' true  to a pipeline that is deliberately not a gate. The script was moved to ' + rejected + ' and is regenerated next pass. Offending lines:' + chr(10) + chr(10).join(masked[:20])}))
+    raise SystemExit(0)
 pre = tree_state()
 rc = 0
 out = ''

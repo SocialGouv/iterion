@@ -160,6 +160,30 @@ exit code — so it must genuinely pass, not merely look plausible. A `verify.sh
 that omits the §1b regen step when the repo has generated artifacts is the
 canonical way a change lands green-locally / red-in-CI.
 
+### Capture the status, then filter — never pipe a gate
+
+A pipeline exits with its **last** command's status. `go test ./... 2>&1 | tail
+-10` therefore reports `tail`, and a build whose compiler is not even installed
+reads as a pass (measured: a missing `tsc` returned 127 and the run recorded
+`EXIT=0`). `set -o pipefail` is **not POSIX** and `verify.sh` runs under
+`/bin/sh` — dash does not have it — so the convention is:
+
+```sh
+<check> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; }   # gate, then filter
+V=$(<producer> | head -1)                                      # a captured VALUE is fine
+<noisy-but-not-a-gate> | tail -5 || true                       # explicitly not a gate
+```
+
+Read `$?` from the command itself, never from an `echo` after a pipeline. A
+check whose tool is missing is **unavailable**, not passed — say so in the
+summary rather than letting it read green.
+
+This is **deterministically enforced**: the gate refuses a `verify.sh` that
+pipes a top-level command into an output filter (`tail`/`head`/`tee`/`wc`/a
+filtering `grep`) with **MASKED EXIT STATUS** (exit 5) *before* running it, and
+moves the script aside so it is regenerated. Comments are stripped first, and
+the three shapes above are never flagged.
+
 ## 3. Run it, and fix what the just-applied changes broke
 
 Run your script. If it fails, the failure is almost always introduced by the

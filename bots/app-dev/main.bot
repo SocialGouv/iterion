@@ -316,6 +316,18 @@ prompt campaign_system:
      durable state: an interrupted run keeps every committed slice,
      and a fresh pass reads `git log` and continues. No worklist /
      cursor files.
+     CAPTURE THE STATUS, THEN FILTER — never let a pipe decide
+     whether a check passed. A pipeline exits with its LAST command's
+     status, so `<check> 2>&1 | tail -10` reports `tail`: a missing
+     compiler returned 127 and the run recorded EXIT=0 for a check that
+     never ran. `pipefail` is not POSIX and these commands run under
+     `sh`, so redirect the check's output to a file, gate on the
+     CHECK's own status, and filter the file afterwards —
+     `<check> >step.log 2>&1 || { tail -50 step.log; exit 1; }`. Read
+     `$?` from the command itself, never from an `echo` after a
+     pipeline. A check whose tool is missing is UNAVAILABLE, not
+     passed: report each one as passed, failed or unavailable, and
+     never let a successful filter stand in for a successful check.
      END EVERY PASS ON A CLEAN TREE: if you must stop mid-slice,
      either finish it to committable or discard the in-progress edits
      — `git restore --staged --worktree -- <the paths you touched>`

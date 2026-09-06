@@ -275,6 +275,107 @@ func TestVerifyRunDriftTail(t *testing.T) {
 	})
 }
 
+// TestVerifyRunMaskedPipeline guards the second way a verify script can lie:
+// a gating command piped into an output filter. A pipeline exits with its LAST
+// command's status, so `<gate> 2>&1 | tail -10` reports tail — measured live on
+// PR #770 (run 01a07283), where a missing tsc returned 127 and the campaign
+// printed EXIT=0 (issue #779). `pipefail` is not POSIX and verify.sh runs under
+// /bin/sh, so the convention is to capture the status FIRST and filter after.
+//
+// The refusal moves the script aside so verify_probe re-authors it on the next
+// pass instead of re-running the same lie forever.
+func TestVerifyRunMaskedPipeline(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	command := verifyRunCommand(t, "feature-dev/main.bot")
+
+	type verifyResult struct {
+		Passed   bool   `json:"passed"`
+		Skipped  bool   `json:"skipped"`
+		ExitCode int    `json:"exit_code"`
+		LogTail  string `json:"log_tail"`
+	}
+	run := func(t *testing.T, ws, scratch string) verifyResult {
+		t.Helper()
+		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
+		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
+		out, err := exec.Command("sh", "-c", cmd).Output()
+		if err != nil {
+			t.Fatalf("verify_run command failed to execute: %v (out %q)", err, out)
+		}
+		var res verifyResult
+		if uerr := json.Unmarshal(out, &res); uerr != nil {
+			t.Fatalf("verify_run output is not the verify_result JSON: %v (out %q)", uerr, out)
+		}
+		return res
+	}
+	setup := func(t *testing.T, body string) (string, string) {
+		t.Helper()
+		ws, scratch := t.TempDir(), t.TempDir()
+		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v (%s)", err, out)
+		}
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return ws, scratch
+	}
+
+	t.Run("gate_piped_into_tail_is_refused", func(t *testing.T) {
+		// The exact observed shape: a failing command whose status is eaten
+		// by the filter, then reported as EXIT=0.
+		ws, scratch := setup(t, "#!/bin/sh\nset -e\nfalse 2>&1 | tail -10\necho EXIT=0\n")
+		res := run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 5 {
+			t.Fatalf("a gate piped into tail must be refused (exit 5), got %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "MASKED EXIT STATUS") || !strings.Contains(res.LogTail, "tail") {
+			t.Fatalf("log_tail must name the defect and the offending line, got %q", res.LogTail)
+		}
+		if _, err := os.Stat(filepath.Join(scratch, "verify.sh")); err == nil {
+			t.Error("the rejected verify.sh is still in place — verify_probe would call it fresh and re-run the same lie")
+		}
+		if _, err := os.Stat(filepath.Join(scratch, "verify.sh.rejected")); err != nil {
+			t.Errorf("the rejected script must be kept for inspection: %v", err)
+		}
+	})
+
+	t.Run("gate_piped_into_grep_is_refused", func(t *testing.T) {
+		ws, scratch := setup(t, "#!/bin/sh\nset -e\nfalse | grep -v skip\n")
+		res := run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 5 {
+			t.Fatalf("a gate piped into a filtering grep must be refused, got %+v", res)
+		}
+	})
+
+	t.Run("legitimate_pipelines_pass", func(t *testing.T) {
+		// Four shapes that are NOT the defect: a text producer whose filter
+		// IS the assertion, a captured value the script checks itself, a
+		// conditional whose test is the pipeline's own status, and a
+		// pipeline explicitly declared not to be a gate.
+		body := "#!/bin/sh\nset -e\nprintf 'ok\\n' | grep -q ok\nV=$(printf 'a\\nb\\n' | head -1)\n" +
+			"[ -n \"$V\" ]\nif printf 'x\\n' | grep -q x; then :; fi\nfalse | tail -1 || true\n"
+		ws, scratch := setup(t, body)
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("legitimate pipelines must not be refused: %+v", res)
+		}
+	})
+
+	t.Run("commented_pipeline_does_not_accuse", func(t *testing.T) {
+		ws, scratch := setup(t, "#!/bin/sh\nset -e\n# go test ./... 2>&1 | tail -10\ntrue\n")
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("a commented-out pipeline is not a masked gate: %+v", res)
+		}
+	})
+}
+
 // TestVerifyRunDriftTailPresentInAllBots asserts every catalog bot carrying a
 // verify_run-style gate ships the deterministic drift tail (the body is
 // copy-pasted per bot — no DSL include — so a new bot or an edit can silently
@@ -298,7 +399,7 @@ func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
 	for rel, node := range bots {
 		t.Run(rel, func(t *testing.T) {
 			cmd := toolCommand(t, rel, node)
-			for _, marker := range []string{"tree_state", "DRIFT GATE MISSING", "UNCOMMITTED REGEN OUTPUT"} {
+			for _, marker := range []string{"tree_state", "DRIFT GATE MISSING", "UNCOMMITTED REGEN OUTPUT", "MASKED EXIT STATUS"} {
 				if !strings.Contains(cmd, marker) {
 					t.Errorf("%s %s lacks the deterministic drift tail (missing %q)", rel, node, marker)
 				}
