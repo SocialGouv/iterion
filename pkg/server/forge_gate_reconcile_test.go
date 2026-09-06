@@ -333,8 +333,8 @@ func TestGateReconcile_ReasonStripsMechanicalWrappers(t *testing.T) {
 	}
 }
 
-// The synthetic marker must be recognized in both its shapes and must never
-// swallow a real verdict.
+// The synthetic marker must be recognized in every shape the reconciler
+// writes and must never swallow a real verdict.
 func TestGateReconcile_SyntheticMarker(t *testing.T) {
 	for _, tc := range []struct {
 		desc string
@@ -342,6 +342,7 @@ func TestGateReconcile_SyntheticMarker(t *testing.T) {
 	}{
 		{gateInterruptedDescription, true},
 		{"review died (budget exceeded: duration…) — push again or comment the bot's command to re-run", true},
+		{gateDLQDescription, true},
 		{"no blocking findings (≥high); 4 total", false},
 		{"supply-chain audit clean; no alignment needed, build verified", false},
 		{"", false},

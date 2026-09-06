@@ -57,11 +57,26 @@ var gateReasonWrappers = []*regexp.Regexp{
 	regexp.MustCompile(`^git: `),
 }
 
+// gateDLQDescription is what a run parked on the dead-letter queue leaves on
+// the head. The generic trailer below would be false advice here: a push, or
+// the bot's command, launches a FRESH run and leaves the parked message
+// parked, so the check would contradict the DLQ comment on the same pull
+// request and hide the one remedy that reaches the message. Reason-free on
+// purpose — the DLQ comment carries the cause and the status links to the run,
+// so the 140 characters a forge allows go to the remedy.
+const gateDLQDescription = "review parked on the DLQ — operator replay needed (iterion remote admin dlq)"
+
 // gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
 // the run doc can say (budget exceeded, provider error, …). GitHub truncates
 // commit-status descriptions at 140 characters, so the reason is bounded and
 // the remedy — the part the operator cannot reconstruct — keeps priority.
+//
+// The remedy is selected by the persisted FailureCode, the same typed WHY the
+// DLQ notice keys on, never by parsing run.Error.
 func gateInterruptedDescriptionFor(run *store.Run) string {
+	if run != nil && run.FailureCode == store.FailureDLQParked {
+		return gateDLQDescription
+	}
 	reason := ""
 	if run != nil {
 		reason = strings.TrimSpace(run.Error)
@@ -104,7 +119,8 @@ const gateDiedDescriptionPrefix = "review died ("
 // there are no findings behind a synthetic failure for a fixer to address.
 func isSyntheticGateInterruption(description string) bool {
 	d := strings.TrimSpace(description)
-	return d == gateInterruptedDescription || strings.HasPrefix(d, gateDiedDescriptionPrefix)
+	return d == gateInterruptedDescription || d == gateDLQDescription ||
+		strings.HasPrefix(d, gateDiedDescriptionPrefix)
 }
 
 // startGateReconciler attaches the reconciler to the event spine. It rides the

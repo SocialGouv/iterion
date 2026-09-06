@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -156,5 +157,61 @@ func TestNoticeGateDLQParked_SilentForANonGatingRun(t *testing.T) {
 
 	if len(c.bodies) != 0 {
 		t.Fatalf("a run owing no verdict posted a DLQ notice: %v", c.bodies)
+	}
+}
+
+// The check is what the developer reads first, and for a DLQ-parked run the
+// dead-review trailer is false advice: a push (or the bot's command) launches
+// a FRESH run while the parked message stays parked, so the check would tell
+// the developer the opposite of what the DLQ comment on the same PR says, and
+// hide the one remedy that reaches the parked message.
+func TestGateReconcile_DLQParkedCheckNamesTheOperatorReplay(t *testing.T) {
+	s, runID, gc, _ := dlqGateFixture(t, nil)
+
+	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d statuses, want 1", gc.setCalls)
+	}
+	desc := gc.last.Description
+	if strings.Contains(desc, "push again") || strings.Contains(desc, "comment the bot's command") {
+		t.Fatalf("the DLQ check carries the dead-review trailer — a push wakes no parked message:\n%s", desc)
+	}
+	for _, want := range []string{"DLQ", "iterion remote admin dlq"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("the DLQ check must name the remedy that reaches the parked message, missing %q:\n%s", want, desc)
+		}
+	}
+	// The reconciler must still read its own repair as its own: the second
+	// death on a head escalates, and the auto-fix lane must not send a fixer
+	// hunting for findings behind a review that never ran.
+	if !isSyntheticGateInterruption(desc) {
+		t.Fatalf("the DLQ description is not recognised as a synthetic interruption:\n%s", desc)
+	}
+	if n := utf8.RuneCountInString(desc); n > 140 {
+		t.Fatalf("description is %d runes — a forge truncates commit-status descriptions at 140:\n%s", n, desc)
+	}
+}
+
+// The wording is selected by the persisted FailureCode, the same typed WHY
+// the DLQ notice keys on — never by parsing run.Error.
+func TestGateInterruptedDescriptionFor_DLQParkOutranksTheRunError(t *testing.T) {
+	run := &store.Run{
+		Status:      store.RunStatusFailedResumable,
+		FailureCode: store.FailureDLQParked,
+		Error:       "max deliveries exhausted: runner: prepare repo workspace for 01a0: boom",
+	}
+	got := gateInterruptedDescriptionFor(run)
+	if strings.HasPrefix(got, gateDiedDescriptionPrefix) || strings.Contains(got, "push again") {
+		t.Fatalf("a DLQ park must not be described as a dead review: %q", got)
+	}
+	if !strings.Contains(got, "iterion remote admin dlq") {
+		t.Fatalf("a DLQ park must name the operator replay: %q", got)
+	}
+	// A plain interruption keeps the dead-review wording.
+	plain := gateInterruptedDescriptionFor(&store.Run{Error: "boom"})
+	if !strings.HasPrefix(plain, gateDiedDescriptionPrefix) {
+		t.Fatalf("a non-DLQ interruption must keep the dead-review wording: %q", plain)
 	}
 }

@@ -888,6 +888,14 @@ repeatedly on one revision is a structural signal (a run budget too short for
 the workload, a recurring provider quota, a bot defect), which is a human's
 call.
 
+The synthetic failure states the remedy that applies to the run it replaces.
+A review that died reads `review died (<reason>) — push again or comment the
+bot's command to re-run`; a run whose queue message is parked on the
+dead-letter queue reads `review parked on the DLQ — operator replay needed
+(iterion remote admin dlq)` instead, because a push there launches a fresh run
+and leaves the parked message where it is. Both are the reconciler's own
+marker, so both are repairable and both are ignored by the lane below.
+
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is
 re-running the REVIEWER (this lane), never launching the fixer.
