@@ -814,3 +814,33 @@ func TestSyncProjectBoardReflectsARunVerdict(t *testing.T) {
 		t.Fatalf("run verdict: reflected=%d writes=%+v, want one Done write", res.Reflected, bc.writes)
 	}
 }
+
+// TestSyncProjectBoardReflectsALaunchGiveUp (#814): the filing that ends a
+// card's launch retries is a decision for a human, so it IS reflected —
+// while the give-backs that preceded it (launch_refused) were machinery.
+func TestSyncProjectBoardReflectsALaunchGiveUp(t *testing.T) {
+	at := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	board := newTestBoard(t)
+	id := seedSynced(t, board, 814, native.StateReady, "Planned", at)
+	tok, err := board.Claim(id, "board-dispatcher:pod-1")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := board.SetStateOwnedReason(id, native.StateBlocked, tok, tracker.ReasonLaunchGivenUp); err != nil {
+		t.Fatalf("file: %v", err)
+	}
+	if mustGet(t, board, id).StateByMachine() {
+		t.Fatal("fixture: launch_given_up must not read as machine provenance")
+	}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 814, statusValue("Planned", at)),
+	}}}
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: testBinding()})
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Reflected != 1 || len(bc.writes) != 1 || bc.writes[0].OptionID != optionID(t, testProject(), "Blocked") {
+		t.Fatalf("launch give-up: reflected=%d writes=%+v, want one Blocked write — the operator's board must show the card that needs them", res.Reflected, bc.writes)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -60,6 +61,9 @@ type boardCoordinator interface {
 	// SetGaveUpOwned stamps the watchdog's give-up on a card it filed on
 	// its own authority (a pruned pointer) — fenced like every owner write.
 	SetGaveUpOwned(ctx context.Context, tenant, id string, g *native.GiveUp, tok tracker.ClaimToken) error
+	// SetLaunchRefusalOwned writes (nil clears) a card's launch-refusal
+	// ledger — the retry bound of a launch the run service refused.
+	SetLaunchRefusalOwned(ctx context.Context, tenant, id string, r *native.LaunchRefusal, tok tracker.ClaimToken) error
 	// The reaper pair (the cloud half of the claim watchdog — the hole
 	// boarddispatch itself documented as R5ceb26: "no TTL and no reaper
 	// exists yet"). List is cross-tenant; Reclaim is a CAS TRANSFER.
@@ -94,6 +98,16 @@ var errCardContinuable = errors.New("board dispatcher: run continuable")
 //     bot the resolver cannot find, carries malformed reserved bot-args, or
 //     the run service is not wired. Card back to its column, claim freed,
 //     one Warn per (card, reason) edge.
+//   - errCardLaunchRefused — the run service refused the launch before any
+//     run existed (a sealing failure, a queue outage, the server draining,
+//     a bot that does not compile, an invalid spec): transient, retryable.
+//     Card back to its column under the machine ReasonLaunchRefused, the
+//     card's launch-refusal ledger advanced (the dispatch listing skips it
+//     for a backoff), one Warn per (card, reason) edge — and past the
+//     attempt cap, filed `blocked` under the DESCRIPTIVE
+//     ReasonLaunchGivenUp with the last refusal on the card, reflected on
+//     purpose: a human has to decide. The server draining consumes no
+//     attempt (another replica picks the card up next tick).
 //   - errCardPaused — the run parked on a human/operator gate → the
 //     awaiting-input column.
 //   - errCardContinuable — the run ended failed_resumable / cancelled → the
@@ -103,6 +117,39 @@ var errCardContinuable = errors.New("board dispatcher: run continuable")
 //   - anything else — the run was launched and ended in a terminal failure,
 //     or the publisher refused the launch (quota, sealing, …) → `blocked`.
 var errCardUnlaunchable = errors.New("board dispatcher: card cannot be launched")
+
+// errCardLaunchRefused marks a launch the run service refused before any run
+// started — see the taxonomy above. Typed at the ONE boundary where it is
+// decidable without reading an error's prose: every error returned by
+// runview.Service.Launch means no run was started.
+var errCardLaunchRefused = errors.New("board dispatcher: launch refused")
+
+// launchRefusal is the typed form processBoardCard returns for an error out
+// of runs.Launch: errors.Is(err, errCardLaunchRefused) for the class,
+// errors.Is through Cause for the typed refusals underneath (the server
+// draining), and Cause's own text for the ledger the operator reads — never
+// the class wrapper's.
+type launchRefusal struct {
+	cardID string
+	cause  error
+}
+
+func (e *launchRefusal) Error() string {
+	return fmt.Sprintf("card %s launch refused: %v", e.cardID, e.cause)
+}
+func (e *launchRefusal) Is(target error) bool { return target == errCardLaunchRefused }
+func (e *launchRefusal) Unwrap() error        { return e.cause }
+
+// launchRefusalReason is the refusal's own text — what the card's ledger and
+// the give-up stamp record — falling back to the whole error for a refusal
+// that did not come through the typed form.
+func launchRefusalReason(err error) string {
+	var lr *launchRefusal
+	if errors.As(err, &lr) && lr.cause != nil {
+		return lr.cause.Error()
+	}
+	return err.Error()
+}
 
 // pollDisposition maps a TERMINAL polled status to the poll's verdict:
 // finished = clean; failed = the one filing-worthy failure; everything
@@ -215,6 +262,11 @@ type boardDispatcher struct {
 	unlaunchMu     sync.Mutex
 	unlaunchWarned map[string]unlaunchNote
 	unlaunchTally  unlaunchableTally
+
+	// launchAttemptCap is how many consecutive launch refusals a card may
+	// collect before it is filed blocked (dispatcher.LaunchAttemptCap by
+	// default; tests lower it).
+	launchAttemptCap int
 }
 
 // unlaunchNote is one card's last unlaunchable verdict: the reason said, and
@@ -232,18 +284,19 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		concurrency = 4
 	}
 	return &boardDispatcher{
-		coord:           coord,
-		process:         process,
-		marker:          marker,
-		eligible:        []string{native.StateReady},
-		inProgressState: native.StateInProgress,
-		doneState:       native.StateDone,
-		blockedState:    native.StateBlocked,
-		awaitingState:   native.StateAwaitingInput,
-		interval:        5 * time.Second,
-		reapEvery:       dispatcher.ClaimReaperInterval(),
-		sem:             make(chan struct{}, concurrency),
-		logger:          logger,
+		coord:            coord,
+		process:          process,
+		marker:           marker,
+		eligible:         []string{native.StateReady},
+		inProgressState:  native.StateInProgress,
+		doneState:        native.StateDone,
+		blockedState:     native.StateBlocked,
+		awaitingState:    native.StateAwaitingInput,
+		interval:         5 * time.Second,
+		reapEvery:        dispatcher.ClaimReaperInterval(),
+		sem:              make(chan struct{}, concurrency),
+		logger:           logger,
+		launchAttemptCap: dispatcher.LaunchAttemptCap(),
 	}
 }
 
@@ -275,7 +328,7 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 			if err := d.admit(ctx, c.Tenant, c.Issue); err != nil {
 				<-d.sem
 				if errors.Is(err, errCardUnlaunchable) {
-					d.noteUnlaunchable(c.Tenant, c.Issue.ID, c.Issue.State, err, false)
+					d.noteHeld(heldAtAdmission, c.Tenant, c.Issue.ID, c.Issue.State, err)
 				} else {
 					d.warn("card %s/%s admission: %v — retried next tick", c.Tenant, c.Issue.ID, err)
 				}
@@ -332,8 +385,11 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState
 	// finalReason is the provenance the final write carries; empty for a
-	// run's own verdict (the ordinary fenced move).
+	// run's own verdict (the ordinary fenced move). ledger / giveUp are the
+	// launch-refusal writes that accompany it, when the class calls for them.
 	finalReason := ""
+	var ledger *native.LaunchRefusal
+	var giveUp *native.GiveUp
 	switch {
 	case runErr != nil && errors.Is(runErr, errCardUnlaunchable):
 		// Nothing ran (the taxonomy on errCardUnlaunchable): no verdict
@@ -344,7 +400,33 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// makes this the race case (the card changed between the listing
 		// and the launch); it is still never `blocked`.
 		final, finalReason = c.Issue.State, tracker.ReasonUnlaunchable
-		d.noteUnlaunchable(c.Tenant, c.Issue.ID, c.Issue.State, runErr, true)
+		d.noteHeld(heldAfterClaim, c.Tenant, c.Issue.ID, c.Issue.State, runErr)
+	case runErr != nil && errors.Is(runErr, errCardLaunchRefused):
+		// The run service refused the launch before any run existed (the
+		// taxonomy above): transient, not a verdict. Back to the column the
+		// tick took it from under machine provenance, and the card's ledger
+		// advanced so the dispatch listing spaces the retries — unless the
+		// refusal is the server draining, which says nothing about the card:
+		// another replica claims it next tick with a clean count. Past the
+		// attempt cap the retries are over: the card is filed blocked under
+		// the DESCRIPTIVE launch_given_up (the roadmap shows it, on purpose)
+		// with the last refusal on the card and a give-up stamp, so the
+		// operator reads why instead of guessing.
+		final, finalReason = c.Issue.State, tracker.ReasonLaunchRefused
+		kind := heldLaunchRefused
+		if !errors.Is(runErr, runtime.ErrServerDraining) {
+			ledger = dispatcher.NextLaunchRefusal(c.Issue.LaunchRefusal, time.Now().UTC(), launchRefusalReason(runErr))
+			if ledger.Attempts >= d.launchAttemptCap {
+				final, finalReason = d.blockedState, tracker.ReasonLaunchGivenUp
+				giveUp = &native.GiveUp{
+					State:    d.blockedState,
+					Attempts: ledger.Attempts,
+					Reason:   fmt.Sprintf("the launch was refused %d times; last refusal: %s", ledger.Attempts, ledger.LastReason),
+				}
+				kind = heldLaunchGivenUp
+			}
+		}
+		d.noteHeld(kind, c.Tenant, c.Issue.ID, final, runErr)
 	case runErr != nil && errors.Is(runErr, errCardPaused):
 		// A pause is not a failure: route the card to the awaiting-input
 		// column so the operator answers it there, not to blocked.
@@ -384,6 +466,13 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	// too, while the release below is the write the drain exists FOR.
 	finCtx, finCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finCancel()
+	if ledger != nil {
+		// Before the state write: the ledger is what keeps the next tick
+		// from claiming the card again the moment it is back in its column.
+		if err := d.coord.SetLaunchRefusalOwned(finCtx, c.Tenant, c.Issue.ID, ledger, tok); err != nil {
+			d.warn("card %s/%s launch-refusal ledger: %v", c.Tenant, c.Issue.ID, err)
+		}
+	}
 	if final != "" {
 		var err error
 		if finalReason != "" {
@@ -393,6 +482,13 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		}
 		if err != nil {
 			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
+		}
+	}
+	if giveUp != nil {
+		// After the filing: the stamp only lands on a card sitting in the
+		// state it names (GiveUpToRecord), which is the write just above.
+		if err := d.coord.SetGaveUpOwned(finCtx, c.Tenant, c.Issue.ID, giveUp, tok); err != nil {
+			d.warn("card %s/%s launch give-up stamp: %v", c.Tenant, c.Issue.ID, err)
 		}
 	}
 	// Announce the release BEFORE it lands (the local twin's rule, see
@@ -717,6 +813,9 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	// the operator's only other feedback at the cutover is cards that
 	// stay stuck.
 	if msg := dispatcher.ClaimReaperMisspelling(); msg != "" {
+		d.warn("%s", msg)
+	}
+	if msg := dispatcher.LaunchAttemptCapMisspelling(); msg != "" {
 		d.warn("%s", msg)
 	}
 	reaperOn := dispatcher.ClaimReaperEnabled()
@@ -1395,6 +1494,10 @@ func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.Ex
 // blocked — that is the point of counting them apart from failures.
 type unlaunchableTally struct {
 	refused, released int
+	// launchRefused counts launches the run service refused (the card
+	// given back, its ledger advanced); launchGivenUp the cards filed
+	// blocked because the refusals reached the attempt cap.
+	launchRefused, launchGivenUp int
 }
 
 // unlaunchableCounts returns the running tally (test seam).
@@ -1404,12 +1507,31 @@ func (d *boardDispatcher) unlaunchableCounts() unlaunchableTally {
 	return d.unlaunchTally
 }
 
-// noteUnlaunchable records one unlaunchable verdict on a card and says it
-// ONCE per (card, reason) edge: the card is listed again on every tick for
-// as long as it stays broken, and the line has to be findable, not buried
-// under 17k copies of itself a day. column is where the card stays (or
-// returns to); afterClaim tells the belt's give-back from admission's skip.
-func (d *boardDispatcher) noteUnlaunchable(tenant, id, column string, err error, afterClaim bool) {
+// heldKind is why a card was held back from running: the four verdicts
+// that leave a card without a run — none of them a filing, except the last.
+type heldKind int
+
+const (
+	// heldAtAdmission: a precondition failed before the claim; the card is
+	// skipped in its column.
+	heldAtAdmission heldKind = iota
+	// heldAfterClaim: a precondition failed after the claim; the card is
+	// returned to its column.
+	heldAfterClaim
+	// heldLaunchRefused: the run service refused the launch; the card is
+	// returned to its column and retried after a backoff.
+	heldLaunchRefused
+	// heldLaunchGivenUp: the refusals reached the attempt cap; the card is
+	// filed blocked with the last refusal on it.
+	heldLaunchGivenUp
+)
+
+// noteHeld records one such verdict on a card and says it ONCE per (card,
+// reason) edge: the card is listed again on every tick (or after every
+// backoff) for as long as it stays broken, and the line has to be findable,
+// not buried under 17k copies of itself a day. column is where the card
+// stays, returns to, or — for a give-up — was filed.
+func (d *boardDispatcher) noteHeld(kind heldKind, tenant, id, column string, err error) {
 	key := tenant + "/" + id
 	reason := err.Error()
 	d.unlaunchMu.Lock()
@@ -1418,22 +1540,34 @@ func (d *boardDispatcher) noteUnlaunchable(tenant, id, column string, err error,
 	}
 	said := d.unlaunchWarned[key].reason == reason
 	d.unlaunchWarned[key] = unlaunchNote{reason: reason, at: time.Now()}
-	if afterClaim {
-		d.unlaunchTally.released++
-	} else {
+	switch kind {
+	case heldAtAdmission:
 		d.unlaunchTally.refused++
+	case heldAfterClaim:
+		d.unlaunchTally.released++
+	case heldLaunchRefused:
+		d.unlaunchTally.launchRefused++
+	case heldLaunchGivenUp:
+		d.unlaunchTally.launchGivenUp++
 	}
 	d.unlaunchMu.Unlock()
-	if said {
-		return
+	if said && kind != heldLaunchGivenUp {
+		return // a give-up is a filing: always said, once per card
 	}
-	if afterClaim {
+	switch kind {
+	case heldAtAdmission:
+		d.warn("card %s/%s cannot be launched — left in %q, not claimed (said once until the reason changes): %v",
+			tenant, id, column, err)
+	case heldAfterClaim:
 		d.warn("card %s/%s could not be launched after the claim — returned to %q, claim freed, not filed (said once until the reason changes): %v",
 			tenant, id, column, err)
-		return
+	case heldLaunchRefused:
+		d.warn("card %s/%s launch refused by the run service — returned to %q, claim freed, retried after a backoff (said once until the reason changes): %v",
+			tenant, id, column, err)
+	case heldLaunchGivenUp:
+		d.warn("card %s/%s launch refused on every attempt allowed (%s=%d) — filed %q with the last refusal on the card; a human decides now: %v",
+			tenant, id, dispatcher.LaunchAttemptCapEnvName(), d.launchAttemptCap, column, err)
 	}
-	d.warn("card %s/%s cannot be launched — left in %q, not claimed (said once until the reason changes): %v",
-		tenant, id, column, err)
 }
 
 // clearUnlaunchable forgets a card's memo entry once it launched, so a later
@@ -1459,11 +1593,11 @@ func (d *boardDispatcher) reportUnlaunchable(now time.Time) {
 		}
 	}
 	d.unlaunchMu.Unlock()
-	if t.refused == 0 && t.released == 0 {
+	if t == (unlaunchableTally{}) {
 		return
 	}
-	d.warn("unlaunchable cards since the last watchdog pass: %d refused at admission (never claimed), %d returned to their column after a claim — none filed blocked; each card is named once above",
-		t.refused, t.released)
+	d.warn("cards held back since the last watchdog pass: %d refused at admission (never claimed), %d returned to their column after a claim, %d launches refused by the run service (retried after a backoff), %d filed blocked after the launch attempt cap — each card is named once above",
+		t.refused, t.released, t.launchRefused, t.launchGivenUp)
 }
 
 func (d *boardDispatcher) warn(format string, args ...any) {
@@ -1726,7 +1860,9 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	lb.Stamp(&spec)
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
-		return err
+		// Every error out of Launch means no run was started — the class is
+		// decidable here, at the boundary, without reading the error's text.
+		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	runID := res.RunID
 	// Stamp the launched run onto the card immediately (not after the run
