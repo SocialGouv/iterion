@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.7](https://github.com/SocialGouv/iterion/compare/v3.112.6...v3.112.7) (2026-09-06)
+
+### Bug Fixes
+
+* **server:** the board dispatcher never claims a card it cannot launch, and a column iterion wrote on its own authority is not reflected onto the bound board ([#813](https://github.com/SocialGouv/iterion/issues/813)) ([9a4a6a0](https://github.com/SocialGouv/iterion/commit/9a4a6a07609b43ee237adb99a550578beec6b794)), references [#798](https://github.com/SocialGouv/iterion/issues/798) [#798](https://github.com/SocialGouv/iterion/issues/798) [#798](https://github.com/SocialGouv/iterion/issues/798) [#798](https://github.com/SocialGouv/iterion/issues/798)
+
+    <details><summary>why</summary>
+
+    Two store-level seams the #798 fix rests on. Coordinator.ListDispatchable is the cloud dispatch tick's candidate query: unclaimed cards in a launch column THAT CARRY A BOT, filtered in the query because the batch is capped and bot-less cards (never written, so the oldest) would fill every batch. ListEligible stays the sweeps' listing. Issue.StateReason persists the provenance of the card's last transition - the same value its state event carries, derived once by native.StateProvenance - so a…
+
+    </details>
+
 ## [3.112.6](https://github.com/SocialGouv/iterion/compare/v3.112.5...v3.112.6) (2026-09-06)
 
 ### Bug Fixes
