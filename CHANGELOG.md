@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.11](https://github.com/SocialGouv/iterion/compare/v3.112.10...v3.112.11) (2026-09-06)
+
+### Bug Fixes
+
+* **git,pluginsource,runview:** a git command iterion runs into a directory it disposes of leaves nothing running ([#827](https://github.com/SocialGouv/iterion/issues/827)) ([cdfdc65](https://github.com/SocialGouv/iterion/commit/cdfdc6523b241ca608109398e8d0dbcd4f3b983a)), closes [#821](https://github.com/SocialGouv/iterion/issues/821), references [#813](https://github.com/SocialGouv/iterion/issues/813)
+
+    <details><summary>why</summary>
+
+    The merge-queue build of #813 ejected the PR on a cleanup, not an assertion: `TempDir RemoveAll cleanup: unlinkat …/deploy-onyxia-…/.git/ objects: directory not empty` — something was still writing under the plugin-source cache checkout after the test had passed.
+
+    </details>
+
 ## [3.112.10](https://github.com/SocialGouv/iterion/compare/v3.112.9...v3.112.10) (2026-09-06)
 
 ### Bug Fixes
