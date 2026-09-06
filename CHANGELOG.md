@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.4](https://github.com/SocialGouv/iterion/compare/v3.112.3...v3.112.4) (2026-09-06)
+
+### Bug Fixes
+
+* **runner:** an IR this runner cannot load is a verdict on the run, acked — not eight silent redeliveries to the DLQ ([#806](https://github.com/SocialGouv/iterion/issues/806)) ([b693fd0](https://github.com/SocialGouv/iterion/commit/b693fd0e550d250f1e05c6799b6f8e80fb9a231e))
+
+    <details><summary>why</summary>
+
+    Measured on a five-release server/runner skew: six runs (five of one team, one of another) went failed_resumable within 75 s with zero events and an empty final_error; the runner logs read "compile IR: N diagnostic(s)" on every delivery, 1 … 8, then "parking on DLQ". The compiled IR of a server ahead of the fleet does not load on the runner, the error came back generic, and the delivery loop did what it does with generic errors — while the run said nothing.
+
+    </details>
+
 ## [3.112.3](https://github.com/SocialGouv/iterion/compare/v3.112.2...v3.112.3) (2026-09-06)
 
 ### Bug Fixes
