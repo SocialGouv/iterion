@@ -178,11 +178,11 @@ type ProjectionBindings interface {
 // case no projection row is ever owed.
 func MaterializeEffects(ctx context.Context, subs SubscriptionStore, bindings ProjectionBindings, ev Event, now time.Time) ([]EffectRow, error) {
 	var rows []EffectRow
-	// The projection is computed BEFORE — and outside of —
-	// matchingSubscriptions, deliberately: that prelude declines
-	// machine-caused events to protect the fleet from mass LAUNCHES, and a
-	// watchdog filing a card in `blocked` is exactly what the external
-	// roadmap must show. A projection spends no budget and starts no run.
+	// The projection is computed outside of matchingSubscriptions: it is
+	// owed to the tenant's board binding, never to a subscription, and it
+	// spends no budget and starts no run. It shares that prelude's
+	// machine-caused decline all the same (projectionOwed): a column
+	// iterion wrote on its own authority is not a move the roadmap follows.
 	owed, err := projectionOwed(ctx, bindings, ev)
 	if err != nil {
 		return nil, err
@@ -226,6 +226,16 @@ func projectionOwed(ctx context.Context, bindings ProjectionBindings, ev Event) 
 	// name, for a tenant a binding can be resolved for.
 	if bindings == nil || ev.Source != SourceBoard || ev.Kind != KindCardMoved ||
 		ev.Subject.ID == "" || ev.TenantID == "" {
+		return false, nil
+	}
+	// A machine-caused move — a watchdog park, a column rename, a card given
+	// back after a failed launch — is iterion's own bookkeeping, not a move
+	// the operator's roadmap follows: no row. Declined HERE, not only in the
+	// reflect (which judges the card's persisted provenance and refuses
+	// too), for the reason launches are: a schema migration emits one event
+	// per card, and a column of durable rows that each retire with nothing
+	// to write sits FIFO ahead of the next genuine reflect.
+	if machineCaused(ev) {
 		return false, nil
 	}
 	bound, err := bindings.HasBoardBinding(ctx, ev.TenantID)

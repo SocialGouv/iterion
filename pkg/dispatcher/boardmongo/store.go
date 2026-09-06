@@ -231,7 +231,8 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 	now := time.Now().UTC()
 	in.CreatedAt = now
 	in.UpdatedAt = now
-	in.StateAt = now // the card's column was decided now (the FS twin derives the same)
+	in.StateAt = now    // the card's column was decided now (the FS twin derives the same)
+	in.StateReason = "" // derived by the store at every transition, never supplied
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	if _, err := s.issues.InsertOne(ctx, issueDoc{ID: in.ID, Tenant: s.tenant, Issue: in}); err != nil {
@@ -400,7 +401,12 @@ func (s *Store) replaceGuarded(ctx context.Context, iss *native.Issue, guard bso
 	// writeIssueLocked derivation.
 	if slices.Contains(changed, "state") {
 		iss.StateAt = time.Now().UTC()
-		changed = append(changed, "state_at")
+		// The provenance rides with the transition too: the caller set
+		// iss.StateReason for THIS write (or left it empty for an
+		// unattributed move), and naming the key here is what writes it —
+		// a state writer cannot leave the previous transition's reason on
+		// the card by forgetting the key.
+		changed = append(changed, "state_at", "state_reason")
 	}
 	hadGaveUp := iss.GaveUp != nil
 	expireGiveUp(iss)
@@ -580,6 +586,7 @@ func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, erro
 		}
 		old = iss.State
 		iss.State = newState
+		iss.StateReason = native.StateProvenance("", reason)
 		iss.UpdatedAt = time.Now().UTC()
 		matched, err := s.replaceGuarded(ctx, iss, bson.M{"issue.state": old}, "state")
 		if err != nil {
@@ -598,11 +605,8 @@ func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, erro
 		}
 		iss = fresh
 	}
-	payload := map[string]any{"from": old, "to": newState}
-	if reason != "" {
-		payload["reason"] = reason
-	}
-	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID, Payload: payload}); err != nil {
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID,
+		Payload: native.StateEventPayload(old, newState, "", reason)}); err != nil {
 		return nil, err
 	}
 	if newState == native.StateDone {

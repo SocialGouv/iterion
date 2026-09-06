@@ -1,6 +1,10 @@
 package native
 
-import "time"
+import (
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+)
 
 // Issue is the native tracker's source-of-truth issue record. The
 // dispatcher consumes a normalized view via tracker.Issue (see
@@ -109,6 +113,19 @@ type Issue struct {
 	// ClaimedAt. A reader wanting a transition time for such a card has to
 	// say what it falls back to.
 	StateAt time.Time `json:"state_at,omitempty"`
+	// StateReason is the provenance of the card's LAST column change — the
+	// `reason` its state event carried (a tracker.Reason* constant), empty
+	// for an unattributed write (an operator surface, a bot's board tool,
+	// the project import, a create). It is what lets a reader of the CARD
+	// alone — the periodic project-board reflect, which sees no event —
+	// tell a column iterion wrote on its own authority (StateByMachine)
+	// from one a person, or a run's verdict, put the card in.
+	//
+	// Stamped by the store at every state write, on both twins, from the
+	// same inputs that build the event's `reason`: it cannot disagree with
+	// the event, and it is overwritten (or cleared) by the next transition,
+	// so it never describes a column the card has left.
+	StateReason string `json:"state_reason,omitempty"`
 	// External links this card to an issue on an external forge — set when
 	// the card is mirrored FROM a forge (one-way forge→board sync) or pushed
 	// TO one (push-to-forge). It is metadata: the card's column stays
@@ -119,6 +136,17 @@ type Issue struct {
 	// IssueModal, and — once the comment-trigger wiring lands — to carry
 	// operator `/command` requests and the resulting MR/PR back-links.
 	Comments []Comment `json:"comments,omitempty"`
+}
+
+// StateByMachine reports whether the card's current column was written by
+// iterion acting on its own authority — a watchdog repair, a schema
+// migration, the dispatcher returning a card it could not launch — rather
+// than by a person or by a run's verdict. The predicate is the enumerated
+// tracker.IsMachineReason over the persisted provenance, the same contract
+// the trigger spine applies to the event: a descriptive reason (unblocked,
+// run_finished) reads as a gesture here too.
+func (i *Issue) StateByMachine() bool {
+	return i != nil && tracker.IsMachineReason(i.StateReason)
 }
 
 // RunRef is one entry in an issue's run history (Issue.Runs). RunID is

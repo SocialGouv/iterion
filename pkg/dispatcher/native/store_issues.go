@@ -109,6 +109,7 @@ func (s *Store) createLocked(in Issue) (created *Issue, err error) {
 	now := time.Now().UTC()
 	in.CreatedAt = now
 	in.UpdatedAt = now
+	in.StateReason = "" // derived by the store at every transition, never supplied — like StateAt
 	if err := s.writeIssueLocked(&in); err != nil {
 		return nil, err
 	}
@@ -500,6 +501,7 @@ func (s *Store) Reopen(id, toState string) (updated *Issue, err error) {
 	}
 	old := iss.State
 	iss.State = toState
+	iss.StateReason = "" // an operator gesture: whatever parked the card no longer describes it
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err
@@ -589,6 +591,9 @@ func (s *Store) setStateReasonLocked(iss *Issue, newState, byMarker, reason stri
 	}
 	old := iss.State
 	iss.State = newState
+	// The card records the same provenance the event carries — derived
+	// once, here, from the same two inputs, so the two cannot disagree.
+	iss.StateReason = StateProvenance(byMarker, reason)
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err
@@ -597,13 +602,7 @@ func (s *Store) setStateReasonLocked(iss *Issue, newState, byMarker, reason stri
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
-		Payload: func() map[string]any {
-			p := StateChangePayload(old, newState, byMarker)
-			if reason != "" {
-				p["reason"] = reason
-			}
-			return p
-		}(),
+		Payload: StateEventPayload(old, newState, byMarker, reason),
 	}); err != nil {
 		return nil, err
 	}
@@ -641,6 +640,7 @@ func (s *Store) ClaimForLaunch(id string) (claimed *Issue, won bool, err error) 
 		return nil, false, nil
 	}
 	iss.State = StateInProgress
+	iss.StateReason = "" // the admission loop launching a run: a lifecycle move, not machine bookkeeping
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, false, err
@@ -704,6 +704,7 @@ func (s *Store) promoteUnblockedDependentsLocked(closedID string) error {
 		// Mutate a clone then write — index holds shared pointers.
 		next := cloneIssue(iss)
 		next.State = target
+		next.StateReason = tracker.ReasonUnblocked
 		next.UpdatedAt = time.Now().UTC()
 		if err := s.writeIssueLocked(next); err != nil {
 			return err
@@ -822,21 +823,42 @@ func stampStateAtLocked(prev, next *Issue) {
 	next.StateAt = time.Now().UTC()
 }
 
-// StateChangePayload builds the state-change event body, stamping the
-// provenance when the WRITER is a watchdog. byMarker is the writer's own
-// claim marker — the token a fenced write presented — never the marker
-// the card happens to carry: an operator moving a card the watchdog is
-// conserving is still an operator gesture. Downstream consumers launch
-// bots and spend one-shot label gates on these events, and a machine
-// repairing a dead owner is not the operator gesture they are written
-// for. Exported for the Mongo twin, which builds the same event from
-// its own CAS.
-func StateChangePayload(from, to, byMarker string) map[string]any {
-	p := map[string]any{"from": from, "to": to}
+// StateProvenance is the ONE derivation of a state write's provenance —
+// the value that lands on the event's `reason` AND on the card
+// (Issue.StateReason): the explicit reason when the writer gave one, else
+// the machine ReasonWatchdog when the WRITER is a watchdog, else none.
+// byMarker is the writer's own claim marker — the token a fenced write
+// presented — never the marker the card happens to carry: an operator
+// moving a card the watchdog is conserving is still an operator gesture.
+// Downstream consumers launch bots, spend one-shot label gates and reflect
+// columns onto external boards from this value, and a machine repairing a
+// dead owner is not the operator gesture they are written for. Exported
+// for the Mongo twin, which builds the same event from its own CAS.
+func StateProvenance(byMarker, reason string) string {
+	if reason != "" {
+		return reason
+	}
 	if tracker.IsReaperMarker(byMarker) {
-		p["reason"] = tracker.ReasonWatchdog
+		return tracker.ReasonWatchdog
+	}
+	return ""
+}
+
+// StateEventPayload builds the state-change event body carrying
+// StateProvenance(byMarker, reason) — omitted when empty, so an
+// unattributed move keeps the bare {from, to} shape its consumers expect.
+func StateEventPayload(from, to, byMarker, reason string) map[string]any {
+	p := map[string]any{"from": from, "to": to}
+	if prov := StateProvenance(byMarker, reason); prov != "" {
+		p["reason"] = prov
 	}
 	return p
+}
+
+// StateChangePayload is StateEventPayload for a write with no explicit
+// reason — the ordinary fenced move.
+func StateChangePayload(from, to, byMarker string) map[string]any {
+	return StateEventPayload(from, to, byMarker, "")
 }
 
 // expireGiveUp drops a give-up stamp that no longer describes the state the

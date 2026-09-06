@@ -125,6 +125,14 @@ type ProjectImportResult struct {
 	// ReflectFailed is the reflects the forge refused. Counted rather than
 	// fatal: one card's failed write must not abandon the rest of the board.
 	ReflectFailed int `json:"reflect_failed,omitempty"`
+	// ReflectMachine is the cards whose current column iterion wrote on its
+	// own authority (Issue.StateByMachine — a watchdog park, a schema
+	// migration, a card given back after a failed launch) and therefore did
+	// NOT push onto the board: the roadmap follows people and run verdicts,
+	// never the machinery's own bookkeeping. Counted per pass, like
+	// ReflectNoColumn — the same cards stay unreflectable until someone or
+	// some run moves them.
+	ReflectMachine int `json:"reflect_machine,omitempty"`
 	// Labelled is the cards whose project-derived labels changed.
 	Labelled int `json:"labelled"`
 	// Conflicts is the items where both sides had moved since the last sync.
@@ -572,6 +580,13 @@ func applyProjectItem(
 // "who moved?" oracle and the echo suppressor, which is why neither direction
 // needs a per-write "last mover" flag.
 //
+// What it does need is WHO made the native move: a column iterion wrote on
+// its own authority (Issue.StateByMachine — a watchdog park, a column rename,
+// a card given back after a launch that never happened) is not a move the
+// roadmap follows, and is left alone and counted (ReflectMachine). A person's
+// move and a run's verdict — the dispatcher filing `in_progress` at launch,
+// `done` after a finished run, `blocked` after a failed one — are reflected.
+//
 // A failed write is counted and logged, never fatal: one card's 403 must not
 // abandon the rest of the board.
 //
@@ -608,6 +623,18 @@ func reflectNativeState(
 	}
 	if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(boardStatus)) {
 		return reflectNothingToWrite // already there — the idempotence that keeps a pass free
+	}
+	if card.StateByMachine() {
+		// The card's column was written by iterion on its own authority — a
+		// watchdog park, a schema migration, a card given back after a launch
+		// that never happened — not by a person and not by a run's verdict.
+		// The roadmap follows the latter two and never the machinery's own
+		// bookkeeping: a park that says nothing about the card's work must
+		// not read, on the operator's board, as if someone had decided it.
+		// Counted like ReflectNoColumn, not warned: the same card stays
+		// unreflectable on every pass until a person or a run moves it.
+		res.ReflectMachine++
+		return reflectNothingToWrite
 	}
 	option, ok := binding.OptionForState(card.State)
 	if !ok || repair.lostState(card.State) {

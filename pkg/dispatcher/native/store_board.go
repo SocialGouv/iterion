@@ -102,6 +102,7 @@ func (s *Store) migrateStateLocked(from, to, reason string) (int, error) {
 		// goroutines holding earlier defensive copies.
 		next := cloneIssue(iss)
 		next.State = to
+		next.StateReason = reason
 		next.UpdatedAt = time.Now().UTC()
 		if err := s.writeIssueLocked(next); err != nil {
 			return touched, fmt.Errorf("native store: write %s during state migration: %w", id, err)

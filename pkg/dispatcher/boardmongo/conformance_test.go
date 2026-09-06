@@ -41,6 +41,17 @@ func lastStatePayload(t *testing.T, s native.BoardStore, id string) map[string]a
 	return last
 }
 
+// mustGetIssue is Get or Fatal, for the provenance rows that read a method
+// off the record.
+func mustGetIssue(t *testing.T, s native.BoardStore, id string) *native.Issue {
+	t.Helper()
+	got, err := s.Get(id)
+	if err != nil {
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return got
+}
+
 // runBoardStoreSuite exercises the native.BoardStore contract. It runs against
 // both the filesystem native.Store (always — proving the suite) and the Mongo
 // store (gated on ITERION_TEST_MONGO_URI), so the two implementations are held
@@ -147,6 +158,96 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
 		t.Fatalf("StateAt: restore state: %v", err)
+	}
+
+	// Issue.StateReason is the provenance of the card's last TRANSITION —
+	// the `reason` its state event carried — persisted so a reader of the
+	// card alone (the project-board reflect, which sees no event) can tell a
+	// column iterion wrote on its own authority from one a person, or a
+	// run's verdict, put it in (#798). Both twins owe: stamped from the SAME
+	// inputs as the event's reason, overwritten or cleared by the next
+	// transition, untouched by an edit or a same-state no-op.
+	reasonOf := func(what string) string {
+		got, err := store.Get(created.ID)
+		if err != nil {
+			t.Fatalf("StateReason/%s: Get: %v", what, err)
+		}
+		return got.StateReason
+	}
+	if got := reasonOf("after an operator SetState"); got != "" {
+		t.Errorf("StateReason after a tokenless SetState = %q, want empty (an unattributed gesture)", got)
+	}
+	watchdogTok, err := store.Claim(created.ID, tracker.ReaperMarkerPrefix+"host-1")
+	if err != nil {
+		t.Fatalf("StateReason: reaper claim: %v", err)
+	}
+	if _, err := store.SetStateOwned(created.ID, native.StateBlocked, watchdogTok); err != nil {
+		t.Fatalf("StateReason: watchdog park: %v", err)
+	}
+	if got := reasonOf("after a watchdog park"); got != tracker.ReasonWatchdog {
+		t.Errorf("StateReason after a reaper-marker write = %q, want %q (marker-derived, like the event)", got, tracker.ReasonWatchdog)
+	}
+	if got, _ := lastStatePayload(t, store, created.ID)["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Fatalf("event reason after a watchdog park = %q, want %q — the card and the event must agree", got, tracker.ReasonWatchdog)
+	}
+	if !mustGetIssue(t, store, created.ID).StateByMachine() {
+		t.Error("StateByMachine after a watchdog park = false, want true")
+	}
+	pr3 := 3
+	if _, err := store.Update(created.ID, native.Patch{Priority: &pr3}); err != nil {
+		t.Fatalf("StateReason: Update: %v", err)
+	}
+	if got := reasonOf("after a non-state Update"); got != tracker.ReasonWatchdog {
+		t.Errorf("StateReason cleared by a priority edit: %q — an edit is not a transition", got)
+	}
+	if _, err := store.SetStateOwned(created.ID, native.StateBlocked, watchdogTok); err != nil {
+		t.Fatalf("StateReason: same-state no-op: %v", err)
+	}
+	if got := reasonOf("after a same-state write"); got != tracker.ReasonWatchdog {
+		t.Errorf("StateReason changed by a same-state no-op: %q", got)
+	}
+	if err := store.ReleaseOwned(created.ID, watchdogTok); err != nil {
+		t.Fatalf("StateReason: release reaper claim: %v", err)
+	}
+	// Reopen is an operator gesture: it clears the machine provenance.
+	if _, err := store.Reopen(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateReason: Reopen: %v", err)
+	}
+	if got := reasonOf("after Reopen"); got != "" {
+		t.Errorf("StateReason after an operator Reopen = %q, want empty — the machine's park no longer describes the card", got)
+	}
+	// An explicit reason travels verbatim; an owner's ordinary fenced move
+	// carries none (a run's own lifecycle is not machine provenance).
+	ownerTok, err := store.Claim(created.ID, "runner-X")
+	if err != nil {
+		t.Fatalf("StateReason: owner claim: %v", err)
+	}
+	if _, err := store.SetStateOwned(created.ID, native.StateInProgress, ownerTok); err != nil {
+		t.Fatalf("StateReason: owner start: %v", err)
+	}
+	if got := reasonOf("after an owner's fenced move"); got != "" {
+		t.Errorf("StateReason after an ordinary owner write = %q, want empty", got)
+	}
+	if _, err := store.SetStateOwnedReason(created.ID, native.StateReady, ownerTok, tracker.ReasonUnlaunchable); err != nil {
+		t.Fatalf("StateReason: give back: %v", err)
+	}
+	if got := reasonOf("after a give-back"); got != tracker.ReasonUnlaunchable {
+		t.Errorf("StateReason after SetStateOwnedReason(unlaunchable) = %q, want %q", got, tracker.ReasonUnlaunchable)
+	}
+	if !mustGetIssue(t, store, created.ID).StateByMachine() {
+		t.Error("StateByMachine after a give-back = false, want true")
+	}
+	if err := store.ReleaseOwned(created.ID, ownerTok); err != nil {
+		t.Fatalf("StateReason: release owner claim: %v", err)
+	}
+	if _, moved, err := store.SetStateFrom(created.ID, native.StateReady, native.StateInProgress); err != nil || !moved {
+		t.Fatalf("StateReason: SetStateFrom: moved=%v err=%v", moved, err)
+	}
+	if got := reasonOf("after a tokenless CAS move"); got != "" {
+		t.Errorf("StateReason after SetStateFrom = %q, want empty — the previous machine provenance must not survive a transition", got)
+	}
+	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateReason: restore state: %v", err)
 	}
 
 	// Claim: idempotent same marker; conflict on a different marker; release.
@@ -1214,7 +1315,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 		{"cb", "claimed", native.StateReady, true}, // eligible state but claimed
 	} {
 		st := coord.StoreFor(tc.tenant)
-		iss, cerr := st.Create(native.Issue{Title: tc.title, State: tc.state})
+		iss, cerr := st.Create(native.Issue{Title: tc.title, State: tc.state, Bot: "feature-dev"})
 		if cerr != nil {
 			t.Fatalf("coord create %s: %v", tc.title, cerr)
 		}
@@ -1224,10 +1325,46 @@ func TestMongoStore_Conformance(t *testing.T) {
 			}
 		}
 	}
+	// A ready+unclaimed card with NO bot is roadmap content (#798): the
+	// sweeps' ListEligible still sees it, the dispatch tick's
+	// ListDispatchable never does — the bot predicate is in the query.
+	if _, cerr := coord.StoreFor("ca").Create(native.Issue{Title: "roadmap-no-bot", State: native.StateReady}); cerr != nil {
+		t.Fatalf("coord create roadmap-no-bot: %v", cerr)
+	}
+	disp, derr0 := coord.ListDispatchable(ctx, []string{native.StateReady}, 50)
+	if derr0 != nil {
+		t.Fatalf("ListDispatchable: %v", derr0)
+	}
+	dispTitles := map[string]bool{}
+	for _, c := range disp {
+		if c.Issue.Title == "roadmap-no-bot" {
+			t.Error("ListDispatchable listed a ready card with no bot — the tick would claim what it cannot launch")
+		}
+		if c.Issue.Bot == "" {
+			t.Errorf("ListDispatchable listed %q with an empty bot", c.Issue.Title)
+		}
+		dispTitles[c.Issue.Title] = true
+	}
+	if !dispTitles["ready-a"] || !dispTitles["ready-b"] {
+		t.Errorf("ListDispatchable must list the launchable ready cards: %v", dispTitles)
+	}
 	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50, false)
 	if eerr != nil {
 		t.Fatalf("ListEligible: %v", eerr)
 	}
+	sawRoadmap := false
+	kept := elig[:0:0]
+	for _, c := range elig {
+		if c.Issue.Title == "roadmap-no-bot" {
+			sawRoadmap = true
+			continue // keep the ordering assertions below on their two-card population
+		}
+		kept = append(kept, c)
+	}
+	if !sawRoadmap {
+		t.Error("ListEligible (the sweeps' listing) must still see a bot-less card — a sweep judges by the recorded run")
+	}
+	elig = kept
 	// The Coordinator is cross-tenant BY DESIGN, and this suite shares one
 	// database: ready+unclaimed residue from the earlier per-tenant suites
 	// (tenant-1's cards) legitimately shows up here. Scope the assertions
@@ -1274,7 +1411,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	}
 	var descOwn []boardmongo.Candidate
 	for _, c := range desc {
-		if coordTenants[c.Tenant] {
+		if coordTenants[c.Tenant] && c.Issue.Title != "roadmap-no-bot" {
 			descOwn = append(descOwn, c)
 		}
 	}

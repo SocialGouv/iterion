@@ -134,6 +134,10 @@ func TestMachineCaused_EnumeratedSet(t *testing.T) {
 		tracker.ReasonStateRename: true,
 		tracker.ReasonStateDelete: true,
 		tracker.ReasonFieldRename: true,
+		// The dispatcher giving back a card it could not launch: nothing
+		// ran, so the return to the column is machinery — a subscription
+		// armed on that column must not re-fire on it (#798).
+		tracker.ReasonUnlaunchable: true,
 		// Descriptive provenance — the cascade of an operator gesture —
 		// keeps its triggers. This row is what died under `reason != ""`.
 		tracker.ReasonUnblocked: false,

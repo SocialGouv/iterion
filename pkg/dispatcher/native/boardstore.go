@@ -60,6 +60,13 @@ type BoardStore interface {
 	// of clobbering the new owner's state.
 	ReleaseOwned(id string, tok tracker.ClaimToken) error
 	SetStateOwned(id, newState string, tok tracker.ClaimToken) (*Issue, error)
+	// SetStateOwnedReason is SetStateOwned with an EXPLICIT provenance
+	// overriding the marker-derived one — the watchdog's terminal filings
+	// carry the run's own verdict (run_finished / run_failed), the
+	// dispatcher's give-back of a card it could not launch carries the
+	// machine ReasonUnlaunchable. The reason lands on the event AND on the
+	// card (Issue.StateReason), on both twins.
+	SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*Issue, error)
 	// SetStateOwnedFrom is SetStateOwned with a source-state precondition:
 	// ONE CAS on (claim, claim_epoch, state == from). changed=false when
 	// the state drifted (somebody moved the card while its owner was

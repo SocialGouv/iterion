@@ -55,17 +55,18 @@ func (c *Coordinator) DistinctEffectTenants(ctx context.Context) ([]string, erro
 	return vals, nil
 }
 
-// ListEligible returns up to `limit` UNCLAIMED issues whose state is in
-// `eligible`, across every tenant, in the requested update order:
-// oldest-updated first (newestFirst=false) for the dispatch tick — FIFO
-// fairness — or newest-updated first for the stranded-card sweeps, whose
-// capped window must always contain the freshest strandings (a stranding
-// bumps UpdatedAt, and a sweep that leaves a card in place does not, so
-// under oldest-first a saturated board's forgotten pile occupies the window
-// permanently and starves exactly the cards the sweep exists to rescue).
-// (v1 assumes the default-board eligibility passed by the caller; a
-// per-tenant custom board schema is a future refinement. Blocker gating is
-// left to the per-issue processor.)
+// ListEligible is the SWEEPS' listing: up to `limit` UNCLAIMED issues whose
+// state is in `eligible`, across every tenant, with no bot filter (a sweep
+// judges a card by its recorded run — the dispatch tick lists through
+// ListDispatchable), in the requested update order: oldest-updated first
+// (newestFirst=false), or newest-updated first for the stranded-card
+// sweeps, whose capped window must always contain the freshest strandings
+// (a stranding bumps UpdatedAt, and a sweep that leaves a card in place
+// does not, so under oldest-first a saturated board's forgotten pile
+// occupies the window permanently and starves exactly the cards the sweep
+// exists to rescue). (v1 assumes the default-board eligibility passed by
+// the caller; a per-tenant custom board schema is a future refinement.
+// Blocker gating is left to the per-issue processor.)
 func (c *Coordinator) ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]Candidate, error) {
 	if len(eligible) == 0 {
 		return nil, nil
@@ -88,6 +89,46 @@ func (c *Coordinator) ListEligible(ctx context.Context, eligible []string, limit
 	var docs []issueDoc
 	if err := cur.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("boardmongo: decode eligible: %w", err)
+	}
+	out := make([]Candidate, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, Candidate{Tenant: d.Tenant, Issue: d.Issue})
+	}
+	return out, nil
+}
+
+// ListDispatchable is the dispatch tick's candidate query: up to `limit`
+// UNCLAIMED issues in an `eligible` state that CARRY A BOT, across every
+// tenant, oldest-updated first (FIFO fairness). The cloud dispatcher has
+// no default bot, so a card without one is not launchable — it is roadmap
+// content (a project-board sync lands every "Planned" ticket in `ready`),
+// and listing it only buys a claim, a failed launch and a park. The bot
+// filter lives in the QUERY because the batch cap does too: bot-less cards
+// are never written, so they are the oldest, so they would fill every
+// oldest-first batch and starve the launchable ones behind them.
+//
+// Same index as ListEligible (eligible_by_updated): the bot predicate is a
+// residual filter on that scan, which is what keeps the sweeps' sort
+// index-served — a bot key between claim and updatedat would not.
+func (c *Coordinator) ListDispatchable(ctx context.Context, eligible []string, limit int) ([]Candidate, error) {
+	if len(eligible) == 0 {
+		return nil, nil
+	}
+	opt := options.Find().SetSort(bson.D{{Key: "issue.updatedat", Value: 1}})
+	if limit > 0 {
+		opt.SetLimit(int64(limit))
+	}
+	cur, err := c.coll.Find(ctx, bson.M{
+		"issue.state": bson.M{"$in": eligible},
+		"issue.claim": bson.M{"$in": bson.A{"", nil}},
+		"issue.bot":   bson.M{"$gt": ""},
+	}, opt)
+	if err != nil {
+		return nil, fmt.Errorf("boardmongo: list dispatchable: %w", err)
+	}
+	var docs []issueDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("boardmongo: decode dispatchable: %w", err)
 	}
 	out := make([]Candidate, 0, len(docs))
 	for _, d := range docs {

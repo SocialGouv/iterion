@@ -245,11 +245,30 @@ settle it:
   different one. The import owns the join (it hydrates cards, it never creates
   them from items), so the reflect waits for it.
 
-A **machine-caused** move — a claim watchdog filing a card in `blocked`, a
-column rename — is reflected like any other. The trigger spine declines those
-events for *launches* (they must not spend LLM budget); a projection starts no
-run, so it is explicitly exempt. Your roadmap shows what actually happened to
-the card.
+## What is projected — people and run verdicts, never the machinery
+
+The roadmap follows two kinds of native move and ignores a third:
+
+| the card's column was written by | reflected? |
+|---|---|
+| a **person** (studio, CLI, a bot's `board.move` tool) | yes |
+| a **run's verdict** — the dispatcher filing `in_progress` at launch, `done` after a finished run, `blocked` after a failed one, `awaiting_input` on a pause | yes |
+| **iterion on its own authority** — the claim watchdog parking a card, a column rename/delete, the dispatcher giving back a card it could not launch | **no** |
+
+The third kind is *machine provenance*: the store stamps it on the card
+(`state_reason`, the same value the card's state event carries — `watchdog`,
+`state_rename`, `unlaunchable`, …) at every transition, on both the filesystem
+and the Mongo board, and both reflect paths read it off the card. Such a
+column says nothing about the card's work, so pushing it would show on the
+operator's board as if someone had decided it. The pass counts what it left
+alone as `reflect_machine`; the fast path materializes no projection row for
+a machine-caused move at all. The trigger spine applies the same
+`tracker.IsMachineReason` set to *launches*, for the same reason.
+
+The card and the board therefore stay legitimately divergent after a machine
+park — a watchdog-filed `blocked` while GitHub still says *Planned* — until a
+person or a run moves the card again. Reopening the card in iterion, or
+dragging it on GitHub, both clear the divergence on the next pass.
 
 > Setting `--sync-every 0` leaves the fast path running with **no net under
 > it**: a move the outbox dead-letters, or one made while the binding was
@@ -280,7 +299,7 @@ permanent divergence.
 ```
 board sync: team=t_123 board=SocialGouv/203 items=214 moved=2 reflected=1 \
   labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 reflect_no_column=0 \
-  skipped_no_card=4 skipped_archived=3 skipped=11 took=812ms
+  reflect_machine=0 skipped_no_card=4 skipped_archived=3 skipped=11 took=812ms
 ```
 
 A failed pass logs `Warn` and **does not block the next tick**; one team's
@@ -341,6 +360,17 @@ The dispatcher can take its workflow state from the board instead of labels —
 `tracker.github.project` in the config. Full reference:
 [dispatcher.md](dispatcher.md#board-mode--states-from-a-projects-v2-board-adr-097).
 
+**The default map makes every *Planned* ticket a `ready` card**, and `ready`
+is the column the cloud board dispatcher dispatches from. What keeps a bound
+roadmap from being launched wholesale is the **bot**: the dispatcher only
+claims a `ready` card that names one (there is no default bot on cloud), so a
+roadmap ticket the sync moved to `ready` is roadmap content until something —
+a triage bot via `set_bot`, an operator, a board trigger — stamps a bot on
+it. A card the dispatcher claimed but could not launch after all (its bot was
+cleared or cannot be resolved in between) is given back to its column, never
+parked `blocked`; see
+[dispatcher.md](dispatcher.md#claim-selection-on-the-cloud-board--what-is-never-claimed).
+
 ---
 
 ## Troubleshooting
@@ -374,15 +404,19 @@ mapped column the board lacks). Then check it is not a terminal card:
 which is by design — reopen it in iterion.
 
 **A card moved in iterion but not on GitHub.**
-Four causes, in order of likelihood: the state is unmapped (`review`,
-`waiting_deps`, `awaiting_input`, `backlog` are inert); the binding has
-`sync_every: 0`; the board has no column for that state — `reflect_no_column >
-0`, and `iterion remote board show` says which (a `!` on a mapped column, or a
-`degraded` reason when a column was deleted after the bind, see [Editing a
-bound board's columns](#editing-a-bound-boards-columns)); or the credential
-lacks the write grant — `reflect_failed > 0` with a `403 Resource not
-accessible by integration` in the log means the App's *Projects: Read and
-write* is not approved.
+Five causes, in order of likelihood: the state is unmapped (`review`,
+`waiting_deps`, `awaiting_input`, `backlog` are inert); the move was
+**iterion's own** — a watchdog park, a column rename, a card given back after
+a failed launch — which the roadmap never follows (`reflect_machine > 0`; the
+card's `state_reason` names it, see [What is
+projected](#what-is-projected--people-and-run-verdicts-never-the-machinery));
+the binding has `sync_every: 0`; the board has no column for that state —
+`reflect_no_column > 0`, and `iterion remote board show` says which (a `!` on
+a mapped column, or a `degraded` reason when a column was deleted after the
+bind, see [Editing a bound board's columns](#editing-a-bound-boards-columns));
+or the credential lacks the write grant — `reflect_failed > 0` with a `403
+Resource not accessible by integration` in the log means the App's *Projects:
+Read and write* is not approved.
 
 **A card moved in iterion and reached GitHub, but only minutes later.**
 The [projection effect](#how-fast-a-native-move-reaches-the-board) declined and

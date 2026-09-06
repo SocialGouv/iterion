@@ -243,6 +243,14 @@ const (
 	// under the machine ReasonWatchdog.
 	ReasonRunFinished = "run_finished"
 	ReasonRunFailed   = "run_failed"
+	// ReasonUnlaunchable is the dispatcher returning a card it claimed but
+	// could not launch (no bot, an unresolvable bot, malformed launch
+	// context) to the column it took it from. Nothing ran, so nothing
+	// about the card's work was judged: machine provenance — a
+	// subscription armed on that column must not re-fire on the return,
+	// an audit surface must not sign it with the assignee's name, and an
+	// external roadmap must not read it as a move.
+	ReasonUnlaunchable = "unlaunchable"
 )
 
 // IsMachineReason reports whether a board-event `reason` names iterion
@@ -253,7 +261,7 @@ const (
 // field's mere presence silently disarmed them.
 func IsMachineReason(reason string) bool {
 	switch reason {
-	case ReasonWatchdog, ReasonStateRename, ReasonStateDelete, ReasonFieldRename, ReasonFieldDelete:
+	case ReasonWatchdog, ReasonStateRename, ReasonStateDelete, ReasonFieldRename, ReasonFieldDelete, ReasonUnlaunchable:
 		return true
 	}
 	return false

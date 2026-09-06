@@ -43,7 +43,7 @@ func (s *Store) ClaimForLaunch(id string) (*native.Issue, bool, error) {
 			"issue.state": native.StateReady,
 			"issue.claim": bson.M{"$in": bson.A{"", nil}},
 		},
-		bson.M{"$set": stateSetAt(native.StateInProgress, time.Now().UTC())},
+		bson.M{"$set": stateSetAt(native.StateInProgress, "", time.Now().UTC())},
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {

@@ -118,17 +118,25 @@ func (s *Store) ReleaseOwned(id string, tok tracker.ClaimToken) error {
 // package added would otherwise leave a card reading "the dispatcher gave
 // up" after something moved it on. The stamp only describes the state it
 // was taken in — a card that left that state has no give-up to show.
-func stateSet(newState string) bson.M { return stateSetAt(newState, time.Now().UTC()) }
+//
+// reason is the transition's provenance (native.StateProvenance — the value
+// the event carries), persisted on the card as Issue.StateReason: written
+// on EVERY transition, so a cleared reason overwrites the previous one and
+// a card never keeps the provenance of a column it has left.
+func stateSet(newState, reason string) bson.M {
+	return stateSetAt(newState, reason, time.Now().UTC())
+}
 
 // stateSetAt is stateSet with the write's timestamp supplied, so a caller
 // that must ALSO return the updated issue can report exactly what it
 // wrote instead of a pre-write snapshot.
-func stateSetAt(newState string, at time.Time) bson.M {
+func stateSetAt(newState, reason string, at time.Time) bson.M {
 	return bson.M{
-		"issue.state":     newState,
-		"issue.stateat":   at,
-		"issue.gaveup":    nil,
-		"issue.updatedat": at,
+		"issue.state":       newState,
+		"issue.statereason": reason,
+		"issue.stateat":     at,
+		"issue.gaveup":      nil,
+		"issue.updatedat":   at,
 	}
 }
 
@@ -184,9 +192,10 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 	// the retry below re-reads it the same way. writtenAt lets the return
 	// value below still describe what was WRITTEN rather than the
 	// pre-write snapshot.
+	prov := native.StateProvenance(tok.Marker, reason)
 	writtenAt := time.Now().UTC()
 	res := s.issues.FindOneAndUpdate(ctx, filter,
-		bson.M{"$set": stateSetAt(newState, writtenAt)},
+		bson.M{"$set": stateSetAt(newState, prov, writtenAt)},
 		options.FindOneAndUpdate().SetReturnDocument(options.Before))
 	if res.Err() != nil && isNoDocuments(res.Err()) {
 		// Zero match has three causes and they must not be conflated: the
@@ -214,7 +223,7 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 		// still holds.
 		writtenAt = time.Now().UTC()
 		res = s.issues.FindOneAndUpdate(ctx, filter,
-			bson.M{"$set": stateSetAt(newState, writtenAt)},
+			bson.M{"$set": stateSetAt(newState, prov, writtenAt)},
 			options.FindOneAndUpdate().SetReturnDocument(options.Before))
 		if res.Err() != nil && isNoDocuments(res.Err()) {
 			// Still nothing, with ownership just verified: the card is
@@ -242,16 +251,12 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 	// value that still carries the old ones describes a card that no
 	// longer exists.
 	updated.State = newState
+	updated.StateReason = prov
 	updated.GaveUp = nil
 	updated.UpdatedAt = writtenAt
 	if old != newState {
 		if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
-			Payload: func() map[string]any {
-				if reason != "" {
-					return map[string]any{"from": old, "to": newState, "reason": reason}
-				}
-				return native.StateChangePayload(old, newState, tok.Marker)
-			}()}); err != nil {
+			Payload: native.StateEventPayload(old, newState, tok.Marker, reason)}); err != nil {
 			return nil, err
 		}
 		if newState == native.StateDone {
@@ -297,7 +302,7 @@ func (s *Store) SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (
 	filter["issue.state"] = from
 	writtenAt := time.Now().UTC()
 	res := s.issues.FindOneAndUpdate(ctx, filter,
-		bson.M{"$set": stateSetAt(to, writtenAt)},
+		bson.M{"$set": stateSetAt(to, native.StateProvenance(tok.Marker, ""), writtenAt)},
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
@@ -669,7 +674,7 @@ func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
 	// card still carried the give-up flag that "Needs attention" reads.
 	res := s.issues.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": iss.State},
-		bson.M{"$set": stateSet(toState)},
+		bson.M{"$set": stateSet(toState, "")}, // an operator gesture: the park's provenance no longer describes the card
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
@@ -717,7 +722,7 @@ func (s *Store) SetStateFromReason(id, from, to, reason string) (*native.Issue, 
 	}
 	res := s.issues.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": s.tenant, "issue.state": from},
-		bson.M{"$set": stateSet(to)},
+		bson.M{"$set": stateSet(to, native.StateProvenance("", reason))},
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if res.Err() != nil {
 		if !isNoDocuments(res.Err()) {
@@ -734,11 +739,8 @@ func (s *Store) SetStateFromReason(id, from, to, reason string) (*native.Issue, 
 		return nil, false, fmt.Errorf("boardmongo: set state from decode: %w", err)
 	}
 	updated := doc.Issue
-	payload := map[string]any{"from": from, "to": to}
-	if reason != "" {
-		payload["reason"] = reason
-	}
-	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id, Payload: payload}); err != nil {
+	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: id,
+		Payload: native.StateEventPayload(from, to, "", reason)}); err != nil {
 		return nil, false, err
 	}
 	if to == native.StateDone {

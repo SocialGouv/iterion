@@ -66,6 +66,7 @@ func (s *Store) migrateState(ctx context.Context, from, to, reason string) (int,
 			continue
 		}
 		iss.State = to
+		iss.StateReason = reason
 		iss.UpdatedAt = time.Now().UTC()
 		if err := s.replace(ctx, &iss, "state"); err != nil {
 			return touched, fmt.Errorf("boardmongo: write %s during state migration: %w", iss.ID, err)

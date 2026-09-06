@@ -262,6 +262,41 @@ Each tick (`polling.interval_ms`, default 30s):
 6. **Broadcast snapshot.** Publish to the WS bridge so the dashboard
    shows the new state.
 
+### Claim selection on the cloud board — what is never claimed
+
+The cloud board dispatcher (one per server replica, over the Mongo
+board) has no configured default bot: a card is launchable only if it
+**names a bot**. Its candidate query therefore lists unclaimed cards in
+the launch column **that carry a bot** — the filter is in the query, not
+a skip after the listing, because the batch is capped and bot-less cards
+(never written, so always the oldest) would otherwise fill every batch
+and starve the launchable ones. A `ready` card with no bot is roadmap
+content, typically one a project-board sync moved there (the default map
+lands every *Planned* ticket in `ready`, see
+[github-board-sync.md](github-board-sync.md#dispatching-from-the-board));
+it is neither claimed nor moved until something stamps a bot on it.
+
+Before claiming a listed card, the tick runs the **launch
+preconditions** — a run service, a bot, a bot the resolver can find,
+reserved bot-args that parse — and skips a card that fails them in its
+column, without claiming it (the local dispatcher's `resolveExplicitBot`
+shape). The same preconditions guard the launch itself, so a card that
+changed between the listing and the launch is caught there too; nothing
+ran, so **no verdict is written on it**: the card is returned to the
+column it was taken from under the machine provenance `unlaunchable`
+(no subscription re-fires on the return, no external board reflects
+it), and the claim is freed. It is never parked `blocked` — that column
+is a verdict on the card's work, and reaching it here parked 36 roadmap
+tickets in one pass and pushed *Blocked* onto the operator's GitHub
+board. Real launch failures — the publisher refusing the run (quota,
+sealing), a run that started and failed — keep filing `blocked`.
+
+Each refusal is logged **once per card and reason** (the card is listed
+again every tick for as long as it stays broken), and every watchdog
+pass logs one tally line — `N refused at admission, M returned to their
+column after a claim` — so the ongoing cost of a broken card stays
+visible after its first line.
+
 ## Retry queue
 
 | Trigger                       | Delay                                                  |
