@@ -2305,14 +2305,16 @@ tool sync_harness:
         return True, ""
 
 
-    def drop_applied_marker(ws, meta=None):
-        """Remove the marker — only when it records THIS mutant (meta None: any
-        marker of ours). A revert of B must never erase the record of A, whose
-        revert failed: that record is the only trace of a tree that is not HEAD."""
+    def drop_applied_marker(ws, meta):
+        """Remove the marker — only when it records THIS mutant, and only after its
+        revert demonstrably succeeded. A revert of B must never erase the record of
+        A, whose revert failed: that record is the only trace of a tree that is not
+        HEAD. There is deliberately no "drop whatever is there" form — dropping a
+        record the harness did not just undo is how a leftover is lost for good."""
         prior, why = read_applied_marker(ws)
         if prior is None or why:
             return
-        if meta is not None and prior.get("id") is not None and prior.get("id") != meta.get("id"):
+        if prior.get("id") is not None and prior.get("id") != meta.get("id"):
             return
         try:
             os.remove(applied_marker_for(ws))
@@ -2375,10 +2377,14 @@ tool sync_harness:
         reports it again instead of forgetting it; an operator who reverts by
         hand clears it by deleting the marker.
 
-        Refused, nothing executed: a marker whose directory is neither this
-        workspace nor its sealed held-out pile (dropped — it is ours and it is
-        not evidence), and a marker slot that is not the harness's own (kept —
-        not ours to delete; every application is refused until it is gone).
+        Refused, nothing executed AND nothing deleted — `refused` names which
+        half the harness would not touch: "dir", a marker whose directory is
+        neither this workspace nor its sealed held-out pile, and "slot", a
+        marker slot that is not the harness's own. Reading is not deciding: the
+        record goes down BEFORE apply.sh runs, so it stands whatever the
+        directory resolves to today, and dropping it would destroy the only
+        evidence that the tree is not HEAD. Every application is refused while
+        it is there, which is what makes the refusal stick.
         """
         marker = applied_marker_for(ws)
         meta, why = read_applied_marker(ws)
@@ -2386,12 +2392,12 @@ tool sync_harness:
             return None
         if why:
             return {"id": None, "dir": "", "code": None, "out": why, "marker": marker,
-                    "refused": True, "kept": True, "dirty": ""}
+                    "refused": "slot", "kept": True, "dirty": ""}
         mdir = meta.get("dir") or ""
         if not mdir or not any(_under(mdir, r) for r in leftover_roots(ws)):
-            drop_applied_marker(ws)
-            return {"id": meta.get("id"), "dir": mdir, "code": None, "out": "",
-                    "marker": marker, "refused": True, "kept": False, "dirty": ""}
+            return {"id": meta.get("id"), "dir": mdir, "code": None,
+                    "out": " and ".join(leftover_roots(ws)),
+                    "marker": marker, "refused": "dir", "kept": True, "dirty": ""}
         script = os.path.join(mdir, "revert.sh")
         if os.path.isfile(script):
             code, out = run_script(script, ws)
@@ -2407,27 +2413,44 @@ tool sync_harness:
                 "marker": marker, "refused": False, "kept": code != 0, "dirty": dirty[:400]}
 
 
+    # The dispositions on which the gate STOPS rather than judges. Only "reverted"
+    # — the harness undid the leftover and saw the tree come back — lets it
+    # through. The set lives here, beside the function that produces the kinds, so
+    # the decision and its consumer cannot drift apart silently.
+    LEFTOVER_BAIL_KINDS = ("still_mutated", "unusable", "refused")
+
+
     def leftover_disposition(left):
         """What the gate says about a leftover, and whether it may proceed.
 
         Returns (kind, text): "reverted" — revert.sh exit 0, a note (with what
-        the tree still shows, if anything); "refused" — a marker of ours naming
-        a foreign directory was dropped, a note; "unusable" — the marker slot is
-        not the harness's own, the gate must stop: every application would be
-        refused; "still_mutated" — the revert failed or its script is gone, the
-        tree is NOT HEAD, the gate must refuse rather than judge a program
+        the tree still shows, if anything), the only kind that lets the gate
+        through; "refused" — a marker of ours naming a directory the harness
+        does not recognise, kept and not executed; "unusable" — the marker slot
+        is not the harness's own; "still_mutated" — the revert failed or its
+        script is gone. The last three are LEFTOVER_BAIL_KINDS: the tree is, or
+        may be, not HEAD, and the gate refuses rather than judge a program
         nobody wrote.
         """
+        if left.get("refused") == "slot":
+            return "unusable", (
+                "the application-marker slot %s is not the harness's own: %s. Nothing "
+                "executed, nothing deleted. Every mutant application is refused until "
+                "it is removed by hand or GM_SCRATCH points at a private root."
+                % (left.get("marker"), left.get("out")))
         if left.get("refused"):
-            if left.get("kept"):
-                return "unusable", (
-                    "the application-marker slot %s is not the harness's own: %s. Nothing "
-                    "executed, nothing deleted. Every mutant application is refused until "
-                    "it is removed by hand or GM_SCRATCH points at a private root."
-                    % (left.get("marker"), left.get("out")))
             return "refused", (
-                "a stale application marker named a directory outside this workspace and "
-                "its sealed held-out pile (%s): dropped, nothing executed." % (left.get("dir") or "?"))
+                "a mutant is recorded as APPLIED (%s) and the harness will NOT revert it: "
+                "its directory %s is none of the roots a leftover may live under (%s). "
+                "Nothing executed, nothing deleted. The record goes down BEFORE apply.sh "
+                "runs, so it stands whatever that directory resolves to today: the tree "
+                "is, or may be, mutated, and the gate will not judge it. The ordinary "
+                "cause is a GM_SEALED_DIR that moved between passes — re-run with the one "
+                "that pass used and the harness reverts the mutant itself. Otherwise "
+                "revert by hand (git checkout -- <the mutant's paths>), then delete the "
+                "marker %s."
+                % (left.get("id") or "?", left.get("dir") or "?", left.get("out") or "?",
+                   left.get("marker")))
         if left.get("code") == 0:
             text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
                     "(revert.sh exit 0). The interrupted attempt's verdict, if any, judged a "
@@ -3522,6 +3545,14 @@ tool sync_harness:
                 def tree():
                     with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
                         return f.read()
+
+                def clear_marker():
+                    # Tolerant on purpose: a mutant on the drop rules must fail as
+                    # CHECKS, not as an OSError that takes the whole self-test with it.
+                    try:
+                        os.remove(applied_marker_for(tmp))
+                    except OSError:
+                        pass
                 scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
                 lmeta = {"id": "leftover-1", "dir": mdir}
                 code, _out = apply_mutant(lmeta, tmp)
@@ -3562,10 +3593,7 @@ tool sync_harness:
                       ["leftover-1", True, True])
                 check("son marqueur reste", os.path.isfile(applied_marker_for(tmp)), True)
                 check("disposition d'un revert.sh disparu", leftover_disposition(left)[0], "still_mutated")
-                try:
-                    os.remove(applied_marker_for(tmp))
-                except OSError:
-                    pass
+                clear_marker()
                 sub("git", "checkout", "--", "f.txt")
                 # Une application qui ECHOUE nettoie l'arbre et le marqueur dans son propre run.
                 scripts("printf 'half\\n' >> f.txt; exit 1", "git checkout -- f.txt")
@@ -3573,17 +3601,45 @@ tool sync_harness:
                 check("une application en echec est un mutant 'failed'", state, "failed")
                 check("elle a reverti l'arbre", tree(), "original\n")
                 check("et efface son marqueur", os.path.isfile(applied_marker_for(tmp)), False)
-                # Un marqueur qui nomme un repertoire etranger est refuse, rien n'est execute.
+                # Seule la disposition « reverti » laisse passer la porte. Le lien entre
+                # la decision et son consommateur est CETTE constante, pas trois lignes
+                # de main() que rien ne conduit.
+                check("seule une disposition 'reverted' laisse passer la porte",
+                      [k in LEFTOVER_BAIL_KINDS
+                       for k in ("still_mutated", "unusable", "refused", "reverted")],
+                      [True, True, True, False])
+                # Un marqueur qui nomme un repertoire que le harnais ne RECONNAIT pas :
+                # rien n'est execute, et rien n'est efface non plus. Lire n'est pas
+                # decider — le marqueur est pose AVANT apply.sh, donc son existence dit
+                # que l'arbre est (ou peut etre) mute, quoi que ce repertoire designe
+                # aujourd'hui. L'effacer detruisait la seule trace, et la porte
+                # continuait sur un arbre d'etat inconnu : #799 qui recommence, en
+                # silence.
                 canary = os.path.join(outside, "ran")
                 os.makedirs(os.path.join(outside, "evil"))
                 with open(os.path.join(outside, "evil", "revert.sh"), "w", encoding="utf-8") as f:
                     f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
                 write_applied_marker(tmp, {"id": "evil", "dir": os.path.join(outside, "evil")})
                 left = revert_leftover_mutant(tmp)
-                check("un marqueur etranger est refuse", (left or {}).get("refused"), True)
-                check("rien n'a ete execute", os.path.exists(canary), False)
-                check("le marqueur etranger est jete", os.path.isfile(applied_marker_for(tmp)), False)
+                check("un marqueur etranger est refuse, rien n'est execute",
+                      [(left or {}).get("refused"), os.path.exists(canary)], ["dir", False])
+                check("le marqueur etranger est GARDE : c'est la seule trace de l'application",
+                      os.path.isfile(applied_marker_for(tmp)), True)
                 check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
+                check("elle arrete la porte", leftover_disposition(left)[0] in LEFTOVER_BAIL_KINDS, True)
+                check("et son message nomme le marqueur a effacer a la main",
+                      applied_marker_for(tmp) in leftover_disposition(left)[1], True)
+                # Le refus COLLE : la porte suivante refuse a l'identique, et aucune
+                # application ne passe tant que le marqueur est la.
+                again = revert_leftover_mutant(tmp)
+                check("la porte suivante refuse a l'identique, canari toujours pas execute",
+                      [(again or {}).get("refused"), os.path.exists(canary),
+                       os.path.isfile(applied_marker_for(tmp))], ["dir", False, True])
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                code, _out = apply_mutant(lmeta, tmp)
+                check("aucune application ne passe tant qu'un refus est enregistre",
+                      [code, tree()], [APPLY_REFUSED, "original\n"])
+                clear_marker()
                 # Un marqueur sous la racine scratch mais HORS de la pile scellee est
                 # etranger aussi : la racine, c'est tout /tmp sur un hote partage.
                 evil2 = os.path.join(os.environ["GM_SCRATCH"], "evil2")
@@ -3592,8 +3648,10 @@ tool sync_harness:
                     f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
                 write_applied_marker(tmp, {"id": "evil2", "dir": evil2})
                 left = revert_leftover_mutant(tmp)
-                check("un marqueur sous la racine scratch, hors pile scellee, est refuse",
-                      [(left or {}).get("refused"), os.path.exists(canary)], [True, False])
+                check("un marqueur sous la racine scratch, hors pile scellee, est refuse et garde",
+                      [(left or {}).get("refused"), os.path.exists(canary),
+                       os.path.isfile(applied_marker_for(tmp))], ["dir", False, True])
+                clear_marker()
                 # Un marqueur sous la pile scellee (GM_SEALED_DIR, hors arbre et hors
                 # scratch) est le held-out : il est reverti, pas refuse.
                 sealed = tempfile.mkdtemp(prefix="gm-sealed-")
@@ -3613,6 +3671,27 @@ tool sync_harness:
                           [(left or {}).get("refused"), (left or {}).get("code"), tree()],
                           [False, 0, "original\n"])
                     check("disposition du held-out reverti", leftover_disposition(left)[0], "reverted")
+                    # LE CAS MESURE. La pile scellee a bouge entre deux passes —
+                    # GM_SEALED_DIR pose a l'application, absent a la porte suivante :
+                    # exactement la configuration que le harnais recommande quand la
+                    # racine par defaut n'est pas stable. Le held-out laisse applique
+                    # se lit alors comme etranger. Tant que ce refus jetait le
+                    # marqueur, la porte notait et CONTINUAIT sur l'arbre mute, sans
+                    # rien pour le dire a la suivante.
+                    code, _out = apply_mutant({"id": "h1", "dir": hdir}, tmp)
+                    check("le held-out est re-applique", [code, tree()], [0, "original\nheld\n"])
+                    os.environ.pop("GM_SEALED_DIR", None)
+                    moved = revert_leftover_mutant(tmp)
+                    check("pile scellee deplacee : refus, marqueur garde, arbre encore mute",
+                          [(moved or {}).get("refused"), os.path.isfile(applied_marker_for(tmp)), tree()],
+                          ["dir", True, "original\nheld\n"])
+                    check("et la porte s'arrete au lieu de juger cet arbre",
+                          leftover_disposition(moved or {})[0] in LEFTOVER_BAIL_KINDS, True)
+                    os.environ["GM_SEALED_DIR"] = sealed
+                    healed = revert_leftover_mutant(tmp)
+                    check("la pile scellee retrouvee, le harnais revertit lui-meme",
+                          [(healed or {}).get("code"), tree(),
+                           os.path.isfile(applied_marker_for(tmp))], [0, "original\n", False])
                 finally:
                     os.environ.pop("GM_SEALED_DIR", None)
                     if saved_sealed is not None:
@@ -3644,7 +3723,7 @@ tool sync_harness:
                 code, _out = revert_mutant(bmeta, tmp)
                 check("le revert de B (exit 0) n'efface pas l'enregistrement de A",
                       [code, (read_applied_marker(tmp)[0] or {}).get("id")], [0, "leftover-1"])
-                os.remove(applied_marker_for(tmp))
+                clear_marker()
                 sub("git", "checkout", "--", "f.txt")
                 # Un repertoire de marqueur qui n'est pas prive n'est pas utilisable :
                 # l'application est refusee, la porte s'arrete (disposition 'unusable').
@@ -3662,7 +3741,7 @@ tool sync_harness:
                     check("un marqueur dans un repertoire non prive est refuse et garde, rien n'est execute",
                           [(left or {}).get("refused"), (left or {}).get("kept"), tree(),
                            os.path.isfile(applied_marker_for(tmp))],
-                          [True, True, "original\nmutant\n", True])
+                          ["slot", True, "original\nmutant\n", True])
                     check("disposition d'un emplacement inutilisable", leftover_disposition(left)[0], "unusable")
                 finally:
                     os.chmod(mdir_marker, 0o700)
@@ -3837,7 +3916,7 @@ tool sync_harness:
         left = revert_leftover_mutant(ws)
         if left:
             kind, text = leftover_disposition(left)
-            if kind in ("still_mutated", "unusable"):
+            if kind in LEFTOVER_BAIL_KINDS:
                 bail(text)
             note(report, text)
 
