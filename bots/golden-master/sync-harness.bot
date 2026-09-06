@@ -2193,12 +2193,67 @@ tool sync_harness:
         return run("sh %s" % shlex.quote(path), ws, timeout)
 
 
+    def applied_marker_for(ws):
+        """Where the harness notes the mutant it has applied and not yet reverted.
+
+        Outside the tree (the tree is what is judged), keyed on the workspace's
+        absolute path (sibling worktrees share a basename), in the same temp root
+        as the sealed held-out set.
+        """
+        key = hashlib.sha256(os.path.abspath(ws).encode("utf-8")).hexdigest()[:12]
+        return os.path.join(tempfile.gettempdir(), "gm-applied-%s.json" % key)
+
+
     def apply_mutant(meta, ws):
+        # The marker goes down BEFORE apply.sh runs: an interruption between the
+        # two leaves a tree that is mutated and a note that says by what.
+        try:
+            with open(applied_marker_for(ws), "w", encoding="utf-8") as f:
+                json.dump({"id": meta.get("id"), "dir": meta.get("dir")}, f)
+        except OSError:
+            pass
         return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
     def revert_mutant(meta, ws):
-        return run_script(os.path.join(meta["dir"], "revert.sh"), ws)
+        code, out = run_script(os.path.join(meta["dir"], "revert.sh"), ws)
+        if code == 0:
+            try:
+                os.remove(applied_marker_for(ws))
+            except OSError:
+                pass
+        return code, out
+
+
+    def revert_leftover_mutant(ws):
+        """Revert the mutant a previous, interrupted run left applied — if any.
+
+        A stream cut, a SIGTERM or a pod kill between apply.sh and revert.sh
+        leaves the mutant in the tree; the next gate, in the same tree, would
+        judge a mutated program and call it the lot's. Measured: a tool node
+        retried on the same tree after its exec stream broke — the build gate
+        went red on a file the mutant had edited, and the oracle reported that
+        file as "not committed". Returns None when there is nothing to revert,
+        else what was reverted and how revert.sh exited.
+        """
+        marker = applied_marker_for(ws)
+        if not os.path.isfile(marker):
+            return None
+        try:
+            with open(marker, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+        script = os.path.join(meta.get("dir") or "", "revert.sh")
+        if meta.get("dir") and os.path.isfile(script):
+            code, out = run_script(script, ws)
+        else:
+            code, out = None, "the mutant's revert.sh is no longer there"
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+        return {"id": meta.get("id"), "dir": meta.get("dir"), "code": code, "out": (out or "")[-300:]}
 
 
     # ─── Comparison ─────────────────────────────────────────────────────────────
@@ -3237,6 +3292,46 @@ tool sync_harness:
                 os.environ.pop(k, None)
                 if v is not None:
                     os.environ[k] = v
+            # ── Un mutant laisse APPLIQUE par une porte interrompue est reverti au
+            # demarrage de la suivante. Les VRAIS apply/revert, sur un vrai depot :
+            # c'est le marqueur et le nettoyage qui sont juges, pas leur doublure.
+            tmp = tempfile.mkdtemp(prefix="gm-leftover-")
+            try:
+                def sub(*a):
+                    subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
+                sub("git", "init", "-q")
+                sub("git", "config", "user.email", "t@t")
+                sub("git", "config", "user.name", "t")
+                with open(os.path.join(tmp, "f.txt"), "w", encoding="utf-8") as f:
+                    f.write("original\n")
+                sub("git", "add", "f.txt")
+                sub("git", "commit", "-qm", "seed")
+                mdir = os.path.join(tmp, "m1")
+                os.makedirs(mdir)
+                with open(os.path.join(mdir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nprintf 'mutant\\n' >> f.txt\n")
+                with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                lmeta = {"id": "leftover-1", "dir": mdir}
+                code, _out = saved["apply_mutant"](lmeta, tmp)
+                check("apply.sh tourne", code, 0)
+                check("le marqueur d'application est pose", os.path.isfile(applied_marker_for(tmp)), True)
+                # Interruption ici : pas de revert. La porte suivante nettoie.
+                left = revert_leftover_mutant(tmp)
+                check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
+                with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
+                    check("l'arbre est revenu a HEAD", f.read(), "original\n")
+                check("le marqueur est efface", os.path.isfile(applied_marker_for(tmp)), False)
+                check("rien a revertir la seconde fois", revert_leftover_mutant(tmp), None)
+                saved["apply_mutant"](lmeta, tmp)
+                saved["revert_mutant"](lmeta, tmp)
+                check("le revert nominal efface le marqueur", os.path.isfile(applied_marker_for(tmp)), False)
+                saved["apply_mutant"](lmeta, tmp)
+                shutil.rmtree(mdir)
+                left = revert_leftover_mutant(tmp)
+                check("un mutant dont revert.sh a disparu est signale, pas tu", (left or {}).get("code"), None)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
         finally:
             g.update(saved)
 
@@ -3390,6 +3485,17 @@ tool sync_harness:
         # est capturé ensuite décrit autre chose. Le travail non committé est
         # détruit au passage, en silence. Signalé plutôt que refusé : enregistrer et
         # itérer sur un arbre sale est légitime, GATER dessus ne l'est pas.
+        # A mutant left APPLIED by an interrupted gate is reverted BEFORE the tree
+        # is looked at, and said: otherwise the dirty check below names the
+        # mutant's file as the lot's uncommitted work, and the build gate judges a
+        # program nobody wrote.
+        left = revert_leftover_mutant(ws)
+        if left:
+            note(report, (
+                "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
+                "(revert.sh exit %s). The tree below is HEAD again; the interrupted attempt's "
+                "verdict, if any, judged a mutated program." % (left.get("id"), left.get("code"))))
+
         if mode != "record":
             dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
                                    capture_output=True, text=True)
