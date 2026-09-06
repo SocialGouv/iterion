@@ -3,8 +3,10 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -42,9 +44,14 @@ func TestFailUnloadableIR_WritesTheVerdictOnTheRun(t *testing.T) {
 	if _, err := st.CreateRun(ctx, "run-skew", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
+	// A drained run redelivered on a stale image: it carries a checkpoint
+	// worth every node already paid for.
+	if err := st.FailRunResumable(ctx, "run-skew", &store.Checkpoint{NodeID: "n2"}, "drained", store.FailureExecutionFailed); err != nil {
+		t.Fatal(err)
+	}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.New(iterlog.LevelDebug, nil)}}
 	msg := &queue.RunMessage{RunID: "run-skew", WorkflowHash: "e7e2f6e6"}
-	r.failUnloadableIR(ctx, msg, errors.New("runner: the IR does not load on this runner: compile IR: 3 diagnostic(s)"))
+	r.failUnloadableIR(ctx, msg, errors.New("runner: the IR does not load on this runner: compile IR: 3 error(s)"))
 
 	run, err := st.LoadRun(ctx, "run-skew")
 	if err != nil {
@@ -53,8 +60,11 @@ func TestFailUnloadableIR_WritesTheVerdictOnTheRun(t *testing.T) {
 	if run.Status != store.RunStatusFailedResumable {
 		t.Fatalf("status = %q, want failed_resumable (a resume after the fleet is aligned re-compiles on the server)", run.Status)
 	}
-	if run.FailureCode != "IR_UNLOADABLE" {
+	if run.FailureCode != store.FailureIRUnloadable {
 		t.Fatalf("failure code = %q, want IR_UNLOADABLE", run.FailureCode)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.NodeID != "n2" {
+		t.Fatalf("checkpoint = %+v, want the drained run's checkpoint preserved: the aligned fleet resumes from it", run.Checkpoint)
 	}
 	evs, _ := st.LoadEvents(ctx, "run-skew")
 	var found bool
@@ -83,6 +93,9 @@ func TestExecuteRun_UnloadableIRWritesTheVerdictBeforeReturning(t *testing.T) {
 	if _, err := st.CreateRun(ctx, "run-skew-2", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SaveCheckpoint(ctx, "run-skew-2", &store.Checkpoint{NodeID: "n3"}); err != nil {
+		t.Fatal(err)
+	}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.New(iterlog.LevelDebug, nil)}}
 	msg := &queue.RunMessage{RunID: "run-skew-2", WorkflowHash: "e7e2f6e6", IRCompiled: []byte("not json")}
 	execErr := r.executeRun(ctx, msg, nil)
@@ -93,7 +106,27 @@ func TestExecuteRun_UnloadableIRWritesTheVerdictBeforeReturning(t *testing.T) {
 		t.Fatalf("classified as %s/%v, want ir_unloadable/ack", got.finalStatus, got.action)
 	}
 	run, _ := st.LoadRun(ctx, "run-skew-2")
-	if run.Status != store.RunStatusFailedResumable || run.FailureCode != "IR_UNLOADABLE" {
+	if run.Status != store.RunStatusFailedResumable || run.FailureCode != store.FailureIRUnloadable {
 		t.Fatalf("run = %s/%s, want failed_resumable/IR_UNLOADABLE written before the return", run.Status, run.FailureCode)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.NodeID != "n3" {
+		t.Fatalf("checkpoint = %+v, want preserved through the verdict", run.Checkpoint)
+	}
+}
+
+// The verdict names the errors that blocked the load, not the warnings the
+// compiler happened to append first.
+func TestSummariseDiagnostics_ErrorsOnly(t *testing.T) {
+	diags := []ir.Diagnostic{
+		{Code: "C089", Severity: ir.SeverityWarning, Message: "ultracode on a model that is not opus"},
+		{Code: "C128", Severity: ir.SeverityWarning, Message: "sandbox note"},
+		{Code: "C001", Severity: ir.SeverityError, Message: "unknown node kind"},
+	}
+	errs := compileErrors(diags)
+	if len(errs) != 1 || errs[0].Code != "C001" {
+		t.Fatalf("compileErrors = %v, want the single error", errs)
+	}
+	if got := summariseDiagnostics(errs); !strings.Contains(got, "C001") || strings.Contains(got, "C089") {
+		t.Fatalf("summary = %q, want the error named and the warnings absent", got)
 	}
 }

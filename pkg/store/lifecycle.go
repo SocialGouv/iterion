@@ -97,6 +97,13 @@ const (
 	// FailureDLQParked: the queue exhausted its deliveries for this run
 	// and parked it on the DLQ — replay via /api/admin/dlq.
 	FailureDLQParked FailureCode = "DLQ_PARKED"
+	// FailureIRUnloadable: the runner could not decode or compile the IR a
+	// server ahead of it produced. Written by the runner before it acks the
+	// delivery (a redelivery would reach the same image and the same
+	// verdict); resumable, because a resume after the fleet is aligned
+	// re-compiles the source on the server. Reserved so no bot can mint it
+	// and no reader takes it for a bot's own refusal.
+	FailureIRUnloadable FailureCode = "IR_UNLOADABLE"
 	// FailureLaunchFailed: the run never left the launch path. Its row was
 	// persisted but no queue message was ever published for it (the
 	// publish, the IR encoding or the contribution payload failed), so no
@@ -167,6 +174,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureProcessOrphaned,
 	FailureQueueSchemaMismatch,
 	FailureDLQParked,
+	FailureIRUnloadable,
 	FailureLaunchFailed,
 	FailureSandboxSetupTimeout,
 	FailureSandboxCapacity,
@@ -269,6 +277,15 @@ func (s RunStatus) CanOperatorResume() bool {
 // RequiresResumeAnswers: resuming this status needs the pending human
 // interaction answered first (`--answers-file`, the studio form).
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }
+
+// RunnerVerdictFromStatuses is the CAS set of the runner's own writes on a
+// run it claimed — the DLQ park and the unloadable-IR verdict: a claimed
+// or queued attempt, and the engine's own failed_resumable write, which on
+// the nominal path lands before the runner's (a CAS from running/queued
+// alone could never land). A run cancelled meanwhile is not flipped back.
+func RunnerVerdictFromStatuses() []RunStatus {
+	return []RunStatus{RunStatusRunning, RunStatusQueued, RunStatusFailedResumable}
+}
 
 // CanAutoResume answers the AUTOMATIC eligibility question: may
 // machinery (--auto-resume, usage-window retries) resume this run with

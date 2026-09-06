@@ -2304,7 +2304,8 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 	}
 	cr := ir.Compile(file)
 	if cr.HasErrors() {
-		return nil, fmt.Errorf("runner: %w: compile IR: %d diagnostic(s): %s", ErrIRUnloadable, len(cr.Diagnostics), summariseDiagnostics(cr.Diagnostics))
+		errs := compileErrors(cr.Diagnostics)
+		return nil, fmt.Errorf("runner: %w: compile IR: %d error(s): %s", ErrIRUnloadable, len(errs), summariseDiagnostics(errs))
 	}
 	return cr.Workflow, nil
 }
@@ -2316,6 +2317,19 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 // it on the DLQ with the diagnosis overwritten, which is how five runs died
 // mute on a five-release server/runner skew.
 var ErrIRUnloadable = errors.New("the IR does not load on this runner")
+
+// compileErrors keeps the diagnostics that blocked the load: the compiler
+// appends warnings and errors in compile order, so an unfiltered head of
+// the list can be three warnings while the error sits further down.
+func compileErrors(diags []ir.Diagnostic) []ir.Diagnostic {
+	errs := make([]ir.Diagnostic, 0, len(diags))
+	for _, d := range diags {
+		if d.Severity == ir.SeverityError {
+			errs = append(errs, d)
+		}
+	}
+	return errs
+}
 
 // summariseDiagnostics keeps the first few compiler messages for a verdict
 // an operator can read on the run, without the whole list.
@@ -2340,13 +2354,23 @@ func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, ca
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
 	defer cancel()
 	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
-	if err := r.cfg.Store.FailRunResumable(idCtx, msg.RunID, nil, cause.Error(), store.FailureCode("IR_UNLOADABLE")); err != nil {
+	// UpdateRunOutcome, not FailRunResumable: the latter assigns the
+	// checkpoint it is handed, and a resume delivery that lands on a stale
+	// image carries a checkpoint worth every node already paid for — a nil
+	// there would erase the anchor the aligned fleet resumes from. The
+	// expected set keeps the cancelled-wins guard: a run the operator
+	// cancelled meanwhile is not flipped back.
+	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
+		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
+		store.RunnerVerdictFromStatuses()); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
+	} else if !changed {
+		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunFailed,
 		Data: map[string]any{
-			"code": "IR_UNLOADABLE", "error": cause.Error(),
+			"code": string(store.FailureIRUnloadable), "error": cause.Error(),
 			"runner_version": appinfo.Version, "runner_commit": appinfo.Commit,
 			"workflow_hash": msg.WorkflowHash,
 			"hint":          "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",

@@ -295,11 +295,10 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/cli/remote_runs.go :: Cancelled+Failed+FailedResumable+Finished":  {[]string{"followRemoteRun"}, "--follow stop set over the WIRE statuses (strings): IsTerminal's set; the paused non-exit is the known bug #3 follow-up card"},
 
 	// -- pkg/runner.
-	"pkg/runner/loop.go :: Failed+Finished":                     {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
-	"pkg/runner/loop.go :: Failed+Finished+PausedWaitingHuman":  {[]string{"dispositionForStatus"}, "stale-delivery drop set: shapes a redelivery can never legitimately target (the admission switch, shared by the pre-lock pass and the under-lock re-read)"},
-	"pkg/runner/loop.go :: FailedResumable+PausedOperator":      {[]string{"dispositionForStatus"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes; same switch)"},
-	"pkg/runner/loop_nats.go :: FailedResumable+Queued+Running": {[]string{"parkOnDLQOnFinalDelivery"}, "DLQ park CAS: claimed/queued attempts AND the engine's own failed_resumable write — on the nominal path the engine parks first, and a CAS that excluded it dropped the DLQ_PARKED cause silently (gate F4)"},
-	"pkg/runner/usage_cap.go :: Queued+Running":                 {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+	"pkg/runner/loop.go :: Failed+Finished":                    {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
+	"pkg/runner/loop.go :: Failed+Finished+PausedWaitingHuman": {[]string{"dispositionForStatus"}, "stale-delivery drop set: shapes a redelivery can never legitimately target (the admission switch, shared by the pre-lock pass and the under-lock re-read)"},
+	"pkg/runner/loop.go :: FailedResumable+PausedOperator":     {[]string{"dispositionForStatus"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes; same switch)"},
+	"pkg/runner/usage_cap.go :: Queued+Running":                {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
 
 	// -- pkg/worktreepool.
 	"pkg/worktreepool/classify.go :: PausedOperator+PausedWaitingHuman": {[]string{"isPausedResumable"}, "the paused pair guarding checkout sparing (GC policy nuance documented at the site)"},
