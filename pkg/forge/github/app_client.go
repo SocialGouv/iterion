@@ -448,6 +448,47 @@ func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase stri
 	return Installation{Login: out.Account.Login, HTMLURL: out.HTMLURL, Permissions: out.Permissions}, nil
 }
 
+// AppSlug resolves the App's slug via GET /app (App-JWT authenticated). The
+// bot posts as "<slug>[bot]", so the slug is the identity every loop guard
+// compares a commenter against. One round trip; AppClient memoizes it.
+func AppSlug(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, now time.Time) (string, error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	jwt, err := signAppJWT(cfg.AppID, cfg.PrivateKeyPEM, now)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/app", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", forge.ErrUnauthorized
+	}
+	if resp.StatusCode/100 != 2 {
+		return "", statusErr("GET /app", resp.StatusCode)
+	}
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("github: GET /app: decode: %w", err)
+	}
+	if strings.TrimSpace(out.Slug) == "" {
+		return "", fmt.Errorf("github: GET /app returned no slug for app %d", cfg.AppID)
+	}
+	return strings.TrimSpace(out.Slug), nil
+}
+
 // MintInstallationToken trades the App JWT for a short-lived (≈1h)
 // installation access token. apiBase is the REST API base (APIBaseFor). opts
 // may be nil for an unconstrained (whole-installation) token, or narrow it to
@@ -623,10 +664,17 @@ type AppClient struct {
 	Cfg            AppConfig
 	InstallationID int64
 	Now            func() time.Time
+	// OnSlugResolved, when set, is told the App slug the first time Slug
+	// resolves it over the network (Cfg carried none), so the owner of the
+	// connection record can persist it: iterionBotLogins reads the record,
+	// not this client.
+	OnSlugResolved func(slug string)
 
 	mu    sync.Mutex
 	token string
 	exp   time.Time
+	// slug memoizes the App slug GET /app answered when Cfg carries none.
+	slug string
 	// denied names the permissions the cached token LACKS relative to the
 	// full request: rest() re-mints without the optional ones an
 	// installation withholds, so the token is healthy for every other call
@@ -838,6 +886,11 @@ func permissionSetKey(perms map[string]string) string {
 	return b.String()
 }
 
+// PermissionSetKey renders a grant set as a stable string — the key the
+// scoped-token cache uses — so a caller can tell two grant sets apart
+// without comparing maps.
+func PermissionSetKey(perms map[string]string) string { return permissionSetKey(perms) }
+
 // PreflightFor mints (or reuses) the installation token and nothing else,
 // then reports whether that token carries every permission in need. A caller
 // learns BEFORE acting whether the installation can serve: the client is
@@ -866,12 +919,41 @@ func (a *AppClient) PreflightFor(ctx context.Context, need ...string) error {
 
 func (a *AppClient) Provider() forge.Provider { return forge.ProviderGitHub }
 
+// Slug returns the App's slug: the configured one, else the one GET /app
+// answers, resolved once per client and handed to OnSlugResolved.
+func (a *AppClient) Slug(ctx context.Context) (string, error) {
+	if a.Cfg.AppSlug != "" {
+		return a.Cfg.AppSlug, nil
+	}
+	a.mu.Lock()
+	known := a.slug
+	a.mu.Unlock()
+	if known != "" {
+		return known, nil
+	}
+	slug, err := AppSlug(ctx, a.HTTP, a.apiBase(), a.Cfg, a.clock())
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	first := a.slug == ""
+	a.slug = slug
+	cb := a.OnSlugResolved
+	a.mu.Unlock()
+	if first && cb != nil {
+		cb(slug)
+	}
+	return slug, nil
+}
+
 // WhoAmI returns the App identity — an installation token can't call /user,
-// and the bot posts AS the App, so this is the correct "post as" handle.
-func (a *AppClient) WhoAmI(context.Context) (forge.Identity, error) {
-	slug := a.Cfg.AppSlug
-	if slug == "" {
-		slug = "github-app"
+// and the bot posts AS the App, so "<slug>[bot]" is the correct "post as"
+// handle. A slug that cannot be resolved is an error, never a placeholder: a
+// loop guard fed a login that never posts compares against nobody.
+func (a *AppClient) WhoAmI(ctx context.Context) (forge.Identity, error) {
+	slug, err := a.Slug(ctx)
+	if err != nil {
+		return forge.Identity{}, fmt.Errorf("github: resolve the App identity: %w", err)
 	}
 	return forge.Identity{Login: slug + "[bot]", ID: strconv.FormatInt(a.Cfg.AppID, 10), Kind: forge.AccountKindInstallation, Namespace: slug}, nil
 }
@@ -996,7 +1078,19 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 		return forge.RefreshedToken{}, err
 	}
 	RecordRuntimePermissions(conn.InstallationID, opts.Permissions)
-	return forge.RefreshedToken{AccessToken: tok, ExpiresAt: exp}, nil
+	out := forge.RefreshedToken{AccessToken: tok, ExpiresAt: exp}
+	if conn.AppSlug == "" {
+		// A record without the slug names no bot identity (iterionBotLogins
+		// builds "<slug>[bot]" from it). The configured slug serves first, a
+		// GET /app probe otherwise. A failed probe never fails the refresh —
+		// the token is what bots run on — and is retried on the next cycle.
+		if slug := r.Cfg.AppSlug; slug != "" {
+			out.AppSlug = slug
+		} else if slug, serr := AppSlug(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, now); serr == nil {
+			out.AppSlug = slug
+		}
+	}
+	return out, nil
 }
 
 var _ forge.Admin = (*AppClient)(nil)

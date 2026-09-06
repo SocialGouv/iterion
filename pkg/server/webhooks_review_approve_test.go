@@ -689,6 +689,17 @@ type fakeGitHubForge struct {
 	// answers 401 to — a binding whose token was revoked or rotated away
 	// while the webhook still pins it.
 	revokedBearer string
+	// slug is what GET /app (the App-JWT identity probe) answers; appLookups
+	// counts those probes.
+	slug       string
+	appLookups int
+}
+
+// appLookupCount returns how many times the App identity was probed.
+func (f *fakeGitHubForge) appLookupCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.appLookups
 }
 
 // revoked answers 401 when the request carries the revoked bearer.
@@ -708,7 +719,7 @@ const bearerNoStatuses = "Bearer ghs_nostatus"
 
 func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	t.Helper()
-	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234", bearers: map[string][]string{}}
+	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234", bearers: map[string][]string{}, slug: "iterion-forge-x"}
 	reply := func(w http.ResponseWriter, code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
@@ -742,6 +753,13 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 			token = "ghs_nostatus"
 		}
 		reply(w, http.StatusCreated, map[string]any{"token": token, "expires_at": "2099-01-01T00:00:00Z"})
+	})
+	mux.HandleFunc("GET /api/v3/app", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.appLookups++
+		slug := f.slug
+		f.mu.Unlock()
+		reply(w, http.StatusOK, map[string]any{"id": 42, "slug": slug, "name": "iterion forge"})
 	})
 	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, r *http.Request) {
 		seen("user", r)
