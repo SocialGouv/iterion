@@ -57,8 +57,10 @@ Apply state on a connection: `account_kind`, `avatar_applied_at`, `avatar_error`
 `POST /api/teams/{id}/forge/connections/{conn_id}/avatar` `{variant?: plain|circle, force?}`
 — 422 with `logo_url` + `logo_circle_url` on GitHub (plus `manage_url` when
 the App is one iterion created), 422 on a revoked connection (reconnect
-first), 409 `needs_force` on an unflagged account, 502 with the forge's
-reason when the upload is refused. Audit event on both the automatic and
+first), 409 `needs_force` on an account the forge does not flag as a bot —
+or would not describe at all (a token without the scope): iterion cannot
+vouch, the operator can — 502 with the forge's reason when the upload is
+refused. Audit event on both the automatic and
 the explicit path: `forge.connection.avatar_applied` (`automatic: true` at
 connect time).
 
@@ -74,12 +76,17 @@ connect-time upload deployment-wide; the explicit action stays.
 2. Open the App's settings: the *Logo ↗* link on the App row (Integrations →
    Manual setup → Forge OAuth apps), or GitHub → the org → Settings → Developer
    settings → GitHub Apps → the App → **General**.
-3. Under **Display information**, *Upload a logo*, pick a badge background
-   colour if you like, save. Comments and commits signed by
-   `<slug>[bot]` carry the avatar from then on.
+3. Under **Display information**, *Upload a logo…*, then *Set new avatar* in
+   the crop dialog. The logo is live at that click — the form's *Save changes*
+   button belongs to the basic information above it, not to the logo. Comments
+   and commits signed by `<slug>[bot]` carry the avatar from then on.
 
-To do once on the SocialGouv org: every `iterion-forge-*` / `iterion-watch-*`
-App iterion created there, and the `iterion` OAuth App used for SSO.
+An **OAuth App** (the `iterion` SSO app) takes the same file through
+*Application logo → Upload new logo → Set new application logo*.
+
+Done on the SocialGouv org on 2026-09-06 (the four `iterion-forge-*` /
+`iterion-watch-*` Apps and the `iterion` / `iterion preprod` OAuth Apps). An App
+the manifest flow creates afterwards starts without a logo: repeat the steps.
 
 ### GitLab group bot accounts already connected (the PIC)
 

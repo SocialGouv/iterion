@@ -100,8 +100,9 @@ func RemoteForgeAvatar(ctx context.Context, c *RemoteClient, p *Printer, path, v
 }
 
 // printAvatarRefusal renders the refusal fields of the avatar endpoint (422 on
-// GitHub with the App's settings page, 409 when the account is not flagged
-// as a bot) so the operator reads the alternative, not a cut JSON blob.
+// GitHub with the App's settings page, 409 when the forge does not flag the
+// account as a bot — or would not describe it at all) so the operator reads
+// the alternative, not a cut JSON blob.
 func printAvatarRefusal(p *Printer, raw []byte) {
 	var refusal struct {
 		Error        string `json:"error"`

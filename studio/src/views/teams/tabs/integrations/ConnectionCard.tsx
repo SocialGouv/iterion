@@ -233,19 +233,31 @@ function AvatarRow({
   }
 
   const isBot = conn.account_kind === "bot";
-  const vouch = () =>
+  // The dialog opens on what iterion knows: the forge's own answer when a 409
+  // brought one (it may not flag the account — or may have refused to describe
+  // it), the connection's recorded kind otherwise.
+  const vouch = (reason?: string) =>
     confirm({
       title: "Rebrand this account?",
       message: (
         <span>
-          {conn.forge_base_url ?? conn.provider} does not flag{" "}
-          <span className="font-mono">@{conn.account_login}</span> as a bot. Apply the
-          iterion-bot avatar only if this is a dedicated account for iterion — never a
+          {reason ? (
+            <>{reason}.</>
+          ) : (
+            <>
+              {conn.forge_base_url ?? conn.provider} does not flag{" "}
+              <span className="font-mono">@{conn.account_login}</span> as a bot.
+            </>
+          )}{" "}
+          Apply the iterion-bot avatar only if this is a dedicated account for iterion — never a
           person&apos;s.
         </span>
       ),
       confirmLabel: "Apply the avatar",
     });
+  // A 409 reads "<why iterion cannot vouch>; if it is a dedicated account …,
+  // apply with force": the dialog shows the why and is the force itself.
+  const refusalReason = (e: ApiError) => e.message.replace(/;\s*if it is a dedicated account.*$/, "");
   // A refusal still taught the server something (the account's kind, a forge
   // error kept on the record): refetch, then show the reason. onChanged clears
   // the banner synchronously and onError re-sets it in the same batch — keep
@@ -269,7 +281,7 @@ function AvatarRow({
       onChanged();
     } catch (e) {
       if (!force && e instanceof ApiError && e.status === 409) {
-        if (!(await vouch())) {
+        if (!(await vouch(refusalReason(e)))) {
           onChanged(); // the server recorded the learned kind
           return;
         }
