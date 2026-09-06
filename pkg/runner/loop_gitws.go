@@ -440,13 +440,23 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 // runGitOutEnv is runGitEnv returning the command's combined output —
 // for the callers that need to READ git (ls-remote, rev-list), with the
 // same timeout, cancellation hardening and token redaction.
+//
+// It is the ONE place this package builds a git subprocess, so the
+// guarantees below hold for every git command the runner runs.
+// NoAutoMaintenance is what makes the return of this function the END of
+// the command: a `git fetch` otherwise detaches `git maintenance run
+// --auto`, which closes its descriptors — the very thing CombinedOutput
+// waits on — and keeps writing under `.git/objects` of the per-run clone.
+// That clone is deleted when the run returns (and again at the next
+// attempt), so the removal would race a process nothing here can wait for,
+// and gitOpTimeout would bound nothing that escaped it.
 func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) (string, error) {
 	if gitOpTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(args...)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
