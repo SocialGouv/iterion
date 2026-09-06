@@ -172,6 +172,35 @@ The `tier` (`team` | `pool` | `platform`) is part of the meter identity, not
 a label: the same key lent through the pool and used by its owner are two
 different economic facts.
 
+**Where a route's model comes from.** The runner's metrics emitter names each
+node's route from three events, in order: `delegate_started.declared_model`
+(the node's spec, provider included — every backend emits it), then each
+`llm_request` (the id the call actually went to), then
+`delegate_finished.effective_model` when the backend reports one. A backend
+reports the id it CALLED, and claw strips the provider before the request —
+so a claw step reports `gpt-5.6-sol`, not `openai/gpt-5.6-sol`. A bare id
+names no provider and would fall to the backend's default wire (anthropic for
+claw), charging an OpenAI model's tokens to the Claude forfait; when the
+reported id is the declared model without its prefix, the route keeps the
+declared, provider-qualified name. A different id (a fallback element) is kept
+as reported.
+
+**claw inside a sandbox.** The LLM loop runs in `iterion __claw-runner` in the
+container, and the runner relays its per-step `llm_request` /
+`llm_step_finished` to the launcher over the IPC ([sandbox.md](sandbox.md#claw-backend-in-sandbox)),
+so a sandboxed claw node is metered from its steps exactly like an in-process
+one — and the `delegate_finished` total, a summary of those steps, is not
+counted again (cost or tokens). When a run's container carries an older
+runner that relays nothing, that total is the only observation: it is booked
+on the route and, when the event carries no `cost_usd`, priced from the table
+at the model's **input** rate — a floor, since one aggregate count cannot be
+split into input and output — or left unpriced when no source knows the
+model. Zero is unknown, never free.
+
+A route iterion cannot attribute is logged at **warn** by the runner, once per
+route per attempt (`no credential iterion can name`): the decline is
+definitive for that attempt, so it has to be visible.
+
 ```sh
 # This team's credentials, this month
 iterion remote usage --by-credential

@@ -2,12 +2,14 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -380,9 +382,14 @@ func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
 		Data: map[string]any{"backend": "claw", "tokens": float64(1500), "cost_usd": perStep},
 	})
 
-	total, _, _ := usage.RunTotals()
+	total, in, out := usage.RunTotals()
 	if total != perStep {
 		t.Errorf("cost = %v after the delegation total, want %v — claw was charged twice", total, perStep)
+	}
+	// The delegation total is the SUM of the steps already counted: booking
+	// it again doubles the token figure on the org bucket and the ledger.
+	if in != 1000 || out != 500 {
+		t.Errorf("tokens = %d in / %d out after the delegation total, want 1000 / 500 — claw's tokens were counted twice", in, out)
 	}
 }
 
@@ -396,5 +403,196 @@ func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
 	})
 	if cost, _, _ := usage.RunTotals(); cost != 0.42 {
 		t.Errorf("cost = %v, want 0.42", cost)
+	}
+}
+
+// #805 — the production shape of a sandboxed claw node. The LLM loop runs in
+// `iterion __claw-runner` inside the container; an in-container runner that
+// relays no per-step events leaves the host with the delegation pair alone:
+// delegate_started names the model, delegate_finished carries one aggregate
+// token count and, when the container could not price the call, no cost. The
+// route must still be the node's provider-qualified model — an empty or bare
+// model falls to the backend's default wire and charges an OpenAI forfait's
+// tokens to the Anthropic credential — with the tokens booked and a price
+// taken off the table rather than the $0 the claw double-count guard used to
+// leave (a pool donor "reads $0 forever").
+func TestMetricsEmitter_sandboxedClaw_delegateOnlyIsPricedAndRouted(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	ctx := context.Background()
+
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventDelegateStarted, RunID: "run-1", NodeID: "plan_review",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"},
+	})
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventDelegateFinished, RunID: "run-1", NodeID: "plan_review",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol", "tokens": float64(25000)},
+	})
+
+	routes := usage.RouteTotals()
+	got, ok := routes[routeKey{backend: "claw", model: "openai/gpt-5.6-sol"}]
+	if !ok {
+		t.Fatalf("routes = %v, want one keyed (claw, openai/gpt-5.6-sol) — the declared model must name the route", routes)
+	}
+	if got.inputTokens != 25000 {
+		t.Errorf("route input tokens = %d, want 25000", got.inputTokens)
+	}
+	if got.costUSD <= 0 {
+		t.Errorf("route cost = %v, want > 0: the table prices gpt-5.6-sol, and a delegation the guard excluded is not a free call", got.costUSD)
+	}
+	cost, in, _ := usage.RunTotals()
+	if cost != got.costUSD || in != 25000 {
+		t.Errorf("RunTotals = ($%v, %d) — must mirror the route (%+v)", cost, in, got)
+	}
+}
+
+// The delegation's own figure is exact (the container split input from output
+// when it priced the call); the host-side table price is only for a delegation
+// that carries none.
+func TestMetricsEmitter_sandboxedClaw_delegateCostWinsOverTheTable(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "tokens": float64(25000), "cost_usd": 0.1234}})
+	if cost, in, _ := usage.RunTotals(); cost != 0.1234 || in != 25000 {
+		t.Fatalf("RunTotals = ($%v, %d), want ($0.1234, 25000)", cost, in)
+	}
+}
+
+// Zero is unknown, never free: a delegation no source can price books its
+// tokens on the route and leaves the cost at zero — no fabricated figure.
+func TestMetricsEmitter_sandboxedClaw_unknownModelStaysUnpriced(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-99-nowhere"}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "tokens": float64(400)}})
+	cost, in, _ := usage.RunTotals()
+	if cost != 0 {
+		t.Errorf("cost = %v for a model no source prices, want 0 (unknown)", cost)
+	}
+	if in != 400 {
+		t.Errorf("input tokens = %d, want 400 — the tokens are known even when the price is not", in)
+	}
+	if _, ok := usage.RouteTotals()[routeKey{backend: "claw", model: "openai/gpt-99-nowhere"}]; !ok {
+		t.Errorf("routes = %v, want the unpriced route present so the credential still sees its tokens", usage.RouteTotals())
+	}
+}
+
+// The in-process shape of the same class. claw strips the provider before the
+// call, so its llm_request reports the BARE id; keyed on that, the route of a
+// claw node on an OpenAI model falls to the anthropic wire exactly like the
+// sandboxed one did. The declared model supplies the provider the report
+// dropped — for the same model only; a different id (a fallback element) is
+// kept as reported.
+func TestMetricsEmitter_bareStepModelKeepsTheDeclaredProvider(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
+	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
+		Data: map[string]any{"model": "gpt-5.6-sol"}})
+	usage.observe(store.Event{Type: store.EventLLMStepFinished, NodeID: "n",
+		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(100)}})
+	routes := usage.RouteTotals()
+	if _, ok := routes[routeKey{backend: "claw", model: "openai/gpt-5.6-sol"}]; !ok {
+		t.Fatalf("routes = %v, want (claw, openai/gpt-5.6-sol): the bare step id must inherit the declared provider", routes)
+	}
+
+	other := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	other.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
+	other.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
+		Data: map[string]any{"model": "claude-opus-5"}})
+	other.observe(store.Event{Type: store.EventLLMStepFinished, NodeID: "n",
+		Data: map[string]any{"input_tokens": float64(10), "output_tokens": float64(1)}})
+	if _, ok := other.RouteTotals()[routeKey{backend: "claw", model: "claude-opus-5"}]; !ok {
+		t.Fatalf("routes = %v, want (claw, claude-opus-5): a different model than declared is not re-labelled", other.RouteTotals())
+	}
+}
+
+// delegate_finished.effective_model is what the provider reports it ran; when
+// present it names the route over the declared model.
+func TestMetricsEmitter_effectiveModelNamesTheRoute(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
+		Data: map[string]any{"backend": "claude_code", "declared_model": "anthropic/claude-opus-5"}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
+		Data: map[string]any{"backend": "claude_code", "declared_model": "anthropic/claude-opus-5",
+			"effective_model": "claude-sonnet-4-6", "tokens": float64(900), "cost_usd": 0.42}})
+	routes := usage.RouteTotals()
+	if r, ok := routes[routeKey{backend: "claude_code", model: "claude-sonnet-4-6"}]; !ok || r.costUSD != 0.42 {
+		t.Fatalf("routes = %v, want (claude_code, claude-sonnet-4-6) carrying $0.42", routes)
+	}
+}
+
+// The sandboxed shape WITH the relay, through the production hooks on both
+// sides: the in-container runner's hooks encode each step, the host decodes
+// and re-fires them through its store hooks — whose emitter is this metrics
+// emitter on a runner pod — around the delegation pair the host emits
+// itself. The route is named by the declared spec, the tokens are the
+// steps' exact input/output split, the cost is the steps' price, and the
+// delegation total (a summary of those steps) is not booked again.
+func TestMetricsEmitter_relayedSandboxedClawStepsMeterLikeInProcess(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	host := model.NewStoreEventHooks(context.Background(), usage, "run-relay", iterlog.New(iterlog.LevelError, nil), nil)
+	relay := model.SandboxRelayHooks(func(env delegate.Envelope) error {
+		var ed delegate.EventData
+		if err := json.Unmarshal(env.Data, &ed); err != nil {
+			return err
+		}
+		_, err := model.ApplyRelayedEvent(host, "plan_review", ed.Type, ed.Payload)
+		return err
+	}, func(err error) { t.Errorf("relay: %v", err) })
+
+	host.OnDelegateStarted("plan_review", model.DelegateInfo{BackendName: "claw", DeclaredModel: "openai/gpt-5.6-sol"})
+	relay.OnLLMRequest("plan_review", model.LLMRequestInfo{Model: "gpt-5.6-sol"})
+	relay.OnLLMStepFinish("plan_review", model.LLMStepInfo{Number: 1, InputTokens: 20000, OutputTokens: 3000})
+	relay.OnLLMStepFinish("plan_review", model.LLMStepInfo{Number: 2, InputTokens: 20000, OutputTokens: 3000})
+	stepsCost, _, _ := usage.RunTotals()
+	if stepsCost <= 0 {
+		t.Fatalf("the relayed steps priced to %v — gpt-5.6-sol is in the table", stepsCost)
+	}
+	host.OnDelegateFinished("plan_review", model.DelegateInfo{BackendName: "claw", DeclaredModel: "openai/gpt-5.6-sol", Tokens: 46000, CostUSD: 0.5})
+
+	routes := usage.RouteTotals()
+	got, ok := routes[routeKey{backend: "claw", model: "openai/gpt-5.6-sol"}]
+	if !ok {
+		t.Fatalf("routes = %v, want (claw, openai/gpt-5.6-sol)", routes)
+	}
+	if got.inputTokens != 40000 || got.outputTokens != 6000 {
+		t.Errorf("route tokens = %d in / %d out, want 40000 / 6000 — the steps' split, counted once", got.inputTokens, got.outputTokens)
+	}
+	if got.costUSD != stepsCost {
+		t.Errorf("route cost = %v, want the steps' %v — the delegation total was re-priced", got.costUSD, stepsCost)
+	}
+	if len(routes) != 1 {
+		t.Errorf("routes = %v, want the one route", routes)
+	}
+	if cost, in, out := usage.RunTotals(); cost != stepsCost || in != 40000 || out != 6000 {
+		t.Errorf("RunTotals = ($%v, %d, %d), want ($%v, 40000, 6000)", cost, in, out, stepsCost)
+	}
+}
+
+// A node's second attempt (a loop iteration, a retry) opens with a fresh
+// delegate_started; whether its steps were seen is decided per attempt, so a
+// relayed first pass never hides an unrelayed second one.
+func TestMetricsEmitter_newAttemptResetsTheStepGuard(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	start := store.Event{Type: store.EventDelegateStarted, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}}
+	usage.observe(start)
+	usage.observe(store.Event{Type: store.EventLLMStepFinished, NodeID: "n",
+		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(0)}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "tokens": float64(1000)}})
+	if _, in, _ := usage.RunTotals(); in != 1000 {
+		t.Fatalf("after a summarised first attempt: input tokens = %d, want 1000", in)
+	}
+	usage.observe(start)
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
+		Data: map[string]any{"backend": "claw", "tokens": float64(500)}})
+	if _, in, _ := usage.RunTotals(); in != 1500 {
+		t.Fatalf("after an unrelayed second attempt: input tokens = %d, want 1500 — the guard must reset per attempt", in)
 	}
 }

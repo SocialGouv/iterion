@@ -1322,6 +1322,24 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// snapshot behind but the next capture will reconcile.
 			_ = hostStore.SaveSnapshot(hostRunID, task.NodeID, snapshot)
 		},
+		OnEvent: func(eventType string, payload map[string]any) {
+			// The runner's per-step LLM observations (llm_request,
+			// llm_step_finished), re-fired through THIS process's hooks so
+			// a sandboxed claw node is persisted, priced and metered like
+			// an in-process one — see sandbox_relay.go.
+			handled, err := ApplyRelayedEvent(b.hooks, task.NodeID, eventType, payload)
+			if b.logger == nil {
+				return
+			}
+			switch {
+			case err != nil:
+				b.logger.Warn("[%s#%d/claw] the sandbox runner relayed a %s event this host cannot decode — the node's per-step metering is incomplete: %v",
+					task.NodeID, task.Iteration, eventType, err)
+			case !handled:
+				b.logger.Debug("[%s#%d/claw] the sandbox runner relayed a %s event this host does not consume",
+					task.NodeID, task.Iteration, eventType)
+			}
+		},
 	}
 }
 
