@@ -56,6 +56,44 @@ go test ./...
 
 Prefer `task build` after editing studio assets or any of the nine embedded dispatcher bots because it runs `studio:build` and `templates:dispatch-bots` first.
 
+## Running the Mongo conformance harness locally
+
+`pkg/store/mongo` (and every other suite gated on `ITERION_TEST_MONGO_URI` —
+`grep -rl ITERION_TEST_MONGO_URI --include='*_test.go' pkg/`) skips under a
+plain `go test ./...`; CI's `mongo-conformance` job is what enforces the
+contract. A change to a store twin or a conformance row is therefore
+unverified until CI runs it — unless you reproduce the job. The recipe that
+matches the job (`mongo:8.0`, a one-member replica set for change streams and
+transactions), on a port that leaves a studio's own Mongo alone:
+
+```bash
+docker run --rm -d --name iterion-mongo-conf --ulimit nofile=131072:131072 \
+  -p 27018:27017 mongo:8.0 --replSet rs0 --bind_ip_all
+docker exec iterion-mongo-conf mongosh --quiet \
+  --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27018" }] })'
+# wait for PRIMARY:
+docker exec iterion-mongo-conf mongosh --quiet --eval 'rs.status().members[0].stateStr'
+
+ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
+  devbox run -- go test ./pkg/store/mongo/ -run 'TestConformance_Mongo' -v
+docker rm -f iterion-mongo-conf
+```
+
+Two details that cost a session each: the member must be advertised on the
+published port (`localhost:27018`), or the driver's topology resolves back
+onto whatever listens on 27017; and the `--ulimit nofile` is not optional —
+the whole suite creates a fresh database with ~10 indexes per subtest, and a
+container's default file-descriptor limit makes `mongod` panic with
+`Too many open files` a few minutes in, which reads as `connection refused`
+from the test.
+
+Both store twins start a run differently on purpose — the filesystem store
+goes straight to `running`, the cloud store to `queued`
+(`storetest.Opts.InitialStatus` models it). A conformance row that
+compares-and-sets from a status it did not set itself passes on one twin by
+accident and can never match on the other; state the status the row tests
+from.
+
 ## Frontend and local services
 
 ```bash

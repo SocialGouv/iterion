@@ -1693,6 +1693,7 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 - **Scenario executor** (`e2e/e2e_test.go`) — configurable stub with `.on(nodeID, handler)` for per-node behavior
 - Table-driven subtests with standard `testing` package
 - `task test:live` — runs E2E with real Claude/Codex CLIs (requires API keys)
+- **Mongo conformance locally** — the `mongo-conformance` CI job is reproducible with one `mongo:8.0` replica-set container on port 27018 (`--ulimit nofile=131072:131072`, member advertised as `localhost:27018`); recipe + the two traps in [docs/development.md](docs/development.md#running-the-mongo-conformance-harness-locally). A store-twin or conformance-row change is unverified until it ran there
 - **Studio UI e2e** (`studio/e2e/`, `task test:e2e:ui`) — Playwright against the
   REAL server: the built binary serving the embedded SPA over a throwaway
   workspace `studio/e2e/serve.mjs` rebuilds per run and seeds with genuine
