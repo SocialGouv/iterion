@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -694,5 +695,122 @@ func TestSyncProjectBoardConvergesWhenTheReflectCannotWrite(t *testing.T) {
 					res2.Conflicts, res2)
 			}
 		})
+	}
+}
+
+// TestSyncProjectBoardDoesNotReflectAMachineTransition (#798): a column
+// iterion wrote on its OWN authority — here the claim watchdog parking a card
+// in `blocked` under its reaper marker — is not a move the roadmap follows.
+// The pass counts it (reflect_machine) and pushes nothing, while the same
+// park performed by a person is reflected like any other move. The rule
+// reads the CARD's persisted provenance, not the event: the pass sees no
+// event, and the card must decide.
+func TestSyncProjectBoardDoesNotReflectAMachineTransition(t *testing.T) {
+	at := time.Date(2026, 9, 5, 20, 55, 0, 0, time.UTC)
+	park := map[string]func(t *testing.T, board *native.Store, id string){
+		"watchdog": func(t *testing.T, board *native.Store, id string) {
+			tok, err := board.Claim(id, tracker.ReaperMarkerPrefix+"host-1")
+			if err != nil {
+				t.Fatalf("claim: %v", err)
+			}
+			if _, err := board.SetStateOwned(id, native.StateBlocked, tok); err != nil {
+				t.Fatalf("park: %v", err)
+			}
+		},
+		"given back after a failed launch": func(t *testing.T, board *native.Store, id string) {
+			tok, err := board.Claim(id, "board-dispatcher:pod-1")
+			if err != nil {
+				t.Fatalf("claim: %v", err)
+			}
+			if _, err := board.SetStateOwned(id, native.StateInProgress, tok); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			if _, err := board.SetStateOwnedReason(id, native.StateReady, tok, tracker.ReasonUnlaunchable); err != nil {
+				t.Fatalf("give back: %v", err)
+			}
+		},
+	}
+	for name, parkFn := range park {
+		t.Run(name, func(t *testing.T) {
+			board := newTestBoard(t)
+			id := seedSynced(t, board, 798, native.StateReady, "Planned", at)
+			parkFn(t, board, id)
+			if !mustGet(t, board, id).StateByMachine() {
+				t.Fatalf("fixture: the card's provenance is %q, want a machine reason", mustGet(t, board, id).StateReason)
+			}
+			bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+				item("PVTI_1", 798, statusValue("Planned", at)),
+			}}}
+			res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+				&ProjectImportOptions{Binding: testBinding()})
+			if err != nil {
+				t.Fatalf("ImportProjectBoard: %v", err)
+			}
+			if len(bc.writes) != 0 {
+				t.Fatalf("writes = %+v, want none — a machine-written column is not a move the roadmap follows", bc.writes)
+			}
+			if res.Reflected != 0 {
+				t.Errorf("Reflected = %d, want 0 (%+v)", res.Reflected, res)
+			}
+			if mustGet(t, board, id).State == native.StateBlocked && res.ReflectMachine != 1 {
+				t.Errorf("ReflectMachine = %d, want 1 — the pass must explain the card it left alone (%+v)", res.ReflectMachine, res)
+			}
+		})
+	}
+
+	t.Run("a person's park is reflected", func(t *testing.T) {
+		board := newTestBoard(t)
+		id := seedSynced(t, board, 798, native.StateReady, "Planned", at)
+		if _, err := board.SetState(id, native.StateBlocked); err != nil {
+			t.Fatalf("park: %v", err)
+		}
+		if mustGet(t, board, id).StateByMachine() {
+			t.Fatal("fixture: an operator move must not read as machine provenance")
+		}
+		bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+			item("PVTI_1", 798, statusValue("Planned", at)),
+		}}}
+		res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+			&ProjectImportOptions{Binding: testBinding()})
+		if err != nil {
+			t.Fatalf("ImportProjectBoard: %v", err)
+		}
+		if res.Reflected != 1 || len(bc.writes) != 1 || bc.writes[0].OptionID != optionID(t, testProject(), "Blocked") {
+			t.Fatalf("a person's park: reflected=%d writes=%+v, want one Blocked write", res.Reflected, bc.writes)
+		}
+	})
+}
+
+// TestSyncProjectBoardReflectsARunVerdict pins the other half of the rule,
+// the one ADR-097 was written for: the dispatcher filing a run's OUTCOME
+// (`done` after a finished run, under its fenced claim) is what actually
+// happened to the card, and the roadmap follows it.
+func TestSyncProjectBoardReflectsARunVerdict(t *testing.T) {
+	at := time.Date(2026, 9, 5, 20, 55, 0, 0, time.UTC)
+	board := newTestBoard(t)
+	id := seedSynced(t, board, 613, native.StateReady, "Planned", at)
+	tok, err := board.Claim(id, "board-dispatcher:pod-1")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := board.SetStateOwned(id, native.StateInProgress, tok); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := board.SetStateOwned(id, native.StateDone, tok); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if mustGet(t, board, id).StateByMachine() {
+		t.Fatal("fixture: a run verdict filed by its owner must not read as machine provenance")
+	}
+	bc := &fakeBoardClient{project: testProject(), pages: [][]forge.ProjectItem{{
+		item("PVTI_1", 613, statusValue("Planned", at)),
+	}}}
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board,
+		&ProjectImportOptions{Binding: testBinding()})
+	if err != nil {
+		t.Fatalf("ImportProjectBoard: %v", err)
+	}
+	if res.Reflected != 1 || len(bc.writes) != 1 || bc.writes[0].OptionID != optionID(t, testProject(), "Done") {
+		t.Fatalf("run verdict: reflected=%d writes=%+v, want one Done write", res.Reflected, bc.writes)
 	}
 }

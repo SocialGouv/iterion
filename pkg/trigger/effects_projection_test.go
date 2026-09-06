@@ -111,24 +111,49 @@ func TestMaterializeEffects_ProjectionOnlyWhereItIsOwed(t *testing.T) {
 	}
 }
 
-// TestMaterializeEffects_ProjectionExemptFromTheMachineDecline is the point of
-// the whole exercise: the machine-caused decline guards LAUNCH admission (a
-// column rename must not mass-launch), and a watchdog filing a card in
-// `blocked` is EXACTLY what the external roadmap has to show. The launch rows
-// stay declined; the projection row is owed.
-func TestMaterializeEffects_ProjectionExemptFromTheMachineDecline(t *testing.T) {
-	ev := movedEvent()
-	ev.Payload = map[string]any{"reason": tracker.ReasonWatchdog}
-	if !machineCaused(ev) {
-		t.Fatalf("fixture is not machine-caused — reason %q", ev.Payload["reason"])
+// TestMaterializeEffects_MachineCausedOwesNoProjection (#798): a move iterion
+// made on its own authority — a watchdog park, a column rename, a card given
+// back after a failed launch — is not a move the external roadmap follows,
+// so no projection row is owed for it. Declined at materialization for the
+// reason launches are: a schema migration emits one event per card, and a
+// column of rows that each retire with nothing to write sits FIFO ahead of
+// the next genuine reflect. The launch rows stay declined too.
+func TestMaterializeEffects_MachineCausedOwesNoProjection(t *testing.T) {
+	for _, reason := range []string{tracker.ReasonWatchdog, tracker.ReasonStateRename, tracker.ReasonUnlaunchable} {
+		t.Run(reason, func(t *testing.T) {
+			ev := movedEvent()
+			ev.Payload = map[string]any{"reason": reason}
+			if !machineCaused(ev) {
+				t.Fatalf("fixture is not machine-caused — reason %q", reason)
+			}
+			rows, err := MaterializeEffects(context.Background(), projectionSubs(t),
+				&stubBindings{bound: map[string]bool{"t1": true}}, ev, time.Now().UTC())
+			if err != nil {
+				t.Fatalf("materialize: %v", err)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("machine-caused move materialized %+v, want no row at all — not a launch, not a projection", rows)
+			}
+		})
 	}
+	// A DESCRIPTIVE reason is a gesture (or a run's verdict) and still owes
+	// its projection: the watchdog filing a finished run's `done` is what
+	// the roadmap must show.
+	ev := movedEvent()
+	ev.Payload = map[string]any{"reason": tracker.ReasonRunFinished}
 	rows, err := MaterializeEffects(context.Background(), projectionSubs(t),
 		&stubBindings{bound: map[string]bool{"t1": true}}, ev, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
-	if len(rows) != 1 || !rows[0].IsProjection() {
-		t.Fatalf("machine-caused move materialized %+v, want exactly one projection row and no launch", rows)
+	var proj int
+	for _, r := range rows {
+		if r.IsProjection() {
+			proj++
+		}
+	}
+	if proj != 1 {
+		t.Fatalf("a run-verdict move materialized %d projection row(s), want 1 (%+v)", proj, rows)
 	}
 }
 
@@ -232,19 +257,26 @@ func TestEffectWorker_ProjectionReflectsAndCompletes(t *testing.T) {
 	}
 }
 
-// TestEffectWorker_ProjectionIsExemptFromTheMachineDecline is the exemption
-// at its own line: `applyEffect` declines a machine-caused event for every
-// LAUNCH arm, and must not for a projection. A watchdog move that never
-// reaches the external board is the one divergence the reflect exists to
-// prevent.
-func TestEffectWorker_ProjectionIsExemptFromTheMachineDecline(t *testing.T) {
+// TestEffectWorker_ProjectionArmStillExecutesAQueuedRow: the projection arm
+// does not re-derive the machine decline from the event — a row that IS in
+// the outbox reaches the reflect, which judges the CARD's persisted
+// provenance (the one authority both callers share). A row queued by an
+// older binary for a machine move therefore retires through the reflect's
+// own refusal, never as a dead-letter.
+func TestEffectWorker_ProjectionArmStillExecutesAQueuedRow(t *testing.T) {
 	ev := movedEvent()
-	ev.Payload = map[string]any{"reason": tracker.ReasonWatchdog}
 	proj := &stubProjection{}
 	w, out := projectionWorld(t, ev, proj)
+	// Stamp the provenance AFTER materialization: the row exists; only its
+	// execution is under test.
+	row, _ := out.Row(ProjectionEffectID(ev.ID))
+	row.Event.Payload = map[string]any{"reason": tracker.ReasonWatchdog}
+	if err := out.UpsertPending(context.Background(), []EffectRow{row}); err != nil {
+		t.Fatal(err)
+	}
 	w.Tick(context.Background(), 10)
 	if len(proj.cards) != 1 {
-		t.Fatalf("a machine-caused move reflected %d times, want 1 — the decline leaked into the projection arm", len(proj.cards))
+		t.Fatalf("a queued projection row reached the reflect %d times, want 1 — the arm hands every row to the reflect, which decides on the card", len(proj.cards))
 	}
 	if row, _ := out.Row(ProjectionEffectID(ev.ID)); row.State != EffectDone {
 		t.Fatalf("projection row state = %q, want %q", row.State, EffectDone)

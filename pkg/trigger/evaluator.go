@@ -159,17 +159,15 @@ func machineCaused(ev Event) bool {
 // (the bus path warns and moves on, the outbox path retries).
 
 func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
-	// The PROJECTION arm, deliberately ahead of the machine-caused decline
-	// below — this is the exemption ADR-097 §10 named, stated at the one line
-	// that grants it rather than left to fall out of the wiring.
-	//
-	// That decline protects LAUNCH admission: a schema migration emits one
-	// event per card, and one run per card is the fan-out it refuses. A
-	// projection starts no run, spends no budget and consumes no one-shot —
-	// it copies a column the native board already holds onto the external
-	// board bound to it. Declining it there would make iterion's OWN moves (a
-	// watchdog filing a card in `blocked`) the only ones the roadmap never
-	// hears about, which is the divergence the reflect exists to close.
+	// The PROJECTION arm, ahead of the machine-caused decline below: the
+	// decline here reads the EVENT, and a projection row is judged on the
+	// CARD — the reflect refuses a column iterion wrote on its own authority
+	// from the card's persisted provenance, the one authority the fast path
+	// and the periodic pass share. A row that is in the outbox (materialized
+	// before the event was known to be machine-caused, or by an older
+	// binary) therefore reaches the reflect and retires through its answer,
+	// never as a dead-letter. projectionOwed already declines the row at
+	// materialization for a machine-caused event.
 	//
 	// `sub` is the zero value here: a projection is owed to the tenant's board
 	// binding, never to a subscription.
