@@ -62,15 +62,7 @@ func TestFetcher_PeerPublishedTheSamePinnedCheckoutFirst(t *testing.T) {
 
 	// Nothing parked beside it either: a retired or staging copy of a full
 	// checkout that nobody deletes is the cache growing one clone per race.
-	entries, err := os.ReadDir(cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") {
-			t.Errorf("left behind in the cache dir: %s", e.Name())
-		}
-	}
+	assertNoLeftovers(t, cache, filepath.Base(got))
 }
 
 // The loser's own read of the final path is the second half of the rule: a
