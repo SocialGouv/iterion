@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.12](https://github.com/SocialGouv/iterion/compare/v3.112.11...v3.112.12) (2026-09-06)
+
+### Bug Fixes
+
+* **runner:** the per-run clone's git commands leave no maintenance process behind ([#829](https://github.com/SocialGouv/iterion/issues/829)) ([da8a2f0](https://github.com/SocialGouv/iterion/commit/da8a2f0bc8278e4ca206ffcf4a56e735415cbb6b)), closes [#821](https://github.com/SocialGouv/iterion/issues/821), references [#813](https://github.com/SocialGouv/iterion/issues/813) [#821](https://github.com/SocialGouv/iterion/issues/821) [#828](https://github.com/SocialGouv/iterion/issues/828)
+
+    <details><summary>why</summary>
+
+    The merge-queue build of #813 ejected the PR on a cleanup, not an assertion: `TempDir RemoveAll cleanup: unlinkat …/deploy-onyxia-…/.git/ objects: directory not empty` — something was still writing under the plugin-source cache checkout after the test had passed.
+
+    </details>
+* **runtime,bots:** an oracle that never ran is not a RED — the run-files env var goes with its bind, the report goes to a temp file of the run ([#815](https://github.com/SocialGouv/iterion/issues/815)) ([f517637](https://github.com/SocialGouv/iterion/commit/f5176376a1f74cd1888feeec5aa79d0bce624807)), references [#795](https://github.com/SocialGouv/iterion/issues/795) [pre-#795](https://github.com/pre-/issues/795)
+
+    <details><summary>why</summary>
+
+    Measured on the pod backend, four modernize lots in one night: gate green, references intact, and "oracle RED" on one line — the gate wrapper's `cannot create /iterion/artifact-files/gm-last-report.json: Directory nonexistent`. The harness never ran: the redirect died first. One lot diagnosed it and blocked, two were stopped by the loop budget guard, one spent 173 minutes repairing an environment. Some 20 run-hours, no verdict.
+
+    </details>
+* **sandbox:** a sandboxed claw node relays its tools, retries and turns ([#835](https://github.com/SocialGouv/iterion/issues/835)) ([e6c4b40](https://github.com/SocialGouv/iterion/commit/e6c4b4075c1c85ad3fe6ae5d636e690afaf15bba)), closes [#811](https://github.com/SocialGouv/iterion/issues/811), references [#805](https://github.com/SocialGouv/iterion/issues/805)
+
+    <details><summary>why</summary>
+
+    The `__claw-runner` relay carried the LLM steps (#805) and nothing else, so everything the in-container loop observed died at the container boundary: the studio timeline of a sandboxed claw node showed LLM steps and no tools, an in-container permission denial left no audit, a supervisor's `tool_*` monitor never armed, the plan checklist stayed empty, a retry or a compaction round read as a silent gap, and `iterion fork --turn` had no anchor at all.
+
+    </details>
+* **server:** a live 401 marks the connection revoked; only a forge that answered "no" earns the vouch ([#833](https://github.com/SocialGouv/iterion/issues/833)) ([5cd4877](https://github.com/SocialGouv/iterion/commit/5cd48770251e44828d0cd538fb172f847453334d))
+
+    <details><summary>why</summary>
+
+    A failed WhoAmI now takes three shapes instead of one. A credential the forge rejects outright is the reconnect problem the revoked-status rung already names — a 422, forced or not, because no force can carry an upload the forge would refuse the same way. A forge that answered but would not describe the account (insufficient scope) is the one case the operator can vouch for: a 409 unforced, tolerated under force. Anything else — a spent budget, an unreachable forge, a 5xx — is not an answer: a…
+
+    </details>
+
 ## [3.112.11](https://github.com/SocialGouv/iterion/compare/v3.112.10...v3.112.11) (2026-09-06)
 
 ### Bug Fixes
