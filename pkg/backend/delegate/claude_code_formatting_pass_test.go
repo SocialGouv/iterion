@@ -17,9 +17,6 @@ import (
 // with both passes' usage; a transient render exhausts the attempts typed;
 // the recovery pass returns its message with the verdict.
 func TestFormattingPassVerdicts(t *testing.T) {
-	prevDelay := formatRetryDelay
-	formatRetryDelay = 0
-	t.Cleanup(func() { formatRetryDelay = prevDelay })
 	str := func(s string) *string { return &s }
 	f := func(v float64) *float64 { return &v }
 	schema := json.RawMessage(`{"type":"object","required":["answer","count"],"properties":{"answer":{"type":"string"},"count":{"type":"integer"}}}`)
@@ -28,7 +25,7 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		Usage: &claudesdk.Usage{InputTokens: 100, OutputTokens: 10}, TotalCostUSD: f(0.10)}
 	newBackend := func(replies ...*claudesdk.ResultMessage) (*ClaudeCodeBackend, *int) {
 		calls := 0
-		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
 		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
 			i := calls
 			calls++
@@ -107,7 +104,7 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		}
 	})
 	t.Run("a pass that could not run still prices the delegation on the exhausted path", func(t *testing.T) {
-		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
 		calls := 0
 		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
 			calls++
@@ -146,11 +143,29 @@ func TestFormattingPassVerdicts(t *testing.T) {
 			t.Fatalf("an object beside plain prose re-typed: %v", err)
 		}
 	})
-	t.Run("a raw error body is not an answer", func(t *testing.T) {
+	t.Run("a raw error body is not an answer, the provider's two-key envelope neither", func(t *testing.T) {
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
-		rm := &claudesdk.ResultMessage{Result: str(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`)}
-		if err := b.renderedFailure(rm, task, "pass 1"); err == nil {
-			t.Fatalf("a raw error body shipped as an answer")
+		for _, text := range []string{
+			`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`,
+			`{"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`,
+		} {
+			rm := &claudesdk.ResultMessage{Result: str(text)}
+			if err := b.renderedFailure(rm, task, "pass 1"); err == nil {
+				t.Fatalf("%s: an error envelope shipped as an answer", text)
+			}
+		}
+		// An answer that carries an `error` field beside real data stays one.
+		rm := &claudesdk.ResultMessage{Result: str(`{"answer":"rate limit exceeded on the third call","error":null,"count":3}`)}
+		if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
+			t.Fatalf("an answer with an error field re-typed: %v", err)
+		}
+	})
+	t.Run("the retry pause is per backend, off when negative, default when zero", func(t *testing.T) {
+		if (&ClaudeCodeBackend{formatRetryDelay: -1}).retryDelay() != 0 {
+			t.Fatal("negative must disable the pause")
+		}
+		if (&ClaudeCodeBackend{}).retryDelay() != defaultFormatRetryDelay {
+			t.Fatal("zero must mean the default")
 		}
 	})
 	t.Run("a render carrying a fenced JSON is still a render", func(t *testing.T) {

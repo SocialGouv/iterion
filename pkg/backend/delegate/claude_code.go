@@ -53,6 +53,27 @@ type ClaudeCodeBackend struct {
 	// loop around it — retry, terminal verdict, usage, cost — is where the
 	// accounting defects lived, and it had no seam to be exercised through.
 	formatOutputFn func(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error)
+	// formatRetryDelay overrides the pause before a repeated formatting
+	// attempt: zero means the default, negative means none (tests). Per
+	// backend, not package-wide, so parallel tests cannot race on it.
+	formatRetryDelay time.Duration
+}
+
+// defaultFormatRetryDelay is the pause before a formatting attempt is
+// repeated after a retryable render: a throttle answered immediately is a
+// throttle again.
+const defaultFormatRetryDelay = 2 * time.Second
+
+// retryDelay is the pause this backend takes before repeating a formatting
+// attempt.
+func (b *ClaudeCodeBackend) retryDelay() time.Duration {
+	switch {
+	case b.formatRetryDelay < 0:
+		return 0
+	case b.formatRetryDelay == 0:
+		return defaultFormatRetryDelay
+	}
+	return b.formatRetryDelay
 }
 
 // formatPass runs one formatting pass: the CLI, or the test seam.
@@ -497,7 +518,8 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the formatting passes: a render is never an answer, on any pass. The
 	// session was billed all the same: its cost goes out with the verdict.
 	if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
-		return result, typedFailure(&result, task, totalIn, totalOut, err, rm)
+		typed := typedFailure(&result, task, totalIn, totalOut, err, rm)
+		return result, typed
 	}
 
 	if needsTwoPass && rm.SessionID != "" {
@@ -518,7 +540,8 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
 		var rerr error
 		if recoveryRM, rerr = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut); rerr != nil {
-			return result, typedFailure(&result, task, totalIn, totalOut, rerr, rm, recoveryRM)
+			typed := typedFailure(&result, task, totalIn, totalOut, rerr, rm, recoveryRM)
+			return result, typed
 		}
 	}
 
@@ -653,21 +676,25 @@ func looksRendered(text string) bool {
 		isModelUnavailableResult(text) || isTransientAPIErrorResult(text)
 }
 
-// errorBodyObject reports an object that is only an error envelope — a raw
-// {"error": …} body a facade could relay as the result text — which is not
-// an answer even though it parses as one.
+// errorBodyObject reports an object that is only an error envelope — a bare
+// {"error": …} body, or the provider's own {"type":"error","error":{…}} —
+// relayed verbatim as the result text: not an answer even though it parses
+// as one. A legitimate answer that carries an `error` field beside real data
+// stays an answer.
 func errorBodyObject(obj map[string]any) bool {
-	if len(obj) != 1 {
+	if _, ok := obj["error"]; !ok {
 		return false
 	}
-	_, ok := obj["error"]
-	return ok
+	return len(obj) == 1 || (len(obj) == 2 && obj["type"] == "error")
 }
 
 // typedFailure returns err with the delegation's spend stamped on the result
 // first: a typed failure still spent Pass 1 and whatever passes ran, and the
 // caps, the fallback chain's carried spend and a donor's ledger read the
-// cost from the output map — an unallocated map records nothing.
+// cost from the output map — an unallocated map records nothing. Callers
+// hoist the call into its own statement before returning `result`: Go leaves
+// the order between a plain operand and a call in one return list
+// unspecified, and the stamp must land before the copy is taken.
 func typedFailure(result *Result, task Task, totalIn, totalOut int, err error, rms ...*claudesdk.ResultMessage) error {
 	if result.Output == nil {
 		result.Output = map[string]any{}
@@ -675,11 +702,6 @@ func typedFailure(result *Result, task Task, totalIn, totalOut int, err error, r
 	annotateCost(result, task, totalIn, totalOut, rms...)
 	return err
 }
-
-// formatRetryDelay is the pause before a formatting attempt is repeated after
-// a retryable render: a throttle answered immediately is a throttle again.
-// A variable so the seam tests run without it.
-var formatRetryDelay = 2 * time.Second
 
 // renderRetryable reports whether a rendered failure is one a repeat of the
 // same pass can recover from: the transient class (5xx, overload,
@@ -867,8 +889,9 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 					// A credential, model or window verdict is terminal: a
 					// second attempt re-spends the pass against a provider
 					// that just refused and re-files the same evidence.
-					return true, result, typedFailure(&result, task, *totalIn, *totalOut,
+					typed := typedFailure(&result, task, *totalIn, *totalOut,
 						fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr), rm, fmtRM)
+					return true, result, typed
 				}
 				fmtErr = rerr
 			}
@@ -880,11 +903,14 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 				// A throttle or an overload answered at once is the same
 				// answer again: a short pause before the repeat, bounded by
 				// the run's context.
-				if formatRetryDelay > 0 {
+				if d := b.retryDelay(); d > 0 {
 					select {
 					case <-ctx.Done():
-						return true, result, typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), rm, fmtRM)
-					case <-time.After(formatRetryDelay):
+						// Cancellation wins over the typed cause: a run being
+						// cancelled must not read as rate-limited downstream.
+						typed := typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), rm, fmtRM)
+						return true, result, typed
+					case <-time.After(d):
 					}
 				}
 				continue
@@ -894,8 +920,9 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			// nothing left to recover from it: the delegation fails typed —
 			// with Pass 1's cost whether or not the last attempt produced a
 			// message (annotateCost skips a nil one).
-			return true, result, typedFailure(&result, task, *totalIn, *totalOut,
+			typed := typedFailure(&result, task, *totalIn, *totalOut,
 				fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr), rm, fmtRM)
+			return true, result, typed
 		}
 
 		output, rawLen, fallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
