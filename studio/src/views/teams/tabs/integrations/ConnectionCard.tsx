@@ -257,7 +257,8 @@ function AvatarRow({
     });
   // A 409 reads "<why iterion cannot vouch>; if it is a dedicated account …,
   // apply with force": the dialog shows the why and is the force itself.
-  const refusalReason = (e: ApiError) => e.message.replace(/;\s*if it is a dedicated account.*$/, "");
+  const refusalReason = (e: ApiError) =>
+    (e.detail ?? e.message).replace(/;\s*if it is a dedicated account.*$/, "");
   // A refusal still taught the server something (the account's kind, a forge
   // error kept on the record): refetch, then show the reason. onChanged clears
   // the banner synchronously and onError re-sets it in the same batch — keep

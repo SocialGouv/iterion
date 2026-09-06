@@ -163,17 +163,30 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		switch {
 		case err == nil:
 			conn.AccountKind, learned = ident.Kind, ident.Kind
-		case ctx.Err() != nil:
-			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
-		case !force:
-			// The forge would not describe the account (a token without the
-			// scope, a forge without the field): iterion cannot vouch for it,
-			// the operator can — the same rung as an unflagged account, so
-			// every surface offers the forced retry instead of a 502 that
-			// records nothing and repeats on the next attempt.
+		case errors.Is(err, forge.ErrUnauthorized):
+			// The credential itself is rejected: the reconnect problem the
+			// revoked-status rung above catches once the health probe has
+			// seen it. No force can carry an upload the forge would refuse
+			// the same way.
+			return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+				msg: fmt.Sprintf("%s rejected this connection's token — reconnect it first", conn.Host())}
+		case errors.Is(err, forge.ErrForbidden) && force:
+			// The forge answered but would not describe the account: the
+			// operator's word carries the apply, the kind stays unknown.
+		case errors.Is(err, forge.ErrForbidden):
+			// iterion cannot vouch for an account the forge will not
+			// describe (a token without the scope) — the operator can: the
+			// same rung as an unflagged account, so every surface offers the
+			// forced retry instead of a 502 that records nothing and repeats
+			// on the next attempt.
 			return conn, "", &avatarRefusal{status: http.StatusConflict,
 				msg:    fmt.Sprintf("%s would not say whether @%s is a bot account (%v)%s", conn.Host(), conn.AccountLogin, err, avatarForceHint),
 				fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
+		default:
+			// Not an answer — a spent budget, an unreachable forge, a 5xx:
+			// nothing to vouch for, and the upload would only fail the same
+			// way and stamp a misleading reason on the connection.
+			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
 		}
 	}
 	if conn.AccountKind != forge.AccountKindBot && !force {

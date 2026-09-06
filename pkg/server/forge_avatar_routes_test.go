@@ -603,3 +603,51 @@ func TestForgeConnectionAvatar_UnreadableAccountAsksForTheWord(t *testing.T) {
 		t.Fatalf("the operator's word carries the apply: code=%d uploads=%d body=%s", w.Code, uploads, w.Body.String())
 	}
 }
+
+// A token the forge rejects outright is a reconnect problem, whatever the
+// connection's recorded status says: no vouch is offered, no force carries
+// it, and nothing lands on the record.
+func TestForgeConnectionAvatar_RejectedCredentialIsAReconnectProblem(t *testing.T) {
+	s := newForgeTestServer(t)
+	uploads := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		uploads++
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-dead-token", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL}) // AccountKind empty, status still active
+	for _, body := range []string{"", `{"force":true}`} {
+		w := avatarReq(s, "c-dead-token", body)
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect it first") || strings.Contains(w.Body.String(), "needs_force") {
+			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
+		}
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-dead-token")
+	if uploads != 0 || stored.AccountKind != "" || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
+		t.Fatalf("a rejected credential must upload and record nothing: uploads=%d stored=%+v", uploads, stored)
+	}
+}
+
+// A forge that does not answer at all is not a vouch matter either: the
+// unforced apply is a plain failure naming the identity, never a 409 that
+// would invite the operator to vouch for an upload that cannot land.
+func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
+	s := newForgeTestServer(t)
+	gone := httptest.NewServer(http.NotFoundHandler())
+	url := gone.URL
+	gone.Close() // connection refused from here on
+	seedAvatarConn(t, s, forge.Connection{ID: "c-unreachable", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: url})
+	for _, body := range []string{"", `{"force":true}`} {
+		w := avatarReq(s, "c-unreachable", body)
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
+			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
+		}
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreachable")
+	if stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
+		t.Fatalf("an unreachable forge must record nothing: %+v", stored)
+	}
+}
