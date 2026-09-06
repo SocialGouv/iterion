@@ -2099,11 +2099,20 @@ def revert_leftover_mutant(ws):
         code, out = run_script(script, ws)
     else:
         code, out = None, "the mutant's revert.sh is no longer there"
-    try:
-        os.remove(marker)
-    except OSError:
-        pass
-    return {"id": meta.get("id"), "dir": meta.get("dir"), "code": code, "out": (out or "")[-300:]}
+    # The marker is the ONLY record that a mutant is applied. Dropping it after
+    # a revert that did NOT succeed — a non-zero exit, or a revert.sh that is
+    # no longer there — forgets a tree that is still mutated: no later gate
+    # could retry it, or even notice. So it goes only on a demonstrated exit 0.
+    # Otherwise it survives and keeps being reported, and the operator clears it
+    # by deleting the path named in the report once they have restored HEAD by
+    # hand — which is why that path travels back in the result.
+    if code == 0:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+    return {"id": meta.get("id"), "dir": meta.get("dir"), "code": code,
+            "out": (out or "")[-300:], "marker": marker}
 
 
 # ─── Comparison ─────────────────────────────────────────────────────────────
@@ -3237,11 +3246,41 @@ def _selftest():
             check("et la cause de l'echec reste dite",
                   "apply.sh exited 1" in (v.get("reason") or ""), True)
 
+            # Un revert.sh qui ECHOUE : l'arbre reste mute, donc le marqueur —
+            # seule trace qu'un mutant est applique — doit SURVIVRE. Efface, la
+            # porte suivante ne pourrait ni reessayer ni meme s'en apercevoir.
+            with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nexit 3\n")
+            saved["apply_mutant"](lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
+                still = f.read()
+            check("revert.sh en echec : marqueur GARDE, arbre encore mute, sortie dite",
+                  [(left or {}).get("code"), os.path.isfile(applied_marker_for(tmp)), still],
+                  [3, True, "original\nmutant\n"])
+            check("et le chemin du marqueur revient, pour le nettoyage a la main",
+                  (left or {}).get("marker"), applied_marker_for(tmp))
+            # Remis en etat pour la suite : vrai revert, marqueur efface.
+            with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+            check("un revert qui repasse au vert efface enfin le marqueur",
+                  [(revert_leftover_mutant(tmp) or {}).get("code"),
+                   os.path.isfile(applied_marker_for(tmp))],
+                  [0, False])
+
             saved["apply_mutant"](lmeta, tmp)
             shutil.rmtree(mdir)
             left = revert_leftover_mutant(tmp)
             check("un mutant dont revert.sh a disparu est signale, pas tu", (left or {}).get("code"), None)
+            check("et son marqueur SURVIT : irrevertible n'est pas oublie",
+                  os.path.isfile(applied_marker_for(tmp)), True)
         finally:
+            # Le marqueur vit hors de l'arbre (c'est tout son interet) : le
+            # dernier cas le laisse pose expres, donc c'est ici qu'il part.
+            try:
+                os.remove(applied_marker_for(tmp))
+            except OSError:
+                pass
             shutil.rmtree(tmp, ignore_errors=True)
     finally:
         g.update(saved)
