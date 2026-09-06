@@ -130,11 +130,17 @@ jobs:
         run: go vet -mod=vendor ./...
 
       - name: Unit tests
-        run: go test -mod=vendor ./...
+        # `./...` includes the e2e package, which has its own step below with
+        # its own budget; running it here too doubled the job's wall-clock
+        # AND ran the suite under Go's implicit per-package 10m first — the
+        # timeout that actually ejected PRs from the merge queue. Unit tests
+        # are everything but e2e; the e2e step is the only e2e run.
+        run: go test -mod=vendor $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: E2E tests
-        # Same budget as the Taskfile's test:e2e. The number bounds a HANG, not
-        # a slow machine: a timeout that a healthy run can reach is a coin flip
+        # The ONLY run of the e2e package in this job (the unit step excludes
+        # it). The number bounds a HANG, not a slow machine: a timeout that a
+        # healthy run can reach is a coin flip
         # that ejects PRs from the merge queue with a panic dump naming
         # whichever test happened to be in flight. Measured on green
         # merge-group builds: 568-572 s for the whole package (2026-09-06,
