@@ -3953,6 +3953,12 @@ def _selftest():
             # Un marqueur SANS dirty_before (git muet a l'application, ou harnais
             # d'avant) et un arbre encore modifie apres le revert : INDECIDABLE,
             # donc pas propre — marqueur garde, porte arretee. Arbre propre : reverti.
+            # Baseline VRAIMENT propre d'abord : les repertoires de mutants de ce
+            # test sont des fichiers non suivis, donc « modifies » pour git.
+            with open(os.path.join(tmp, ".gitignore"), "w", encoding="utf-8") as f:
+                f.write("m1/\nm2/\n")
+            sub("git", "add", ".gitignore")
+            sub("git", "commit", "-qm", "ignore the mutant dirs")
             scripts("printf 'mutant\\n' >> f.txt", "true")
             apply_mutant(lmeta, tmp)
             mpath = applied_marker_for(tmp)
@@ -3965,12 +3971,6 @@ def _selftest():
                   [True, ["f.txt"], "still_mutated", True])
             os.remove(applied_marker_for(tmp))
             sub("git", "checkout", "--", "f.txt")
-            # Un arbre VRAIMENT propre : les repertoires de mutants de ce test sont
-            # des fichiers non suivis, donc « modifies » pour git — ignores ici.
-            with open(os.path.join(tmp, ".gitignore"), "w", encoding="utf-8") as f:
-                f.write("m1/\nm2/\n")
-            sub("git", "add", ".gitignore")
-            sub("git", "commit", "-qm", "ignore the mutant dirs")
             scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
             apply_mutant(lmeta, tmp)
             with open(mpath, "w", encoding="utf-8") as f:
