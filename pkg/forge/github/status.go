@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -25,12 +26,12 @@ func (c *AdminClient) SetCommitStatus(ctx context.Context, repo, sha string, st 
 	var out struct {
 		ID int64 `json:"id"`
 	}
-	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/statuses/"+url.PathEscape(sha), body, &out)
+	code, errBody, err := c.doErr(ctx, http.MethodPost, "/repos/"+repo+"/statuses/"+url.PathEscape(sha), body, &out)
 	if err != nil {
 		return err
 	}
 	if code/100 != 2 {
-		return statusErr("set commit status", code)
+		return refusal("set commit status", code, errBody, "statuses:write")
 	}
 	return nil
 }
@@ -38,13 +39,21 @@ func (c *AdminClient) SetCommitStatus(ctx context.Context, repo, sha string, st 
 // SetCommitStatus on an App connection delegates to a management-token
 // AdminClient minted on demand (same live-token rationale as CreatePullReview)
 // — so the merge gate works on the production GitHub App path, not only on
-// raw-token connections.
+// raw-token connections. A 403 on the write is recorded as a statuses denial
+// on the cached token: the grant was revoked after the mint (or the
+// repository left the installation), and PreflightFor must say so for the
+// token's remaining life so the next caller takes its fallback credential
+// instead of failing the same write again.
 func (a *AppClient) SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error {
 	rest, err := a.rest(ctx)
 	if err != nil {
 		return err
 	}
-	return rest.SetCommitStatus(ctx, repo, sha, st)
+	err = rest.SetCommitStatus(ctx, repo, sha, st)
+	if errors.Is(err, forge.ErrForbidden) {
+		a.noteDenied(PermissionStatuses)
+	}
+	return err
 }
 
 // githubCommitState maps the normalized CommitState onto GitHub's wire
@@ -79,12 +88,12 @@ func (c *AdminClient) ListCommitStatuses(ctx context.Context, repo, sha string) 
 			TargetURL   string `json:"target_url"`
 		} `json:"statuses"`
 	}
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(sha)+"/status", nil, &out)
+	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(sha)+"/status", nil, &out)
 	if err != nil {
 		return nil, err
 	}
 	if code/100 != 2 {
-		return nil, statusErr("list commit statuses", code)
+		return nil, refusal("list commit statuses", code, errBody, "statuses:read")
 	}
 	sts := make([]forge.CommitStatus, 0, len(out.Statuses))
 	for _, s := range out.Statuses {
@@ -99,11 +108,17 @@ func (c *AdminClient) ListCommitStatuses(ctx context.Context, repo, sha string) 
 }
 
 // ListCommitStatuses on an App connection delegates to a management-token
-// AdminClient, like SetCommitStatus.
+// AdminClient, like SetCommitStatus — and records a 403 the same way: a token
+// refused the READ holds no statuses grant at all, so the write is refused
+// too.
 func (a *AppClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
 	rest, err := a.rest(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return rest.ListCommitStatuses(ctx, repo, sha)
+	out, err := rest.ListCommitStatuses(ctx, repo, sha)
+	if errors.Is(err, forge.ErrForbidden) {
+		a.noteDenied(PermissionStatuses)
+	}
+	return out, err
 }

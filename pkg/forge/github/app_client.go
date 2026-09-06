@@ -208,6 +208,17 @@ func PullListInstallationPermissions() map[string]string {
 	}
 }
 
+// PRReviewCommentsInstallationPermissions is the grant set minted for
+// reading a pull request's review-thread comments (the reply gate's thread
+// fetch): pull_requests read plus the metadata baseline — the same set as
+// the listing profile, so the two reads share one cached token by key.
+func PRReviewCommentsInstallationPermissions() map[string]string {
+	return map[string]string{
+		"pull_requests": "read",
+		"metadata":      "read",
+	}
+}
+
 // PullGetInstallationPermissions is the grant set minted for reading ONE pull
 // request. GitHub gates GET /repos/{owner}/{repo}/pulls/{number} on contents
 // read as well as pull_requests read — the object carries content-derived
@@ -377,6 +388,32 @@ func RuntimePermissionsFor(granted map[string]string) map[string]string {
 	return out
 }
 
+// ManagementPermissionsFor narrows the management token — what the server's
+// own calls through a connection ride: hooks, repos, the commit status, the
+// PR review, the collaborator role — to the baseline grants the installation
+// approved. It is RuntimePermissionsFor without the delivery grants: those
+// belong to the token a RUN pushes with, and a management token carrying
+// workflows:write could rewrite CI from a server-side call. Same contract
+// otherwise: an unknown grant keeps the baseline, and a grant covering
+// nothing recognised keeps it too (an empty map would mint the
+// installation's FULL set).
+func ManagementPermissionsFor(granted map[string]string) map[string]string {
+	base := RuntimeInstallationPermissions()
+	if len(granted) == 0 {
+		return base
+	}
+	out := map[string]string{}
+	for name, level := range base {
+		if _, ok := granted[name]; ok {
+			out[name] = level
+		}
+	}
+	if len(out) == 0 {
+		return base
+	}
+	return out
+}
+
 // InstallationTokenOptions narrows a minted installation token below the
 // installation's full grant (least-privilege). Both fields are optional; a nil
 // field means "don't constrain that dimension" (GitHub returns the
@@ -446,6 +483,47 @@ func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase stri
 		return Installation{}, err
 	}
 	return Installation{Login: out.Account.Login, HTMLURL: out.HTMLURL, Permissions: out.Permissions}, nil
+}
+
+// AppSlug resolves the App's slug via GET /app (App-JWT authenticated). The
+// bot posts as "<slug>[bot]", so the slug is the identity every loop guard
+// compares a commenter against. One round trip; AppClient memoizes it.
+func AppSlug(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, now time.Time) (string, error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	jwt, err := signAppJWT(cfg.AppID, cfg.PrivateKeyPEM, now)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/app", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", forge.ErrUnauthorized
+	}
+	if resp.StatusCode/100 != 2 {
+		return "", statusErr("GET /app", resp.StatusCode)
+	}
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("github: GET /app: decode: %w", err)
+	}
+	if strings.TrimSpace(out.Slug) == "" {
+		return "", fmt.Errorf("github: GET /app returned no slug for app %d", cfg.AppID)
+	}
+	return strings.TrimSpace(out.Slug), nil
 }
 
 // MintInstallationToken trades the App JWT for a short-lived (≈1h)
@@ -623,10 +701,23 @@ type AppClient struct {
 	Cfg            AppConfig
 	InstallationID int64
 	Now            func() time.Time
+	// OnSlugResolved, when set, is told the App slug the first time Slug
+	// resolves it over the network (Cfg carried none), so the owner of the
+	// connection record can persist it: iterionBotLogins reads the record,
+	// not this client.
+	OnSlugResolved func(slug string)
+	// Granted is the installation's approved permission set as the
+	// connection recorded it (nil = unknown). The management token is minted
+	// for the baseline this grant covers (ManagementPermissionsFor), so an
+	// installation approved with less than the baseline still mints — and
+	// what it withholds is denied up front, not discovered at the write.
+	Granted map[string]string
 
 	mu    sync.Mutex
 	token string
 	exp   time.Time
+	// slug memoizes the App slug GET /app answered when Cfg carries none.
+	slug string
 	// denied names the permissions the cached token LACKS relative to the
 	// full request: rest() re-mints without the optional ones an
 	// installation withholds, so the token is healthy for every other call
@@ -666,31 +757,47 @@ func (a *AppClient) clock() time.Time {
 
 func (a *AppClient) apiBase() string { return APIBaseFor(a.WebBaseURL) }
 
-// rest returns an AdminClient backed by a fresh installation token.
+// rest returns an AdminClient backed by the management token: the baseline
+// grants the connection's recorded grant covers (ManagementPermissionsFor) —
+// never the installation's full set — plus the OPTIONAL statuses:write the
+// merge gate posts its verdict with, asked for only when the grant is unknown
+// or carries it. What the token cannot do — the baseline grants the
+// installation withholds, statuses when it lacks or refuses it — is recorded
+// in denied, so PreflightFor answers without a round trip.
 func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.token == "" || a.clock().After(a.exp.Add(-60*time.Second)) {
-		// Least-privilege: pin the management token to iterion's minimal
-		// permission set (webhook + metadata + code + PR), never the
-		// installation's full grant — plus the OPTIONAL statuses:write the
-		// merge gate needs to post its revi/review commit status.
-		perms := map[string]string{PermissionStatuses: "write"}
-		for k, v := range RuntimeInstallationPermissions() {
-			perms[k] = v
+		base := ManagementPermissionsFor(a.Granted)
+		denied := map[string]bool{}
+		for name := range RuntimeInstallationPermissions() {
+			if _, ok := base[name]; !ok {
+				denied[name] = true
+			}
+		}
+		wantStatuses := len(a.Granted) == 0 || grantCovers(a.Granted, PermissionStatuses, "write")
+		perms := base
+		if wantStatuses {
+			perms = make(map[string]string, len(base)+1)
+			for k, v := range base {
+				perms[k] = v
+			}
+			perms[PermissionStatuses] = "write"
+		} else {
+			denied[PermissionStatuses] = true
 		}
 		tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
 			&InstallationTokenOptions{Permissions: perms})
-		var denied map[string]bool
-		if errors.Is(err, forge.ErrPermissionsNotGranted) {
+		if wantStatuses && errors.Is(err, forge.ErrPermissionsNotGranted) {
 			// An installation created before the merge gate (or one that
-			// declined statuses:write) still works — the gate then advises
-			// instead of blocking (SetCommitStatus 403s, non-fatal). Retry with
-			// the core baseline so every other capability keeps functioning,
-			// and remember what this token cannot do.
+			// declined statuses:write) whose recorded grant did not say so
+			// still works — the gate then advises instead of blocking
+			// (SetCommitStatus 403s, non-fatal). Retry with the covered
+			// baseline so every other capability keeps functioning, and
+			// remember what this token cannot do.
 			tok, exp, err = MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
-				&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
-			denied = map[string]bool{PermissionStatuses: true}
+				&InstallationTokenOptions{Permissions: base})
+			denied[PermissionStatuses] = true
 		}
 		if err != nil {
 			return nil, err
@@ -838,6 +945,25 @@ func permissionSetKey(perms map[string]string) string {
 	return b.String()
 }
 
+// PermissionSetKey renders a grant set as a stable string — the key the
+// scoped-token cache uses — so a caller can tell two grant sets apart
+// without comparing maps.
+func PermissionSetKey(perms map[string]string) string { return permissionSetKey(perms) }
+
+// noteDenied records that the cached management token was refused a
+// permission at a call — a grant revoked after the mint, a repository the
+// installation lost — so PreflightFor reports it withheld for the rest of
+// the token's life, instead of every write failing the same way while a
+// fallback credential sits unused. The next mint starts clean.
+func (a *AppClient) noteDenied(perm string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.denied == nil {
+		a.denied = map[string]bool{}
+	}
+	a.denied[perm] = true
+}
+
 // PreflightFor mints (or reuses) the installation token and nothing else,
 // then reports whether that token carries every permission in need. A caller
 // learns BEFORE acting whether the installation can serve: the client is
@@ -866,12 +992,41 @@ func (a *AppClient) PreflightFor(ctx context.Context, need ...string) error {
 
 func (a *AppClient) Provider() forge.Provider { return forge.ProviderGitHub }
 
+// Slug returns the App's slug: the configured one, else the one GET /app
+// answers, resolved once per client and handed to OnSlugResolved.
+func (a *AppClient) Slug(ctx context.Context) (string, error) {
+	if a.Cfg.AppSlug != "" {
+		return a.Cfg.AppSlug, nil
+	}
+	a.mu.Lock()
+	known := a.slug
+	a.mu.Unlock()
+	if known != "" {
+		return known, nil
+	}
+	slug, err := AppSlug(ctx, a.HTTP, a.apiBase(), a.Cfg, a.clock())
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	first := a.slug == ""
+	a.slug = slug
+	cb := a.OnSlugResolved
+	a.mu.Unlock()
+	if first && cb != nil {
+		cb(slug)
+	}
+	return slug, nil
+}
+
 // WhoAmI returns the App identity — an installation token can't call /user,
-// and the bot posts AS the App, so this is the correct "post as" handle.
-func (a *AppClient) WhoAmI(context.Context) (forge.Identity, error) {
-	slug := a.Cfg.AppSlug
-	if slug == "" {
-		slug = "github-app"
+// and the bot posts AS the App, so "<slug>[bot]" is the correct "post as"
+// handle. A slug that cannot be resolved is an error, never a placeholder: a
+// loop guard fed a login that never posts compares against nobody.
+func (a *AppClient) WhoAmI(ctx context.Context) (forge.Identity, error) {
+	slug, err := a.Slug(ctx)
+	if err != nil {
+		return forge.Identity{}, fmt.Errorf("github: resolve the App identity: %w", err)
 	}
 	return forge.Identity{Login: slug + "[bot]", ID: strconv.FormatInt(a.Cfg.AppID, 10), Kind: forge.AccountKindInstallation, Namespace: slug}, nil
 }
@@ -996,7 +1151,19 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 		return forge.RefreshedToken{}, err
 	}
 	RecordRuntimePermissions(conn.InstallationID, opts.Permissions)
-	return forge.RefreshedToken{AccessToken: tok, ExpiresAt: exp}, nil
+	out := forge.RefreshedToken{AccessToken: tok, ExpiresAt: exp}
+	if conn.AppSlug == "" {
+		// A record without the slug names no bot identity (iterionBotLogins
+		// builds "<slug>[bot]" from it). The configured slug serves first, a
+		// GET /app probe otherwise. A failed probe never fails the refresh —
+		// the token is what bots run on — and is retried on the next cycle.
+		if slug := r.Cfg.AppSlug; slug != "" {
+			out.AppSlug = slug
+		} else if slug, serr := AppSlug(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, now); serr == nil {
+			out.AppSlug = slug
+		}
+	}
+	return out, nil
 }
 
 var _ forge.Admin = (*AppClient)(nil)

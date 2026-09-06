@@ -32,7 +32,12 @@ entries there:
   still without forge I/O (`isIterionForgeBotAuthor` — the bot's
   own answer echoes back as this very event), requires the converse
   bot in the webhook scope (`roleBots().ReviConverse` +
-  `cfg.AllowsBot`), then gates: the thread is fetched
+  `cfg.AllowsBot`), then gates: the forge client is resolved the way
+  every GitHub/Forgejo lane resolves it (`prforgeReplierAPIFor`) — the
+  team connection covering the PR first, its App client reading under a
+  `pull_requests:read` token, the webhook's `forge_token` binding as the
+  fallback — so a connection-only integration serves the lane; the
+  thread is fetched
   (`ListPRReviewComments` — newest-first capped pagination, handed
   back chronological, so a long-lived PR's cap never blinds the gate
   on the thread just replied to) and must contain a

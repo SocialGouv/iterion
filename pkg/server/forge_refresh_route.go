@@ -66,8 +66,10 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 		MissingPermissions:   missingDeliveryFor(conn, inst.Permissions),
 		MissingCIPermissions: missingCIFor(conn, inst.Permissions),
 	}
-	// Force a fresh token mint so the observability reflects the new grants
-	// (forgeAdminFor builds a fresh client → rest() mints on first use).
+	// Force a fresh token mint so the observability reflects the new grants:
+	// the connection's cached client is dropped first, so forgeAdminFor
+	// builds a new one and rest() mints on first use.
+	s.forgetForgeAppClient(conn.ID)
 	if admin, err := s.forgeAdminFor(r.Context(), conn); err == nil {
 		if _, err := admin.ListRepos(r.Context(), forge.RepoQuery{}); err != nil {
 			out.LiveError = err.Error()

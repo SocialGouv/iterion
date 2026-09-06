@@ -217,6 +217,12 @@ type Server struct {
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// forgeAppClients is the per-connection GitHub-App client cache
+	// (githubAppClientFor): one client — hence one set of minted tokens — per
+	// connection per replica, validated against the connection state it was
+	// built from and evicted by forgetForgeAppClient.
+	forgeAppClients   map[string]*cachedForgeAppClient
+	forgeAppClientsMu sync.Mutex
 	// boardBindings ties a team to one forge PROJECT board (ADR-097). Nil in
 	// local mode, which is what self-disables the endpoints and the sync
 	// worker.

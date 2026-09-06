@@ -95,7 +95,7 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
-| `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider. See the caution for what actually guards fork PRs. |
+| `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider: the fork guard is unconditional everywhere (see the caution). |
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
@@ -105,25 +105,29 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
 > by the org launch gate + webhook rate limit.
 >
-> **Where fork PRs actually stand, per provider.** On **GitHub** and
-> **Forgejo** the guard is unconditional and needs no configuration: an
-> inbound PR event whose head is a fork is filtered before the sync lane
-> is even considered, so the fork re-review exposure above cannot occur
-> there. The `/command` lanes refuse a fork (or an unnamed head repo) too —
-> same-repo only, silently: the fork's work needs a branch in the base repo
-> before any bot runs on it. On **GitLab** the inbound MR (auto-review)
-> lane still has no fork/cross-project guard, so a forked-MR auto-review
-> *is* reachable — bound that lane with an `AuthorAllowlist` /
-> `MinAuthorRole`, since `block_fork_prs` is inert. Every lane that
-> resolves the MR through the API instead — the `/command` note lane,
-> auto-fix, and gate relaunch, all fail-closed on an unproven head repo —
-> does guard on GitLab: a same-project MR qualifies (the MR's source and
-> target project ids agree, so the head lives in the project the lane
-> queried), a fork MR is refused (GitLab's MR payload names the source
-> project's id only, never its path, so the head stays unproven). The
-> note payload itself carries neither id, which is why the `/command`
-> lane resolves the MR via the API purely to prove this, even though the
-> note already carries branch names of its own.
+> **Where fork PRs actually stand, per provider.** The guard is
+> unconditional on every provider and needs no configuration. On
+> **GitHub** and **Forgejo** an inbound PR event whose head is a fork is
+> filtered before the sync lane is even considered, so the fork re-review
+> exposure above cannot occur there. On **GitLab** the inbound MR
+> (auto-review) lane filters a **proven** fork the same way — the MR
+> payload names both projects (`source_project_id`/`target_project_id`
+> and the source project's own path), and the refusal names the fork; a
+> payload naming neither project is not refused as a fork (unproven is not
+> proven), and the lanes below fail closed on it. The `/command` lanes
+> refuse a fork (or an unnamed head repo) too — same-repo only, silently:
+> the fork's work needs a branch in the base repo before any bot runs on
+> it. Every lane that resolves the MR through the API — the `/command`
+> note lane, auto-fix, and gate relaunch, all fail-closed on an unproven
+> head repo — guards on GitLab as well: a same-project MR qualifies (the
+> MR's source and target project ids agree, so the head lives in the
+> project the lane queried); a fork MR has its source project resolved by
+> id (`GET /projects/:id`, cached per instance for an hour), so the head
+> compares by its real path and the refusal names it; a source project the
+> token cannot see (a private fork) stays unproven and is refused as
+> before. The note payload itself carries neither id, which is why the
+> `/command` lane resolves the MR via the API purely to prove this, even
+> though the note already carries branch names of its own.
 
 ## <a name="review-tiers"></a>Review tiers — glance / guard / audit
 

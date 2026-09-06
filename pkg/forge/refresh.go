@@ -30,6 +30,10 @@ type RefreshedToken struct {
 	RefreshToken string // may be rotated by the provider; empty = keep current
 	ExpiresAt    time.Time
 	Scopes       []string
+	// AppSlug is the GitHub App's slug when the refresher resolved it for a
+	// record that lacked it; the worker persists it so the "<slug>[bot]"
+	// identity the loop guards read exists on every App connection.
+	AppSlug string
 }
 
 // RefreshWorker keeps OAuth-app and GitHub-App connection tokens fresh and
@@ -196,6 +200,14 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	}
 	if len(out.Scopes) > 0 {
 		conn.Scopes = out.Scopes
+	}
+	if out.AppSlug != "" && conn.AppSlug != out.AppSlug {
+		conn.AppSlug = out.AppSlug
+		// The connect flow derives the account login from the slug; a record
+		// made without one carries the bare "[bot]", which names nobody.
+		if conn.AccountLogin == "" || conn.AccountLogin == "[bot]" {
+			conn.AccountLogin = out.AppSlug + "[bot]"
+		}
 	}
 	conn.UpdatedAt = now
 	if err := w.Connections.Update(ctx, conn); err != nil {

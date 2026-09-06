@@ -559,23 +559,29 @@ func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext st
 }
 
 // realWebhookPRForgeReviewReplyGate is the production reply gate: resolve
-// the bot's forge token and hand the thread work to reviewReplyGateWithAPI.
-// ok=false + reason for benign refusals; err only for infra failure.
+// the forge client the way every other GitHub/Forgejo lane does — the team
+// connection covering the PR first, the webhook's forge_token binding as the
+// fallback (prforgeReplierAPIFor) — and hand the thread work to
+// reviewReplyGateWithAPI. ok=false + reason for benign refusals; err only
+// for infra failure.
 func (s *Server) realWebhookPRForgeReviewReplyGate(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedReviewComment, botID string) (bool, string, string, error) {
-	token, terr := s.resolveForgeToken(ctx, cfg, botID)
-	if terr != nil || token == "" {
-		return false, "", "no forge token resolved (configure a forge_token binding)", nil
-	}
 	baseURL := strings.TrimSpace(cfg.ForgeBaseURL)
 	if baseURL == "" {
-		return false, "", "no forge base url on this webhook", nil
+		var refusal string
+		baseURL, refusal = prforgeBaseURLFromRef(p.PRURL)
+		if refusal != "" {
+			return false, "", refusal, nil
+		}
 	}
-	client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
-	api, ok := client.(prforgeReviewThreadAPI)
+	api, apiRefusal := s.prforgeReplierAPIFor(ctx, cfg, provider, baseURL, p.ProjectPath, botID)
+	if apiRefusal != "" {
+		return false, "", "reply refused: " + apiRefusal, nil
+	}
+	thread, ok := api.(prforgeReviewThreadAPI)
 	if !ok {
 		return false, "", "review-thread conversations are not supported on this provider yet", nil
 	}
-	return s.reviewReplyGateWithAPI(ctx, cfg, p, api)
+	return s.reviewReplyGateWithAPI(ctx, cfg, p, thread)
 }
 
 // reviewReplyGateWithAPI is the token-free core of the reply gate — split

@@ -33,6 +33,7 @@ type githubPull struct {
 		SHA  string `json:"sha"`
 		Repo struct {
 			FullName string `json:"full_name"`
+			CloneURL string `json:"clone_url"`
 		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
@@ -60,6 +61,7 @@ func (gp githubPull) toRef() forge.PullRef {
 		TargetBranch:     gp.Base.Ref,
 		HeadSHA:          gp.Head.SHA,
 		HeadRepoFullName: gp.Head.Repo.FullName,
+		HeadCloneURL:     gp.Head.Repo.CloneURL,
 		Author:           gp.User.Login,
 		Draft:            gp.Draft,
 		CreatedAt:        gp.CreatedAt,

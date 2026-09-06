@@ -112,6 +112,31 @@ Prefer narrowing the *connection*, not the user:
   (`iterion remote forge connections refresh <id>` prints the same line), and
   nothing else on the connection is affected — the runtime token is never
   minted with it.
+
+  **One client per connection.** The server keeps a single App client per
+  connection per replica ([`githubAppClientFor`](../pkg/server/forge_clients.go)),
+  so the management token and each scoped profile are minted once per token
+  lifetime (~1h) and reused by every lane and delivery — not minted again by
+  each call. The entry is valid only while the connection state it was built
+  from is unchanged (installation, App id + key, status, granted permissions,
+  slug): a re-provisioned App, a synced grant, a revocation or a key rotation
+  builds a fresh client; deleting the connection or hitting its `refresh`
+  route evicts it. The App's identity — the `<slug>[bot]` login the loop
+  guards compare a commenter against — is the configured slug, else the one
+  `GET /app` answers, resolved once and recorded on the connection (the
+  refresh worker records it too), never a placeholder. The management token
+  that client mints — the one the server's own calls ride: hooks, the merge
+  gate's commit status, the PR review, the commenter's role — is narrowed to
+  the baseline grants the installation **recorded as approved**
+  (`ManagementPermissionsFor`, the health probe keeps the record in step),
+  plus `statuses:write` when the grant carries it; an installation approved
+  with less than the baseline still mints the intersection, and what it
+  withholds is known before any write (`PreflightFor`) rather than
+  discovered as a 403. A 403 the forge does answer on a commit-status call —
+  a grant revoked after the mint — is recorded on that token too, so the next
+  preflight reports `statuses` withheld and the lane takes its fallback
+  (the webhook's `forge_token` binding) instead of failing the same write
+  for the rest of the token's life.
   **Self-service** (no platform App, no manual registration): Integrations →
   "+ Register an OAuth app" → github → **"Create a GitHub App"** (iterion builds
   the scoped App via manifest and captures its private key), then the **"Install"**

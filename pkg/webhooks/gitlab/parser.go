@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // Parsed is the normalized merge-request view the handler consumes.
@@ -44,6 +46,33 @@ type Parsed struct {
 	// gesture on GitLab versions that predate the re_requested attribute —
 	// and the fallback trigger when it is absent.
 	AddedReviewers []string
+	// HeadRepoFullName is the project the MR's head branch lives in, as the
+	// payload names it (object_attributes.source) — a fork's own on a fork
+	// MR. Empty when the payload carries no source project; SameRepoAsBase
+	// reads empty as NOT proven.
+	HeadRepoFullName string
+	// HeadCloneURL is the head project's clone URL when the payload names it.
+	HeadCloneURL string
+	// SourceProjectID / TargetProjectID are the project ids the payload
+	// carries (0 = absent). Two different ids are a fork whatever the paths
+	// say.
+	SourceProjectID int64
+	TargetProjectID int64
+}
+
+// SameRepoAsBase reports whether the head branch is PROVEN to live in the
+// event's own project — the contract of forge.PullRef.SameRepoAs: an empty
+// head is never proven.
+func (p Parsed) SameRepoAsBase() bool { return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) }
+
+// IsFork reports a PROVEN fork: the payload names two different projects
+// for the head and the base (by id, else by path). A payload naming neither
+// is unproven — not same-repo, but not a fork either.
+func (p Parsed) IsFork() bool {
+	if p.SourceProjectID > 0 && p.TargetProjectID > 0 {
+		return p.SourceProjectID != p.TargetProjectID
+	}
+	return p.HeadRepoFullName != "" && !p.SameRepoAsBase()
 }
 
 // ParseMergeRequest decodes a GitLab merge_request webhook body.
@@ -89,6 +118,15 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 			}
 		}
 	}
+	// The head project: the payload's source when it names one; otherwise
+	// the event's own project when the ids prove the MR is same-project.
+	head, headClone := "", ""
+	if oa.Source != nil {
+		head, headClone = oa.Source.PathWithNamespace, oa.Source.GitHTTPURL
+	}
+	if head == "" && oa.SourceProjectID > 0 && oa.SourceProjectID == oa.TargetProjectID {
+		head, headClone = e.Project.PathWithNamespace, e.Project.GitHTTPURL
+	}
 	return Parsed{
 		ProjectID:      e.Project.ID,
 		ProjectPath:    e.Project.PathWithNamespace,
@@ -113,6 +151,11 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 
 		ReRequestedReviewers: reRequested,
 		AddedReviewers:       added,
+
+		HeadRepoFullName: head,
+		HeadCloneURL:     headClone,
+		SourceProjectID:  oa.SourceProjectID,
+		TargetProjectID:  oa.TargetProjectID,
 	}, nil
 }
 

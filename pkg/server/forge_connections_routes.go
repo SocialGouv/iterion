@@ -398,6 +398,7 @@ func (s *Server) handleDeleteForgeConnection(w http.ResponseWriter, r *http.Requ
 		httpError(w, http.StatusInternalServerError, "disconnect failed: %v", err)
 		return
 	}
+	s.forgetForgeAppClient(connID)
 	s.auditTenant(r, teamID, "forge.connection.deleted", "forge_connection", connID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }

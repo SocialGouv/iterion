@@ -136,6 +136,24 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
+	// Fork guard, unconditional on the auto path — parity with the
+	// GitHub/Forgejo lanes: a fork MR is untrusted (anyone can open one to
+	// run code in the runner with the forge token and to spend the tenant's
+	// budget), and the launch pair (this project's clone URL + the fork's
+	// branch name) names no repository — the checkout misses, or hits a
+	// same-named branch here and the bot reviews the wrong code under the
+	// bot's identity. The payload names both projects (ids + source path),
+	// so a PROVEN fork is filtered here, naming the fork. A payload naming
+	// neither stays on its way: this lane refuses what the payload proves,
+	// while the lanes that resolve the MR through the API fail closed on an
+	// unproven head. A collaborator runs a bot on fork code deliberately,
+	// from a branch in this project.
+	if p.IsFork() {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, gitlabForkRefusal(p.HeadRepoFullName))
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	// Same per-bot fan-out as the GitHub PR lane — resolved BEFORE the
 	// hold-label/bot guards so the replier gate below can name the bot whose
 	// forge token authenticates the authz lookup.
@@ -501,8 +519,10 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		// hit a same-named branch here and the bot answers grounded in the
 		// wrong code, under the bot's identity). The note payload carries
 		// neither source_project_id nor target_project_id, so proving
-		// same-project needs the API (pkg/forge/gitlab/ci.go toRef names
-		// HeadRepoFullName only when they agree).
+		// same-project needs the API (pkg/forge/gitlab/ci.go headProjectFor:
+		// a same-project MR is the project queried, a fork's source project
+		// is resolved by id so the refusal can name it, an invisible one
+		// stays unproven).
 		resolve := s.webhookGitLabPRResolver
 		if resolve == nil {
 			resolve = s.realWebhookGitLabPRResolver
@@ -514,7 +534,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			return
 		}
 		if !resolved.SameRepoAs(p.ProjectPath) {
-			filtered("fork MR or unverifiable head project — /" + cmd + " runs are same-project only")
+			filtered(gitlabCommandForkRefusal(cmd, resolved.HeadRepoFullName))
 			return
 		}
 		vars = applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg)
@@ -833,6 +853,29 @@ func (s *Server) realWebhookReviewRequestGate(ctx context.Context, cfg webhooks.
 // to answer a boolean on the note hot path.
 func (s *Server) canRouteToConverseBot(cfg webhooks.Config, converseBot string) bool {
 	return cfg.AllowsBot(converseBot) && s.botExists(converseBot)
+}
+
+// gitlabForkRefusal words the MR lane's fork refusal for the delivery row,
+// naming the fork's own project when the payload named it. The /command
+// lanes refuse the same MR (same-project only), so the refusal never
+// advertises them as an escape hatch: fork work needs a branch in this
+// project before any bot runs on it.
+func gitlabForkRefusal(head string) string {
+	where := "the head lives in another project"
+	if head != "" {
+		where = "the head lives in " + head
+	}
+	return "fork MR — " + where + " — auto-launch blocked (untrusted; the /command lanes are same-project only too, so the fork's work needs a branch in this project before any bot runs on it)"
+}
+
+// gitlabCommandForkRefusal words the command lane's same-project refusal:
+// the fork's own project when the adapter resolved it, "unverifiable" when
+// the head could not be proven either way.
+func gitlabCommandForkRefusal(cmd, head string) string {
+	if head == "" {
+		return "fork MR or unverifiable head project — /" + cmd + " runs are same-project only"
+	}
+	return "fork MR — the head lives in " + head + " — /" + cmd + " runs are same-project only"
 }
 
 // recordNoteDelivery inserts a terminal note-event audit row with a

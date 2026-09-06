@@ -57,7 +57,13 @@ var githubEndpointGrants = []struct {
 		map[string]string{"checks": "read"}, "list-check-runs-for-a-git-reference"},
 	{"GET", regexp.MustCompile(`^/repos/[^/]+/[^/]+/commits/[^/]+/status$`),
 		map[string]string{"statuses": "read"}, "get-the-combined-status-for-a-specific-reference"},
+	{"GET", regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls/\d+/comments$`),
+		map[string]string{"pull_requests": "read"}, "list-review-comments-on-a-pull-request"},
 }
+
+// pullListOpts is the listing the reply-gate parity test issues after a
+// thread fetch.
+func pullListOpts() forge.PullListOptions { return forge.PullListOptions{State: "all", PerPage: 100} }
 
 // grantsForRequestLine returns GitHub's rule for one recorded request line
 // ("GET /api/v3/repos/o/r/pulls?state=all") and the row's slug, or nil for a
@@ -265,6 +271,13 @@ func newPullMintRecorder(t *testing.T) *pullMintRecorder {
 			return
 		}
 		switch {
+		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/comments"):
+			// Newest first, as GitHub answers sort=created&direction=desc; the
+			// client hands the thread back chronological.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 9002, "in_reply_to_id": 9001, "body": "why?", "path": "pkg/x/y.go", "created_at": "2026-09-02T10:05:00Z", "user": map[string]any{"login": "alice"}},
+				{"id": 9001, "body": "the SSRF is reachable", "path": "pkg/x/y.go", "created_at": "2026-09-02T10:00:00Z", "user": map[string]any{"login": "iterion[bot]"}},
+			})
 		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/check-runs"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 1, "check_runs": []map[string]any{
 				{"name": "build", "status": "completed", "conclusion": "success", "html_url": "https://gh/o/r/runs/1", "started_at": "2026-01-01T00:00:00Z"},

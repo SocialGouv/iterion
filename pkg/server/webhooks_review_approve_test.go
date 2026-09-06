@@ -679,8 +679,16 @@ type fakeGitHubForge struct {
 	// installation created before the merge gate, or one that declined
 	// statuses:write.
 	mintDenyStatuses bool
-	mints            int
-	mintsBaseline    int // mints that did NOT ask for statuses
+	// granted, when set, is the installation's approved permission set: a
+	// mint asking for anything outside it (or above its level) is refused
+	// with GitHub's permissions-not-granted 422.
+	granted map[string]string
+	// statusForbidden refuses the commit-status write for every MINTED token
+	// with GitHub's 403 "Resource not accessible by integration" — a grant
+	// revoked after the mint — while a hand-owned binding still writes.
+	statusForbidden bool
+	mints           int
+	mintsBaseline   int // mints that did NOT ask for statuses
 	// bearers records, per endpoint, the Authorization values the forge
 	// saw — the proof of WHICH credential served a call: the minted
 	// installation token (ghs_…) or the webhook's hand-owned binding.
@@ -689,6 +697,20 @@ type fakeGitHubForge struct {
 	// answers 401 to — a binding whose token was revoked or rotated away
 	// while the webhook still pins it.
 	revokedBearer string
+	// slug is what GET /app (the App-JWT identity probe) answers; appLookups
+	// counts those probes.
+	slug       string
+	appLookups int
+	// reviewComments is what the PR's review-comments listing answers
+	// (newest first, as GitHub serves direction=desc).
+	reviewComments []map[string]any
+}
+
+// appLookupCount returns how many times the App identity was probed.
+func (f *fakeGitHubForge) appLookupCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.appLookups
 }
 
 // revoked answers 401 when the request carries the revoked bearer.
@@ -708,7 +730,7 @@ const bearerNoStatuses = "Bearer ghs_nostatus"
 
 func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 	t.Helper()
-	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234", bearers: map[string][]string{}}
+	f := &fakeGitHubForge{perms: map[string]string{}, prAuthor: "alice", headSHA: "deadbeef1234", bearers: map[string][]string{}, slug: "iterion-forge-x"}
 	reply := func(w http.ResponseWriter, code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
@@ -731,17 +753,33 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		if !asksStatuses {
 			f.mintsBaseline++
 		}
-		fail, denyStatuses := f.mintFail, f.mintDenyStatuses
+		fail, denyStatuses, granted := f.mintFail, f.mintDenyStatuses, f.granted
 		f.mu.Unlock()
 		if fail || (denyStatuses && asksStatuses) {
 			reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "The permissions requested are not granted to this installation."})
 			return
+		}
+		if granted != nil {
+			for name, level := range req.Permissions {
+				got, ok := granted[name]
+				if !ok || (level == "write" && got != "write" && got != "admin") {
+					reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "The permissions requested are not granted to this installation."})
+					return
+				}
+			}
 		}
 		token := "ghs_inst"
 		if denyStatuses {
 			token = "ghs_nostatus"
 		}
 		reply(w, http.StatusCreated, map[string]any{"token": token, "expires_at": "2099-01-01T00:00:00Z"})
+	})
+	mux.HandleFunc("GET /api/v3/app", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.appLookups++
+		slug := f.slug
+		f.mu.Unlock()
+		reply(w, http.StatusOK, map[string]any{"id": 42, "slug": slug, "name": "iterion forge"})
 	})
 	mux.HandleFunc("GET /api/v3/user", func(w http.ResponseWriter, r *http.Request) {
 		seen("user", r)
@@ -783,7 +821,11 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		if f.revoked(w, r) {
 			return
 		}
-		if r.Header.Get("Authorization") == bearerNoStatuses {
+		f.mu.Lock()
+		statusForbidden := f.statusForbidden
+		f.mu.Unlock()
+		bearer := r.Header.Get("Authorization")
+		if bearer == bearerNoStatuses || (statusForbidden && strings.HasPrefix(bearer, "Bearer ghs_")) {
 			reply(w, http.StatusForbidden, map[string]any{"message": "Resource not accessible by integration"})
 			return
 		}
@@ -794,6 +836,19 @@ func newFakeGitHubForge(t *testing.T) *fakeGitHubForge {
 		f.statuses = append(f.statuses, body)
 		f.mu.Unlock()
 		reply(w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mux.HandleFunc("GET /api/v3/repos/acme/widgets/pulls/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		seen("review_comments", r)
+		if f.revoked(w, r) {
+			return
+		}
+		f.mu.Lock()
+		comments := f.reviewComments
+		f.mu.Unlock()
+		if comments == nil {
+			comments = []map[string]any{}
+		}
+		reply(w, http.StatusOK, comments)
 	})
 	mux.HandleFunc("POST /api/v3/repos/acme/widgets/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		seen("comment", r)

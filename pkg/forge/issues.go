@@ -110,6 +110,10 @@ type PullRef struct {
 	// fork guard on lanes that resolve a PR via the forge API and therefore
 	// cannot rely on the webhook payload's own head.repo field.
 	HeadRepoFullName string `json:"head_repo_full_name,omitempty"`
+	// HeadCloneURL is the head repo's own clone URL when the provider reports
+	// it — a fork's, on a fork PR; empty when unknown. It is what a lane that
+	// chooses to work on a fork's code would clone; no launch lane does today.
+	HeadCloneURL string `json:"head_clone_url,omitempty"`
 	// LinkedIssues are issue numbers this PR references / closes, best-effort
 	// parsed from the title/body ("fixes #12", "Closes #7", "!?").
 	LinkedIssues []int `json:"linked_issues,omitempty"`

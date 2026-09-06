@@ -24,6 +24,7 @@ type forgejoBranchInfo struct {
 	Sha  string `json:"sha"`
 	Repo *struct {
 		FullName string `json:"full_name"`
+		CloneURL string `json:"clone_url"`
 	} `json:"repo,omitempty"`
 }
 
@@ -63,6 +64,7 @@ func (p forgejoPull) toRef() forge.PullRef {
 		ref.HeadSHA = p.Head.Sha
 		if p.Head.Repo != nil {
 			ref.HeadRepoFullName = p.Head.Repo.FullName
+			ref.HeadCloneURL = p.Head.Repo.CloneURL
 		}
 	}
 	if p.Base != nil {
