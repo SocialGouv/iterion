@@ -1734,16 +1734,34 @@ func builtinSum(args []any) (any, error) {
 
 // builtinMin / builtinMax return the smallest / largest numeric element, or nil
 // for an empty array.
+//
+// Two call shapes, because an author reaches for whichever fits the value in
+// hand: ONE array argument (`min(input.nums)`), or two or more scalars
+// (`min(a, b)`). The scalar form is what a clamp is written with —
+// `min(max(floor, cap * ratio), cap * 0.5)` — and without it the same two
+// subexpressions have to be spelled out four times inside nested `if`s, which
+// is how a deterministic guard stops being reviewable. Arguments are FLATTENED
+// one level, so `max(list, 7)` reads the list's elements alongside the scalar.
 func builtinMin(args []any) (any, error) { return minMax(args, "min") }
 func builtinMax(args []any) (any, error) { return minMax(args, "max") }
 
 func minMax(args []any, which string) (any, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("expr: %s() takes 1 argument, got %d", which, len(args))
+	if len(args) == 0 {
+		return nil, fmt.Errorf("expr: %s() takes an array or two or more values, got none", which)
 	}
-	arr, err := toElemSlice(args[0])
-	if err != nil {
-		return nil, fmt.Errorf("expr: %s() expects array, %w", which, err)
+	var arr []any
+	for _, a := range args {
+		elems, err := toElemSlice(a)
+		if err != nil {
+			// A scalar argument is itself the element, never an error: only
+			// the single-argument form is required to be an array.
+			if len(args) == 1 {
+				return nil, fmt.Errorf("expr: %s() expects array, %w", which, err)
+			}
+			arr = append(arr, a)
+			continue
+		}
+		arr = append(arr, elems...)
 	}
 	if len(arr) == 0 {
 		return nil, nil

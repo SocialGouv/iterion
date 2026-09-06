@@ -257,6 +257,26 @@ vars:
   ## (--var plan_budget_ratio=0.5). See docs/bot-runs/branch-improve-loop.md.
   plan_budget_ratio: float = 0.3
 
+  ## DELIVERY RESERVE. Three production runs died at the duration cap
+  ## within two seconds of it -- 9001s/9000s, 2h30m01s/2h30m,
+  ## 9001.86s/9000s -- and NONE had pushed a commit: the campaign spent
+  ## the whole window and the delivery tail (verify gate, in-loop review,
+  ## push onto the PR, verdict comment, merge-gate status) was never
+  ## scheduled. Landing in the last two seconds three times is not luck;
+  ## it is a window sized for analysis with nothing left to ship with.
+  ## The reserve is the slice of the run's cap the campaign is told to
+  ## stop BEFORE, so the tail always has room:
+  ##   reserve = min( max(floor_minutes x 60, cap x ratio), cap / 2 )
+  ## The clamp is the arithmetic guarantee that the campaign keeps at
+  ## least half the run however the two knobs are set. Read from the caps
+  ## IN FORCE (run.max_duration_seconds -- after any --max-duration
+  ## override, the recipe and the platform ceiling), exactly like
+  ## plan_budget_ratio: a literal mirroring the budget: block drifts from
+  ## it in silence. A cap of 0 is UNBOUNDED, so the reserve is 0 too.
+  ## Overridable per run (--var delivery_reserve_ratio=0.25).
+  delivery_reserve_ratio: float = 0.15
+  delivery_reserve_floor_minutes: int = 10
+
   ## Above this many added lines in the branch diff (git diff --shortstat
   ## insertions), the plan phase reads a git diff --stat footprint +
   ## per-file hunks instead of the full unified diff, and the
@@ -376,6 +396,24 @@ prompt campaign_system:
        it overrides your own judgement on any point it covers, and you decide
        the rest yourself. Ask ONCE — this is an arbitration, not a dialogue.
 
+  DELIVERY RESERVE — stop working in time to SHIP. Your working window is
+  deliberately SHORTER than the run's duration cap: the run holds a reserve
+  back for the delivery tail — the deterministic build/test gate, the in-loop
+  review, the push onto the pull request, the verdict comment and the
+  merge-gate status. Your task below gives you three figures in seconds of RUN
+  time: the cap, the instant your window closes, and how much has elapsed so
+  far. Subtract and you have your remaining working time; check it again
+  whenever you finish a fix.
+  When you reach that instant: finish the fix in your hands to a committable
+  state (or discard it, per the clean-tree rule), COMMIT, and REPORT with
+  stopped_on_reserve=true. Do NOT open an issue you cannot finish inside the
+  window — pick the next-smallest one, or stop.
+  This is not headroom you may spend. Three production runs died exactly at
+  the cap with NOTHING delivered: no push, no verdict, no comment, and every
+  uncommitted fix lost with the pod. Under-using the window costs one pass;
+  overrunning it costs the whole run. (A closing instant of 0 means the run is
+  unbounded on time — then work to the task, not to a clock.)
+
   KEEP GOING, one issue at a time, until this pass has resolved every real
   issue you can find in the branch diff within your budget. Then STOP and
   report.
@@ -433,6 +471,11 @@ prompt campaign_system:
     - commits_this_pass: how many commits you landed this pass.
     - issues_remaining: a concise note of what real issues still need work
       (empty when branch_clean).
+    - stopped_on_reserve: true when you stopped because your working window
+      closed, not because the branch was clean. Say so plainly — it is how the
+      operator learns the cap is too small for this branch, and it costs you
+      nothing (branch_clean=false already routes another pass). issues_remaining
+      then names what the next pass should pick up first.
     - needs_human / human_note: set if you paused or need an operator decision.
     - summary: what you reviewed and what you improved, and how it relates to
       the branch's changes.
@@ -474,6 +517,15 @@ prompt campaign_user:
   is your scope — do NOT flag pre-existing code the branch didn't touch.
 
   Piloting for this run: {{vars.pilot}}
+
+  WORKING WINDOW (seconds of RUN time — everything past the closing instant is
+  the delivery reserve: the build/test gate, the review, the push, the verdict
+  comment and the merge-gate status):
+    duration cap for this run: {{run.max_duration_seconds}}
+    your window closes at:     {{outputs.delivery_reserve.work_deadline_seconds}}
+    elapsed when you started:  {{run.elapsed_seconds}}
+  Commit and report by the closing instant. Both zero = the run is unbounded on
+  time; then work to the task, not to a clock.
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
@@ -753,6 +805,13 @@ schema campaign_output:
   needs_human: bool
   human_note: string
   summary: string
+  ## Did the pass stop because its WORKING WINDOW closed rather than
+  ## because the branch was clean? Without it the two are indistinguishable
+  ## on the run, and the operator never learns the cap is too small for
+  ## this branch -- which is exactly what three dead runs cost before the
+  ## reserve existed. Costs the agent nothing to admit: branch_clean=false
+  ## already routes another pass.
+  stopped_on_reserve: bool
   ## finding_ledger: what happened to each finding of the PRIOR REVIEW, keyed by
   ## the stable id it was shown under (on the PR comment and in prior_review).
   ## Empty when no prior review was handed over.
@@ -770,6 +829,20 @@ schema campaign_output:
   ## topology nothing cross-confirms a finding, so the refusal channel is the
   ## only place a wrong finding can be contested in the open.
   finding_ledger: json
+
+## delivery_reserve's contract: the deterministic working window, plus the
+## plan-phase relay it sits on. cap/reserve/deadline are SECONDS OF RUN
+## TIME, not wall-clock instants — the campaign compares them against
+## `run.elapsed_seconds`, which its own prompt resolves fresh on every pass.
+schema delivery_reserve_state:
+  cap_seconds: float
+  reserve_seconds: float
+  work_deadline_seconds: float
+  fail_log: string
+  plan: string
+  plan_critique: string
+  plan_responses: string
+  plan_provenance: string
 
 ## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
 schema verify_plan:
@@ -1354,6 +1427,36 @@ fail workspace_not_a_repo:
   code: WORKSPACE_NOT_A_REPO
   message: "{{outputs.workspace_probe.reason}}"
   resumable: false
+
+## delivery_reserve — the SINGLE choke point every entry into `campaign`
+## crosses, so no path can start a pass with no working window by
+## omission. One deterministic compute: no shell, no clock of its own —
+## `run.max_duration_seconds` is the cap IN FORCE, and the campaign's own
+## prompt reads `run.elapsed_seconds` at the instant it executes, which is
+## what keeps the window fresh on every continuation pass without a second
+## copy of this arithmetic on the back-edge (the deadline is a CONSTANT of
+## the run; only the elapsed side moves).
+##
+## Like plan_budget_gate it is also the relay: it hands the plan-phase
+## fields on to the campaign exactly as the pre-reserve edges did.
+compute delivery_reserve:
+  description: "The campaign's working window: the cap minus the delivery tail's reserve"
+  input: campaign_input
+  output: delivery_reserve_state
+  expr:
+    cap_seconds: "run.max_duration_seconds"
+    ## Repeated rather than referenced: a compute's fields are evaluated
+    ## against the node's input and the run, never against its own
+    ## siblings, so reading `reserve_seconds` here would be nil.
+    ## A cap of 0 is UNBOUNDED on that axis, never "no allowance left" —
+    ## an unbudgeted run must not be told its window is already shut.
+    reserve_seconds: "if(run.max_duration_seconds > 0, min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0)"
+    work_deadline_seconds: "if(run.max_duration_seconds > 0, run.max_duration_seconds - min(max(vars.delivery_reserve_floor_minutes * 60, run.max_duration_seconds * vars.delivery_reserve_ratio), run.max_duration_seconds * 0.5), 0)"
+    fail_log: "input.fail_log"
+    plan: "input.plan"
+    plan_critique: "input.plan_critique"
+    plan_responses: "input.plan_responses"
+    plan_provenance: "input.plan_provenance"
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native Claude
@@ -2055,7 +2158,17 @@ workflow branch_improve_loop:
     max_parallel_branches: 1
     ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
     ## plan_review resolves on, ~3 LLM calls run before the campaign.
-    max_duration: "2h30m"
+    ##
+    ## 3h, not the historical 2h30m. Three runs spent all of 2h30m on the
+    ## campaign alone and delivered nothing, which measures the campaign's
+    ## appetite at MORE than 2h30m — so carving the delivery reserve out of
+    ## 2h30m would have traded "ships nothing" for "does less work". At 3h
+    ## the default reserve is 27 min (comfortably over the ~16 min tail
+    ## measured on this repo: verify ~10, in-loop review ~5, push + verdict
+    ## ~1) and the campaign still gets 2h33m — more working time than the
+    ## dead runs had. The COST cap is unchanged: all three died on duration
+    ## with cost never binding.
+    max_duration: "3h"
     max_cost_usd: 75
 
   compaction:
@@ -2067,12 +2180,13 @@ workflow branch_improve_loop:
   workspace_probe -> plan_topology when ok
   workspace_probe -> workspace_not_a_repo when not ok
 
-  ## Plan phase: on by default; plan_phase off → straight to the campaign.
+  ## Plan phase: on by default; plan_phase off → straight to the reserve,
+  ## which is the single choke point before the campaign either way.
   plan_topology -> plan_scope_probe when do_plan
   ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
-  plan_topology -> campaign when not do_plan with {
+  plan_topology -> delivery_reserve when not do_plan with {
     fail_log: "", plan: "", plan_critique: "", plan_responses: "",
     plan_provenance: ""
   }
@@ -2133,7 +2247,7 @@ workflow branch_improve_loop:
   ## the studio and the alert sinks read it) instead of spending
   ## campaign's reserve (native:695). The refusal is resumable: widen the
   ## caps, resume, and this guard is re-evaluated.
-  plan_budget_gate -> campaign when not exhausted with {
+  plan_budget_gate -> delivery_reserve when not exhausted with {
     fail_log:        "",
     plan:            "{{outputs.plan_budget_gate.plan}}",
     plan_critique:   "{{outputs.plan_budget_gate.plan_critique}}",
@@ -2141,6 +2255,19 @@ workflow branch_improve_loop:
     plan_provenance: "{{outputs.plan_budget_gate.plan_provenance}}"
   }
   plan_budget_gate -> plan_exhausted when exhausted
+
+  ## The working window, then the campaign. Every FORWARD entry crosses
+  ## this node, so no launch shape can start a pass with an unbounded
+  ## window by omission; the loop back-edge is exempt by construction —
+  ## it re-enters the same campaign, whose prompt reads the deadline off
+  ## this node's persisted output and the elapsed side off the run.
+  delivery_reserve -> campaign with {
+    fail_log:        "{{outputs.delivery_reserve.fail_log}}",
+    plan:            "{{outputs.delivery_reserve.plan}}",
+    plan_critique:   "{{outputs.delivery_reserve.plan_critique}}",
+    plan_responses:  "{{outputs.delivery_reserve.plan_responses}}",
+    plan_provenance: "{{outputs.delivery_reserve.plan_provenance}}"
+  }
 
   ## Each pass: the campaign reviews+improves the branch diff (committing each
   ## fix in stride), then the deterministic build/test gate re-checks the tree.
