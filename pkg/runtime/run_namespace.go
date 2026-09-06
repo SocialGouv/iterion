@@ -4,9 +4,11 @@ import "time"
 
 // RunNamespaceMembers is the exhaustive `run.<member>` vocabulary, in
 // documentation order. Every consumer of the namespace — the expression
-// evaluator (`compute` nodes, `when` conditions), prompt bodies, and tool
-// commands / scripts / postconditions — resolves exactly these names, so a
-// member added here reaches all three at once.
+// evaluator (`compute` nodes, `when` conditions), prompt bodies, tool
+// commands / scripts / postconditions, and the data-mapping resolver (a
+// fail node's `message:`, an edge `with`, an `emit` payload, a subbot
+// `with:`) — resolves exactly these names, so a member added here reaches
+// all four at once.
 var RunNamespaceMembers = []string{
 	"id",
 	"elapsed_seconds",
