@@ -333,10 +333,10 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
 		// before the engine runs) so the studio Overview draws budget meters
-		// with a denominator. A resume that raises a cap re-parses the
-		// budget, so overwriting is correct; the non-nil guard preserves a
-		// prior snapshot if a --force resume dropped the budget: block.
-		if b := SnapshotBudgetForPersist(e.workflow.Budget); b != nil {
+		// with a denominator. A resume re-stamps the same value through
+		// stampEffectiveBudget; the non-nil guard preserves a prior snapshot
+		// if a --force resume dropped the budget: block.
+		if b := e.effectiveBudgetSnapshot(); b != nil {
 			run.Budget = b
 		}
 		// The raw ask next to the effective caps: what a resume replays
@@ -369,6 +369,45 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 	}
 	return run, nil
+}
+
+// effectiveBudgetSnapshot projects the caps THIS engine enforces onto the
+// doc's display-only shape. e.workflow.Budget is the settled figure by the
+// time an execution begins: the launching surface merged the asks into it
+// (CLI flags, recipe, the resume replay) and, on a cloud pod,
+// applyCloudBudgetCeiling clamped it to the platform ceiling afterwards.
+// One projection for both stamps — the launch one in runResolveDoc and the
+// resume one in stampEffectiveBudget — so the two readings cannot drift.
+//
+// Nil for a budget-less workflow: callers PRESERVE the prior snapshot
+// rather than erase it (a --force resume of a .bot whose budget block was
+// dropped must not blank the meter).
+func (e *Engine) effectiveBudgetSnapshot() *store.RunBudget {
+	if e.workflow == nil {
+		return nil
+	}
+	return SnapshotBudgetForPersist(e.workflow.Budget)
+}
+
+// stampEffectiveBudget refreshes the doc's effective-caps snapshot for an
+// attempt that is NOT a launch. Every resume re-resolves the budget from
+// scratch, and the platform ceiling is applied on the pod — where no
+// publisher can see it — so a doc stamped upstream advertises caps this
+// attempt will not honour (issue #718: a run resumed with
+// --max-cost-usd 120 under a $50 ceiling dies at $50 reading 120).
+//
+// Granular (SetRunBudgetSnapshot, not SaveRun): the write lands beside the
+// claim CAS without reverting any other field. Best-effort — a display
+// figure must never cost the resume — but a failure is logged: a silent
+// one puts the lie back.
+func (e *Engine) stampEffectiveBudget(ctx context.Context, runID string) {
+	b := e.effectiveBudgetSnapshot()
+	if b == nil {
+		return
+	}
+	if err := e.store.SetRunBudgetSnapshot(ctx, runID, b); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: resume: refresh effective budget snapshot on %s: %v (the doc keeps the caps of the previous attempt)", runID, err)
+	}
 }
 
 // runStartQueued reloads the document after the transition advances its

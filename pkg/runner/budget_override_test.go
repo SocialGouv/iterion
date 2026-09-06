@@ -1,12 +1,16 @@
 package runner
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestApplyBudgetOverrides pins the launch-override contract on the cloud
@@ -70,4 +74,71 @@ func TestApplyBudgetOverrides(t *testing.T) {
 			t.Errorf("MaxCostUSD = %v, want 100 (ceiling clamps the tenant override)", wf.Budget.MaxCostUSD)
 		}
 	})
+}
+
+// #718, driven through the runner's OWN budget resolution and a real
+// engine resume: the publisher stamps the doc from the merged ask
+// ($120) because the platform ceiling lives in the runner pod's
+// environment, not the server's. The pod then clamps to $50 and runs
+// against that. Whatever the runner hands the engine is what the doc
+// must say — otherwise the studio meter and `iterion remote runs get`
+// advertise a cap the attempt cannot spend.
+func TestExecuteRunBudget_ResumeReStampsTheDocAfterTheCloudCeiling(t *testing.T) {
+	t.Setenv("ITERION_CLOUD_MAX_COST_USD", "50")
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const runID = "run-resume-ceiling"
+	if _, err := st.CreateRun(ctx, runID, "ceiling_probe", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// What the publisher left behind: the merged ask, unaware of the pod's
+	// ceiling.
+	if err := st.SetRunBudgetSnapshot(ctx, runID, &store.RunBudget{MaxCostUSD: 120}); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot: %v", err)
+	}
+	if err := st.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "done"}, "usage window", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.WorkDir = t.TempDir()
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// The pod's own resolution, in the order executeRun performs it.
+	wf := &ir.Workflow{
+		Name:   "ceiling_probe",
+		Entry:  "done",
+		Nodes:  map[string]ir.Node{"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}}},
+		Budget: &ir.Budget{MaxCostUSD: 60},
+	}
+	if err := applyBudgetOverrides(wf, &queue.BudgetOverrides{MaxCostUSD: 120}, iterlog.Nop()); err != nil {
+		t.Fatalf("applyBudgetOverrides: %v", err)
+	}
+	applyCloudBudgetCeiling(wf, iterlog.Nop())
+
+	if err := runtime.New(wf, st, unusedExecutor{}).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	got, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after resume: %v", err)
+	}
+	if got.Budget == nil || got.Budget.MaxCostUSD != 50 {
+		t.Fatalf("run.Budget = %+v after a resume under a $50 platform ceiling, want MaxCostUSD 50 — the doc over-reports by the clamp margin", got.Budget)
+	}
+}
+
+// unusedExecutor satisfies NodeExecutor for a workflow whose only node is
+// terminal: reaching Execute would mean the resume ran something.
+type unusedExecutor struct{}
+
+func (unusedExecutor) Execute(context.Context, ir.Node, map[string]any) (map[string]any, error) {
+	return nil, errors.New("no node of this workflow should execute")
 }

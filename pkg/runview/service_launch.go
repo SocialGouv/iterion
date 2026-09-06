@@ -532,8 +532,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// cloud path — the MERGED ask as the replay source (so the next
 	// resume, ask-less or not, and the detached subprocess that re-reads
 	// the doc, keep the raise), and the effective caps as the snapshot
-	// the studio Overview draws, since the engine stamps Run.Budget only
-	// at launch. Both granular on purpose: a whole-doc SaveRun from the
+	// the studio Overview draws — the engine re-stamps the same figure
+	// when it claims the resume, this write moves it before the claim so
+	// the meter never shows the cap that just killed the run. Both
+	// granular on purpose: a whole-doc SaveRun from the
 	// copy loaded at the top of this method would revert any transition
 	// that landed since (a cancel, a finish). Best-effort: a store blip
 	// here does not fail the resume.

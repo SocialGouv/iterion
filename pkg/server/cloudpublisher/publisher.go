@@ -2201,9 +2201,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// run may spend $120. A nil wire means nothing changed: the runner's
 	// post-ceiling launch stamp stands. What this stamp cannot see is the
 	// PLATFORM ceiling (ITERION_CLOUD_MAX_*): it lives in the runner's
-	// environment, not the publisher's, and a cap raised above it is
-	// clamped on the pod and logged there — the doc over-reports by that
-	// margin until the engine re-stamps on resume (ticketed).
+	// environment, not the publisher's. This figure is therefore the
+	// doc's caps only until a pod claims the attempt — the engine
+	// re-stamps post-clamp when it claims the resume
+	// (runtime.Engine.stampEffectiveBudget).
 	if wire != nil {
 		if snap := runtime.EffectiveBudgetSnapshot(wf, runtime.BudgetOverridesFromWire(wire)); snap != nil {
 			if err := p.store.SetRunBudgetSnapshot(persistCtx, spec.RunID, snap); err != nil && p.logger != nil {
