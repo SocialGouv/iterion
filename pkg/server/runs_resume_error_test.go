@@ -30,7 +30,7 @@ func (p *queueOutageTestPublisher) SubmitLaunch(context.Context, string, runview
 
 func (*queueOutageTestPublisher) CancelRun(context.Context, string) error { return nil }
 
-func (*queueOutageTestPublisher) CancelRunWithReason(context.Context, string, string) error {
+func (*queueOutageTestPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
 

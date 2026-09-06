@@ -33,6 +33,18 @@ type DeliveryStore interface {
 	Insert(ctx context.Context, d Delivery) error
 	GetByIdempotencyKey(ctx context.Context, key string) (Delivery, error)
 	Update(ctx context.Context, d Delivery) error
+	// ClaimFailedRetry takes over a delivery row left in StatusLaunchError so
+	// that ONE caller retries the event. A prior launch failure is
+	// deliberately retryable — a redelivery of the same event must be able to
+	// relaunch it — which makes the take-over a claim, not a read followed by
+	// a write: two redeliveries arriving together both find the failed row,
+	// and both would otherwise go on to launch a run for one event.
+	//
+	// The replacement lands iff the stored row is STILL that failure at the
+	// attempt count the caller read. claimed=false with a NIL error means
+	// another caller got there first, and the loser must answer as a
+	// duplicate rather than launch. ErrNotFound when the row is gone.
+	ClaimFailedRetry(ctx context.Context, d Delivery, expectAttempts int) (claimed bool, err error)
 	ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error)
 	// CountLaunched counts the deliveries of one event kind on one subject
 	// that actually launched a run (RunID set). This is a CEILING query —

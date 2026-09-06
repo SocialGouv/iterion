@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/store"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -134,7 +136,7 @@ func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec Lau
 	return 1, nil
 }
 func (p *stubLaunchPublisher) CancelRun(context.Context, string) error { return nil }
-func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, string) error {
+func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
 func (p *stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {

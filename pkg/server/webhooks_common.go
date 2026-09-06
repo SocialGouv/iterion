@@ -911,10 +911,11 @@ func (s *Server) webhookRunLive(ctx context.Context, runID string) bool {
 	return false
 }
 
-// supersededRunReason is recorded as the run error of a run cancelled by the
-// overlap=supersede lane. Kept short: the merge-gate synthetic description
-// quotes it within a 60-rune budget.
-const supersededRunReason = "superseded by a newer delivery for the same subject"
+// supersededRunReason names the cancel of a run replaced by the
+// overlap=supersede lane. Its message is kept short in the store's
+// vocabulary: the merge-gate synthetic description quotes it within a
+// 60-rune budget.
+const supersededRunReason = store.RunEndReasonSuperseded
 
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise
@@ -1094,17 +1095,36 @@ func (s *Server) launchWebhookTarget(
 	delivery.Attempts = 1
 	if reusePriorFailure != nil {
 		// Retry: keep the prior row's identity + received-at, count the
-		// attempt, clear the error, and UPDATE it (Insert would
-		// ErrDuplicate on the idemKey).
+		// attempt, clear the error, and CLAIM it (Insert would ErrDuplicate
+		// on the idemKey). A claim rather than a plain update because the
+		// row was READ in step 1: two redeliveries of the same failed event
+		// both find it there, and an unconditional write would let both go
+		// on to launch a run for one event — the storm shape a redelivery
+		// burst has. The loser answers as a duplicate, exactly as the
+		// concurrent-insert loser below does.
 		delivery.ID = reusePriorFailure.ID
 		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
 		delivery.Attempts = reusePriorFailure.Attempts + 1
 		if s.webhookDeliveries != nil {
-			if err := s.webhookDeliveries.Update(ctx, delivery); err != nil {
+			claimed, err := s.webhookDeliveries.ClaimFailedRetry(ctx, delivery, reusePriorFailure.Attempts)
+			if err != nil {
 				adm.rollback(s.logger)
 				out.Status = webhooks.StatusLaunchError
 				out.Error = fmt.Sprintf("reset failed delivery: %v", err)
 				out.httpStatus = http.StatusInternalServerError
+				return out
+			}
+			if !claimed {
+				// Somebody else is retrying this event right now. Release
+				// this delivery's metered quota unit — the same reason the
+				// Insert loser does — and echo the row that won.
+				adm.rollback(s.logger)
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				out.Status = webhooks.StatusDuplicate
+				out.DeliveryID = reusePriorFailure.ID
+				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
+					out.RunID, out.DeliveryID = existing.RunID, existing.ID
+				}
 				return out
 			}
 		}
@@ -1212,10 +1232,10 @@ func (s *Server) launchWebhookTarget(
 // prClosedRunReason names the cancel so the run list, and the merge-gate
 // synthetic status that quotes run.Error, say WHY. "cancelled by user"
 // there once sent operators hunting for a human who did nothing.
-// The exact text is store.RunEndReasonPRClosed so the runner admission can
-// detect it in preRun.Error (via store.IsPRClosedCancel) and drop a redelivered
-// message even when it carries an explicit resume — the runner never imports
-// the webhook layer, so the vocabulary lives in the store, not here.
+// It is the TYPED store.RunEndReasonPRClosed, which is what the runner
+// admission reads to drop a redelivered message even when that message carries
+// an explicit resume — the runner never imports the webhook layer, so the
+// vocabulary lives in the store, not here.
 const prClosedRunReason = store.RunEndReasonPRClosed
 
 // forkGuardRefusal is the fork guard of the unattended payload-side lanes
@@ -1243,7 +1263,7 @@ func forkGuardRefusal(sameRepoProven, withheld bool, headRepo string) string {
 // prRequeuedRunReason names the auto-heal cancel for the same reason: a
 // reader finding a stopped fixer run has to learn that the queue took the
 // pull request back, not that someone gave up on it.
-const prRequeuedRunReason = "pull request re-entered the merge queue — the heal has nothing left to carry"
+const prRequeuedRunReason = store.RunEndReasonPRRequeued
 
 // healIdempotencyKey is the identity of ONE auto-heal attempt: this
 // webhook, this pull request, this head. Both halves of the loop derive
@@ -1288,7 +1308,7 @@ func (s *Server) stopHealRunForRequeuedPR(ctx context.Context, cfg webhooks.Conf
 	// Disarm before cancelling, like the closed-PR stop: a retry left armed
 	// would resume the very run we just stopped.
 	if retries := store.AsRunRetryStore(s.cfg.Store); retries != nil {
-		if aerr := retries.AbandonRunRetry(ctx, d.RunID, prRequeuedRunReason); aerr != nil && s.logger != nil {
+		if aerr := retries.AbandonRunRetry(ctx, d.RunID, prRequeuedRunReason.Message()); aerr != nil && s.logger != nil {
 			s.logger.Debug("webhooks: could not disarm the retry of heal run %s on a re-queued PR: %v", d.RunID, aerr)
 		}
 	}
@@ -1390,7 +1410,7 @@ func (s *Server) stopRunsForDeadPR(ctx context.Context, cfg webhooks.Config, met
 		// leaves the promise standing, and the sweeper would resume the
 		// run we just cancelled.
 		if retries != nil {
-			if aerr := retries.AbandonRunRetry(ctx, d.RunID, prClosedRunReason); aerr != nil && s.logger != nil {
+			if aerr := retries.AbandonRunRetry(ctx, d.RunID, prClosedRunReason.Message()); aerr != nil && s.logger != nil {
 				s.logger.Debug("webhooks: could not disarm the retry of run %s on a closed PR: %v", d.RunID, aerr)
 			}
 		}

@@ -125,22 +125,74 @@ func (s RunStatus) IsPaused() bool {
 	return s == RunStatusPausedWaitingHuman || s == RunStatusPausedOperator
 }
 
-// RunEndReasonPRClosed is the exact reason prefix written to run.Error when
-// the stop-on-close webhook lane cancels a run because its pull request was
-// closed or merged. Consumers detect it via strings.Contains — CancelRunWithReason
-// wraps the reason as "<reason> (was <status>: <prior>)", so a match on this
-// prefix survives that wrapping. Shared vocabulary between the webhook layer
-// (writer) and the runner admission (reader), so a redelivery that arrived
-// after the cancel does not resurrect a dead PR's review.
-const RunEndReasonPRClosed = "pull request closed or merged — nothing left to review"
+// RunEndReason is the typed WHY a run ENDED, persisted on the run doc beside
+// FailureCode. It is the protocol between the surface that ends a run and the
+// surfaces that must recognise the ending — above all the runner admission,
+// which drops a redelivery for a run whose pull request is gone.
+//
+// It exists because run.Error cannot be that protocol: it is a human message,
+// wrapped by the cancel path as "<message> (was <status>: <prior>)", quoted on
+// the run list, on board cards and inside the merge-gate synthetic status. Any
+// rewording, translation or truncation of a message read by a strings.Contains
+// would silently disarm the check that reads it.
+//
+// The message is DERIVED from the reason (Message below), so a writer states
+// the reason alone and the two can never disagree.
+type RunEndReason string
 
-// IsPRClosedCancel reports whether run.Error carries the PR-closed cancel
-// reason (RunEndReasonPRClosed). Used by the runner admission to drop a
-// redelivered message — including an explicit-resume one — for a run whose
-// PR is gone: nothing the review would say can matter, and continuing burns
-// provider quota on a diff no one will merge. Empty string → false.
+const (
+	// RunEndReasonOperator: a human asked for the run to stop.
+	RunEndReasonOperator RunEndReason = "operator"
+	// RunEndReasonPRClosed: the stop-on-close webhook lane ended the run
+	// because its pull request was closed or merged. The runner admission
+	// drops every redelivery for such a run — including one carrying an
+	// explicit resume: nothing the review would say can matter now, and
+	// continuing burns provider quota on a diff no one will merge.
+	RunEndReasonPRClosed RunEndReason = "pr_closed"
+	// RunEndReasonPRRequeued: the merge queue took the pull request back,
+	// so the auto-heal run has nothing left to carry.
+	RunEndReasonPRRequeued RunEndReason = "pr_requeued"
+	// RunEndReasonSuperseded: a newer delivery for the same subject
+	// replaced this run.
+	RunEndReasonSuperseded RunEndReason = "superseded"
+)
+
+// Message is the human sentence a reason writes into run.Error — what the run
+// list, the board cards and the merge-gate synthetic status quote. An unknown
+// or empty reason reads as a bare "cancelled": an automated stop that cannot
+// name itself must not sign an operator's name to its own decision.
+func (r RunEndReason) Message() string {
+	switch r {
+	case RunEndReasonOperator:
+		return "cancelled by user"
+	case RunEndReasonPRClosed:
+		return "pull request closed or merged — nothing left to review"
+	case RunEndReasonPRRequeued:
+		return "pull request re-entered the merge queue — the heal has nothing left to carry"
+	case RunEndReasonSuperseded:
+		return "superseded by a newer delivery for the same subject"
+	default:
+		return "cancelled"
+	}
+}
+
+// IsPRClosedCancel reports whether run.Error carries the PR-closed message.
+// It is the MIGRATION reader, for run documents written before EndReason
+// existed and which therefore say why in prose alone; a run carrying the typed
+// reason is recognised by that field. Empty string → false.
 func IsPRClosedCancel(runError string) bool {
-	return runError != "" && strings.Contains(runError, RunEndReasonPRClosed)
+	return runError != "" && strings.Contains(runError, RunEndReasonPRClosed.Message())
+}
+
+// EndedBecausePRClosed answers the admission's question over BOTH carriers:
+// the typed reason on the doc, and — for a document written before the field
+// existed — the message it wrapped. One predicate, so a caller cannot honour
+// half the answer.
+func EndedBecausePRClosed(r *Run) bool {
+	if r == nil {
+		return false
+	}
+	return r.EndReason == RunEndReasonPRClosed || IsPRClosedCancel(r.Error)
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +624,15 @@ type Run struct {
 	// rollback text — the code classifies the restored state, not the
 	// rollback message. See lifecycle.go (ADR-095) for the vocabulary
 	// and the open-world contract.
-	FailureCode   FailureCode    `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+	FailureCode FailureCode `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+	// EndReason is the typed WHY the run ended — the protocol half of
+	// Error, whose prose it derives (RunEndReason.Message). It carries on
+	// the same statuses as FailureCode and is cleared by the same
+	// transitions, so a resumed run never keeps claiming why it once
+	// ended. Empty means UNKNOWN, and for a run cancelled before this
+	// field existed the message is the only carrier there is — read the
+	// pair through EndedBecausePRClosed rather than either half alone.
+	EndReason     RunEndReason   `json:"end_reason,omitempty" bson:"end_reason,omitempty"`
 	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
 	ArtifactIndex map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
 	// WorkDir is the absolute filesystem path the run executes in
@@ -1041,6 +1101,12 @@ const (
 type RunOutcomeMeta struct {
 	Code         FailureCode
 	Continuation ContinuationState
+	// EndReason is the typed WHY the run ended. It follows the FailureCode
+	// discipline exactly — persisted only on the statuses that carry an
+	// outcome (RunStatus.CarriesFailureCode), cleared by every transition
+	// out of them, preserved across a same-status rewrite that states none
+	// — so a resumed run cannot keep claiming why it once ended.
+	EndReason RunEndReason
 }
 
 // MergeStatus enumerates the lifecycle of the merge step independently

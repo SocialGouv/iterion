@@ -29,6 +29,17 @@ import (
 // exists (the studio launch surface): a team's experimental fork must not
 // silently hijack that team's schedules/webhooks. The platform tier applies
 // everywhere — overriding the deployment's catalog is its purpose.
+//
+// That exclusion is a CONTRACT, not an oversight, and it binds the metadata
+// reads below as much as the launch: effectiveEntries* / effectiveFindByName
+// are the tenant-context-FREE view (platform over baked), which is exactly the
+// resolution resolveBotSource performs on the lanes that read them — the
+// webhook hand-off matcher (produces:/consumes:), the command discovery, the
+// gate-var defaults. A team-authored bot is therefore invisible to those
+// lanes, on purpose: describing a fork the launch will never run would seed a
+// run from the wrong manifest. A caller that holds the tier a bot ACTUALLY
+// resolved through — a run's BotSourceTenant, stamped at launch — asks
+// teamBotManifest first instead.
 
 // launchBot is a resolved, launch-ready bot: its source, provenance, and —
 // for a STORED bot (team or platform botsource row) — the materialized
@@ -328,6 +339,33 @@ func (s *Server) botExists(botID string) bool {
 	}
 	_, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
 	return err == nil
+}
+
+// teamBotManifest reads the manifest of a TEAM-authored bot row. It is for
+// callers holding the tier a bot actually resolved through — a run's
+// BotSourceTenant — so that a run's own manifest is read where the run came
+// from. Nil when the tenant names no team row (empty, the platform sentinel,
+// or no such slug), leaving the caller on the platform + baked tiers.
+//
+// Deliberately NOT folded into effectiveFindByName: see the contract at the
+// top of this file — the tenant-context-free lanes must stay blind to a team
+// fork, because their launch is blind to it too.
+func (s *Server) teamBotManifest(ctx context.Context, tenantID, slug string) *bundle.Manifest {
+	slug = strings.TrimSpace(slug)
+	tenantID = strings.TrimSpace(tenantID)
+	if s.botSources == nil || slug == "" || tenantID == "" || tenantID == botsource.PlatformTenantID {
+		return nil
+	}
+	bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, tenantID), tenantID, slug)
+	if err != nil {
+		if !errors.Is(err, botsource.ErrNotFound) {
+			// A store blip is not "this team authored no such bot": say so,
+			// then fall through to the tiers that can still answer.
+			s.logger.Warn("bot source %s/%s: %v — reading the manifest fell through to the platform tier", tenantID, slug, err)
+		}
+		return nil
+	}
+	return bs.Manifest()
 }
 
 // effectiveFindByName returns the effective (platform-overlaid) entry for a

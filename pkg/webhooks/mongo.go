@@ -120,6 +120,25 @@ func (s *MongoDeliveryStore) Update(ctx context.Context, d Delivery) error {
 	return s.kit.Replace(ctx, d.ID, d, nil, "update delivery")
 }
 
+// ClaimFailedRetry is the compare-and-set take-over of a failed row (see
+// DeliveryStore). Keep its semantics in lock-step with the memory twin.
+func (s *MongoDeliveryStore) ClaimFailedRetry(ctx context.Context, d Delivery, expectAttempts int) (bool, error) {
+	// attempts is omitempty, so a row that never counted one carries NO
+	// field — and {attempts: 0} does not match a missing field. Match both
+	// spellings of "none yet", or a first retry could never be claimed.
+	attempts := bson.M{"$eq": expectAttempts}
+	if expectAttempts == 0 {
+		attempts = bson.M{"$in": bson.A{0, nil}}
+	}
+	res, err := s.kit.Coll().ReplaceOne(ctx, bson.M{
+		"_id": d.ID, "status": StatusLaunchError, "attempts": attempts,
+	}, d)
+	if err != nil {
+		return false, fmt.Errorf("webhooks: claim failed delivery %s: %w", d.ID, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 func (s *MongoDeliveryStore) ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
 	if limit <= 0 {
 		limit = 50

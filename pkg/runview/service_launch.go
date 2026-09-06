@@ -47,11 +47,13 @@ type LaunchPublisher interface {
 	// flips the Mongo doc to cancelled regardless of whether a runner
 	// is currently holding the lease.
 	CancelRun(ctx context.Context, runID string) error
-	// CancelRunWithReason is CancelRun with an explicit reason recorded
-	// on the run (run.Error). Automated cancellations — the webhook
-	// supersede lane — pass what actually happened; CancelRun stays the
-	// operator-click shape ("cancelled by user").
-	CancelRunWithReason(ctx context.Context, runID, reason string) error
+	// CancelRunWithReason is CancelRun with an explicit, TYPED reason
+	// recorded on the run — the field the runner admission reads, and the
+	// message the run list shows, both derived from it. Automated
+	// cancellations — the webhook supersede, re-queue and closed-PR lanes
+	// — say what actually happened; CancelRun stays the operator-click
+	// shape (store.RunEndReasonOperator).
+	CancelRunWithReason(ctx context.Context, runID string, reason store.RunEndReason) error
 	// SubmitResume republishes a RunMessage with ResumeSpec set so
 	// the runner picks the run back up.
 	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, hash string) error

@@ -5957,6 +5957,7 @@ export interface components {
             /** Format: date-time */
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];
+            end_reason?: string;
             error?: string;
             failure_code?: string;
             fallbacks_used?: components["schemas"]["FallbackUsage"][];
@@ -6045,6 +6046,7 @@ export interface components {
             bundle_name?: string;
             /** Format: date-time */
             created_at: string;
+            end_reason?: string;
             error?: string;
             failure_code?: string;
             file_path?: string;

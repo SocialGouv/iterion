@@ -57,11 +57,26 @@ var gateReasonWrappers = []*regexp.Regexp{
 	regexp.MustCompile(`^git: `),
 }
 
+// gateDLQDescription is what a run parked on the dead-letter queue leaves on
+// the head. The generic trailer below would be false advice here: a push, or
+// the bot's command, launches a FRESH run and leaves the parked message
+// parked, so the check would contradict the DLQ comment on the same pull
+// request and hide the one remedy that reaches the message. Reason-free on
+// purpose — the DLQ comment carries the cause and the status links to the run,
+// so the 140 characters a forge allows go to the remedy.
+const gateDLQDescription = "review parked on the DLQ — operator replay needed (iterion remote admin dlq)"
+
 // gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
 // the run doc can say (budget exceeded, provider error, …). GitHub truncates
 // commit-status descriptions at 140 characters, so the reason is bounded and
 // the remedy — the part the operator cannot reconstruct — keeps priority.
+//
+// The remedy is selected by the persisted FailureCode, the same typed WHY the
+// DLQ notice keys on, never by parsing run.Error.
 func gateInterruptedDescriptionFor(run *store.Run) string {
+	if run != nil && run.FailureCode == store.FailureDLQParked {
+		return gateDLQDescription
+	}
 	reason := ""
 	if run != nil {
 		reason = strings.TrimSpace(run.Error)
@@ -104,7 +119,8 @@ const gateDiedDescriptionPrefix = "review died ("
 // there are no findings behind a synthetic failure for a fixer to address.
 func isSyntheticGateInterruption(description string) bool {
 	d := strings.TrimSpace(description)
-	return d == gateInterruptedDescription || strings.HasPrefix(d, gateDiedDescriptionPrefix)
+	return d == gateInterruptedDescription || d == gateDLQDescription ||
+		strings.HasPrefix(d, gateDiedDescriptionPrefix)
 }
 
 // startGateReconciler attaches the reconciler to the event spine. It rides the
@@ -326,6 +342,30 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	}
 	if strings.TrimSpace(pr.HeadSHA) == "" {
 		return abstain("the forge returned no head sha")
+	}
+	// A pull request that is closed or merged owes nobody a verdict: painting
+	// "review died — push again" there tells a developer to re-run a review of
+	// work that already shipped, and the relaunch below stands down on the
+	// same state anyway. Reachable from every terminal outcome such a run can
+	// have — the retry sweeper's abandon republishes one deliberately, the
+	// stop-on-close cancel IS one, and the sweep re-offers the run for its
+	// whole lookback.
+	//
+	// Same predicate the relaunch and auto-fix lanes use: an EMPTY state is a
+	// provider that does not report one, not a closure, so a verdict is never
+	// suppressed on a guess. Debug rather than abstain(): a pull request
+	// closed while its review ran is ordinary, not an anomaly.
+	//
+	// What this leaves behind is an in-flight claim nothing repairs. It blocks
+	// nothing — the pull request is already merged or closed — and a reopen
+	// heals it, because the fresh review's own claim may overwrite an
+	// in-flight marker (markGateInFlight).
+	if pr.State != "" && pr.State != "open" {
+		if s.logger != nil {
+			s.logger.Debug("forge gate: run %s owed %s on %s, but the pull request is %s — a closed pull request needs no verdict",
+				runID, gateCtx, prURL, pr.State)
+		}
+		return nil
 	}
 	// Only the revision this run was reviewing. Between its start and its
 	// death the head routinely moves — the author pushes a fix, a brancher

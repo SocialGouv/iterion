@@ -288,11 +288,12 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 		// operator's explicit resume re-queues it.
 		//
 		// A PR-closed cancel keeps its own line: the redelivered message
-		// does not carry the cancel, and the reason on the doc (via
-		// store.IsPRClosedCancel, which survives CancelRunWithReason's
-		// "(was <status>: <prior>)" wrapping) is the only signal that the PR
-		// is gone.
-		if store.IsPRClosedCancel(run.Error) {
+		// does not carry the cancel, so the reason on the doc is the only
+		// signal that the PR is gone. store.EndedBecausePRClosed reads the
+		// TYPED EndReason the cancel writes, and falls back to the message
+		// for a document cancelled before that field existed — the prose is
+		// a migration carrier here, never the protocol.
+		if store.EndedBecausePRClosed(run) {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
 				op:          "ack-pr-closed-cancel",

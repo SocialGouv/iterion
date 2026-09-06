@@ -1790,6 +1790,9 @@
           "deployment": {
             "$ref": "#/components/schemas/DeploymentReport"
           },
+          "end_reason": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
           },
@@ -2059,6 +2062,9 @@
           },
           "created_at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "end_reason": {
             "type": "string"
           },
           "error": {

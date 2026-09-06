@@ -67,6 +67,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
+	t.Run("EndReasonLifecycle", func(t *testing.T) { testEndReasonLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
 	t.Run("FinalContinuationDisarmsRetry", func(t *testing.T) { testFinalContinuationDisarmsRetry(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
@@ -1283,6 +1284,82 @@ func testFailureCodeLifecycle(t *testing.T, s store.RunStore) {
 	r, _ = s.LoadRun(ctx, "run_fc")
 	if r.FailureCode != "SOME_FUTURE_CODE_V9" {
 		t.Fatalf("unknown code mangled: %q", r.FailureCode)
+	}
+}
+
+// testEndReasonLifecycle pins the typed end-reason discipline on BOTH
+// store twins. It is the protocol the runner admission reads to drop a
+// redelivery for a run whose pull request closed, so it has to persist on
+// the same statuses as FailureCode, survive a same-status rewrite that
+// states none, and be cleared by every transition out of them — a resumed
+// run that still claimed "pr_closed" would be refused admission forever.
+func testEndReasonLifecycle(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_er", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	load := func() *store.Run {
+		t.Helper()
+		r, err := s.LoadRun(ctx, "run_er")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	// The twins start a run differently on purpose — the filesystem store goes
+	// straight to running, the cloud one to queued (Opts.InitialStatus models
+	// it) — so the row states the status it CASes from instead of inheriting
+	// either default. What is under test is the end reason, not CreateRun.
+	if err := s.UpdateRunStatus(ctx, "run_er", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The cancel writes reason and status in ONE outcome write.
+	changed, err := s.UpdateRunOutcome(ctx, "run_er", store.RunStatusCancelled,
+		store.RunEndReasonPRClosed.Message(),
+		store.RunOutcomeMeta{Code: store.FailureCancelled, EndReason: store.RunEndReasonPRClosed},
+		[]store.RunStatus{store.RunStatusRunning})
+	if err != nil || !changed {
+		t.Fatalf("cancel outcome: changed=%v err=%v", changed, err)
+	}
+	if r := load(); r.EndReason != store.RunEndReasonPRClosed || r.FailureCode != store.FailureCancelled {
+		t.Fatalf("after the cancel: end_reason=%q failure_code=%q", r.EndReason, r.FailureCode)
+	}
+	// A same-status rewrite that states no reason keeps the one the
+	// transition wrote — an untyped writer must not erase it.
+	if err := s.UpdateRunStatusCoded(ctx, "run_er", store.RunStatusCancelled, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if r := load(); r.EndReason != store.RunEndReasonPRClosed {
+		t.Fatalf("a same-status rewrite erased the end reason: %q", r.EndReason)
+	}
+	// Any transition out of the carrying statuses clears it: an operator
+	// resume must not leave the run claiming why it once ended.
+	if _, err := s.UpdateRunStatusIf(ctx, "run_er", store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	if r := load(); r.EndReason != "" {
+		t.Fatalf("queued must clear the end reason, got %q", r.EndReason)
+	}
+	// Open-world, like FailureCode: an unknown reason round-trips.
+	if _, err := s.UpdateRunOutcome(ctx, "run_er", store.RunStatusFailed, "boom",
+		store.RunOutcomeMeta{Code: store.FailureExecutionFailed, EndReason: store.RunEndReason("some_future_reason")},
+		[]store.RunStatus{store.RunStatusQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if r := load(); r.EndReason != "some_future_reason" {
+		t.Fatalf("unknown reason mangled: %q", r.EndReason)
+	}
+	// A full-document write on a non-carrying status cannot resurrect it,
+	// and a document that already carries one is healed on read.
+	r := load()
+	r.Status = store.RunStatusRunning
+	r.EndReason = store.RunEndReasonPRClosed
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if got := load(); got.EndReason != "" {
+		t.Fatalf("SaveRun resurrected an end reason on a running run: %q", got.EndReason)
 	}
 }
 

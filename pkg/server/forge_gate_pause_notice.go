@@ -46,20 +46,13 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || run.RetryState == nil || run.RetryState.RetryAfter == nil {
 		return
 	}
-	if s.forgePublishTokens == nil || s.forgeConnections == nil {
-		return
-	}
-	prURL := strings.TrimSpace(runInputString(run, "pr_url"))
-	token := strings.TrimSpace(runInputString(run, forgePublishVarToken))
-	if prURL == "" || token == "" {
-		return // holds no publish grant: nothing to tell anyone
-	}
-	// Holding a grant is NOT enough to warrant a notice — the server mints
-	// one for ANY bot launched with a pr_url (the brancher, the docs
-	// amender, and every fixer). And a run whose repo pinned the gate off
-	// isn't blocking a merge, so a park there tells nobody nothing useful.
-	// Filter both classes: no gate_context OR the operator disabled the gate.
-	if strings.TrimSpace(runInputString(run, "gate_context")) == "" || runGateDisabled(run) {
+	// Where iterion may speak, and through whom, is ONE walk — the run's
+	// publish grant and its (repo, tenant, host) scope — shared with the DLQ
+	// notice. Both comment on a pull request under iterion's forge identity,
+	// so both are bounded by the same rule: a grant for repo A must not let
+	// that identity speak on any repo B the connection reaches.
+	target, ok := s.gateNoticeTarget(ctx, run, "pause notice")
+	if !ok {
 		return
 	}
 	// Derive the run's ROLE from its bot manifest, never from a bot id —
@@ -74,60 +67,18 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	// re-reads the branch, so a push in between collides with what it
 	// pushes back). Unknown: says the pause exists and when it resumes,
 	// makes no push-side claim either way.
-	role := s.pauseNoticeRoleForBot(run.BotID)
-	debugf := func(format string, args ...any) {
-		if s.logger != nil {
-			s.logger.Debug("forge gate: pause notice for run %s on %s not posted: "+format,
-				append([]any{run.ID, prURL}, args...)...)
-		}
-	}
-	grant, ok := s.forgePublishTokens.lookup(token)
-	if !ok {
-		debugf("its publish grant is expired or revoked")
-		return
-	}
-	host, repo, number, err := forge.ParsePullURL(prURL)
-	if err != nil {
-		debugf("its pr_url does not parse: %v", err)
-		return
-	}
-	// pr_url is a LAUNCH VAR and injectForgePublishVars honours a
-	// caller-pinned token, so the grant's scope has to be re-enforced here
-	// exactly as the publish endpoint and the reconciler enforce it —
-	// repo, tenant, host. Without the REPO half a run holding a legitimate
-	// grant for repo A could park on a quota and have iterion's forge
-	// identity comment on any repo B the connection reaches (for a GitHub
-	// App installation, typically the whole org).
-	if !strings.EqualFold(strings.TrimSpace(repo), strings.TrimSpace(grant.Repo)) {
-		debugf("its grant covers %s — refusing to comment outside the grant's repo", grant.Repo)
-		return
-	}
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
-	if err != nil {
-		debugf("its connection %s is unreadable: %v", grant.ConnectionID, err)
-		return
-	}
-	if conn.TenantID != grant.TeamID {
-		debugf("its connection %s belongs to another tenant", grant.ConnectionID)
-		return
-	}
-	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
-		debugf("its connection points at %q, not %q", hostOfURL(conn.BaseURL()), host)
-		return
-	}
-	commenter, err := s.issueCommenterFor(ctx, conn)
-	if err != nil || commenter == nil {
-		debugf("no comment client for %s: %v", conn.Provider, err)
-		return
-	}
+	//
+	// Read after the target resolves: it walks the bot catalog, which a run
+	// that may not be commented on has no reason to pay for.
+	role := s.pauseNoticeRoleForRun(ctx, run)
 	body := gatePauseNoticeBody(run, role, time.Now().UTC())
-	if _, err := commenter.CommentIssue(ctx, repo, number, body); err != nil {
-		debugf("%v", err)
+	if _, err := target.commenter.CommentIssue(ctx, target.repo, target.number, body); err != nil {
+		s.gateNoticeDebug(run, "pause notice", "%v", err)
 		return
 	}
 	if s.logger != nil {
 		s.logger.Info("forge gate: run %s parked on a provider quota — pause notice posted on %s (retry at %s)",
-			run.ID, prURL, run.RetryState.RetryAfter.Format(time.RFC3339))
+			run.ID, target.prURL, run.RetryState.RetryAfter.Format(time.RFC3339))
 	}
 }
 
@@ -170,16 +121,25 @@ const (
 	pauseNoticeRoleFixer
 )
 
-// pauseNoticeRoleForBot classifies the bot behind a parked run. A bot that
+// pauseNoticeRoleForRun classifies the bot behind a parked run. A bot that
 // PRODUCES a review is a reviewer (Revi and any peer); one that CONSUMES a
-// review to answer it is a fixer (Billy and any peer). Consumes wins over
-// produces on the (unlikely) both — a bot that produces its own review of
-// its own fixes is a fixer, and the fixer notice's push-back warning is the
-// one that matters. Missing bot / entry / catalog → unknown (silent).
-func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
-	botID = strings.TrimSpace(botID)
+// review to answer it is a fixer (Billy and any peer). Missing bot / entry /
+// catalog → unknown (neutral notice).
+//
+// The manifest is read AT THE TIER THE RUN CAME FROM: a team-authored bot
+// resolves through the team's own bot-source row at launch, and the run
+// records which (BotSourceTenant), so reading only the platform + baked
+// catalog would find nothing and hand a team's reviewer the neutral notice.
+// The team lookup is keyed on the run's own provenance, never on an ambient
+// tenant — the tenant-context-free lanes stay blind to team forks by
+// contract (see bot_resolver.go).
+func (s *Server) pauseNoticeRoleForRun(ctx context.Context, run *store.Run) pauseNoticeRole {
+	botID := strings.TrimSpace(run.BotID)
 	if botID == "" {
 		return pauseNoticeRoleUnknown
+	}
+	if m := s.teamBotManifest(ctx, run.BotSourceTenant, botID); m != nil {
+		return pauseNoticeRoleFor(m.Produces, m.Consumes)
 	}
 	entry, ok, err := s.effectiveFindByName(botID)
 	if err != nil {
@@ -194,12 +154,21 @@ func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
 	if !ok {
 		return pauseNoticeRoleUnknown
 	}
-	for _, c := range entry.Consumes {
+	return pauseNoticeRoleFor(entry.Produces, entry.Consumes)
+}
+
+// pauseNoticeRoleFor is the classification itself, over the two hand-off
+// declaration lists whichever tier supplied them. Consumes wins over produces
+// on the (unlikely) both — a bot that produces its own review of its own
+// fixes is a fixer, and the fixer notice's push-back warning is the one that
+// matters.
+func pauseNoticeRoleFor(produces []bundle.ProducedArtifact, consumes []bundle.ConsumedArtifact) pauseNoticeRole {
+	for _, c := range consumes {
 		if c.Kind == bundle.HandoffKindReview {
 			return pauseNoticeRoleFixer
 		}
 	}
-	for _, p := range entry.Produces {
+	for _, p := range produces {
 		if p.Kind == bundle.HandoffKindReview {
 			return pauseNoticeRoleReviewer
 		}

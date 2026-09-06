@@ -8,11 +8,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// A cancel's reason lands in run.Error — what the run list, board cards and
-// merge-gate synthetic statuses all read. Pinned here: an automated cancel
+// A cancel's reason lands on the run twice: as the typed EndReason the runner
+// admission reads, and as the run.Error the run list, board cards and
+// merge-gate synthetic statuses all show. Pinned here: an automated cancel
 // (the webhook supersede lane) records what actually happened instead of
-// "cancelled by user", and the prior error is carried forward rather than
-// erased (a supersede once overwrote a runner validation error, and the PR's
+// "cancelled by user", the message is DERIVED from the reason so the two
+// cannot disagree, and the prior error is carried forward rather than erased
+// (a supersede once overwrote a runner validation error, and the PR's
 // synthetic gate then blamed a human who had touched nothing).
 func TestCancelRunWithReason(t *testing.T) {
 	newPub := func(t *testing.T) (*Publisher, store.RunStore) {
@@ -42,7 +44,7 @@ func TestCancelRunWithReason(t *testing.T) {
 	t.Run("an automated reason is recorded verbatim and keeps the prior error", func(t *testing.T) {
 		p, st := newPub(t)
 		seed(t, st, "run-1", store.RunStatusFailedResumable, `runner: reject repo ref: git: branch name "renovate/npm-(non-major)"`)
-		if err := p.CancelRunWithReason(context.Background(), "run-1", "superseded by a newer delivery for the same subject"); err != nil {
+		if err := p.CancelRunWithReason(context.Background(), "run-1", store.RunEndReasonSuperseded); err != nil {
 			t.Fatalf("CancelRunWithReason: %v", err)
 		}
 		run, err := st.LoadRun(context.Background(), "run-1")
@@ -52,7 +54,10 @@ func TestCancelRunWithReason(t *testing.T) {
 		if run.Status != store.RunStatusCancelled {
 			t.Fatalf("status = %s, want cancelled", run.Status)
 		}
-		if !strings.HasPrefix(run.Error, "superseded by a newer delivery") {
+		if run.EndReason != store.RunEndReasonSuperseded {
+			t.Errorf("end_reason = %q, want %q — the typed reason is what a reader keys on", run.EndReason, store.RunEndReasonSuperseded)
+		}
+		if !strings.HasPrefix(run.Error, store.RunEndReasonSuperseded.Message()) {
 			t.Errorf("error = %q, want the automated reason first", run.Error)
 		}
 		if !strings.Contains(run.Error, "was failed_resumable") || !strings.Contains(run.Error, "reject repo ref") {
@@ -70,8 +75,8 @@ func TestCancelRunWithReason(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if run.Error != "cancelled by user" {
-			t.Errorf("error = %q, want the plain operator shape", run.Error)
+		if run.Error != "cancelled by user" || run.EndReason != store.RunEndReasonOperator {
+			t.Errorf("(error, end_reason) = (%q, %q), want the plain operator shape", run.Error, run.EndReason)
 		}
 	})
 
@@ -83,7 +88,7 @@ func TestCancelRunWithReason(t *testing.T) {
 	t.Run("the runner's engine cancel does not overwrite a recorded reason", func(t *testing.T) {
 		p, st := newPub(t)
 		seed(t, st, "run-4", store.RunStatusRunning, "")
-		if err := p.CancelRunWithReason(context.Background(), "run-4", "superseded by a newer delivery for the same subject"); err != nil {
+		if err := p.CancelRunWithReason(context.Background(), "run-4", store.RunEndReasonSuperseded); err != nil {
 			t.Fatalf("CancelRunWithReason: %v", err)
 		}
 		// The exact write the engine performs on ctx-cancel.
@@ -103,15 +108,17 @@ func TestCancelRunWithReason(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(run.Error, "superseded by a newer delivery") {
-			t.Errorf("error = %q — the supersede reason did not survive the runner's cancel", run.Error)
+		if !strings.HasPrefix(run.Error, store.RunEndReasonSuperseded.Message()) || run.EndReason != store.RunEndReasonSuperseded {
+			t.Errorf("(error, end_reason) = (%q, %q) — the supersede reason did not survive the runner's cancel", run.Error, run.EndReason)
 		}
 	})
 
-	t.Run("an empty reason still names the fact", func(t *testing.T) {
+	// A reason the vocabulary does not know still names the fact, and never
+	// signs an operator's name to a decision no operator took.
+	t.Run("an unknown reason still names the fact", func(t *testing.T) {
 		p, st := newPub(t)
 		seed(t, st, "run-3", store.RunStatusQueued, "")
-		if err := p.CancelRunWithReason(context.Background(), "run-3", "  "); err != nil {
+		if err := p.CancelRunWithReason(context.Background(), "run-3", store.RunEndReason("  ")); err != nil {
 			t.Fatalf("CancelRunWithReason: %v", err)
 		}
 		run, err := st.LoadRun(context.Background(), "run-3")

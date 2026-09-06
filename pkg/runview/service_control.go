@@ -33,13 +33,14 @@ func (s *Service) Cancel(runID string) error {
 	return s.manager.Cancel(runID)
 }
 
-// CancelWithReason mirrors Cancel but records WHY on the run (run.Error) —
-// what the run list, board cards and merge-gate synthetic statuses read. An
+// CancelWithReason mirrors Cancel but records WHY on the run: the typed
+// store.RunEndReason the runner admission reads, and the message it derives —
+// what the run list, board cards and merge-gate synthetic statuses show. An
 // automated caller (the webhook supersede lane) must not sign its cancel
 // "cancelled by user". The in-process manager path has no reason plumbing —
 // the engine stamps its own cancellation semantics — so the reason applies
 // on the cloud path, where the bare status flip IS the record.
-func (s *Service) CancelWithReason(runID, reason string) error {
+func (s *Service) CancelWithReason(runID string, reason store.RunEndReason) error {
 	if s.publisher != nil {
 		return s.publisher.CancelRunWithReason(context.Background(), runID, reason)
 	}

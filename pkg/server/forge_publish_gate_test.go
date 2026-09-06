@@ -68,14 +68,19 @@ type fakeGateClient struct {
 	// same-repo PR), so pre-#642 fixtures pass the fork-guard fail-CLOSED
 	// check without editing every callsite; a fork test sets it explicitly.
 	headRepo string
+	// noHeadRepo returns an EMPTY HeadRepoFullName — the shape a provider
+	// emits once a fork was deleted or blocked (head.repo: null).
+	noHeadRepo bool
+	// state is the PR state the stub reports; empty reads as open.
+	state string
 }
 
 func (f *fakeGateClient) GetPullRequest(_ context.Context, repo string, _ int) (forge.PullRef, error) {
 	head := f.headRepo
-	if head == "" {
+	if head == "" && !f.noHeadRepo {
 		head = repo
 	}
-	return forge.PullRef{HeadSHA: f.headSHA, HeadRepoFullName: head}, f.getErr
+	return forge.PullRef{HeadSHA: f.headSHA, HeadRepoFullName: head, State: f.state}, f.getErr
 }
 
 func (f *fakeGateClient) SetCommitStatus(_ context.Context, _, sha string, st forge.CommitStatus) error {
