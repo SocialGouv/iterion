@@ -2027,21 +2027,50 @@ def run_script(path, ws, timeout=600):
     return run("sh %s" % shlex.quote(path), ws, timeout)
 
 
-APPLY_REFUSED = -1  # apply_mutant's code when apply.sh was NOT run: no record could go down first
+# apply_mutant's code when apply.sh was NOT run because no record could go
+# down first. A string on purpose: a returncode is an int, and a shell killed
+# by SIGHUP reports -1 — an apply that DID run and must be reverted.
+APPLY_REFUSED = "refused"
+
+
+_git_dir_cache = {}
+
+
+def git_dir_of(ws):
+    """The tree's git dir (a worktree's own, under the main repo's .git), or
+    "" when ws is not a git repository — or when git does not answer:
+    bounded and guarded, because this runs before the JSON report the
+    campaign parses. Cached per workspace path."""
+    key = os.path.realpath(ws)
+    if key not in _git_dir_cache:
+        try:
+            p = subprocess.run(["git", "-C", ws, "rev-parse", "--git-dir"],
+                               capture_output=True, text=True, timeout=60)
+            d = (p.stdout or "").strip() if p.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            d = ""
+        if d and not os.path.isabs(d):
+            d = os.path.join(key, d)
+        _git_dir_cache[key] = os.path.realpath(d) if d else ""
+    return _git_dir_cache[key]
 
 
 def applied_marker_for(ws):
     """Where the harness notes the mutant it has applied and not yet reverted.
 
-    Outside the tree (the tree is what is judged), keyed on the workspace's
-    absolute path (sibling worktrees share a basename), under the same
-    scratch root as the sealed held-out set (GM_SCRATCH, else the system
-    temp dir) — one rule, so a root that makes the sealed pile survive makes
-    the marker survive too. In a private directory of its own: the marker
-    names a script the next gate will execute.
+    With the TREE, outside what is judged: in the tree's git dir, which lives
+    exactly as long as the mutated files do — a container restarted on the
+    same bind-mounted worktree keeps both, a copy-based pod's fresh copy has
+    neither — whereas a marker in a temp root outlives or predeceases the
+    tree it describes (a retry with a fresh /tmp on the same worktree would
+    keep the mutant and lose the note). A workspace that is not a git
+    repository falls back to the scratch root (GM_SCRATCH, else the system
+    temp dir), keyed on the workspace's real path. In a private directory of
+    its own: the marker names a script the next gate will execute.
     """
-    key = hashlib.sha256(os.path.abspath(ws).encode("utf-8")).hexdigest()[:12]
-    root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+    real = os.path.realpath(ws)
+    key = hashlib.sha256(real.encode("utf-8")).hexdigest()[:12]
+    root = git_dir_of(ws) or os.environ.get("GM_SCRATCH", tempfile.gettempdir())
     return os.path.join(root, "gm-applied", "gm-applied-%s.json" % key)
 
 
@@ -2247,16 +2276,17 @@ def _under(path, root):
     return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
 
-def leftover_roots(ws):
+def leftover_roots(ws, gm_dir=None):
     """The only two places a mutant of this workspace's net can live: the
-    tree itself (visible mutants, an unsealed held-out) and the sealed
-    held-out pile (sealed_dir_for — GM_SEALED_DIR honoured). Never the whole
-    scratch root: on a shared host that is all of /tmp, and a marker naming
-    a directory there would have the gate run whatever script it found."""
-    return [ws, sealed_dir_for(ws)]
+    net's own directory (visible mutants, an unsealed held-out — the whole
+    tree when the caller has no net dir to name) and the sealed held-out
+    pile (sealed_dir_for — GM_SEALED_DIR honoured). Never the whole scratch
+    root: on a shared host that is all of /tmp, and a marker naming a
+    directory there would have the gate run whatever script it found."""
+    return [gm_dir or ws, sealed_dir_for(ws)]
 
 
-def revert_leftover_mutant(ws):
+def revert_leftover_mutant(ws, gm_dir=None):
     """Revert the mutant a previous, interrupted run left applied — if any.
 
     A stream cut, a SIGTERM or a pod kill between apply.sh and revert.sh
@@ -2308,9 +2338,9 @@ def revert_leftover_mutant(ws):
         return {"id": None, "dir": "", "code": None, "out": why, "marker": marker,
                 "refused": "slot", "kept": True, "dirty": ""}
     mdir = meta.get("dir") or ""
-    if not mdir or not any(_under(mdir, r) for r in leftover_roots(ws)):
+    if not mdir or not any(_under(mdir, r) for r in leftover_roots(ws, gm_dir)):
         return {"id": meta.get("id"), "dir": mdir, "code": None,
-                "out": " and ".join(leftover_roots(ws)),
+                "out": " and ".join(leftover_roots(ws, gm_dir)),
                 "marker": marker, "refused": "dir", "kept": True, "dirty": ""}
     script = os.path.join(mdir, "revert.sh")
     if os.path.isfile(script):
@@ -3452,7 +3482,7 @@ def _selftest():
         os.environ["GM_SCRATCH"] = tempfile.mkdtemp(prefix="gm-scratch-")
         try:
             def sub(*a):
-                subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
+                return subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
             sub("git", "init", "-q")
             sub("git", "config", "user.email", "t@t")
             sub("git", "config", "user.name", "t")
@@ -3485,8 +3515,16 @@ def _selftest():
             code, _out = apply_mutant(lmeta, tmp)
             check("apply.sh tourne", code, 0)
             check("le marqueur d'application est pose", os.path.isfile(applied_marker_for(tmp)), True)
-            check("le marqueur vit sous GM_SCRATCH, comme la pile scellee",
-                  applied_marker_for(tmp).startswith(os.environ["GM_SCRATCH"]), True)
+            check("le marqueur vit dans le git-dir de l'arbre, hors de ce qui est juge",
+                  [applied_marker_for(tmp).startswith(os.path.realpath(os.path.join(tmp, ".git")) + os.sep),
+                   "gm-applied" in sub("git", "status", "--porcelain").stdout],
+                  [True, False])
+            nogit = tempfile.mkdtemp(prefix="gm-nogit-")
+            try:
+                check("sans depot git, le marqueur retombe sous GM_SCRATCH",
+                      applied_marker_for(nogit).startswith(os.environ["GM_SCRATCH"]), True)
+            finally:
+                shutil.rmtree(nogit, ignore_errors=True)
             # Interruption ici : pas de revert. La porte suivante nettoie.
             left = revert_leftover_mutant(tmp)
             check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
@@ -3786,6 +3824,43 @@ def _selftest():
             left = revert_leftover_mutant(tmp)
             check("le meme marqueur, l'emplacement redevenu prive : reverti",
                   [(left or {}).get("code"), tree()], [0, "original\n"])
+            # ── Ajouts : racines resserrees sur le repertoire du filet, sentinelle
+            # qui n'est pas un code de retour. Etat remis a plat d'abord.
+            try:
+                os.remove(applied_marker_for(tmp))
+            except OSError:
+                pass
+            sub("git", "checkout", "--", "f.txt")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp, os.path.join(tmp, ".golden-master"))
+            check("hors du repertoire du filet nomme, le marqueur est refuse et garde",
+                  [(left or {}).get("refused"), tree(), os.path.isfile(applied_marker_for(tmp))],
+                  ["dir", "original\nmutant\n", True])
+            left = revert_leftover_mutant(tmp)
+            check("sans repertoire de filet nomme, l'arbre entier est reconnu : reverti",
+                  [(left or {}).get("code"), tree()], [0, "original\n"])
+            # Une application TUEE par un signal (returncode -1, ce que rapporte
+            # subprocess pour un shell mort sur SIGHUP) n'est pas une application
+            # refusee : elle a tourne, elle est revertie dans le run. Le -1 est
+            # injecte par une doublure de run_script (un signal reel depend du
+            # shell : exec ou non de la derniere commande).
+            scripts("printf 'half\\n' >> f.txt", "git checkout -- f.txt")
+            real_run_script = g["run_script"]
+
+            def killed_apply(path, ws, timeout=600):
+                if path.endswith("apply.sh"):
+                    real_run_script(path, ws, timeout)
+                    return -1, "killed by SIGHUP"
+                return real_run_script(path, ws, timeout)
+            g["run_script"] = killed_apply
+            try:
+                verdict, state = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+            finally:
+                g["run_script"] = real_run_script
+            check("une application tuee par un signal est revertie, pas lue comme refusee",
+                  [state, tree(), os.path.isfile(applied_marker_for(tmp))],
+                  ["failed", "original\n", False])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             shutil.rmtree(outside, ignore_errors=True)
@@ -3951,7 +4026,7 @@ def main():
     # is looked at, and said: otherwise the dirty check below names the
     # mutant's file as the lot's uncommitted work, and the build gate judges a
     # program nobody wrote.
-    left = revert_leftover_mutant(ws)
+    left = revert_leftover_mutant(ws, gm_dir)
     if left:
         kind, text = leftover_disposition(left)
         if kind in LEFTOVER_BAIL_KINDS:
