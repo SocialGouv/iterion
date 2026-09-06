@@ -190,6 +190,8 @@ func TestPublish_NeverRetiresACompleteImmutableTree(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "the-peers")); err != nil {
 			t.Fatalf("a complete immutable tree was renamed aside anyway: %v", err)
 		}
+		// `staging` is expected: publish leaves the copy it did not use to the
+		// caller's defer. What must NOT be here is a `dest.retired-…`.
 		assertNoLeftovers(t, root, "staging", "dest")
 	})
 }
