@@ -2616,11 +2616,15 @@ tool oracle_run:
                     residue = after
                     residue_undecided = True
             else:
+                # A git that answered nothing is more undecidable still than one
+                # that answered with no record to compare against: the marker
+                # stays, the gate stops, an operator looks.
                 unknown = "`git status` did not answer (exit %s)" % st
-            if not residue:
+                residue_undecided = True
+            if not residue and not residue_undecided:
                 drop_applied_marker(ws, meta)
         return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
-                "marker": marker, "refused": False, "kept": code != 0 or bool(residue),
+                "marker": marker, "refused": False, "kept": code != 0 or bool(residue) or residue_undecided,
                 "dirty": dirty[:400], "dirty_unknown": unknown, "residue": residue[:50],
                 "residue_undecided": residue_undecided}
 
@@ -2663,6 +2667,13 @@ tool oracle_run:
                 "marker %s."
                 % (left.get("id") or "?", left.get("dir") or "?", left.get("out") or "?",
                    left.get("marker")))
+        if left.get("code") == 0 and left.get("residue_undecided") and not left.get("residue"):
+            return "still_mutated", (
+                "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
+                "exit 0), but whether the tree came back could not be checked: %s. Unknown is not "
+                "clean — the tree will be neither judged nor recorded. Check it by hand (git status, "
+                "git diff), revert the mutant's paths if any remain, then delete the marker %s."
+                % (left.get("id"), left.get("dirty_unknown") or "no record", left.get("marker")))
         if left.get("code") == 0 and left.get("residue"):
             if left.get("residue_undecided"):
                 return "still_mutated", (
@@ -4043,8 +4054,10 @@ tool oracle_run:
                 check("l'etat de l'arbre est INCONNU, pas propre",
                       [(nogit or {}).get("dirty"), bool((nogit or {}).get("dirty_unknown"))],
                       ["", True])
-                check("et la note le dit au lieu de laisser croire a un arbre propre",
-                      "Unknown, not clean" in leftover_disposition(nogit or {})[1], True)
+                check("et la porte s'arrete au lieu de laisser croire a un arbre propre",
+                      [leftover_disposition(nogit or {})[0], "Unknown is not clean" in leftover_disposition(nogit or {})[1],
+                       (nogit or {}).get("kept")],
+                      ["still_mutated", True, True])
                 clear_marker()
                 # Un revert en ECHEC garde son enregistrement face au mutant suivant :
                 # la seconde application est refusee, rien ne tourne, et le revert du
@@ -4198,6 +4211,29 @@ tool oracle_run:
                 check("sans dirty_before, un arbre propre apres le revert est reverti",
                       [(left or {}).get("residue"), leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
                       [[], "reverted", False])
+                # Un `git status` qui ne repond pas apres le revert : inconnu, pas propre —
+                # marqueur garde, porte arretee (doublure de run() sur cette commande seule).
+                os.remove(os.path.join(tmp, ".gitignore"))
+                sub("git", "checkout", "--", ".gitignore")
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                apply_mutant(lmeta, tmp)
+                real_run = g["run"]
+
+                def mute_status(cmd, cwd, timeout=CMD_TIMEOUT_S):
+                    if "status --porcelain" in cmd:
+                        return 124, "timeout after 120s"
+                    return real_run(cmd, cwd, timeout)
+                g["run"] = mute_status
+                try:
+                    left = revert_leftover_mutant(tmp)
+                finally:
+                    g["run"] = real_run
+                check("un git status muet apres le revert : inconnu, marqueur garde, porte arretee",
+                      [(left or {}).get("residue_undecided"), bool((left or {}).get("dirty_unknown")),
+                       (left or {}).get("kept"), os.path.isfile(applied_marker_for(tmp)),
+                       leftover_disposition(left or {})[0]],
+                      [True, True, True, True, "still_mutated"])
+                os.remove(applied_marker_for(tmp))
                 # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
                 mpath = applied_marker_for(tmp)
                 os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
