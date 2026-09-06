@@ -160,15 +160,22 @@ func (f *Fetcher) lockKey(ctx context.Context, key string) (func(), error) {
 	}
 }
 
-// git runs one git command. The credential is injected via an askpass helper
-// (never argv, never the URL) so it cannot leak into a process listing, git's
-// own logs, or an error message — the same use-by-reference discipline the
-// mounted run secrets follow.
+// git runs one git command, and its return is the END of that command: nothing
+// it spawned is still running. gitlib.NoAutoMaintenance is what makes that
+// true — without it a fetch leaves a DETACHED `git maintenance run --auto`
+// behind, writing under the checkout's `.git/objects` after this function has
+// returned, past FetchTimeout, and into a cache directory the caller may
+// already be deleting.
+//
+// The credential is injected via an askpass helper (never argv, never the URL)
+// so it cannot leak into a process listing, git's own logs, or an error
+// message — the same use-by-reference discipline the mounted run secrets
+// follow.
 func (f *Fetcher) git(ctx context.Context, dir, cred string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(args...)...)
 	cmd.Dir = dir
 	// SanitizeEnv first: cmd.Dir names the checkout, and an inherited GIT_DIR
 	// or GIT_INDEX_FILE would silently redirect the fetch away from it.
