@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.17](https://github.com/SocialGouv/iterion/compare/v3.112.16...v3.112.17) (2026-09-06)
+
+### Bug Fixes
+
+* **pluginsource:** a peer that published the same pinned checkout first has published this fetch's tree ([#855](https://github.com/SocialGouv/iterion/issues/855)) ([9144328](https://github.com/SocialGouv/iterion/commit/9144328f5ea142978b6223fb74232fd78556febb)), closes [#854](https://github.com/SocialGouv/iterion/issues/854), references [#822](https://github.com/SocialGouv/iterion/issues/822)
+
+    <details><summary>why</summary>
+
+    Two fetchers sharing a cache dir both stage the same key; the first rename(staging → final) wins and the loser's fails ENOTEMPTY. The loser already re-read the final path and accepted it — but that read could find NOTHING, because publish renames an existing tree ASIDE before its own rename. With N publishers the sequence is: A publishes, B's rename loses, C retires the path to make room for its own copy, and B — reading between C's retire and C's rename — sees no final path and reports…
+
+    </details>
+
 ## [3.112.16](https://github.com/SocialGouv/iterion/compare/v3.112.15...v3.112.16) (2026-09-06)
 
 ### Bug Fixes
