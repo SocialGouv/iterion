@@ -2386,9 +2386,11 @@ tool sync_harness:
             return None
         if not marker_dir_is_ours(marker):
             # Not ours to read — and not ours to delete either. Nothing is executed
-            # and nothing is dropped. No mutant of ours can be stranded by this:
-            # write_applied_marker refuses the same directory, so nothing was ever
-            # applied under it.
+            # and nothing is dropped. `write_applied_marker` refuses the same
+            # directory, so no mutant can be applied while it stands; and for the
+            # narrow case of a directory that WAS ours when the marker went down
+            # and has changed hands since, a dirty tree turns this refusal into a
+            # refusal to gate — see leftover_disposition.
             return {"id": None, "dir": "", "code": None, "out": "", "marker": marker,
                     "refused": True, "untrusted_dir": True}
         meta = read_applied_marker(marker)
