@@ -235,7 +235,7 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
-	// The seven below pin what bounding the search must NOT cost. Every one of
+	// The eight below pin what bounding the search must NOT cost. Every one of
 	// them reads on an unbounded scan, and every one was dropped by some
 	// bound written to make the no-report path fast — whether by ending the
 	// scan outright, by letting chatter spend the budget, or by counting a
@@ -303,6 +303,29 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
 			t.Fatalf("the block's fields were lost to the multi-line chatter: %+v", res)
+		}
+	})
+
+	// An opening that shares its line with a key — `"lane-3": {` — can never
+	// START a JSON object, so a scan that files only brace-FIRST lines leaves
+	// the close matching it unowned and hands that close the block ABOVE: a
+	// long futile join, once per pair. Sixty of them and the search walks past
+	// the report's own "}" and returns ONE ENTRY OF ITS LIST as the verdict —
+	// which has no "mode", so a subset run, no verdict at all, would read as a
+	// pass. Worse than a dropped report: a wrong one.
+	t.Run("key-brace teardown chatter does not cost the block its verdict", func(t *testing.T) {
+		sections := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": false,\\n  \"invalid\": [\\n    {\"id\": \"m17\", \"reason\": \"anchor gone\"}\\n  ]\\n}\\n' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\n" +
+			"i=0; while [ $i -lt 60 ]; do echo \"  \\\"lane-$i\\\": {\"; echo '  }'; i=$((i+1)); done\n" +
+			"exit 1\n"
+		ws, base := scratchWorkspace(t, sections)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a block verdict was discarded by key-brace teardown chatter: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the search read past the block into its own list: %+v", res)
 		}
 	})
 

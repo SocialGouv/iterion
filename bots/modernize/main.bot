@@ -935,8 +935,14 @@ tool lot_verify:
             up, down = braces(ln)
             if down > up:
                 opener_of[i] = last_open.get(depth + up - down, -1)
-            elif up > down and ln.lstrip().startswith("{"):
-                last_open[depth] = i
+            elif up > down:
+                # An opening is filed whether or not a block can START on it:
+                # one that cannot — a `"results": {` — still OWNS the close
+                # that matches it, and leaving it unfiled hands that close the
+                # block ABOVE instead, which is a long futile join repeated for
+                # every such pair. Filed as -1, its close is simply not a pair
+                # worth trying, and the noise costs nothing at all.
+                last_open[depth] = i if ln.lstrip().startswith("{") else -1
             depth += up - down
         # One candidate per close already makes chatter cheap, so what is left
         # to bound is the SIZE of the joins, not their number: a "k": { … } / }
