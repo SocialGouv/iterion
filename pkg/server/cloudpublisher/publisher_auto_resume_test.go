@@ -22,7 +22,7 @@ func TestSubmitResume_AutomaticRefusesCancelled(t *testing.T) {
 	}
 	ctx := store.WithIdentity(context.Background(), "team", "alice")
 	const runID = "run-cancelled-by-stop-on-close"
-	cancelReason := store.RunEndReasonPRClosed + " (was failed_resumable: node \"campaign\": rate_limited)"
+	cancelReason := store.RunEndReasonPRClosed.Message() + " (was failed_resumable: node \"campaign\": rate_limited)"
 	if err := st.SaveRun(ctx, &store.Run{
 		ID: runID, TenantID: "team", OwnerID: "alice",
 		Status: store.RunStatusCancelled, Error: cancelReason,

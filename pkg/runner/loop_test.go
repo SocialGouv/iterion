@@ -632,11 +632,12 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 			t.Fatalf("SaveRun %s: %v", id, err)
 		}
 	}
-	// The exact prefix CancelRunWithReason wraps ("(was <status>: <prior>)"),
-	// so the substring detection has to survive it — that's the WHOLE point of
-	// exposing store.IsPRClosedCancel as a helper.
+	// A document cancelled before EndReason existed: the message, wrapped
+	// as CancelRunWithReason wraps it ("(was <status>: <prior>)"), is the
+	// only carrier — which is what store.EndedBecausePRClosed's migration
+	// half reads.
 	saveErr("run-cancel-pr-closed", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"},
-		store.RunEndReasonPRClosed+" (was failed_resumable: node \"campaign\": rate_limited)")
+		store.RunEndReasonPRClosed.Message()+" (was failed_resumable: node \"campaign\": rate_limited)")
 	// An operator cancel of a QUEUED resume: every cloud resume CASes the
 	// doc to queued before publishing, so `cancelled` at admission always
 	// post-dates the publish — whatever the error shape.
@@ -1546,5 +1547,53 @@ func TestAdoptRunningUnderLock_PeerMovedTheDocTakesItsDisposition(t *testing.T) 
 	}
 	if got := loadStatus(t, st, id); got.FailureCode != store.FailureInterrupted {
 		t.Fatalf("FailureCode = %q, want the peer's INTERRUPTED kept — the adoption must not overwrite a cause it did not establish", got.FailureCode)
+	}
+}
+
+// The PR-closed drop is a PROTOCOL between the webhook layer that cancels and
+// the runner that admits. Its carrier is the typed EndReason on the run doc,
+// not the prose in run.Error: a reworded, translated or truncated message must
+// not silently re-arm the redelivery this admission exists to refuse.
+func TestResolveDeliveryPreconditions_PRClosedIsReadFromTheTypedEndReason(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	save := func(id string, end store.RunEndReason, errText string) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{
+			ID: id, WorkflowName: "wf", Status: store.RunStatusCancelled,
+			Checkpoint: &store.Checkpoint{NodeID: "n1"},
+			EndReason:  end, Error: errText,
+		}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	// The typed reason with a message that shares nothing with the constant.
+	save("run-typed", store.RunEndReasonPRClosed, "la pull request est fermée (was running: node \"campaign\")")
+	// A doc written before the field existed: the prose is all there is.
+	save("run-legacy", "", store.RunEndReasonPRClosed.Message()+" (was failed_resumable: node \"campaign\": rate_limited)")
+	// An operator cancel must NOT be mistaken for one.
+	save("run-operator", store.RunEndReasonOperator, "cancelled by user")
+
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	for _, c := range []struct {
+		name, runID, wantOp string
+	}{
+		{"the typed reason decides", "run-typed", "ack-pr-closed-cancel"},
+		{"a pre-field doc still reads its prose", "run-legacy", "ack-pr-closed-cancel"},
+		{"an operator cancel keeps its own line", "run-operator", "ack-cancelled"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			msg := &queue.RunMessage{RunID: c.runID, TenantID: "team-1", Resume: &queue.ResumeSpec{}}
+			out := r.resolveDeliveryPreconditions(msg)
+			if out.proceed {
+				t.Fatalf("a cancelled run must never proceed (outcome %+v)", out)
+			}
+			if out.op != c.wantOp {
+				t.Fatalf("op = %q, want %q", out.op, c.wantOp)
+			}
+		})
 	}
 }

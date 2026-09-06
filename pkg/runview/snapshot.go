@@ -119,7 +119,11 @@ type RunHeader struct {
 	// FailureCode is Error's machine-readable classification (ADR-095);
 	// empty = unknown/legacy.
 	FailureCode store.FailureCode `json:"failure_code,omitempty"`
-	Checkpoint  *store.Checkpoint `json:"checkpoint,omitempty"`
+	// EndReason is the typed WHY the run ended, of which Error is the
+	// human sentence — what tells "cancelled because its pull request
+	// closed" from an operator's click. Empty = unknown/legacy.
+	EndReason  store.RunEndReason `json:"end_reason,omitempty"`
+	Checkpoint *store.Checkpoint  `json:"checkpoint,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
@@ -1446,6 +1450,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		FinishedAt:           r.FinishedAt,
 		Error:                r.Error,
 		FailureCode:          r.FailureCode,
+		EndReason:            r.EndReason,
 		Checkpoint:           r.Checkpoint,
 		WorkDir:              r.WorkDir,
 		ProjectPath:          r.ProjectPath,

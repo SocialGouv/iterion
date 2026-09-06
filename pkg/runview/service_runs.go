@@ -265,6 +265,7 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
 		FailureCode:       r.FailureCode,
+		EndReason:         r.EndReason,
 		Active:            active,
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,

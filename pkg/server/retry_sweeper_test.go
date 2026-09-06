@@ -213,7 +213,7 @@ func TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead(t *testing.T) {
 	st.loadRun["run-cancelled"] = &store.Run{
 		ID:     "run-cancelled",
 		Status: store.RunStatusCancelled,
-		Error:  store.RunEndReasonPRClosed + " (was failed_resumable: node \"campaign\": rate_limited)",
+		Error:  store.RunEndReasonPRClosed.Message() + " (was failed_resumable: node \"campaign\": rate_limited)",
 	}
 	resumer := &fakeResumer{}
 	s := newRetrySweeperServer(t, st, resumer)

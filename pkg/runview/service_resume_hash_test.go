@@ -63,7 +63,7 @@ func (*resumeHashPublisher) CancelRun(context.Context, string) error {
 	return nil
 }
 
-func (*resumeHashPublisher) CancelRunWithReason(context.Context, string, string) error {
+func (*resumeHashPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
 

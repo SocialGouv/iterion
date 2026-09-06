@@ -21,7 +21,7 @@ func (*operatorResumePublisher) SubmitLaunch(context.Context, string, LaunchSpec
 }
 
 func (*operatorResumePublisher) CancelRun(context.Context, string) error { return nil }
-func (*operatorResumePublisher) CancelRunWithReason(context.Context, string, string) error {
+func (*operatorResumePublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
 

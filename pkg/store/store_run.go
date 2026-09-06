@@ -147,6 +147,7 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	// A concurrent write is refused at writeRun, before replacing the file.
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
+		r.EndReason = ""
 	}
 	// Same discipline for the pause pointer: a full-document write on a
 	// non-carrying status must not resurrect consumed interaction
@@ -275,13 +276,19 @@ func healRun(r *Run) bool {
 		r.FinishedAt = nil
 		changed = true
 	}
-	// A failure code may only persist on a failure status. The
-	// transition machinery clears it and SaveRun normalizes, so the
-	// remaining sources are historical rows written before those
-	// guards and hand-edited run.json — heal on read.
-	if r.FailureCode != "" && !r.Status.CarriesFailureCode() {
-		r.FailureCode = ""
-		changed = true
+	// A failure code, and the end reason beside it, may only persist on a
+	// status that carries an outcome. The transition machinery clears them
+	// and SaveRun normalizes, so the remaining sources are historical rows
+	// written before those guards and hand-edited run.json — heal on read.
+	if !r.Status.CarriesFailureCode() {
+		if r.FailureCode != "" {
+			r.FailureCode = ""
+			changed = true
+		}
+		if r.EndReason != "" {
+			r.EndReason = ""
+			changed = true
+		}
 	}
 	return changed
 }
@@ -655,6 +662,17 @@ func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStat
 		}
 	default:
 		r.FailureCode = ""
+	}
+	// The end reason follows the same discipline, on the same statuses.
+	switch {
+	case status.CarriesFailureCode() && meta.EndReason != "":
+		r.EndReason = meta.EndReason
+	case status.CarriesFailureCode():
+		if transition {
+			r.EndReason = ""
+		}
+	default:
+		r.EndReason = ""
 	}
 	switch status {
 	case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable, RunStatusCancelled:

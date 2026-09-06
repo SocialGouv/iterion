@@ -251,6 +251,7 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// A concurrent write refuses the replacement.
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
+		r.EndReason = ""
 	}
 	// Same discipline for the pause pointer: a full-document write on a
 	// non-carrying status must not resurrect consumed interaction
@@ -912,6 +913,16 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 			bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}}
 	default:
 		set["failure_code"] = "$$REMOVE"
+	}
+	// The end reason follows the same discipline, on the same statuses.
+	switch {
+	case status.CarriesFailureCode() && meta.EndReason != "":
+		set["end_reason"] = bson.M{"$literal": string(meta.EndReason)}
+	case status.CarriesFailureCode():
+		set["end_reason"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
+			bson.M{"$ifNull": bson.A{"$end_reason", "$$REMOVE"}}}}
+	default:
+		set["end_reason"] = "$$REMOVE"
 	}
 	// The pause pointer is a consumable (store.CarriesPausePointer):
 	// strip it off the SURVIVING checkpoint via $unsetField, guarded on

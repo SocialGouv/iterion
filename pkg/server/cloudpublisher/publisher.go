@@ -1899,20 +1899,25 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 //
 // Idempotent: running CancelRun on an already-terminal run is a no-op.
 func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
-	return p.CancelRunWithReason(ctx, runID, "cancelled by user")
+	return p.CancelRunWithReason(ctx, runID, store.RunEndReasonOperator)
 }
 
-// CancelRunWithReason is CancelRun with an explicit reason. The reason lands
-// in run.Error — which the run list, the board cards and the merge-gate
-// synthetic status all read — so an AUTOMATED cancel must say what actually
-// happened instead of masquerading as an operator action: a webhook supersede
-// once overwrote a runner validation error with "cancelled by user", and the
-// PR's synthetic gate then blamed a human who had touched nothing.
+// CancelRunWithReason is CancelRun with an explicit, TYPED reason. It lands on
+// the run twice: as store.Run.EndReason, the field the runner admission reads
+// to drop a redelivery for a dead pull request, and — through
+// RunEndReason.Message — as the run.Error the run list, the board cards and
+// the merge-gate synthetic status all quote. An AUTOMATED cancel must say what
+// actually happened instead of masquerading as an operator action: a webhook
+// supersede once overwrote a runner validation error with "cancelled by user",
+// and the PR's synthetic gate then blamed a human who had touched nothing.
+//
+// One reason, one message: the caller states the reason and the message is
+// derived, so a rewording can never disarm a reader keyed on the meaning.
 //
 // The prior error, when present, is carried forward (same rationale as
 // runview.CancelInactiveCtx): run.Error is the only record in run.json of WHY
 // the run was in its pre-cancel state, and cancelling must not erase it.
-func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason string) error {
+func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reason store.RunEndReason) error {
 	// Cancel descends here with a NON-request context (runview.Service.Cancel
 	// takes no ctx), so the mongo tenant filter has no tenant and its
 	// tenant-scoped queries panic. The caller (handleCancelRun / the WS
@@ -1945,13 +1950,12 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 			cancellable = append(cancellable, st)
 		}
 	}
-	if strings.TrimSpace(reason) == "" {
-		reason = "cancelled"
-	}
+	msg := reason.Message()
 	if prior := strings.TrimSpace(r.Error); prior != "" {
-		reason += " (was " + string(r.Status) + ": " + prior + ")"
+		msg += " (was " + string(r.Status) + ": " + prior + ")"
 	}
-	changed, err := p.store.UpdateRunStatusIfCoded(ctx, runID, store.RunStatusCancelled, reason, store.FailureCancelled, cancellable)
+	changed, err := p.store.UpdateRunOutcome(ctx, runID, store.RunStatusCancelled, msg,
+		store.RunOutcomeMeta{Code: store.FailureCancelled, EndReason: reason}, cancellable)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: flip status: %w", err)
 	}
