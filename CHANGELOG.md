@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.9](https://github.com/SocialGouv/iterion/compare/v3.112.8...v3.112.9) (2026-09-06)
+
+### Bug Fixes
+
+* **delegate:** a facade's bracketed API-error render is an API error, not a node's answer ([#818](https://github.com/SocialGouv/iterion/issues/818)) ([6930fd8](https://github.com/SocialGouv/iterion/commit/6930fd82ac1664d0471500e4914467585976b84b))
+
+    <details><summary>why</summary>
+
+    Measured on a golden-master run behind an Anthropic-shaped facade: the campaign node finished in 2.5 minutes with its structured output built from "API Error: [500][Operation failed][<request id>]" — the CLI's render of an upstream 500 — and the graph continued: 283 minutes and the next node's budget spent on a request that was never acted, the run ending unconverged.
+
+    </details>
+
 ## [3.112.8](https://github.com/SocialGouv/iterion/compare/v3.112.7...v3.112.8) (2026-09-06)
 
 ### Bug Fixes
