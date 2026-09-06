@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io"
 	"os"
 	"path/filepath"
@@ -697,6 +698,22 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			level:       logWarn,
 			logFmt:      "runner: run %s: the sandbox could not be placed (resumable) — re-offered in %s (%v)",
 			logArgs:     []any{runID, sandboxCapacityNakDelay, execErr},
+		}
+	}
+	// The IR does not load on this runner (a server ahead of the fleet):
+	// deterministic here, so Ack — a redelivery reaches the same runner
+	// image and the same verdict, eight times, then the DLQ park overwrites
+	// the diagnosis with DLQ_PARKED. The run is failed_resumable with
+	// IR_UNLOADABLE (failUnloadableIR); the resume after the fleet is
+	// aligned re-compiles on the server.
+	if errors.Is(execErr, ErrIRUnloadable) {
+		return execOutcome{
+			finalStatus: "ir_unloadable",
+			op:          "ack-ir-unloadable",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s: the IR the server compiled does not load on this runner (%s) — failed_resumable, NOT redelivered: align the runner with the server, then resume (%v)",
+			logArgs:     []any{runID, appinfo.Version, execErr},
 		}
 	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).
@@ -1827,6 +1844,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 
 	wf, err := loadWorkflow(ctx, msg, store.AsIRBlobStore(r.cfg.Store))
 	if err != nil {
+		if errors.Is(err, ErrIRUnloadable) {
+			r.failUnloadableIR(ctx, msg, err)
+		}
 		return err
 	}
 
@@ -2280,13 +2300,60 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 	}
 	file, err := ast.UnmarshalFile(raw)
 	if err != nil {
-		return nil, fmt.Errorf("runner: decode IR: %w", err)
+		return nil, fmt.Errorf("runner: %w: decode IR: %v", ErrIRUnloadable, err)
 	}
 	cr := ir.Compile(file)
 	if cr.HasErrors() {
-		return nil, fmt.Errorf("runner: compile IR: %d diagnostic(s)", len(cr.Diagnostics))
+		return nil, fmt.Errorf("runner: %w: compile IR: %d diagnostic(s): %s", ErrIRUnloadable, len(cr.Diagnostics), summariseDiagnostics(cr.Diagnostics))
 	}
 	return cr.Workflow, nil
+}
+
+// ErrIRUnloadable marks a RunMessage whose compiled IR this runner cannot
+// decode or compile — the shape a server ahead of the runner produces. It
+// is deterministic for this runner, so the delivery is acked, not naked:
+// redelivering it burns the delivery budget on the same verdict and parks
+// it on the DLQ with the diagnosis overwritten, which is how five runs died
+// mute on a five-release server/runner skew.
+var ErrIRUnloadable = errors.New("the IR does not load on this runner")
+
+// summariseDiagnostics keeps the first few compiler messages for a verdict
+// an operator can read on the run, without the whole list.
+func summariseDiagnostics(diags []ir.Diagnostic) string {
+	parts := make([]string, 0, 3)
+	for i, d := range diags {
+		if i == 3 {
+			parts = append(parts, fmt.Sprintf("… (%d more)", len(diags)-3))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", d.Code, d.Message))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// failUnloadableIR writes the verdict a mute runner never wrote: the run
+// goes failed_resumable with a typed code — resumable, because a resume
+// after the fleet is aligned re-compiles the source on the server — and a
+// run_failed event carries the runner's version beside the workflow hash,
+// so the skew is readable from the run alone.
+func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, cause error) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if err := r.cfg.Store.FailRunResumable(idCtx, msg.RunID, nil, cause.Error(), store.FailureCode("IR_UNLOADABLE")); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
+	}
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunFailed,
+		Data: map[string]any{
+			"code": "IR_UNLOADABLE", "error": cause.Error(),
+			"runner_version": appinfo.Version, "runner_commit": appinfo.Commit,
+			"workflow_hash": msg.WorkflowHash,
+			"hint":          "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
+		},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_failed for the unloadable IR: %v", msg.RunID, err)
+	}
 }
 
 // applyBudgetOverrides folds launch-time budget overrides from the queue
