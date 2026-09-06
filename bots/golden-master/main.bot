@@ -3700,7 +3700,7 @@ tool oracle_run:
                 check("l'arbre est revenu a HEAD", tree(), "original\n")
                 check("le marqueur est efface apres un revert propre", os.path.isfile(applied_marker_for(tmp)), False)
                 check("rien a revertir la seconde fois", revert_leftover_mutant(tmp), None)
-                check("disposition d'un revert propre", leftover_disposition(left)[0], "reverted")
+                check("disposition d'un revert propre", leftover_disposition(left or {})[0], "reverted")
                 # Le chemin nominal efface aussi le marqueur.
                 apply_mutant(lmeta, tmp)
                 revert_mutant(lmeta, tmp)
@@ -3712,7 +3712,7 @@ tool oracle_run:
                 check("un revert en echec est signale avec son code", (left or {}).get("code"), 3)
                 check("le marqueur reste tant que rien n'est reverti", os.path.isfile(applied_marker_for(tmp)), True)
                 check("disposition d'un revert en echec : l'arbre est encore mute",
-                      leftover_disposition(left)[0], "still_mutated")
+                      leftover_disposition(left or {})[0], "still_mutated")
                 scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
                 left = revert_leftover_mutant(tmp)
                 check("le revert repare nettoie et efface", [tree(), os.path.isfile(applied_marker_for(tmp))],
@@ -3726,7 +3726,7 @@ tool oracle_run:
                        "revert.sh" in ((left or {}).get("out") or "")],
                       ["leftover-1", True, True])
                 check("son marqueur reste", os.path.isfile(applied_marker_for(tmp)), True)
-                check("disposition d'un revert.sh disparu", leftover_disposition(left)[0], "still_mutated")
+                check("disposition d'un revert.sh disparu", leftover_disposition(left or {})[0], "still_mutated")
                 clear_marker()
                 sub("git", "checkout", "--", "f.txt")
                 # Une application qui ECHOUE nettoie l'arbre et le marqueur dans son propre run.
@@ -3841,10 +3841,10 @@ tool oracle_run:
                       [(left or {}).get("refused"), os.path.exists(canary)], ["dir", False])
                 check("le marqueur etranger est GARDE : c'est la seule trace de l'application",
                       os.path.isfile(applied_marker_for(tmp)), True)
-                check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
-                check("elle arrete la porte", leftover_disposition(left)[0] in LEFTOVER_BAIL_KINDS, True)
+                check("disposition d'un marqueur etranger", leftover_disposition(left or {})[0], "refused")
+                check("elle arrete la porte", leftover_disposition(left or {})[0] in LEFTOVER_BAIL_KINDS, True)
                 check("et son message nomme le marqueur a effacer a la main",
-                      applied_marker_for(tmp) in leftover_disposition(left)[1], True)
+                      applied_marker_for(tmp) in leftover_disposition(left or {})[1], True)
                 # Le refus COLLE : la porte suivante refuse a l'identique, et aucune
                 # application ne passe tant que le marqueur est la.
                 again = revert_leftover_mutant(tmp)
@@ -3886,7 +3886,7 @@ tool oracle_run:
                     check("un marqueur sous la pile scellee est reverti, pas refuse",
                           [(left or {}).get("refused"), (left or {}).get("code"), tree()],
                           [False, 0, "original\n"])
-                    check("disposition du held-out reverti", leftover_disposition(left)[0], "reverted")
+                    check("disposition du held-out reverti", leftover_disposition(left or {})[0], "reverted")
                     # LE CAS MESURE. La pile scellee a bouge entre deux passes —
                     # GM_SEALED_DIR pose a l'application, absent a la porte suivante :
                     # exactement la configuration que le harnais recommande quand la
@@ -3987,7 +3987,7 @@ tool oracle_run:
                           [(left or {}).get("refused"), (left or {}).get("kept"), tree(),
                            os.path.isfile(applied_marker_for(tmp))],
                           ["slot", True, "original\nmutant\n", True])
-                    check("disposition d'un emplacement inutilisable", leftover_disposition(left)[0], "unusable")
+                    check("disposition d'un emplacement inutilisable", leftover_disposition(left or {})[0], "unusable")
                 finally:
                     os.chmod(mdir_marker, 0o700)
                 left = revert_leftover_mutant(tmp)
