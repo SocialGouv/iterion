@@ -81,6 +81,13 @@ type ObjectAttributes struct {
 	// auto-launch a bot; the trigger is the update that clears it.
 	Draft          bool `json:"draft"`
 	WorkInProgress bool `json:"work_in_progress"`
+	// SourceProjectID / TargetProjectID name the projects the head and base
+	// branches live in; Source / Target carry those projects' own path and
+	// clone URL. On a fork MR the source is not the event's project.
+	SourceProjectID int64    `json:"source_project_id"`
+	TargetProjectID int64    `json:"target_project_id"`
+	Source          *Project `json:"source"`
+	Target          *Project `json:"target"`
 }
 
 type Commit struct {

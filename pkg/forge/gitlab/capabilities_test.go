@@ -220,18 +220,22 @@ func TestListPullRequests_Mapping(t *testing.T) {
 // forge.PullRef.SameRepoAs. GitLab's MR payload carries the source and
 // target PROJECT IDS and never the source project's path: equal ids mean the
 // head branch lives in the project the caller addressed the MR under, so
-// that reference IS the head repo; a fork MR (differing ids) and a payload
-// without the ids leave it empty — not proven same-repo, which those lanes
+// that reference IS the head repo; a fork MR (differing ids) has its source
+// project resolved by id, so the head is the fork's own path — never the
+// addressed project; a source project the token cannot see, and a payload
+// without the ids, leave it empty — not proven same-repo, which those lanes
 // refuse. Both read paths (get + list) must agree.
 func TestPullRequest_HeadRepo(t *testing.T) {
 	cases := []struct {
 		name     string
 		ids      map[string]any
 		wantHead string
+		wantSame bool
 	}{
-		{"same project: the addressed project is the head repo", map[string]any{"source_project_id": 3, "target_project_id": 3}, "g/p"},
-		{"fork MR: the payload names no source project path, head stays unproven", map[string]any{"source_project_id": 5, "target_project_id": 3}, ""},
-		{"payload without project ids proves nothing", map[string]any{}, ""},
+		{"same project: the addressed project is the head repo", map[string]any{"source_project_id": 3, "target_project_id": 3}, "g/p", true},
+		{"fork MR: the source project resolves to the fork's own path", map[string]any{"source_project_id": 5, "target_project_id": 3}, "alice/p", false},
+		{"fork MR: a source project the token cannot see stays unproven", map[string]any{"source_project_id": 7, "target_project_id": 3}, "", false},
+		{"payload without project ids proves nothing", map[string]any{}, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -244,11 +248,16 @@ func TestPullRequest_HeadRepo(t *testing.T) {
 				mr[k] = v
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.EscapedPath(), "/projects/g%2Fp/merge_requests/42") {
+				switch p := r.URL.EscapedPath(); {
+				case strings.HasSuffix(p, "/projects/g%2Fp/merge_requests/42"):
 					_ = json.NewEncoder(w).Encode(mr)
-					return
+				case strings.HasSuffix(p, "/projects/5"):
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 5, "path_with_namespace": "alice/p", "http_url_to_repo": "https://gl/alice/p.git"})
+				case strings.HasSuffix(p, "/projects/7"):
+					w.WriteHeader(http.StatusNotFound)
+				default:
+					_ = json.NewEncoder(w).Encode([]map[string]any{mr})
 				}
-				_ = json.NewEncoder(w).Encode([]map[string]any{mr})
 			}))
 			defer srv.Close()
 			c1 := New(srv.Client(), srv.URL, "tok")
@@ -260,7 +269,7 @@ func TestPullRequest_HeadRepo(t *testing.T) {
 			if got.HeadRepoFullName != c.wantHead {
 				t.Errorf("GetPullRequest HeadRepoFullName = %q, want %q", got.HeadRepoFullName, c.wantHead)
 			}
-			if got.SameRepoAs("g/p") != (c.wantHead != "") {
+			if got.SameRepoAs("g/p") != c.wantSame {
 				t.Errorf("SameRepoAs(g/p) = %v with head %q — the same-repo-only lanes would decide wrongly", got.SameRepoAs("g/p"), got.HeadRepoFullName)
 			}
 			list, err := c1.ListPullRequests(context.Background(), "g/p", forge.PullListOptions{})

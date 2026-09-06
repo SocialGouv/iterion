@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -15,8 +16,8 @@ import (
 // addressed by its per-project `iid`; `state` is "opened"/"merged"/"closed",
 // `sha` is the head commit, `work_in_progress`/`draft` flag a draft.
 // `source_project_id`/`target_project_id` name the projects the head and
-// base branches live in — ids only; the payload never carries the source
-// project's path.
+// base branches live in — ids only; the MR object never carries the source
+// project's path, which headProjectFor resolves.
 type gitlabMR struct {
 	IID             int        `json:"iid"`
 	Title           string     `json:"title"`
@@ -35,24 +36,89 @@ type gitlabMR struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
-// toRef normalizes a GitLab MR onto forge.PullRef. project is the reference
-// the caller addressed the MR under — an MR lives in its TARGET project.
-// state "opened"→"open", "merged"/"closed" pass through; draft is the OR of
-// the two GitLab flags.
+// headProject is where a merge request's head branch lives, as far as it is
+// proven: the project's path, and — for a fork — its own clone URL. The zero
+// value is UNPROVEN, which every same-project lane reads as a refusal.
+type headProject struct {
+	path     string
+	cloneURL string
+}
+
+// sourceProjectTTL bounds how long a resolved source project is reused: the
+// answer changes only when the project is renamed or transferred.
+const sourceProjectTTL = time.Hour
+
+// sourceProjects caches resolved source projects per (instance, project id)
+// across clients — a bearer client is built per call, so a cache on the
+// client would never hit — so a fork costs one lookup an hour, not one per
+// MR read.
+var sourceProjects = struct {
+	mu sync.Mutex
+	m  map[string]sourceProjectEntry
+}{m: map[string]sourceProjectEntry{}}
+
+type sourceProjectEntry struct {
+	headProject
+	at time.Time
+}
+
+// headProjectFor resolves where a merge request's head branch lives.
+// project is the reference the caller addressed the MR under — an MR lives
+// in its TARGET project. A same-project MR (source and target ids agree) is
+// that same reference, no round trip: a SameRepoAs against the caller's own
+// reference holds by construction, whichever form (path or numeric id) the
+// caller addressed the project by. A fork MR (differing ids) is looked up
+// by its source project id — GET /projects/:id gives the path and clone URL
+// the MR object never carries — so the same-project guards compare real
+// names and a refusal can name the fork.
 //
-// HeadRepoFullName is that same reference when the source and target
-// project ids agree: the head branch then lives in the project the caller
-// queried, and a SameRepoAs against the caller's own reference holds by
-// construction, whichever form (path or numeric id) the caller addressed
-// the project by. A fork MR (differing ids) leaves it empty — the payload
-// names no source project path — and so does a payload without the ids:
-// every same-repo-only lane reads an empty head as "not proven" and
-// refuses, which is the right answer for a fork and for an unknown.
-func (mr gitlabMR) toRef(project string) forge.PullRef {
-	head := ""
-	if mr.SourceProjectID > 0 && mr.SourceProjectID == mr.TargetProjectID {
-		head = strings.TrimSpace(project)
+// Two shapes stay UNPROVEN on purpose rather than failing the read: an MR
+// object without the ids, and a source project the token cannot see (404 /
+// 403 — a private or deleted fork). Every same-project lane refuses an
+// unproven head, which is the right answer for a fork it cannot inspect,
+// and the MR's own fields still serve the lanes that only need its branches.
+func (c *AdminClient) headProjectFor(ctx context.Context, project string, mr gitlabMR) (headProject, error) {
+	switch {
+	case mr.SourceProjectID <= 0 || mr.TargetProjectID <= 0:
+		return headProject{}, nil
+	case mr.SourceProjectID == mr.TargetProjectID:
+		return headProject{path: strings.TrimSpace(project)}, nil
 	}
+	key := c.BaseURL + "#" + strconv.FormatInt(mr.SourceProjectID, 10)
+	sourceProjects.mu.Lock()
+	cached, ok := sourceProjects.m[key]
+	sourceProjects.mu.Unlock()
+	if ok && time.Since(cached.at) < sourceProjectTTL {
+		return cached.headProject, nil
+	}
+	var out struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+		HTTPURLToRepo     string `json:"http_url_to_repo"`
+	}
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+strconv.FormatInt(mr.SourceProjectID, 10), nil, &out)
+	if err != nil {
+		return headProject{}, err
+	}
+	switch {
+	case code == http.StatusNotFound || code == http.StatusForbidden:
+		return headProject{}, nil
+	case code != http.StatusOK:
+		return headProject{}, statusErr("get source project", code)
+	}
+	head := headProject{path: strings.TrimSpace(out.PathWithNamespace), cloneURL: strings.TrimSpace(out.HTTPURLToRepo)}
+	if head.path == "" {
+		return headProject{}, nil
+	}
+	sourceProjects.mu.Lock()
+	sourceProjects.m[key] = sourceProjectEntry{headProject: head, at: time.Now()}
+	sourceProjects.mu.Unlock()
+	return head, nil
+}
+
+// toRef normalizes a GitLab MR onto forge.PullRef. head is where its head
+// branch was proven to live (headProjectFor); state "opened"→"open",
+// "merged"/"closed" pass through; draft is the OR of the two GitLab flags.
+func (mr gitlabMR) toRef(head headProject) forge.PullRef {
 	return forge.PullRef{
 		Number:           mr.IID,
 		Title:            mr.Title,
@@ -61,7 +127,8 @@ func (mr gitlabMR) toRef(project string) forge.PullRef {
 		SourceBranch:     mr.SourceBranch,
 		TargetBranch:     mr.TargetBranch,
 		HeadSHA:          mr.SHA,
-		HeadRepoFullName: head,
+		HeadRepoFullName: head.path,
+		HeadCloneURL:     head.cloneURL,
 		Author:           mr.Author.Username,
 		Draft:            mr.Draft || mr.WorkInProgress,
 		CreatedAt:        mr.CreatedAt,
@@ -124,7 +191,11 @@ func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts fo
 	}
 	out := make([]forge.PullRef, 0, len(mrs))
 	for _, mr := range mrs {
-		out = append(out, mr.toRef(repo))
+		head, err := c.headProjectFor(ctx, repo, mr)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mr.toRef(head))
 	}
 	return out, nil
 }
@@ -139,7 +210,11 @@ func (c *AdminClient) GetPullRequest(ctx context.Context, repo string, number in
 	if code != http.StatusOK {
 		return forge.PullRef{}, statusErr("get merge request", code)
 	}
-	return mr.toRef(repo), nil
+	head, err := c.headProjectFor(ctx, repo, mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	return mr.toRef(head), nil
 }
 
 // gitlabCommitStatus is one per-job commit status (the GitLab
@@ -313,7 +388,11 @@ func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewP
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("create merge request", code)
 	}
-	return mr.toRef(repo), nil
+	head, err := c.headProjectFor(ctx, repo, mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	return mr.toRef(head), nil
 }
 
 // UpdatePull applies a partial update. State transitions map onto GitLab's
@@ -345,7 +424,11 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("update merge request", code)
 	}
-	return mr.toRef(repo), nil
+	head, err := c.headProjectFor(ctx, repo, mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	return mr.toRef(head), nil
 }
 
 // MergePull merges a merge request via PUT /merge_requests/{iid}/merge, which
@@ -376,7 +459,11 @@ func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, op
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("merge merge request", code)
 	}
-	return mr.toRef(repo), nil
+	head, err := c.headProjectFor(ctx, repo, mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	return mr.toRef(head), nil
 }
 
 var _ forge.PullClient = (*AdminClient)(nil)

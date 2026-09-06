@@ -94,7 +94,13 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
   An `update` whose `changes.reviewers` **(re-)requests a review from
   iterion's own bot account** is the exception — the re-request-review
-  button; see <a href="#re-request-review">below</a>.
+  button; see <a href="#re-request-review">below</a>. A **fork MR never
+  auto-launches**, on any action: the payload names both projects
+  (`source_project_id`/`target_project_id` and the source project's own
+  path under `object_attributes.source`), so a proven fork is filtered
+  with a reason naming the fork (`gitlab.Parsed.IsFork`) — the same
+  posture as the GitHub/Forgejo lanes; a payload naming neither project
+  stays on its way, and the API-side lanes fail closed on it.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
   /revi" mid-text never triggers (anti-oscillation guard —
@@ -114,7 +120,10 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
      also resolves the MR via the forge API to prove the fork guard
      (`forge.PullRef.SameRepoAs` — the note payload carries neither
      `source_project_id` nor `target_project_id`, so same-project can
-     only be proven, never assumed from the payload) and carries the
+     only be proven, never assumed from the payload; the adapter resolves
+     a fork's source project by id — `GET /projects/:id`, cached per
+     instance for an hour — so the refusal names the fork's own path, and
+     a source project the token cannot see stays unproven) and carries the
      note's own conversational plumbing (`discussion_id`,
      `trigger_note`/`trigger_command`/`trigger_args`, `replier`) plus a
      best-effort `thread_context` for any command that carries args. A
@@ -699,7 +708,7 @@ are accepted by `POST` / `PATCH`:
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
 | `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
-| `block_fork_prs` | `false` | Persisted but **never read** by any launch path — see [merge-gate.md](merge-gate.md) for what actually guards fork PRs, which differs by provider. |
+| `block_fork_prs` | `false` | Persisted but **never read** by any launch path — the fork guard is unconditional on every provider (see [merge-gate.md](merge-gate.md)), so the flag has nothing left to add. |
 
 `authorized_repliers` / `min_replier_role` gate who may talk back to a
 bot in a note thread — see
