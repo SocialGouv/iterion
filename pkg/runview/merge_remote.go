@@ -81,10 +81,16 @@ func mergeGitAuthArgs(token string) []string {
 
 // runMergeGit executes one git command for the merge clone, with the
 // forge header injected and the token redacted from any error output.
+//
+// NoAutoMaintenance keeps the command's lifetime whole: fetch, merge and
+// commit each end by DETACHING a `git maintenance run --auto` that keeps
+// writing under `.git/objects`, and this clone is removed the moment the
+// merge lands (removeRepoTargetedMergeRoot) — a partially removed tree that
+// still has a `.git` reads as a materialised clone to the next request.
 func runMergeGit(ctx context.Context, dir, token string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, mergeGitTimeout)
 	defer cancel()
-	full := append(mergeGitAuthArgs(token), args...)
+	full := gitlib.NoAutoMaintenance(append(mergeGitAuthArgs(token), args...)...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	if dir != "" {
 		cmd.Dir = dir
