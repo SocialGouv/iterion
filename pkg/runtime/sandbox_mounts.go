@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
@@ -493,7 +494,7 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 // the entry carries no target= field.
 func mountTarget(entry string) string {
 	for _, field := range strings.Split(entry, ",") {
-		if v, ok := strings.CutPrefix(field, "target="); ok {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(field), "target="); ok {
 			return v
 		}
 	}
@@ -624,6 +625,88 @@ func dropHostBindMounts(mounts []string, logger *iterlog.Logger) []string {
 		kept = append(kept, m)
 	}
 	return kept
+}
+
+// runFilesEnvVar tells in-sandbox tool scripts where the run-files bind
+// landed (SandboxParams.RunFilesHostDir). It is set only when that bind was
+// added, and withdrawn with it: the variable is a promise that the directory
+// exists, never a hint to try.
+const runFilesEnvVar = "ITERION_ARTIFACT_FILES_DIR"
+
+// finalizeMountsForDriver drops every host bind mount the selected driver
+// cannot honour, and with them the promises the runtime made on their
+// behalf: the run-files variable (dropUnsupportedHostBinds) and the
+// attachments path handed to nodes, returned empty when its bind is gone —
+// nodes are then given the host path, which at least fails loudly instead of
+// resolving to an empty mount point. A driver with a host filesystem keeps
+// everything.
+func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, attachmentsDir, botRunFilesDir string, logger *iterlog.Logger) string {
+	if caps.SupportsHostBindMounts {
+		return attachmentsDir
+	}
+	dropUnsupportedHostBinds(spec, botRunFilesDir, logger)
+	return ""
+}
+
+// dropUnsupportedHostBinds strips every host bind mount from spec — the
+// selected driver has no host filesystem to honour them — and withdraws the
+// run-files variable when the directory it names went with them. Measured on
+// the pod backend: the variable named a directory the pod never had, a gate
+// wrapper redirecting its report into it died on "Directory nonexistent"
+// before the oracle ran, and four lots read an oracle verdict out of an
+// environment failure. The rule is keyed on the mounts, not on who set the
+// variable: a target a dropped bind served is gone unless a mount the driver
+// honours (pvc, configmap, secret) still serves it, and a value naming a path
+// no bind ever served is a promise the runtime never made. botRunFilesDir is
+// the value the runtime overwrote when it added its bind: handed back when
+// the runtime's promise is withdrawn, unless it names a dropped target too.
+func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger *iterlog.Logger) {
+	// Targets compare cleaned: a trailing slash or a spaced field is the same
+	// directory, and a miss here recreates the incident this rule closes.
+	target := func(m string) string {
+		if t := mountTarget(m); t != "" {
+			return path.Clean(t)
+		}
+		return ""
+	}
+	gone := map[string]bool{}
+	for _, m := range spec.Mounts {
+		if mountIsHostBind(m) {
+			if t := target(m); t != "" {
+				gone[t] = true
+			}
+		}
+	}
+	spec.Mounts = dropHostBindMounts(spec.Mounts, logger)
+	for _, m := range spec.Mounts {
+		delete(gone, target(m))
+	}
+	// A value goes when it names a dropped target OR a path under one: a
+	// directory under a bind that is gone is gone with it.
+	underDropped := func(dir string) bool {
+		value := path.Clean(dir)
+		for t := range gone {
+			if value == t || strings.HasPrefix(value, t+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	dir, set := spec.Env[runFilesEnvVar]
+	if !set || !underDropped(dir) {
+		return
+	}
+	if botRunFilesDir != "" && !underDropped(botRunFilesDir) {
+		spec.Env[runFilesEnvVar] = botRunFilesDir
+		if logger != nil {
+			logger.Warn("runtime: sandbox: %s handed back to the bot's own value %s — the runtime's bind serving %s was dropped with the other host binds", runFilesEnvVar, botRunFilesDir, dir)
+		}
+		return
+	}
+	delete(spec.Env, runFilesEnvVar)
+	if logger != nil {
+		logger.Warn("runtime: sandbox: %s withdrawn — the bind serving %s was dropped with the other host binds; tools writing run files fall back to a temp dir", runFilesEnvVar, dir)
+	}
 }
 
 // mountIsHostBind reports whether a docker-style mount string is a host bind

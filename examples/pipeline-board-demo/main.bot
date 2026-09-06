@@ -35,7 +35,7 @@ schema final_out:
 ## Writes the parent's own produced element (the season brief), then emits
 ## the episode list the router fans out over.
 tool plan:
-  command: `mkdir -p "$ITERION_ARTIFACT_FILES_DIR" && printf '# Season brief\n\nThree demo episodes, one sub-bot each.\nEach child produces a cover image + an audio track, then waits for your review.\n' > "$ITERION_ARTIFACT_FILES_DIR/season-brief.md" && printf '{"episodes":[{"id":"ep1"},{"id":"ep2"},{"id":"ep3"}]}'`
+  command: `D="$ITERION_ARTIFACT_FILES_DIR"; [ -n "$D" ] || D=/tmp/iterion-artifacts && mkdir -p "$D" && printf '# Season brief\n\nThree demo episodes, one sub-bot each.\nEach child produces a cover image + an audio track, then waits for your review.\n' > "$D/season-brief.md" && printf '{"episodes":[{"id":"ep1"},{"id":"ep2"},{"id":"ep3"}]}'`
   output: plan_out
 
 router dispatch:

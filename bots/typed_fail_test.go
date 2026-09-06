@@ -89,6 +89,15 @@ func codedRefusals() []codedRefusal {
 			failNode: "contract_unreadable", code: "CONTRACT_UNREADABLE",
 			messageRefs: []string{"{{outputs.lot_gate.fail_log}}"},
 		},
+		// The oracle delivered no verdict: the gate wrapper or the harness
+		// died before printing a report. An environment failure of the run,
+		// never a verdict over the tree — four lots read "oracle RED" out of
+		// "Directory nonexistent" before it carried a code of its own.
+		codedRefusal{
+			bot: "modernize", from: "lot_gate", condition: "oracle_not_run",
+			failNode: "oracle_environment", code: "ORACLE_NOT_RUN",
+			messageRefs: []string{"{{outputs.lot_verify.block_reason}}"},
+		},
 	)
 }
 

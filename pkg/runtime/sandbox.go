@@ -366,13 +366,23 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// dir on the host), and cleared again below when the driver drops host
 	// binds. attachmentPath keys off it rather than re-predicting.
 	attachmentsDir := addOptionalBindMount(spec, p.AttachmentsHostDir, p.AttachmentsContainerPath, "/run/iterion/attachments", "attachments", true, logger)
+	// The value a bot or a devcontainer gave the run-files variable before
+	// the runtime's own took its place; handed back if that promise is
+	// withdrawn (finalizeMountsForDriver).
+	botRunFilesDir := ""
 	if runFilesContainerPath := addOptionalBindMount(spec, p.RunFilesHostDir, p.RunFilesContainerPath, "/iterion/artifact-files", "run-files", false, logger); runFilesContainerPath != "" {
 		// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
-		// so recipe authors don't have to hard-code container paths.
+		// so recipe authors don't have to hard-code container paths. The
+		// runtime's value wins where the bind is real: the run-files
+		// collector reads that directory and no other, so a bot's or a
+		// devcontainer's own value would send files where nothing collects
+		// them. The promise is withdrawn with the bind when the driver
+		// drops host binds (finalizeMountsForDriver).
 		if spec.Env == nil {
 			spec.Env = map[string]string{}
 		}
-		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
+		botRunFilesDir = spec.Env[runFilesEnvVar]
+		spec.Env[runFilesEnvVar] = runFilesContainerPath
 	}
 	seedDefaultLocale(spec)
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
@@ -421,14 +431,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandboxed agent falls back to env creds + the workspace mount (skills are
 	// mirrored into <workspace>/.claude). type=secret/pvc/configmap pass through;
 	// docker keeps everything (the capability is true there).
-	if !caps.SupportsHostBindMounts {
-		spec.Mounts = dropHostBindMounts(spec.Mounts, logger)
-		// The attachments bind went with them, so there is no
-		// in-container path to hand out — nodes must be given the host
-		// path (kubernetes: neither exists, but a host path at least
-		// fails loudly instead of resolving to an empty mount point).
-		attachmentsDir = ""
-	}
+	attachmentsDir = finalizeMountsForDriver(spec, caps, attachmentsDir, botRunFilesDir, logger)
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
 	// sub-process inside the container so their tool calls (Bash, file

@@ -184,6 +184,18 @@ schema lot_report:
   ## pass would hit again is a finding about the wall, not a reason to pay
   ## four passes for it — nor a stop that reads `finished`.
   gate_timed_out: bool
+  ## The oracle delivered NO verdict: the gate wrapper or the harness died
+  ## before printing a report — a redirect into a directory the pod never
+  ## had, a crashed harness, a temp dir that resolves inside the workspace.
+  ## Named here so an environment failure never reads as a RED over the
+  ## tree: measured, four lots read "oracle RED" out of "Directory
+  ## nonexistent", and one spent three hours repairing an environment. The
+  ## gate ends the run at `fail`, typed ORACLE_NOT_RUN, once.
+  oracle_not_run: bool
+  ## The harness report as the wrapper printed it, read from the wrapper's
+  ## FULL stdout. The log tail keeps the last 4000 characters of stdout then
+  ## stderr — a harness that logs progress pushes its own report out first.
+  oracle_report: json
   ## The contract was rewritten during the lot: an existing lot's normative
   ## fields changed, a lot disappeared, or another lot's status moved. One
   ## entry per rewrite. Refused before any gate command runs, like `done`.
@@ -207,6 +219,10 @@ schema gate_state:
   ## the first occurrence — never a repair pass against the same wall, never
   ## a `finished` the programme would relaunch into the same wall.
   timed_out: bool
+  ## The oracle delivered no verdict. Ends the run at `fail`, typed, on the
+  ## first occurrence: a repair pass would spend the worker's hour on an
+  ## environment it cannot fix.
+  oracle_not_run: bool
   ## The verifier could not read the contract. Fails the run at once.
   unreadable: bool
   fail_log: string
@@ -620,7 +636,7 @@ tool lot_verify:
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
               "gate_timed_out": False, "contract_unreadable": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
-              "oracle_invalid": [], "extension_pending": [], "done_self_written": False,
+              "oracle_invalid": [], "oracle_not_run": False, "oracle_report": {}, "extension_pending": [], "done_self_written": False,
               "contract_rewritten": []}
     problems = []
 
@@ -811,9 +827,12 @@ tool lot_verify:
             raise SystemExit(0)
 
     def run(cmd, timeout=None):
-        """(exit code, tail). An expiry returns (None, tail) — the caller records
-        it as the GATE_TIMEOUT verdict; raised, it was a tool error the engine
-        retried once (the same hour replayed) before failed_resumable."""
+        """(exit code, tail, full stdout). An expiry returns (None, tail, "") —
+        the caller records it as the GATE_TIMEOUT verdict; raised, it was a
+        tool error the engine retried once (the same hour replayed) before
+        failed_resumable. The tail is the last 4000 characters of stdout then
+        stderr; a reader that needs one whole line of stdout (the oracle's
+        report) takes it from the third value, never from the tail."""
         started = time.monotonic()
         try:
             p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
@@ -823,8 +842,8 @@ tool lot_verify:
                 return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
             tail = (text_of(e.stdout) + text_of(e.stderr))[-4000:]
             return None, "exceeded gate_timeout_s=%d after %ds; last output:\n%s" % (
-                timeout or gate_timeout, int(time.monotonic() - started), tail)
-        return p.returncode, (p.stdout + p.stderr)[-4000:]
+                timeout or gate_timeout, int(time.monotonic() - started), tail), ""
+        return p.returncode, (p.stdout + p.stderr)[-4000:], p.stdout
 
     def timed_out(what, cmd, log):
         # Not a `lot_blocked` stop: that one ends the run `finished`, and a
@@ -838,10 +857,51 @@ tool lot_verify:
                         "gate legitimately needs longer, or shorten the gate."
                         % (what, cmd, log))
 
+    def oracle_not_run(why):
+        # Not a verdict over the tree: the oracle never judged it. Typed like
+        # GATE_TIMEOUT — block_reason carries the cause the fail node reports.
+        # A lot the campaign already declared blocked keeps its own reason and
+        # its own stop: the environment failure is logged, never typed over it.
+        problems.append("ORACLE_NOT_RUN: %s — an environment failure of the run, "
+                        "never a verdict on the tree: the oracle never delivered one. "
+                        "Read the wrapper's output — a missing directory, a broken net, "
+                        "a crashed harness — fix that, then relaunch." % why)
+        if report["lot_blocked"]:
+            return
+        report["oracle_not_run"] = True
+        # Collapsed, and cut from BOTH ends: the cause is the wrapper's LAST
+        # output, and a chatty wrapper puts it after thousands of characters
+        # — the head of the sentence and the tail of the output both stay.
+        flat = " ".join((why or "").split())
+        if len(flat) > 400:
+            flat = flat[:120] + " … " + flat[-277:]
+        report["block_reason"] = "ORACLE_NOT_RUN: %s" % flat
+
+    def last_json_object(text):
+        """The report is the last JSON object on stdout — one line, as the
+        harness prints it, or a pretty-printed block: the wrapper prints
+        exactly one, after the harness has logged to stderr. A format is not
+        a verdict, so both shapes read the same."""
+        lines = (text or "").splitlines()[-2000:]
+        for j in range(len(lines) - 1, -1, -1):
+            tail = lines[j].strip()
+            if not tail.endswith("}"):
+                continue
+            candidates = [j] if tail.startswith("{") else []
+            candidates += [i for i in range(j - 1, -1, -1) if lines[i].lstrip().startswith("{")]
+            for i in candidates:
+                try:
+                    obj = json.loads("\n".join(lines[i:j + 1]))
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    return obj
+        return None
+
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True
     for cmd in gate_cmds:
-        code, log = run(cmd)
+        code, log, _ = run(cmd)
         if code is None:
             report["gate_passed"] = False
             timed_out("exit_gate command", cmd, log)
@@ -866,35 +926,84 @@ tool lot_verify:
         # The gate wrapper writes its report where GM_REPORT_TMP says, and
         # defaults to a dotfile INSIDE the net. Judged next, that file reads
         # as uncommitted work of the run — and the finalize banks it as wip,
-        # which a converged lot then never lands over. The report goes to the
-        # run's scratch instead: content of the run, never of the tree.
+        # which a converged lot then never lands over. So the report goes to
+        # a temp file of THIS process: created here, named here, removed
+        # here — never a path the environment announces or inherits. A
+        # directory announced but absent killed the redirect before the
+        # oracle ran, and four lots read "oracle RED" out of it; a temp dir
+        # that resolves inside the workspace would put the report back in
+        # the tree. Neither is a verdict, and neither is read as one.
         import tempfile
-        scratch = os.environ.get("ITERION_ARTIFACT_FILES_DIR") or tempfile.gettempdir()
-        os.environ.setdefault("GM_REPORT_TMP", os.path.join(scratch, "gm-last-report.json"))
-        code, log = run(verify)
-        report["oracle_passed"] = code == 0
-        if code is None:
-            timed_out("the behavioural oracle", verify, log)
-        elif code != 0:
-            problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
-        # WHICH mutants the oracle could no longer apply, read rather than
-        # guessed. A mutant goes invalid for two very different reasons: it
-        # mutates nothing — it never proved anything — or its anchor vanished
-        # under a change this lot was entitled to make, which means it DID prove
-        # something and has stopped. Only the second is mechanically repairable,
-        # and telling them apart requires reading the field instead of matching
-        # a phrase in a log.
-        #
-        # Repairing it is NOT this bot's to do: a mutant belongs to the net. The
-        # signal is surfaced so the party that owns the net can act on it.
-        for line in reversed((log or "").splitlines()):
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    report["oracle_invalid"] = json.loads(line).get("invalid") or []
-                except ValueError:
-                    pass
-                break
+        fd, report_tmp = tempfile.mkstemp(prefix="gm-last-report-", suffix=".json")
+        os.close(fd)
+        if os.path.realpath(report_tmp).startswith(os.path.realpath(ws) + os.sep):
+            os.unlink(report_tmp)
+            oracle_not_run("the temp dir resolves inside the workspace (%s): a report "
+                           "written there reads as work of the run"
+                           % os.path.dirname(report_tmp))
+        else:
+            os.environ["GM_REPORT_TMP"] = report_tmp
+            code, log, out = run(verify)
+            if os.path.exists(report_tmp):
+                os.unlink(report_tmp)
+            # The report is read from the wrapper's FULL stdout: the log tail
+            # keeps the last 4000 characters of stdout then stderr, which is
+            # where a harness that logs its progress pushes its report out.
+            oracle_report = last_json_object(out)
+            if oracle_report is not None:
+                # Bounded like log_tail: the verdict rides the artifact and the
+                # checkpoint on every pass. The fields the graph reads
+                # (`mode`, `invalid`) are taken from the whole object below.
+                as_text = json.dumps(oracle_report)
+                if len(as_text) <= 65536:
+                    report["oracle_report"] = oracle_report
+                else:
+                    report["oracle_report"] = {"mode": oracle_report.get("mode"),
+                                               "truncated": True, "bytes": len(as_text)}
+            mode = (oracle_report or {}).get("mode") or "gate"
+            if code is None:
+                timed_out("the behavioural oracle", verify, log)
+            elif oracle_report is not None and mode != "gate":
+                # The harness said so itself: a subset (an ambient GM_MUTANTS)
+                # or a non-gate mode is "not a gate; no verdict". The wrapper
+                # exits 0 on it — read as a pass, one mutant would be the
+                # cheapest green in the whole programme.
+                oracle_not_run("the wrapper reported mode=%s — a subset or a non-gate "
+                               "run, not a verdict on the tree" % mode)
+            elif oracle_report is None:
+                # No report at all: the wrapper or the harness died before
+                # judging — or a wrapper that says nothing exited 0, which is
+                # not a pass either. "cannot create …/gm-last-report.json"
+                # was read as an oracle RED four times in one night.
+                oracle_not_run("the gate wrapper exited %d without printing a report; "
+                               "last output:\n%s" % (code, log))
+            elif code == 0:
+                report["oracle_passed"] = True
+            else:
+                problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
+            # WHICH mutants the oracle could no longer apply, read rather than
+            # guessed. A mutant goes invalid for two very different reasons: it
+            # mutates nothing — it never proved anything — or its anchor vanished
+            # under a change this lot was entitled to make, which means it DID prove
+            # something and has stopped. Only the second is mechanically repairable,
+            # and telling them apart requires reading the field instead of matching
+            # a phrase in a log.
+            #
+            # Repairing it is NOT this bot's to do: a mutant belongs to the net. The
+            # signal is surfaced so the party that owns the net can act on it.
+            if oracle_report is not None:
+                invalid = oracle_report.get("invalid") or []
+                if not isinstance(invalid, list):
+                    invalid = []
+                # Bounded like oracle_report: this list rides the checkpoint on
+                # every pass and is handed to the reanchor subbot as a var. Never
+                # silently: the cut is written where the verdict's log is read.
+                if len(invalid) > 200:
+                    problems.append("the oracle reported %d invalid mutants; the verdict carries "
+                                    "the first 200 — read the net's own report for the rest."
+                                    % len(invalid))
+                    invalid = invalid[:200]
+                report["oracle_invalid"] = invalid
 
     # 3. Did the oracle's references move? This is the separation of powers,
     #    and it is checked in git rather than trusted: the party that changes
@@ -1021,7 +1130,7 @@ tool lot_verify:
         # there by the diff's own result — a dirty net converged and the gate
         # committed `done` (review finding, executed).
         net_dirty = False
-        code, log = run("git -c core.quotePath=false status --porcelain -- %s"
+        code, log, _ = run("git -c core.quotePath=false status --porcelain -- %s"
                         % shlex.quote(gm_dir))
         if code != 0:
             problems.append("cannot read the net's worktree state: %s" % log)
@@ -1055,7 +1164,7 @@ tool lot_verify:
                             "nothing to judge the references against — build and commit "
                             "the net before modernising against it." % (base[:12], gm_dir))
 
-        code, log = run("git -c core.quotePath=false diff --name-only %s -- %s"
+        code, log, _ = run("git -c core.quotePath=false diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
@@ -1124,6 +1233,7 @@ compute lot_gate:
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
     refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0"
     timed_out: "outputs.lot_verify.gate_timed_out"
+    oracle_not_run: "outputs.lot_verify.oracle_not_run"
     unreadable: "outputs.lot_verify.contract_unreadable"
     fail_log: "outputs.lot_verify.log_tail"
     ## Read on EVERY outcome, including a converged one, and that is the point.
@@ -1145,6 +1255,18 @@ compute lot_gate:
 fail gate_timeout:
   description: "a gate command outlived the contract's gate_timeout_s"
   code: GATE_TIMEOUT
+  message: "{{outputs.lot_verify.block_reason}}"
+  resumable: false
+
+## oracle_environment — the oracle delivered no verdict: the gate wrapper or
+## the harness died before printing a report. An environment failure of the
+## run, never a verdict over the tree — reported under its own code so the
+## operator repairs the environment instead of reading a RED. Terminal: a
+## resume would replay the gate in the same environment; relaunch on the
+## bank once it is fixed.
+fail oracle_environment:
+  description: "the behavioural oracle delivered no verdict"
+  code: ORACLE_NOT_RUN
   message: "{{outputs.lot_verify.block_reason}}"
   resumable: false
 
@@ -1487,6 +1609,7 @@ workflow modernize:
   ## also carry an invalidated mutant or a pending extension — routed to a
   ## subbot, it would replay the same gate before failing.
   lot_gate -> gate_timeout when timed_out
+  lot_gate -> oracle_environment when oracle_not_run
   lot_gate -> contract_unreadable when unreadable
 
   ## Repair the net BEFORE deciding the lot, and on every outcome — a converged
