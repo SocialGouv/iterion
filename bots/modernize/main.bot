@@ -887,11 +887,15 @@ tool lot_verify:
         # budgeted: every "}"-terminated line is parsed ON ITS OWN, one parse
         # each, so a one-line report is read wherever it sits and whatever the
         # harness prints after it. Only the multi-line joins — the quadratic
-        # half — are capped, and a join is attempted only where the braces
-        # between its two ends BALANCE, settled in O(1) off a prefix sum. That
-        # is what keeps noise from SPENDING the budget rather than merely
-        # surviving it: a cap consumed by chatter would discard the verdict
-        # underneath it, which is how a bound turns a report into ORACLE_NOT_RUN.
+        # half — are capped, and a closing line gets exactly ONE candidate: for
+        # a well-formed object the opening is provably the NEAREST line at the
+        # brace balance the close returns to, since the balance cannot come
+        # back to it in between without ending the object early. That is what
+        # keeps noise from SPENDING the budget rather than merely surviving it:
+        # a block of chatter costs its own length and nothing more, however
+        # many of them the harness logs after its report — and a cap consumed
+        # by chatter discards the verdict underneath it, which is how a bound
+        # turns an oracle's RED into ORACLE_NOT_RUN.
         def braces(ln):
             # Outside of strings only. A brace inside one is text, and reading
             # it as structure makes a report quoting `if err != nil {`
@@ -919,19 +923,29 @@ tool lot_verify:
             return up, down
 
         lines = (text or "").splitlines()[-2000:]
-        col = [len(ln) - len(ln.lstrip()) for ln in lines]
-        # Brace balance BEFORE each line. Two ends can be one object only when
-        # theirs are equal — the O(1) test below — so an opening is filed under
-        # its own, and a closing looks its candidates up instead of scanning
-        # every line before it for them.
-        depth = [0] * (len(lines) + 1)
-        opens_at = {}
+        # One forward pass pairs each closing line with its opening: the last
+        # line filed at the balance that close returns to. Only a line closing
+        # MORE braces than it opens can END a block; one that balances is
+        # complete in itself — the report, or a harness's "[INFO] mutant 7
+        # applied {ok}" — and json has its say on those alone, below.
+        opener_of = [-1] * len(lines)
+        last_open = {}
+        depth = 0
         for i, ln in enumerate(lines):
             up, down = braces(ln)
-            if up > down and ln.lstrip().startswith("{"):
-                opens_at.setdefault(depth[i], []).append(i)
-            depth[i + 1] = depth[i] + up - down
-        joins = 0
+            if down > up:
+                opener_of[i] = last_open.get(depth + up - down, -1)
+            elif up > down and ln.lstrip().startswith("{"):
+                last_open[depth] = i
+            depth += up - down
+        # One candidate per close already makes chatter cheap, so what is left
+        # to bound is the SIZE of the joins, not their number: a "k": { … } / }
+        # alternation pairs every close with the same far-back opening. Hence a
+        # budget counted in LINES joined, and generous against the window —
+        # room for the report and every block of noise around it, never enough
+        # to be slow.
+        joined = 0
+        budget = 8 * len(lines) + 64
         for j in range(len(lines) - 1, -1, -1):
             tail = lines[j].strip()
             if not tail.endswith("}"):
@@ -943,30 +957,16 @@ tool lot_verify:
                     obj = None
                 if isinstance(obj, dict):
                     return obj
-            # Only a line closing MORE braces than it opens can END a block.
-            # One that balances is complete in itself — the report, or a
-            # harness's "[INFO] mutant 7 applied {ok}" — and json has already
-            # had its say on it above. Keeping such a line out of the join
-            # scan is what stops chatter from SPENDING the budget: a cap
-            # consumed by noise discards the verdict printed underneath it.
-            if depth[j + 1] >= depth[j] or joins >= 32:
+            i = opener_of[j]
+            if i < 0 or joined > budget:
                 continue
-            # The openings this line can close are those its brace balance
-            # points at; among them, the one in this line's own column comes
-            # first — that is the pair every pretty-printer emits, and without
-            # it the inner "{" of a pretty-printed list would spend the budget
-            # before the block's own opening is ever reached.
-            for i in sorted((o for o in opens_at.get(depth[j + 1], ()) if o < j),
-                            key=lambda o: (col[o] != col[j], -o)):
-                if joins >= 32:
-                    break
-                joins += 1
-                try:
-                    obj = json.loads("\n".join(lines[i:j + 1]))
-                except ValueError:
-                    continue
-                if isinstance(obj, dict):
-                    return obj
+            joined += j - i + 1
+            try:
+                obj = json.loads("\n".join(lines[i:j + 1]))
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                return obj
         return None
 
     # 1. The lot's own gate, every command, in order.

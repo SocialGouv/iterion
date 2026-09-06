@@ -26,6 +26,18 @@ const scratchTeardownChatter = "i=0; while [ $i -lt 60 ]; do " +
 	"echo \"{'teardown': $i, 'note': 'a dict repr the harness logged after its report'}\"; " +
 	"i=$((i+1)); done\n"
 
+// The same harness, one wrap away: pprint breaks any dict wider than its
+// width across lines, and an echoed code snippet puts its brace on a line of
+// its own. Unlike the single-line shape above, each of these blocks is one
+// more OPENING at the report's own depth and one more net-closing line — so a
+// budget counted per join ATTEMPT is drained by how MANY of them there are,
+// however cheap each is, and the verdict underneath is typed ORACLE_NOT_RUN.
+const scratchMultiLineTeardownChatter = "python3 -c 'import pprint; [print(pprint.pformat(" +
+	"{\"elapsed_ms\": i, \"teardown_step\": i, \"lane\": \"lane-%d\" % i, " +
+	"\"note\": \"a dict repr the harness logged after its report\"}, width=60)) for i in range(40)]'\n" +
+	"i=0; while [ $i -lt 40 ]; do echo 'if err != nil'; echo '{'; " +
+	"echo \"    fmt.Println($i)\"; echo '}'; i=$((i+1)); done\n"
+
 func scratchWorkspace(t *testing.T, wrapper string) (ws, base string) {
 	t.Helper()
 	const plan = `version: 1
@@ -208,7 +220,7 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
-	// The six below pin what bounding the search must NOT cost. Every one of
+	// The seven below pin what bounding the search must NOT cost. Every one of
 	// them reads on an unbounded scan, and every one was dropped by some
 	// bound written to make the no-report path fast — whether by ending the
 	// scan outright, by letting chatter spend the budget, or by counting a
@@ -255,6 +267,27 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
 			t.Fatalf("the block report's fields were lost to the trailing chatter: %+v", res)
+		}
+	})
+
+	// A budget spent per join ATTEMPT is spendable by COUNT: forty wrapped
+	// dict reprs each file an opening at the report's own depth and each end
+	// in a net-closing line, so the scan meets the report's own "}" with
+	// nothing left to spend on it. The fix is that a close has exactly one
+	// candidate — the nearest opening at its balance — and that the budget
+	// counts lines joined, so cheap noise stays cheap however much of it the
+	// harness prints.
+	t.Run("multi-line teardown chatter does not cost the block its verdict", func(t *testing.T) {
+		wrapped := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": false,\\n  \"invalid\": [\\n    {\"id\": \"m16\", \"reason\": \"anchor gone\"}\\n  ]\\n}\\n' > \"$GM_REPORT_TMP\"\n" +
+			"cat \"$GM_REPORT_TMP\"\nrm -f \"$GM_REPORT_TMP\"\n" + scratchMultiLineTeardownChatter + "exit 1\n"
+		ws, base := scratchWorkspace(t, wrapped)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a block verdict was discarded by multi-line teardown chatter: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 || res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the block's fields were lost to the multi-line chatter: %+v", res)
 		}
 	})
 
