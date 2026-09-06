@@ -86,6 +86,41 @@ of the baked image it replaces. That is why the surface is super-admin
 only, safe-origin-gated, and digest-audited. Treat a push like a deploy:
 review the diff first (`admin bots pull` + `git diff` against the repo).
 
+## An override outlives the release that made it necessary
+
+The tier's whole point is that a stored bundle **outranks the baked
+catalog** at every launch surface. The consequence is easy to miss: an
+override pushed once keeps serving after a later release bakes a *newer*
+bundle for the same slug. The image moves; the bot does not.
+
+Measured on 2026-09-06: `review-pr`'s override, pushed 2026-09-04 for the
+0.7.0 cost pass, was still serving every production review 29 hours after
+#742 baked the 0.8.0 review tiers into the image. Nothing said so — the
+release notes, the runner digest and the bilan all reported the tiers as
+deployed, while the graph that actually ran had no `tier_expand` node.
+
+**iterion now reports it, and still does not refuse it** (pinning an older
+bundle is a legitimate choice — a rollback is exactly this):
+
+- `GET /api/admin/bots` returns `bundle_version`, `baked_version` and
+  `shadows_newer_bake` on every row. The last one is omitted unless true,
+  so a healthy inventory stays quiet. This is the check to run after any
+  release that touched a bot you have overridden.
+- The resolver logs one `Warn` per drift state naming both versions and the
+  two ways out. Once per `(slug, stored, baked)` triple, not per launch.
+
+Versions are compared as dotted numeric components, so `0.10.0` correctly
+beats `0.9.0`. `Manifest.version` is free-form, so a pair that does not
+parse numerically is treated as **unordered** and never flagged — a false
+staleness alarm on an operator's own naming scheme would be worse than the
+silence it replaces.
+
+To clear a shadow, either re-push the current bundle
+(`iterion remote admin bots push bots/<slug>`) or drop the override and let
+the image serve (`DELETE /api/admin/bots/<slug>`). Prefer dropping it once
+the reason for the override has shipped: it restores the normal flow where
+releases carry bots, and removes the trap for the next release.
+
 ## Known gaps (v1)
 
 - **Binary files** cannot ride an override (the store carries JSON text);
