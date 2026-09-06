@@ -2398,6 +2398,24 @@ tool oracle_run:
         return (not verdict.get("revert_clean", True)) or leftover_on_record(ws)
 
 
+    def overall_revert_clean(verdicts, stopped, ws):
+        """The report's `revert_clean`: did every mutant this gate applied get
+        undone, and did the tree come back?
+
+        Three branches never reach the revert path and so never write the field —
+        a refused apply, an inert mutant, an apply that failed — and reading their
+        SILENCE as True is what let a lot in which almost nothing was measured
+        report a clean revert. Combined with a scoring that stopped (so the later
+        mutants are absent, `blind_lanes` is empty and the held-out loop never ran,
+        leaving a vacuous 0 == 0), that produced a GREEN gate on a tree the harness
+        itself had left mutated with its marker armed. A stop, or a record still
+        standing, is the evidence the tree did not come back.
+        """
+        if stopped is not None or leftover_on_record(ws):
+            return False
+        return all(v.get("revert_clean", True) for v in verdicts)
+
+
     def apply_mutant(meta, ws):
         # The marker goes down BEFORE apply.sh runs: an interruption between the
         # two leaves a tree that is mutated and a note that says by what. A marker
@@ -3710,12 +3728,28 @@ tool oracle_run:
                       scoring_must_stop(v_inert, tmp), True)
                 check("l'application suivante est de toute facon refusee",
                       apply_mutant(lmeta, tmp)[0], APPLY_REFUSED)
+                # LE SILENCE N'EST PAS UNE PREUVE DE PROPRETE. `revert_clean` n'est
+                # ecrit que par le chemin complet ; les trois branches qui n'y
+                # arrivent pas ne disent rien, et lire ce silence comme « propre »
+                # rendait VERTE une porte sur un arbre que le harnais venait de
+                # laisser mute, marqueur arme. Mesure : apply.sh mi-edite puis sort
+                # 7, revert.sh sort 1 -> score 100 %, revert_clean vrai, held-out
+                # 0/0, GREEN, `git status` = `M f.txt`.
+                check("un mutant enregistre interdit d'annoncer un revert propre",
+                      overall_revert_clean([{"revert_clean": True}], None, tmp), False)
+                check("un classement arrete aussi, quoi que disent les verdicts",
+                      overall_revert_clean([{"revert_clean": True}], {"id": "x"}, tmp), False)
                 clear_marker()
                 check("rien d'enregistre, un verdict propre : le classement continue",
                       [leftover_on_record(tmp), scoring_must_stop({"revert_clean": True}, tmp)],
                       [False, False])
                 check("un revert sale arrete le classement meme sans enregistrement",
                       scoring_must_stop({"revert_clean": False}, tmp), True)
+                check("arbre sain, verdicts sains : le revert est annonce propre",
+                      overall_revert_clean([{"revert_clean": True}, {}], None, tmp), True)
+                check("un seul verdict sale suffit a le nier",
+                      overall_revert_clean([{"revert_clean": True}, {"revert_clean": False}],
+                                           None, tmp), False)
                 sub("git", "checkout", "--", "f.txt")
                 # Seule la disposition « reverti » laisse passer la porte. Le lien entre
                 # la decision et son consommateur est CETTE constante, pas trois lignes
@@ -4389,19 +4423,22 @@ tool oracle_run:
                     continue
                 v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
                 verdicts.append(v)
+                if v.get("valid"):
+                    if not v.get("detected"):
+                        blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
+                                      "mutant_id": v["id"], "entries": v.get("targets_declared", []),
+                                      "why": "no declared target moved"})
+                    elif v.get("undetected_targets"):
+                        blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
+                                      "mutant_id": v["id"], "entries": v["undetected_targets"],
+                                      "why": "these references did not move for a change they cover"})
+                # Classified FIRST, then the stop. A verdict whose revert failed
+                # still reached capture and comparison, so what it says about the
+                # net is evidence; breaking before this line dropped a real blind
+                # lane on the way out.
                 if scoring_must_stop(v, ws):
                     stopped = v
                     break
-                if not v.get("valid"):
-                    continue
-                if not v.get("detected"):
-                    blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
-                                  "mutant_id": v["id"], "entries": v.get("targets_declared", []),
-                                  "why": "no declared target moved"})
-                elif v.get("undetected_targets"):
-                    blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
-                                  "mutant_id": v["id"], "entries": v["undetected_targets"],
-                                  "why": "these references did not move for a change they cover"})
 
             # The seal relocates the held-out set in BOTH modes — the campaign must
             # lose file access early — but selfcheck neither scores it nor reports
@@ -4438,7 +4475,7 @@ tool oracle_run:
                 valid=len(valid),
                 detected=len(detected),
                 score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
-                revert_clean=all(v.get("revert_clean", True) for v in verdicts + held),
+                revert_clean=overall_revert_clean(verdicts + held, stopped, ws),
                 collateral=sum(len(v.get("collateral") or []) for v in verdicts),
             unstable_controls=sorted({c for v in verdicts
                                       for c in (v.get("unstable_controls") or [])}),
@@ -4463,6 +4500,22 @@ tool oracle_run:
                     "probe: %s. The net saw the change; the lane they were drawn against did "
                     "not. Citing the aggregate alone would report the resemblance."
                     % (len(off), ", ".join(off))))
+            # A lot whose baseline was lost reports a WITHHELD held-out figure, not
+            # a measured one: the held-out loop did not run (or stopped part-way),
+            # so its 0 == 0 is the vacuous equality this file guards against
+            # everywhere else — and it sat right beside a `revert_clean` that read
+            # silence as clean. Measured, end to end: apply.sh half-edits and exits
+            # 7, revert.sh exits 1 — score_pct 100, revert_clean true, blind_lanes
+            # empty, holdout 0/0, GATE GREEN, `git status` showing `M f.txt` and the
+            # marker still armed. The gate approved the exact tree this guard exists
+            # to refuse. `overall_revert_clean` is now the one that says otherwise.
+            baseline_lost = not report["revert_clean"]
+            if baseline_lost and len(held) < len(held_meta):
+                # Withheld, not zero-because-failed — the idiom selfcheck uses just
+                # below, deliberately unequal so an unscored held-out set can never
+                # be taken for a passed one.
+                report["holdout_total"] = len(held_meta)
+                report["holdout_detected"] = -1
             if mode == "selfcheck":
                 # Withheld, not zero-because-failed. The two numbers are made
                 # DELIBERATELY UNEQUAL: the gate converges on
@@ -4473,6 +4526,14 @@ tool oracle_run:
                 report["holdout_detected"] = -1
 
             problems = []
+            if baseline_lost:
+                problems.append(
+                    "THE TREE IS NOT KNOWN TO BE BACK AT BASELINE: %s. The figures above "
+                    "describe what was measured BEFORE that point, not the lot — the mutants "
+                    "after it were never applied, so an empty blind-lane list and a 0/0 "
+                    "held-out figure mean 'not measured', never 'clean'."
+                    % (("scoring stopped after mutant %s" % stopped.get("id")) if stopped
+                       else "a mutant is still recorded as applied"))
             if not report["noop_silent"]:
                 detail = noop.get("noisy_detail") or {}
                 problems.append(
@@ -4539,7 +4600,12 @@ tool oracle_run:
                              "its result is withheld on purpose. Only the final gate scores "
                              "it. An empty log_tail here means the VISIBLE set is clean, "
                              "which is not the same as a green gate.")
-            elif report["holdout_total"] and report["holdout_detected"] < report["holdout_total"]:
+            elif (not baseline_lost and report["holdout_total"]
+                    and report["holdout_detected"] < report["holdout_total"]):
+                # `not baseline_lost`: after a stop the figure is WITHHELD (-1), not
+                # measured, and rendering it would read "HELD-OUT set: -1/2 detected"
+                # — a count where there was no measurement. The red is already said,
+                # once, above.
                 problems.append("HELD-OUT set: %d/%d detected. The oracle was hardened against "
                                 "the mutants it could see, not against divergence in general."
                                 % (report["holdout_detected"], report["holdout_total"]))
