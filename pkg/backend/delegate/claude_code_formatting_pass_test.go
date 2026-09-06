@@ -162,6 +162,29 @@ func TestFormattingPassVerdicts(t *testing.T) {
 			t.Fatalf("an object beside plain prose re-typed: %v", err)
 		}
 	})
+	t.Run("a JSON answer text beside a populated SDK object is an answer, whatever its words", func(t *testing.T) {
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+		rm := &claudesdk.ResultMessage{
+			Result:           str(`{"reason":"usage limit reached","count":1}`),
+			StructuredOutput: map[string]any{"reason": "usage limit reached", "count": 1},
+		}
+		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+			t.Fatalf("a structured answer about quotas re-typed because the SDK object answered first: %v", err)
+		}
+	})
+	t.Run("a billed throttle attempt still prices the delegation when the next attempt answers", func(t *testing.T) {
+		answer := &claudesdk.ResultMessage{Result: str(`{"answer":"done","count":2}`), SessionID: "s1",
+			Usage: &claudesdk.Usage{InputTokens: 40, OutputTokens: 4}, TotalCostUSD: f(0.05)}
+		b, _ := newBackend(render("API Error: 429 rate limit exceeded", 0.50), answer)
+		in, out := 100, 10
+		_, res, err := b.runTwoPassFormatting(context.Background(), task, pass1, Result{Tokens: 110}, &in, &out)
+		if err != nil {
+			t.Fatalf("want a shipped answer, got %v", err)
+		}
+		if got, _ := res.Output["_cost_usd"].(float64); got < 0.50 {
+			t.Fatalf("the billed throttle attempt's CLI figure was lost on the success path: _cost_usd=%v (want >= 0.50)", res.Output["_cost_usd"])
+		}
+	})
 	t.Run("a raw error body is not an answer, the provider's two-key envelope neither", func(t *testing.T) {
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
 		for _, text := range []string{

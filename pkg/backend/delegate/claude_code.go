@@ -576,7 +576,10 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	// prose no guard matches and the answer ships anyway. No evidence is
 	// filed from a shipped answer: a false bench costs more than a reading
 	// the next pass files.
-	if obj, _, found, fromText := structuredObject(rm.Result, rm.StructuredOutput); found && fromText && len(obj) > 0 &&
+	// Read from the text alone: with the SDK object passed too, a populated
+	// structured_output — the normal shape on a schema pass — answers first
+	// and hides that the text is that very object.
+	if obj, _, found, fromText := structuredObject(rm.Result, nil); found && fromText && len(obj) > 0 &&
 		!errorBodyObject(obj) && !hasRenderPrefix(*rm.Result) {
 		return nil
 	}
@@ -862,14 +865,15 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	}
 	const maxFmtAttempts = 2
 	var lastFmtErr error
-	// The last attempt that produced a message: an earlier billed attempt
-	// must price the delegation when the final one could not even spawn.
-	var lastFmtRM *claudesdk.ResultMessage
+	// Every attempt that produced a message: each was billed, and the
+	// pricing takes the highest CLI figure among them — an earlier attempt
+	// must count when a later one could not spawn, or answered.
+	var ranRMs []*claudesdk.ResultMessage
 	for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
 		fmtRM, fmtErr := b.formatPass(ctx, task, rm.SessionID)
 		if fmtErr == nil {
-			lastFmtRM = fmtRM
+			ranRMs = append(ranRMs, fmtRM)
 			// The pass ran and was billed, whatever its result says: its
 			// usage counts on every path out of here, the typed ones too.
 			if fmtRM.Usage != nil {
@@ -886,7 +890,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 					// second attempt re-spends the pass against a provider
 					// that just refused and re-files the same evidence.
 					typed := typedFailure(&result, task, *totalIn, *totalOut,
-						fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr), rm, fmtRM)
+						fmt.Errorf("delegate: claude-code formatting pass failed: %w", rerr), append([]*claudesdk.ResultMessage{rm}, ranRMs...)...)
 					return true, result, typed
 				}
 				fmtErr = rerr
@@ -904,7 +908,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 					case <-ctx.Done():
 						// Cancellation wins over the typed cause: a run being
 						// cancelled must not read as rate-limited downstream.
-						typed := typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), rm, lastFmtRM)
+						typed := typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), append([]*claudesdk.ResultMessage{rm}, ranRMs...)...)
 						return true, result, typed
 					case <-time.After(d):
 					}
@@ -918,7 +922,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			// message, whether or not the final one did (annotateCost takes
 			// the highest CLI figure and skips a nil message).
 			typed := typedFailure(&result, task, *totalIn, *totalOut,
-				fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr), rm, lastFmtRM, fmtRM)
+				fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr), append([]*claudesdk.ResultMessage{rm}, ranRMs...)...)
 			return true, result, typed
 		}
 
@@ -930,7 +934,8 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		result.Output = output
 		result.RawOutputLen = rawLen
 		result.ParseFallback = fallback
-		annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
+		// Priced from every attempt that ran, the one that answered included.
+		annotateCost(&result, task, *totalIn, *totalOut, append([]*claudesdk.ResultMessage{rm}, ranRMs...)...)
 		return true, result, nil
 	}
 	// Defensive: loop fell through without returning. Shouldn't happen
