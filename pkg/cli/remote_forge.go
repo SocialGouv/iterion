@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -60,8 +61,24 @@ func RemoteForgeRefresh(ctx context.Context, c *RemoteClient, p *Printer, path s
 		p.Line("missing for app delivery (CI workflow + image publish): %s", strings.Join(res.MissingPermissions, ", "))
 	}
 	if len(res.MissingCIPermissions) > 0 {
-		p.Line("missing for the board card CI panel: %s — approve the pending request on %s",
-			strings.Join(res.MissingCIPermissions, ", "), res.ManageInstallURL)
+		// Name every surface the gap darkens, not just the one that prompted
+		// the probe: `statuses` is also what the revi/review merge-gate
+		// verdict is posted and read with, so an operator told only about a
+		// card panel would not know the gate is dark too.
+		line := "missing for the board card CI panel"
+		if slices.Contains(res.MissingCIPermissions, "statuses") {
+			line += " and the merge-gate verdict"
+		}
+		line += ": " + strings.Join(res.MissingCIPermissions, ", ")
+		// The install page is where an owner approves the pending request —
+		// when the probe could not report one, say so instead of trailing off
+		// after "on".
+		if res.ManageInstallURL != "" {
+			line += " — approve the pending request on " + res.ManageInstallURL
+		} else {
+			line += " — approve the pending request on the App's installation page"
+		}
+		p.Line("%s", line)
 	}
 	if res.LiveError != "" {
 		p.Line("live probe error: %s", res.LiveError)
