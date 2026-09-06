@@ -119,6 +119,25 @@ func TestFormattingPassVerdicts(t *testing.T) {
 			t.Fatalf("Pass 1's cost dropped when the last attempt produced no message: %v", res.Output)
 		}
 	})
+	t.Run("a billed first attempt prices the delegation when the second could not spawn", func(t *testing.T) {
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
+		calls := 0
+		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
+			calls++
+			if calls == 1 {
+				return render("API Error: 429 rate limit exceeded", 0.45), nil
+			}
+			return nil, errors.New("container is not running")
+		}
+		in, out := 100, 10
+		_, res, err := b.runTwoPassFormatting(context.Background(), task, pass1, Result{Tokens: 110}, &in, &out)
+		if err == nil || calls != 2 {
+			t.Fatalf("want an error after 2 attempts, got err=%v calls=%d", err, calls)
+		}
+		if got, _ := res.Output["_cost_usd"].(float64); got < 0.45 {
+			t.Fatalf("the billed first attempt's CLI figure was lost: _cost_usd=%v (want >= 0.45)", res.Output["_cost_usd"])
+		}
+	})
 	t.Run("a typed failure carries the delegation's spend", func(t *testing.T) {
 		res := Result{}
 		err := typedFailure(&res, task, 100, 10, errors.New("x"), pass1)
@@ -148,6 +167,7 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		for _, text := range []string{
 			`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`,
 			`{"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`,
+			`{"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"},"request_id":"req_123"}`,
 		} {
 			rm := &claudesdk.ResultMessage{Result: str(text)}
 			if err := b.renderedFailure(rm, task, "pass 1"); err == nil {

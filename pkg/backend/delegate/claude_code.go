@@ -563,21 +563,21 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	if rm == nil || rm.Result == nil {
 		return nil
 	}
-	// A structured answer is an answer — structuredObject is its one
-	// definition, the one parseSDKOutput ships — but on two conditions. An
-	// object the TEXT itself is (direct or fenced) is the answer, whatever
+	// An object the TEXT itself is (direct or fenced) is the answer, whatever
 	// words it contains: a short JSON answer about quotas must not read as a
-	// quota notice. An object the SDK carried BESIDE a text is trusted only
-	// when that text is not a render the guards below would recognise: a
-	// resumed pass could echo a prior turn's object next to a refusal, and
-	// a window verdict shipped as an answer is the class this predicate
-	// closes. The CLI's render form ("API Error: …") is never an answer,
-	// whatever it carries after the prefix; an object that is only an error
-	// body ({"error": …}) is not one either. No evidence is filed from a
-	// shipped answer: a false bench costs more than a reading the next pass
-	// files anyway.
-	if obj, _, found, fromText := structuredObject(rm.Result, rm.StructuredOutput); found && len(obj) > 0 &&
-		!errorBodyObject(obj) && (fromText || !looksRendered(*rm.Result)) && !hasRenderPrefix(*rm.Result) {
+	// quota notice — structuredObject is the one definition, the one
+	// parseSDKOutput ships. Two vetoes: the CLI's render form ("API Error:
+	// …") is never an answer, whatever it carries after the prefix; an
+	// error envelope ({"error": …}, {"type":"error", …}) is not one either.
+	// An object the SDK carried BESIDE a text earns no exemption: the text
+	// goes through the guards below like any other — a resumed pass could
+	// echo a prior turn's object next to a refusal, and a window verdict
+	// shipped as an answer is the class this predicate closes; beside plain
+	// prose no guard matches and the answer ships anyway. No evidence is
+	// filed from a shipped answer: a false bench costs more than a reading
+	// the next pass files.
+	if obj, _, found, fromText := structuredObject(rm.Result, rm.StructuredOutput); found && fromText && len(obj) > 0 &&
+		!errorBodyObject(obj) && !hasRenderPrefix(*rm.Result) {
 		return nil
 	}
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
@@ -667,25 +667,17 @@ func hasRenderPrefix(text string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), "api error")
 }
 
-// looksRendered reports whether a result text is one of the renders the
-// guards recognise — a quota notice, a credential or model verdict, a
-// transient API error, the render prefix. Used to refuse the structured
-// exemption to an SDK object that sits beside such a text.
-func looksRendered(text string) bool {
-	return hasRenderPrefix(text) || isRateLimitMessage(text) || isAuthErrorResult(text) ||
-		isModelUnavailableResult(text) || isTransientAPIErrorResult(text)
-}
-
-// errorBodyObject reports an object that is only an error envelope — a bare
-// {"error": …} body, or the provider's own {"type":"error","error":{…}} —
-// relayed verbatim as the result text: not an answer even though it parses
-// as one. A legitimate answer that carries an `error` field beside real data
-// stays an answer.
+// errorBodyObject reports an object that is an error envelope — a bare
+// {"error": …} body, or the provider's own {"type":"error","error":{…}}
+// with whatever else it carries (a request id) — relayed verbatim as the
+// result text: not an answer even though it parses as one. A legitimate
+// answer that carries an `error` field beside real data, without the
+// provider's type marker, stays an answer.
 func errorBodyObject(obj map[string]any) bool {
 	if _, ok := obj["error"]; !ok {
 		return false
 	}
-	return len(obj) == 1 || (len(obj) == 2 && obj["type"] == "error")
+	return len(obj) == 1 || obj["type"] == "error"
 }
 
 // typedFailure returns err with the delegation's spend stamped on the result
@@ -870,10 +862,14 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	}
 	const maxFmtAttempts = 2
 	var lastFmtErr error
+	// The last attempt that produced a message: an earlier billed attempt
+	// must price the delegation when the final one could not even spawn.
+	var lastFmtRM *claudesdk.ResultMessage
 	for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
 		fmtRM, fmtErr := b.formatPass(ctx, task, rm.SessionID)
 		if fmtErr == nil {
+			lastFmtRM = fmtRM
 			// The pass ran and was billed, whatever its result says: its
 			// usage counts on every path out of here, the typed ones too.
 			if fmtRM.Usage != nil {
@@ -908,7 +904,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 					case <-ctx.Done():
 						// Cancellation wins over the typed cause: a run being
 						// cancelled must not read as rate-limited downstream.
-						typed := typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), rm, fmtRM)
+						typed := typedFailure(&result, task, *totalIn, *totalOut, ctx.Err(), rm, lastFmtRM)
 						return true, result, typed
 					case <-time.After(d):
 					}
@@ -918,10 +914,11 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			// Both attempts exhausted. Pass 1's own output was already tried
 			// by the fast path above with the same arguments, so there is
 			// nothing left to recover from it: the delegation fails typed —
-			// with Pass 1's cost whether or not the last attempt produced a
-			// message (annotateCost skips a nil one).
+			// priced from Pass 1 and from the last attempt that produced a
+			// message, whether or not the final one did (annotateCost takes
+			// the highest CLI figure and skips a nil message).
 			typed := typedFailure(&result, task, *totalIn, *totalOut,
-				fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr), rm, fmtRM)
+				fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr), rm, lastFmtRM, fmtRM)
 			return true, result, typed
 		}
 
