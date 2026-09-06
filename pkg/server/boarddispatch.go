@@ -22,6 +22,20 @@ import (
 // boardCoordinator is the cross-tenant board view the cloud dispatcher needs.
 // *boardmongo.Coordinator satisfies it; tests pass a fake.
 type boardCoordinator interface {
+	// ListDispatchable is the dispatch tick's candidate query: unclaimed
+	// cards in a launch column that CARRY A BOT, oldest-updated first. The
+	// cloud dispatcher has no default bot, so a card without one cannot be
+	// launched — it is roadmap content (a project-board sync lands every
+	// "Planned" ticket in `ready`), and claiming it only to fail is the
+	// claim + failed launch + park this listing exists to make impossible.
+	// The filter is part of the QUERY, not a post-listing skip: the batch
+	// is capped, and bot-less cards — never written, so always the oldest
+	// — would otherwise fill every batch and starve the launchable ones.
+	ListDispatchable(ctx context.Context, eligible []string, limit int) ([]boardmongo.Candidate, error)
+	// ListEligible is the sweeps' listing — unclaimed cards in the given
+	// states, either order, with NO bot filter: a sweep judges a card by
+	// its recorded run, and a card whose bot was cleared after its run is
+	// still the sweep's to file.
 	ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]boardmongo.Candidate, error)
 	Claim(ctx context.Context, tenant, id, marker string) (tracker.ClaimToken, error)
 	SetState(ctx context.Context, tenant, id, state string) error
@@ -67,6 +81,29 @@ var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
 // blocked, the flag no reconciler lifts.
 var errCardContinuable = errors.New("board dispatcher: run continuable")
 
+// errCardUnlaunchable marks a launch PRECONDITION failure: nothing ran, so
+// nothing about the card's work was judged and no verdict belongs on it.
+// processCard returns such a card to the column the tick took it from and
+// frees the claim — never `blocked`, which reads as a verdict on the work
+// and, on a team bound to an external board, is projected onto the
+// operator's roadmap as one.
+//
+// The failure taxonomy of processBoardCard, which processCard routes on:
+//
+//   - errCardUnlaunchable — a precondition: the card names no bot, names a
+//     bot the resolver cannot find, carries malformed reserved bot-args, or
+//     the run service is not wired. Card back to its column, claim freed,
+//     one Warn per (card, reason) edge.
+//   - errCardPaused — the run parked on a human/operator gate → the
+//     awaiting-input column.
+//   - errCardContinuable — the run ended failed_resumable / cancelled → the
+//     card stays where it is; the retry machinery or the operator continues.
+//   - a cancelled parent context — this replica is draining → the card
+//     stays where it is, the claim is released.
+//   - anything else — the run was launched and ended in a terminal failure,
+//     or the publisher refused the launch (quota, sealing, …) → `blocked`.
+var errCardUnlaunchable = errors.New("board dispatcher: card cannot be launched")
+
 // pollDisposition maps a TERMINAL polled status to the poll's verdict:
 // finished = clean; failed = the one filing-worthy failure; everything
 // else terminal (failed_resumable, cancelled) is continuable — the retry
@@ -91,7 +128,13 @@ func pollDisposition(runID string, st store.RunStatus) error {
 type boardDispatcher struct {
 	coord   boardCoordinator
 	process func(ctx context.Context, tenant string, iss native.Issue) error
-	marker  string
+	// admit checks a listed card's launch preconditions BEFORE it is
+	// claimed (the local dispatcher's resolveExplicitBot shape): a card
+	// that cannot be launched is skipped in its column, not claimed, moved
+	// and given back every tick. Optional; an errCardUnlaunchable is the
+	// only refusal — any other error is a transient the tick retries.
+	admit  func(ctx context.Context, tenant string, iss native.Issue) error
+	marker string
 
 	eligible        []string
 	inProgressState string
@@ -162,6 +205,25 @@ type boardDispatcher struct {
 	// so the abstention it causes is reported on its edges rather than
 	// once per candidate per pass.
 	runReadFailure bool
+
+	// The unlaunchable bookkeeping is shared by the tick (admission, run
+	// loop goroutine) and the processCard goroutines (the post-claim belt),
+	// hence its own lock. unlaunchWarned dedups the per-card Warn on its
+	// (card, reason) edge — a card that cannot be launched is listed on
+	// every tick, and one line per 5s per card is the storm that hides the
+	// next real signal; unlaunchTally is reported once per watchdog pass.
+	unlaunchMu     sync.Mutex
+	unlaunchWarned map[string]unlaunchNote
+	unlaunchTally  unlaunchableTally
+}
+
+// unlaunchNote is one card's last unlaunchable verdict: the reason said, and
+// when it was last seen — a card that stops being listed (deleted, fixed and
+// launched elsewhere) drops out of the memo after a pass, so the memo is
+// bounded by the live population and a card that comes back warns again.
+type unlaunchNote struct {
+	reason string
+	at     time.Time
 }
 
 // newBoardDispatcher wires a cloud board dispatcher with sensible defaults.
@@ -188,9 +250,12 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 // tick claims as many eligible cards as there are free slots and dispatches
 // each in a detached goroutine. Returns the number it claimed this tick.
 func (d *boardDispatcher) tick(ctx context.Context) int {
-	cands, err := d.coord.ListEligible(ctx, d.eligible, cap(d.sem)*2, false)
+	// The dispatch listing, not the sweeps' one: a card that names no bot
+	// is never a candidate (the query filters it), so the tick cannot claim
+	// what it has no way to launch.
+	cands, err := d.coord.ListDispatchable(ctx, d.eligible, cap(d.sem)*2)
 	if err != nil {
-		d.warn("list eligible: %v", err)
+		d.warn("list dispatchable: %v", err)
 		return 0
 	}
 	claimed := 0
@@ -199,6 +264,23 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 		case d.sem <- struct{}{}: // acquired a slot
 		default:
 			return claimed // no free slots; the rest wait for the next tick
+		}
+		// Admission BEFORE the claim (the local dispatcher's
+		// resolveExplicitBot shape): a card whose launch preconditions fail
+		// is skipped in its column — not claimed, moved into the running
+		// column and given back a tick later, over and over. Only
+		// errCardUnlaunchable refuses; any other error is a transient the
+		// next tick retries.
+		if d.admit != nil {
+			if err := d.admit(ctx, c.Tenant, c.Issue); err != nil {
+				<-d.sem
+				if errors.Is(err, errCardUnlaunchable) {
+					d.noteUnlaunchable(c.Tenant, c.Issue.ID, c.Issue.State, err, false)
+				} else {
+					d.warn("card %s/%s admission: %v — retried next tick", c.Tenant, c.Issue.ID, err)
+				}
+				continue
+			}
 		}
 		tok, err := d.coord.Claim(ctx, c.Tenant, c.Issue.ID, d.marker)
 		if err != nil {
@@ -249,7 +331,20 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	}
 	runErr := d.process(cardCtx, c.Tenant, c.Issue)
 	final := d.doneState
+	// finalReason is the provenance the final write carries; empty for a
+	// run's own verdict (the ordinary fenced move).
+	finalReason := ""
 	switch {
+	case runErr != nil && errors.Is(runErr, errCardUnlaunchable):
+		// Nothing ran (the taxonomy on errCardUnlaunchable): no verdict
+		// belongs on the card. Back to the column the tick took it from —
+		// under machine provenance, so the return re-fires no subscription
+		// armed on that column and is not projected onto an external board
+		// as a move — and the claim is freed below. The pre-claim admission
+		// makes this the race case (the card changed between the listing
+		// and the launch); it is still never `blocked`.
+		final, finalReason = c.Issue.State, tracker.ReasonUnlaunchable
+		d.noteUnlaunchable(c.Tenant, c.Issue.ID, c.Issue.State, runErr, true)
 	case runErr != nil && errors.Is(runErr, errCardPaused):
 		// A pause is not a failure: route the card to the awaiting-input
 		// column so the operator answers it there, not to blocked.
@@ -277,6 +372,11 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		final = d.blockedState
 		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
 	}
+	if finalReason == "" {
+		// The card ran (or is running): whatever kept it from launching
+		// before is over, and a later refusal must be said again.
+		d.clearUnlaunchable(c.Tenant, c.Issue.ID)
+	}
 	// Final writes on a DETACHED ctx: a superseded claim cancelled
 	// cardCtx (the fenced writes must still run to be REFUSED loudly —
 	// typed conflict in the log — rather than die on a dead ctx reading
@@ -285,7 +385,13 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	finCtx, finCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finCancel()
 	if final != "" {
-		if err := d.coord.SetStateOwned(finCtx, c.Tenant, c.Issue.ID, final, tok); err != nil {
+		var err error
+		if finalReason != "" {
+			err = d.coord.SetStateOwnedReason(finCtx, c.Tenant, c.Issue.ID, final, tok, finalReason)
+		} else {
+			err = d.coord.SetStateOwned(finCtx, c.Tenant, c.Issue.ID, final, tok)
+		}
+		if err != nil {
 			d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
 		}
 	}
@@ -660,6 +766,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 			d.sweepAbandonedRecoveryClaims(ctx, now, verdict)
 			d.sweepUnleasedClaims(ctx, now, verdict)
 			verdict.report(d)
+			d.reportUnlaunchable(now)
 		}
 		select {
 		case <-ctx.Done():
@@ -1282,6 +1389,83 @@ func (d *boardDispatcher) fileReapedCard(ctx context.Context, cand boardmongo.Ex
 	return true
 }
 
+// unlaunchableTally counts the cards the dispatcher could not launch since
+// the last watchdog pass: refused at admission (never claimed) and released
+// after a claim (given back to their column). Neither is a card filed
+// blocked — that is the point of counting them apart from failures.
+type unlaunchableTally struct {
+	refused, released int
+}
+
+// unlaunchableCounts returns the running tally (test seam).
+func (d *boardDispatcher) unlaunchableCounts() unlaunchableTally {
+	d.unlaunchMu.Lock()
+	defer d.unlaunchMu.Unlock()
+	return d.unlaunchTally
+}
+
+// noteUnlaunchable records one unlaunchable verdict on a card and says it
+// ONCE per (card, reason) edge: the card is listed again on every tick for
+// as long as it stays broken, and the line has to be findable, not buried
+// under 17k copies of itself a day. column is where the card stays (or
+// returns to); afterClaim tells the belt's give-back from admission's skip.
+func (d *boardDispatcher) noteUnlaunchable(tenant, id, column string, err error, afterClaim bool) {
+	key := tenant + "/" + id
+	reason := err.Error()
+	d.unlaunchMu.Lock()
+	if d.unlaunchWarned == nil {
+		d.unlaunchWarned = map[string]unlaunchNote{}
+	}
+	said := d.unlaunchWarned[key].reason == reason
+	d.unlaunchWarned[key] = unlaunchNote{reason: reason, at: time.Now()}
+	if afterClaim {
+		d.unlaunchTally.released++
+	} else {
+		d.unlaunchTally.refused++
+	}
+	d.unlaunchMu.Unlock()
+	if said {
+		return
+	}
+	if afterClaim {
+		d.warn("card %s/%s could not be launched after the claim — returned to %q, claim freed, not filed (said once until the reason changes): %v",
+			tenant, id, column, err)
+		return
+	}
+	d.warn("card %s/%s cannot be launched — left in %q, not claimed (said once until the reason changes): %v",
+		tenant, id, column, err)
+}
+
+// clearUnlaunchable forgets a card's memo entry once it launched, so a later
+// refusal of the same card is said again.
+func (d *boardDispatcher) clearUnlaunchable(tenant, id string) {
+	d.unlaunchMu.Lock()
+	delete(d.unlaunchWarned, tenant+"/"+id)
+	d.unlaunchMu.Unlock()
+}
+
+// reportUnlaunchable folds the pass's tally into ONE line — the per-card
+// lines above are edge-triggered, so without this a broken card's ongoing
+// cost (one refused listing per tick) is invisible after its first tick —
+// and prunes memo entries no tick has refreshed for a pass (the card was
+// deleted, or fixed and launched by another replica).
+func (d *boardDispatcher) reportUnlaunchable(now time.Time) {
+	d.unlaunchMu.Lock()
+	t := d.unlaunchTally
+	d.unlaunchTally = unlaunchableTally{}
+	for key, note := range d.unlaunchWarned {
+		if now.Sub(note.at) > 2*d.reapEvery {
+			delete(d.unlaunchWarned, key)
+		}
+	}
+	d.unlaunchMu.Unlock()
+	if t.refused == 0 && t.released == 0 {
+		return
+	}
+	d.warn("unlaunchable cards since the last watchdog pass: %d refused at admission (never claimed), %d returned to their column after a claim — none filed blocked; each card is named once above",
+		t.refused, t.released)
+}
+
 func (d *boardDispatcher) warn(format string, args ...any) {
 	if d.logger != nil {
 		d.logger.Warn("board dispatcher: "+format, args...)
@@ -1457,19 +1641,26 @@ func (s *Server) boardIssueRuns(ctx context.Context, tenant, issueID string) ([]
 	return runs, nil
 }
 
-func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
+// boardLaunchPreconditions is everything a cloud card must satisfy BEFORE a
+// run can exist: a run service, a bot, a bot the resolver can find, and
+// reserved bot-args that parse. Every refusal wraps errCardUnlaunchable —
+// nothing ran, so the card keeps (or gets back) its column instead of being
+// filed blocked; a transient resolver error takes the same exit on purpose,
+// since the next tick retries a card that kept its column and never retries
+// one parked blocked. ONE helper for the tick's pre-claim admission and for
+// the launch itself, so the two cannot drift.
+func (s *Server) boardLaunchPreconditions(ctx context.Context, tenant string, iss native.Issue) (*launchBot, boardLaunchContext, error) {
 	if s.runs == nil {
-		return errors.New("run service unavailable")
+		return nil, boardLaunchContext{}, fmt.Errorf("run service unavailable: %w", errCardUnlaunchable)
 	}
 	if iss.Bot == "" {
-		return fmt.Errorf("card %s has no bot", iss.ID)
+		return nil, boardLaunchContext{}, fmt.Errorf("card %s has no bot: %w", iss.ID, errCardUnlaunchable)
 	}
 	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
 	lb, err := s.resolveBotSource(ctx, iss.Bot)
 	if err != nil {
-		return err
+		return nil, boardLaunchContext{}, fmt.Errorf("card %s names bot %q: %w: %w", iss.ID, iss.Bot, err, errCardUnlaunchable)
 	}
-	defer lb.Cleanup()
 	// A webhook-launched card carries its launch context (repo + the webhook's
 	// BYOK key / secret overrides) in reserved BotArgs keys (ensureBoardCard) —
 	// the coordinator otherwise has none of it. Lift it into the LaunchSpec so
@@ -1477,8 +1668,33 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// reserved keys from the bot's vars.
 	lc, err := liftBoardLaunchContext(iss.BotArgs)
 	if err != nil {
-		return fmt.Errorf("card %s: %w", iss.ID, err)
+		lb.Cleanup()
+		return nil, boardLaunchContext{}, fmt.Errorf("card %s: %w: %w", iss.ID, err, errCardUnlaunchable)
 	}
+	return lb, lc, nil
+}
+
+// admitBoardCard is the dispatcher's pre-claim admission for a cloud card:
+// the launch preconditions, and nothing else. It resolves the bot a second
+// time when the launch follows (processBoardCard resolves for itself) — one
+// extra catalog/store read per launch, paid so that a card that cannot be
+// launched is never claimed, moved and given back on every tick.
+func (s *Server) admitBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
+	lb, _, err := s.boardLaunchPreconditions(ctx, tenant, iss)
+	if err != nil {
+		return err
+	}
+	lb.Cleanup()
+	return nil
+}
+
+func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
+	lb, lc, err := s.boardLaunchPreconditions(ctx, tenant, iss)
+	if err != nil {
+		return err
+	}
+	defer lb.Cleanup()
+	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself.
 	lc.Vars = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)

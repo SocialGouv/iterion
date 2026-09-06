@@ -420,6 +420,9 @@ func (s *Server) ListenAndServe() error {
 				cancel()
 			}()
 			d := newBoardDispatcher(s.cfg.CloudBoardCoordinator, s.processBoardCard, marker, 4, s.logger)
+			// Pre-claim admission: a card that cannot be launched is skipped
+			// in its column, never claimed and parked.
+			d.admit = s.admitBoardCard
 			// Parked-card sweep wiring: read a run's status tenant-scoped,
 			// and clear the denormalized ⏸ badge when the sweep moves a card.
 			d.statusFor = s.boardRunStatus

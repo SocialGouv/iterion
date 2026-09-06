@@ -26,16 +26,19 @@ import (
 )
 
 type fakeBoardCoord struct {
-	mu       sync.Mutex
-	cands    []boardmongo.Candidate
-	claimed  map[string]string
-	states   map[string]string
-	claimErr map[string]error
-	stateErr map[string]error
-	renews   map[string]int
-	epochs   map[string]int64
-	expired  []boardmongo.ExpiredCandidate
-	unleased []boardmongo.ExpiredCandidate
+	mu    sync.Mutex
+	cands []boardmongo.Candidate
+	// claimCalls counts Claim attempts — the oracle for "refused BEFORE
+	// the claim" (a released claim leaves no trace in `claimed`).
+	claimCalls int
+	claimed    map[string]string
+	states     map[string]string
+	claimErr   map[string]error
+	stateErr   map[string]error
+	renews     map[string]int
+	epochs     map[string]int64
+	expired    []boardmongo.ExpiredCandidate
+	unleased   []boardmongo.ExpiredCandidate
 	// recoveryLists counts ListAbandonedRecoveryClaims calls — the
 	// periodicity oracle for the repair-sweep cadence.
 	recoveryLists int
@@ -77,7 +80,29 @@ func (f *fakeBoardCoord) ListEligible(_ context.Context, states []string, limit 
 		if f.claimed[c.Issue.ID] != "" || !slices.Contains(states, state) {
 			continue
 		}
-		if len(out) == limit {
+		if limit > 0 && len(out) == limit { // limit <= 0 is unbounded, like the real coordinator
+			break
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// ListDispatchable honours the dispatch tick's contract on top of
+// ListEligible's: a card with NO bot is never listed, however eligible its
+// column — the real query filters on issue.bot, and a fake that listed it
+// would certify a tick that claims what it cannot launch (#798).
+func (f *fakeBoardCoord) ListDispatchable(ctx context.Context, states []string, limit int) ([]boardmongo.Candidate, error) {
+	all, err := f.ListEligible(ctx, states, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	var out []boardmongo.Candidate
+	for _, c := range all {
+		if c.Issue.Bot == "" {
+			continue
+		}
+		if limit > 0 && len(out) == limit {
 			break
 		}
 		out = append(out, c)
@@ -88,6 +113,7 @@ func (f *fakeBoardCoord) ListEligible(_ context.Context, states []string, limit 
 func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) (tracker.ClaimToken, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.claimCalls++
 	if err := f.claimErr[id]; err != nil {
 		return tracker.ClaimToken{}, err
 	}
@@ -2596,7 +2622,7 @@ func (s *stolenClaimCoord) SetStateOwned(context.Context, string, string, string
 // later fenced write (the final state, the release) is refused too.
 func TestCloudProcessCard_ClaimConflictAbortsTheLaunch(t *testing.T) {
 	f := newFakeBoardCoord(boardmongo.Candidate{
-		Tenant: "t1", Issue: native.Issue{ID: "c-stolen", State: native.StateReady},
+		Tenant: "t1", Issue: native.Issue{ID: "c-stolen", State: native.StateReady, Bot: "feature-dev"},
 	})
 	var processed atomic.Bool
 	d := newBoardDispatcher(&stolenClaimCoord{fakeBoardCoord: f},
