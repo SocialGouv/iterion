@@ -56,11 +56,14 @@ Apply state on a connection: `account_kind`, `avatar_applied_at`, `avatar_error`
 (`GET /api/teams/{id}/forge/connections`). The action:
 `POST /api/teams/{id}/forge/connections/{conn_id}/avatar` `{variant?: plain|circle, force?}`
 — 422 with `logo_url` + `logo_circle_url` on GitHub (plus `manage_url` when
-the App is one iterion created), 422 on a revoked connection or a token the
-forge rejects at apply time (reconnect first), 409 `needs_force` on an account the forge does not flag as a bot —
-or would not describe at all (a token without the scope): iterion cannot
-vouch, the operator can — 502 with the forge's reason when the upload is
-refused. Audit event on both the automatic and
+the App is one iterion created); 422 on a revoked connection, or on a token
+the forge rejects at apply time (the connection is marked `revoked` with the
+reason — reconnect first); 409 `needs_force` on an account the forge does
+not flag as a bot, or would not describe at all (a token without the scope):
+iterion cannot vouch, the operator can; 502 when the forge did not answer
+the identity read (unreachable, timeout, 5xx, no user endpoint at that base
+URL — no upload was attempted) or when it refused the upload — the message
+says which. Audit event on both the automatic and
 the explicit path: `forge.connection.avatar_applied` (`automatic: true` at
 connect time).
 

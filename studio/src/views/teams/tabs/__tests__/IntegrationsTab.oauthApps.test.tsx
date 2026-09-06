@@ -24,7 +24,7 @@ vi.mock("@/api/bots", async () => {
   return { ...actual, listBots: vi.fn(async () => []) };
 });
 
-import { ApiError, apiErrorFrom } from "@/api/client";
+import { apiErrorFrom } from "@/api/client";
 import * as forgeApi from "@/api/forgeConnections";
 import IntegrationsTab from "../IntegrationsTab";
 
@@ -136,12 +136,13 @@ describe("ConnectionCard — iterion-bot avatar", () => {
   it("refetches AND keeps the reason when the apply fails", async () => {
     vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: "bot" })]);
     vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
-      new ApiError(502, "gitlab: avatar rejected (HTTP 400): boom"),
+      apiErrorFrom(502, { message: "gitlab: avatar rejected (HTTP 400): boom" }),
     );
     renderTab();
     const before = vi.mocked(forgeApi.listForgeConnections).mock.calls.length;
     fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
-    await screen.findByText(/avatar rejected \(HTTP 400\): boom/);
+    await screen.findByText(/^gitlab: avatar rejected \(HTTP 400\): boom$/);
+    expect(screen.queryByText(/API error/)).toBeNull();
     await waitFor(() =>
       expect(vi.mocked(forgeApi.listForgeConnections).mock.calls.length).toBeGreaterThan(before),
     );

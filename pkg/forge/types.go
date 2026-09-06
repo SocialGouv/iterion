@@ -325,8 +325,9 @@ var (
 	// the studio can prompt for re-auth with broader scope or a PAT.
 	ErrForbidden = errors.New("forge: insufficient scope")
 	// ErrUnauthorized is returned when the credential is rejected outright
-	// (revoked / expired). The refresh worker flips the connection to
-	// StatusRevoked on this.
+	// (revoked / expired). The refresh worker marks a refreshable connection
+	// StatusNeedsReauth on it; an avatar apply meeting it on a PAT — which
+	// nothing else probes — marks the connection StatusRevoked.
 	ErrUnauthorized = errors.New("forge: credential rejected")
 	// ErrPermissionsNotGranted is returned when minting a GitHub-App
 	// installation token fails with a PERMANENT permission mismatch — the

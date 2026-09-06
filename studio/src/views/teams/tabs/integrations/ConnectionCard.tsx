@@ -265,7 +265,8 @@ function AvatarRow({
   // this order.
   const fail = (e: unknown) => {
     onChanged();
-    onError(errorMessage(e));
+    // The banner quotes the server's reason, not the transport's prefix.
+    onError(e instanceof ApiError && e.detail ? e.detail : errorMessage(e));
   };
   const apply = async () => {
     // A known non-bot account needs the operator's word up front. An account

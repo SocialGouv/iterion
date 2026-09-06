@@ -110,8 +110,8 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("connection kind %q cannot carry an avatar", conn.Kind)}
 	case conn.Status == forge.StatusRevoked:
-		// A dead credential would come back as a 401 recorded on AvatarError,
-		// dressing a reconnect problem as an avatar one.
+		// The forge already rejected this token (a live 401 met by an apply
+		// below): a reconnect problem, never an avatar one.
 		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 			msg: fmt.Sprintf("%s rejected this connection's token (status %s) — reconnect it first", conn.Host(), conn.Status)}
 	}
@@ -163,13 +163,29 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		switch {
 		case err == nil:
 			conn.AccountKind, learned = ident.Kind, ident.Kind
+		case ctx.Err() != nil:
+			// The apply's budget is spent, whatever the forge managed to send:
+			// the upload would only fail on the dead context and stamp a
+			// misleading reason on the connection.
+			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
 		case errors.Is(err, forge.ErrUnauthorized):
-			// The credential itself is rejected: the reconnect problem the
-			// revoked-status rung above catches once the health probe has
-			// seen it. No force can carry an upload the forge would refuse
-			// the same way.
+			// The credential itself is rejected. Nothing else probes a PAT,
+			// so this is where the connection learns it: mark it revoked so
+			// the card and every later apply say so, and refuse — no force
+			// can carry an upload the forge would refuse the same way.
+			if updated, rerr := record(func(c *forge.Connection) {
+				c.Status, c.StatusReason = forge.StatusRevoked, "the forge rejected the token on an avatar apply (HTTP 401)"
+			}); rerr == nil {
+				conn = updated
+			} else if s.logger != nil {
+				s.logger.Error("forge avatar: mark connection %s revoked: %v", conn.ID, rerr)
+			}
 			return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 				msg: fmt.Sprintf("%s rejected this connection's token — reconnect it first", conn.Host())}
+		case errors.Is(err, forge.ErrHookNotFound):
+			// StatusErr maps every 404 onto the hook sentinel; here the user
+			// endpoint is what is missing, i.e. the base URL is wrong.
+			return conn, "", fmt.Errorf("could not read the account behind connection %s: %s does not serve the user endpoint (HTTP 404) — check the forge base URL", conn.ID, conn.Host())
 		case errors.Is(err, forge.ErrForbidden) && force:
 			// The forge answered but would not describe the account: the
 			// operator's word carries the apply, the kind stays unknown.
@@ -183,9 +199,9 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 				msg:    fmt.Sprintf("%s would not say whether @%s is a bot account (%v)%s", conn.Host(), conn.AccountLogin, err, avatarForceHint),
 				fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
 		default:
-			// Not an answer — a spent budget, an unreachable forge, a 5xx:
-			// nothing to vouch for, and the upload would only fail the same
-			// way and stamp a misleading reason on the connection.
+			// Not an answer — an unreachable forge, a 5xx, a body that is not
+			// JSON: nothing to vouch for, and the upload would only fail the
+			// same way and stamp a misleading reason on the connection.
 			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
 		}
 	}

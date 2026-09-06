@@ -606,12 +606,13 @@ func TestForgeConnectionAvatar_UnreadableAccountAsksForTheWord(t *testing.T) {
 
 // A token the forge rejects outright is a reconnect problem, whatever the
 // connection's recorded status says: no vouch is offered, no force carries
-// it, and nothing lands on the record.
+// it, and the connection — which nothing else probes — is marked revoked
+// with the reason, so the card says so and the next apply refuses up front.
 func TestForgeConnectionAvatar_RejectedCredentialIsAReconnectProblem(t *testing.T) {
 	s := newForgeTestServer(t)
-	uploads := 0
+	uploads, whoami := 0, 0
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) { whoami++; w.WriteHeader(http.StatusUnauthorized) })
 	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
 		uploads++
 		w.WriteHeader(http.StatusUnauthorized)
@@ -619,15 +620,52 @@ func TestForgeConnectionAvatar_RejectedCredentialIsAReconnectProblem(t *testing.
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	seedAvatarConn(t, s, forge.Connection{ID: "c-dead-token", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL}) // AccountKind empty, status still active
+	w := avatarReq(s, "c-dead-token", "")
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect it first") || strings.Contains(w.Body.String(), "needs_force") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-dead-token")
+	if stored.Status != forge.StatusRevoked || !strings.Contains(stored.StatusReason, "401") {
+		t.Fatalf("a live 401 must mark the connection revoked with the reason: status=%q reason=%q", stored.Status, stored.StatusReason)
+	}
+	if uploads != 0 || stored.AccountKind != "" || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
+		t.Fatalf("a rejected credential must upload nothing and touch no avatar field: uploads=%d stored=%+v", uploads, stored)
+	}
+	// Forced or not, the next apply is refused before the forge is asked.
+	if w := avatarReq(s, "c-dead-token", `{"force":true}`); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect it first") || whoami != 1 || uploads != 0 {
+		t.Fatalf("forced apply on a revoked connection: code=%d whoami=%d uploads=%d body=%s", w.Code, whoami, uploads, w.Body.String())
+	}
+}
+
+// A forge that sends its refusal's headers and then stalls has spent the
+// apply's budget: that outranks the answer it managed to send — no 409 to
+// vouch into, no forced upload on a dead context.
+func TestForgeConnectionAvatar_SpentBudgetOutranksTheForgesAnswer(t *testing.T) {
+	s := newForgeTestServer(t)
+	uploads := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // the body never completes
+	})
+	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
+		uploads++
+		_ = json.NewEncoder(w).Encode(map[string]any{"avatar_url": "https://gl/u.png"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-stalled-403", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL})
+	s.avatarApplyTimeout = 200 * time.Millisecond
 	for _, body := range []string{"", `{"force":true}`} {
-		w := avatarReq(s, "c-dead-token", body)
-		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect it first") || strings.Contains(w.Body.String(), "needs_force") {
+		w := avatarReq(s, "c-stalled-403", body)
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
 			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
 		}
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-dead-token")
-	if uploads != 0 || stored.AccountKind != "" || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
-		t.Fatalf("a rejected credential must upload and record nothing: uploads=%d stored=%+v", uploads, stored)
+	stored, _ := s.forgeConnections.Get(context.Background(), "c-stalled-403")
+	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
+		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d stored=%+v", uploads, stored)
 	}
 }
 
@@ -649,5 +687,13 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreachable")
 	if stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("an unreachable forge must record nothing: %+v", stored)
+	}
+	// A forge that answers 404 to /user is a wrong base URL, and says so —
+	// not the hook sentinel StatusErr maps every 404 onto.
+	noUser := httptest.NewServer(http.NotFoundHandler())
+	defer noUser.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-wrong-base", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: noUser.URL})
+	if w := avatarReq(s, "c-wrong-base", ""); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "does not serve the user endpoint") || strings.Contains(w.Body.String(), "hook") {
+		t.Fatalf("404 on /user: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
