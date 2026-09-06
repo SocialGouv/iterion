@@ -88,6 +88,12 @@ print-mode pi node has no control channel and gets none of this.
   (releasing its semaphore slot, like `wait`); the `await_answers`
   TOOL called from inside a branch returns an explicit error (a pause
   is run-global by construction — put the sync point in the graph).
+- **`interaction: async` belongs on the trunk.** A question set is keyed
+  per `(run, node)`, and `fan_out_each` replays ONE node id per item, so
+  inside a fan-out that key names every item at once. The engine
+  therefore hands a branch node no async binder: `ask_user_async` errors
+  and a warning names the reason, rather than N items silently sharing
+  one inbox. Declare the async node on the trunk and fan out below it.
 - **Level-triggered, store-backed**: the await predicate is "no pending
   `Kind: async` interaction in scope", re-checked on an in-process
   doorbell (immediate) and a 5s poll (cross-process answers). Answers

@@ -631,28 +631,45 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 	}
 }
 
-// execContext is the SINGLE wiring point for the per-execution context
-// every executor.Execute call must carry: the run and node identity, plus
-// the template snapshot that turns `{{run.*}}`, `{{outputs.*}}`,
-// `{{loop.*}}`, `{{artifacts.*}}` and `{{attachments.*}}` into values
-// instead of literals.
+// templateContext attaches the template snapshot that turns `{{run.*}}`,
+// `{{outputs.*}}`, `{{loop.*}}`, `{{artifacts.*}}` and `{{attachments.*}}`
+// into values instead of literals. The SINGLE wiring point for it: every
+// dispatch site goes through templateContext or execContext, so a namespace
+// added to TemplateData reaches all of them at once. A site that skips it
+// renders a literal `{{…}}` into a shell command, which is a silent
+// constant.
 //
-// Every dispatch site goes through it — the trunk, both fan-out kinds, the
-// llm router and the two resume re-invocations — so a namespace added to
-// TemplateData reaches all of them at once. A site that skips it renders a
-// literal `{{…}}` into a shell command, which is a silent constant.
-func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
-	return e.execContextScoped(ctx, rs, nodeID, rs.scope())
+// sc supplies the outputs/artifacts view — rs.scope() on the trunk, the
+// branch's merged scope inside a fan-out, which is the SAME scope the expr
+// path resolves `outputs.*` against, so a prompt and a `when` condition
+// inside one branch read one set of upstream outputs, not two.
+//
+// The snapshot is all a fan-out branch gets. It carries the run id
+// (`{{run.id}}` renders from TemplateData), and deliberately not the ctx
+// RUN IDENTITY that execContext adds: see there.
+func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveScope) context.Context {
+	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 
-// execContextScoped is execContext against an explicit outputs/artifacts
-// view. Fan-out branches pass the SAME merged scope the expr path resolves
-// `outputs.*` against, so a prompt and a `when` condition inside one branch
-// read one set of upstream outputs, not two.
-func (e *Engine) execContextScoped(ctx context.Context, rs *runState, nodeID string, sc resolveScope) context.Context {
+// execContext is templateContext plus the ctx run/node IDENTITY, which is
+// a key, not a value: every consumer of it addresses per-run-per-node state
+// — the compaction session store (`sessionKey(runID, nodeID)`), the
+// operator-chat inbox, the ADR-081 async-question binder. That key is
+// unique only where a node id executes once per run, i.e. on the trunk
+// (and on the resume/router paths, which are the trunk re-entered).
+//
+// It is NOT unique inside a fan-out: `fan_out_each` replays ONE node id
+// per item. Handing the identity to a branch would make N items share one
+// session slot — an item whose node fails leaves its transcript behind
+// (eviction happens on success only) for the next item executing that node
+// id to have prepended, and a sibling succeeding evicts the slot a
+// concurrent retry depends on. No data race, just another item's
+// conversation. Branches therefore call templateContext alone; give them
+// the identity only once those stores key on the branch too.
+func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
 	ctx = model.WithRunID(ctx, rs.runID)
 	ctx = model.WithNodeID(ctx, nodeID)
-	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
+	return e.templateContext(ctx, rs, rs.scope())
 }
 
 // loadAttachmentInfos populates the per-run attachment view consumed

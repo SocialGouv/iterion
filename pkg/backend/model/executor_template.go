@@ -427,28 +427,54 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *
 	return "", false
 }
 
-// lookupRunTemplateRef resolves one `{{run.<key>}}` reference against the
-// engine's namespace snapshot. Shared by the prompt path (resolveTemplateRef
-// above) and the tool-command path (resolveRunRefs), so a member added to
-// the namespace reaches both instead of rendering as a literal placeholder
-// in whichever one was forgotten.
+// lookupRunTemplateRef resolves one `{{run.<key>}}` reference for a PROMPT
+// body, formatting the raw value runNamespaceValue returns. The tool-command
+// path (resolveRunRefs) reads the same lookup with its own renderer, so a
+// member added to the namespace reaches both instead of rendering as a
+// literal placeholder in whichever one was forgotten.
 //
-// `id` is served from RunID whether or not the snapshot map is populated:
-// callers that predate the map (tests, hosts that wire only WithRunID) keep
-// the member that has always worked. Any other unknown key stays
-// unresolved, which is what a caller distinguishes from an empty value.
+// `id` is served from RunID whether or not the snapshot's Run map is
+// populated: callers that predate the map (tests, hosts that wire only
+// WithRunID) keep the member that has always worked. Any other unknown key
+// stays unresolved, which is what a caller distinguishes from an empty value.
 func lookupRunTemplateRef(td *TemplateData, key string) (string, bool) {
-	if td == nil {
-		return "", false
-	}
-	if key == "id" {
-		return td.RunID, true
-	}
-	v, ok := td.Run[key]
+	v, ok := runNamespaceValue("", td, key)
 	if !ok {
 		return "", false
 	}
 	return formatValue(v), true
+}
+
+// runNamespaceValue resolves one `run.<member>` to its RAW value — the
+// single lookup behind both the prompt path (lookupRunTemplateRef, which
+// formats it) and the tool command / script / postcondition path
+// (resolveRunRefs, which shell-escapes or JSON-encodes it), so a member
+// cannot resolve in one and stay literal in the other.
+//
+// The TEMPLATE SNAPSHOT is the authority, including for `id`: it is the
+// only source a fan-out branch has, since the engine withholds the ctx run
+// identity there (a key that would alias sibling items — see pkg/runtime's
+// execContext). ctxRunID is the fallback for `id` alone, for hosts that
+// wire WithRunID and no snapshot. `id` resolves to the empty string rather
+// than to its own placeholder whenever either is wired.
+func runNamespaceValue(ctxRunID string, td *TemplateData, member string) (any, bool) {
+	if member == "id" {
+		if td != nil && td.RunID != "" {
+			return td.RunID, true
+		}
+		if ctxRunID != "" {
+			return ctxRunID, true
+		}
+		if td != nil {
+			return "", true
+		}
+		return nil, false
+	}
+	if td == nil {
+		return nil, false
+	}
+	v, ok := td.Run[member]
+	return v, ok
 }
 
 // drillTemplatePath walks a dotted path through nested maps. Returns
