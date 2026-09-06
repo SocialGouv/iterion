@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 // layer over the machine-global one for set/remove.
 type SecretOptions struct {
 	Name     string
+	Kind     string
 	FromEnv  string
 	Project  bool
 	Hosts    []string
@@ -75,6 +77,9 @@ func RunSecretSet(p *Printer, opts SecretOptions) error {
 	if value == "" {
 		return fmt.Errorf("empty secret value")
 	}
+	if err := validateSecretShape(opts.Kind, name, value); err != nil {
+		return err
+	}
 
 	st, sealer, err := buildLocalSecrets(opts)
 	if err != nil {
@@ -100,6 +105,35 @@ func RunSecretSet(p *Printer, opts SecretOptions) error {
 		verb = "Stored"
 	}
 	p.Line("%s secret %q (%s scope, last4 %s)", verb, name, scope, rec.Last4)
+	return nil
+}
+
+// validateSecretShape is the CLI's half of the ingestion gate the API
+// paths run (secrets.ValidateAPIKeyShape / ValidateTokenShape): a value
+// that could not possibly authenticate is refused at the paste, not
+// discovered as a provider 401 in the middle of a run hours later.
+//
+// The local store is name-keyed and carries no kind of its own, so the
+// shape is what the operator names with --kind, or what the value itself
+// says (a PEM header, a JSON opener, else a bare token). `--kind raw` is
+// the explicit opt-out for a value that is none of the three — the
+// refusal names it, so the remedy travels with the message.
+func validateSecretShape(kind, name, value string) error {
+	shape := secrets.InferSecretShapeKind(value)
+	if strings.TrimSpace(kind) != "" {
+		parsed, err := secrets.ParseSecretShapeKind(kind)
+		if err != nil {
+			return err
+		}
+		shape = parsed
+	}
+	if err := secrets.ValidateSecretShape(shape, name, value); err != nil {
+		var se *secrets.ShapeError
+		if errors.As(err, &se) {
+			return fmt.Errorf("%s (read as --kind %s; pass --kind raw to store it unchecked)", se.Error(), shape)
+		}
+		return err
+	}
 	return nil
 }
 

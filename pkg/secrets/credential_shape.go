@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"strings"
 	"unicode"
@@ -74,19 +75,130 @@ func ValidateAPIKeyShape(provider Provider, value string) error {
 	if !provider.CredentialIsJSON() {
 		return ValidateTokenShape("api-key secret", value)
 	}
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
+	if strings.TrimSpace(value) == "" {
 		return &ShapeError{Field: "api-key secret", Reason: "is empty"}
 	}
-	var doc map[string]json.RawMessage
-	if !strings.HasPrefix(trimmed, "{") || json.Unmarshal([]byte(trimmed), &doc) != nil {
+	fields, kind := jsonDocument(value)
+	if kind != jsonObject {
 		return &ShapeError{Field: "api-key secret", Reason: fmt.Sprintf("must be a JSON credential object for provider %s (an AWS-style credential document, a service-account file), not a bearer token", provider)}
 	}
 	// An EMPTY object parses and carries nothing: a credential that cannot
 	// authenticate is refused at ingestion like any other, rather than
 	// discovered at the first call.
-	if len(doc) == 0 {
+	if fields == 0 {
 		return &ShapeError{Field: "api-key secret", Reason: fmt.Sprintf("is an empty JSON object — a %s credential document must carry its fields", provider)}
 	}
 	return nil
+}
+
+// jsonDocumentKind classifies what a value parses as at the top level.
+type jsonDocumentKind int
+
+const (
+	jsonNotADocument jsonDocumentKind = iota
+	jsonObject
+	jsonArray
+)
+
+// jsonDocument parses value as a top-level JSON object or array and
+// returns how many members it carries. Shared by every ingestion gate so
+// "is this a JSON credential document" has one answer: a scalar, a
+// truncated paste or trailing garbage is not a document.
+func jsonDocument(value string) (members int, kind jsonDocumentKind) {
+	trimmed := strings.TrimSpace(value)
+	switch {
+	case strings.HasPrefix(trimmed, "{"):
+		var doc map[string]json.RawMessage
+		if json.Unmarshal([]byte(trimmed), &doc) != nil {
+			return 0, jsonNotADocument
+		}
+		return len(doc), jsonObject
+	case strings.HasPrefix(trimmed, "["):
+		var doc []json.RawMessage
+		if json.Unmarshal([]byte(trimmed), &doc) != nil {
+			return 0, jsonNotADocument
+		}
+		return len(doc), jsonArray
+	}
+	return 0, jsonNotADocument
+}
+
+// SecretShapeKind names the shape a stored secret's value must have. The
+// generic secret store legitimately holds a PEM key or a JSON document
+// as well as bearer tokens, so the bare-token rule cannot be the only
+// one — the kind selects which gate applies, and SecretShapeRaw opts out
+// explicitly for a value that is none of the three (a passphrase, a
+// connection string, a blob).
+type SecretShapeKind string
+
+const (
+	SecretShapeToken SecretShapeKind = "token"
+	SecretShapeJSON  SecretShapeKind = "json"
+	SecretShapePEM   SecretShapeKind = "pem"
+	SecretShapeRaw   SecretShapeKind = "raw"
+)
+
+// SecretShapeKinds lists the accepted kinds, in the order an operator
+// meets them in the help text.
+var SecretShapeKinds = []SecretShapeKind{SecretShapeToken, SecretShapeJSON, SecretShapePEM, SecretShapeRaw}
+
+// ParseSecretShapeKind resolves an operator-supplied kind. An empty
+// string means "infer from the value" and is the caller's business
+// (InferSecretShapeKind); an unrecognised one is an error, never a
+// silent pass-through to no checking.
+func ParseSecretShapeKind(s string) (SecretShapeKind, error) {
+	k := SecretShapeKind(strings.ToLower(strings.TrimSpace(s)))
+	for _, known := range SecretShapeKinds {
+		if k == known {
+			return k, nil
+		}
+	}
+	names := make([]string, 0, len(SecretShapeKinds))
+	for _, known := range SecretShapeKinds {
+		names = append(names, string(known))
+	}
+	return "", fmt.Errorf("unknown secret kind %q (want one of: %s)", s, strings.Join(names, "|"))
+}
+
+// InferSecretShapeKind reads the shape off the value itself: a PEM
+// header, a JSON document opener, else a bare token. It never returns
+// SecretShapeRaw — opting out of the check is a decision an operator
+// takes, not one a heuristic takes for them.
+func InferSecretShapeKind(value string) SecretShapeKind {
+	trimmed := strings.TrimSpace(value)
+	switch {
+	case strings.HasPrefix(trimmed, "-----BEGIN "):
+		return SecretShapePEM
+	case strings.HasPrefix(trimmed, "{"), strings.HasPrefix(trimmed, "["):
+		return SecretShapeJSON
+	}
+	return SecretShapeToken
+}
+
+// ValidateSecretShape is the ingestion gate for a stored secret whose
+// shape the operator named (or that InferSecretShapeKind read off the
+// value). field phrases the refusal — pass the secret's name so an
+// operator sees WHICH secret was rejected; the value never appears.
+func ValidateSecretShape(kind SecretShapeKind, field, value string) error {
+	switch kind {
+	case SecretShapeRaw:
+		return nil
+	case SecretShapeToken:
+		return ValidateTokenShape(field, value)
+	case SecretShapeJSON:
+		members, docKind := jsonDocument(value)
+		if docKind == jsonNotADocument {
+			return &ShapeError{Field: field, Reason: "is not a JSON document — it opens like one but does not parse, which is what a truncated or partially-copied paste looks like"}
+		}
+		if members == 0 {
+			return &ShapeError{Field: field, Reason: "is an empty JSON document — it carries nothing to authenticate with"}
+		}
+		return nil
+	case SecretShapePEM:
+		if block, _ := pem.Decode([]byte(value)); block == nil {
+			return &ShapeError{Field: field, Reason: "is not a PEM block — it opens with a PEM header but no complete -----BEGIN/-----END block decodes, which is what a truncated paste looks like"}
+		}
+		return nil
+	}
+	return fmt.Errorf("secrets: unknown secret shape kind %q", kind)
 }

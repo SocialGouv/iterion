@@ -579,11 +579,12 @@ iterion server webpush-keys        # mint a VAPID keypair for Web Push
 
 ### `iterion secret`
 
-Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed.
+Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed. `set` shape-checks the value at ingestion against the kind read off it (token / JSON / PEM), or the one `--kind` names; `--kind raw` stores it unchecked.
 
 ```bash
 iterion secret set GITHUB_TOKEN
 iterion secret set DB_URL --project --hosts db.internal
+iterion secret set DB_PASSPHRASE --kind raw
 iterion secret list
 ```
 

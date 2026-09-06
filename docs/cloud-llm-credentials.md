@@ -141,6 +141,11 @@ was found (#627). The gate is
   expiry or a scope).
 - **Codex `auth.json`**: the token-shape check on `tokens.access_token`.
 
+The **local** store has the same door: `iterion secret set` runs the matching
+rule for the value's shape (token / JSON / PEM), with `--kind` to name it and
+`--kind raw` to opt out — see
+[secrets.md](secrets.md#ingestion-shape-gate---kind).
+
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the
 field and the reason — never the value. Nothing is stored on a refusal. Which
