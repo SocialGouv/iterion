@@ -70,7 +70,7 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	//
 	// Read after the target resolves: it walks the bot catalog, which a run
 	// that may not be commented on has no reason to pay for.
-	role := s.pauseNoticeRoleForBot(run.BotID)
+	role := s.pauseNoticeRoleForRun(ctx, run)
 	body := gatePauseNoticeBody(run, role, time.Now().UTC())
 	if _, err := target.commenter.CommentIssue(ctx, target.repo, target.number, body); err != nil {
 		s.gateNoticeDebug(run, "pause notice", "%v", err)
@@ -121,16 +121,25 @@ const (
 	pauseNoticeRoleFixer
 )
 
-// pauseNoticeRoleForBot classifies the bot behind a parked run. A bot that
+// pauseNoticeRoleForRun classifies the bot behind a parked run. A bot that
 // PRODUCES a review is a reviewer (Revi and any peer); one that CONSUMES a
-// review to answer it is a fixer (Billy and any peer). Consumes wins over
-// produces on the (unlikely) both — a bot that produces its own review of
-// its own fixes is a fixer, and the fixer notice's push-back warning is the
-// one that matters. Missing bot / entry / catalog → unknown (silent).
-func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
-	botID = strings.TrimSpace(botID)
+// review to answer it is a fixer (Billy and any peer). Missing bot / entry /
+// catalog → unknown (neutral notice).
+//
+// The manifest is read AT THE TIER THE RUN CAME FROM: a team-authored bot
+// resolves through the team's own bot-source row at launch, and the run
+// records which (BotSourceTenant), so reading only the platform + baked
+// catalog would find nothing and hand a team's reviewer the neutral notice.
+// The team lookup is keyed on the run's own provenance, never on an ambient
+// tenant — the tenant-context-free lanes stay blind to team forks by
+// contract (see bot_resolver.go).
+func (s *Server) pauseNoticeRoleForRun(ctx context.Context, run *store.Run) pauseNoticeRole {
+	botID := strings.TrimSpace(run.BotID)
 	if botID == "" {
 		return pauseNoticeRoleUnknown
+	}
+	if m := s.teamBotManifest(ctx, run.BotSourceTenant, botID); m != nil {
+		return pauseNoticeRoleFor(m.Produces, m.Consumes)
 	}
 	entry, ok, err := s.effectiveFindByName(botID)
 	if err != nil {
@@ -145,12 +154,21 @@ func (s *Server) pauseNoticeRoleForBot(botID string) pauseNoticeRole {
 	if !ok {
 		return pauseNoticeRoleUnknown
 	}
-	for _, c := range entry.Consumes {
+	return pauseNoticeRoleFor(entry.Produces, entry.Consumes)
+}
+
+// pauseNoticeRoleFor is the classification itself, over the two hand-off
+// declaration lists whichever tier supplied them. Consumes wins over produces
+// on the (unlikely) both — a bot that produces its own review of its own
+// fixes is a fixer, and the fixer notice's push-back warning is the one that
+// matters.
+func pauseNoticeRoleFor(produces []bundle.ProducedArtifact, consumes []bundle.ConsumedArtifact) pauseNoticeRole {
+	for _, c := range consumes {
 		if c.Kind == bundle.HandoffKindReview {
 			return pauseNoticeRoleFixer
 		}
 	}
-	for _, p := range entry.Produces {
+	for _, p := range produces {
 		if p.Kind == bundle.HandoffKindReview {
 			return pauseNoticeRoleReviewer
 		}

@@ -888,6 +888,13 @@ repeatedly on one revision is a structural signal (a run budget too short for
 the workload, a recurring provider quota, a bot defect), which is a human's
 call.
 
+A pull request that is **closed or merged** gets no synthetic failure at all:
+it owes nobody a verdict, and "push again to re-run the review" on work that
+already shipped is advice with no object. The check then keeps whatever the
+interrupted run's in-flight claim left on the head — which blocks nothing, and
+which a reopen heals, since the fresh review's claim may overwrite an in-flight
+marker. A provider that reports no state at all is not treated as a closure.
+
 The synthetic failure states the remedy that applies to the run it replaces.
 A review that died reads `review died (<reason>) — push again or comment the
 bot's command to re-run`; a run whose queue message is parked on the

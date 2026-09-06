@@ -377,3 +377,49 @@ func TestGateReconcile_DoesNotSpeakForAHeadItNeverReviewed(t *testing.T) {
 		t.Fatalf("the head it DID review must still get its verdict (%d writes)", gc.setCalls)
 	}
 }
+
+// A pull request that is closed or merged owes nobody a verdict. The
+// reconciler used to paint its synthetic failure there anyway — a red
+// "review died — push again or comment the bot's command to re-run" on a
+// pull request already merged, telling a developer to re-run a review of
+// work that shipped. Reachable from every terminal outcome on such a run:
+// the retry sweeper's abandon republishes the outcome deliberately, the
+// stop-on-close cancel is itself a terminal outcome, and the sweep re-offers
+// the run for its whole lookback.
+//
+// Same predicate the relaunch and auto-fix lanes already use: an EMPTY state
+// (a provider that does not report one) is not a closure, so a verdict is
+// never suppressed on an unknown.
+func TestGateReconcile_ClosedPullRequestGetsNoSyntheticFailure(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  int
+	}{
+		{"open", 1},
+		{"", 1}, // unknown state: never suppress a verdict on a guess
+		{"closed", 0},
+		{"merged", 0},
+	} {
+		t.Run("state="+tc.state, func(t *testing.T) {
+			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef", state: tc.state}}
+			s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+			run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.Status = store.RunStatusCancelled
+			run.Error = "auto-retry abandoned: monthly_run_quota_exceeded"
+			if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if gc.setCalls != tc.want {
+				t.Fatalf("pull request %q: posted %d statuses, want %d (last: %q %q)",
+					tc.state, gc.setCalls, tc.want, gc.last.State, gc.last.Description)
+			}
+		})
+	}
+}

@@ -1095,17 +1095,36 @@ func (s *Server) launchWebhookTarget(
 	delivery.Attempts = 1
 	if reusePriorFailure != nil {
 		// Retry: keep the prior row's identity + received-at, count the
-		// attempt, clear the error, and UPDATE it (Insert would
-		// ErrDuplicate on the idemKey).
+		// attempt, clear the error, and CLAIM it (Insert would ErrDuplicate
+		// on the idemKey). A claim rather than a plain update because the
+		// row was READ in step 1: two redeliveries of the same failed event
+		// both find it there, and an unconditional write would let both go
+		// on to launch a run for one event — the storm shape a redelivery
+		// burst has. The loser answers as a duplicate, exactly as the
+		// concurrent-insert loser below does.
 		delivery.ID = reusePriorFailure.ID
 		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
 		delivery.Attempts = reusePriorFailure.Attempts + 1
 		if s.webhookDeliveries != nil {
-			if err := s.webhookDeliveries.Update(ctx, delivery); err != nil {
+			claimed, err := s.webhookDeliveries.ClaimFailedRetry(ctx, delivery, reusePriorFailure.Attempts)
+			if err != nil {
 				adm.rollback(s.logger)
 				out.Status = webhooks.StatusLaunchError
 				out.Error = fmt.Sprintf("reset failed delivery: %v", err)
 				out.httpStatus = http.StatusInternalServerError
+				return out
+			}
+			if !claimed {
+				// Somebody else is retrying this event right now. Release
+				// this delivery's metered quota unit — the same reason the
+				// Insert loser does — and echo the row that won.
+				adm.rollback(s.logger)
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				out.Status = webhooks.StatusDuplicate
+				out.DeliveryID = reusePriorFailure.ID
+				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
+					out.RunID, out.DeliveryID = existing.RunID, existing.ID
+				}
 				return out
 			}
 		}

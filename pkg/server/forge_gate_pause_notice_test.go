@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -434,5 +435,58 @@ func TestGateNotices_ShareOneAuthorizationWalk(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A run's manifest is read at the TIER the run came from. A team-authored
+// bot resolves through the team botsource row at launch (run.BotSourceTenant
+// records which), so reading its produces:/consumes: from the platform +
+// baked catalog alone finds nothing and the reviewer silently gets the
+// role-neutral notice — the wrong etiquette for the one surface a developer
+// reads while their PR waits.
+func TestGatePausedNotice_TeamAuthoredBotKeepsItsRole(t *testing.T) {
+	s := newForgeGateTestServer(t, nil)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Store = st
+	s.botSources = botsource.NewMemoryStore()
+	registerPublishToken(t, s, "tok-gate", ForgePublishGrant{
+		TeamID: "team1", ConnectionID: "conn1", Repo: "o/r", Bot: "acme-reviewer",
+	})
+	c := &stubCommenter{}
+	s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) { return c, nil }
+
+	// A reviewer the TEAM authored: it exists in no catalog, only in the
+	// team's own bot-source row.
+	ctx := store.WithTenant(context.Background(), "team1")
+	if _, err := s.botSources.Create(ctx, botsource.BotSource{
+		TenantID: "team1", Slug: "acme-reviewer",
+		Files: map[string]string{
+			botsource.MainBotFile: "workflow acme_reviewer:\n  entry: done\n",
+			"manifest.yaml": "name: acme-reviewer\nversion: 0.1.0\n" +
+				"produces:\n  - kind: review\n    node: publish\n",
+		},
+	}); err != nil {
+		t.Fatalf("seed the team bot: %v", err)
+	}
+
+	at := time.Now().UTC().Add(time.Hour)
+	run := &store.Run{
+		ID: "run-team", BotID: "acme-reviewer", BotSourceTenant: "team1",
+		TenantID: "team1", Status: store.RunStatusFailedResumable,
+		Inputs:     gatingInputs(),
+		RetryState: &store.RunRetryState{RetryAfter: &at, Reason: "usage_window"},
+		Error:      "rate_limited: You've hit your weekly limit",
+	}
+
+	s.noticeGatePausedForRetry(context.Background(), run)
+
+	if len(c.bodies) != 1 {
+		t.Fatalf("want exactly one notice, got %d", len(c.bodies))
+	}
+	if !strings.Contains(c.bodies[0], "Review paused") {
+		t.Fatalf("a team-authored reviewer must get the reviewer notice; got:\n%s", c.bodies[0])
 	}
 }

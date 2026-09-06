@@ -76,6 +76,18 @@ func (s *MemoryDeliveryStore) Update(_ context.Context, d Delivery) error {
 	return s.kit.Replace(d.ID, d)
 }
 
+// ClaimFailedRetry is the compare-and-set take-over of a failed row (see
+// DeliveryStore). Keep its semantics in lock-step with the Mongo twin.
+func (s *MemoryDeliveryStore) ClaimFailedRetry(_ context.Context, d Delivery, expectAttempts int) (bool, error) {
+	return s.kit.Mutate(d.ID, func(cur *Delivery) bool {
+		if cur.Status != StatusLaunchError || cur.Attempts != expectAttempts {
+			return false
+		}
+		*cur = d
+		return true
+	})
+}
+
 func (s *MemoryDeliveryStore) ListByWebhook(_ context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
 	out := s.kit.List(func(d Delivery) bool {
 		return d.TenantID == tenantID && d.WebhookID == webhookID

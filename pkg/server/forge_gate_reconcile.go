@@ -343,6 +343,30 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if strings.TrimSpace(pr.HeadSHA) == "" {
 		return abstain("the forge returned no head sha")
 	}
+	// A pull request that is closed or merged owes nobody a verdict: painting
+	// "review died — push again" there tells a developer to re-run a review of
+	// work that already shipped, and the relaunch below stands down on the
+	// same state anyway. Reachable from every terminal outcome such a run can
+	// have — the retry sweeper's abandon republishes one deliberately, the
+	// stop-on-close cancel IS one, and the sweep re-offers the run for its
+	// whole lookback.
+	//
+	// Same predicate the relaunch and auto-fix lanes use: an EMPTY state is a
+	// provider that does not report one, not a closure, so a verdict is never
+	// suppressed on a guess. Debug rather than abstain(): a pull request
+	// closed while its review ran is ordinary, not an anomaly.
+	//
+	// What this leaves behind is an in-flight claim nothing repairs. It blocks
+	// nothing — the pull request is already merged or closed — and a reopen
+	// heals it, because the fresh review's own claim may overwrite an
+	// in-flight marker (markGateInFlight).
+	if pr.State != "" && pr.State != "open" {
+		if s.logger != nil {
+			s.logger.Debug("forge gate: run %s owed %s on %s, but the pull request is %s — a closed pull request needs no verdict",
+				runID, gateCtx, prURL, pr.State)
+		}
+		return nil
+	}
 	// Only the revision this run was reviewing. Between its start and its
 	// death the head routinely moves — the author pushes a fix, a brancher
 	// commits, review_on_sync already has a fresh review in flight. Painting
