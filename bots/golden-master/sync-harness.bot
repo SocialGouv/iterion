@@ -2377,9 +2377,15 @@ tool sync_harness:
 
         A marker is an instruction to run a script, so it is REFUSED — reported,
         nothing executed — on either of two grounds: it names a directory that is
-        not one of this workspace's `mutant_roots` (dropped, it sits in our own
-        private directory), or it sits in a directory this user does not privately
-        own (left alone, it is not ours to touch).
+        not one of this workspace's `mutant_roots`, or it sits in a directory this
+        user does not privately own.
+
+        A refusal drops NOTHING. Reading is not deciding: whether the record may
+        be forgotten depends on the tree, which this function does not look at —
+        `settle_leftover` is where that call is made, once. Dropping it here made
+        the refusal one-shot; the gate below would refuse a dirty tree, but the
+        record was already gone, so the NEXT gate found nothing, said nothing, and
+        judged a tree that may still carry the mutant.
         """
         marker = applied_marker_for(ws)
         if not os.path.isfile(marker):
@@ -2396,7 +2402,6 @@ tool sync_harness:
         meta = read_applied_marker(marker)
         mdir = meta.get("dir") or ""
         if not mdir or not any(_under(mdir, r) for r in mutant_roots(ws)):
-            drop_applied_marker(ws)
             return {"id": meta.get("id"), "dir": mdir, "code": None, "out": "",
                     "marker": marker, "refused": True}
         script = os.path.join(mdir, "revert.sh")
@@ -2457,8 +2462,8 @@ tool sync_harness:
         elif left.get("refused"):
             kind, text = "refused", (
                 "a stale application marker named a directory that is neither this "
-                "workspace's mutant set nor its sealed held-out pile (%s): dropped, "
-                "nothing executed." % (left.get("dir") or "?"))
+                "workspace's mutant set nor its sealed held-out pile (%s): nothing "
+                "was executed." % (left.get("dir") or "?"))
         elif left.get("code") == 0:
             return "reverted", (
                 "a mutant left APPLIED by an interrupted gate was reverted at start: %s "
@@ -2474,8 +2479,30 @@ tool sync_harness:
             return "still_mutated", (
                 "%s The workspace is NOT clean (%d path(s): %s), so it may still carry the "
                 "mutant that marker recorded, and the harness can no longer tell. Revert by "
-                "hand (git checkout -- <the mutant's paths>), then gate."
-                % (text, len(dirty), ", ".join(sorted(dirty)[:12])))
+                "hand (git checkout -- <the mutant's paths>), then delete the marker %s and "
+                "gate — it is KEPT until you do, and every gate until then refuses the same "
+                "way."
+                % (text, len(dirty), ", ".join(sorted(dirty)[:12]), left.get("marker")))
+        return kind, text
+
+
+    def settle_leftover(ws, left, dirty=()):
+        """`leftover_disposition`, plus the one side effect its verdict implies.
+
+        A refused marker is forgotten only once the gate has decided to PROCEED on
+        it — i.e. only on a tree git reports clean, which cannot be carrying the
+        mutant. When the verdict escalates to "still_mutated" the record is KEPT,
+        so the refusal is sticky: the next gate reads the same marker and refuses
+        the same way, until the operator reverts and deletes it. That also arms
+        `write_applied_marker`'s O_EXCL refusal for free — no new mutant is
+        applied on top of one that may still be in the tree.
+
+        A marker in a directory that is not this user's own is never dropped,
+        whatever the verdict: it is not ours to touch.
+        """
+        kind, text = leftover_disposition(left, dirty)
+        if kind != "still_mutated" and left.get("refused") and not left.get("untrusted_dir"):
+            drop_applied_marker(ws)
         return kind, text
 
 
@@ -3660,17 +3687,42 @@ tool sync_harness:
                 left = revert_leftover_mutant(tmp)
                 check("un marqueur etranger est refuse", (left or {}).get("refused"), True)
                 check("rien n'a ete execute", os.path.exists(canary), False)
-                check("le marqueur etranger est jete", os.path.isfile(applied_marker_for(tmp)), False)
-                check("disposition d'un marqueur etranger", leftover_disposition(left)[0], "refused")
+                check("lire n'est pas decider : le marqueur survit a la lecture",
+                      os.path.isfile(applied_marker_for(tmp)), True)
                 # Un REFUS n'a rien reverti. Si l'arbre est sale, il peut donc encore
                 # PORTER ce mutant — et un marqueur que le harnais a ecrit lui-meme
                 # devient refuse des que GM_SEALED_DIR ou GM_DIR change d'une passe a
                 # l'autre. La porte refuse plutot que de juger un programme que
                 # personne n'a ecrit.
-                kind_d, text_d = leftover_disposition(left, ["src/Api.java", "b.txt"])
+                kind_d, text_d = settle_leftover(tmp, left, ["src/Api.java", "b.txt"])
                 check("un refus sur un arbre sale refuse la porte", kind_d, "still_mutated")
                 check("et nomme les chemins sales", ["src/Api.java" in text_d, "b.txt" in text_d],
                       [True, True])
+                # ── Et ce refus TIENT. Efface des la lecture, il ne valait qu'une
+                # passe : la porte refusait bien, mais le marqueur avait deja disparu,
+                # donc la SUIVANTE ne trouvait plus rien a signaler et jugeait un arbre
+                # portant peut-etre encore le mutant. Or le declencheur mesure de toute
+                # cette branche est un REESSAI automatique sur le meme arbre : re-gater
+                # sans revert humain est la sequence attendue, pas le cas limite.
+                check("le marqueur survit au refus, et le texte dit de l'effacer",
+                      [os.path.isfile(applied_marker_for(tmp)), (left or {}).get("marker") in text_d],
+                      [True, True])
+                # `again or {}` : sous la regression que ces trois checks attrapent, la
+                # seconde lecture ne trouve plus de marqueur et rend None. Un `.get`
+                # direct la ferait CRASHER — un echec de check dit ce qui a lache, une
+                # trace d'AttributeError ne dit que par ou.
+                again = revert_leftover_mutant(tmp)
+                check("la porte suivante refuse encore, sur le meme marqueur",
+                      [(again or {}).get("refused"),
+                       settle_leftover(tmp, again or {}, ["src/Api.java"])[0],
+                       os.path.exists(canary)],
+                      [True, "still_mutated", False])
+                # Sur un arbre que git dit PROPRE, rien ne peut plus porter le mutant :
+                # le refus redevient une note, et c'est la — une fois — que le marqueur
+                # perime est oublie.
+                check("sur un arbre propre le refus est une note, et le marqueur est jete",
+                      [settle_leftover(tmp, again or {}, [])[0], os.path.isfile(applied_marker_for(tmp))],
+                      ["refused", False])
                 # ET un repertoire VOISIN sous la racine de scratch elle-meme. Le
                 # controle precedent passait deja quand tout /tmp etait « contenu » :
                 # il place son leurre hors de la racine, donc il ne prouvait pas le
@@ -3684,6 +3736,7 @@ tool sync_harness:
                 left = revert_leftover_mutant(tmp)
                 check("un voisin sous la racine de scratch est refuse aussi",
                       [(left or {}).get("refused"), os.path.exists(canary)], [True, False])
+                settle_leftover(tmp, left, [])      # arbre propre : le marqueur perime est oublie
                 # La pile SCELLEE est une racine legitime, meme hors de l'arbre et
                 # hors du scratch — c'est la configuration que la porte elle-meme
                 # exige quand la racine temporaire par defaut ne survit pas d'une
@@ -3747,8 +3800,12 @@ tool sync_harness:
                     check("il n'est ni execute ni efface",
                           [os.path.exists(canary), os.path.isfile(applied_marker_for(tmp))],
                           [False, True])
-                    check("disposition d'un repertoire de marqueurs non prive",
-                          leftover_disposition(left)[0], "refused")
+                    # Meme quand la porte passe (arbre propre), un marqueur qui n'est
+                    # pas dans NOTRE repertoire n'est jamais efface : il n'est pas a
+                    # nous. Le refus y est donc sticky sans condition d'arbre.
+                    check("disposition d'un repertoire de marqueurs non prive, marqueur intact",
+                          [settle_leftover(tmp, left, [])[0], os.path.isfile(applied_marker_for(tmp))],
+                          ["refused", True])
                     check("et plus rien ne peut y etre enregistre, donc applique",
                           apply_mutant(lmeta, tmp)[0], None)
                 finally:
@@ -3935,14 +3992,20 @@ tool sync_harness:
         left = revert_leftover_mutant(ws)
         # Read AFTER the leftover is reverted — a mutant still applied is exactly
         # what would show up here, and it is not the lot's uncommitted work.
-        paths = dirty_paths(ws) if mode != "record" else []
+        #
+        # Read in EVERY mode, including record, even though the "not committed"
+        # note below is a gate-only concern: it is what turns a refused marker into
+        # a refusal, and recording is the one mode where a mutated tree does not
+        # just produce a wrong verdict — it becomes the reference every later
+        # verdict is measured against.
+        paths = dirty_paths(ws)
         if left:
-            kind, text = leftover_disposition(left, paths)
+            kind, text = settle_leftover(ws, left, paths)
             if kind == "still_mutated":
                 bail(text)
             note(report, text)
 
-        if paths:
+        if mode != "record" and paths:
             note(report, (
                 "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                 "these changes are destroyed during the run and the verdict below describes "
