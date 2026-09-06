@@ -622,6 +622,24 @@ across the channel.
   envelope, the runner stashes the snapshot, then loads it into its
   local store once the task arrives so applySessionMessages
   prepends the replayed prior messages to the LLM's first call.
+- ✅ **Per-step LLM observability — metering parity.** The in-container
+  runner's claw backend carries [model.SandboxRelayHooks], which emit
+  each `llm_request` and `llm_step_finished` (model, input / output /
+  cache token counts, response text, thinking) as an `event` envelope;
+  the launcher's [delegate.MultiplexerHandler.OnEvent] decodes them
+  ([model.ApplyRelayedEvent]) and re-fires its OWN event hooks. A
+  sandboxed claw node therefore writes the same `llm_request` /
+  `llm_step_finished` / `assistant_text` events as an in-process one, the
+  host derives the same `usage_progress` samples from them (a
+  supervisor's `cost_gt` monitor works), and the runner pod's org,
+  per-credential and pool metering read the steps the same way. The
+  launcher still emits `delegate_started` / `delegate_finished` itself;
+  with the steps relayed, the delegation total is a summary and is not
+  counted again — see [quotas-and-limits.md](quotas-and-limits.md#per-credential-usage--what-did-this-key-cost)
+  for what a run whose container carries an older, non-relaying runner
+  is charged. Not relayed: `tool_started` / `tool_called` for the
+  builtins executed inside the container, `llm_retry`, and the per-turn
+  `llm_turn_capture` checkpoints — those stay in the container.
 
 ### MCP tools in a sandbox
 

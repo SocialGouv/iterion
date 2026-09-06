@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,5 +178,95 @@ func TestRecordCredentialSpend_IsInertWithoutACounterOrCredentials(t *testing.T)
 	r2.recordCredentialSpend(context.Background(), &queue.RunMessage{RunID: "x"}, usage, time.Now())
 	if rows, _ := counter.List(context.Background(), time.Now(), ""); len(rows) != 0 {
 		t.Fatalf("rows = %+v, want none", rows)
+	}
+}
+
+// #805 — the production shape: a claw plan-review node served by the
+// platform's codex forfait, executed inside the sandbox, observed by the
+// runner as delegate_started + delegate_finished only. The run also holds the
+// team's claude_code forfait. The codex slot must be the one charged — the
+// tokens used to land on the claude forfait's fingerprint, because an
+// unnamed model fell to claw's default (anthropic) wire.
+func TestRecordCredentialSpend_SandboxedClawChargesTheCodexSlot(t *testing.T) {
+	counter := credusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), CredUsage: counter}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{
+			delegate.BackendClaudeCode:     "/tmp/oauth-claude",
+			string(secrets.OAuthKindCodex): "/tmp/oauth-codex",
+		},
+		PlatformSourced: map[string]bool{string(secrets.OAuthKindCodex): true},
+		Fingerprints: map[string]string{
+			delegate.BackendClaudeCode:     "fp-claude-forfait",
+			string(secrets.OAuthKindCodex): "fp-codex-platform",
+		},
+	})
+	usage := newMetricsEmitter(nil, nil)
+	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "plan_review",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "plan_review",
+		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol", "tokens": float64(25000)}})
+
+	now := time.Now().UTC()
+	r.recordCredentialSpend(ctx, &queue.RunMessage{RunID: "run-805", TenantID: "team-a"}, usage, now)
+
+	rows, err := counter.List(ctx, now, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d credential rows, want exactly the codex forfait's: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Fingerprint != "fp-codex-platform" {
+		t.Fatalf("charged fingerprint %q, want fp-codex-platform — the OpenAI tokens landed on the Anthropic credential", row.Fingerprint)
+	}
+	if row.InputTokens != 25000 {
+		t.Errorf("input tokens = %d, want 25000", row.InputTokens)
+	}
+	if row.CostUSD <= 0 {
+		t.Errorf("cost = %v, want > 0 — a priced model's delegation is not a free call", row.CostUSD)
+	}
+	if row.Tier != credusage.TierPlatform || row.Nature != credusage.NatureEstimate {
+		t.Errorf("tier/nature = %s/%s, want platform/estimate (a subscription's would-have-cost figure)", row.Tier, row.Nature)
+	}
+	if len(row.Backends) != 1 || row.Backends[0] != "claw" {
+		t.Errorf("backends = %v, want [claw]", row.Backends)
+	}
+}
+
+// A route iterion cannot attribute is declined for good at the end of the
+// attempt, so the decline is a WARN — a debug line is silent on a production
+// runner and left the misattribution unseen for a week. Once per route.
+func TestRecordCredentialSpend_WarnsOnceOnAnUnattributableRoute(t *testing.T) {
+	var logBuf bytes.Buffer
+	counter := credusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelWarn, &logBuf), CredUsage: counter}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-a"},
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-a"},
+	})
+	usage := newMetricsEmitter(nil, nil)
+	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
+		Data: map[string]any{"model": "google/gemini-3"}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
+		Data: map[string]any{"backend": "pi", "tokens": float64(10), "cost_usd": 0.5}})
+
+	now := time.Now().UTC()
+	msg := &queue.RunMessage{RunID: "run-warn", TenantID: "team-c"}
+	r.recordCredentialSpend(ctx, msg, usage, now)
+	r.recordCredentialSpend(ctx, msg, usage, now)
+
+	logged := logBuf.String()
+	if n := strings.Count(logged, "no credential iterion can name"); n != 1 {
+		t.Fatalf("decline logged %d time(s) at warn, want exactly 1:\n%s", n, logged)
+	}
+	for _, want := range []string{"run-warn", "pi/google/gemini-3"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("warn line does not name %q:\n%s", want, logged)
+		}
+	}
+	if rows, _ := counter.List(ctx, now, "team-c"); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none: the decline must not charge anybody", rows)
 	}
 }

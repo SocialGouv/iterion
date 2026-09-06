@@ -49,9 +49,13 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 	for route, totals := range routes {
 		slot := credentialSlotForRoute(creds, route.backend, route.model)
 		if slot == "" {
-			if r.cfg.Logger != nil {
-				r.cfg.Logger.Debug("runner: run %s spent on %s/%s with no credential iterion can name — not metered per credential",
-					msg.RunID, route.backend, route.model)
+			// Declined for good: the attempt is over and nothing will name
+			// this route's credential later, so the decline is a warning —
+			// a debug line is silent on a production runner. Once per route.
+			if r.cfg.Logger != nil && usage.noteDeclinedRoute(route) {
+				r.cfg.Logger.Warn("runner: run %s spent %d tokens ($%.4f) on %s/%s with no credential iterion can name (wire %q) — not metered per credential",
+					msg.RunID, totals.inputTokens+totals.outputTokens, totals.costUSD,
+					route.backend, route.model, wireForRoute(route.backend, route.model))
 			}
 			continue
 		}

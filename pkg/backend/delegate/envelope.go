@@ -161,9 +161,11 @@ type AskUserAnswerData struct {
 }
 
 // EventData is the payload of an [EnvelopeEvent]. The runner forwards
-// observability events that belong in the run's events.jsonl
-// (tool_called, llm_request, …) — the launcher persists them via the
-// engine's normal emit path.
+// observability events that belong in the run's events.jsonl — its
+// per-step LLM observations, `llm_request` and `llm_step_finished`, whose
+// payloads are the wire forms defined beside model.SandboxRelayHooks — and
+// the launcher re-fires them through its own event hooks, so they are
+// persisted, priced and metered exactly like an in-process node's.
 type EventData struct {
 	Type    string         `json:"type"`
 	Payload map[string]any `json:"payload,omitempty"`

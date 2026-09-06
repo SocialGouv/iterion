@@ -160,9 +160,12 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// Build a minimal ClawBackend. The registry resolves the API
 	// client from the standard ITERION_*_KEY env vars, which the
 	// sandbox driver inherits from the host (subject to the env
-	// scrubbing the engine applies before container start).
+	// scrubbing the engine applies before container start). Its event
+	// hooks relay the per-step LLM observations to the launcher, which
+	// re-fires them through its own hooks — what meters a sandboxed claw
+	// node like an in-process one.
 	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, model.EventHooks{}, model.RetryPolicy{})
+	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicy{})
 
 	start := time.Now()
 	result, err := backend.Execute(ctx, task)
@@ -189,6 +192,17 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		return err
 	}
 	return nil
+}
+
+// relayEventHooks builds the event hooks the runner installs on its claw
+// backend: llm_request and llm_step_finished cross the IPC as `event`
+// envelopes on the dispatcher's writer (see [model.SandboxRelayHooks]). A
+// failed write is reported on stderr, which the launcher captures into the
+// node's error when the channel is dead.
+func relayEventHooks(d *proxyDispatcher, stderr io.Writer) model.EventHooks {
+	return model.SandboxRelayHooks(d.write, func(err error) {
+		fmt.Fprintf(stderr, "iterion-claw-runner: %v\n", err)
+	})
 }
 
 // unmarshalTaskEnvelope decodes a [delegate.EnvelopeTask] envelope
