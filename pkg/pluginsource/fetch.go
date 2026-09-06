@@ -37,6 +37,12 @@ type Fetcher struct {
 	// Nil (or a nil return) means "public repository".
 	CredentialFor func(ctx context.Context, s PluginSource) (string, error)
 
+	// beforePublish runs after the checkout is staged and before it is moved
+	// onto the cache path. The seam a test uses to let a peer win the publish
+	// race on demand, instead of wagering on a `-count` stress run. Nil in
+	// production.
+	beforePublish func(staging, dest string)
+
 	mu       sync.Mutex
 	keyGates map[string]chan struct{}
 }
@@ -62,7 +68,7 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 
 	// A pinned ref makes the checkout immutable, so an existing tree is
 	// authoritative and we skip the network entirely.
-	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil && s.PinnedRef() {
+	if isPublished(dest) && s.PinnedRef() {
 		return dest, nil
 	}
 	if err := os.MkdirAll(f.CacheDir, 0o700); err != nil {
@@ -96,20 +102,48 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 	if err := f.git(ctx, staging, cred, "checkout", "--force", "FETCH_HEAD"); err != nil {
 		return "", err
 	}
-	if err := publish(staging, dest); err != nil {
+	if f.beforePublish != nil {
+		f.beforePublish(staging, dest)
+	}
+	// Only a MOVING ref publishes over an existing tree: its content changed,
+	// so the old one must go. A pinned ref's content cannot differ from what
+	// is already at its content-addressed path.
+	if err := publish(staging, dest, !s.PinnedRef()); err != nil {
 		return "", fmt.Errorf("pluginsource: publish checkout for %q: %w", s.Name, err)
 	}
 	return dest, nil
 }
 
-// publish moves a finished checkout onto its cache path. A moving ref replaces
-// an older tree, so the previous one is renamed aside first and deleted after
-// the swap — never before, so a failed rename leaves the old tree serving.
+// isPublished reports whether dest holds a checkout a reader can be handed.
+// `.git` is the marker the cache hit above reads, and publish reads the same
+// one: "complete enough to serve" must mean one thing in this package, or a
+// publisher and a reader can disagree about the very same directory.
+func isPublished(dest string) bool {
+	_, err := os.Stat(filepath.Join(dest, ".git"))
+	return err == nil
+}
+
+// publish moves a finished checkout onto its cache path. The in-process gate
+// does not cover a second process — nor a second Fetcher — sharing the cache
+// dir, so N publishers can arrive at the same path at once.
 //
-// The in-process gate does not cover a second process sharing the cache dir, so
-// a publisher that loses the race finds the path already holding an equivalent
-// checkout and keeps it rather than failing the launch.
-func publish(staging, dest string) error {
+// replaceExisting says whether a tree already there has to go. It is true only
+// for a MOVING ref, whose content changed under the same key; then the old tree
+// is renamed aside first and deleted after the swap — never before, so a failed
+// rename leaves it serving.
+//
+// For an immutable (pinned) ref a tree already there IS the tree being
+// published, so it is kept and the staging copy dropped. That is not only
+// cheaper: renaming it aside makes `dest` briefly ABSENT to every other
+// publisher, and that absence is the window a peer's "was it already
+// published?" read fell into — its own rename had lost, dest was then retired
+// by a third publisher, and it reported ENOTEMPTY for a tree that was there
+// (#854). Never retiring an immutable tree removes the window rather than
+// racing it.
+func publish(staging, dest string, replaceExisting bool) error {
+	if !replaceExisting && isPublished(dest) {
+		return nil // a peer published it while we were staging
+	}
 	retired := ""
 	if _, err := os.Stat(dest); err == nil {
 		retired = dest + ".retired-" + filepath.Base(staging)
@@ -124,7 +158,15 @@ func publish(staging, dest string) error {
 		if retired != "" {
 			_ = os.Rename(retired, dest)
 		}
-		if _, statErr := os.Stat(filepath.Join(dest, ".git")); statErr == nil {
+		// Lost the race: the path holds a complete checkout of this same key,
+		// which is what this fetch was going to put there. Keep it rather than
+		// failing the launch — the staging copy goes with the caller's defer.
+		// A dest that is ABSENT or INCOMPLETE is still an error, carrying the
+		// rename's own cause.
+		if isPublished(dest) {
+			if retired != "" {
+				_ = os.RemoveAll(retired)
+			}
 			return nil
 		}
 		return err
