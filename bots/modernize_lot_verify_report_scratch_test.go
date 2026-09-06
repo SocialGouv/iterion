@@ -179,18 +179,33 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
+	// Measured against a CONTROL that does identical work but for the one
+	// variable under test — whether those 6000 lines are brace-shaped. A
+	// wall-clock number of its own would be a bet on the runner: a contended
+	// one slows both halves alike, and it is the RATIO that carries the
+	// claim. Unbounded, the search alone took 22.7s here against a control of
+	// milliseconds; bounded, the two are the same run.
 	t.Run("a chatty stdout with no report is typed in seconds, not minutes", func(t *testing.T) {
-		noisy := scratchWrapperHead +
-			"i=0; while [ $i -lt 6000 ]; do echo \"{'line': $i, 'note': 'a python dict repr the harness logged, brace first, no JSON anywhere'}\"; i=$((i+1)); done\n" +
-			"exit 2\n"
-		ws, base := scratchWorkspace(t, noisy)
-		started := time.Now()
-		res := scratchVerify(t, script, ws, base)
-		if d := time.Since(started); d > 8*time.Second {
-			t.Fatalf("typing a no-report stdout of 6000 brace-first lines took %s — the report search is not bounded", d)
+		chatty := func(line string) string {
+			return scratchWrapperHead +
+				"i=0; while [ $i -lt 6000 ]; do echo \"" + line + "\"; i=$((i+1)); done\n" +
+				"exit 2\n"
 		}
-		if !res.OracleNotRun || res.OraclePassed {
-			t.Fatalf("a chatty wrapper death read as something else: %+v", res)
+		run := func(line string) (modernizeLotVerifyOut, time.Duration) {
+			ws, base := scratchWorkspace(t, chatty(line))
+			started := time.Now()
+			return scratchVerify(t, script, ws, base), time.Since(started)
+		}
+		// Nothing a brace search can pair, so this is the git repo, the
+		// python start and the 6000 echoes — everything except the search.
+		ctl, control := run("[INFO] step $i of the harness's own log")
+		res, noisy := run("{'line': $i, 'note': 'a python dict repr the harness logged, brace first, no JSON anywhere'}")
+		if budget := 4*control + 2*time.Second; noisy > budget {
+			t.Fatalf("typing a no-report stdout of 6000 brace-first lines took %s against a %s control (budget %s) — the report search is not bounded",
+				noisy, control, budget)
+		}
+		if !res.OracleNotRun || res.OraclePassed || !ctl.OracleNotRun || ctl.OraclePassed {
+			t.Fatalf("a chatty wrapper death read as something else: %+v (control %+v)", res, ctl)
 		}
 	})
 
