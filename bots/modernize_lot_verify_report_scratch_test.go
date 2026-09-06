@@ -173,6 +173,92 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
+	t.Run("a report buried under chatter and followed by one noise line is still read", func(t *testing.T) {
+		// The budget bounds the SEARCH; it must never discard a verdict that
+		// was there. A bounded scan that gave up on the first brace-terminated
+		// noise line after the report typed a green oracle ORACLE_NOT_RUN.
+		buried := scratchWrapperHead +
+			"i=0; while [ $i -lt 40 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
+			"echo '{\"mode\":\"gate\",\"ok\":true,\"invalid\":[]}'\n" +
+			"echo \"{'teardown': 'one more brace-first line after the report'}\"\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, buried)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("a report followed by one noise line was discarded: %+v", res)
+		}
+		if res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the buried report is not in the verdict: %+v", res)
+		}
+	})
+
+	t.Run("a pretty-printed report buried under chatter and followed by noise is still read", func(t *testing.T) {
+		// The block starts at the nearest column-0 "{" above its closing
+		// line: forty brace-first lines above and two below must not push it
+		// out of reach, whatever the search spends on the noise.
+		buried := scratchWrapperHead +
+			"i=0; while [ $i -lt 40 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
+			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": true,\\n  \"invalid\": []\\n}\\n'\n" +
+			"echo \"{'teardown': 'one more brace-first line after the report'}\"\n" +
+			"echo \"{'teardown': 'and another'}\"\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, buried)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("a pretty-printed report followed by noise was discarded: %+v", res)
+		}
+		if res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("the buried pretty-printed report is not in the verdict: %+v", res)
+		}
+	})
+
+	t.Run("an indent=0 report whose list objects sit at column 0 is read whole, not as a fragment", func(t *testing.T) {
+		// json.dumps(indent=0) puts every object of a list at column 0; the
+		// nearest opening line above the closing brace then starts an inner
+		// object, and a fragment without a mode was read as a green gate.
+		zero := scratchWrapperHead +
+			"printf '{\\n\"mode\": \"gate\",\\n\"invalid\": [\\n{\\n\"name\": \"m1\"\\n},\\n{\\n\"name\": \"m2\"\\n}\\n],\\n\"stable\": true\\n}\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, zero)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("an indent=0 report was not read as a gate verdict: %+v", res)
+		}
+		if len(res.OracleInvalid) != 2 {
+			t.Fatalf("the report's invalid list was lost — a fragment was read instead of the report: %+v", res)
+		}
+	})
+
+	t.Run("an indented one-line report is read wherever it sits", func(t *testing.T) {
+		indented := scratchWrapperHead +
+			"echo '   {\"mode\":\"gate\",\"ok\":true,\"invalid\":[]}'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, indented)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("an indented one-line report was lost: %+v", res)
+		}
+	})
+
+	t.Run("a JSON object carrying no verdict field is not a report — the report above it is read", func(t *testing.T) {
+		// A wrapper that prints `{}` (or a fragment) after its report: the
+		// object is skipped, the report is the verdict. Read as a mode-less
+		// gate report, `{}` was a green verdict with an empty `invalid` list.
+		bare := scratchWrapperHead +
+			"echo '{\"mode\":\"gate\",\"ok\":false,\"invalid\":[\"m1\"]}'\n" +
+			"echo '{}'\n" +
+			"echo '{\"name\": \"m2\"}'\n" +
+			"exit 1\n"
+		ws, base := scratchWorkspace(t, bare)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a red report followed by non-report objects was not read as the RED it is: %+v", res)
+		}
+		if len(res.OracleInvalid) != 1 {
+			t.Fatalf("the report's invalid list was lost — a later object was read instead: %+v", res)
+		}
+	})
+
 	t.Run("a wrapper that exits 0 without printing a report is not a pass", func(t *testing.T) {
 		silent := scratchWrapperHead + "exit 0\n"
 		ws, base := scratchWorkspace(t, silent)

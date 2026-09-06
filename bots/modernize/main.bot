@@ -882,27 +882,50 @@ tool lot_verify:
         harness prints it, or a pretty-printed block: the wrapper prints
         exactly one, after the harness has logged to stderr. A format is not
         a verdict, so both shapes read the same."""
-        # Bounded: a block starts at a column-0 "{" and at most 32 parses are
-        # attempted, so a chatty stdout with no report stays linear — the
-        # no-report path is the one this reader exists to type, and it must
-        # not burn minutes saying so.
+        # Bounded by the window, never at the expense of a verdict that was
+        # there: a one-line report costs one parse wherever it sits; a
+        # pretty-printed block ends at a "}"-terminated line and starts at a
+        # column-0 "{" above it — the two nearest are tried, then the
+        # window's outermost (`indent=0` puts a list's objects at column 0,
+        # and the nearest open would hand back an inner fragment). At most
+        # three joins per closing line, never every "{" above (that scan was
+        # quadratic on a chatty stdout with no report), and never a global
+        # budget (one that noise printed AFTER the report could spend typed
+        # a green oracle ORACLE_NOT_RUN).
+        # And only a REPORT is handed back — an object carrying at least one
+        # of the harness's verdict fields (an older harness writes no
+        # `mode`, it always writes `invalid`/`stable`/`ok`). A `{}` or a
+        # fragment `{"name": …}` printed after the report is skipped, not
+        # read as a mode-less gate verdict with an empty `invalid` list.
+        import bisect
+
+        def is_report(obj):
+            return isinstance(obj, dict) and any(
+                k in obj for k in ("mode", "stable", "ok", "invalid", "blind_lanes", "holdout_total"))
+
         lines = (text or "").splitlines()[-2000:]
-        attempts = 0
+        opens = [i for i, l in enumerate(lines) if l.startswith("{")]
         for j in range(len(lines) - 1, -1, -1):
-            tail = lines[j].rstrip()
+            tail = lines[j].strip()
             if not tail.endswith("}"):
                 continue
-            candidates = [j] if tail.startswith("{") else []
-            candidates += [i for i in range(j - 1, -1, -1) if lines[i].startswith("{")]
-            for i in candidates:
-                attempts += 1
-                if attempts > 32:
-                    return None
+            if tail.startswith("{"):
+                try:
+                    obj = json.loads(tail)
+                except ValueError:
+                    obj = None
+                if is_report(obj):
+                    return obj
+            k = bisect.bisect_left(opens, j)
+            starts = list(reversed(opens[max(0, k - 2):k]))
+            if k > 0 and opens[0] not in starts:
+                starts.append(opens[0])
+            for i in starts:
                 try:
                     obj = json.loads("\n".join(lines[i:j + 1]))
                 except ValueError:
                     continue
-                if isinstance(obj, dict):
+                if is_report(obj):
                     return obj
         return None
 
@@ -968,6 +991,10 @@ tool lot_verify:
                 else:
                     report["oracle_report"] = {"mode": oracle_report.get("mode"),
                                                "truncated": True, "bytes": len(as_text)}
+            # An older harness's report carries no `mode` and is a gate; the
+            # default is safe only because the reader above hands back
+            # nothing but reports (an object carrying a verdict field) — a
+            # `{}` or a fragment never reaches this line.
             mode = (oracle_report or {}).get("mode") or "gate"
             if code is None:
                 timed_out("the behavioural oracle", verify, log)
