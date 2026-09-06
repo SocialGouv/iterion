@@ -2481,10 +2481,17 @@ tool sync_harness:
             # over a tree no mutant touched — the fix becoming the bug it closes.
             rcode, rout = revert_mutant(meta, ws)
             reason = "apply.sh exited %s: %s" % (code, out[-300:])
+            extra = {}
             if rcode != 0:
                 reason += (" | revert.sh then exited %s (%s) — THE TREE MAY STILL CARRY "
                            "A PARTIAL MUTATION" % (rcode, (rout or "")[-200:]))
-            return dict(base, valid=False, detected=False, reason=reason), "failed"
+                # Same term score_mutant sets when a revert fails under it (and for
+                # the same reason): an invalid mutant is dropped from the score, so
+                # without this the run would go on scoring the REST of the lot
+                # against a tree this one left half-mutated, and could still come
+                # out green. revert_clean is the gate's own conjunction term.
+                extra["revert_clean"] = False
+            return dict(base, valid=False, detected=False, reason=reason, **extra), "failed"
 
         after_tree, after_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
         mutated = (before_tree != after_tree) or (
@@ -3526,6 +3533,33 @@ tool sync_harness:
                       ["failed", "original\n", False])
                 check("et la cause de l'echec reste dite",
                       "apply.sh exited 1" in (v.get("reason") or ""), True)
+                check("un apply en echec revertible ne salit pas revert_clean",
+                      v.get("revert_clean", True), True)
+
+                # apply.sh ECHOUE et revert.sh AUSSI : l'arbre reste peut-etre
+                # a moitie mute. Un mutant invalide sort du score, donc sans
+                # revert_clean la porte noterait TOUT LE RESTE du lot sur cet
+                # arbre-la et pourrait finir verte.
+                with open(os.path.join(bdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nexit 7\n")
+                stubbed = {k: g[k] for k in ("apply_mutant", "revert_mutant",
+                                             "tree_fingerprint", "data_fingerprint")}
+                g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
+                         tree_fingerprint=lambda _w: "x", data_fingerprint=lambda _m, _w: None)
+                try:
+                    v2, state2 = probe_mutation({"id": "m2", "dir": bdir, "targets": ["001"]}, tmp)
+                finally:
+                    g.update(stubbed)
+                check("apply ET revert en echec -> revert_clean faux, les deux causes dites",
+                      [state2, v2.get("revert_clean"), "apply.sh exited 1" in (v2.get("reason") or ""),
+                       "revert.sh then exited 7" in (v2.get("reason") or "")],
+                      ["failed", False, True, True])
+                subprocess.run(["git", "checkout", "--", "f.txt"], cwd=tmp,
+                               capture_output=True, text=True)
+                try:
+                    os.remove(applied_marker_for(tmp))
+                except OSError:
+                    pass
 
                 # Un revert.sh qui ECHOUE : l'arbre reste mute, donc le marqueur —
                 # seule trace qu'un mutant est applique — doit SURVIVRE. Efface, la
