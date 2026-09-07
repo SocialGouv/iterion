@@ -251,11 +251,51 @@ tool extend_base:
         p = subprocess.run(["git", "-C", ws] + list(args), capture_output=True, text=True)
         return (p.stdout or "").strip() if p.returncode == 0 else ""
 
+    # The identity is written into the workspace's LOCAL git config and only
+    # extend_verify restores it — so a run that dies in between (an LLM error,
+    # a budget stop, a cancel: ordinary failed_resumable outcomes) leaves the
+    # net's name on the LOT's later commits, and the next run would read the
+    # leak as the state to restore, making it permanent (review finding,
+    # executed). The pre-run identity is recorded in the git DIR — never the
+    # worktree: nothing there is committable, and nothing the gate judges —
+    # and re-applied by whichever run comes next.
+    git_dir = git_out("rev-parse", "--absolute-git-dir")
+    marker = os.path.join(git_dir, "iterion-extend-prev-identity") if git_dir else ""
+    if marker and os.path.isfile(marker):
+        leaked = None
+        try:
+            with open(marker, encoding="utf-8") as f:
+                leaked = json.load(f)
+        except (OSError, ValueError) as e:
+            notice = ((notice + " | ") if notice else "") + (
+                "the identity marker %s is unreadable (%s): this workspace may "
+                "still be committing under the net's name — check `git config "
+                "user.email` before trusting any attribution here" % (marker, e))
+        if isinstance(leaked, dict):
+            for key, val in (("user.name", leaked.get("name") or ""),
+                             ("user.email", leaked.get("email") or "")):
+                if val:
+                    subprocess.run(["git", "-C", ws, "config", key, val])
+                else:
+                    subprocess.run(["git", "-C", ws, "config", "--unset", key])
+            notice = ((notice + " | ") if notice else "") + (
+                "a previous extension did not restore the workspace identity; "
+                "the pre-run identity it recorded was re-applied before this "
+                "run read its own.")
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+
     prev_name = git_out("config", "--local", "--get", "user.name")
     prev_email = git_out("config", "--local", "--get", "user.email")
     if clean:
         # The identity the parent's gate attributes this run's acts to —
-        # set by the engine, restored by extend_verify, never by prose.
+        # set by the engine, restored by extend_verify, never by prose. The
+        # marker restores it when this run never reaches that node.
+        if marker:
+            with open(marker, "w", encoding="utf-8") as f:
+                json.dump({"name": prev_name, "email": prev_email}, f)
         subprocess.run(["git", "-C", ws, "config", "user.name", {{vars.actor_name}}])
         subprocess.run(["git", "-C", ws, "config", "user.email", {{vars.actor_email}}])
 
@@ -468,6 +508,15 @@ tool extend_verify:
             subprocess.run(["git", "-C", ws, "config", key, val])
         else:
             subprocess.run(["git", "-C", ws, "config", "--unset", key])
+    # Restored here, so the marker extend_base left for the run that would
+    # have had to repair a leak has nothing left to repair.
+    gd = subprocess.run(["git", "-C", ws, "rev-parse", "--absolute-git-dir"],
+                        capture_output=True, text=True)
+    if gd.returncode == 0 and gd.stdout.strip():
+        try:
+            os.remove(os.path.join(gd.stdout.strip(), "iterion-extend-prev-identity"))
+        except OSError:
+            pass
 
     report["log_tail"] = "\n".join(problems)[-6000:]
     print(json.dumps(report))

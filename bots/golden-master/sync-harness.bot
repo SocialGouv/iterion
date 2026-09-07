@@ -1435,8 +1435,15 @@ tool sync_harness:
                              "judging additions against nothing would pass by "
                              "construction" % (base, err.strip() or "unknown ref")}
 
+        # `provenance` is the verdict SAYING which rule it applied. A net whose
+        # harness predates this feature answers `extend-verify` and passes a
+        # caller's capability probe all the same, while judging by the
+        # same-commit rule alone — the bypassable one — and nothing in its answer
+        # said so: the gate reverted to the hole in silence (review finding,
+        # executed). A caller that hands provenance asserts this echo.
         verdict = {"acted": [], "ok_paths": [], "ledger_append_only": True,
-                   "requests_added": 0, "problems": []}
+                   "requests_added": 0, "problems": [],
+                   "provenance": "strict" if acted_commits is not None else "legacy"}
 
         head_txt = at("HEAD", ledger_rel) or ""
         base_txt = at(base, ledger_rel) or ""
@@ -1605,9 +1612,14 @@ tool sync_harness:
             # the subbot ran).
             if acted_commits is not None and req is not None and act_sha \
                     and act_sha not in acted_commits:
-                blobs_match = bool(paths) and acted_blobs is not None and all(
+                # The way back in is CONTENT, so there must BE content: an act
+                # recording only the ledger leaves the generator empty, `all([])`
+                # is true, and the escape hatch opens for an act that certified
+                # no surface path at all (review finding, executed).
+                surface = [p for p in paths if p != ledger_rel]
+                blobs_match = bool(surface) and acted_blobs is not None and all(
                     acted_blobs.get(p) and blob_id("HEAD", p) == acted_blobs.get(p)
-                    for p in paths if p != ledger_rel)
+                    for p in surface)
                 if not blobs_match:
                     row["forged"] = True
                     row["problems"].append(
@@ -3705,6 +3717,29 @@ tool sync_harness:
             v_rw2 = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
                                       acted_blobs={".golden-master/refs/2.txt": blob_b})
             check("sha inconnu ET contenu different : refuse", v_rw2["acted"][0]["ok"], False)
+
+            # Le verdict ANNONCE la regle qu'il a appliquee : sans cet echo, un
+            # filet synchronise avant la provenance repond `extend-verify`, ignore
+            # les deux variables et rend l'ancienne regle — le trou que ce terme
+            # ferme, revenu en silence. L'appelant l'exige (main.bot).
+            check("le verdict annonce la regle appliquee",
+                  [v_old.get("provenance"), v_strict.get("provenance"),
+                   v_sub.get("provenance"), v_rw2.get("provenance")],
+                  ["legacy", "strict", "strict", "strict"])
+
+            # Un acte qui n'enregistre QUE le registre : aucun chemin de surface
+            # a certifier, donc aucune echappatoire par contenu.
+            xreset()
+            xrequest(req2)
+            xledger(("request", req2),
+                    ("act", '{"id": "E-1", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/EXTENSIONS.md"]}'))
+            xcommit(email="lot@run")
+            v_led = extension_verdict(xroot, ".golden-master", xbase,
+                                      acted_commits=set(), acted_blobs={})
+            check("acte n'enregistrant que le registre, hors commits du subbot : forge",
+                  [v_led["acted"][0]["ok"], v_led["acted"][0].get("forged")],
+                  [False, True])
 
             # Reecriture deguisee : la ref existait a la base.
             xreset()
