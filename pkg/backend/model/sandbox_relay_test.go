@@ -233,6 +233,22 @@ func TestSandboxRelay_HostWarnsOnAnUndecodableRelayedEvent(t *testing.T) {
 	}
 }
 
+// The sandboxed and in-process paths must bound the model's view of a
+// tool payload identically: the launcher clamps a tool_result crossing
+// the IPC to delegate.MaxToolResultBytes, the executor's own hooks clamp
+// an in-process one to maxFieldSize. Two constants for one promise drift
+// the moment either moves.
+func TestToolPayloadCeiling_IsTheSameSandboxedAndInProcess(t *testing.T) {
+	if maxFieldSize != delegate.MaxToolResultBytes {
+		t.Fatalf("in-process ceiling maxFieldSize = %d, IPC ceiling delegate.MaxToolResultBytes = %d — a sandboxed node and an unsandboxed one would show the model different amounts of the same tool output",
+			maxFieldSize, delegate.MaxToolResultBytes)
+	}
+	if relayFieldBudget != delegate.MaxToolResultBytes {
+		t.Fatalf("relayFieldBudget = %d, delegate.MaxToolResultBytes = %d — the two IPC directions would clamp differently",
+			relayFieldBudget, delegate.MaxToolResultBytes)
+	}
+}
+
 // A write that fails is reported, not swallowed: the runner cannot return
 // an error from a hook, and a dead channel must leave a trace.
 func TestSandboxRelayHooks_ReportsAFailedWrite(t *testing.T) {

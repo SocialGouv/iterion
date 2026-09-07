@@ -736,6 +736,21 @@ across the channel.
     nothing left to cut) is refused and reported on the runner's stderr,
     which the launcher folds into the node's error: one lost
     observation, never a dead channel, and never a silent one.
+  - **The reply direction is bounded the same way.** A host-side tool
+    result travelling BACK to the container (an MCP call's result, a
+    large file read, a `go test ./...` transcript) is cut to
+    `delegate.MaxToolResultBytes` (1 MiB) with a marker naming the bytes
+    produced on the host — the same ceiling the executor's own hooks
+    apply to an unsandboxed node's tool payload, so a sandboxed run and
+    an in-process one show the model the same amount of the same output.
+    A `ask_user` payload is the exception: its conversation is the
+    pre-pause LLM state the runner rebuilds from, so it crosses whole or
+    becomes an explicit tool error naming its size — a cut one would
+    resume onto a corrupted conversation. And whatever the producer,
+    `EnvelopeWriter` **refuses** an over-cap line at the source with a
+    typed error naming the envelope type: a writer that forgot to clamp
+    fails where it is, instead of killing the peer's reader with a
+    payload it can only report the size of.
   - **A turn's conversation crosses whole or not at all.** The snapshot a
     fork replays is relayed up to 2 MiB (a full 200k-token context, with
     room under the line cap); a larger one is left out and the turn

@@ -163,11 +163,13 @@ func (m *Multiplexer) handleToolCall(ctx context.Context, env Envelope) error {
 			data.Error = callErr.Error()
 		}
 	}
-	buf, err := json.Marshal(data)
+	// Clamped before it goes on the wire: a host-side tool can return more
+	// than the channel's line cap, and an unclamped line kills the whole
+	// IPC instead of handing the model a bounded result.
+	reply, err := newToolResultData(env.ID, data)
 	if err != nil {
-		return fmt.Errorf("delegate: marshal tool_result: %w", err)
+		return err
 	}
-	reply := Envelope{Type: EnvelopeToolResult, ID: env.ID, Data: buf}
 	return m.writer.Write(reply)
 }
 
