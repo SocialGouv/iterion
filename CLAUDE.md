@@ -805,9 +805,14 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 
 ### Error Handling
 
-- **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `Code` (type `ErrorCode`), `Message`, `NodeID`, `Hint`, `Cause`
-  - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`
-- **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C199 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
+- **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `Code` (type `ErrorCode`), `Message`, `NodeID`, `Hint`, `Cause`. `ErrorCode` is a **type alias of `store.FailureCode`** (ADR-095): the code the engine classifies with in-process is the one that lands on `Run.FailureCode`, instead of dying into free text. The canonical vocabulary is `store.ReservedFailureCodes` ([pkg/store/lifecycle.go](pkg/store/lifecycle.go)); `pkg/runtime` re-exports most of it under the historical `ErrCode*` names, while codes the engine never emits itself (`INTERRUPTED`, `FAIL_NODE`, `PROCESS_ORPHANED`, `QUEUE_SCHEMA_MISMATCH`) exist only as `store.Failure*`.
+  - Codes, grouped by what an automatic resume can achieve — the classification in [pkg/retrypolicy/classify.go](pkg/retrypolicy/classify.go), which has one row per code and a conformance test against drift:
+    - *transient* (a later attempt can outlast it; waiting helps): `EXECUTION_FAILED`, `BUDGET_EXCEEDED`, `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`, `NETWORK_TRANSIENT`, `TOOL_FAILED_TRANSIENT`
+    - *infrastructure* (the run never failed — the platform took it away; a fresh pod is the cure): `INTERRUPTED`, `PROCESS_ORPHANED`, `SANDBOX_SETUP_TIMEOUT`, `SANDBOX_CAPACITY`
+    - *re-executable* (an LLM node decided it, so the next sample may differ, but waiting helps nothing): `SCHEMA_VALIDATION`, `NO_OUTGOING_EDGE`, `JOIN_FAILED`, `AUTH_FAILED`
+    - *deterministic* (same step, same checkpoint, same verdict — an auto-resume can only burn a pod, so the run stays parked for an operator): `EXPRESSION_FAILED`, `TOOL_FAILED_PERMANENT`, `WORKSPACE_SAFETY`, `NODE_NOT_FOUND`, `LOOP_EXHAUSTED`, `RESUME_INVALID`, `FAIL_NODE`, `CONTEXT_LENGTH_EXCEEDED`, `IR_UNLOADABLE`, `QUEUE_SCHEMA_MISMATCH`, `LAUNCH_FAILED`, `DLQ_PARKED`, `CANCELLED`
+  - The bar for *deterministic* is deliberately high: a resume re-executes the failing node, so anything an LLM decided is named re-executable however permanent it looks. An **unknown** code is neither — each surface keeps whatever it did before. See [docs/resume.md](docs/resume.md).
+- **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C199 plus C240–C248 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), async interaction (C240–C242), parallel-branch ownership (C244–C246), typed `fail` codes (C247–C248), etc.)
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
@@ -826,7 +831,7 @@ The checkpoint embedded in `run.json` is the authoritative source for resume —
 
 **Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` or `paused_operator` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
-**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `run_finished`, `run_failed`
+**Key event types:** `run_started` (carrying the execution provenance: `engine_version`, `engine_commit`, `workflow_hash`, and `launched_by_version` only when the launching and executing builds differ), `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `run_retry_scheduled` / `run_retry_skipped` (the pair that makes an automatic resume auditable — a skip carries `{reason: deterministic, code, error}`, without which a dropped redelivery reads exactly like one still in flight), `run_finished`, `run_failed` (emitted for setup deaths too, with `{error, code, phase}`), `run_cancelled`
 
 ### Resume from Failed/Cancelled Runs
 
