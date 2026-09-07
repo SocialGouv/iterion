@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -374,12 +373,8 @@ func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
 	workDir := t.TempDir()
 	storeDir := filepath.Join(workDir, ".iterion")
 
-	blocker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("occupy port: %v", err)
-	}
+	blocker, port := reserveBusyLoopbackPort(t)
 	defer func() { _ = blocker.Close() }()
-	port := blocker.Addr().(*net.TCPAddr).Port
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -399,7 +394,7 @@ func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
 	cmd.Stderr = &stderr
 	cmd.Stdout = io.Discard
 
-	err = cmd.Run()
+	err := cmd.Run()
 	if err == nil {
 		t.Fatal("iterion server exit 0 on a bind failure — a supervisor would never restart it")
 	}

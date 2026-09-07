@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -181,12 +180,8 @@ func TestDispatchDaemonFailsLoudlyOnABusyPort(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeDispatchConfig(t, dir)
 
-	blocker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("occupy port: %v", err)
-	}
+	blocker, port := reserveBusyLoopbackPort(t)
 	defer func() { _ = blocker.Close() }()
-	port := blocker.Addr().(*net.TCPAddr).Port
 
 	done := make(chan error, 1)
 	go func() {
