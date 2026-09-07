@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -279,13 +280,24 @@ func (s *Server) handleRemoveProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// hotSwapStopBudget bounds the previous service's background stop. The
+// reconcile half awaits the scan in flight, and that scan is cancelled first,
+// so the budget only covers a store call already under way — past it the
+// switch proceeds and runview logs what it could not wait for.
+const hotSwapStopBudget = 5 * time.Second
+
 // swapWorkDir is the hot-swap primitive. Builds a fresh runview.Service
 // and Watcher for the new directory, then atomically replaces the
 // server's references under stateMu. In-flight engine goroutines from
 // the previous project keep their captured *Service reference and
 // drain to the old store in the background — the SPA's reset on
 // `project_switched` makes that invisible to the user.
-func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
+//
+// The previous service's PERIODIC workers stop, though: they are the
+// server's, not the runs'. Left alive they scan a store the server no longer
+// serves — one more orphan-reconcile ticker, pipeline scheduler and stall
+// poll per switch, for the process lifetime.
+func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	abs, err := filepath.Abs(newDir)
 	if err != nil {
 		return fmt.Errorf("abs: %w", err)
@@ -328,6 +340,13 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
 			svcOpts = append(svcOpts, opt)
 		}
+		// Run-health alerting is a server-level setting, not a per-project
+		// one: without this the first switch silently ends alerting for the
+		// rest of the process (the boot service keeps the only manager, over
+		// a store nobody serves).
+		if s.cfg.Alerts != nil {
+			svcOpts = append(svcOpts, runview.WithAlerts(*s.cfg.Alerts))
+		}
 		if localSecretsEnabled {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(newLocalSecrets, s.sealer))
 		}
@@ -360,6 +379,7 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 	// continue to write to their original store.
 	s.stateMu.Lock()
 	oldWatcher := s.watcher
+	oldRuns := s.runs
 	s.cfg.WorkDir = abs
 	s.cfg.StoreDir = storeDir
 	s.runs = newRuns
@@ -378,6 +398,13 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 
 	if oldWatcher != nil {
 		oldWatcher.Stop()
+	}
+	// Detached from the caller: the swap has already happened, so a requester
+	// that hung up must not leave the previous project's workers running.
+	if oldRuns != nil && oldRuns != newRuns {
+		stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), hotSwapStopBudget)
+		oldRuns.StopBackground(stopCtx)
+		cancelStop()
 	}
 	if newWatcher != nil {
 		errtrack.Go("server.fileWatcher", newWatcher.Start)
