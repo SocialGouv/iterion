@@ -176,6 +176,11 @@ schema lot_report:
   ## harness's own code, and routed to the net's extension subbot. A lot may
   ## ASK for a new observation point; it may never write one.
   extension_pending: json
+  ## An act in the ledger was not the net subbot's: introduced by a commit
+  ## the subbot did not report, or a certified path rewritten since. Refused
+  ## and TYPED — a resume from the banked branch would find the act at its
+  ## base and certify it, so this is a stop, never a repair pass.
+  extension_forged: bool
   ## The worker wrote `done` into the contract. `done` is the gate's word: this
   ## verdict is refused BEFORE any gate command runs, so the revert costs the
   ## worker seconds, never the hour a full gate would spend confirming a
@@ -241,6 +246,11 @@ schema verify_input:
   base_sha: string
   refs_dir: string
   exit_gate: string
+  ## The net subbot's provenance (see extend_result) — empty until the
+  ## subbot has run, and passed to the harness EVEN THEN: the only pass that
+  ## judges a lot acting its own extension is the one where no subbot ran.
+  acted_commits: string
+  acted_blobs: string
 
 schema mark_input:
   lot_id: string
@@ -634,15 +644,21 @@ tool lot_verify:
     import time
     import sys
 
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
     ws = {{vars.workspace_dir}}
     base = {{input.base_sha}}
     refs_dir = {{input.refs_dir}}
+    # The net subbot's provenance: `null` (rendered for a node that has not
+    # run) reads as "none reported", and is STILL handed to the harness —
+    # presence, even empty, is what makes the certifier strict.
+    acted_commits = ({{input.acted_commits}} or "")
+    acted_blobs = ({{input.acted_blobs}} or "")
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
               "gate_timed_out": False, "contract_unreadable": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
-              "oracle_invalid": [], "oracle_not_run": False, "oracle_report": {}, "extension_pending": [], "done_self_written": False,
+              "oracle_invalid": [], "oracle_not_run": False, "oracle_report": {}, "extension_pending": [], "extension_forged": False, "done_self_written": False,
               "contract_rewritten": []}
     problems = []
 
@@ -1157,7 +1173,8 @@ tool lot_verify:
         if listing is not None and listing is not CAPABILITY_ABSENT:
             report["extension_pending"] = listing.get("pending") or []
         exempt = set()
-        verdict = harness_json("extend-verify", GM_BASE=base)
+        verdict = harness_json("extend-verify", GM_BASE=base,
+                               GM_ACTED_COMMITS=acted_commits, GM_ACTED_BLOBS=acted_blobs)
         if verdict is not None and verdict is not CAPABILITY_ABSENT and not verdict.get("error"):
             exempt = set(verdict.get("ok_paths") or [])
 
@@ -1266,6 +1283,15 @@ tool lot_verify:
                                    "; ".join(r.get("problems") or []))
                                 for r in bad)
                 report["refs_untouched"] = False
+            # Provenance refused = the constrained party acted its own request,
+            # or rewrote a certified reference: typed and terminal, never a
+            # repair pass — a resume from the banked branch would find the act
+            # at its base and certify it.
+            if any(r.get("forged") for r in (verdict.get("acted") or [])):
+                report["extension_forged"] = True
+                report["block_reason"] = ("EXTENSION_FORGED: " + "; ".join(
+                    "%s: %s" % (r.get("id"), "; ".join(r.get("problems") or []))
+                    for r in (verdict.get("acted") or []) if r.get("forged")))[:600]
         else:
             # No verdict is not "nothing to refuse". The certifier runs on
             # ledger content the constrained party writes, so a crash there
@@ -1290,7 +1316,7 @@ compute lot_gate:
   expr:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
-    refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0"
+    refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
     timed_out: "outputs.lot_verify.gate_timed_out"
     oracle_not_run: "outputs.lot_verify.oracle_not_run"
     unreadable: "outputs.lot_verify.contract_unreadable"
@@ -1385,6 +1411,12 @@ schema extend_result:
   converged: bool
   extended: int
   notice: string
+  ## The net subbot's provenance, handed to the harness at this bot's gate:
+  ## the commits it made, the request ids it acted, the blob it certified
+  ## per surface path. Strings, so they travel through edges as text.
+  acted_commits: string
+  acted_ids: string
+  acted_blobs: string
 
 ## mark_done — `done` is the GATE's word, and this is where it is written.
 ##
@@ -1650,11 +1682,13 @@ workflow modernize:
   ## touched the tree. Comparing the references against anything later would
   ## compare the work with itself and always pass.
   upgrade_campaign -> lot_verify with {
-    lot_id:    "{{outputs.work_gate.lot_id}}",
-    plan_path: "{{vars.plan_path}}",
-    base_sha:  "{{outputs.work_gate.base_sha}}",
-    refs_dir:  "{{outputs.work_gate.refs_dir}}",
-    exit_gate: "{{outputs.work_gate.exit_gate}}"
+    lot_id:        "{{outputs.work_gate.lot_id}}",
+    plan_path:     "{{vars.plan_path}}",
+    base_sha:      "{{outputs.work_gate.base_sha}}",
+    refs_dir:      "{{outputs.work_gate.refs_dir}}",
+    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
   lot_verify -> lot_gate
@@ -1682,11 +1716,13 @@ workflow modernize:
   ## is part of that verdict, so reading it again is what stops a failed repair
   ## from looking like a successful one.
   reanchor -> lot_verify with {
-    lot_id:    "{{outputs.work_gate.lot_id}}",
-    plan_path: "{{vars.plan_path}}",
-    base_sha:  "{{outputs.work_gate.base_sha}}",
-    refs_dir:  "{{outputs.work_gate.refs_dir}}",
-    exit_gate: "{{outputs.work_gate.exit_gate}}"
+    lot_id:        "{{outputs.work_gate.lot_id}}",
+    plan_path:     "{{vars.plan_path}}",
+    base_sha:      "{{outputs.work_gate.base_sha}}",
+    refs_dir:      "{{outputs.work_gate.refs_dir}}",
+    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
   ## Act the lot's extension requests, after any reanchor and before the lot
@@ -1701,11 +1737,13 @@ workflow modernize:
   ## the additions inside lot_verify — exemption is re-derived every pass,
   ## never remembered.
   extend -> lot_verify with {
-    lot_id:    "{{outputs.work_gate.lot_id}}",
-    plan_path: "{{vars.plan_path}}",
-    base_sha:  "{{outputs.work_gate.base_sha}}",
-    refs_dir:  "{{outputs.work_gate.refs_dir}}",
-    exit_gate: "{{outputs.work_gate.exit_gate}}"
+    lot_id:        "{{outputs.work_gate.lot_id}}",
+    plan_path:     "{{vars.plan_path}}",
+    base_sha:      "{{outputs.work_gate.base_sha}}",
+    refs_dir:      "{{outputs.work_gate.refs_dir}}",
+    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
   ## Converged: the gate writes `done` — one line, one commit — then the run
