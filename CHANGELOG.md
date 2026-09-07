@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.25](https://github.com/SocialGouv/iterion/compare/v3.112.24...v3.112.25) (2026-09-07)
+
+### Bug Fixes
+
+* **forge,server,credentials,runtime:** a 404 is typed by resource, a publish grant refuses the launch it cannot serve and dies with its run, and a squash message stays in the run range ([#886](https://github.com/SocialGouv/iterion/issues/886)) ([1178fa6](https://github.com/SocialGouv/iterion/commit/1178fa665fb7956906e212d9af79573ee96e90b4)), closes [#812](https://github.com/SocialGouv/iterion/issues/812) [#826](https://github.com/SocialGouv/iterion/issues/826) [#820](https://github.com/SocialGouv/iterion/issues/820) [#747](https://github.com/SocialGouv/iterion/issues/747)
+
+    <details><summary>why</summary>
+
+    Every provider's 404 collapsed onto ErrHookNotFound at the one shared mapping point, so a pull request that does not exist reported "forge: hook not found" — and GitHub answers 404, not 403, for a resource a credential may not see, so a token short of pull_requests got the same webhook message. StatusErr now types a 404 by OPERATION: the hook operations keep their sentinel (deprovision reads it as "already gone"), everything else becomes a *NotFoundError naming its own call, and every 404…
+
+    </details>
+* **model:** ChainHooks forwards every EventHooks field, and run.* resolves in the single template pass ([#878](https://github.com/SocialGouv/iterion/issues/878)) ([2b4510f](https://github.com/SocialGouv/iterion/commit/2b4510f50978e68196811e97c94b53c3f7e9c94d)), closes [#836](https://github.com/SocialGouv/iterion/issues/836) [#817](https://github.com/SocialGouv/iterion/issues/817)
+
+    <details><summary>why</summary>
+
+    ChainHooks composed 18 of the 22 func fields and dropped OnAssistantText, OnUsageCap, OnUsageProgress and OnOrchestrationStall. runview chains every ExtraHooks entry through it, so any run launched with one — the Prometheus exporter (ITERION_PROMETHEUS_ADDR) is the shipped case — lost those four event families silently: no live usage_progress for a supervisor's cost_gt monitor, no usage_cap, no delegate_stall, no assistant text in the timeline. Nothing failed; the callbacks simply never fired.
+
+    </details>
+* **sandbox:** every setup phase is bounded on both drivers, a tool_result crossing the IPC is clamped, and a promise on a dropped bind is withdrawn ([#877](https://github.com/SocialGouv/iterion/issues/877)) ([186d434](https://github.com/SocialGouv/iterion/commit/186d434498a44391c80105413f4978156391d72d)), closes [#823](https://github.com/SocialGouv/iterion/issues/823) [#837](https://github.com/SocialGouv/iterion/issues/837) [#834](https://github.com/SocialGouv/iterion/issues/834), references [#815](https://github.com/SocialGouv/iterion/issues/815)
+
+    <details><summary>why</summary>
+
+    Two setup phases still ran on the bare run context, so a stall in either held the run with no `sandbox_started` event, no typed failure and no redelivery until the outer max_duration fired.
+
+    </details>
+* **webhooks,gate,branch-improve-loop:** a fixer stops when its PR closes, never pushes onto a merged one, and a gate that cannot decide fails closed ([#875](https://github.com/SocialGouv/iterion/issues/875)) ([f334053](https://github.com/SocialGouv/iterion/commit/f334053864aacfb0389de0f1458c6d80dcb1e323)), closes [#847](https://github.com/SocialGouv/iterion/issues/847) [#831](https://github.com/SocialGouv/iterion/issues/831) [#863](https://github.com/SocialGouv/iterion/issues/863) [#773](https://github.com/SocialGouv/iterion/issues/773), references [#863](https://github.com/SocialGouv/iterion/issues/863) [#855](https://github.com/SocialGouv/iterion/issues/855) [#783](https://github.com/SocialGouv/iterion/issues/783) [#788](https://github.com/SocialGouv/iterion/issues/788)
+
+    <details><summary>why</summary>
+
+    Four defects in the inbound lanes, all measured on production deliveries.
+
+    </details>
+
 ## [3.112.24](https://github.com/SocialGouv/iterion/compare/v3.112.23...v3.112.24) (2026-09-07)
 
 ### Bug Fixes
