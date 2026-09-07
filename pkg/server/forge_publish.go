@@ -44,23 +44,27 @@ import (
 // actually been computed. The grant therefore has to outlive the longest wait
 // the retry machinery can schedule, plus a margin for the resumed run itself.
 //
-// The cost is a wider window for a leaked token, and it is NOT offset by early
-// revocation: nothing in this tree calls Revoke outside its own test, so the
-// TTL is the only bound there is. What limits the damage is what the grant can
-// do — post a review and a commit status on ONE repo, re-enforced against the
-// grant's (team, connection, repo) at every use.
+// This is the CEILING, not the ordinary life of a grant: a run's terminal
+// outcome brings the expiry forward to forgePublishPostRunGrace
+// (expireForgePublishGrantForRun), so only a run that is genuinely waiting out
+// a quota window keeps the full window. What limits the damage meanwhile is
+// what the grant can do — post a review and a commit status on ONE repo,
+// re-enforced against the grant's (team, connection, repo) at every use.
 const forgePublishDefaultTTL = retrypolicy.DefaultMaxWait + 24*time.Hour
 
 // forgePublishMaxTokens bounds the in-memory registry (the backend used when
 // no Valkey is configured).
 //
-// It scales with the TTL because Register only evicts EXPIRED entries before
-// checking the cap, so the ceiling is really "gating launches per TTL": at a
-// flat 1024 the 9-day TTL would saturate at ~114 launches/day, and saturation
-// is not graceful — Register errors, injectForgePublishVars hands the run no
-// grant, and the run cannot publish its verdict. Worse now that the launch has
-// already claimed the check: the reconciler needs the grant to speak, so it
-// abstains (no token ⇒ "not a gating run") and the claim is never answered.
+// It scales with the TTL because Register evicts only EXPIRED entries before
+// checking the cap: the ceiling is "live grants", and a grant lives at most
+// one TTL. The terminal-outcome eviction is what keeps the steady state near
+// "gating launches in flight" instead of "gating launches per TTL", but a
+// deployment whose runs all park on a quota window still accumulates, so the
+// cap keeps the TTL's shape.
+//
+// Saturation is no longer silent: Register's error refuses the launch
+// (errForgePublishGrantUnavailable) rather than starting a run that claims the
+// gate context and can never answer it.
 const forgePublishMaxTokens = 1024 * int(forgePublishDefaultTTL/(24*time.Hour))
 
 // ForgePublishGrant scopes one run's publish token: reviews may only be
@@ -147,6 +151,11 @@ func (s *Server) runOwnsGrant(run *store.Run, grant ForgePublishGrant, what stri
 type ForgePublishTokenStore interface {
 	Register(token string, g ForgePublishGrant) error
 	Revoke(token string)
+	// expireIn brings a live grant's expiry forward to now+d, never pushes it
+	// out, and does nothing for an unknown token. It is how a grant stops
+	// outliving its run without being revoked outright — the merge-gate
+	// repair still needs to read it for its own window after the run dies.
+	expireIn(token string, d time.Duration)
 	lookup(token string) (ForgePublishGrant, bool)
 }
 
@@ -185,6 +194,20 @@ func (r *ForgePublishTokenRegistry) Revoke(token string) {
 	r.mu.Lock()
 	delete(r.tokens, token)
 	r.mu.Unlock()
+}
+
+// expireIn brings the grant's expiry forward. Never later: a caller shortening
+// a window must not be able to extend one.
+func (r *ForgePublishTokenRegistry) expireIn(token string, d time.Duration) {
+	at := r.now().Add(d)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.tokens[token]
+	if !ok || !at.Before(g.ExpiresAt) {
+		return
+	}
+	g.ExpiresAt = at
+	r.tokens[token] = g
 }
 
 func (r *ForgePublishTokenRegistry) lookup(token string) (ForgePublishGrant, bool) {
@@ -724,10 +747,18 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		return vars, nil
 	}
 	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
+		// A launch that reaches here has a connection covering the PR: it is
+		// gating-shaped, and the caller is about to claim the repo's gate
+		// context on this head. Proceeding without a grant is the "pending
+		// forever" shape — the run cannot publish its verdict, and the
+		// reconciler that repairs a dead claim reads the grant to know where
+		// to speak, so it abstains ("not a gating run") and nothing ever
+		// answers the claim. Refuse instead: the claim is posted AFTER the
+		// launch, so a launch refused here leaves nothing to release.
 		if s.logger != nil {
-			s.logger.Error("forge publish: %v; deterministic review publishing disabled for this launch", err)
+			s.logger.Error("forge publish: %v; refusing the launch on %s/%s rather than starting a run that cannot publish its verdict", err, host, repo)
 		}
-		return vars, nil
+		return vars, fmt.Errorf("%w: %s/%s: %w", errForgePublishGrantUnavailable, host, repo, err)
 	}
 	if vars == nil {
 		vars = map[string]string{}

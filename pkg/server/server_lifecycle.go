@@ -166,6 +166,7 @@ func (s *Server) ListenAndServe() error {
 	s.startUserNotify()
 	s.startOperatorAlerts()
 	s.startGateReconciler()
+	s.startForgePublishGrantExpiry()
 	s.startBoardSync()
 	s.startGateAutofix()
 	s.startOutcomeRouter()
@@ -668,6 +669,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.gateReconcileCancel != nil {
 		s.gateReconcileCancel()
+	}
+	if s.forgePublishExpiryCancel != nil {
+		s.forgePublishExpiryCancel()
+		s.forgePublishExpiryCancel = nil
 	}
 	if s.watcher != nil {
 		s.watcher.Stop()
