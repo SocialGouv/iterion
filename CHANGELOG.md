@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.114.0](https://github.com/SocialGouv/iterion/compare/v3.113.3...v3.114.0) (2026-09-07)
+
+### Features
+
+* **runner:** a copy-based sandbox's work leaves the pod while the pod still answers ([#898](https://github.com/SocialGouv/iterion/issues/898)) ([f111dd4](https://github.com/SocialGouv/iterion/commit/f111dd4d448e3fd642993148c8d04aa60a0f6460))
+
+    <details><summary>why</summary>
+
+    On a driver whose workspace is a tar COPY inside a pod, nothing a run produces leaves that pod before teardown: the export runs once, at the end, and every push the runner performs reads the exported clone. A pod that dies hard therefore takes the whole run with it, however well the run committed.
+
+    </details>
+
+### Bug Fixes
+
+* **board-sync:** a human's move out of Blocked on the roadmap board is the reopen ([#895](https://github.com/SocialGouv/iterion/issues/895)) ([169be9d](https://github.com/SocialGouv/iterion/commit/169be9d7c82ad610f9616afaf11d97da962a5ffa)), closes [#839](https://github.com/SocialGouv/iterion/issues/839)
+
+    <details><summary>why</summary>
+
+    The terminal sink (ADR-096 §5) protects a card from a MACHINE resurrecting it. A drag on the bound GitHub board is not a machine: it is the operator's hand, arriving through the only channel they have. The project pass refused it all the same, so a card moved Blocked -> Inbox in production stayed `blocked` for ever while the roadmap showed Inbox, with one server log line to say so.
+
+    </details>
+
 ## [3.113.3](https://github.com/SocialGouv/iterion/compare/v3.113.2...v3.113.3) (2026-09-07)
 
 ### Bug Fixes
