@@ -403,7 +403,11 @@ supervisor pacer:
   system: pacer_policy
   cooldown: "5m"
   max_evals: 4
-  monitors: ["cost_gt=8"]
+  ## An ABSOLUTE dollar trigger, kept at ~2/3 of the cap (it was 8 of 12):
+  ## calibrated lower it fires in the cheap early phase, spends its four
+  ## evals telling a review to wrap up before it has reproduced anything,
+  ## and is silent by the time spend nears the real wall.
+  monitors: ["cost_gt=32"]
 
 prompt pacer_policy:
   You pace a READ-ONLY code reviewer that has a hard cost budget. Its
@@ -1515,9 +1519,16 @@ workflow review_pr:
     ## one revision, the relaunch included — and the merge gate posted no
     ## verdict at all: a required check that dies is worse than one that
     ## costs. A review that reproduces its findings and answers the fixer's
-    ## rounds is the workload now; the cap follows it. Re-budget a
-    ## deliberate deep review per run with --max-cost-usd.
-    max_cost_usd: 40
+    ## rounds is the workload now; the cap follows it.
+    ##
+    ## The EFFECTIVE ceiling is 0.9 × cap, not the cap: the engine refuses
+    ## any new node — the publish tail included — once an axis sits at 90%
+    ## of its cap, with no grace on that band (pkg/runtime/budget.go). And
+    ## $36 was the spend at the kill, a lower bound on the workload, since
+    ## the run never paid for converge + publish. 48 puts $36 at 75% and
+    ## leaves ~$43 before the wall. Re-budget a deliberate deep review per
+    ## run with --max-cost-usd.
+    max_cost_usd: 48
 
   ## EFFICIENCY: an empty review diff skips tier resolution, both LLM
   ## reviewers, and emit.
