@@ -612,6 +612,13 @@ type Service struct {
 	// reconcileStopOnce so double-teardown is safe.
 	reconcileStop     chan struct{}
 	reconcileStopOnce sync.Once
+	// reconcileCancel interrupts the scan that goroutine may be running
+	// right now; reconcileDone is closed when it has returned. Signalling
+	// reconcileStop alone only stops the NEXT tick — the scan already in
+	// flight keeps flipping run statuses into a store the caller believes
+	// it has finished with. stopPeriodicReconcile cancels, then awaits.
+	reconcileCancel context.CancelFunc
+	reconcileDone   chan struct{}
 
 	// publisher, when non-nil, intercepts Launch/Resume/Cancel and
 	// routes them through the cloud queue. When nil the service runs
@@ -1025,9 +1032,9 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 			notify.WithSigningSecret(secret))
 	}
 
-	s.reconcileOrphans()
+	s.reconcileOrphans(context.Background())
 	s.reconcileSandboxContainers()
-	s.reconcileSandboxK8sResources()
+	s.reconcileSandboxK8sResources(context.Background())
 	s.startPeriodicReconcile()
 	// Recover any pipelines left waiting in the queue by a previous
 	// process lifetime (persisted as queued docs), then start the

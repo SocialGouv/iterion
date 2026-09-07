@@ -138,8 +138,8 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	// correctness coverage no longer depends on how many timer goroutines a
 	// loaded -race worker happens to schedule inside a fixed sleep.
 	for pass := 1; pass <= 10; pass++ {
-		svc.reconcileOrphans()
-		observer.reconcileOrphans()
+		svc.reconcileOrphans(context.Background())
+		observer.reconcileOrphans(context.Background())
 		child, loadErr := svc.store.LoadRun(context.Background(), childID)
 		if loadErr != nil {
 			t.Fatalf("LoadRun(child) after reconcile pass %d: %v", pass, loadErr)

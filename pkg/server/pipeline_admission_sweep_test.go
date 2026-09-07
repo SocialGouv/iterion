@@ -497,12 +497,8 @@ func TestHandleDeleteRun_LiveRunAnswers409(t *testing.T) {
 	if err := rs.SaveRun(ctx, r0); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatal(err)
-	}
 	s := newSweepTestServer()
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/runs/run-live", nil)
 	req.SetPathValue("id", "run-live")
@@ -743,10 +739,7 @@ func newLaunchProbeServer(t *testing.T) (*Server, *runview.Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs), runview.WithLogger(iterlog.Nop()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLogger(iterlog.Nop()))
 	s := newSweepTestServer()
 	s.cfg.Bots.Paths = []string{botDir}
 	return s, svc
