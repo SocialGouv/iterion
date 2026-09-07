@@ -136,6 +136,38 @@ func TestCheckpointOnceComparesTheWorkNotTheCommit(t *testing.T) {
 	}
 }
 
+// TestCheckpointOnceDoesNotPushAnUnreadableAnswer pins the guard that came
+// with the pair. The script's answer is now THREE fields, so a last line
+// that is not one must never be mistaken for the work: until it was a pair,
+// any non-empty last line was taken for a sha, and a ref built out of a
+// credential helper's chatter is a push that cannot succeed and a state that
+// holds nothing. Two properties, and both must survive whatever the
+// unreadable tick is later made to SAY about itself: nothing is pushed, and
+// `last` — the state that really was preserved — comes out untouched, so the
+// next readable tick still compares against it instead of re-pushing.
+func TestCheckpointOnceDoesNotPushAnUnreadableAnswer(t *testing.T) {
+	for _, tc := range []struct{ name, answer string }{
+		{"noise instead of an answer", "fatal: could not read Username for 'https://forge'"},
+		{"truncated — the commit is missing", "h1 t1"},
+		{"a hook appended to the line", "h1 t1 c0ffee01 and-then-some"},
+		{"nothing at all", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := checkpointRunner(t, "R1")
+			run := &checkpointRun{shas: []string{tc.answer}}
+			o := sandboxObserverOpts{runID: "R1", tenantID: "team-a", checkpoint: true}
+
+			got := r.checkpointWorkspaceOnce(context.Background(), o, run, "h9 t9")
+			if got != "h9 t9" {
+				t.Fatalf("an unreadable answer replaced the state that WAS preserved: %q", got)
+			}
+			if p := run.pushes(); len(p) != 0 {
+				t.Fatalf("an unreadable answer was pushed as if it were the run's work: %v", p)
+			}
+		})
+	}
+}
+
 // TestCheckpointOnceKeepsTheLastGoodOnAFailedPush: a failed push must not
 // record the sha as preserved, or the next tick would skip it and the work
 // would be lost with the pod anyway — silently, which is the failure mode
