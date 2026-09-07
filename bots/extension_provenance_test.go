@@ -505,6 +505,18 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 			t.Fatalf("a commit under the lot's identity must be reported: %+v", res)
 		}
 	})
+	// git accepts a SPACE inside an author email, so an address that merely
+	// ENDS with the engine's reads as the engine's to a last-token parse —
+	// and the one commit this check exists to name walks past it.
+	t.Run("an author whose address merely ends with the engine's is said", func(t *testing.T) {
+		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
+		act(t, ws, "evil extend@golden-master.iterion")
+		res := runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
+		if res.IdentityOk || !strings.Contains(res.LogTail, "another identity") {
+			t.Fatalf("an author email wearing the engine's address as its tail passed "+
+				"the identity check: %+v", res)
+		}
+	})
 }
 
 // TestGoldenMasterExtendBaseRepairsALeakedIdentity pins the failure path:

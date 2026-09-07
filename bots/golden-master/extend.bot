@@ -412,8 +412,16 @@ tool extend_verify:
     else:
         run_commits = [l.strip() for l in out.splitlines() if l.strip()]
     report["acted_commits"] = " ".join(run_commits)
+    # The author field is everything after the sha, NOT the last token: git
+    # accepts a space inside an email, so `evil extend@golden-master.iterion`
+    # ends with the engine's address and the last-token read called it the
+    # engine's own — the one commit this check exists to name walked past it
+    # (reproduced against real git). A field that cannot be split off cleanly
+    # (an empty email, no space at all) is not the engine's either, so every
+    # shape below refuses.
     code, out, _ = git("log", "--format=%H %ae", "%s..HEAD" % base)
-    others = [l for l in (out.splitlines() if code == 0 else []) if l.strip() and l.split()[-1] != actor_email]
+    others = [l for l in (out.splitlines() if code == 0 else [])
+              if l.strip() and l.split(" ", 1)[-1] != actor_email]
     report["identity_ok"] = code == 0 and not others
     if others:
         problems.append("%d commit(s) of this run carry another identity than the engine set "
