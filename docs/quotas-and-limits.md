@@ -40,6 +40,19 @@ boundary. The one nuance: when `AllowRun` errors at step 5 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
 
+**One refusal that is not a quota.** A launch can also be refused *after*
+the gate, at publish, by
+[`cloudpublisher`](../pkg/server/cloudpublisher/publisher.go): with
+`ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL=1` on the server, a run whose every
+LLM route pins a provider iterion knows and for which **no tier** (BYOK,
+OAuth forfait, pool, platform) holds a credential is refused with HTTP `422`
+rather than queued to die at its first call. It is **off by default** — a
+runner legitimately proceeds on its pod's ambient env when the bundle
+carries nothing — and a route the walk cannot attribute (no model prefix,
+no provider hint, `auto`, a hint outside the vocabulary) is never refused,
+on or off. This consumes no quota slot; see
+[cloud-llm-credentials.md](cloud-llm-credentials.md).
+
 ## Which surfaces are gated
 
 Every launch a cloud instance performs passes `gateLaunch` with the
