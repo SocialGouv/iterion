@@ -78,6 +78,35 @@ is CLI-first.
   record for "what exactly is deployed". `admin bots` list shows the same
   digest.
 
+## Shipping a baked-catalog change — two halves, or it did not ship
+
+A change to `bots/<slug>/` that is MERGED reaches a deployment in two halves,
+and a run only sees it when both have moved:
+
+- the **runner image** — the pod that EXECUTES the bot (its engine evaluates
+  the bot's expressions, its baked `bots/` is what the by-ref rebuild reads);
+  it is pinned by digest in the deployment values, so a merge changes
+  nothing until the digest is bumped;
+- the **server** — the process that RESOLVES the bot at launch (team →
+  platform → baked, `pkg/server/bot_resolver.go`) from ITS OWN baked catalog
+  and stamps the ref on the queue message; it follows `:edge`, so a
+  `kubectl rollout restart deploy/iterion` is the bump.
+
+Bump the runner and forget the server, and every launch still resolves the
+OLD bot (2026-09-06: Billy 1.6.0 on the runner, 1.5.x served — no
+`delivery_reserve` node in the run). Push a platform override to skip the
+image rollout, and the override runs on the runner's CURRENT engine: a bot
+that needs a builtin the engine does not have (1.6.0's variadic `min`/`max`,
+#830, on a v3.112.7 engine) compiles, then fails at its first evaluation —
+and the failure auto-resumes in a loop (#857, #858). The order that works:
+
+1. bump the runner digest to an image built from the main that carries the
+   bot AND the engine it needs (`docs/cloud-deployment.md` § pinning);
+2. `kubectl rollout restart deploy/iterion` so the server resolves the new
+   baked catalog;
+3. only then dogfood; a platform override is for iterating on a bot the
+   deployed engine already supports.
+
 ## Trust model
 
 A platform override executes across **all tenants**, with each tenant's
