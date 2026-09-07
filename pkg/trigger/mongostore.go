@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -51,6 +52,21 @@ func (s *MongoSubscriptionStore) Get(ctx context.Context, id string) (Subscripti
 
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": sub.ID}, sub, nil, ErrSubscriptionNotFound, "trigger: update subscription")
+}
+
+func (s *MongoSubscriptionStore) MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error {
+	update := bson.M{"$set": bson.M{"last_error": lastError, "last_error_at": at.UTC()}}
+	if lastError == "" {
+		update = bson.M{"$unset": bson.M{"last_error": "", "last_error_at": ""}}
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id}, update)
+	if err != nil {
+		return fmt.Errorf("trigger: mark subscription launch error: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrSubscriptionNotFound
+	}
+	return nil
 }
 
 func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {

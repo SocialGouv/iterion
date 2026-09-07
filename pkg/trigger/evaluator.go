@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -212,6 +212,7 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 			}
 		}
 		_, err := e.launcher.Launch(ctx, e.buildPlan(sub, ev))
+		recordLaunchVerdict(ctx, e.subs, e.logger, sub, err)
 		return err
 	}
 }

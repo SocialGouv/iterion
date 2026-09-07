@@ -137,7 +137,7 @@ func (s *Server) ListenAndServe() error {
 		}
 		var launcher trigger.Launcher
 		if s.runs != nil {
-			launcher = newServiceLauncher(s.runs, s.logger, s.resolveRunRetryPolicy, s.resolveBotSource)
+			launcher = s.triggerLauncher()
 		}
 		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger)
 	}
@@ -149,7 +149,7 @@ func (s *Server) ListenAndServe() error {
 	if s.cfg.NativeTrackerStore == nil && s.cfg.CloudBoardCoordinator != nil && s.cfg.TriggerStore != nil && s.runs != nil {
 		s.cloudTriggerCoord = StartCloudTriggerCoordinator(
 			s.cfg.CloudBoardCoordinator, s.cfg.TriggerStore,
-			newServiceLauncher(s.runs, s.logger, s.resolveRunRetryPolicy, s.resolveBotSource),
+			s.triggerLauncher(),
 			s.boardProjection(), s.cfg.EventsBus, s.logger)
 	}
 	// Wire the run-completion source onto the process's single event spine
