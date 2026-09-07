@@ -175,13 +175,12 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 	resolve := func() string {
 		expanded := expandBracedEnv(node.Postcondition)
 		td := TemplateDataFromContext(ctx)
-		expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), td, node.PostcondRefs, shellEscapeValue)
 		// A postcondition is the node's second shell command body, resolved
 		// with the same escaper over the same snapshot, and its refs are
 		// validated against the same input schema — so a `json`-declared
 		// field holding a list breaks out of its assignment here exactly as
 		// it does in the command itself.
-		return resolveCommandTemplate(expanded, node.PostcondRefs, e.jsonFieldsAsText(node, input), e.vars, td, e.secretGuard)
+		return resolveCommandTemplate(expanded, node.PostcondRefs, e.jsonFieldsAsText(node, input), e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 	}
 	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)

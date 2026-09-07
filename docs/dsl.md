@@ -380,9 +380,14 @@ Two conventions:
   figure a bot cannot reconstruct for itself. A guard that compares
   against a cap therefore needs the `budget:` block that declares it.
 
-An unknown member (`run.no_such_thing`) resolves to nothing — the same
-silence as `vars.<unknown>` — rather than raising. Comparing it in an
-expression is what fails, loudly, at the node.
+An unknown member (`run.no_such_thing`) is UNRESOLVED, never an empty
+value. In an expression it is nil — the same silence as
+`vars.<unknown>` — and comparing it is what fails, loudly, at the node.
+In a rendered body it takes the missing-ref rule every namespace
+follows: the `{{…}}` placeholder stays in a prompt and in a shell
+`command:` / `postcondition:`, so `sh -c` fails on visible braces
+instead of running one argument short, and it renders as `null` in a
+`script:` body so the interpreter still parses.
 
 The members are available in `compute` expressions and quoted `when`
 conditions, in prompt bodies, in tool `command:` / `script:` /
