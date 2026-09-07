@@ -34,9 +34,17 @@ import (
 
 // sweepOverlapCards / sweepOverlapDelay size the two admin-sweep race rows:
 // enough cards that the sweep is still walking sweepOverlapDelay later, and
-// few enough that the sweep stays far inside the store's own 10s per-call
-// budget on a runner several times slower than a developer's machine.
-// Measured 2026-09-07: 3.6 ms/card locally, 27 ms/card on a loaded CI runner.
+// few enough that it stays well inside its own budget on a runner several
+// times slower than a developer's machine. Measured 2026-09-07: 3.6 ms/card
+// locally, 27 ms/card on a loaded CI runner.
+//
+// That second half used to read "inside the store's own 10s per-call budget",
+// which #889 has since made the wrong bound to cite: a cascade now takes a
+// fresh sweepCtx per write instead of threading one opTimeout through the
+// whole walk, so the headroom is per card and this sizing is further inside
+// it than when it was chosen. The overlap the rows probe is unaffected — it
+// is a function of how long the walk takes, not of what bounds it — and
+// assertSweepOverlapped below fails loudly if that ever stops being true.
 const (
 	sweepOverlapCards = 60
 	sweepOverlapDelay = 40 * time.Millisecond
