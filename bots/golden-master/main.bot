@@ -1633,8 +1633,28 @@ tool oracle_run:
         base_act_ids = {b.get("id") for b in _extension_blocks(base_txt, "act")
                         if b.get("id") != "UNPARSEABLE"}
         intro = introducing_commits()
+        # An id is acted ONCE. `introducing_commits` keys first-wins, so a SECOND
+        # act block carrying an id the subbot already acted resolves its
+        # provenance on the subbot's commit — the whole provenance branch is
+        # skipped, no certified blob exists for its paths so the rewrite check
+        # skips too, and the lot's own commit writes a reference into the net that
+        # judges it, exempted (review finding, executed: both rows came back ok
+        # and the second act's path landed in ok_paths). The ledger's ids are the
+        # audit trail's keys; a duplicate key is a refusal, like the corpus's.
+        seen_act_ids = set()
         for act in acts:
             row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
+            if act.get("id") in seen_act_ids:
+                row["forged"] = True
+                row["problems"].append(
+                    "a SECOND act block for %r — an id is acted once. Its "
+                    "provenance would resolve on the FIRST act's commit, so any "
+                    "later block rides the subbot's certificate: remove it, and "
+                    "file a new request if something more must be acted"
+                    % act.get("id"))
+                verdict["acted"].append(row)
+                continue
+            seen_act_ids.add(act.get("id"))
             if act.get("id") in base_act_ids:
                 row["ok"] = True
                 row["acted_at_base"] = True
@@ -3837,6 +3857,45 @@ tool oracle_run:
             check("l'acte du subbot, lui, reste certifie",
                   [r["ok"] for r in v_smug["acted"] if r["id"] == "E-1"], [True])
 
+            # LE DOUBLON D'ACTE, rejoue en entier : la demande du lot declare DEUX
+            # chemins, le subbot en acte UN, puis le lot appose un SECOND bloc
+            # `act` portant le meme id pour le chemin restant. La provenance du
+            # doublon se resout sur le commit du subbot (premier gagnant), donc
+            # sans refus du doublon tout passe et le chemin du lot est exempte.
+            req_two = ('{"id": "E-1", "lot": "L", "type": "add-file",'
+                       ' "paths": [".golden-master/refs/2.txt",'
+                       ' ".golden-master/refs/9.txt"]}')
+            act_one = ('{"id": "E-1", "lot": "L",'
+                       ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+            act_dup = ('{"id": "E-1", "lot": "L",'
+                       ' "recorded_paths": [".golden-master/refs/9.txt"]}')
+            xreset()
+            xledger(("request", req_two))
+            xcommit()                                         # le lot depose
+            xledger(("request", req_two), ("act", act_one))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("acte par le subbot\n")
+            xcommit(email="extend@golden-master.iterion")      # le subbot acte
+            sha_one = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_one = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                           xroot, timeout=60)[1].strip()
+            xledger(("request", req_two), ("act", act_one), ("act", act_dup))
+            with open(os.path.join(xgm, "refs", "9.txt"), "w", encoding="utf-8") as f:
+                f.write("ecrit par le lot\n")
+            xcommit(email="lot@run")                           # le lot double l'acte
+            v_dup = extension_verdict(xroot, ".golden-master", xbase,
+                                      acted_commits={sha_one},
+                                      acted_blobs={".golden-master/refs/2.txt": blob_one},
+                                      acted_ids={"E-1"})
+            dup = v_dup["acted"][1]
+            check("second bloc `act` de meme id : refuse, forge, et n'exempte rien",
+                  [dup["ok"], dup.get("forged"),
+                   ".golden-master/refs/9.txt" in v_dup["ok_paths"]],
+                  [False, True, False])
+            check("l'acte du subbot reste certifie, lui",
+                  [v_dup["acted"][0]["ok"], v_dup["ok_paths"]],
+                  [True, [".golden-master/refs/2.txt"]])
+
             # Un acte qui n'enregistre QUE le registre : aucun chemin de surface
             # a certifier, donc aucune echappatoire par contenu.
             xreset()
@@ -4955,18 +5014,39 @@ tool oracle_run:
                 for tok in os.environ.get("GM_ACTED_COMMITS", "").split():
                     full = run("git rev-parse --verify --quiet %s^{commit}" % shlex.quote(tok), ws, timeout=60)[1].strip()
                     acted_commits.add(full if len(full) == 40 else tok)
+            # ONE ENTRY PER LINE, for both certificates. Whitespace-delimited,
+            # a surface path containing a space split into two tokens: the left
+            # had no `=` and was DROPPED, the right registered a bogus key — so
+            # the real path had no certified blob, the post-act rewrite check
+            # skipped it, and the lot could rewrite that reference in a later
+            # commit and keep the exemption (review finding). The same defect sat
+            # on the ids, where a space in an id split it out of the set and the
+            # act silently lost its cover. Both ids and paths are lot-authored
+            # and a space passes their guards, so the encoding is what has to be
+            # unambiguous — and an entry that cannot be read is a REFUSAL, never
+            # a silent drop.
             if "GM_ACTED_BLOBS" in os.environ:
                 acted_blobs = {}
-                for tok in os.environ.get("GM_ACTED_BLOBS", "").split():
-                    path, sep, sha = tok.rpartition("=")
-                    if sep and path and sha:
-                        acted_blobs[path] = sha
+                for line in os.environ.get("GM_ACTED_BLOBS", "").splitlines():
+                    if not line.strip():
+                        continue
+                    path, sep, sha = line.rpartition("=")
+                    if not (sep and path and sha):
+                        print(json.dumps({"error":
+                                          "GM_ACTED_BLOBS carries an entry that is "
+                                          "not `path=blob`: %r — a certificate the "
+                                          "judge cannot read is refused, not dropped"
+                                          % line}))
+                        raise SystemExit(1)
+                    acted_blobs[path] = sha
             # The ids the subbot reports having acted. Absent = no act is
             # covered by the content rule, which is the safe direction: the
             # rule only ever EXEMPTS.
             acted_ids = None
             if "GM_ACTED_IDS" in os.environ:
-                acted_ids = set(os.environ.get("GM_ACTED_IDS", "").split())
+                acted_ids = {l.strip() for l in
+                             os.environ.get("GM_ACTED_IDS", "").splitlines()
+                             if l.strip()}
             print(json.dumps(extension_verdict(
                 ws, os.environ.get("GM_DIR", ".golden-master"), base,
                 acted_commits=acted_commits, acted_blobs=acted_blobs,
