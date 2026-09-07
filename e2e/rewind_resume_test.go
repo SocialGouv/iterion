@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -40,7 +39,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 	})
 
 	const runID = "e2e-rewind-mini"
-	eng := runtime.New(wf, st, exec)
+	eng := newEngine(t, wf, st, exec)
 	if err := eng.Run(context.Background(), runID, nil); err == nil {
 		t.Fatal("expected the run to fail (verify -> fail), got success")
 	}
@@ -81,7 +80,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"value": "approved", "ok": true}, nil
 	})
-	eng2 := runtime.New(wf, st, exec)
+	eng2 := newEngine(t, wf, st, exec)
 	if err := eng2.Resume(context.Background(), runID, nil); err != nil {
 		t.Fatalf("resume after rewind: %v", err)
 	}

@@ -9,7 +9,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -89,7 +88,7 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 		model.WithWorkDir(t.TempDir()),
 	)
 
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -222,7 +221,7 @@ workflow run_ref_missing_member:
 	const runID = "e2e-run-ref-missing-member"
 	exec := model.NewClawExecutor(model.NewRegistry(), wf, model.WithWorkDir(t.TempDir()))
 
-	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, nil); err != nil {
+	if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	events, err := s.LoadEvents(context.Background(), runID)

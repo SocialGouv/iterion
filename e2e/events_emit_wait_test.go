@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -21,7 +20,7 @@ func TestEventsEmitWait(t *testing.T) {
 	s := tmpStore(t)
 	// No LLM/tool nodes — emit/wait/compute are engine-handled; the stub
 	// executor is never invoked.
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 
 	if err := eng.Run(context.Background(), "e2e-events-pingpong", nil); err != nil {
 		t.Fatalf("run pingpong: %v", err)

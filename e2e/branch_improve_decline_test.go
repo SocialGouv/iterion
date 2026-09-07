@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -51,7 +50,7 @@ func TestBranchImproveLoop_DeclineEndsTypedWithoutShipping(t *testing.T) {
 	stubDeclineTail(exec, true, reason)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	err := eng.Run(context.Background(), "run-bil-declined", map[string]any{
 		"plan_phase": "off", "push_branch": "feature", "pr_url": "https://forge/x/y/pull/1",
 	})
@@ -97,7 +96,7 @@ func TestBranchImproveLoop_RefusedDeclineShipsAnyway(t *testing.T) {
 	stubDeclineTail(exec, false, "declined but HEAD moved from abc123456789 to def987654321: the pass committed work")
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-decline-refused", map[string]any{"plan_phase": "off"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

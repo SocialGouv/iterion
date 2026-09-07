@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -43,7 +42,7 @@ func runExtend(t *testing.T, exec *scenarioExecutor, runID string) *store.Run {
 	t.Helper()
 	wf := compileFixtureStubSafe(t, "golden-master/extend.bot")
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

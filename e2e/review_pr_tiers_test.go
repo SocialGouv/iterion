@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -63,7 +62,7 @@ func runReviewPRTier(t *testing.T, runID string, inputs map[string]any) *scenari
 	wireReviewPRStubs(exec)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), runID, inputs); err != nil {
 		t.Fatalf("run error: %v", err)
 	}

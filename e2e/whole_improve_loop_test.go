@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -112,7 +111,7 @@ func TestWholeImproveLoop_ContinuesUntilComplete(t *testing.T) {
 	stubCampaignSweep(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-wil-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -152,7 +151,7 @@ func TestWholeImproveLoop_ConvergesFirstPass(t *testing.T) {
 	stubCampaignSweep(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-wil-first", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -197,7 +196,7 @@ func TestWholeImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-wil-red", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -226,7 +225,7 @@ func TestWholeImproveLoop_MRPathOnConverge(t *testing.T) {
 	stubCampaignSweep(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"open_mr": true}
 	if err := eng.Run(context.Background(), "run-wil-mr", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -254,7 +253,7 @@ func TestWholeImproveLoop_EventTrace(t *testing.T) {
 	stubCampaignSweep(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-wil-events", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

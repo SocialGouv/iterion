@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -49,7 +48,7 @@ func runModernize(t *testing.T, exec *scenarioExecutor, runID string) *store.Run
 	t.Helper()
 	wf := compileFixtureStubSafe(t, "modernize/main.bot")
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	_ = eng.Run(context.Background(), runID, nil) // the status is the verdict, read below
 	run, err := s.LoadRun(context.Background(), runID)
 	if err != nil {

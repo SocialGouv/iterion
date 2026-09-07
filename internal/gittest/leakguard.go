@@ -38,6 +38,13 @@ import (
 // live worktree still exists, and an operator's checkout on an unmounted
 // volume — the case that makes `git worktree prune` unusable — is never
 // under os.TempDir().
+//
+// That leaves one honest imprecision, observed on this repository: the
+// registry is shared by every checkout of it (a linked worktree's .git points
+// at the main repository's), so a leak from a sibling package — or from an
+// agent's own worktree running the suite at the same time — appears inside
+// this window and is reported here. The report names the test behind each
+// path, which is what makes it actionable regardless of who ran it.
 func NoWorktreeLeaks(m *testing.M) int {
 	root, ok := worktreeAdminRoot()
 	if !ok {
@@ -54,7 +61,7 @@ func NoWorktreeLeaks(m *testing.M) int {
 		return code
 	}
 	fmt.Fprintf(os.Stderr, `
-FAIL: this package left %d dead worktree registration(s) in %s.
+FAIL: %d dead worktree registration(s) appeared in %s while this package ran.
 
 A run with `+"`worktree: auto`"+` (the IR default) used the checkout the tests
 run in as its source repository, so git registered the run's worktree HERE
@@ -65,6 +72,11 @@ genuinely the point, unregister it with gittest.RemoveWorktree(t, repo, path).
 
 The entries have been reclaimed by recorded path, so the repository is clean
 again; the failure is the leak, not its residue.
+
+Each line names the test that owns the path. That test is not necessarily in
+THIS package: a sibling package (or a second worktree of the same repository)
+running concurrently shares this registry, and the window is all of m.Run().
+Fix the test the path names.
 
 Leaked (recorded path -> the test that owns it):
   %s

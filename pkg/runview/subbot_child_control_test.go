@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -100,7 +101,10 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 		t.Fatalf("write parent bot: %v", err)
 	}
 
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	// The run gets a repository the test OWNS: without one, `worktree: auto`
+	// (the IR default) takes os.Getwd() — this package inside the developer's
+	// checkout — and registers the run's worktree there for good (#870).
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(gittest.SourceRepo(t)))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -160,7 +164,10 @@ func TestServiceLaunch_SubbotChild_PauseMidFlight(t *testing.T) {
 		t.Fatalf("write parent bot: %v", err)
 	}
 
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	// The run gets a repository the test OWNS: without one, `worktree: auto`
+	// (the IR default) takes os.Getwd() — this package inside the developer's
+	// checkout — and registers the run's worktree there for good (#870).
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(gittest.SourceRepo(t)))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
