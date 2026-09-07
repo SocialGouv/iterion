@@ -8,8 +8,13 @@
 // Detection is intentionally decoupled from the runtime: budget and
 // failure triggers ride the existing runtime events (budget_warning,
 // budget_exceeded, run_failed), while stall is timer-driven off a
-// per-run liveness heartbeat advanced by *every* observed event
-// (including tool events), mirroring the dispatcher's heartbeat pattern.
+// per-run liveness heartbeat advanced by every observed event that is
+// the RUN working (including tool events), mirroring the dispatcher's
+// heartbeat pattern. The exceptions are the events that are not it: our
+// own persisted run_health twin, and the runner's timer-driven
+// run_workspace_checkpoint — see Manager.Observe, where the reason each
+// is excluded is spelled out. A safety net or an alarm's own echo that
+// kept its run reading as alive would blind the alarm it was laid beside.
 package alert
 
 import (
