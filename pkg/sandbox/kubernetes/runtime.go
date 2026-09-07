@@ -41,6 +41,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // kubeBinaryName is the kubectl CLI iterion shells out to. Hardcoded
@@ -110,23 +112,51 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 // diagnostic surfacing — kubectl writes the failure reason to
 // stderr in a structured way ("Error from server (NotFound)") that
 // callers can parse without re-issuing the request.
-func applyManifest(ctx context.Context, namespace string, manifest []byte) error {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "apply", "-f", "-")
-	cmd.Stdin = bytes.NewReader(manifest)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("kubectl apply: %w\noutput: %s", err, string(out))
-	}
-	return nil
+//
+// BOUNDED, and bounded at both ends of the pipe: the phase helper caps
+// the call (resolveApplyTimeout, ITERION_SANDBOX_K8S_APPLY_TIMEOUT) and
+// kills the process on expiry, and `--request-timeout` makes kubectl
+// itself give up rather than wait on a wedged apiserver forever. Without
+// the pair, an apply on the bare run context hangs sandbox creation
+// BEFORE the first bounded phase is reached. The expiry carries
+// sandbox.ErrPhaseTimeout, so the engine parks the run failed_resumable
+// with SANDBOX_SETUP_TIMEOUT like every other setup stall.
+//
+// phase names WHICH apply stalled ("apply pod", "apply networkpolicy",
+// …) — every per-run resource shares one budget but not one diagnosis.
+func applyManifest(ctx context.Context, logger *iterlog.Logger, namespace, phase string, manifest []byte) error {
+	timeout := resolveApplyTimeout()
+	return sandbox.RunWithPhaseTimeout(ctx, logger, phase, applyTimeoutEnv, timeout, func(ctx context.Context) error {
+		cmd := kubectlCmdContext(ctx, "--namespace", namespace,
+			"--request-timeout="+timeout.String(), "apply", "-f", "-")
+		cmd.Stdin = bytes.NewReader(manifest)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("kubectl apply: %w\noutput: %s", err, string(out))
+		}
+		return nil
+	})
 }
 
 // deleteResource runs `kubectl delete <kind> <name> --namespace ...`.
 // Treats NotFound as success — callers invoke it from defer paths
 // where the resource may already be gone (a panicking iterion run
-// can leak partial state).
-func deleteResource(ctx context.Context, namespace, kind, name string) error {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "delete", kind, name,
-		"--ignore-not-found=true", "--wait=false")
+// can leak partial state). extraArgs appends per-call flags (e.g. a
+// force-delete's `--grace-period=0 --force`).
+//
+// Bounded by the apply family's budget, and by `--request-timeout` on
+// kubectl itself: a delete is one apiserver call like an apply, and most
+// callers discard its result — a wedged apiserver would otherwise hang a
+// rollback or a stale-pod eviction with nothing to show for it. Plain
+// context deadline, NOT sandbox.ErrPhaseTimeout: a cleanup is not a setup
+// phase and must not be classified as one.
+func deleteResource(ctx context.Context, namespace, kind, name string, extraArgs ...string) error {
+	timeout := resolveApplyTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	args := []string{"--namespace", namespace, "--request-timeout=" + timeout.String(),
+		"delete", kind, name, "--ignore-not-found=true", "--wait=false"}
+	cmd := kubectlCmdContext(ctx, append(args, extraArgs...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Even with --ignore-not-found, delete returns non-zero on

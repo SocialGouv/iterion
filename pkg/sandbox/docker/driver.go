@@ -919,9 +919,21 @@ func cleanupTempDirs(dirs []string) {
 // runPostCreate runs the spec's post-create command inside the
 // freshly started container. Stdout/stderr are streamed to the
 // driver's logger so users see install progress.
+//
+// BOUNDED like every other setup phase: a snippet that never returns (a
+// package install waiting on a dead mirror, a command reading stdin)
+// would otherwise hold the run in setup until the outer max_duration
+// fires — no `sandbox_started`, no typed failure. Budget:
+// sandbox.ResolvePostCreateTimeout (ITERION_SANDBOX_POST_CREATE_TIMEOUT),
+// the same knob the kubernetes driver reads — the phase owns the budget,
+// not the driver. The expiry carries sandbox.ErrPhaseTimeout, so the
+// engine parks the run failed_resumable with SANDBOX_SETUP_TIMEOUT.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand")
-	return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+	return sandbox.RunWithPhaseTimeout(ctx, r.driver.logger, "post_create", sandbox.PostCreateTimeoutEnv, sandbox.ResolvePostCreateTimeout(),
+		func(ctx context.Context) error {
+			return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+		})
 }
 
 // containerNameFor maps a run ID to a deterministic container name.
