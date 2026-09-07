@@ -42,8 +42,10 @@ const (
 	EffectsCollection = "trigger_effects"
 )
 
-// opTimeout bounds every Mongo call (the BoardStore interface carries no
-// context, so each op uses a fresh bounded background context).
+// opTimeout bounds ONE Mongo round-trip (the BoardStore interface carries no
+// context, so each op uses a fresh bounded background context). It is NOT a
+// budget for a whole operation: an O(N) cascade priced at one round-trip
+// half-applies as soon as the board outgrows it — see sweepCtx.
 const opTimeout = 10 * time.Second
 
 // Store is a tenant-scoped Mongo board.
