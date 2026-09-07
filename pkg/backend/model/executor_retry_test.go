@@ -124,6 +124,93 @@ func newTestExecutorForRetry(maxAttempts int) *ClawExecutor {
 	}
 }
 
+// TestRetryDelegateLoop_KeepsTheSpendItDiscards: the shape that hurts is the
+// one where the LAST attempt is the cheap one — a session spends minutes, the
+// retry cannot even spawn and reports nothing, and taking the last attempt's
+// figure reports the cost of nothing. The caps, the org ledger and a lending
+// donor all read the map, so the true figure has to survive.
+//
+// MAX, never a sum: the CLI's accounting is session-cumulative, so a retry
+// inside one session re-reports the running total (see the sibling test).
+func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
+	e := newTestExecutorForRetry(3)
+	calls := 0
+	billed := func(tokens int, usd float64) delegate.Result {
+		return delegate.Result{
+			Tokens:   tokens,
+			Duration: time.Second,
+			Output:   map[string]any{"_tokens": tokens, "_cost_usd": usd},
+		}
+	}
+	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", func() (delegate.Result, error) {
+		calls++
+		if calls == 1 {
+			// A whole session, then a transient wall.
+			return billed(9000, 0.80), &delegate.ErrTransient{Reason: "stream closed"}
+		}
+		// The retry cannot even spawn: nothing billed, and it is terminal.
+		return delegate.Result{}, errors.New("container is not running")
+	})
+	if err == nil || calls != 2 {
+		t.Fatalf("want a failure after 2 attempts, got err=%v calls=%d", err, calls)
+	}
+	if got.Tokens != 9000 {
+		t.Fatalf("the discarded attempt's tokens were lost: %d", got.Tokens)
+	}
+	if usd, _ := got.Output["_cost_usd"].(float64); usd < 0.80 {
+		t.Fatalf("the discarded attempt's cost was lost: %v", got.Output["_cost_usd"])
+	}
+	if tok, _ := got.Output["_tokens"].(int); tok != 9000 {
+		t.Fatalf("the map the caps read was not updated: %v", got.Output["_tokens"])
+	}
+}
+
+// The other direction, and the reason the fold is a MAX: a retry inside one
+// session re-reports the session's RUNNING TOTAL, so summing the attempts
+// would bill the same tokens twice. The node's figure is the largest any
+// attempt reported, not their sum.
+func TestRetryDelegateLoop_CumulativeUsageIsNotDoubled(t *testing.T) {
+	e := newTestExecutorForRetry(3)
+	calls := 0
+	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", func() (delegate.Result, error) {
+		calls++
+		// Attempt 1 reports 1000; attempt 2 reports the session total, 1300.
+		tokens := 1000
+		if calls > 1 {
+			tokens = 1300
+		}
+		r := delegate.Result{Tokens: tokens, Output: map[string]any{"_tokens": tokens, "_cost_usd": float64(tokens) / 10000}}
+		if calls < 2 {
+			return r, &delegate.ErrTransient{Reason: "stream closed"}
+		}
+		return r, nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("want two attempts then success: err=%v calls=%d", err, calls)
+	}
+	if got.Tokens != 1300 {
+		t.Fatalf("cumulative usage was summed instead of taken at its max: %d", got.Tokens)
+	}
+}
+
+// A cancelled retry keeps the accounting too: no output survives a
+// cancellation, but what the attempts spent is not undone by it.
+func TestRetryDelegateLoop_CancelledKeepsTheSpend(t *testing.T) {
+	e := newTestExecutorForRetry(3)
+	ctx, cancel := context.WithCancel(context.Background())
+	got, err := e.retryDelegateLoop(ctx, "node1", "claw", func() (delegate.Result, error) {
+		cancel()
+		return delegate.Result{Tokens: 500, Output: map[string]any{"_tokens": 500, "_cost_usd": 0.05}},
+			&delegate.ErrTransient{Reason: "stream closed"}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want the cancellation, got %v", err)
+	}
+	if got.Tokens != 500 {
+		t.Fatalf("a cancellation erased the spend: %+v", got)
+	}
+}
+
 func TestRetryDelegateLoop_SucceedsFirstTry(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
