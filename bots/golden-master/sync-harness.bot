@@ -2373,31 +2373,44 @@ tool sync_harness:
             if not stat.S_ISREG(st.st_mode):
                 return "?"
             if st.st_size > BIG_FILE_BYTES:
-                return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
-            h = hashlib.sha1()
-            with open(full, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 20), b""):
-                    h.update(chunk)
-            return h.hexdigest()
+                return stat_form(st)
+            return content_hash(full)
         except OSError:
             return "?"
 
 
+    def stat_form(st):
+        """The one stat fingerprint, "st-<size>-<mtime>": written by
+        dirty_fingerprint past the size bound and answered by fingerprint_like
+        for a stat record — one function, so the two cannot drift apart."""
+        return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
+
+
+    def content_hash(full):
+        h = hashlib.sha1()
+        with open(full, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+
     def fingerprint_like(ws, path, recorded):
-        """The path's fingerprint in the SCHEME the record used: a stat record
-        ("st-…") is answered by the stat form whatever today's size bound is —
-        a record written under an 8 MiB bound compared to a content hash under
-        a 256 MiB bound could never match, and an untouched file was permanent
-        residue. Any other record is answered by dirty_fingerprint."""
-        if isinstance(recorded, str) and recorded.startswith("st-"):
+        """The path's fingerprint in the SCHEME the record used, whatever today's
+        size bound: a stat record ("st-…") is answered by the stat form, a
+        content-hash record by the content hash — a record written under one
+        bound compared under another could never match, and an untouched file
+        was permanent residue (measured with the bound raised; the mirror
+        holds when it is lowered). Any other record is answered by
+        dirty_fingerprint."""
+        if isinstance(recorded, str) and (recorded.startswith("st-") or len(recorded) == 40):
             full = os.path.join(repo_root_of(ws), path)
             try:
                 if not os.path.lexists(full):
                     return "absent"
                 st = os.lstat(full)
                 if not stat.S_ISREG(st.st_mode):
-                    return "?"
-                return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
+                    return dirty_fingerprint(ws, path)
+                return stat_form(st) if recorded.startswith("st-") else content_hash(full)
             except OSError:
                 return "?"
         return dirty_fingerprint(ws, path)
@@ -2468,8 +2481,12 @@ tool sync_harness:
                 # ("st:<size>:<mtime>:<path>"): read as the current form, so a
                 # marker across the upgrade still clears an untouched file.
                 parts = e.split(":", 3)
-                if len(parts) == 4 and parts[3] and parts[1].isdigit() and parts[2].isdigit():
-                    rec[parts[3]] = "st-%s-%s" % (parts[1], parts[2])
+                try:
+                    size, mtime = int(parts[1]), int(parts[2])
+                except (ValueError, IndexError):
+                    size = mtime = None
+                if len(parts) == 4 and parts[3] and size is not None:
+                    rec[parts[3]] = "st-%d-%d" % (size, mtime)
                     continue
             if sep and q and (fp in ("absent", "?") or fp.startswith(("st-", "u-")) or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
                 rec[q] = fp
@@ -4478,7 +4495,7 @@ tool sync_harness:
                     shutil.rmtree(secret, ignore_errors=True)
                 os.remove(os.path.join(tmp, "other.txt"))
                 if os.geteuid() == 0:
-                    sys.stderr.write("selftest: 2 permission checks skipped under root (chmod 0 denies nothing)\n")
+                    skipped_under_root.append("2 permission checks (chmod 0 denies nothing)")
                 if os.geteuid() != 0:
                     check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
                           [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
