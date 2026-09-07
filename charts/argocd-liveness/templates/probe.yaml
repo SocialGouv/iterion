@@ -1,0 +1,130 @@
+{{- $name := printf "%s-argocd-liveness" .Release.Name | trunc 50 | trimSuffix "-" -}}
+{{- $app := required "application is required" .Values.application -}}
+{{- $repo := required "repository is required" .Values.repository -}}
+{{- $webhook := required "credentials.webhookSecret is required" .Values.credentials.webhookSecret -}}
+{{- if not (regexMatch "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" $repo) -}}
+{{- fail "repository must be GitHub owner/repo" -}}
+{{- end -}}
+{{- if lt (int .Values.thresholdSeconds) 300 -}}
+{{- fail "thresholdSeconds must be at least 300 (one observation interval)" -}}
+{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Values.applicationNamespace }}
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications]
+    resourceNames: [{{ $app | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Values.applicationNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }} }
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-state
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ printf "%s-state" $name | quote }}]
+    verbs: [get, patch]
+  # Kubernetes cannot restrict create by resourceNames. Use a dedicated ops
+  # namespace; this identity cannot read secrets, change apps, or launch pods.
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-state
+  namespace: {{ .Release.Namespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-state }
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-code
+  namespace: {{ .Release.Namespace }}
+data:
+  config.json: |
+    {{- dict "application" $app "applicationNamespace" .Values.applicationNamespace "repository" $repo "branch" .Values.branch "thresholdSeconds" .Values.thresholdSeconds "stateName" (printf "%s-state" $name) | toPrettyJson | nindent 4 }}
+  probe.py: |
+    {{- .Files.Get "files/probe.py" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 120
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: {{ $name }}
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: probe
+              image: {{ .Values.image | quote }}
+              imagePullPolicy: {{ .Values.imagePullPolicy }}
+              command: [python3, -B, /config/probe.py]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+              volumeMounts:
+                - { name: code, mountPath: /config, readOnly: true }
+                - { name: webhook, mountPath: /credentials/webhook, readOnly: true }
+                {{- if .Values.credentials.githubSecret }}
+                - { name: github, mountPath: /credentials/github, readOnly: true }
+                {{- end }}
+          volumes:
+            - name: code
+              configMap: { name: {{ $name }}-code }
+            - name: webhook
+              secret:
+                secretName: {{ $webhook }}
+                items: [{ key: url, path: url }]
+            {{- if .Values.credentials.githubSecret }}
+            - name: github
+              secret:
+                secretName: {{ .Values.credentials.githubSecret }}
+                items: [{ key: token, path: token }]
+            {{- end }}

@@ -1,0 +1,18 @@
+# Install in a dedicated ops namespace ON THE ARGO CONTROL-PLANE CLUSTER.
+application: ""
+applicationNamespace: argocd
+repository: "" # GitHub owner/repo; one HTTPS Git source only
+branch: master
+thresholdSeconds: 900
+schedule: "*/5 * * * *"
+image: python:3.12-alpine
+imagePullPolicy: IfNotPresent
+credentials:
+  # Existing Secret in the release namespace, key `url`; use the same incoming
+  # ops webhook as Iterion alerts. Its value never belongs in Helm values.
+  webhookSecret: ""
+  # Optional Secret key `token`, contents:read only for a private GitHub repo.
+  githubSecret: ""
+resources:
+  requests: { cpu: 10m, memory: 32Mi }
+  limits: { cpu: 100m, memory: 64Mi }

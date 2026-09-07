@@ -344,6 +344,9 @@ the hours this one spent.
   actually landed (Deployment generation, never pods — the ArgoCD stall of
   2026-09-05 sat 2h30 until the next push). Read it on "I pushed the config
   and nothing happened", or before shipping an engine fix to the runners.
+  The [standalone ArgoCD liveness chart](charts/argocd-liveness/README.md)
+  checks Git HEAD and fresh Synced comparison every five minutes with a
+  read-only Kubernetes identity, persistent incident state and the ops webhook.
 
 ## Work tracking & session methodology — read AGENTS.md
 

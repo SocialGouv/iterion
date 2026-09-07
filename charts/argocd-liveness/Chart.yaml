@@ -1,0 +1,6 @@
+apiVersion: v2
+name: argocd-liveness
+description: Read-only, zero-LLM GitOps liveness sentinel with durable incident state
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

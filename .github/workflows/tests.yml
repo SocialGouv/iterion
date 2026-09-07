@@ -611,6 +611,10 @@ jobs:
         run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - name: helm lint --strict (values-prod.yaml)
         run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+      - name: ArgoCD liveness chart and probe
+        run: |
+          helm lint charts/argocd-liveness --set application=test --set repository=acme/infra --set credentials.webhookSecret=ops-alerts
+          python3 -B charts/argocd-liveness/tests/test_probe.py
       # `helm lint` renders nothing image-shaped, and cloud-e2e only ever
       # installs via image.tag — so without these two the digest branch of
       # `iterion.image` is exercised by no CI job at all, and a refactor could

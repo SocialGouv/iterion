@@ -399,14 +399,32 @@ kubectl -n iterion get deploy iterion iterion-runner \
   the config repo (`git commit --allow-empty -m "chore: nudge argocd"`) — a
   new revision is what cleared the 2026-09-05 stall.
 - Still unchanged: read the app's `status.sync` / `status.operationState`
-  with a fresh ArgoCD token (`argocd app get <app>`). An expired operator
+  with a fresh ArgoCD token (`argocd app get <app>`), or GET the Application
+  through Kubernetes on the **Argo control-plane cluster**:
+  `kubectl --context <argo-cluster> -n <argo-namespace> get application <app> -o json`.
+  The workload cluster may not have the Application CRD. An expired operator
   token is what made that stall unreadable at the time.
 - A runner rollout that DID apply takes ~5 min end to end (new ReplicaSet
   ready, then the old one drains); the pods' `imageID` is the proof that a
   digest bump reached them.
 
-A scheduled sync-liveness probe (config-repo HEAD vs the app's
-`status.sync.revision` age) is tracked in SocialGouv/iterion#733.
+The [standalone sync-liveness chart](../charts/argocd-liveness/README.md)
+provides a five-minute, zero-LLM CronJob on the Argo control-plane cluster.
+It compares config-repo HEAD, `status.sync.revision`, `Synced` and freshness
+of `reconciledAt`; a continuous unhealthy episode older than 15 minutes goes
+to the existing ops incoming webhook. State survives pod changes, a new HEAD
+does not reset the delay, failed API reads count as unhealthy, and failed
+delivery is retried. Its identity can only read the named Application and
+maintain its incident state; it cannot nudge or sync a deployment. This chart
+is independently installed through GitOps, not enabled by the Iterion chart.
+
+Historical investigation on 2026-09-07: `iterion-prod` was Synced to the exact
+remote infra-apps HEAD `14304450389711e1d62dd708427d194755d5d956` at 20:41Z.
+The retained Application history began on September 5 at 17:03Z and controller
+logs at September 7 at 19:39Z, both after the 06:39–09:08Z stall. These records
+cannot distinguish a failed sync, sync window or repo-server cache problem;
+no root cause is inferred from them. Preserve controller logs and Application
+status immediately if it recurs.
 
 ### Bumping the chart dependency (a template change reaches a deployment)
 
