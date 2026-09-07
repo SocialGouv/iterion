@@ -89,6 +89,8 @@ func runExtendVerifyClean(t *testing.T, ws, head, pendingJSON string, clean bool
 	body = strings.ReplaceAll(body, "{{input.head}}", strconv.Quote(head))
 	body = strings.ReplaceAll(body, "{{input.pending}}", pendingJSON)
 	body = strings.ReplaceAll(body, "{{input.clean}}", map[bool]string{true: "true", false: "false"}[clean])
+	// What an edge renders for an agent that produced no line.
+	body = strings.ReplaceAll(body, "{{input.agent_summary}}", "null")
 	body = strings.ReplaceAll(body, "{{input.prev_name}}", strconv.Quote(""))
 	body = strings.ReplaceAll(body, "{{input.prev_email}}", strconv.Quote(""))
 	body = strings.ReplaceAll(body, "{{vars.actor_name}}", strconv.Quote("golden-master extend"))

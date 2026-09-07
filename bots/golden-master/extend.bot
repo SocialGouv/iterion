@@ -156,6 +156,8 @@ schema base_state:
 
 ## Not one field here is an opinion.
 schema verify_report:
+  ## The agent's own line, as a string whatever it produced.
+  agent_summary: string
   committed: bool
   scope_clean: bool
   out_of_scope: string[]
@@ -216,7 +218,7 @@ tool extend_base:
 
     head = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
                           capture_output=True, text=True)
-    dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+    dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain", "-z"],
                            capture_output=True, text=True)
 
     pending, notice = [], ""
@@ -232,7 +234,27 @@ tool extend_base:
         except (ValueError, IndexError):
             notice = ("the harness did not answer GM_MODE=extensions (exit %d): %s"
                       % (p.returncode, (p.stdout + p.stderr)[-400:]))
-    dirty_paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()] if dirty.returncode == 0 else []
+    # `--porcelain` QUOTES any path carrying a non-ASCII byte, a quote, a
+    # backslash or a control character: `.golden-master/refs/é.txt` comes back
+    # as `".golden-master/refs/\303\251.txt"`, so a raw prefix match misses it
+    # and a dirty net reads CLEAN — the absorption this refusal exists to
+    # stop, reachable with a single accented file name (review finding,
+    # reproduced against real git). `-z` never quotes. A rename carries its
+    # ORIGIN as the next token, and a reference moved OUT of the net dirties
+    # it as surely as one moved in — `R  old -> new` matched neither side.
+    # extend_verify already passes `-c core.quotePath=false` for this exact
+    # reason; the two halves of one file disagreed.
+    dirty_paths = []
+    if dirty.returncode == 0:
+        toks = [t for t in dirty.stdout.split("\0") if t]
+        i = 0
+        while i < len(toks):
+            xy, path = toks[i][:2], toks[i][3:]
+            dirty_paths.append(path)
+            i += 1
+            if ("R" in xy or "C" in xy) and i < len(toks):
+                dirty_paths.append(toks[i])
+                i += 1
     net_dirty = [q for q in dirty_paths if q.startswith(gm.rstrip("/") + "/")]
     clean = not net_dirty
     if net_dirty:
@@ -308,7 +330,7 @@ tool extend_base:
         subprocess.run(["git", "-C", ws, "config", "user.name", {{vars.actor_name}}])
         subprocess.run(["git", "-C", ws, "config", "user.email", {{vars.actor_email}}])
 
-    print(json.dumps({"head": head.stdout.strip(), "dirty": dirty.stdout.strip(),
+    print(json.dumps({"head": head.stdout.strip(), "dirty": "\n".join(dirty_paths),
                       "pending": pending, "notice": notice, "clean": clean,
                       "prev_name": prev_name, "prev_email": prev_email}))
 
@@ -344,13 +366,18 @@ tool extend_verify:
     base = {{input.head}}
     before = {p.get("id") for p in ({{input.pending}} or []) if p.get("id")}
     clean = bool({{input.clean}})
+    # The agent's own line, made a STRING here so nothing downstream adds a
+    # null: `{{input.agent_summary}}` renders `null` for a node that produced
+    # none, and the graph's `+` refuses to concatenate that.
+    agent_summary = ({{input.agent_summary}} or "")
     actor_email = {{vars.actor_email}}
 
     report = {"committed": False, "scope_clean": False, "out_of_scope": [],
               "additions_ok": False, "refused": [], "no_new_requests": False,
               "still_pending": [], "extended": 0, "log_tail": "",
               "clean_start": clean, "identity_ok": False,
-              "acted_commits": "", "acted_ids": "", "acted_blobs": ""}
+              "acted_commits": "", "acted_ids": "", "acted_blobs": "",
+              "agent_summary": agent_summary}
     problems = []
     if not clean:
         problems.append("REFUSED at start: the net's directory was dirty when this run "
@@ -563,6 +590,9 @@ schema verify_input:
   head: string
   pending: json
   clean: bool
+  ## The agent's own one-line report, carried through so the verdict can
+  ## publish it as a string (see extend_result.notice).
+  agent_summary: string
 
 ## A pure CONJUNCTION, never an aggregate. An extension that is additions-ok
 ## but out of scope is not "mostly fine" — it is a lot writing in the judge's
@@ -572,6 +602,30 @@ schema verify_input:
 ## written) leaves the run not converged — the parent's gate keeps refusing
 ## on the pending term either way, and this verdict must not read greener
 ## than that gate will.
+## A start REFUSED before the agent leaves by its own door.
+##
+## `clean` is read once, in extend_base, and carried unchanged onto every
+## pass — so the conjunct it feeds is false forever and no pass can flip it.
+## Routing it through the campaign anyway paid a full claude_code run, then
+## `max_passes` more of them, to report a refusal node 1 already knew (review
+## finding, executed). Worse than the cost: extend_base says "the agent
+## receives no pending request", and the agent still got the workspace with
+## commit access — that half rested on the prompt line "act nothing and end",
+## which is prose.
+##
+## No identity was set on this path (extend_base only sets it when clean), so
+## there is nothing to restore either.
+compute extend_refused:
+  output: extend_result
+  publish: notice
+  expr:
+    converged: "false"
+    extended: "0"
+    notice: "'the extension was REFUSED before the agent ran. ' + outputs.extend_base.notice"
+    acted_commits: "''"
+    acted_ids: "''"
+    acted_blobs: "''"
+
 ## The identity comes back ONCE, on the way out — the only place both exits
 ## of the gate pass through. Its source is the marker extend_base wrote, not
 ## an edge input: the marker is the durable record (a run that dies never
@@ -649,7 +703,19 @@ compute extend_result:
     ## an agent told to «report in summary» writes a file instead to make its
     ## reasoning survive — a file its own gate then refuses (production
     ## finding). Evidence beside the verdict, never in place of it.
-    notice: "if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say. The subbot said: ' + outputs.extend_campaign.summary, 'the extension was REFUSED. The subbot said: ' + outputs.extend_campaign.summary + ' — the gate says: ' + outputs.extend_gate.fail_log)"
+    ## The subbot's own line travels with the deterministic verdict, plainly
+    ## attributed: without it the cause a refusal states reaches nobody, and
+    ## an agent told to «report in summary» writes a file instead to make its
+    ## reasoning survive — a file its own gate then refuses (production
+    ## finding). Evidence beside the verdict, never in place of it.
+    ##
+    ## Read from extend_verify, not from the agent node: `if()` evaluates
+    ## BOTH branches (its arguments are computed before the call), so a
+    ## summary the agent omitted would render null and `string + null` is a
+    ## typed error — the compute would fail and take down a run that was only
+    ## reporting a refusal. A tool node's `or ""` makes it a string once, and
+    ## everything downstream can add it.
+    notice: "if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say. The subbot said: ' + outputs.extend_verify.agent_summary, 'the extension was REFUSED. The subbot said: ' + outputs.extend_verify.agent_summary + ' — the gate says: ' + outputs.extend_gate.fail_log)"
     acted_commits: "outputs.extend_verify.acted_commits"
     acted_ids: "outputs.extend_verify.acted_ids"
     acted_blobs: "outputs.extend_verify.acted_blobs"
@@ -665,15 +731,19 @@ workflow extend:
     max_duration: "1h"
     max_cost_usd: 20
 
+  ## Declared FIRST: a deterministic refusal must not buy an LLM pass.
+  extend_base -> extend_refused when not clean
+
   extend_base -> extend_campaign with {
     pending:  "{{outputs.extend_base.pending}}",
     fail_log: ""
   }
 
   extend_campaign -> extend_verify with {
-    head:    "{{outputs.extend_base.head}}",
-    pending: "{{outputs.extend_base.pending}}",
-    clean:   "{{outputs.extend_base.clean}}"
+    head:          "{{outputs.extend_base.head}}",
+    pending:       "{{outputs.extend_base.pending}}",
+    clean:         "{{outputs.extend_base.clean}}",
+    agent_summary: "{{outputs.extend_campaign.summary}}"
   }
 
   extend_verify -> extend_gate
@@ -696,4 +766,5 @@ workflow extend:
   extend_gate -> extend_restore
 
   extend_restore -> extend_result
+  extend_refused -> done
   extend_result -> done
