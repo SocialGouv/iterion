@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.22](https://github.com/SocialGouv/iterion/compare/v3.112.21...v3.112.22) (2026-09-07)
+
+### Bug Fixes
+
+* **golden-master:** a type change is a dirty path, a big file's fingerprint round-trips, an unreadable subtree is undecidable ([#866](https://github.com/SocialGouv/iterion/issues/866)) ([17681ca](https://github.com/SocialGouv/iterion/commit/17681ca3311dac922fb274d9a0e4dd86cfb02559))
+
+    <details><summary>why</summary>
+
+    Sixth review round. The porcelain status set lacked T, so a type change (a tracked file swapped for a symlink) was neither recorded before the mutant nor seen after a revert that left it: the one disposition that lets the gate through, on the fail-open this PR closes. T is a status.
+
+    </details>
+
 ## [3.112.21](https://github.com/SocialGouv/iterion/compare/v3.112.20...v3.112.21) (2026-09-07)
 
 ### Bug Fixes
