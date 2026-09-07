@@ -4624,7 +4624,22 @@ def main():
 
     # Les tests du harnais d'abord, et hors de tout le reste : ils ne touchent
     # ni au depot, ni a l'application, ni a la configuration.
+    #
+    # Ils n'y touchaient pas ; ils en HERITAIENT. Le lanceur de porte execute
+    # cette etape en bloquant, environnement herite, donc une entree
+    # d'operateur destinee au FILET s'appliquait aux doubles : mesure,
+    # `GM_CONFIG` nommant un second environnement faisait refuser toutes les
+    # fixtures qui n'ecrivent que `config.json` (la porte mourait ROUGE avant
+    # de juger, en accusant les regles de decision), et `GM_SEAL_COMMITTED=1`
+    # faisait echouer les fixtures de scellement. Pire en silence : sous un
+    # ambiant, un refus type de fixture passe pour la MAUVAISE cause — « config
+    # absente » portant le nom du refus d'opt-in qu'il pretend epingler.
+    # Retirees ici, au point de dispatch : une variable absente ne peut
+    # qu'ETRE PLUS STRICTE sur des doubles, jamais adoucir un verdict.
     if mode == "selftest":
+        for _ambient in ("GM_CONFIG", "GM_SEAL_COMMITTED", "GM_SEALED_DIR",
+                         "GM_MUTATION_FLOOR", "GM_MUTANTS", "GM_RECORD_IDS"):
+            os.environ.pop(_ambient, None)
         raise SystemExit(_selftest())
 
     # Ledger listings and the additions-only verdict are pure git/file reads:

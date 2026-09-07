@@ -82,6 +82,80 @@ func TestGoldenMasterHarnessNamesTheConfig(t *testing.T) {
 		}
 	})
 
+	// The path a gate actually takes, which neither the direct call nor the
+	// selftest covered: `verify-oracle.sh` runs the selftest as a BLOCKING
+	// step with the environment inherited, so an ambient GM_CONFIG would make
+	// the one documented invocation of a second environment die red before
+	// judging anything — accusing the decision rules of what is the fixtures'
+	// shape. The selftest judges its own fixtures; it must not read the
+	// operator's choice about their net.
+	t.Run("the selftest is hermetic to every operator input", func(t *testing.T) {
+		// Not GM_CONFIG alone: an operator input meant for the NET applied to
+		// the doubles is one class, and the same count must come out of each
+		// run — a guard that made fixtures vanish instead of hermetic would
+		// pass this loop while testing less.
+		const want = "218 verifications passent"
+		for _, env := range [][]string{
+			nil,
+			{"GM_CONFIG=config-pg.json"},
+			{"GM_CONFIG="},
+			{"GM_SEAL_COMMITTED=1"},
+			{"GM_SEALED_DIR=" + filepath.Join(t.TempDir(), "pile")},
+			{"GM_MUTATION_FLOOR=1"},
+			{"GM_CONFIG=config-pg.json", "GM_SEAL_COMMITTED=1"},
+		} {
+			cmd := exec.Command("python3", harness)
+			cmd.Dir = t.TempDir()
+			cmd.Env = append(append(os.Environ(), "GM_MODE=selftest"), env...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v made the selftest fail — the gate wrapper runs it as a blocking step: %v\n%s", env, err, out)
+			}
+			if !strings.Contains(string(out), want) {
+				t.Fatalf("%v changed WHICH checks ran (want %q):\n%s", env, want, out)
+			}
+		}
+	})
+
+	// And the same thing through the wrapper the workflow EMITS, which is the
+	// only invocation the skill documents: `GM_CONFIG=<name> sh
+	// .golden-master/verify-oracle.sh`. The wrapper runs the selftest as a
+	// blocking step before judging, so this is the path a gate takes and the
+	// one neither the direct call nor the selftest could see.
+	t.Run("the emitted wrapper survives its selftest step and refuses for the right reason", func(t *testing.T) {
+		requireModernizeTools(t)
+		ws := t.TempDir()
+		gm := filepath.Join(ws, ".golden-master")
+		if err := os.MkdirAll(filepath.Join(gm, "canon"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		real, err := os.ReadFile(harness)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string][]byte{
+			"canon/test_rules.py": []byte("print('ok')\n"),
+			"harness.py":          real,
+			"config.json":         []byte(`{"up": "true", "base_url": "http://127.0.0.1:1"}`),
+			"corpus.json":         []byte(`{"entries": []}`),
+		} {
+			if werr := os.WriteFile(filepath.Join(gm, name), body, 0o644); werr != nil {
+				t.Fatal(werr)
+			}
+		}
+		runner := emitRunner(t, ws)
+		cmd := exec.Command("sh", runner)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GM_CONFIG=config-pg.json", "GM_WORKSPACE="+ws)
+		out, _ := cmd.CombinedOutput()
+		if strings.Contains(string(out), "RÈGLE DE DÉCISION") {
+			t.Fatalf("the gate died on its own selftest under GM_CONFIG — the documented invocation of a second environment never reaches a verdict:\n%s", out)
+		}
+		if !strings.Contains(string(out), "config-pg.json") {
+			t.Fatalf("the refusal must name the declaration that is missing, not something else:\n%s", out)
+		}
+	})
+
 	t.Run("a path is refused: the declaration lives with the corpus", func(t *testing.T) {
 		ws := newNet(t)
 		cmd := exec.Command("python3", harness)
