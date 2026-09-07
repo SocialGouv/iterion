@@ -238,9 +238,29 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	statusBefore := git("status", "--porcelain")
 	indexBefore := git("rev-parse", ":committed.txt")
 
+	// git stamps a commit to the SECOND, so two back-to-back ticks land on the
+	// same sha and the property under test — an unchanged workspace still
+	// yields a new commit — would vanish. Production ticks are ten minutes
+	// apart: pin BOTH of them to fixed, distinct dates so that gap is
+	// simulated rather than waited for. Pinning both (not just the second) is
+	// what makes it hermetic: an ambient GIT_AUTHOR_DATE/GIT_COMMITTER_DATE in
+	// the test process then cannot collide with a pin and collapse the shas.
+	// exec.Cmd resolves duplicate keys last-wins, so appending is enough — and
+	// each tick gets its OWN copy, or one tick's pin would leak into another
+	// through a shared backing array.
+	const (
+		tick1Date = "2023-11-14T22:23:20+00:00"
+		tick2Date = "2023-11-14T22:33:20+00:00" // ten minutes later: one checkpoint interval
+	)
+	baseEnv := append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	gitEnvAt := func(date string) []string {
+		return append(append([]string(nil), baseEnv...),
+			"GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
+	}
+
 	sh := exec.Command("sh", "-c", checkpointScript)
 	sh.Dir = ws
-	sh.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	sh.Env = gitEnvAt(tick1Date)
 	out, err := sh.Output()
 	if err != nil {
 		t.Fatalf("checkpoint script: %v (%s)", err, out)
@@ -256,7 +276,7 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	// state is stable while the commit is not (commit-tree stamps a time).
 	sh2 := exec.Command("sh", "-c", checkpointScript)
 	sh2.Dir = ws
-	sh2.Env = sh.Env
+	sh2.Env = gitEnvAt(tick2Date)
 	out2, err2 := sh2.Output()
 	if err2 != nil {
 		t.Fatalf("second tick: %v (%s)", err2, out2)
@@ -266,7 +286,7 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 		t.Fatalf("an unchanged workspace changed state: %q -> %q", state, state2)
 	}
 	if sha2 == sha {
-		t.Skip("commit-tree returned the same sha twice — this machine's clock granularity hides the property under test")
+		t.Fatalf("a second tick over an unchanged workspace must still yield a NEW commit — that it does is exactly why the comparison is on (HEAD,tree) and not on the commit: %q", sha2)
 	}
 
 	// The run's own state: untouched, in all three places it lives.
@@ -304,7 +324,7 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	head2 := git("rev-parse", "HEAD")
 	sh3 := exec.Command("sh", "-c", checkpointScript)
 	sh3.Dir = ws
-	sh3.Env = sh.Env
+	sh3.Env = baseEnv // a clean tree never reaches commit-tree: no date to pin
 	out3, err := sh3.Output()
 	if err != nil {
 		t.Fatalf("checkpoint script on a clean tree: %v (%s)", err, out3)
