@@ -1389,9 +1389,27 @@ tool oracle_run:
                           sort_keys=True, ensure_ascii=False)
 
 
-    def extension_verdict(ws, gm_rel, base):
+    def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None):
         """Judge every ACTED extension against `base`, in git — never against the
         acting party's word.
+
+        `acted_commits` (None, or a set of 40-hex shas) is what the NET's own
+        subbot reports having committed in this segment — read by main() from
+        GM_ACTED_COMMITS, which the parent bot defines even when empty. None
+        means the caller predates provenance (today's rule only: request and
+        act in one commit refuse); a set means STRICT: an act introduced in
+        base..HEAD by a commit outside it was written by the constrained party,
+        whatever author it carries, and is refused — unless every path it
+        records carries at HEAD the exact blob the subbot certified
+        (`acted_blobs`, path → blob id): a history rewritten after the subbot
+        ran keeps its certified content and loses its shas. Measured on a live
+        campaign: a lot filed a request in one commit and acted it in the next,
+        the same-commit rule saw nothing, and the lot's own file became a
+        reference of the net that judges it.
+
+        `acted_blobs` also bounds the exemption: a certified path whose blob at
+        HEAD moved since the act was rewritten by someone after the subbot —
+        the certificate covers the content it certified, not the path forever.
 
         Per acted request, every recorded path must be a pure addition:
           - under refs/: absent at base, present at HEAD. A path that existed at
@@ -1420,6 +1438,11 @@ tool oracle_run:
             code, out, _ = git("ls-tree", ref, "--", path)
             return out.split()[0] if code == 0 and out.strip() else ""
 
+        def blob_id(ref, path):
+            code, out, _ = git("ls-tree", ref, "--", path)
+            parts = out.split() if code == 0 else []
+            return parts[2] if len(parts) >= 3 else ""
+
         ledger_rel = gm_rel.rstrip("/") + "/EXTENSIONS.md"
         corpus_rel = gm_rel.rstrip("/") + "/corpus.json"
         refs_prefix = gm_rel.rstrip("/") + "/refs/"
@@ -1434,11 +1457,15 @@ tool oracle_run:
             subbot never ran — production cannot produce that shape, because the
             parent commits its lot before the subbot starts (adversarial finding,
             executed)."""
-            code, out, _ = git("log", "--format=%H", "--reverse", "--", ledger_rel)
+            code, out, _ = git("log", "--format=%H%x00%ae", "--reverse", "--", ledger_rel)
             if code != 0:
                 return None
             first = {}
-            for sha in out.split():
+            for line in out.splitlines():
+                sha, _, email = line.partition("\0")
+                sha = sha.strip()
+                if not sha:
+                    continue
                 text = at(sha, ledger_rel)
                 if text is None:
                     continue
@@ -1447,6 +1474,7 @@ tool oracle_run:
                         bid = b.get("id")
                         if isinstance(bid, str) and bid:
                             first.setdefault((kind, bid), sha)
+                            first.setdefault(("author", kind, bid), email.strip())
             return first
 
         # An unresolvable base and an honest "absent at base" both read as None
@@ -1613,9 +1641,36 @@ tool oracle_run:
                     "request and the act, so the net's subbot never judged it — "
                     "filing and answering are different powers"
                     % intro[("act", act.get("id"))][:12])
+                row["forged"] = True
             paths = [p for p in (act.get("recorded_paths") or [])
                      if isinstance(p, str) and p]
             row["paths"] = paths
+            act_sha = (intro or {}).get(("act", act.get("id")))
+            if act_sha:
+                row["introduced_by"] = act_sha[:12]
+                row["author"] = (intro or {}).get(("author", "act", act.get("id"))) or ""
+            # Provenance, when the parent states what the net's subbot committed:
+            # an act introduced by any other commit was written by the party the
+            # oracle constrains — whatever author it carries, an author is prose.
+            # The one way back in is the CONTENT: every recorded path carrying at
+            # HEAD the exact blob the subbot certified (a history rewritten after
+            # the subbot ran).
+            if acted_commits is not None and req is not None and act_sha \
+                    and act_sha not in acted_commits:
+                blobs_match = bool(paths) and acted_blobs is not None and all(
+                    acted_blobs.get(p) and blob_id("HEAD", p) == acted_blobs.get(p)
+                    for p in paths if p != ledger_rel)
+                if not blobs_match:
+                    row["forged"] = True
+                    row["problems"].append(
+                        "the act was introduced by %s (author %s), which is not one "
+                        "of the net subbot's commits%s — an act the constrained party "
+                        "wrote is a refusal, not an extension. If the history was "
+                        "rewritten after the subbot ran, relaunch on a fresh base; "
+                        "otherwise remove the act block and file the request only."
+                        % (act_sha[:12], row.get("author") or "?",
+                           (" (%s)" % ", ".join(sorted(c[:12] for c in acted_commits)))
+                           if acted_commits else " (none reported)"))
             if req is not None and not paths:
                 row["problems"].append(
                     "the act records no path — an extension that touched "
@@ -1675,6 +1730,21 @@ tool oracle_run:
                 row["problems"].append(
                     "the act records no path on the extension surface (refs/ or "
                     "corpus.json) — filing paperwork is not an extension")
+            if acted_blobs is not None and req is not None:
+                # The certificate covers the CONTENT the subbot committed, not
+                # the path forever: a reference rewritten after the act — by the
+                # lot, in its own later commit — is the masking vector again, and
+                # the exemption must not follow it.
+                for p in paths:
+                    if p == ledger_rel or p == corpus_rel:
+                        continue
+                    certified = acted_blobs.get(p)
+                    if certified and blob_id("HEAD", p) != certified:
+                        row["forged"] = True
+                        row["problems"].append(
+                            "%s was rewritten after the act: HEAD carries blob %s, "
+                            "the subbot certified %s — the certificate covers the "
+                            "content it certified, not the path" % (p, (blob_id("HEAD", p) or "?")[:12], certified[:12]))
             row["ok"] = (req is not None and not row["problems"]
                          and verdict["ledger_append_only"])
             if row["ok"]:
@@ -3584,9 +3654,9 @@ tool oracle_run:
                     f.write("\n".join("<!-- iterion:extension-%s\n%s\n-->" % b
                                       for b in blks))
 
-            def xcommit():
+            def xcommit(email="t@t"):
                 run("git add -A", xroot, timeout=60)
-                run("git -c user.email=t@t -c user.name=t commit -qm x",
+                run("git -c user.email=%s -c user.name=t commit -qm x" % email,
                     xroot, timeout=60)
 
             def xrequest(req):
@@ -3649,6 +3719,44 @@ tool oracle_run:
             v_touch = extension_verdict(xroot, ".golden-master", xbase_acted)
             check("acte a la base + ref reecrite -> le certificat n'exempte rien",
                   [v_touch["acted"][0]["ok"], v_touch["ok_paths"]], [True, []])
+
+            # 8f. Provenance : un acte doit venir des commits du subbot du filet
+            #     (publies par le parent), ou porter EXACTEMENT le contenu certifie
+            #     (historique reecrit apres le subbot). L'auteur est de la prose.
+            xreset()
+            xrequest(req2)                                   # commit A, le lot
+            xledger(("request", req2), ("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("forge par le lot\n")
+            xcommit(email="lot@run")                         # commit B, le lot acte
+            sha_b = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_b = run("git rev-parse HEAD:.golden-master/refs/2.txt", xroot, timeout=60)[1].strip()
+            v_old = extension_verdict(xroot, ".golden-master", xbase)
+            check("sans provenance (appelant d'avant) : l'auto-acte en deux commits passe encore",
+                  v_old["acted"][0]["ok"], True)
+            v_strict = extension_verdict(xroot, ".golden-master", xbase, acted_commits=set())
+            check("provenance stricte, aucun commit du subbot : l'auto-acte est refuse, forge, auteur nomme",
+                  [v_strict["acted"][0]["ok"], v_strict["acted"][0].get("forged"),
+                   v_strict["acted"][0].get("author"), v_strict["ok_paths"]],
+                  [False, True, "lot@run", []])
+            v_sub = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b})
+            check("l'acte introduit par un commit du subbot passe, chemin exempte",
+                  [v_sub["acted"][0]["ok"], v_sub["ok_paths"]], [True, [".golden-master/refs/2.txt"]])
+            v_blob = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                       acted_blobs={".golden-master/refs/2.txt": blob_b})
+            check("sha inconnu mais contenu certifie identique (historique reecrit) : passe",
+                  v_blob["acted"][0]["ok"], True)
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("reecrit apres l'acte\n")
+            xcommit(email="lot@run")                         # commit C, le lot reecrit
+            v_rw = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b},
+                                     acted_blobs={".golden-master/refs/2.txt": blob_b})
+            check("reference reecrite apres l'acte certifie : refusee, pas exemptee",
+                  [v_rw["acted"][0]["ok"], v_rw["acted"][0].get("forged"), v_rw["ok_paths"]],
+                  [False, True, []])
+            v_rw2 = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                      acted_blobs={".golden-master/refs/2.txt": blob_b})
+            check("sha inconnu ET contenu different : refuse", v_rw2["acted"][0]["ok"], False)
 
             # Reecriture deguisee : la ref existait a la base.
             xreset()
@@ -4744,8 +4852,25 @@ tool oracle_run:
                                   "additions against nothing would pass by "
                                   "construction"}))
                 raise SystemExit(1)
+            # Provenance from the PARENT: present (even empty) means strict —
+            # the parent bot always defines it, because the only pass that
+            # judges a self-act is the one where no subbot ran at all. Absent
+            # means a caller that predates provenance: today's rule only.
+            acted_commits = acted_blobs = None
+            if "GM_ACTED_COMMITS" in os.environ:
+                acted_commits = set()
+                for tok in os.environ.get("GM_ACTED_COMMITS", "").split():
+                    full = run("git rev-parse --verify --quiet %s^{commit}" % shlex.quote(tok), ws, timeout=60)[1].strip()
+                    acted_commits.add(full if len(full) == 40 else tok)
+            if "GM_ACTED_BLOBS" in os.environ:
+                acted_blobs = {}
+                for tok in os.environ.get("GM_ACTED_BLOBS", "").split():
+                    path, sep, sha = tok.rpartition("=")
+                    if sep and path and sha:
+                        acted_blobs[path] = sha
             print(json.dumps(extension_verdict(
-                ws, os.environ.get("GM_DIR", ".golden-master"), base)))
+                ws, os.environ.get("GM_DIR", ".golden-master"), base,
+                acted_commits=acted_commits, acted_blobs=acted_blobs)))
             raise SystemExit(0)
 
         report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
