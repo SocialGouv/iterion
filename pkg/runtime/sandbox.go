@@ -485,6 +485,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
 	}
+	// The forfait config dirs are seeded AFTER the container starts (below),
+	// but their paths are constants: advertise them on the container env now
+	// so every exec — a tool node, a devbox script, a scanner that shells out
+	// to `claude` or `codex` — authenticates as the run, not only the
+	// claude_code/claw delegate spawns that set the variables themselves.
+	exportForfaitConfigDirs(spec, claudeOAuthMounted, codexOAuthMounted)
 
 	// Optionally start the network proxy. When the workflow has no
 	// explicit network policy, default to the iterion-default

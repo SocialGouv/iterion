@@ -186,6 +186,33 @@ mkdir -p "$1"
 cp "$2" "$1/$3"
 chmod 600 "$1/$3"`
 
+// exportForfaitConfigDirs advertises the seeded forfait config dirs on the
+// container env. seedClaudeConfigDir / seedCodexConfigDir populate those
+// dirs once the sandbox is up, and the claude_code and claw delegates point
+// their own spawns at them — but any OTHER process in the sandbox (a tool
+// node running `claude -p`, a scanner driving the claude-agent-sdk) inherits
+// only the container env, and without these variables it runs
+// unauthenticated ("Not logged in") while the credentials sit next to it.
+// A value the operator declared on the spec wins.
+func exportForfaitConfigDirs(spec *sandbox.Spec, claudeMounted, codexMounted bool) {
+	if !claudeMounted && !codexMounted {
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	if claudeMounted {
+		if _, set := spec.Env["CLAUDE_CONFIG_DIR"]; !set {
+			spec.Env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		}
+	}
+	if codexMounted {
+		if _, set := spec.Env["CODEX_HOME"]; !set {
+			spec.Env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
+		}
+	}
+}
+
 // seedClaudeConfigDir runs [seedClaudeConfigScript] inside the freshly
 // started sandbox. Hard error on failure: the run resolved a forfait
 // credential, so a half-delivered config dir must fail the boot loudly
