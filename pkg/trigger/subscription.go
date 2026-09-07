@@ -149,6 +149,16 @@ type Subscription struct {
 	CreatedBy string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+
+	// LastError is the verdict of the last direct launch this subscription
+	// asked for: empty means it went through, a message says why it did not
+	// (an org launch-gate denial, a run service that refused the run).
+	// LastErrorAt is when that verdict was recorded. Both are rendered by
+	// GET /api/v1/triggers and `iterion remote triggers list`, so a
+	// subscription that stopped firing is visible to its operator instead of
+	// living only in a replica's log.
+	LastError   string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	LastErrorAt *time.Time `json:"last_error_at,omitempty" bson:"last_error_at,omitempty"`
 }
 
 // NextFire computes the subscription's next-fire instant after `after`,

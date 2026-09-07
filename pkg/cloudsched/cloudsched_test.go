@@ -306,6 +306,30 @@ func TestMongoStore_CAS(t *testing.T) {
 		t.Errorf("post-claim state: %+v", got)
 	}
 
+	// Launch health, the twin of MemoryStore.MarkLaunchError: a targeted
+	// $set/$unset on the two fields, round-tripped, and ErrNotFound for a
+	// row that is gone.
+	if err := store.MarkLaunchError(ctx, "sb-1", "launch gate: concurrency_cap_exceeded", now); err != nil {
+		t.Fatalf("MarkLaunchError: %v", err)
+	}
+	got, _ = store.Get(ctx, "sb-1")
+	if got.LastError != "launch gate: concurrency_cap_exceeded" || got.LastErrorAt == nil {
+		t.Errorf("launch health after a refusal = (%q, %v), want the message and its instant", got.LastError, got.LastErrorAt)
+	}
+	if !got.NextFireAt.Equal(newNext) {
+		t.Errorf("next_fire_at = %v after the health write, want %v — a $set must not disturb the CAS field", got.NextFireAt, newNext)
+	}
+	if err := store.MarkLaunchError(ctx, "sb-1", "", now); err != nil {
+		t.Fatalf("MarkLaunchError(clear): %v", err)
+	}
+	got, _ = store.Get(ctx, "sb-1")
+	if got.LastError != "" || got.LastErrorAt != nil {
+		t.Errorf("launch health after a clear = (%q, %v), want empty", got.LastError, got.LastErrorAt)
+	}
+	if err := store.MarkLaunchError(ctx, "ghost", "boom", now); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MarkLaunchError on an unknown id = %v, want ErrNotFound", err)
+	}
+
 	if err := store.Delete(ctx, "sb-1"); err != nil {
 		t.Errorf("Delete: %v", err)
 	}

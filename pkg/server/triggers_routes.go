@@ -212,15 +212,19 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("kind is required"))
 		return
 	}
-	// Run-launch admission. A custom emit can fan out to N matching
-	// subscriptions, each a launch — gate it exactly like the inbound
-	// webhook path so an authenticated integration can't bypass the
-	// per-org quota / cost cap / rate limit. Fail-open (nil) in local
-	// single-host scope, so this is a no-op there.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	// Run-launch admission as a PRE-CHECK: a suspended org, an org at its
+	// concurrency cap or over its monthly caps is refused here and now, with
+	// the same envelope the other surfaces send. The metered slot is handed
+	// back at once — an emit is one EVENT, and it fans out to however many
+	// subscriptions match it (zero, one, ten), each of which the spine
+	// launcher meters as its own launch. Fail-open (nil) in local single-host
+	// scope, so this is a no-op there.
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	adm.rollback(s.logger)
 	payload := map[string]any{}
 	if len(req.Vars) > 0 {
 		total := 0

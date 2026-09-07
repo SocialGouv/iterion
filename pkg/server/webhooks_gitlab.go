@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -445,6 +446,23 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	if s.logger != nil {
 		s.logger.Debug("webhooks: gitlab note %s!%d (reply) by %s authorized (%s)", p.ProjectPath, p.MRIID, p.AuthorUsername, reason)
 	}
+	// Prove the head project before launching, exactly as the command lane
+	// does. The note payload names neither source_project_id nor
+	// target_project_id, so `p.CloneURL + p.SourceBranch` is the base project
+	// paired with a branch name that, on a fork MR, lives somewhere else.
+	// HeadCloneURL (plumbed on all three providers) is what a lane serving
+	// forks would clone; reading it now means the day forks are served is not
+	// the day this pair is discovered to name two repositories.
+	head, herr := s.resolveGitLabNoteHead(ctx, cfg, p, converseBot)
+	if herr != nil {
+		s.recordNoteDelivery(ctx, cfg, webhooks.StatusLaunchError, payloadHash, srcIP, p, "MR resolution: "+herr.Error())
+		httpError(w, http.StatusBadGateway, "could not resolve the MR head project")
+		return
+	}
+	if !head.SameRepoAs(p.ProjectPath) {
+		filtered(gitlabCommandForkRefusal("reply", head.HeadRepoFullName))
+		return
+	}
 	question := strings.TrimSpace(p.NoteBody)
 	vars := applyWebhookVarLayers(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, map[string]string{
 		"conversation_mode": "reply",
@@ -463,7 +481,40 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	// Idempotency: one launch per note.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))
 
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, converseBot, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	s.insertAndLaunchWebhook(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, converseBot,
+		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP)
+}
+
+// resolveGitLabNoteHead resolves the merge request a note sits on through the
+// test-seamed resolver the command lane already uses, so both lanes prove the
+// head project the same way and a fake covers both.
+func (s *Server) resolveGitLabNoteHead(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (forge.PullRef, error) {
+	resolve := s.webhookGitLabPRResolver
+	if resolve == nil {
+		resolve = s.realWebhookGitLabPRResolver
+	}
+	return resolve(ctx, cfg, p, botID)
+}
+
+// gitlabHeadCloneURL / gitlabHeadBranch are the launch pair, taken from the
+// RESOLVED head when the forge named it and from the note payload otherwise.
+// On a same-project merge request GitLab reports no separate head clone URL
+// (pkg/forge/gitlab/ci.go headProjectFor returns the queried project with no
+// URL of its own), so the payload's is the right answer; the fields exist for
+// the fork case, which every lane refuses today. Reading them here is what
+// keeps "serve forks" a policy decision instead of a plumbing change.
+func gitlabHeadCloneURL(head forge.PullRef, p gitlab.ParsedNote) string {
+	if u := strings.TrimSpace(head.HeadCloneURL); u != "" {
+		return u
+	}
+	return p.CloneURL
+}
+
+func gitlabHeadBranch(head forge.PullRef, p gitlab.ParsedNote) string {
+	if b := strings.TrimSpace(head.SourceBranch); b != "" {
+		return b
+	}
+	return p.SourceBranch
 }
 
 // handleGitLabCommandNote routes a generic slash-command note (any command
@@ -692,7 +743,15 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 // loop-guard, then allowlist/role authorization honouring the route's
 // MinReplierRole (falling back to the webhook default).
 func (s *Server) gitlabCommandGateWithAPI(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, route webhooks.CommandRoute, api gitlabNoteAPI) (prforgeGateOutcome, string, error) {
-	if bot, berr := api.CurrentUser(ctx); berr == nil && bot.ID == p.AuthorID {
+	// FAILS CLOSED, like its GitHub/Forgejo twin: this is the only thing
+	// standing between the bot's own note and a run that answers it, so an
+	// unreadable identity refuses the delivery with a reason that reaches the
+	// delivery row — never falls through in silence.
+	bot, berr := api.CurrentUser(ctx)
+	switch {
+	case berr != nil:
+		return gateUnevaluable, loopGuardUnevaluable + ": " + berr.Error(), nil
+	case bot.ID == p.AuthorID:
 		return gateRefused, "self note (loop-guard)", nil
 	}
 	minRole := route.MinReplierRole
@@ -1079,13 +1138,18 @@ func gitlabNoteMeta(p gitlab.ParsedNote) webhookEventMeta {
 		subjectURL = p.IssueURL
 	}
 	return webhookEventMeta{
-		Kind:         "note",
-		Action:       "comment",
-		ProjectPath:  p.ProjectPath,
-		SubjectID:    p.SubjectID(),
-		SubjectSHA:   p.HeadSHA,
-		SenderHandle: p.AuthorUsername,
-		SubjectURL:   subjectURL,
+		Kind:        "note",
+		Action:      "comment",
+		ProjectPath: p.ProjectPath,
+		SubjectID:   p.SubjectID(),
+		// The merge request the note hangs off, when it has one. It is what
+		// the closed-MR stop queries: a command run (`/billy`) or a converse
+		// reply records the NOTE as its own subject, so without this link a
+		// fixer keeps working — and pushing — on an MR that already merged.
+		ParentSubjectID: p.ParentSubjectID(),
+		SubjectSHA:      p.HeadSHA,
+		SenderHandle:    p.AuthorUsername,
+		SubjectURL:      subjectURL,
 	}
 }
 
@@ -1099,11 +1163,16 @@ func (s *Server) updateWebhookDelivery(ctx context.Context, d webhooks.Delivery)
 	_ = s.webhookDeliveries.Update(ctx, d)
 }
 
+// scheduledLaunchActor is the auth principal a cron tick launches under: the
+// gate meters it on the schedule's own team.
+const scheduledLaunchActor = "cloud-scheduler"
+
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
-// run for its tenant through the run service (cloud → publisher). The tenant
-// identity is stamped on the ctx so the publisher seals credentials + scopes
-// the run to the org. When the schedule pins a RepoURL, it is threaded onto
-// the LaunchSpec so the runner clones the repo before the bot starts —
+// run for its tenant through the run service (cloud → publisher), past the
+// shared org launch gate. The tenant identity is stamped on the ctx so the
+// publisher seals credentials + scopes the run to the org. When the schedule
+// pins a RepoURL, it is threaded onto the LaunchSpec so the runner clones
+// the repo before the bot starts —
 // mandatory for stateful bots that persist state to git (feed-watch
 // state_commit=true), which need a workspace with push credentials wired.
 // Generic secrets declared by the bot (e.g. `webhooks`) resolve via the
@@ -1130,8 +1199,20 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	}
 	spec.SecretOverrides = overrides
 	lb.Stamp(&spec)
-	_, err = s.runs.Launch(ctx, spec)
-	return err
+	// The SAME admission every other launch surface passes — suspend →
+	// concurrency → launch rate → monthly caps — on the schedule's own team,
+	// so a cron cadence is not a way around any of them. The denial is
+	// returned so the ticker records it on the schedule and audits the tick;
+	// the metered slot goes back when the run service then refuses.
+	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: sb.TenantID, UserID: scheduledLaunchActor}))
+	if deny != nil {
+		return deny.err()
+	}
+	if _, err = s.runs.Launch(ctx, spec); err != nil {
+		adm.rollback(s.logger)
+		return err
+	}
+	return nil
 }
 
 // scheduledForgeOverrides resolves a repo-bound schedule's forge connection

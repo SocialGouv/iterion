@@ -167,8 +167,11 @@ func TestGetIssue_404IsNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, err := New(srv.Client(), srv.URL, "tok").GetIssue(context.Background(), "g/p", 99)
-	if !errors.Is(err, forge.ErrHookNotFound) {
-		t.Errorf("get 404 = %v, want ErrHookNotFound", err)
+	if !errors.Is(err, forge.ErrNotFound) {
+		t.Errorf("get 404 = %v, want ErrNotFound", err)
+	}
+	if errors.Is(err, forge.ErrHookNotFound) {
+		t.Errorf("404 on an issue = %v: a missing issue is not a missing webhook", err)
 	}
 }
 

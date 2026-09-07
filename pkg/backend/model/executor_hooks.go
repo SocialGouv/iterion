@@ -285,25 +285,36 @@ func chainCb6[A, B, C, D, E, F any](a, b func(A, B, C, D, E, F)) func(A, B, C, D
 // side run in order (a then b) for every event. Either side may leave
 // any callback nil; the result keeps the non-nil one without an extra
 // closure.
+//
+// EVERY field of EventHooks must appear below, in declaration order: a
+// field left out here is not a degraded composition, it is a silent drop
+// — the caller registered a callback that then never fires, on a path
+// (runview's ExtraHooks merge) that has no other way to notice.
+// TestChainHooksForwardsEveryField walks the struct by reflection and
+// fails on the first field this list forgets.
 func ChainHooks(a, b EventHooks) EventHooks {
 	return EventHooks{
-		OnLLMRequest:        chainCb2(a.OnLLMRequest, b.OnLLMRequest),
-		OnLLMPrompt:         chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
-		OnLLMResponse:       chainCb2(a.OnLLMResponse, b.OnLLMResponse),
-		OnLLMRetry:          chainCb2(a.OnLLMRetry, b.OnLLMRetry),
-		OnLLMStepFinish:     chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
-		OnLLMTurnCapture:    chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
-		OnLLMCompacted:      chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
-		OnToolStarted:       chainCb2(a.OnToolStarted, b.OnToolStarted),
-		OnToolCall:          chainCb2(a.OnToolCall, b.OnToolCall),
-		OnToolNodeResult:    chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
-		OnDelegateStarted:   chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished:  chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:     chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:     chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback:  chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:   chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnMCPServerDegraded: chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
-		OnNodeFinished:      chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		OnLLMRequest:         chainCb2(a.OnLLMRequest, b.OnLLMRequest),
+		OnLLMPrompt:          chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
+		OnLLMResponse:        chainCb2(a.OnLLMResponse, b.OnLLMResponse),
+		OnLLMRetry:           chainCb2(a.OnLLMRetry, b.OnLLMRetry),
+		OnLLMStepFinish:      chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
+		OnAssistantText:      chainCb2(a.OnAssistantText, b.OnAssistantText),
+		OnLLMTurnCapture:     chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
+		OnUsageCap:           chainCb2(a.OnUsageCap, b.OnUsageCap),
+		OnUsageProgress:      chainCb2(a.OnUsageProgress, b.OnUsageProgress),
+		OnOrchestrationStall: chainCb2(a.OnOrchestrationStall, b.OnOrchestrationStall),
+		OnLLMCompacted:       chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
+		OnToolStarted:        chainCb2(a.OnToolStarted, b.OnToolStarted),
+		OnToolCall:           chainCb2(a.OnToolCall, b.OnToolCall),
+		OnToolNodeResult:     chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
+		OnDelegateStarted:    chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:   chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:      chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:      chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:   chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnSessionDegraded:    chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded:  chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnNodeFinished:       chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

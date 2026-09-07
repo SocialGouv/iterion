@@ -546,6 +546,67 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
+	// #788: a review that dies at its own cost cap, is relaunched, and dies at
+	// the same cap has proven the cap short for THIS diff. A third launch
+	// reviews the same diff under the same cap for the same answer, at the
+	// same price. Same shape as the case above that DOES relaunch — only the
+	// gate_relaunch_of stamp and the typed code differ.
+	t.Run("a second budget death stops the automation", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedDeadRun(t, w.s)
+		run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = store.RunStatusFailedResumable
+		run.FailureCode = store.FailureBudgetExceeded
+		run.Error = "budget exceeded: cost_usd (30/12)"
+		run.Inputs[gateRelaunchOfVar] = "run-that-also-died-on-budget"
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main", HeadRepoFullName: repo},
+			gateCtx: gateNm, prURL: prURL,
+		})
+		if *w.launched != 0 {
+			t.Fatalf("relaunched a review that died twice on the same cap (%d launches) — the third death costs what the first two did", *w.launched)
+		}
+	})
+
+	// The FIRST budget death keeps its one relaunch: a spike (a long tool
+	// loop, one expensive turn) is real and a retry often lands inside the
+	// cap. Without this the guard would turn every overrun into a human ask.
+	t.Run("a first budget death still gets its one relaunch", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedDeadRun(t, w.s)
+		run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = store.RunStatusFailedResumable
+		run.FailureCode = store.FailureBudgetExceeded
+		run.Error = "budget exceeded: cost_usd (36/12)"
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main", HeadRepoFullName: repo},
+			gateCtx: gateNm, prURL: prURL,
+		})
+		if *w.launched != 1 {
+			t.Fatalf("the first budget death must still be retried once (%d launches)", *w.launched)
+		}
+	})
+
 	// The relaunch pair — CloneURLFor(base) + d.pr.SourceBranch — is the
 	// same fork-unsafe pair the auto-launch and autofix lanes guard against.
 	// #642: SameRepoAs is false on a different owner AND on

@@ -95,7 +95,6 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
-| `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider: the fork guard is unconditional everywhere (see the caution). |
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
@@ -815,9 +814,48 @@ that from doing harm of its own:
   reaches is precisely the blast radius the grant exists to bound.
 - **`failure`, not `success`.** A review that did not happen has approved
   nothing.
+- **The remedy has to be one that can work.** The generic wording — *"review
+  died (…) — push again or comment the bot's command to re-run"* — is right for
+  an interruption and wrong for two typed outcomes, each of which gets its own:
+  - a run that ended **`DECLINED`** did not die. It read its task, concluded
+    the premise was wrong and deliberately changed nothing, so a push changes
+    nothing either: the next dispatch reads the same premise and refuses again.
+    The status says a bot was dispatched and declined, and routes to a human.
+    (The relaunch lane already stood down on the code; the reconciler was the
+    last reader still painting *review died* over a deliberate refusal.)
+  - a run that ended **`BUDGET_EXCEEDED`** dies at the same place on the next
+    attempt: the diff and the cap are unchanged. The status carries the spend
+    and the cap and asks for a human reviewer or a higher budget, and the
+    automatic relaunch **stands down after the second budget death in a row**
+    (a first overrun can be a spike and still gets its one retry; a repeat is
+    the cap being structurally short for that diff). Measured on
+    iterion#780: three deaths at 30–36 $ against a 12 $ cap on a seven-file
+    pull request, each one telling the developer to reproduce it.
 
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
+
+### No verdict on a pull request that already ended
+
+`postGateStatus` resolves the pull request before it writes, and refuses to
+write at all when its state is `merged` or `closed`. That head has left the
+merge decision: nothing consults the check any more, and the branch it
+describes is scheduled for deletion. This is the single point every bot's gate
+status crosses, which is what keeps the rule out of each bot's tail. An EMPTY
+state is a provider that does not report one, never a closure — the same
+predicate the relaunch, auto-fix and reconcile lanes use.
+
+The publish response says so (`gate_error`), so a bot's tail can route on it
+rather than claim a verdict it did not get. A bot that needs the answer
+*before* it acts — a fixer deciding whether to push onto the branch — reads
+the grant's own read half, `GET /api/v1/forge/pull-request?pr_url=…` with the
+same `X-Iterion-Run` token, injected as the `forge_pr_state_url` launch var.
+git in the workspace cannot answer the question: a squash merge leaves the
+source branch present and its head no ancestor of the base, so a merged pull
+request reads locally as an open one. Observed in production (run `01a07840`):
+a fixer kept working for half an hour past the squash of its pull request,
+pushed six commits onto the merged branch and posted `revi/review=success` on
+the pre-merge head.
 
 ### Two triggers, because one event is not a guarantee
 
@@ -878,6 +916,37 @@ expired long before the resumed run reached its publish node, so the review
 completed and then had no way to post the verdict it had computed. The grant's
 TTL is therefore derived from the max retry wait, plus a margin for the resumed
 run itself.
+
+### The grant's other two bounds: the run's own end, and a mint that fails
+
+A TTL sized for a seven-day quota wait is a long life for a credential that a
+normal review needs for minutes. So the run's terminal outcome brings the
+expiry forward: the same run-outcome event the reconciler consumes shortens the
+grant to the reconciler's own window (the sweep lookback plus a margin), after
+which nothing revisits the run and the grant has no reader left. Two shapes
+keep the full TTL, because something *will* come back and post their own
+verdict — a **paused** run, and a `failed_resumable` one with an **armed**
+retry. "Abandoned" is not re-derived here: the retry sweeper enforces the
+policy's `max_wait`, unsets the armed instant when it gives up, and
+**republishes the run outcome**, so the grant is shortened on that event
+instead.
+
+The other bound is the mint itself. A launch whose grant cannot be registered —
+a saturated in-memory registry, an unreachable Valkey — is **refused**, not
+degraded: the run would claim the repo's gate context and then have no way to
+answer it, and the reconciler reads the grant to know where to speak, so it
+would abstain and the claim would never be resolved. Refusing works because the
+claim is posted *after* the launch: nothing is left on the head to release. The
+webhook lane marks the delivery `launch_error` (redelivery re-enters), the
+studio/API launch answers `503`, and a board card is filed blocked with the
+reason.
+
+**Known gap — the registry is single-replica by default.** Without Valkey the
+grants live in one pod's memory, so a restart empties them: an in-flight run's
+publish then answers `401`, and the reconciler abstains on "its publish grant
+is expired or revoked". `pkg/valkey` is the cloud twin and is used when
+configured; making it the only backend (so an unknown token is a real refusal
+rather than a lost one) is not done.
 
 ### The dead review is re-run — once per head
 

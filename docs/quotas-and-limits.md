@@ -56,10 +56,10 @@ exists, so nothing was consumed):
 | Inbound webhooks, **board mode** (the command creates a card; the dispatcher launches it) | the token's | pre-check only, at card creation | **no** — a card is not a run; the pre-check's slot is handed back at once and the dispatcher meters the launch when it claims the card |
 | **Board dispatcher** (`processBoardCard`) | `board-dispatcher` on the card's team | yes | yes, rolled back on a refused launch |
 | Retry sweeper (automatic resume of a `failed_resumable` run) | the run's owner | yes | yes, rolled back on a failed resume |
-| `POST /api/v1/triggers/emit` (custom event) | the caller's | once per request | once per request — the launches it fans out to go through the spine launcher below |
-| Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out) | store tenant only, no auth identity | **no** | no |
-| `cloudsched` scheduled launches (`launchScheduledBot`) | store tenant only, no auth identity | **no** | no |
-| Local mode (`iterion studio` / `iterion dispatch` with no identity store) | — | no gate exists | — |
+| `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
+| Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes, rolled back on a refused launch |
+| `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
+| Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
 
 On the board dispatcher a denial is a **launch refusal** of the
 dispatcher's transient class, not a verdict on the card
@@ -72,6 +72,19 @@ ready cards on the backoff schedule, not on every 5s tick. A cap that
 does not free within the attempt cap files the card `blocked` under
 `launch_given_up` with the rule on it, and the pipeline board shows it
 in its *Needs attention* lane.
+
+On the two surfaces that have no request to answer, a denial is recorded
+where an operator reads it, never skipped in silence:
+
+- a **trigger subscription** carries `last_error` + `last_error_at`
+  (`GET /api/v1/triggers`, `iterion remote triggers list`), raised by the
+  refusal and cleared by the next launch that goes through;
+- a **schedule** carries the same two fields
+  (`GET /api/teams/{id}/schedules`, `iterion remote schedules list`), plus
+  the tick-audit row the ticker already wrote.
+
+Both are targeted field writes on both store twins, so an operator editing
+the row between the match and the record does not lose the edit.
 
 ## Limits, fields and platform defaults
 

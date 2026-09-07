@@ -328,7 +328,8 @@ func (e *Engine) performGateMerge(ctx context.Context, rs *runState, hn *ir.Huma
 	}
 
 	message := strutil.FirstNonBlank(stringAnswer(answers, reviewMessageKey),
-		buildSquashMessage(wtCtx.repoRoot, wtCtx.originalTip, finalSHA, e.runName))
+		BuildSquashMessageForMerge(wtCtx.repoRoot, wtCtx.originalTip,
+			resolveMergeTarget(mergeInto, wtCtx.originalBranch), finalSHA, e.runName))
 
 	res, mErr := PerformDeferredMerge(DeferredMergeRequest{
 		RepoRoot:      wtCtx.repoRoot,

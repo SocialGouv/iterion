@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -68,7 +67,7 @@ const DefaultPodReadyTimeout = 10 * time.Minute
 // Fifteen minutes because no measured copy duration exists to size it
 // from: iterion's own checkout is 355 MB streamed through the apiserver,
 // and a cold copy on a slow apiserver must not be killed for being slow
-// but healthy. The halfway warning in runWithPhaseTimeout makes such a
+// but healthy. The halfway warning in sandbox.RunWithPhaseTimeout makes such a
 // copy visible at 7m30s, before the bound strikes. Overridable per host
 // via ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT (a Go duration).
 const DefaultWorkspaceCopyTimeout = 15 * time.Minute
@@ -83,131 +82,36 @@ const workspaceCopyTimeoutEnv = "ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT"
 // override that never took, with nothing saying so.
 var workspaceCopyTimeoutWarnOnce sync.Once
 
-// DefaultPostCreateTimeout bounds the post_create snippet — the setup
-// phase that follows the copy and the git fixup. A hung snippet (a
-// package install waiting on a dead mirror, a command that reads stdin)
-// held the run in setup with no typed failure and no redelivery: the
-// same shape the copy bound closed, one phase later.
-//
-// Thirty minutes because a post_create legitimately outlasts a copy —
-// it is where a devcontainer installs its toolchain — so it carries its
-// own budget rather than sharing the copy's. Overridable per host via
-// ITERION_SANDBOX_POST_CREATE_TIMEOUT (a Go duration).
-const DefaultPostCreateTimeout = 30 * time.Minute
+// DefaultApplyTimeout bounds one `kubectl apply` — the per-run Secret,
+// the CA Secret, the sandbox pod, the NetworkPolicy, and the mid-run
+// secret refresh. An apply against a healthy apiserver takes
+// milliseconds; a wedged one (a control-plane rollout, a throttled
+// admission webhook, a TCP connect that never completes) otherwise hangs
+// sandbox creation BEFORE the first bounded phase is reached, with no
+// `sandbox_started` event and no typed failure. Two minutes leaves a
+// contended apiserver plenty of room while keeping the stall inside the
+// window a redelivery can clear. Overridable per host via
+// ITERION_SANDBOX_K8S_APPLY_TIMEOUT (a Go duration).
+const DefaultApplyTimeout = 2 * time.Minute
 
-// postCreateTimeoutEnv is the post_create override key.
-const postCreateTimeoutEnv = "ITERION_SANDBOX_POST_CREATE_TIMEOUT"
+// applyTimeoutEnv is the override key for the apply family — one knob for
+// every resource the driver applies, since they share an apiserver and
+// stall together.
+const applyTimeoutEnv = "ITERION_SANDBOX_K8S_APPLY_TIMEOUT"
 
-// postCreateTimeoutWarnOnce is the post_create half of the
-// once-per-process unparseable-override warning: each knob warns for
-// itself, or a bad value on one is silenced by a bad value on the other.
-var postCreateTimeoutWarnOnce sync.Once
+// applyTimeoutWarnOnce is the apply family's half of the once-per-process
+// unparseable-override warning: each knob warns for itself, or a bad
+// value on one is silenced by a bad value on the other.
+var applyTimeoutWarnOnce sync.Once
 
 // resolveWorkspaceCopyTimeout returns the effective copy/fixup budget.
 func resolveWorkspaceCopyTimeout() time.Duration {
-	return resolvePhaseTimeout(workspaceCopyTimeoutEnv, DefaultWorkspaceCopyTimeout, &workspaceCopyTimeoutWarnOnce)
+	return sandbox.ResolvePhaseTimeout(workspaceCopyTimeoutEnv, DefaultWorkspaceCopyTimeout, &workspaceCopyTimeoutWarnOnce)
 }
 
-// resolvePostCreateTimeout returns the effective post_create budget.
-func resolvePostCreateTimeout() time.Duration {
-	return resolvePhaseTimeout(postCreateTimeoutEnv, DefaultPostCreateTimeout, &postCreateTimeoutWarnOnce)
-}
-
-// resolvePhaseTimeout returns a setup phase's effective timeout,
-// honouring its env override with a fail-safe fallback: a garbage or
-// non-positive value ("banana", "0", "-5m", or "5" — which Go parses as
-// five NANOseconds, not the five minutes the operator meant) falls back
-// to the default (a setup phase left unbounded is exactly the bug this
-// exists to close) and warns once, naming the key, the value and the
-// default. One resolver for every phase, so a knob added later cannot
-// come with different failure semantics.
-func resolvePhaseTimeout(envKey string, def time.Duration, warnOnce *sync.Once) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(envKey))
-	if raw == "" {
-		return def
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
-		warnOnce.Do(func() {
-			// Stderr, not the driver logger: a leaf helper with no
-			// logger in reach.
-			fmt.Fprintf(os.Stderr,
-				"iterion: %s=%q is not a positive Go duration (use e.g. 5m, 15m, 2h) — using the default %s\n",
-				envKey, raw, def)
-		})
-		return def
-	}
-	return d
-}
-
-// phaseTimeoutWarnRatio is where the halfway-mark warning fires, as a
-// fraction of the phase budget: a slow-but-healthy copy shows up on the
-// runner log BEFORE the bound strikes, with enough runway left to tell
-// "clogged and finishing" from "wedged". A var so tests can lower it.
-var phaseTimeoutWarnRatio = 0.5
-
-// runWithPhaseTimeout runs fn under a bounded child context. When THIS
-// phase's deadline strikes it returns an error naming the phase and the
-// wall-clock elapsed time, wrapping sandbox.ErrPhaseTimeout,
-// context.DeadlineExceeded AND fn's own error through errors.Join, so
-// every consumer can classify the shape with errors.Is (the setup
-// classifier routes it to failed_resumable, the runner NAKs it) and the
-// operator still reads the actual cause. An outer ctx cancellation (run
-// cancel, pod SIGTERM) keeps its own shape: a cooperative stop is not a
-// stall.
-//
-// The bound is only as strong as fn's ctx discipline. fn is called
-// synchronously and nothing races the deadline: the child ctx expires,
-// and whatever fn does with that is the whole enforcement. For the
-// workspace copy that is exec.CommandContext killing the LOCAL tar and
-// kubectl processes; the in-pod tar behind `kubectl exec` is not reached
-// by that signal (Setpgid signals only the leader), it dies with the
-// pipe. A callee that ignores its ctx and returns nil after the deadline
-// therefore completes — and is warned about, so a phase that burned its
-// whole budget and won by a hair is visible before the next occurrence
-// trips the bound.
-//
-// The halfway warning (phaseTimeoutWarnRatio × timeout) runs on a side
-// goroutine that fn's return cancels; on an early return it emits
-// nothing. Both warnings name envKey — the knob of THIS phase — so an
-// operator reading them raises the bound that actually applies.
-func runWithPhaseTimeout(ctx context.Context, logger *iterlog.Logger, phase, envKey string, timeout time.Duration, fn func(context.Context) error) error {
-	if logger == nil {
-		logger = iterlog.Nop()
-	}
-	phaseCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	start := time.Now()
-
-	// The warn delay is computed here, not in the goroutine, so the
-	// ratio is read before the goroutine exists (tests lower it).
-	warnAfter := time.Duration(float64(timeout) * phaseTimeoutWarnRatio)
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(warnAfter):
-			logger.Warn("sandbox: %s phase still running after %s of its %s budget — a stall from here on fails the phase (%s raises the bound)",
-				phase, time.Since(start).Round(time.Second), timeout, envKey)
-		}
-	}()
-
-	err := fn(phaseCtx)
-	close(done)
-
-	if err == nil {
-		if phaseCtx.Err() != nil {
-			logger.Warn("sandbox: %s phase completed at or past its %s budget (elapsed %s) — raise %s or investigate the delay",
-				phase, timeout, time.Since(start).Round(time.Millisecond), envKey)
-		}
-		return nil
-	}
-	if phaseCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		return fmt.Errorf("kubernetes: %s phase timed out after %s (deadline %s exceeded): %w",
-			phase, time.Since(start).Round(time.Millisecond), timeout,
-			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, err))
-	}
-	return err
+// resolveApplyTimeout returns the effective per-apply budget.
+func resolveApplyTimeout() time.Duration {
+	return sandbox.ResolvePhaseTimeout(applyTimeoutEnv, DefaultApplyTimeout, &applyTimeoutWarnOnce)
 }
 
 // Downward-API env vars the runner pod's Helm chart should inject so the
@@ -718,7 +622,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.namespace, secretManifest); err != nil {
+		if err := applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
 			return nil, fmt.Errorf("kubernetes: apply file secrets secret: %w", err)
 		}
 	}
@@ -736,7 +640,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			}
 			return nil, fmt.Errorf("kubernetes: build CA secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.namespace, caSecret); err != nil {
+		if err := applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
 			if secretFilesSecretName != "" {
 				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
@@ -774,11 +678,12 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// immutable and the runner SA intentionally lacks pods/patch → Forbidden,
 	// parking the run on the DLQ. Force-delete any stale pod so apply always
 	// CREATEs fresh; the resume re-populates the workspace from the checkpoint.
-	delStale := kubectlCmdContext(ctx, "--namespace", d.namespace, "delete", "pod", podName,
-		"--ignore-not-found=true", "--grace-period=0", "--force")
-	_, _ = delStale.CombinedOutput()
+	// Goes through deleteResource so it inherits that helper's bound: it is
+	// one apiserver call in the middle of the setup sequence, and an
+	// unbounded one hangs the run before the first bounded phase.
+	_ = deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
 
-	if err := applyManifest(ctx, d.namespace, manifest); err != nil {
+	if err := applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
 		if caSecretName != "" {
 			_ = deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
@@ -832,7 +737,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
 		}
-		if err := applyManifest(ctx, d.namespace, netpolicy); err != nil {
+		if err := applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
 		}
@@ -866,13 +771,13 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// overrides).
 	if info.WorkspacePath != "" {
 		copyTimeout := resolveWorkspaceCopyTimeout()
-		if err := runWithPhaseTimeout(ctx, d.logger, "workspace copy", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
+		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "workspace copy", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
 			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
 		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
 		}
-		if err := runWithPhaseTimeout(ctx, d.logger, "workspace git fixup", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
+		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "workspace git fixup", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
 			return r.fixupWorkspaceGit(ctx, p.workspace)
 		}); err != nil {
 			_ = r.Cleanup(ctx)
@@ -958,7 +863,7 @@ func (r *Run) RefreshSecretFile(ctx context.Context, name string, value []byte) 
 	if err != nil {
 		return err
 	}
-	if err := applyManifest(ctx, r.namespace, manifest); err != nil {
+	if err := applyManifest(ctx, r.driver.logger, r.namespace, "refresh file-secret", manifest); err != nil {
 		return fmt.Errorf("kubernetes: refresh file secret %s: apply: %w", name, err)
 	}
 	return nil
@@ -1116,13 +1021,14 @@ func (r *Run) Cleanup(_ context.Context) error {
 // until the outer max_duration fires — no typed failure, no redelivery,
 // the pod sitting on the run lease. The bound lives here rather than at
 // the Start call site so every caller inherits it. Budget:
-// resolvePostCreateTimeout (ITERION_SANDBOX_POST_CREATE_TIMEOUT); the
-// expiry carries sandbox.ErrPhaseTimeout, so the engine parks the run
-// failed_resumable with SANDBOX_SETUP_TIMEOUT exactly as a copy stall
-// does.
+// sandbox.ResolvePostCreateTimeout (ITERION_SANDBOX_POST_CREATE_TIMEOUT)
+// — the same one the docker driver reads, the phase owning the knob
+// rather than the driver; the expiry carries sandbox.ErrPhaseTimeout, so
+// the engine parks the run failed_resumable with SANDBOX_SETUP_TIMEOUT
+// exactly as a copy stall does.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand in pod %s", r.podName)
-	return runWithPhaseTimeout(ctx, r.driver.logger, "post_create", postCreateTimeoutEnv, resolvePostCreateTimeout(),
+	return sandbox.RunWithPhaseTimeout(ctx, r.driver.logger, "post_create", sandbox.PostCreateTimeoutEnv, sandbox.ResolvePostCreateTimeout(),
 		func(ctx context.Context) error {
 			return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
 		})

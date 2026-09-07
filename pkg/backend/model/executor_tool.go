@@ -333,13 +333,11 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// shell-level variables (positional args, exit-status, captured
 			// stdout) survive into the resolved command for sh -c to interpret.
 			expandedCommand := expandBracedEnv(node.Command)
-			// One snapshot for both passes — the same one the prompts render
-			// from. {{run.*}} goes first (its own pre-pass); {{outputs.*}}
-			// resolves in the main pass beside {{input.*}}, under the same
-			// shell escaping and the same missing-value rule.
+			// One snapshot, one pass — the same snapshot the prompts render
+			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
+			// under the same shell escaping and the same missing-value rule.
 			td := TemplateDataFromContext(ctx)
-			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), td, node.CommandRefs, shellEscapeValue)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, td, e.secretGuard)
+			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -474,11 +472,11 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// script-language string parsers when the value contains embedded
 			// apostrophes. No compression: a script body is not a shell command line.
 			expanded := expandBracedEnv(node.Script)
-			// Same two passes over one snapshot as the shell recipe: {{run.*}}
-			// first, {{outputs.*}} beside {{input.*}} as JSON literals.
+			// Same single pass over one snapshot as the shell recipe:
+			// {{run.*}} and {{outputs.*}} beside {{input.*}}, here as JSON
+			// literals.
 			td := TemplateDataFromContext(ctx)
-			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), td, node.ScriptRefs, jsonLiteralValue)
-			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, e.secretGuard)
+			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
@@ -688,12 +686,14 @@ func looksLikeShellCommand(cmd string) bool {
 	return strings.ContainsAny(cmd, " \t|&;><$`(){}\"'/")
 }
 
-// resolveCommandTemplate substitutes {{input.X}}, {{vars.X}}, {{secrets.X}}
-// and {{outputs.<node>.<field>}} references in a command string — the input
-// map, the workflow variables, the secret guard's placeholders, and the
-// template snapshot td (the same one the prompts render from; nil-tolerant).
-// Values are shell-escaped to prevent command injection when the resolved
-// string is passed to sh -c.
+// resolveCommandTemplate substitutes {{input.X}}, {{vars.X}}, {{secrets.X}},
+// {{outputs.<node>.<field>}} and {{run.X}} references in a command string —
+// the input map, the workflow variables, the secret guard's placeholders,
+// and the template snapshot td (the same one the prompts render from;
+// nil-tolerant). ctxRunID is the run identity for hosts that wire only
+// WithRunID and no snapshot; it answers for `{{run.id}}` alone. Values are
+// shell-escaped to prevent command injection when the resolved string is
+// passed to sh -c.
 //
 // Refs flagged as `Raw` (authored as `{{!input.X}}` / `{{!vars.X}}`) bypass
 // shellEscape and are inserted verbatim. Use only for trusted values that
@@ -701,7 +701,7 @@ func looksLikeShellCommand(cmd string) bool {
 // command line that the wrapping tool needs to RE-INTERPRET as shell, not
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, guards ...*secretguard.Guard) string {
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -710,11 +710,12 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// values — sh -c sees the placeholder and either fails informatively
 	// or the operator notices. Substituting silently would lose that
 	// signal and could mask wiring bugs. An `{{outputs.*}}` ref whose node
-	// has not produced takes the same rule.
+	// has not produced, and a `{{run.*}}` member the namespace does not
+	// carry, take the same rule.
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return resolveTemplateWith(command, refs, input, vars, td, guard, shellEscapeValue, false)
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shellEscapeValue, false)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -730,7 +731,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 // The bang form `{{!input.X}}` keeps the legacy raw-passthrough
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
-func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, guards ...*secretguard.Guard) string {
+func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -740,45 +741,7 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 	// parse time before any user logic can react. Substitute with the
 	// language's null literal (rendered as JSON null = "null") so the
 	// script can still run and handle the missing input itself.
-	return resolveTemplateWith(script, refs, input, vars, td, guard, jsonLiteralValue, true)
-}
-
-// resolveRunRefs substitutes run-namespace refs ({{run.id}}) into a tool
-// command / script template. The shared resolveTemplateWith handles the
-// input / vars / secrets / outputs namespaces — values a tool node reads
-// from a map — so a *direct* {{run.id}} (there is no node output to map it
-// from) would otherwise survive verbatim and run as
-// the literal text "{{run.id}}". That bit sec-audit-source's
-// apply-mode prepare_branch, which named its temp branch
-// `iterion/sec-fix/{{run.id}}` and ended up on `iterion/sec-fix/run.id`
-// after its sanitiser stripped the braces. `render` formats the value for
-// the target context (shellEscapeValue for command bodies, jsonLiteralValue
-// for script bodies), matching the main resolver; the bang form keeps the
-// raw passthrough.
-//
-// The members are the engine's `run.*` namespace — identity plus the run's
-// consumption and effective budget caps — read through the same
-// runNamespaceValue the prompt path uses, so a shell guard on
-// `{{run.elapsed_seconds}}` cannot resolve in a prompt and stay literal in
-// a command. The snapshot answers for every member, `id` included, which is
-// what makes a command inside a fan-out branch render like the same command
-// on the trunk; runID is the fallback for hosts that wire only WithRunID.
-// An unknown member renders empty rather than as its placeholder. A run id
-// and the budget figures are plain tokens with no `{{` of their own, so the
-// literal ReplaceAll cannot re-trigger on a substituted value.
-func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, render func(any) string) string {
-	for _, r := range refs {
-		if r == nil || r.Kind != ir.RefRun || len(r.Path) == 0 {
-			continue
-		}
-		val, _ := runNamespaceValue(runID, td, r.Path[0])
-		rendered := render(val)
-		if r.Unquoted {
-			rendered = rawTemplateValue(val)
-		}
-		template = strings.ReplaceAll(template, r.Raw, rendered)
-	}
-	return template
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, jsonLiteralValue, true)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -788,13 +751,15 @@ func resolveRunRefs(template, runID string, td *TemplateData, refs []*ir.Ref, re
 //
 // Substitution is single-pass over the original template: we build a
 // map[ref.Raw]rendered and then scan the template once, replacing
-// each {{...}} occurrence by its rendered value. The previous
-// strings.ReplaceAll loop fed each substitution's output back into
-// subsequent passes, so an input value that happened to contain a
-// {{...}} literal matching a later ref would be silently rewritten
-// (the "cascade" bug). The single-pass walk only touches positions
-// that were in the source template.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
+// each {{...}} occurrence by its rendered value. A strings.ReplaceAll
+// loop would feed each substitution's output back into subsequent
+// passes, so a value that happened to contain a {{...}} literal
+// matching a later ref would be silently rewritten (the "cascade"
+// bug). The single-pass walk only touches positions that were in the
+// source template — which is why EVERY namespace a tool body can
+// reference resolves here, in this one walk, rather than in a pre-pass
+// of its own.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -816,6 +781,20 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// placeholder in a shell body, `null` in a script body — so
 			// the two namespaces cannot disagree about a hole.
 			val, _ = outputsTemplateValue(td, ref.Path)
+			handled = true
+		case ref.Kind == ir.RefRun && len(ref.Path) > 0:
+			// The engine's `run.*` namespace — identity plus the run's
+			// consumption and effective budget caps — read through the
+			// same runNamespaceValue the prompt path uses, so a member
+			// cannot resolve in a prompt and stay literal in a command.
+			// The snapshot answers for every member, `id` included, which
+			// is what makes a command inside a fan-out branch render like
+			// the same command on the trunk; ctxRunID is the fallback for
+			// hosts that wire only WithRunID. A member the namespace does
+			// not carry is nil here and takes the shared missing-value
+			// rule below — the placeholder in a shell body, `null` in a
+			// script body — instead of vanishing from the command line.
+			val, _ = runNamespaceValue(ctxRunID, td, ref.Path[0])
 			handled = true
 		case ref.Kind == ir.RefSecrets && len(ref.Path) > 0:
 			// Render the opaque placeholder into the command; the real

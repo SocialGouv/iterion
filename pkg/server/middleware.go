@@ -291,7 +291,8 @@ func isPublicPath(path string) bool {
 	// the run token itself and 401s on a missing/unknown one, so the
 	// operator-JWT gate must not front them — a sandboxed or
 	// runner-launched run carries no JWT.
-	if strings.HasPrefix(path, "/api/v1/mcp/") || path == "/api/v1/forge/publish-review" {
+	if strings.HasPrefix(path, "/api/v1/mcp/") ||
+		path == "/api/v1/forge/publish-review" || path == "/api/v1/forge/pull-request" {
 		return true
 	}
 	if strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/") {

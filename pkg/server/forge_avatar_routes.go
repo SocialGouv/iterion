@@ -182,9 +182,8 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 			}
 			return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
 				msg: fmt.Sprintf("%s rejected this connection's token — reconnect it first", conn.Host())}
-		case errors.Is(err, forge.ErrHookNotFound):
-			// StatusErr maps every 404 onto the hook sentinel; here the user
-			// endpoint is what is missing, i.e. the base URL is wrong.
+		case errors.Is(err, forge.ErrNotFound):
+			// The user endpoint itself is missing, i.e. the base URL is wrong.
 			return conn, "", fmt.Errorf("could not read the account behind connection %s: %s does not serve the user endpoint (HTTP 404) — check the forge base URL", conn.ID, conn.Host())
 		case errors.Is(err, forge.ErrForbidden) && force:
 			// The forge answered but would not describe the account: the

@@ -51,7 +51,6 @@ type webhookConfigReq struct {
 	AuthorAllowlist     []string `json:"author_allowlist,omitempty"`
 	LabelAllowlist      []string `json:"label_allowlist,omitempty"`
 	HoldLabels          []string `json:"hold_labels,omitempty"`
-	BlockForkPRs        *bool    `json:"block_fork_prs,omitempty"`
 	ReviewOnSync        *bool    `json:"review_on_sync,omitempty"`
 	ReviewRequestLogins []string `json:"review_request_logins,omitempty"`
 	// ReviewOnSyncPinned clears (false) or restates (true) the provenance
@@ -266,7 +265,6 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		AuthorAllowlist:     req.AuthorAllowlist,
 		LabelAllowlist:      req.LabelAllowlist,
 		HoldLabels:          req.HoldLabels,
-		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
 		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
 		ReviewRequestLogins: req.ReviewRequestLogins,
 		ReviewOnSyncPinned:  req.ReviewOnSync != nil, // an explicit set at create is a decision too
@@ -477,9 +475,6 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "%v", err)
 			return
 		}
-	}
-	if req.BlockForkPRs != nil {
-		cfg.BlockForkPRs = *req.BlockForkPRs
 	}
 	if req.AutoImplementOnOpen != nil {
 		cfg.AutoImplementOnOpen = *req.AutoImplementOnOpen

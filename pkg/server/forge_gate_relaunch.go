@@ -48,6 +48,26 @@ const gateRelaunchLabel = "source:gate-reconcile"
 // while the first death stayed unfindable.
 const gateRelaunchOfVar = "gate_relaunch_of"
 
+// gateRelaunchIsSpentOnBudget reports whether this dead run is a RELAUNCH that
+// died on the same wall its predecessor did — the automation's stop condition
+// for a gate that cannot afford its own review.
+//
+// The stamp above is what makes the question answerable: a run carrying
+// gate_relaunch_of IS the one attempt the head gets, so a budget death there
+// is the second in a row. One overrun is a spike worth retrying; two are the
+// cap being structurally short for this diff, and a third launch buys the
+// same answer at the same price (#788: 36 $, then 30 $, then 33 $, all
+// against a 12 $ cap on a seven-file pull request).
+//
+// Keyed on the typed FailureCode alone — never on parsing run.Error — so a
+// duration or token overrun is judged by the same rule as a cost one.
+func gateRelaunchIsSpentOnBudget(run *store.Run) bool {
+	if run == nil || run.FailureCode != store.FailureBudgetExceeded {
+		return false
+	}
+	return runInputString(run, gateRelaunchOfVar) != ""
+}
+
 // deadGateRun carries what reconcileGateForRun already resolved about the dead
 // run, so the relaunch re-validates nothing it does not have to.
 type deadGateRun struct {
@@ -123,6 +143,19 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		if s.logger != nil {
 			s.logger.Info("gate relaunch: run %s declined its task on %s#%d — not relaunching (a refusal is an answer, not a failure to repair): %s",
 				d.run.ID, d.repo, d.number, strings.TrimSpace(d.run.Error))
+		}
+		return
+	}
+	// A SECOND death on the same budget spends the automation's whole
+	// argument. The relaunch replays the same review of the same diff under
+	// the same cap, so where a transient overrun deserved one more attempt, a
+	// repeat says the cap is structurally short for this diff — and the third
+	// launch buys the same answer at the same price. The status carries the
+	// budget verdict (gateBudgetRemedy) and routes to a human instead.
+	if gateRelaunchIsSpentOnBudget(d.run) {
+		if s.logger != nil {
+			s.logger.Warn("gate relaunch: %s on %s#%d died on its budget and so did the run it replaced (%s) — not relaunching; the check now asks for a human reviewer or a higher budget",
+				d.gateCtx, d.repo, d.number, strings.TrimSpace(d.run.Error))
 		}
 		return
 	}
@@ -205,7 +238,7 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// mints a fresh one (and would overwrite a stale copy anyway).
 	vars := make(map[string]string, len(d.run.Inputs)+1)
 	for k, v := range d.run.Inputs {
-		if k == forgePublishVarToken || k == forgePublishVarURL {
+		if k == forgePublishVarToken || k == forgePublishVarURL || k == forgePublishVarPRState {
 			continue
 		}
 		if sv, ok := v.(string); ok {

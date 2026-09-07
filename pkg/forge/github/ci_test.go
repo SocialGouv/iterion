@@ -104,8 +104,9 @@ func TestGitHubGetCIStatus_FailedWins(t *testing.T) {
 				},
 			})
 		case strings.HasSuffix(r.URL.Path, "/status"):
-			// No legacy statuses configured → 404 is the common case.
-			w.WriteHeader(http.StatusNotFound)
+			// No legacy statuses configured: GitHub answers 200 with an
+			// empty list, not 404.
+			_ = json.NewEncoder(w).Encode(map[string]any{"state": "pending", "sha": "sha", "statuses": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -119,7 +120,7 @@ func TestGitHubGetCIStatus_FailedWins(t *testing.T) {
 		t.Errorf("any failure → failed, got %q", st.State)
 	}
 	if len(st.Runs) != 2 {
-		t.Errorf("404 on /status must be empty, not error: runs=%d", len(st.Runs))
+		t.Errorf("an empty /status contributes nothing: runs=%d", len(st.Runs))
 	}
 }
 

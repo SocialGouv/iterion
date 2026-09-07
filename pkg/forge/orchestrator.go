@@ -1101,7 +1101,6 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	cfg.MonthlyCallLimit = prev.MonthlyCallLimit
 	cfg.AutoImplementOnOpen = prev.AutoImplementOnOpen
 	cfg.BranchImproveAsPR = prev.BranchImproveAsPR
-	cfg.BlockForkPRs = prev.BlockForkPRs
 	cfg.RetryUsageWindow = prev.RetryUsageWindow
 	cfg.RetryMaxAttempts = prev.RetryMaxAttempts
 	cfg.RetryMaxWait = prev.RetryMaxWait

@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
@@ -111,5 +113,78 @@ func TestParsedIsClosed(t *testing.T) {
 	}
 	if open.IsClosed() {
 		t.Fatal("an opened PR must not read as closed")
+	}
+}
+
+const glMergedMR = `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"iid": 7, "action": "merge", "state": "merged", "source_branch": "feature/x", "target_branch": "main",
+    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+    "last_commit": {"id": "sha1"}}
+}`
+
+const glNoteBilly = `{
+  "object_kind": "note",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "user": {"username": "alice"},
+  "object_attributes": {"id": 99, "note": "/billy fix the findings", "noteable_type": "MergeRequest", "discussion_id": "d-1", "author_id": 1},
+  "merge_request": {"iid": 7, "state": "opened", "source_branch": "feature/x", "target_branch": "main",
+    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+    "last_commit": {"id": "headsha"}}
+}`
+
+// A GitLab command run (`/billy`, a converse reply) records the NOTE as its
+// own subject, so the closed-MR stop reaches it only through the parent link.
+// Without it a fixer keeps working — and pushing — on a merge request that
+// already merged. The delivery row is written by the real note lane here:
+// asserting on a hand-inserted row would only exercise the store's reader.
+func TestGitLabWebhook_ClosedMRStopsItsNoteLaunchedRuns(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg := glConfig()
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", Scope: "pr", ArgsVar: "scope_notes"}},
+	}
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "authorized", nil
+	}
+	s.webhookGitLabPRResolver = func(_ context.Context, _ webhooks.Config, p gitlab.ParsedNote, _ string) (forge.PullRef, error) {
+		return forge.PullRef{State: "open", SourceBranch: p.SourceBranch, TargetBranch: p.TargetBranch, HeadRepoFullName: p.ProjectPath}, nil
+	}
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "run-billy", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), glNoteBilly))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("the /billy note must launch: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var cancelled []string
+	s.webhookCancelRun = func(runID string) error {
+		cancelled = append(cancelled, runID)
+		return nil
+	}
+	w = httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glMergedMR, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a merged MR must answer 200/filtered: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(cancelled) != 1 || cancelled[0] != "run-billy" {
+		t.Fatalf("the note-launched fixer must stop when its merge request merges, cancelled=%v", cancelled)
+	}
+}
+
+// The parent link is what makes a note-launched run findable from its merge
+// request. An issue note hangs off no MR and must name none.
+func TestGitLabNoteMetaCarriesTheParentSubject(t *testing.T) {
+	mrNote := gitlab.ParsedNote{ProjectPath: "acme/widgets", NoteID: 99, MRIID: 7, MRURL: "https://gitlab.com/acme/widgets/-/merge_requests/7"}
+	if got := gitlabNoteMeta(mrNote).ParentSubjectID; got != "mr:7" {
+		t.Fatalf("an MR note must name mr:7 as its parent, got %q", got)
+	}
+	issueNote := gitlab.ParsedNote{ProjectPath: "acme/widgets", NoteID: 99, IssueIID: 4, IssueURL: "https://gitlab.com/acme/widgets/-/issues/4"}
+	if got := gitlabNoteMeta(issueNote).ParentSubjectID; got != "" {
+		t.Fatalf("an issue note hangs off no merge request, got parent %q", got)
 	}
 }

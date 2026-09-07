@@ -284,7 +284,34 @@ func (s *Server) realWebhookPRForgeCommandGate(ctx context.Context, cfg webhooks
 	if apiRefusal != "" {
 		return gateUnevaluable, apiRefusal, nil
 	}
-	if id, err := api.WhoAmI(ctx); err == nil && id.Login != "" && strings.EqualFold(id.Login, p.AuthorLogin) {
+	return prforgeCommandGateWithAPI(ctx, cfg, p, route, api)
+}
+
+// loopGuardUnevaluable is the refusal a self-comment guard earns when it
+// cannot read the bot's own identity. Named so a log line, a delivery row and
+// a test all say the same word.
+const loopGuardUnevaluable = "loop guard unevaluable: the bot's own identity is unreadable"
+
+// prforgeCommandGateWithAPI is the token-free core of the command gate — split
+// from the wrapper so tests drive it with a fake client, like its GitLab and
+// review-thread twins. Self-comment loop-guard, then allowlist/role
+// authorization honouring the route's MinReplierRole.
+//
+// The loop guard FAILS CLOSED. It is the only thing standing between the bot's
+// own comment and a run that answers it — and since the App client stopped
+// inventing a `github-app[bot]` login (#711), an unreachable `GET /app` is an
+// ERROR, not an empty identity. Falling through on it left the guard skipped
+// with nothing said anywhere; a guard that cannot decide must refuse, and the
+// refusal reaches the delivery row so the miss is greppable rather than
+// invisible.
+func prforgeCommandGateWithAPI(ctx context.Context, cfg webhooks.Config, p prforge.ParsedNote, route webhooks.CommandRoute, api prforgeReplierAPI) (prforgeGateOutcome, string, error) {
+	id, err := api.WhoAmI(ctx)
+	switch {
+	case err != nil:
+		return gateUnevaluable, loopGuardUnevaluable + ": " + err.Error(), nil
+	case id.Login == "":
+		return gateUnevaluable, loopGuardUnevaluable + ": the forge named no login", nil
+	case strings.EqualFold(id.Login, p.AuthorLogin):
 		return gateRefused, "self comment (loop-guard)", nil
 	}
 	// Allowlist short-circuit (no API call).
@@ -603,6 +630,14 @@ func (s *Server) reviewReplyGateWithAPI(ctx context.Context, cfg webhooks.Config
 		tokenLogin, base := id.Login, isBot
 		isBot = func(login string) bool { return base(login) || strings.EqualFold(login, tokenLogin) }
 		haveIdentity = true
+	} else if werr != nil && haveIdentity && s.logger != nil {
+		// The connection's [bot] slug still decides, so the lane stays live —
+		// but the guard is now NARROWER than it was designed to be: it no
+		// longer knows the account the reply would actually be posted as. That
+		// degradation used to happen in silence, which is the shape a
+		// self-answering conversation hides in.
+		s.logger.Warn("webhooks: %s !%d reply gate: the token identity is unreadable (%v) — the loop guard runs on the connection's bot identity alone",
+			p.ProjectPath, p.PRNumber, werr)
 	}
 	if !haveIdentity {
 		// Fail closed with an honest reason — "not a bot review thread"

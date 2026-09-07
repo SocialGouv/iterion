@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -32,10 +33,30 @@ type serviceLauncher struct {
 	// second, override-blind resolution path here is exactly what the
 	// resolver sweep forbids.
 	resolveBot func(ctx context.Context, botID string) (*launchBot, error)
+	// gate is the server's shared launch admission (suspend → concurrency →
+	// launch rate → monthly caps), injected for the same no-*Server reason.
+	// REQUIRED: a direct launch that skipped it would be the one cloud
+	// launch nobody metered.
+	gate func(ctx context.Context) (*launchAdmission, *launchDenial)
 }
 
-func newServiceLauncher(runs *runview.Service, logger *iterlog.Logger, resolveRetry func(string, ...retrypolicy.Layer) *store.RunRetryPolicy, resolveBot func(context.Context, string) (*launchBot, error)) *serviceLauncher {
-	return &serviceLauncher{runs: runs, logger: logger, resolveRetry: resolveRetry, resolveBot: resolveBot}
+// triggerSpineActor is the identity the trigger spine launches under: the
+// store owner on the ctx it stamps and the auth principal the launch gate
+// meters on the subscription's team.
+const triggerSpineActor = "trigger-spine"
+
+// triggerLauncher builds the spine's direct-mode launcher — the ONE
+// construction site, shared by the local and the cloud coordinator, so a
+// capability wired here (the launch gate) cannot be wired on one spine and
+// missing on the other.
+func (s *Server) triggerLauncher() *serviceLauncher {
+	return &serviceLauncher{
+		runs:         s.runs,
+		logger:       s.logger,
+		resolveRetry: s.resolveRunRetryPolicy,
+		resolveBot:   s.resolveBotSource,
+		gate:         s.gateLaunch,
+	}
 }
 
 func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (string, error) {
@@ -55,14 +76,32 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	if l.resolveBot == nil {
 		return "", errors.New("trigger: no bot resolver wired for direct launch")
 	}
+	if l.gate == nil {
+		return "", errors.New("trigger: no launch gate wired for direct launch")
+	}
+	// The subscription owns the team, so the spine launches AS that team: the
+	// store identity scopes the run and seals its credentials, and the auth
+	// identity is what the gate reads to find the caps to apply.
+	ctx = store.WithIdentity(ctx, plan.TenantID, triggerSpineActor)
 	lb, err := l.resolveBot(ctx, plan.BotID)
 	if err != nil {
 		return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
 	}
 	defer lb.Cleanup()
 	lb.Stamp(&spec)
+	// The SAME admission every other launch surface passes — suspend →
+	// concurrency → launch rate → monthly caps. The denial travels up as the
+	// effect's error: the evaluator records it on the subscription (its
+	// last_error) and the outbox retries it on the backoff.
+	adm, deny := l.gate(auth.WithIdentity(ctx, auth.Identity{TeamID: plan.TenantID, UserID: triggerSpineActor}))
+	if deny != nil {
+		return "", deny.err()
+	}
 	res, err := l.runs.Launch(ctx, spec)
 	if err != nil {
+		// Every error out of Launch means no run started, so the metered slot
+		// goes back — as the HTTP handler does.
+		adm.rollback(l.logger)
 		return "", err
 	}
 	return res.RunID, nil

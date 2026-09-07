@@ -427,6 +427,9 @@ type Server struct {
 
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
 	gateReconcileCancel func()
+	// forgePublishExpiryCancel unsubscribes the publish-grant reaper — the
+	// consumer that shortens a grant once its run can no longer publish.
+	forgePublishExpiryCancel func()
 	// boardSyncCancel stops the project-board reconciliation worker at
 	// shutdown, so a drain does not leave a pass writing to a forge.
 	boardSyncCancel func()
