@@ -46,10 +46,14 @@ func TestDispositionsAreDistinct(t *testing.T) {
 		deterministic, autoResume bool
 	}{
 		{store.FailureExpressionFailed, true, false},
-		{store.FailureAuthFailed, true, false},
 		{store.FailureIRUnloadable, true, false},
 		{store.FailureFailNode, true, false},
 		{store.FailureToolFailedPermanent, true, false},
+		// The in-node recipe already compacted TWICE and gave up
+		// ("compaction did not reduce context enough to fit the model
+		// window"); a resume rehydrates the SAME persisted conversation for
+		// the same node, so no attempt after this one is smaller.
+		{store.FailureContextLengthExceeded, true, false},
 		{store.FailureExecutionFailed, false, true},
 		{store.FailureUsageLimitBlocked, false, true},
 		{store.FailureBudgetExceeded, false, true},
@@ -59,7 +63,12 @@ func TestDispositionsAreDistinct(t *testing.T) {
 		// conform, so parking these would strand runs that recover.
 		{store.FailureSchemaValidation, false, false},
 		{store.FailureNoOutgoingEdge, false, false},
-		{store.FailureContextLengthExceeded, false, false},
+		// Every claim re-MATERIALISES the sealed OAuth-forfait blob into a
+		// fresh file and refreshes it on the spot when it is at/past its
+		// expiry lead (runner.injectCredentials → startOAuthRefreshers). So
+		// the effective token on the next attempt can differ from the one
+		// that was refused, even though the sealed blob does not.
+		{store.FailureAuthFailed, false, false},
 	}
 	for _, c := range cases {
 		if got := IsDeterministic(c.code); got != c.deterministic {

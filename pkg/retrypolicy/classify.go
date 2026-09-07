@@ -90,9 +90,14 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureSchemaValidation: DispositionReexecutable, // raised for an agent's output as well as a compute's
 	store.FailureNoOutgoingEdge:   DispositionReexecutable, // the edge is chosen from the node's output
 	store.FailureJoinFailed:       DispositionReexecutable, // a branch's own failure decides it
-	// The conversation rides the checkpoint, but a resume rebuilds the
-	// backend session and the in-node compaction gets another turn.
-	store.FailureContextLengthExceeded: DispositionReexecutable,
+	// Not "the redelivery carries the same sealed credential": every claim
+	// re-materialises the OAuth-forfait blob into a fresh file and refreshes
+	// it on the spot when it is at or past its expiry lead
+	// (runner.injectCredentials → startOAuthRefreshers). A refresh that
+	// failed transiently on one attempt can succeed on the next, so the
+	// EFFECTIVE token differs even though the sealed blob does not. Waiting
+	// still helps nothing — only a fresh attempt does.
+	store.FailureAuthFailed: DispositionReexecutable,
 
 	// Deterministic — the same step against the same checkpoint, always the
 	// same verdict. Nothing here is decided by a model.
@@ -102,13 +107,18 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureNodeNotFound:        DispositionDeterministic, // the graph does not change between attempts
 	store.FailureLoopExhausted:       DispositionDeterministic, // the counter rides the checkpoint
 	store.FailureResumeInvalid:       DispositionDeterministic, // the resume spec itself is the problem
-	store.FailureAuthFailed:          DispositionDeterministic, // a redelivery carries the SAME sealed credential
 	store.FailureFailNode:            DispositionDeterministic, // the workflow refused on purpose
-	store.FailureIRUnloadable:        DispositionDeterministic, // the same image compiles the same IR
-	store.FailureQueueSchemaMismatch: DispositionDeterministic, // the same runner rejects the same envelope
-	store.FailureLaunchFailed:        DispositionDeterministic, // the run never left the launch path — no checkpoint exists
-	store.FailureDLQParked:           DispositionDeterministic, // the deliveries are already spent
-	store.FailureCancelled:           DispositionDeterministic, // an operator's decision, not a fault
+	// The in-node recipe (recovery.ContextLengthRecipe) already compacted
+	// TWICE and gave up with "compaction did not reduce context enough to
+	// fit the model window"; a resume rehydrates the SAME persisted
+	// conversation for the same node, so nothing makes the next attempt
+	// smaller. Redelivering it burns MaxDeliver pods on one verdict.
+	store.FailureContextLengthExceeded: DispositionDeterministic,
+	store.FailureIRUnloadable:          DispositionDeterministic, // the same image compiles the same IR
+	store.FailureQueueSchemaMismatch:   DispositionDeterministic, // the same runner rejects the same envelope
+	store.FailureLaunchFailed:          DispositionDeterministic, // the run never left the launch path — no checkpoint exists
+	store.FailureDLQParked:             DispositionDeterministic, // the deliveries are already spent
+	store.FailureCancelled:             DispositionDeterministic, // an operator's decision, not a fault
 }
 
 // Classify reports what an automatic resume can achieve for this code.

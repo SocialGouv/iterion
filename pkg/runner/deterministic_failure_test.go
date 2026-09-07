@@ -32,9 +32,12 @@ func TestClassifyExecResult_DeterministicNodeFailureAcks(t *testing.T) {
 		{"permanent tool failure", &runtime.RuntimeError{
 			Code: store.FailureToolFailedPermanent, NodeID: "verify_run", Message: "exit status 2",
 		}},
-		// The credential is sealed per publish, so a redelivery carries the
-		// same dead one — only an operator re-authenticating changes it.
-		{"auth failed", &runtime.RuntimeError{Code: store.FailureAuthFailed, Message: "401 invalid api key"}},
+		// The conversation rides the checkpoint and the in-node recipe
+		// already compacted twice: no attempt after this one is smaller.
+		{"context length exceeded", &runtime.RuntimeError{
+			Code: store.FailureContextLengthExceeded, NodeID: "campaign",
+			Message: "compaction did not reduce context enough to fit the model window",
+		}},
 		{"wrapped expression failure", fmt.Errorf("engine: %w", &runtime.RuntimeError{
 			Code: store.FailureExpressionFailed, Message: "boom",
 		})},
@@ -64,6 +67,10 @@ func TestClassifyExecResult_DeterministicNodeFailureAcks(t *testing.T) {
 		{"schema validation on an agent output", &runtime.RuntimeError{
 			Code: store.FailureSchemaValidation, NodeID: "plan", Message: "output does not match schema",
 		}},
+		// Nor is a refused credential: every claim re-materialises the
+		// sealed OAuth blob and refreshes it, so the EFFECTIVE token on the
+		// next attempt can differ from the one that was refused.
+		{"auth failed", &runtime.RuntimeError{Code: store.FailureAuthFailed, Message: "401 invalid api key"}},
 	} {
 		t.Run(c.name+" still naks", func(t *testing.T) {
 			if out := classifyExecResult(c.err, "run-1"); out.action != actionNak {

@@ -100,8 +100,9 @@ waiting for a human who changed something.
 
 Being one of the engine's own codes does not make a verdict re-decidable.
 `EXPRESSION_FAILED` (a `compute` node: no LLM, no shell, inputs from a
-checkpoint that does not move), `AUTH_FAILED` (a redelivery carries the
-SAME sealed credential), `IR_UNLOADABLE`, `WORKSPACE_SAFETY`,
+checkpoint that does not move), `CONTEXT_LENGTH_EXCEEDED` (the in-node
+recipe already compacted twice and gave up; a resume rehydrates the same
+conversation), `IR_UNLOADABLE`, `WORKSPACE_SAFETY`,
 `TOOL_FAILED_PERMANENT` and their peers reach the same verdict on every
 attempt. Which codes those are is **one table**,
 [`pkg/retrypolicy`'s classification](../pkg/retrypolicy/classify.go), read
@@ -111,10 +112,12 @@ CLI's `--auto-resume` gate, and the dispatcher's retry ladder. Every code
 the engine declares has a row, guarded against drift by a conformance test.
 
 The bar for *deterministic* is deliberately high: a resume **re-executes
-the failing node**, so anything an LLM decided — a `SCHEMA_VALIDATION` on
-an agent's output, a `NO_OUTGOING_EDGE` chosen from it, a
-`CONTEXT_LENGTH_EXCEEDED` a fresh session may fit — can differ on the next
-attempt and keeps its retries.
+the failing node** on freshly resolved inputs, so anything an LLM decided
+— a `SCHEMA_VALIDATION` on an agent's output, a `NO_OUTGOING_EDGE` chosen
+from it — can differ on the next attempt and keeps its retries. So can
+`AUTH_FAILED`: every claim re-materialises the sealed OAuth-forfait blob
+into a fresh file and refreshes it when it is at or past its expiry lead,
+so the *effective* token can differ even though the sealed blob does not.
 
 When a surface declines to bring a run back, it says so on the timeline:
 **`run_retry_skipped {reason: deterministic, code, error}`** — the
