@@ -1791,10 +1791,74 @@ def sealed_dir_for(ws):
     return os.path.join(root, "gm-holdout-%s-%s" % (os.path.basename(ap) or "default", tag))
 
 
+def config_name():
+    """The net's configuration FILE — `config.json` unless GM_CONFIG names another.
+
+    One net can declare more than one ENVIRONMENT for the same corpus: a
+    second database engine, a second runtime. What differs is how the app is
+    brought up, brought down and restored, and where its URL is published;
+    the contract — the corpus, the references, the personas, the standard —
+    does not. Judging the second environment is replaying the SAME references
+    against the app booted the other way, so it is one variable, read here and
+    nowhere else.
+
+    A NAME, never a path: the declaration lives beside the corpus it declares,
+    under the net's own directory. A caller pointing the judge at a file
+    outside it would be judging one tree with another tree's declaration, and
+    the verdict would name a net it never read.
+    """
+    raw = os.environ.get("GM_CONFIG")
+    if raw is None:
+        return "config.json"
+    name = raw.strip()
+    if not name:
+        # SET and empty is not unset: it is a variable that did not expand,
+        # and falling back would judge the first environment while the caller
+        # believes it named the second — the inert check, one layer down.
+        raise SystemExit("GM_CONFIG is set but empty — name the config file to "
+                         "judge (a file under the net's directory), or leave "
+                         "the variable unset for config.json")
+    seps = [os.sep] + ([os.altsep] if os.altsep else [])
+    if name in (".", "..") or any(s in name for s in seps):
+        raise SystemExit("GM_CONFIG=%r is a path — the judge reads the "
+                         "declaration that lives WITH the corpus it declares, "
+                         "so this is a file name under the net's directory and "
+                         "nothing else" % name)
+    return name
+
+
+def config_path(gm_dir):
+    """The one place the config file is located — and checked — for every
+    reader of it.
+
+    Two readers had `config.json` written into them: the gate's own load and
+    the held-out opt-in. A second environment judged with the first one's
+    opt-in would consume a sealed set the other gate was owed, so they read
+    one helper rather than one string each.
+
+    A NAMED config that is absent refuses here, never falls back: the caller
+    asked for a verdict on one environment, and a green reported for the OTHER
+    one is the inert check this variable exists to end — measured on a
+    campaign whose `engine-target` outcome ran `GM_CONFIG=config-pg.json`
+    against a judge that read config.json, and would have reported the second
+    engine met the moment the first was green.
+    """
+    name = config_name()
+    path = os.path.join(gm_dir, name)
+    if name != "config.json" and not os.path.isfile(path):
+        raise SystemExit("GM_CONFIG names %s, which is not a file under %s — "
+                         "judging config.json in its place would report a "
+                         "verdict for an environment nobody asked about"
+                         % (name, gm_dir))
+    return path
+
+
 def seal_committed_opted_in(gm_dir):
     """The convergence gate's opt-in to consume a COMMITTED held-out set.
 
-    Two forms, either suffices: `"seal_committed": true` in config.json —
+    Two forms, either suffices: `"seal_committed": true` in the config being
+    judged (see config_path — a second environment declares its own, and a
+    gate that does not opt in leaves the set for the one that does) —
     written by the net's owner, committed, auditable, the preferred form —
     or GM_SEAL_COMMITTED=1 in the environment for a hand-run gate. The flag
     can only widen what the gate consumes, never soften a verdict, which is
@@ -1808,7 +1872,7 @@ def seal_committed_opted_in(gm_dir):
                          "spelling silently ignored would leave the operator "
                          "sure of an opt-in that never happened" % env)
     try:
-        with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
+        with open(config_path(gm_dir), encoding="utf-8") as f:
             v = json.load(f).get("seal_committed", False)
     except (OSError, ValueError):
         return False
@@ -3219,6 +3283,58 @@ def _selftest():
                       lambda: validate_feature_coverage(
                           {"features": [{"feature": "a", "entries": ["1"]}],
                            "exclusions": [{"feature": "a", "reason": "x"}]}))
+        # 8e-bis. Le filet peut declarer un SECOND environnement pour le meme
+        #     corpus (second moteur, second runtime). GM_CONFIG nomme la
+        #     declaration a juger ; le verdict la porte ; une declaration
+        #     nommee et absente REFUSE, elle ne retombe jamais sur config.json
+        #     — c'est exactement le controle inerte qu'une campagne a mesure :
+        #     l'outcome lancait `GM_CONFIG=config-pg.json` contre un juge qui
+        #     lisait config.json.
+        cdir = tempfile.mkdtemp(prefix="gm-selftest-config-")
+        with open(os.path.join(cdir, "config.json"), "w", encoding="utf-8") as f:
+            f.write('{"seal_committed": true}')
+        with open(os.path.join(cdir, "config-pg.json"), "w", encoding="utf-8") as f:
+            f.write('{"up": "pg-up.sh"}')
+        prev_cfg = os.environ.pop("GM_CONFIG", None)
+        try:
+            check("sans GM_CONFIG : config.json",
+                  [config_name(), os.path.basename(config_path(cdir))],
+                  ["config.json", "config.json"])
+            check("l'opt-in scelle se lit dans la config JUGEE (config.json)",
+                  seal_committed_opted_in(cdir), True)
+            os.environ["GM_CONFIG"] = "config-pg.json"
+            check("GM_CONFIG nomme la declaration jugee",
+                  os.path.basename(config_path(cdir)), "config-pg.json")
+            # Le falsifieur qui compte : la porte du second environnement ne
+            # doit pas consommer le jeu scelle que la premiere s'est reserve.
+            check("l'opt-in du second environnement est le SIEN, pas celui de config.json",
+                  seal_committed_opted_in(cdir), False)
+            os.environ["GM_CONFIG"] = "config-absente.json"
+            named_refusal("config nommee absente -> refus nomme, jamais config.json",
+                          lambda: config_path(cdir))
+            # Le message compte autant que le refus : « chemin » et « absente »
+            # sont deux causes, et un controle qui ne distingue pas laisse
+            # passer la suppression de la garde de chemin (un chemin hors du
+            # filet tombe alors, par hasard, sur « fichier absent »).
+            def refusal_says(name, fn, needle):
+                try:
+                    fn()
+                    check(name, "aucun-refus", "refus contenant %r" % needle)
+                except SystemExit as e:
+                    check(name, needle in str(e), True)
+            for bad in ("../config.json", "a/b.json", ".."):
+                os.environ["GM_CONFIG"] = bad
+                refusal_says("GM_CONFIG=%r -> refuse COMME CHEMIN" % bad,
+                             lambda: config_path(cdir), "is a path")
+            os.environ["GM_CONFIG"] = ""
+            refusal_says("GM_CONFIG vide -> refuse comme vide, pas comme defaut",
+                         lambda: config_path(cdir), "set but empty")
+        finally:
+            if prev_cfg is None:
+                os.environ.pop("GM_CONFIG", None)
+            else:
+                os.environ["GM_CONFIG"] = prev_cfg
+
         prev_env = os.environ.pop("GM_SEAL_COMMITTED", None)
         os.environ["GM_SEAL_COMMITTED"] = "yes"
         try:
@@ -4529,7 +4645,16 @@ def main():
             ws, os.environ.get("GM_DIR", ".golden-master"), base)))
         raise SystemExit(0)
 
-    report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
+    # The verdict CARRIES the declaration it judged. Without it, a green from
+    # the second environment and a green from the first are the same line, and
+    # an operator reading the report cannot tell which app was booted.
+    try:
+        cfg_name = config_name()
+    except SystemExit as e:
+        print(json.dumps({"mode": mode, "log_tail": str(e)}))
+        raise SystemExit(1)
+    report = {"mode": mode, "config": cfg_name,
+              "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
               "noop_silent": False, "revert_clean": True, "collateral": 0,
               "unstable_controls": [],
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
@@ -4552,11 +4677,15 @@ def main():
         print(json.dumps(report))
         raise SystemExit(0)
 
-    for required in ("config.json", "corpus.json"):
+    try:
+        cfg_path = config_path(gm_dir)
+    except SystemExit as e:
+        bail(str(e))
+    for required in (cfg_name, "corpus.json"):
         if not os.path.isfile(os.path.join(gm_dir, required)):
             bail("%s is missing — the campaign has not produced an oracle yet" % required)
 
-    with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
+    with open(cfg_path, encoding="utf-8") as f:
         config = json.load(f)
     with open(os.path.join(gm_dir, "corpus.json"), encoding="utf-8") as f:
         corpus = json.load(f)
