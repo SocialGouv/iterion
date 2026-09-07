@@ -64,7 +64,7 @@ func TestCapParallelism(t *testing.T) {
 		t.Errorf("explicit -parallel %s became %s — the cap overrode an operator's choice", explicit, got)
 	}
 
-	// The env var replaces the cap for the default case.
+	// The env var replaces the cap's number for the default case.
 	t.Setenv(e2eParallelEnv, "3")
 	set(dflt)
 	capParallelism()
@@ -74,5 +74,17 @@ func TestCapParallelism(t *testing.T) {
 	}
 	if got := f.Value.String(); got != want {
 		t.Errorf("%s=3 gave %s, want %s", e2eParallelEnv, got, want)
+	}
+
+	// …and it is a CEILING, not a target: a value above what the machine
+	// offers leaves the default where it is. Stated here because the
+	// difference only shows on a box smaller than the number — the branch
+	// above hides it on every developer machine bigger than 3 — and because
+	// `-parallel N` DOES raise, so the two knobs are not interchangeable.
+	t.Setenv(e2eParallelEnv, strconv.Itoa(runtime.GOMAXPROCS(0)+7))
+	set(dflt)
+	capParallelism()
+	if got := f.Value.String(); got != dflt {
+		t.Errorf("%s above GOMAXPROCS raised the default to %s, want it left at %s — use -parallel to go higher", e2eParallelEnv, got, dflt)
 	}
 }

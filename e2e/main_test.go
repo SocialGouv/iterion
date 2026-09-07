@@ -25,9 +25,14 @@ import (
 // self-hosted machine.
 const e2eParallelCap = 8
 
-// ITERION_E2E_PARALLEL overrides the cap; an explicit `-parallel` on the
-// command line wins over both. See capParallelism for WHY it wins — it is
+// ITERION_E2E_PARALLEL replaces the cap's NUMBER; an explicit `-parallel` on
+// the command line wins over both. See capParallelism for WHY it wins — it is
 // the flag-parsing order, not a test this code performs.
+//
+// It only ever lowers: capParallelism leaves a value already at or under the
+// limit alone, so ITERION_E2E_PARALLEL=32 on a 16-core box still runs 16. Use
+// `-parallel 32` to go above what the machine offers — that is the knob that
+// raises, and this one is a ceiling.
 const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 
 func TestMain(m *testing.M) {
