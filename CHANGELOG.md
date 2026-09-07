@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.113.3](https://github.com/SocialGouv/iterion/compare/v3.113.2...v3.113.3) (2026-09-07)
+
+### Bug Fixes
+
+* **bots:** lot_verify reads the oracle report with one decoder pass per opening line — the enclosing object wins, a named report never loses to an unnamed one; no guessed block start, no budget ([#865](https://github.com/SocialGouv/iterion/issues/865)) ([0c48563](https://github.com/SocialGouv/iterion/commit/0c48563bead1f40817f0e02254c0c354e73d9bb4)), references [pre-#815](https://github.com/pre-/issues/815)
+
+    <details><summary>why</summary>
+
+    Revi (R46d257, medium) on the bounded scan: the block's start was guessed among the two nearest opening lines and the window's FIRST one, so an indent=0 report (a list's objects at column 0) preceded by any brace-first line was lost and a green oracle typed ORACLE_NOT_RUN. The guess is gone: json.JSONDecoder().raw_decode(window, idx) parses in place from each "{" line of the window (lstripped: a logger's indentation leaves a block without a start otherwise), from the last upward; a noise line…
+
+    </details>
+* **review-pr:** the run budget follows the measured workload — $48, sized on two deaths at $36 and $30 and the engine's 90% wall ([#868](https://github.com/SocialGouv/iterion/issues/868)) ([a1e76e4](https://github.com/SocialGouv/iterion/commit/a1e76e417db63d05a3eba208f43d7cce19353ec1))
+
+    <details><summary>why</summary>
+
+    Measured: the merge gate died twice on one revision of a 7-file PR, budget exceeded at cost_usd 36/12 then 30/12 on the automatic relaunch, and posted no verdict; a second PR of the same size died the same way. The cap was sized on a 2026-09-03 sample (median $3.6, p95 $10.5); the review that reproduces its findings and answers the fixer's rounds costs three times that now. A required check that dies is worse than one that costs: the cap follows the workload, the per-run --max-cost-usd override…
+
+    </details>
+* **runner,runtime,dsl:** a deterministic failure is never auto-resumed, every failed run says why on its timeline, a run records the build that launched and ran it, and a stacked PR clones its base ([#881](https://github.com/SocialGouv/iterion/issues/881)) ([02b928a](https://github.com/SocialGouv/iterion/commit/02b928ac5602a297f1a9b49ed53d0a591416e686)), closes [#859](https://github.com/SocialGouv/iterion/issues/859) [#857](https://github.com/SocialGouv/iterion/issues/857) [#697](https://github.com/SocialGouv/iterion/issues/697) [#880](https://github.com/SocialGouv/iterion/issues/880), references [#858](https://github.com/SocialGouv/iterion/issues/858) [#850](https://github.com/SocialGouv/iterion/issues/850) [#774](https://github.com/SocialGouv/iterion/issues/774) [#697](https://github.com/SocialGouv/iterion/issues/697) [#697](https://github.com/SocialGouv/iterion/issues/697)
+
+    <details><summary>why</summary>
+
+    Function calls parse generically, so a `compute` expression calling a builtin with an argument count that builtin does not accept compiled clean and only failed at run time. On a cloud launch that costs a sandbox, a clone and a plan phase before the failure is even visible — and the failure is deterministic, so nothing about retrying it helps.
+
+    </details>
+
 ## [3.113.2](https://github.com/SocialGouv/iterion/compare/v3.113.1...v3.113.2) (2026-09-07)
 
 ### Bug Fixes
