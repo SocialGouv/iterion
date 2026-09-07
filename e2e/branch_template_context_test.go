@@ -104,14 +104,14 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 		t.Fatalf("load events: %v", err)
 	}
 
-	// --- tool `command:` — the silent-constant half -----------------------
+	// --- tool `command:` --------------------------------------------------
 	//
-	// A `{{run.id}}` a tool node cannot resolve does not survive as visible
-	// braces: resolveRunRefs substitutes it with the empty string, so the
-	// command runs with an argument nobody notices is missing. An
-	// `{{outputs.*}}` ref the command resolver did not know (#797) survived
-	// the other way — as the literal braces, handed to sh -c as an argument.
-	// Both are asserted on every dispatch path.
+	// `{{run.*}}` and `{{outputs.*}}` resolve in the SAME single pass as
+	// `{{input.*}}`, from the same snapshot, under the same missing-ref
+	// rule (asserted by TestToolCommandKeepsUnresolvableRunRefVisible
+	// below). Here every ref is resolvable, so what this pins is that the
+	// snapshot reaches all three dispatch paths — a missing snapshot would
+	// show up as a kept placeholder, not as a silent empty argument.
 	toolItems := map[string]bool{}
 	for _, probe := range []struct {
 		node  string
@@ -190,6 +190,50 @@ func TestTemplateContextReachesFanOutBranches(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Errorf("the two fan_out_each bodies rendered %v, want one prompt per item", items)
+	}
+}
+
+// TestToolCommandKeepsUnresolvableRunRefVisible pins the missing-ref rule
+// for the `run.*` namespace in a tool `command:`, end to end through the
+// engine: a member the namespace does not carry keeps its `{{…}}`
+// placeholder and reaches sh -c as visible braces — the same rule
+// `{{input.*}}` and `{{outputs.*}}` follow. Rendering it as the empty
+// string instead removes the argument from the command line, which is
+// worse than an error because nothing downstream can see it happened.
+func TestToolCommandKeepsUnresolvableRunRefVisible(t *testing.T) {
+	const command = "`printf '{\"seen\":\"%s\"}' {{run.no_such_member}}`"
+	wf := compileSource(t, "run_ref_missing_member.bot", `
+schema probe_out:
+  seen: string
+
+tool probe:
+  command: `+command+`
+  output: probe_out
+
+workflow run_ref_missing_member:
+  worktree: none
+  sandbox: none
+  entry: probe
+
+  probe -> done
+`)
+	s := tmpStore(t)
+	const runID = "e2e-run-ref-missing-member"
+	exec := model.NewClawExecutor(model.NewRegistry(), wf, model.WithWorkDir(t.TempDir()))
+
+	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	outs := nodeOutputsFor(events, "probe")
+	if len(outs) != 1 {
+		t.Fatalf("tool probe produced %d outputs, want 1", len(outs))
+	}
+	if got := outs[0]["seen"]; got != "{{run.no_such_member}}" {
+		t.Errorf("unresolvable {{run.no_such_member}} reached sh -c as %q, want the placeholder kept", got)
 	}
 }
 

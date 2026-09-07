@@ -439,10 +439,11 @@ func outputsTemplateValue(td *TemplateData, segs []string) (any, bool) {
 }
 
 // lookupRunTemplateRef resolves one `{{run.<key>}}` reference for a PROMPT
-// body, formatting the raw value runNamespaceValue returns. The tool-command
-// path (resolveRunRefs) reads the same lookup with its own renderer, so a
-// member added to the namespace reaches both instead of rendering as a
-// literal placeholder in whichever one was forgotten.
+// body, formatting the raw value runNamespaceValue returns. The tool
+// command / script / postcondition path (resolveTemplateWith) reads the
+// same lookup with its own renderer, so a member added to the namespace
+// reaches both instead of rendering as a literal placeholder in whichever
+// one was forgotten.
 //
 // `id` is served from RunID whether or not the snapshot's Run map is
 // populated: callers that predate the map (tests, hosts that wire only
@@ -459,15 +460,17 @@ func lookupRunTemplateRef(td *TemplateData, key string) (string, bool) {
 // runNamespaceValue resolves one `run.<member>` to its RAW value — the
 // single lookup behind both the prompt path (lookupRunTemplateRef, which
 // formats it) and the tool command / script / postcondition path
-// (resolveRunRefs, which shell-escapes or JSON-encodes it), so a member
-// cannot resolve in one and stay literal in the other.
+// (resolveTemplateWith, which shell-escapes or JSON-encodes it), so a
+// member cannot resolve in one and stay literal in the other.
 //
 // The TEMPLATE SNAPSHOT is the authority, including for `id`: it is the
 // only source a fan-out branch has, since the engine withholds the ctx run
 // identity there (a key that would alias sibling items — see pkg/runtime's
 // execContext). ctxRunID is the fallback for `id` alone, for hosts that
 // wire WithRunID and no snapshot. `id` resolves to the empty string rather
-// than to its own placeholder whenever either is wired.
+// than to its own placeholder whenever either is wired. A member neither
+// source carries is reported unresolved; each caller applies its own
+// missing-value rule.
 func runNamespaceValue(ctxRunID string, td *TemplateData, member string) (any, bool) {
 	if member == "id" {
 		if td != nil && td.RunID != "" {
