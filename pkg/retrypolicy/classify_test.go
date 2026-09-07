@@ -69,6 +69,10 @@ func TestDispositionsAreDistinct(t *testing.T) {
 		// the effective token on the next attempt can differ from the one
 		// that was refused, even though the sealed blob does not.
 		{store.FailureAuthFailed, false, false},
+		// The provider answered about the MODEL, not about the request:
+		// no sample differs, no wait helps. The one provider rejection
+		// that clears the deterministic bar.
+		{store.FailureModelUnavailable, true, false},
 	}
 	for _, c := range cases {
 		if got := IsDeterministic(c.code); got != c.deterministic {

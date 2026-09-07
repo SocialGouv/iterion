@@ -82,6 +82,19 @@ const (
 	// the run is resumable once the credential is refreshed.
 	FailureAuthFailed FailureCode = "AUTH_FAILED"
 
+	// FailureModelUnavailable: the provider refused the request because
+	// the MODEL it names is not served to this caller — an id the
+	// backend does not know, a model the account may not use, a model
+	// whose minimum client release this image is behind ("requires a
+	// newer version of Codex"). Distinct from FailureAuthFailed, where
+	// the credential is what was rejected, and from
+	// FailureExecutionFailed, whose automatic resume claims that a later
+	// attempt can outlast the fault: this verdict is a property of the
+	// model and the caller, not of the request's content, so every
+	// attempt from the same image is told the same thing. The cure is an
+	// operator changing the model or the image, then resuming.
+	FailureModelUnavailable FailureCode = "MODEL_UNAVAILABLE"
+
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
 	// Previously only visible as the run_failed event's
@@ -178,6 +191,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureToolFailedPermanent,
 	FailureNetworkTransient,
 	FailureAuthFailed,
+	FailureModelUnavailable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,

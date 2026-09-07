@@ -238,6 +238,77 @@ func TestClassify_APIError409_StaysExecutionFailed(t *testing.T) {
 	}
 }
 
+// Measured 2026-09-07 on run 01a07da6: a claw node asked for a model the
+// ChatGPT backend gates on the client release claw announces. The 400 wore
+// EXECUTION_FAILED, whose disposition promises that a later attempt can
+// outlast the fault — so the node failed, the delivery naked, the
+// redelivery synthesised a resume, and the identical verdict came back
+// NINE times in 77 seconds: eight pods, eight clones, eight sandboxes.
+// Nothing in the request was at fault, so no sample and no wait could have
+// helped; only an operator changing the model or the image.
+func TestClassify_ModelTheProviderWillNotServe(t *testing.T) {
+	// The flattened string is the shape that actually reached the
+	// classifier: the claw runner is out of process, so its typed error is
+	// text by the time it bubbles up — verbatim from the run.
+	measured := errors.New(`model: node "m_astra": backend "claw" failed: claw backend: runner: ` +
+		`claw backend: structured generation: openai: API error 400: {"detail":"The 'gpt-6-astra' ` +
+		`model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}`)
+
+	cases := []struct {
+		name string
+		err  error
+		want runtime.ErrorCode
+	}{
+		{"the flattened string from run 01a07da6", measured, runtime.ErrCodeModelUnavailable},
+		{"typed, gated on a client release", &api.APIError{
+			StatusCode: 400, Message: "The 'gpt-6-astra' model requires a newer version of Codex.",
+		}, runtime.ErrCodeModelUnavailable},
+		{"typed 404: the id reached no endpoint", &api.APIError{
+			StatusCode: 404, Message: "The model `gpt-9` does not exist or you do not have access to it.",
+		}, runtime.ErrCodeModelUnavailable},
+		{"flattened 404", errors.New("claw backend: openai: API error 404: model_not_found"),
+			runtime.ErrCodeModelUnavailable},
+
+		// The other half of the rule. A bare 400 can be raised mid-turn on
+		// the model's OWN tool arguments, and those differ on the next
+		// sample — reading it as a model verdict would park a run that
+		// recovers on its own.
+		{"a bare 400 is not a model verdict", &api.APIError{StatusCode: 400, Message: "bad request"},
+			runtime.ErrCodeExecutionFailed},
+		// The credential is read first: a rejection naming both is one to
+		// re-authenticate, not one to re-model.
+		{"401 naming a model is still a credential", &api.APIError{
+			StatusCode: 401, Message: "unknown model gpt-9: authentication token is expired",
+		}, runtime.ErrCodeAuthFailed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Classify(c.err); got != c.want {
+				t.Errorf("Classify() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// No retry at all: the provider answered about the model, so a second call
+// from the same image is told the same thing — and every attempt above
+// this recipe costs a pod.
+func TestModelUnavailableRecipe_FailsTerminalWithoutRetrying(t *testing.T) {
+	r := ModelUnavailableRecipe()
+	for _, attempts := range []int{0, 1, 5} {
+		act := r.Apply(context.Background(), &runtime.RuntimeError{Code: runtime.ErrCodeModelUnavailable}, attempts)
+		if act.Kind != ActionFailTerminal {
+			t.Fatalf("attempts=%d: Kind = %v, want ActionFailTerminal", attempts, act.Kind)
+		}
+		if act.AttemptsLeft != 0 {
+			t.Errorf("attempts=%d: AttemptsLeft = %d, want 0", attempts, act.AttemptsLeft)
+		}
+	}
+	if _, ok := DefaultRecipes()[runtime.ErrCodeModelUnavailable]; !ok {
+		t.Error("no recipe registered for MODEL_UNAVAILABLE — Dispatch would fail terminal with a reason that names the gap instead of the cure")
+	}
+}
+
 func TestClassify_PlainError(t *testing.T) {
 	if got := Classify(errors.New("something")); got != runtime.ErrCodeExecutionFailed {
 		t.Errorf("expected EXECUTION_FAILED for plain error, got %v", got)

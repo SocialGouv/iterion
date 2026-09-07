@@ -119,6 +119,15 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureLaunchFailed:          DispositionDeterministic, // the run never left the launch path — no checkpoint exists
 	store.FailureDLQParked:             DispositionDeterministic, // the deliveries are already spent
 	store.FailureCancelled:             DispositionDeterministic, // an operator's decision, not a fault
+	// The provider will not serve this model to this caller. Nothing in
+	// the request's content is at fault, so a different sample cannot
+	// help either — this is the one provider rejection that does not
+	// belong with the LLM-decided codes above. Measured on 2026-09-07
+	// (run 01a07da6): a claw node on a model the ChatGPT backend gates
+	// on the client release failed identically NINE times in 77 seconds
+	// — eight pods, eight sandboxes — because the 400 wore
+	// EXECUTION_FAILED, whose disposition promises that waiting helps.
+	store.FailureModelUnavailable: DispositionDeterministic,
 }
 
 // Classify reports what an automatic resume can achieve for this code.

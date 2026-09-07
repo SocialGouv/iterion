@@ -41,6 +41,12 @@ func TestClassifyExecResult_DeterministicNodeFailureAcks(t *testing.T) {
 		{"wrapped expression failure", fmt.Errorf("engine: %w", &runtime.RuntimeError{
 			Code: store.FailureExpressionFailed, Message: "boom",
 		})},
+		// Measured 2026-09-07 on run 01a07da6: eight pods in 77 seconds
+		// for a model the ChatGPT backend does not serve to this image.
+		{"a model the provider will not serve", &runtime.RuntimeError{
+			Code: store.FailureModelUnavailable, NodeID: "m_astra",
+			Message: `backend "claw" failed: openai: API error 400: {"detail":"The 'gpt-6-astra' model requires a newer version of Codex."}`,
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
