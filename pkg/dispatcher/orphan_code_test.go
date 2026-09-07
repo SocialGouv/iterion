@@ -50,4 +50,20 @@ func TestPromoteIfOrphanedPersistsProcessOrphaned(t *testing.T) {
 	if after.FailureCode != store.FailureProcessOrphaned {
 		t.Fatalf("persisted failure code = %q, want PROCESS_ORPHANED — the promotion still writes an untyped status", after.FailureCode)
 	}
+	// And on the TIMELINE: a terminal status with nothing to read is what a
+	// consumer triaging by the tree cannot classify.
+	events, err := s.LoadEvents(ctx, "orphan-1")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	for _, e := range events {
+		if e.Type != store.EventRunFailed {
+			continue
+		}
+		if got, _ := e.Data["code"].(string); got != string(store.FailureProcessOrphaned) {
+			t.Fatalf("run_failed.code = %q, want PROCESS_ORPHANED", got)
+		}
+		return
+	}
+	t.Fatal("no run_failed event after the orphan promotion")
 }

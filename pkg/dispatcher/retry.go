@@ -274,6 +274,21 @@ func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemR
 		c.logger.Warn("dispatcher: orphan promotion of run %s → %s failed: %v — the ticket stays held until the status write succeeds", cur.ID, newStatus, err)
 		return status
 	}
+	// The timeline too, not only the document: a consumer that triages
+	// terminals by the tree reads a reaped orphan as a run that simply
+	// stopped mid-flight. Best-effort — a missed event must never leave the
+	// ticket held by a dead run.
+	data := map[string]any{
+		"error":       "process orphaned: dispatcher found run '" + string(cur.Status) + "' with no live owner",
+		"code":        string(store.FailureProcessOrphaned),
+		"interrupted": true,
+	}
+	if newStatus == store.RunStatusFailedResumable {
+		data["resumable"] = true
+	}
+	if _, aerr := s.AppendEvent(ctx, cur.ID, store.Event{Type: store.EventRunFailed, RunID: cur.ID, Data: data}); aerr != nil {
+		c.logger.Warn("dispatcher: orphan promotion of run %s: append run_failed: %v", cur.ID, aerr)
+	}
 	c.logger.Info("dispatcher: last run %s was %s with no live owner — promoted to %s", cur.ID, cur.Status, newStatus)
 	return newStatus
 }
