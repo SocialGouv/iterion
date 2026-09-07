@@ -1393,10 +1393,14 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 }
 
 // withClawOrchestrationTools is what ultracode grants a claw node that
-// restricts its tools: the `agent` subagent tool and the `workflow` tool —
-// the deterministic fan-out whose agent() resolves with typed results.
-// Idempotent: a tool already listed is not listed twice.
+// restricts its tools: the `agent` subagent tool. Idempotent: a tool already
+// listed is not listed twice.
+//
+// Every name added here must be one iterion registers — the node's list is
+// resolved against the registry and an unknown name is an error, not a skip,
+// so a name granted without a registration kills the node at dispatch.
+// claw-code-go's own `workflow` tool is not among them: iterion builds its
+// own registry and wires the subagent runner into `agent` alone.
 func withClawOrchestrationTools(tools []string) []string {
-	tools = ensureToolPresent(tools, "agent")
-	return ensureToolPresent(tools, "workflow")
+	return ensureToolPresent(tools, "agent")
 }
