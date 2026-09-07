@@ -2362,20 +2362,43 @@ tool oracle_run:
         return meta, ""
 
 
+    _repo_root_cache = {}
+
+
+    def repo_root_of(ws):
+        """The working tree's root, which porcelain paths are relative to — ws
+        itself when git does not answer (a gate runs at the root; the fallback
+        keeps a name comparison rather than none)."""
+        key = os.path.realpath(ws)
+        if key not in _repo_root_cache:
+            try:
+                p = subprocess.run(["git", "-C", ws, "rev-parse", "--show-toplevel"],
+                                   capture_output=True, text=True, timeout=60)
+                top = (p.stdout or "").strip() if p.returncode == 0 else ""
+            except (OSError, subprocess.SubprocessError):
+                top = ""
+            _repo_root_cache[key] = top or ws
+        return _repo_root_cache[key]
+
+
+    BIG_FILE_BYTES = 8 << 20
+
+
     def dirty_fingerprint(ws, path):
-        """What a dirty path's CONTENT is, so a later sweep can tell a mutant's
-        edit on an already-dirty path from the operator's untouched work: the
-        sha1 of a file; for a directory (`?? dir/`, an untracked tree collapsed
-        to one line) the sha1 of its recursive listing of (path, size, mtime) —
-        a file a mutant creates inside moves it, an untouched build tree does
-        not; "?" when the path cannot be read or the listing is unreasonably
-        large: undecidable, which is not "unchanged"."""
-        full = os.path.join(ws, path)
+        """What a dirty path IS, so a later sweep can tell a mutant's edit on an
+        already-dirty path from the operator's untouched work. A file: the sha1
+        of its content, or "st:<size>:<mtime>" past BIG_FILE_BYTES (a bound, not
+        a leash: hashing is local and linear); a symlink: its target; a directory
+        (`?? dir/`, an untracked tree collapsed to one line): the sha1 of its
+        recursive NAME listing — a file a mutant creates or removes inside moves
+        it, a build tree merely rebuilt between two runs does not, and a change
+        inside an existing untracked file is the accepted blind spot; "absent"
+        for an uncommitted deletion (a state of its own, equal to itself); "?"
+        for a FIFO or a device (opening could block, on no leash), an unreadable
+        path or a listing past 20000 entries: undecidable, not "unchanged"."""
+        full = os.path.join(repo_root_of(ws), path)
         try:
             if not os.path.lexists(full):
-                # An uncommitted deletion (` D path`): a state of its own, so
-                # absent-before equals absent-after and an operator's deletion
-                # is not residue.
                 return "absent"
             st = os.lstat(full)
             if stat.S_ISDIR(st.st_mode):
@@ -2386,15 +2409,14 @@ tool oracle_run:
                         n += 1
                         if n > 20000:
                             return "?"
-                        fp = os.path.join(root, name)
-                        fst = os.lstat(fp)
-                        h.update(("%s\0%d\0%d\n" % (os.path.relpath(fp, full), fst.st_size, fst.st_mtime_ns)).encode("utf-8", "replace"))
+                        h.update((os.path.relpath(os.path.join(root, name), full) + "\n").encode("utf-8", "replace"))
                 return h.hexdigest()
             if stat.S_ISLNK(st.st_mode):
                 return hashlib.sha1(os.readlink(full).encode("utf-8", "replace")).hexdigest()
             if not stat.S_ISREG(st.st_mode):
-                # A FIFO or a device: opening it could block, on no leash.
                 return "?"
+            if st.st_size > BIG_FILE_BYTES:
+                return "st:%d:%d" % (st.st_size, st.st_mtime_ns)
             h = hashlib.sha1()
             with open(full, "rb") as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -2404,19 +2426,37 @@ tool oracle_run:
             return "?"
 
 
+    def status_porcelain_z(ws):
+        """(exit, stdout) of `git status --porcelain -z`, stderr KEPT APART: run()
+        merges the two streams, and a warning git prints on stderr (a directory
+        it cannot read) would land inside the NUL entry stream and swallow a real
+        path. Bounded, guarded, without the optional index refresh."""
+        try:
+            p = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain", "-z"],
+                               capture_output=True, text=True, timeout=120)
+            return p.returncode, p.stdout or ""
+        except (OSError, subprocess.SubprocessError) as e:
+            return 124, "%s" % e
+
+
+    PORCELAIN_STATUS = " MADRCU?!"
+
+
     def porcelain_paths(out):
         """The paths of a `git status --porcelain -z` output: NUL-separated, no
-        quoting, a rename or copy followed by its source entry (skipped — the
-        destination is the path that exists)."""
+        quoting, a rename or copy (in the index or in the work tree) followed by
+        its source entry, skipped — the destination is the path that exists. An
+        entry that is not `XY<space>path` is not an entry (a stray line that is
+        not the porcelain) and is dropped rather than decided on."""
         entries = (out or "").split("\0")
         paths, i = [], 0
         while i < len(entries):
             e = entries[i]
             i += 1
-            if len(e) < 4:
+            if len(e) < 4 or e[2] != " " or e[0] not in PORCELAIN_STATUS or e[1] not in PORCELAIN_STATUS:
                 continue
             paths.append(e[3:])
-            if e[0] in "RC":
+            if e[0] in "RC" or e[1] in "RC":
                 i += 1
         return sorted(set(paths))
 
@@ -2433,7 +2473,7 @@ tool oracle_run:
         the index is a write into the tree it is only meant to read (under a
         full disk or a size limit it left a corrupt index behind, and every
         later checkout failed)."""
-        code, out = run("git --no-optional-locks status --porcelain -z", ws, timeout=120)
+        code, out = status_porcelain_z(ws)
         if code != 0:
             return None
         return ["%s:%s" % (dirty_fingerprint(ws, q), q) for q in porcelain_paths(out)]
@@ -2677,7 +2717,7 @@ tool oracle_run:
             # wedged one must not hang the gate the way the incident behind this
             # whole guard hung it. Unanswered is reported as UNKNOWN, never as
             # clean — an empty porcelain and an absent git are not the same fact.
-            st, st_out = run("git --no-optional-locks status --porcelain -z", ws, timeout=120)
+            st, st_out = status_porcelain_z(ws)
             if st == 0:
                 after = porcelain_paths(st_out)
                 dirty = "\n".join(after)
@@ -2777,10 +2817,11 @@ tool oracle_run:
                     "those paths (git diff), revert the mutant's by hand, then delete the marker %s."
                     % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
             return "still_mutated", (
-                "a mutant left APPLIED by an interrupted gate was NOT fully reverted at start: %s "
-                "— revert.sh exited 0, but these paths are still modified and were clean when the "
-                "mutant went down: %s. The tree is still mutated and will be neither judged nor "
-                "recorded. Revert by hand (git checkout -- <those paths>), then delete the marker %s."
+                "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
+                "exit 0), but these paths changed since the mutant went down and the harness cannot "
+                "attribute the change — the mutant's residue, or work done in between: %s. The tree "
+                "will be neither judged nor recorded. Inspect them (git diff), revert the mutant's by "
+                "hand, keep yours, then delete the marker %s."
                 % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
         if left.get("code") == 0:
             text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
@@ -4308,17 +4349,12 @@ tool oracle_run:
                 # marqueur garde, porte arretee (doublure de run() sur cette commande seule).
                 scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
                 apply_mutant(lmeta, tmp)
-                real_run = g["run"]
-
-                def mute_status(cmd, cwd, timeout=CMD_TIMEOUT_S):
-                    if "status --porcelain" in cmd:
-                        return 124, "timeout after 120s"
-                    return real_run(cmd, cwd, timeout)
-                g["run"] = mute_status
+                real_status = g["status_porcelain_z"]
+                g["status_porcelain_z"] = lambda ws: (124, "timeout after 120s")
                 try:
                     left = revert_leftover_mutant(tmp)
                 finally:
-                    g["run"] = real_run
+                    g["status_porcelain_z"] = real_status
                 check("un git status muet apres le revert : inconnu, marqueur garde, porte arretee",
                       [(left or {}).get("residue_undecided"), bool((left or {}).get("dirty_unknown")),
                        (left or {}).get("kept"), os.path.isfile(applied_marker_for(tmp)),
@@ -4408,6 +4444,54 @@ tool oracle_run:
                 # Une entree d'avant les empreintes dont le chemin contient ':' reste un chemin entier.
                 check("un chemin d'avant les empreintes avec ':' n'est pas coupe",
                       split_dirty_record(["src/a:b.txt", "absent:d.txt"]), {"src/a:b.txt": "?", "d.txt": "absent"})
+                # Le porcelain -z lu avec stderr A PART : un avertissement de git dans le
+                # flux fondrait un vrai chemin dans une entree fantome. Le parseur jette
+                # ce qui n'a pas la forme `XY<espace>chemin`, et suit les renommages
+                # d'index comme d'arbre de travail.
+                check("un avertissement dans le flux ne fabrique ni ne masque un chemin",
+                      porcelain_paths("warning: could not open directory 'secret/': Permission denied\n M a.txt\0?? b.txt\0"),
+                      ["b.txt"])
+                # L'origine d'un renommage est sautee meme quand son nom a la forme
+                # d'une entree (deux lettres de statut et une espace).
+                check("un renommage d'arbre de travail est suivi par sa destination",
+                      porcelain_paths(" R new.txt\0MM old.txt\0R  new2.txt\0AD old2.txt\0"), ["new.txt", "new2.txt"])
+                # Un avertissement REEL de git (repertoire illisible) sur stderr ne
+                # touche pas le flux des chemins : le vrai chemin modifie est enregistre.
+                secret = os.path.join(tmp, "secret")
+                os.makedirs(secret, exist_ok=True)
+                with open(os.path.join(secret, "s.txt"), "w", encoding="utf-8") as f:
+                    f.write("s\n")
+                with open(os.path.join(tmp, "other.txt"), "w", encoding="utf-8") as f:
+                    f.write("o\n")
+                os.chmod(secret, 0)
+                try:
+                    db = dirty_paths_before_apply(tmp) or []
+                finally:
+                    os.chmod(secret, 0o755)
+                    shutil.rmtree(secret, ignore_errors=True)
+                os.remove(os.path.join(tmp, "other.txt"))
+                check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
+                      [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
+                # Un repertoire non suivi RECONSTRUIT entre deux runs (memes noms, autres
+                # contenus/mtimes) n'est pas un residu ; un fichier cree dedans l'est.
+                os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
+                with open(os.path.join(tmp, "build", "a.o"), "w", encoding="utf-8") as f:
+                    f.write("artefact v1\n")
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                apply_mutant(lmeta, tmp)
+                time.sleep(0.01)
+                with open(os.path.join(tmp, "build", "a.o"), "w", encoding="utf-8") as f:
+                    f.write("artefact v2, rebuilt\n")
+                left = revert_leftover_mutant(tmp)
+                check("un repertoire non suivi reconstruit n'est pas un residu",
+                      [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+                shutil.rmtree(os.path.join(tmp, "build"), ignore_errors=True)
+                # Un gros fichier modifie s'empreinte par (taille, mtime), sans le lire.
+                big = os.path.join(tmp, "big.bin")
+                with open(big, "wb") as f:
+                    f.truncate(BIG_FILE_BYTES + 1)
+                check("un gros fichier s'empreinte par stat", dirty_fingerprint(tmp, "big.bin").startswith("st:"), True)
+                os.remove(big)
                 # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
                 mpath = applied_marker_for(tmp)
                 os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
