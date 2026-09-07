@@ -516,7 +516,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	result.Tokens = totalIn + totalOut
 
 	if rm.IsError && rm.Subtype != claudesdk.ResultSuccess {
-		if errResult, errOut, fatal := b.handleCLIErrorSubtype(rm, task, result); fatal {
+		if errResult, errOut, fatal := b.handleCLIErrorSubtype(rm, task, result, totalIn, totalOut); fatal {
 			return errResult, errOut
 		}
 	}
@@ -811,7 +811,27 @@ func (b *ClaudeCodeBackend) buildStreamErrorResult(rm *claudesdk.ResultMessage, 
 	// lands on stderr. Re-type it as ErrTransient so the executor's
 	// retry loop rides the blip out instead of failing the whole node.
 	streamErr = b.retypeNetworkError(streamErr, stderr, task)
-	return errResult, fmt.Errorf("delegate: claude-code failed: %w", streamErr)
+	// The session was billed for whatever it streamed before the drop, and
+	// this return is TERMINAL for the delegation. The caps, the fallback
+	// chain's carried spend and a donor's ledger all read the cost from the
+	// output map, so a return that skips the stamp records nothing — the
+	// spend is real either way, only the accounting disappears. Same choke
+	// point as every other typed failure.
+	in, out := usageOf(rm)
+	errResult.Tokens = in + out
+	return errResult, typedFailure(&errResult, task, in, out,
+		fmt.Errorf("delegate: claude-code failed: %w", streamErr), rm)
+}
+
+// usageOf reads a result message's token usage, tolerating the nils a
+// broken stream leaves behind: the message may never have arrived, or have
+// arrived without usage, and neither is a reason to bill zero silently
+// when the other half is there.
+func usageOf(rm *claudesdk.ResultMessage) (int, int) {
+	if rm == nil || rm.Usage == nil {
+		return 0, 0
+	}
+	return rm.Usage.InputTokens, rm.Usage.OutputTokens
 }
 
 // handleCLIErrorSubtype branches on the CLI's error subtype after a stream
@@ -824,7 +844,7 @@ func (b *ClaudeCodeBackend) buildStreamErrorResult(rm *claudesdk.ResultMessage, 
 // error subtypes (error_during_execution, error_max_budget_usd) remain
 // hard failures. Returns `fatal=true` when the caller must return the
 // (result, err) pair immediately; `fatal=false` lets Execute fall through.
-func (b *ClaudeCodeBackend) handleCLIErrorSubtype(rm *claudesdk.ResultMessage, task Task, result Result) (Result, error, bool) {
+func (b *ClaudeCodeBackend) handleCLIErrorSubtype(rm *claudesdk.ResultMessage, task Task, result Result, totalIn, totalOut int) (Result, error, bool) {
 	// error_max_turns is a SOFT stop, not a failure: the agent hit its
 	// tool_max_steps cap (claude --max-turns). For an implementer
 	// (act/fix, no output schema) the work it did is already in the
@@ -838,7 +858,12 @@ func (b *ClaudeCodeBackend) handleCLIErrorSubtype(rm *claudesdk.ResultMessage, t
 		b.Logger.Warn("[%s#%d/claude-code] hit max turns (tool_max_steps) — returning partial result; downstream review/fix completes any gaps", task.NodeID, task.Iteration)
 		return result, nil, false
 	}
-	return result, fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype), true
+	// The stamp lives HERE, with the decision, not at the call site: a
+	// session that reached a hard subtype was billed exactly like one that
+	// rendered a refusal — which stamps — and a caller is free to forget.
+	typed := typedFailure(&result, task, totalIn, totalOut,
+		fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype), rm)
+	return result, typed, true
 }
 
 // runTwoPassFormatting runs the Pass-2 structured-output extraction loop
