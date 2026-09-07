@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 )
 
 // A stored bundle (team or platform botsource row) OUTRANKS the baked catalog
@@ -109,12 +110,41 @@ func (s *Server) bakedVersions() map[string]string {
 	return out
 }
 
-// shadowsNewerBake reports the baked version for slug and whether the stored
-// bundle at storedVersion is strictly OLDER than it — i.e. whether this
-// override is holding back what this deployment would otherwise serve. Takes
-// the catalog map so a caller comparing N rows pays for one walk.
-func shadowsNewerBake(baked map[string]string, slug, storedVersion string) (string, bool) {
-	b := baked[slug]
+// versionsBelow returns what would serve for each slug if tenantID's own row
+// were removed — the whole point of the comparison, and not the same map for
+// both tiers. Resolution is team → platform → baked, so a TEAM row is shadowed
+// by the platform override when one exists, not by the baked catalog behind
+// it: comparing a team row against the bake alone would call a 0.9.0 team
+// override "current" while it holds back a 1.0.0 platform one.
+func (s *Server) versionsBelow(tenantID string) map[string]string {
+	out := s.bakedVersions()
+	if tenantID == botsource.PlatformTenantID {
+		return out
+	}
+	set := s.platformBotSetCached()
+	if set == nil {
+		return out
+	}
+	if out == nil {
+		out = make(map[string]string, len(set.manifests))
+	}
+	for slug, m := range set.manifests {
+		if m == nil {
+			continue
+		}
+		if v := strings.TrimSpace(m.Version); v != "" {
+			out[slug] = v
+		}
+	}
+	return out
+}
+
+// shadowsNewerVersion reports what would serve for slug without this row, and
+// whether the stored bundle at storedVersion is strictly OLDER than it — i.e.
+// whether this override is holding back what this deployment would otherwise
+// serve. Takes the map so a caller comparing N rows pays for one walk.
+func shadowsNewerVersion(below map[string]string, slug, storedVersion string) (string, bool) {
+	b := below[slug]
 	if b == "" || strings.TrimSpace(storedVersion) == "" {
 		return b, false
 	}
@@ -152,10 +182,10 @@ func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVe
 	// Not a shadow: the key stays stored. The answer cannot change within a
 	// process, so re-walking the catalog on every later launch of the same row
 	// would buy nothing.
-	baked, shadowed := shadowsNewerBake(s.bakedVersions(), slug, storedVersion)
+	below, shadowed := shadowsNewerVersion(s.versionsBelow(tenantID), slug, storedVersion)
 	if !shadowed {
 		return
 	}
 	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s)",
-		slug, origin, tenantID, storedVersion, baked, slug, slug)
+		slug, origin, tenantID, storedVersion, below, slug, slug)
 }

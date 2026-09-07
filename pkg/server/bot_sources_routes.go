@@ -83,9 +83,9 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 	}
 	// Strip Files from the list payload — it is metadata only. Digest gives
 	// "what exactly is deployed" a comparable answer without the content.
-	// One catalog walk for the whole listing: resolving the baked version per
+	// One catalog walk for the whole listing: resolving what sits below each
 	// row would re-discover every configured bot root for each one.
-	baked := s.bakedVersions()
+	below := s.versionsBelow(tenantID)
 	views := make([]botSourceMetaView, 0, len(list))
 	for _, b := range list {
 		digest := botsource.Digest(b.Files)
@@ -93,14 +93,14 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 		if m := b.Manifest(); m != nil {
 			bundleVersion = strings.TrimSpace(m.Version)
 		}
-		bakedVersion, shadowed := shadowsNewerBake(baked, b.Slug, bundleVersion)
+		shadowedVersion, shadowed := shadowsNewerVersion(below, b.Slug, bundleVersion)
 		b.Files = nil
 		views = append(views, botSourceMetaView{
-			BotSource:        b,
-			Digest:           digest,
-			BundleVersion:    bundleVersion,
-			BakedVersion:     bakedVersion,
-			ShadowsNewerBake: shadowed,
+			BotSource:           b,
+			Digest:              digest,
+			BundleVersion:       bundleVersion,
+			ShadowedVersion:     shadowedVersion,
+			ShadowsNewerVersion: shadowed,
 		})
 	}
 	s.writeJSONFor(w, r, map[string]any{"bot_sources": views})
@@ -109,22 +109,23 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 // botSourceMetaView is one list row: the metadata plus the content digest.
 //
 // It also answers the question this inventory exists to answer — "what is
-// actually serving?" — because an override outranks the baked catalog
+// actually serving?" — because an override outranks the tier below it
 // forever, so a row that looks current can be holding back a newer bundle the
-// deployment already ships. BundleVersion/BakedVersion are the two sides;
-// ShadowsNewerBake is the comparison, omitted unless true so a healthy
-// inventory stays quiet.
+// deployment already has.
 type botSourceMetaView struct {
 	botsource.BotSource
 	Digest string `json:"digest,omitempty"`
 	// BundleVersion is the stored manifest's version ("" when it carries none).
 	BundleVersion string `json:"bundle_version,omitempty"`
-	// BakedVersion is what THIS image ships for the same slug ("" when the
-	// slug is stored-only, which shadows nothing).
-	BakedVersion string `json:"baked_version,omitempty"`
-	// ShadowsNewerBake reports a stored bundle strictly older than the baked
-	// one. Never an error: pinning an older bundle is a legitimate choice.
-	ShadowsNewerBake bool `json:"shadows_newer_bake,omitempty"`
+	// ShadowedVersion is what would serve for this slug WITHOUT this row —
+	// the baked catalog for a platform row, the platform override (else the
+	// bake) for a team one, since resolution is team → platform → baked. ""
+	// when nothing else offers the slug, which shadows nothing.
+	ShadowedVersion string `json:"shadowed_version,omitempty"`
+	// ShadowsNewerVersion reports a stored bundle strictly older than what it
+	// shadows. Omitted unless true, so a healthy inventory stays quiet. Never
+	// an error: pinning an older bundle is a legitimate choice.
+	ShadowsNewerVersion bool `json:"shadows_newer_version,omitempty"`
 }
 
 func (s *Server) handleGetBotSource(w http.ResponseWriter, r *http.Request) {

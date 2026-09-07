@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func TestBundleVersionOrder(t *testing.T) {
@@ -118,33 +119,66 @@ func TestBotSourceListing_ReportsAnOverrideShadowingANewerBake(t *testing.T) {
 	// inventory must say the newer bundle is being held back.
 	store("0.7.0")
 	got := row()
-	if !got.ShadowsNewerBake {
-		t.Errorf("an override at 0.7.0 against a 0.8.0 bake must report shadows_newer_bake; got %+v", got)
+	if !got.ShadowsNewerVersion {
+		t.Errorf("an override at 0.7.0 against a 0.8.0 bake must report shadows_newer_version; got %+v", got)
 	}
-	if got.BundleVersion != "0.7.0" || got.BakedVersion != "0.8.0" {
-		t.Errorf("versions = stored %q / baked %q — want 0.7.0 / 0.8.0", got.BundleVersion, got.BakedVersion)
+	if got.BundleVersion != "0.7.0" || got.ShadowedVersion != "0.8.0" {
+		t.Errorf("versions = stored %q / baked %q — want 0.7.0 / 0.8.0", got.BundleVersion, got.ShadowedVersion)
 	}
 
 	// Control: caught up. The flag must clear, or it is decoration.
 	store("0.8.0")
-	if got := row(); got.ShadowsNewerBake {
+	if got := row(); got.ShadowsNewerVersion {
 		t.Errorf("an override AT the baked version shadows nothing; got %+v", got)
 	}
 
 	// Control: ahead of the bake (an operator shipping before a release).
 	store("0.9.0")
-	if got := row(); got.ShadowsNewerBake {
+	if got := row(); got.ShadowsNewerVersion {
 		t.Errorf("an override NEWER than the bake shadows nothing; got %+v", got)
 	}
 }
 
 // A slug the catalog does not carry shadows nothing — the common case for a
 // team's own bot, which must not be flagged.
-func TestShadowsNewerBake_StoredOnlySlugIsNotStale(t *testing.T) {
+func TestShadowsNewerVersion_StoredOnlySlugIsNotStale(t *testing.T) {
 	s, _, _ := newBotSourceTestServer(t)
 	seedBakedBot(t, s, "reviewer", "0.8.0")
-	if baked, shadowed := shadowsNewerBake(s.bakedVersions(), "a-bot-only-this-team-has", "0.1.0"); shadowed || baked != "" {
-		t.Errorf("a stored-only slug must shadow nothing; got baked=%q shadowed=%v", baked, shadowed)
+	if baked, shadowed := shadowsNewerVersion(s.versionsBelow("t1"), "a-bot-only-this-team-has", "0.1.0"); shadowed || baked != "" {
+		t.Errorf("a stored-only slug must shadow nothing; got below=%q shadowed=%v", baked, shadowed)
+	}
+}
+
+// Resolution is team → platform → baked, so what a TEAM row holds back is the
+// platform override when one exists — not the bake behind it. Comparing a team
+// row against the bake alone called a 0.9.0 team override "current" while it
+// shadowed a 1.0.0 platform one (Revi's open question on the parent commit).
+func TestVersionsBelow_ATeamRowIsShadowedByThePlatformTier(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+	pctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+	if _, err := s.botSources.Create(pctx, botsource.BotSource{
+		TenantID: botsource.PlatformTenantID,
+		Slug:     "reviewer",
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: reviewer\nversion: 1.0.0\n",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.invalidatePlatformBots()
+
+	// A team row NEWER than the bake but OLDER than the platform override.
+	below, shadowed := shadowsNewerVersion(s.versionsBelow("t1"), "reviewer", "0.9.0")
+	if !shadowed || below != "1.0.0" {
+		t.Errorf("a team row at 0.9.0 shadows the 1.0.0 platform override; got below=%q shadowed=%v", below, shadowed)
+	}
+
+	// The platform row itself is measured against the bake — never itself.
+	below, shadowed = shadowsNewerVersion(s.versionsBelow(botsource.PlatformTenantID), "reviewer", "1.0.0")
+	if shadowed || below != "0.8.0" {
+		t.Errorf("a platform row compares against the bake; got below=%q shadowed=%v", below, shadowed)
 	}
 }
 

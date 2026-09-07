@@ -131,10 +131,14 @@ deployed, while the graph that actually ran had no `tier_expand` node.
 **iterion now reports it, and still does not refuse it** (pinning an older
 bundle is a legitimate choice — a rollback is exactly this):
 
-- `GET /api/admin/bots` returns `bundle_version`, `baked_version` and
-  `shadows_newer_bake` on every row. The last one is omitted unless true,
-  so a healthy inventory stays quiet. This is the check to run after any
+- `GET /api/admin/bots` returns `bundle_version`, `shadowed_version` and
+  `shadows_newer_version` on every row. The last is omitted unless true, so
+  a healthy inventory stays quiet. This is the check to run after any
   release that touched a bot you have overridden.
+  `shadowed_version` is **what would serve without that row**, which is not
+  always the bake: resolution is team → platform → baked, so a team row is
+  measured against the platform override when one exists. The same fields
+  appear on the team listing (`GET /api/teams/{id}/bot-sources`).
 - The resolver logs one `Warn` naming the tenant, both versions and the two
   ways out — once per `(tenant, origin, slug, stored version)`, not per
   launch. The tenant is in the key on purpose: many teams can hold a row for
