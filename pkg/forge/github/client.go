@@ -86,9 +86,14 @@ func (c *AdminClient) doErr(ctx context.Context, method, path string, body any, 
 // per-endpoint permission data — and the step that fits the credential kind
 // the body names. Any other 403 keeps its ErrForbidden identity with GitHub's
 // message attached; every other status maps as statusErr does.
+//
+// A 404 carries need too. GitHub answers 404, not 403, for a resource the
+// credential is not allowed to see (it will not confirm a private object
+// exists), so absence and a withheld grant look identical on the wire: the
+// typed 404 names both possibilities instead of asserting either.
 func refusal(op string, code int, errBody []byte, need ...string) error {
 	if code != http.StatusForbidden {
-		return statusErr(op, code)
+		return forge.StatusErrNeeding("github", op, code, need)
 	}
 	msg := githubErrorMessage(errBody)
 	grants := strings.Join(need, ", ")

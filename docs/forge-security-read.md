@@ -29,9 +29,15 @@ Mind which store you write, they are different secrets:
 iterion remote api POST /api/teams/<team-id>/secrets \
   --data '{"name":"dependabot_tokens","value":"{\"my-org\":\"github_pat_…\"}"}'
 
-# LOCAL / desktop runs only (~/.iterion/secrets.json):
-iterion secret set dependabot_tokens '{"my-org": "github_pat_…"}'
+# LOCAL / desktop runs only (~/.iterion/secrets.json). The value never
+# rides argv — it comes from stdin, --from-env, or a masked prompt:
+printf '{"my-org": "github_pat_…"}' | iterion secret set dependabot_tokens --kind json
 ```
+
+`--kind json` names the shape so the ingestion gate checks the right
+one: a JSON credential document legitimately carries the spaces and
+newlines a bare token may not, and a truncated paste is refused here
+rather than discovered as a 401 in the middle of a poll.
 
 The consuming bot mounts it `as: file` and reads it only in its
 deterministic poll step (vuln-watch has no LLM node at all).

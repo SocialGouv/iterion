@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type LocalSecretView,
+  type LocalSecretKind,
   createLocalSecret,
   deleteLocalSecret,
   isValidSecretName,
@@ -221,6 +222,10 @@ function UpsertSecretDialog({
   const [name, setName] = useState(rec?.name ?? "");
   const [secret, setSecret] = useState("");
   const [scope, setScope] = useState<"global" | "project">(rec?.scope ?? "global");
+  // Empty = let the server read the shape off the value. The record carries no
+  // kind (the local store is name-keyed), so a rotate starts from the same
+  // inference a create does.
+  const [kind, setKind] = useState<LocalSecretKind | "">("");
   const [hosts, setHosts] = useState((rec?.allowed_hosts ?? []).join(", "));
   const { busy, error: err, run } = useAsyncAction();
 
@@ -235,9 +240,19 @@ function UpsertSecretDialog({
       .filter(Boolean);
     return run(async () => {
       if (rotate) {
-        await updateLocalSecret(rec.id, { secret, allowed_hosts: allowedHosts });
+        await updateLocalSecret(rec.id, {
+          secret,
+          ...(kind ? { kind } : {}),
+          allowed_hosts: allowedHosts,
+        });
       } else {
-        await createLocalSecret({ name, secret, scope, allowed_hosts: allowedHosts });
+        await createLocalSecret({
+          name,
+          secret,
+          scope,
+          ...(kind ? { kind } : {}),
+          allowed_hosts: allowedHosts,
+        });
       }
       onDone();
     });
@@ -305,6 +320,25 @@ function UpsertSecretDialog({
             placeholder="paste here — never shown again"
             autoFocus={rotate}
           />
+        </label>
+        <label className="block">
+          <div className="text-xs text-fg-muted mb-1">Kind</div>
+          <Select
+            size="md"
+            value={kind}
+            onChange={(e) => setKind(e.target.value as LocalSecretKind | "")}
+          >
+            <option value="">Detect from the value</option>
+            <option value="token">Token (a bearer token / API key)</option>
+            <option value="json">JSON credential document</option>
+            <option value="pem">PEM block (a private key)</option>
+            <option value="raw">Raw — store unchecked</option>
+          </Select>
+          <div className="text-xs text-fg-muted mt-1">
+            A value that could not authenticate is refused here rather than
+            discovered as a provider 401 mid-run. Pick <em>Raw</em> for a
+            passphrase or a connection string.
+          </div>
         </label>
         <label className="block">
           <div className="text-xs text-fg-muted mb-1">Egress hosts (optional, comma-separated)</div>

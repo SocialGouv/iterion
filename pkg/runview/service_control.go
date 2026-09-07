@@ -462,7 +462,11 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 
 	message := req.CommitMessage
 	if message == "" && strategy == store.MergeStrategySquash {
-		message = runtime.BuildSquashMessage(repoRoot, r.BaseCommit, r.FinalCommit, runtime.RunDisplayName(r))
+		// The TARGET bounds the range when the run's recorded base does not
+		// resolve here — a repo-targeted merge runs in a clone this server
+		// materialised, where it frequently does not.
+		message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit,
+			resolveMergeTargetForPersistence(req.MergeInto, repoRoot), r.FinalCommit, runtime.RunDisplayName(r))
 	}
 
 	res, mergeErr := runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
@@ -808,7 +812,11 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 		message = r.PendingMergeMessage
 	}
 	if message == "" {
-		message = runtime.BuildSquashMessage(repoRoot, r.BaseCommit, r.FinalCommit, runtime.RunDisplayName(r))
+		conflictTarget := r.PendingMergeInto
+		if conflictTarget == "" {
+			conflictTarget = resolveMergeTargetForPersistence("current", repoRoot)
+		}
+		message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit, conflictTarget, r.FinalCommit, runtime.RunDisplayName(r))
 	}
 
 	sha, commitErr := runtime.FinalizeConflictMerge(repoRoot, message)

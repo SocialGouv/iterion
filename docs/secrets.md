@@ -344,8 +344,13 @@ it. An unknown `--kind` is an error, not a silent pass-through to no checking.
 
 Studio: the **Secrets** view (gated on `server_info.secrets_enabled`) offers
 the same CRUD over `/api/local/secrets` (unauthenticated single-operator
-routes — the local studio is trusted to its loopback TTY user). Neither the
-CLI nor the REST responses ever return a stored value.
+routes — the local studio is trusted to its loopback TTY user), **including
+the same gate**: the create/rotate request carries an optional `kind` (the
+view's *Kind* picker, defaulting to "detect from the value"), the shape is
+resolved by the same `secrets.ResolveSecretShape` the CLI calls, and a refusal
+answers `400` naming the kind and the `raw` opt-out. Two doors into one store
+must not disagree on what a value is. Neither the CLI nor the REST responses
+ever return a stored value.
 
 The desktop app's provider-API-key keychain (`ANTHROPIC_API_KEY`, … under
 `io.iterion.desktop`) is a **separate** concern — those are how iterion talks

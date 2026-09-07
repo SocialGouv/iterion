@@ -118,16 +118,27 @@ export interface LocalSecretView {
   last_used_at?: string;
 }
 
+/**
+ * LocalSecretKind names the shape the stored value must have — the same gate
+ * `iterion secret set --kind` applies. Omitted, the server infers it from the
+ * value (a PEM header, a JSON opener, else a bare token); "raw" is the
+ * explicit opt-out for a value that is none of the three (a passphrase, a
+ * connection string, a blob).
+ */
+export type LocalSecretKind = "token" | "json" | "pem" | "raw";
+
 export interface CreateLocalSecretInput {
   name: string;
   secret: string;
   scope?: "global" | "project";
+  kind?: LocalSecretKind;
   allowed_hosts?: string[];
 }
 
 export interface UpdateLocalSecretInput {
   name?: string;
   secret?: string;
+  kind?: LocalSecretKind;
   allowed_hosts?: string[] | null;
 }
 

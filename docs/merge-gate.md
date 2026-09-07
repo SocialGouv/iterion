@@ -917,6 +917,37 @@ completed and then had no way to post the verdict it had computed. The grant's
 TTL is therefore derived from the max retry wait, plus a margin for the resumed
 run itself.
 
+### The grant's other two bounds: the run's own end, and a mint that fails
+
+A TTL sized for a seven-day quota wait is a long life for a credential that a
+normal review needs for minutes. So the run's terminal outcome brings the
+expiry forward: the same run-outcome event the reconciler consumes shortens the
+grant to the reconciler's own window (the sweep lookback plus a margin), after
+which nothing revisits the run and the grant has no reader left. Two shapes
+keep the full TTL, because something *will* come back and post their own
+verdict — a **paused** run, and a `failed_resumable` one with an **armed**
+retry. "Abandoned" is not re-derived here: the retry sweeper enforces the
+policy's `max_wait`, unsets the armed instant when it gives up, and
+**republishes the run outcome**, so the grant is shortened on that event
+instead.
+
+The other bound is the mint itself. A launch whose grant cannot be registered —
+a saturated in-memory registry, an unreachable Valkey — is **refused**, not
+degraded: the run would claim the repo's gate context and then have no way to
+answer it, and the reconciler reads the grant to know where to speak, so it
+would abstain and the claim would never be resolved. Refusing works because the
+claim is posted *after* the launch: nothing is left on the head to release. The
+webhook lane marks the delivery `launch_error` (redelivery re-enters), the
+studio/API launch answers `503`, and a board card is filed blocked with the
+reason.
+
+**Known gap — the registry is single-replica by default.** Without Valkey the
+grants live in one pod's memory, so a restart empties them: an in-flight run's
+publish then answers `401`, and the reconciler abstains on "its publish grant
+is expired or revoked". `pkg/valkey` is the cloud twin and is used when
+configured; making it the only backend (so an unknown token is a real refusal
+rather than a lost one) is not done.
+
 ### The dead review is re-run — once per head
 
 The synthetic `failure` makes the interruption visible; on an automated lane

@@ -77,6 +77,25 @@ func DeliveryInstallationPermissions() map[string]string {
 	}
 }
 
+// RunCIReadPermissions are the READ grants a bot needs to inspect the CI of
+// the PR it is working on — `gh pr checks` / `gh run view`, the wait a
+// campaign bot does before it declares a lot delivered.
+//
+// Both halves are needed because `gh pr checks` unions them: check-runs
+// (GitHub Actions and Apps) and the legacy commit statuses. iterion's own
+// merge gate posts a commit STATUS (`revi/review`), so a token carrying only
+// `checks` cannot see the very verdict the bot is waiting on.
+//
+// They are intersected into the RUN token like the delivery grants rather
+// than folded into the baseline: the baseline is also what the MANAGEMENT
+// token narrows to, and a server-side hook or repo call has no use for them.
+func RunCIReadPermissions() map[string]string {
+	return map[string]string{
+		PermissionChecks:   "read",
+		PermissionStatuses: "read",
+	}
+}
+
 // SecurityReadInstallationPermissions is the grant set minted for the
 // security-read token (org-wide Dependabot alerts): the vulnerability_alerts
 // read permission plus the mandatory metadata baseline. It is a separate
@@ -374,9 +393,11 @@ func RuntimePermissionsFor(granted map[string]string) map[string]string {
 			out[name] = level
 		}
 	}
-	for name, level := range DeliveryInstallationPermissions() {
-		if _, ok := granted[name]; ok {
-			out[name] = level
+	for _, extra := range []map[string]string{DeliveryInstallationPermissions(), RunCIReadPermissions()} {
+		for name, level := range extra {
+			if _, ok := granted[name]; ok {
+				out[name] = level
+			}
 		}
 	}
 	// An installation that granted nothing we recognise would yield an empty
