@@ -100,7 +100,8 @@ var errCardContinuable = errors.New("board dispatcher: run continuable")
 //     the run service is not wired. Card back to its column, claim freed,
 //     one Warn per (card, reason) edge.
 //   - errCardLaunchRefused — the launch was refused before any run existed:
-//     by the org launch gate (`launch gate: <rule>: <detail>` — the same
+//     by PR context resolution (forge lookup or grant availability), the
+//     org launch gate (`launch gate: <rule>: <detail>` — the same
 //     admission every other surface passes) or by the run service (a
 //     sealing failure, a queue outage, the server draining, a bot that does
 //     not compile, an invalid spec, a run no credential tier can fund):
@@ -127,14 +128,14 @@ var errCardUnlaunchable = errors.New("board dispatcher: card cannot be launched"
 // gate meters on the card's team.
 const boardDispatcherActor = "board-dispatcher"
 
-// errCardLaunchRefused marks a launch the run service refused before any run
-// started — see the taxonomy above. Typed at the ONE boundary where it is
-// decidable without reading an error's prose: every error returned by
-// runview.Service.Launch means no run was started.
+// errCardLaunchRefused marks a failure known to precede any run — PR context
+// resolution, admission, or runview.Service.Launch. Only those pre-launch
+// boundaries may apply it; a running bot's errors must never trigger a new
+// launch. See the taxonomy above.
 var errCardLaunchRefused = errors.New("board dispatcher: launch refused")
 
-// launchRefusal is the typed form processBoardCard returns for an error out
-// of runs.Launch: errors.Is(err, errCardLaunchRefused) for the class,
+// launchRefusal is the typed form processBoardCard returns for a pre-launch
+// failure: errors.Is(err, errCardLaunchRefused) for the class,
 // errors.Is through Cause for the typed refusals underneath (the server
 // draining), and Cause's own text for the ledger the operator reads — never
 // the class wrapper's.
@@ -411,7 +412,7 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		final, finalReason = c.Issue.State, tracker.ReasonUnlaunchable
 		d.noteHeld(heldAfterClaim, c.Tenant, c.Issue.ID, c.Issue.State, runErr)
 	case runErr != nil && errors.Is(runErr, errCardLaunchRefused):
-		// The run service refused the launch before any run existed (the
+		// The launch failed before any run existed (the
 		// taxonomy above): transient, not a verdict. Back to the column the
 		// tick took it from under machine provenance, and the card's ledger
 		// advanced so the dispatch listing spaces the retries — unless the
@@ -423,7 +424,10 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// operator reads why instead of guessing.
 		final, finalReason = c.Issue.State, tracker.ReasonLaunchRefused
 		kind := heldLaunchRefused
-		if !errors.Is(runErr, runtime.ErrServerDraining) {
+		// A replica can also drain during the forge lookup, before the
+		// run service can return its own ErrServerDraining. The typed
+		// pre-launch marker still proves that returning the card is safe.
+		if ctx.Err() == nil && !errors.Is(runErr, runtime.ErrServerDraining) {
 			ledger = dispatcher.NextLaunchRefusal(c.Issue.LaunchRefusal, time.Now().UTC(), launchRefusalReason(runErr))
 			if ledger.Attempts >= d.launchAttemptCap {
 				final, finalReason = d.blockedState, tracker.ReasonLaunchGivenUp
@@ -1842,11 +1846,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself — and it
 	// passes the fork guard at CLAIM time: a head repo can vanish between
-	// carding and claiming, and a refused card is filed blocked with the
-	// reason rather than launched against the base repo.
+	// carding and claiming. A proven fork or invalid grant is terminal;
+	// inability to resolve the PR context is a retryable pre-launch failure.
 	lc.Vars, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
 	if err != nil {
-		return fmt.Errorf("card %s: %w", iss.ID, err)
+		if errors.Is(err, errPRLaunchForkGuard) || errors.Is(err, errForgePublishGrantTenant) {
+			return fmt.Errorf("card %s: %w", iss.ID, err)
+		}
+		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	spec := runview.LaunchSpec{
 		Vars:            lc.Vars,

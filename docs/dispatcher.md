@@ -304,6 +304,13 @@ one attempt per backoff, not one per 5s tick, and queues behind the
 cards not tried yet (its `updated_at` moves). The server draining
 consumes no attempt: another replica claims the card on its next tick.
 
+PR context resolution before launch uses this same ledger when the forge
+cannot be reached or a publish grant is temporarily unavailable. A proven
+fork, withheld head repository, or grant belonging to another team remains
+a terminal refusal and launches nothing. A replica that drains during the
+PR lookup returns the never-launched card without advancing the ledger;
+draining after launch leaves the existing run in place.
+
 The **org launch gate** is one of these refusals. The board launch passes
 the same admission as an HTTP launch — `gateLaunch`: suspend →
 concurrency → launch rate → monthly caps
