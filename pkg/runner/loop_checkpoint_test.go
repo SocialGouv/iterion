@@ -256,7 +256,16 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	// state is stable while the commit is not (commit-tree stamps a time).
 	sh2 := exec.Command("sh", "-c", checkpointScript)
 	sh2.Dir = ws
-	sh2.Env = sh.Env
+	// git stamps a commit to the SECOND, so two back-to-back ticks land on
+	// the same sha and the property would be invisible. Production ticks are
+	// ten minutes apart; here the second one's date is pinned, so the
+	// difference is deterministic instead of clock-dependent. It was a
+	// t.Skip — which calls runtime.Goexit and took the NINE assertions below
+	// with it, on essentially every run (measured: 3/3 skipped), turning the
+	// guard this test exists for into a green no-op (review finding).
+	sh2.Env = append(append([]string(nil), sh.Env...),
+		"GIT_AUTHOR_DATE=2023-11-14T22:23:20+00:00",
+		"GIT_COMMITTER_DATE=2023-11-14T22:23:20+00:00")
 	out2, err2 := sh2.Output()
 	if err2 != nil {
 		t.Fatalf("second tick: %v (%s)", err2, out2)
@@ -266,7 +275,7 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 		t.Fatalf("an unchanged workspace changed state: %q -> %q", state, state2)
 	}
 	if sha2 == sha {
-		t.Skip("commit-tree returned the same sha twice — this machine's clock granularity hides the property under test")
+		t.Fatalf("a second tick over an unchanged workspace must still yield a NEW commit sha — the state, not the commit, is what a tick may compare")
 	}
 
 	// The run's own state: untouched, in all three places it lives.
