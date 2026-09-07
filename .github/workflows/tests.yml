@@ -303,7 +303,7 @@ jobs:
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
-            ./pkg/forge/...
+            ./pkg/forge/... ./pkg/trigger/...
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
