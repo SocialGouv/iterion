@@ -457,7 +457,14 @@ tool extend_verify:
             code, out, _ = git("rev-parse", "HEAD:%s" % p_)
             if code == 0 and out.strip():
                 blobs.append("%s=%s" % (p_, out.strip()))
-    report["acted_blobs"] = " ".join(blobs)
+    # ONE ENTRY PER LINE: a surface path or a request id may contain a space
+    # (both are lot-authored, and their guards reject `/`, `\\`, `.` and `..`,
+    # not whitespace), and a space-delimited certificate splits such an entry
+    # into two unreadable tokens — the path then has no certified blob and the
+    # act loses the content binding that closes the masking vector (review
+    # finding). The reader refuses an entry it cannot parse; here we make sure
+    # there is none to refuse.
+    report["acted_blobs"] = "\n".join(blobs)
 
     # 3. Additions-only, decided by the harness's own code — the same code
     #    that refuses at the gate, and called with the same provenance the
@@ -522,7 +529,24 @@ tool extend_verify:
         report["refused"] = [p_ for p_ in report["still_pending"]
                              if p_.get("id") in before]
         still = {p_.get("id") for p_ in report["still_pending"]}
-        report["acted_ids"] = " ".join(sorted(i for i in before if i not in still))
+        report["acted_ids"] = "\n".join(sorted(i for i in before if i not in still))
+
+    # A REFUSED start certifies NOTHING. extend_base hands the agent no
+    # pending request when the net was already dirty, so anything committed in
+    # this window is the dirty net's own content — the constrained party's
+    # file — absorbed into this run's commits. Published as provenance, it
+    # would make the parent's gate exempt exactly the path the refusal exists
+    # to reject: the lot leaves `refs/<x>` and its act block uncommitted,
+    # commits only the request, and the subbot's tidy-up commit introduces the
+    # act inside `acted_commits` (review finding). `clean_start` was computed
+    # and fed only the subbot's own gate, which nothing downstream reads — so
+    # the defence rested on the agent obeying prose. It rests here now.
+    #
+    # Deliberately NOT extended to identity_ok: the lock is the commit SET,
+    # and an identity that leaked is an attribution defect, not a claim that
+    # someone else committed — the parent's gate already refuses on it.
+    if not clean:
+        report["acted_commits"] = report["acted_ids"] = report["acted_blobs"] = ""
 
     # The identity is NOT restored here: this node is on the repair loop's
     # body, and the loop re-enters the AGENT, not extend_base. Restoring at

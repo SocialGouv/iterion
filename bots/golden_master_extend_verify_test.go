@@ -76,12 +76,19 @@ func extendVerifyRepo(t *testing.T, verdict, pending string) (string, string) {
 
 func runExtendVerify(t *testing.T, ws, head, pendingJSON string) extendVerifyOut {
 	t.Helper()
+	return runExtendVerifyClean(t, ws, head, pendingJSON, true)
+}
+
+// runExtendVerifyClean is runExtendVerify with extend_base's verdict on the
+// net's cleanliness — the term a refused start carries into this node.
+func runExtendVerifyClean(t *testing.T, ws, head, pendingJSON string, clean bool) extendVerifyOut {
+	t.Helper()
 	body := toolScript(t, "golden-master/extend.bot", "extend_verify")
 	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{vars.oracle_dir}}", strconv.Quote(".golden-master"))
 	body = strings.ReplaceAll(body, "{{input.head}}", strconv.Quote(head))
 	body = strings.ReplaceAll(body, "{{input.pending}}", pendingJSON)
-	body = strings.ReplaceAll(body, "{{input.clean}}", "true")
+	body = strings.ReplaceAll(body, "{{input.clean}}", map[bool]string{true: "true", false: "false"}[clean])
 	body = strings.ReplaceAll(body, "{{input.prev_name}}", strconv.Quote(""))
 	body = strings.ReplaceAll(body, "{{input.prev_email}}", strconv.Quote(""))
 	body = strings.ReplaceAll(body, "{{vars.actor_name}}", strconv.Quote("golden-master extend"))
