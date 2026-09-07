@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -136,7 +137,7 @@ func TestSubmitLaunch_FailureLeavesNoOrphanQueuedRow_Mongo(t *testing.T) {
 		t.Fatalf("mongostore.New: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		_ = st.DB().Drop(ctx)
 		_ = st.Close(ctx)

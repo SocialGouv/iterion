@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"os"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 func rva19db(t *testing.T, prefix string) (*mongo.Database, context.Context) {
@@ -21,7 +21,7 @@ func rva19db(t *testing.T, prefix string) (*mongo.Database, context.Context) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	t.Cleanup(cancel)
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -31,7 +31,7 @@ func rva19db(t *testing.T, prefix string) (*mongo.Database, context.Context) {
 	_, _ = rand.Read(nonce)
 	db := client.Database(prefix + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 10*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = db.Drop(c)
 		_ = client.Disconnect(c)

@@ -1,12 +1,12 @@
 package mongo
 
 import (
-	"context"
 	"os"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // newTTLTestStore builds a Mongo store with a non-zero EventsTTLDays
@@ -18,7 +18,7 @@ func newTTLTestStore(t *testing.T, ttlDays int) *Store {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo TTL schema test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	s, err := New(ctx, Config{
 		URI:           uri,
@@ -30,7 +30,7 @@ func newTTLTestStore(t *testing.T, ttlDays int) *Store {
 		t.Fatalf("mongo New: %v", err)
 	}
 	t.Cleanup(func() {
-		drop, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dcancel := mongotest.TeardownCtx()
 		defer dcancel()
 		_ = s.db.Drop(drop)
 		_ = s.Close(drop)
@@ -42,7 +42,7 @@ func newTTLTestStore(t *testing.T, ttlDays int) *Store {
 // or (0, false) when no such index exists (or it carries no TTL).
 func ttlSeconds(t *testing.T, coll *mongo.Collection, name string) (int32, bool) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	specs, err := coll.Indexes().ListSpecifications(ctx)
 	if err != nil {

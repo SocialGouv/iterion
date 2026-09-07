@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -27,7 +28,7 @@ func mongoKeyStore(t *testing.T) (*MongoApiKeyStore, context.Context) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo api-key suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	t.Cleanup(cancel)
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -37,7 +38,7 @@ func mongoKeyStore(t *testing.T) (*MongoApiKeyStore, context.Context) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_byok_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dropCancel := mongotest.TeardownCtx()
 		defer dropCancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

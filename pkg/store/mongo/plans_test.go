@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,7 +25,7 @@ func newPlanTestStore(t *testing.T) *Store {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo plan-store test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	s, err := New(ctx, Config{
 		URI:      uri,
@@ -35,7 +36,7 @@ func newPlanTestStore(t *testing.T) *Store {
 		t.Fatalf("mongo New: %v", err)
 	}
 	t.Cleanup(func() {
-		drop, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dcancel := mongotest.TeardownCtx()
 		defer dcancel()
 		_ = s.db.Drop(drop)
 		_ = s.Close(drop)

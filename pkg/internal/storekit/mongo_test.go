@@ -1,7 +1,6 @@
 package storekit
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -12,6 +11,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 type rec struct {
@@ -38,7 +39,7 @@ func testDB(t *testing.T) *mongo.Database {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_storekit_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -48,7 +49,7 @@ func testDB(t *testing.T) *mongo.Database {
 
 func TestMongo_CRUD(t *testing.T) {
 	db := testDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 
 	notFound := errors.New("kit: not found")
@@ -151,7 +152,7 @@ func TestMongo_CRUD(t *testing.T) {
 
 func TestTicketMongo(t *testing.T) {
 	db := testDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 
 	notFound := errors.New("kit: ticket not found")
