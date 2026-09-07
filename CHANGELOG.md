@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.24](https://github.com/SocialGouv/iterion/compare/v3.112.23...v3.112.24) (2026-09-07)
+
+### Bug Fixes
+
+* **golden-master:** a stat-recorded path is stat-compared whatever today's size bound ([#873](https://github.com/SocialGouv/iterion/issues/873)) ([6164e1a](https://github.com/SocialGouv/iterion/commit/6164e1aaed223c5c86aff3be5c487be2622e9781))
+
+    <details><summary>why</summary>
+
+    Third review round of the residue follow-up. The legacy migration of a "st:" record raised the size bound in the same change: a record written under 8 MiB for a file that hashes under 256 MiB today could never match — an untouched operator file in that band was permanent residue, the very stop the migration was written to prevent. The comparison is scheme-aware now: a stat record is answered by the stat form of the path whatever the current bound; the legacy branch migrates digits only.
+
+    </details>
+* **server,trigger,cloudsched:** the trigger spine and cron schedules launch through the org gate, and an emit meters what it fans out to ([#872](https://github.com/SocialGouv/iterion/issues/872)) ([a6cec38](https://github.com/SocialGouv/iterion/commit/a6cec387ce35e35084670abeb88269acc7acba2b)), closes [#844](https://github.com/SocialGouv/iterion/issues/844)
+
+    <details><summary>why</summary>
+
+    Three cloud launch surfaces sat outside gateLaunch, so an org launched past its suspend, its concurrency cap, its launch rate and its monthly run/cost caps, unmetered.
+
+    </details>
+
 ## [3.112.23](https://github.com/SocialGouv/iterion/compare/v3.112.22...v3.112.23) (2026-09-07)
 
 ### Bug Fixes
