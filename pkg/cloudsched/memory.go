@@ -68,6 +68,19 @@ func (s *MemoryStore) ClaimTick(_ context.Context, id string, expectedNext, newN
 	return won, nil
 }
 
+func (s *MemoryStore) MarkLaunchError(_ context.Context, id, lastError string, at time.Time) error {
+	_, err := s.kit.Mutate(id, func(sb *ScheduledBot) bool {
+		sb.LastError = lastError
+		sb.LastErrorAt = nil
+		if lastError != "" {
+			t := at.UTC()
+			sb.LastErrorAt = &t
+		}
+		return true
+	})
+	return err
+}
+
 func (s *MemoryStore) Update(_ context.Context, id string, patch SchedulePatch) (ScheduledBot, error) {
 	var out ScheduledBot
 	if _, err := s.kit.Mutate(id, func(sb *ScheduledBot) bool {

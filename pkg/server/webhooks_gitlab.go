@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -1099,11 +1100,16 @@ func (s *Server) updateWebhookDelivery(ctx context.Context, d webhooks.Delivery)
 	_ = s.webhookDeliveries.Update(ctx, d)
 }
 
+// scheduledLaunchActor is the auth principal a cron tick launches under: the
+// gate meters it on the schedule's own team.
+const scheduledLaunchActor = "cloud-scheduler"
+
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
-// run for its tenant through the run service (cloud → publisher). The tenant
-// identity is stamped on the ctx so the publisher seals credentials + scopes
-// the run to the org. When the schedule pins a RepoURL, it is threaded onto
-// the LaunchSpec so the runner clones the repo before the bot starts —
+// run for its tenant through the run service (cloud → publisher), past the
+// shared org launch gate. The tenant identity is stamped on the ctx so the
+// publisher seals credentials + scopes the run to the org. When the schedule
+// pins a RepoURL, it is threaded onto the LaunchSpec so the runner clones
+// the repo before the bot starts —
 // mandatory for stateful bots that persist state to git (feed-watch
 // state_commit=true), which need a workspace with push credentials wired.
 // Generic secrets declared by the bot (e.g. `webhooks`) resolve via the
@@ -1130,8 +1136,20 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	}
 	spec.SecretOverrides = overrides
 	lb.Stamp(&spec)
-	_, err = s.runs.Launch(ctx, spec)
-	return err
+	// The SAME admission every other launch surface passes — suspend →
+	// concurrency → launch rate → monthly caps — on the schedule's own team,
+	// so a cron cadence is not a way around any of them. The denial is
+	// returned so the ticker records it on the schedule and audits the tick;
+	// the metered slot goes back when the run service then refuses.
+	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: sb.TenantID, UserID: scheduledLaunchActor}))
+	if deny != nil {
+		return deny.err()
+	}
+	if _, err = s.runs.Launch(ctx, spec); err != nil {
+		adm.rollback(s.logger)
+		return err
+	}
+	return nil
 }
 
 // scheduledForgeOverrides resolves a repo-bound schedule's forge connection
