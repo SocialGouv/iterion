@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -213,6 +214,59 @@ func TestForgePublishReview_GateMissingHeadSHA(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.GatePosted || gc.setCalls != 0 || resp.GateError == "" {
 		t.Fatalf("missing head sha must skip status with an error: %+v (calls=%d)", resp, gc.setCalls)
+	}
+}
+
+// A verdict on a pull request that already merged names a revision nobody
+// merges any more: the check is gone from the merge decision, the head the
+// status lands on is pre-merge, and the branch it describes is scheduled for
+// deletion. Observed in production (run 01a07840): a fixer kept working for
+// half an hour past the squash and posted `revi/review=success` on the
+// pre-merge head. The chokepoint is here — every campaign bot's gate status
+// crosses postGateStatus, which already resolves the pull request.
+func TestForgePublishReview_GateRefusedOnAClosedPullRequest(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+			gc := &fakeGateClient{headSHA: "deadbeefcafe", state: state}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			w := httptest.NewRecorder()
+			s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"context":"revi/review","blocking_count":0}`)))
+			if w.Code != http.StatusOK {
+				t.Fatalf("the review itself still lands: code=%d body=%s", w.Code, w.Body.String())
+			}
+			var resp publishReviewResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if gc.setCalls != 0 {
+				t.Fatalf("no status may be written on a %s pull request's head, got %d write(s): %+v", state, gc.setCalls, gc.last)
+			}
+			if resp.GatePosted {
+				t.Fatalf("gate_posted must be false on a %s pull request: %+v", state, resp)
+			}
+			if !strings.Contains(resp.GateError, state) {
+				t.Fatalf("gate_error must name the state the bot's tail has to route on, got %q", resp.GateError)
+			}
+			if !resp.Published {
+				t.Fatalf("the review comment is the one thing still worth posting: %+v", resp)
+			}
+		})
+	}
+}
+
+// An empty state is a provider that does not report one, never a closure:
+// suppressing a required check on a guess is how a pull request deadlocks.
+func TestForgePublishReview_GatePostedWhenTheStateIsUnknown(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"} // state "" — unreported
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"blocking_count":0}`)))
+	if gc.setCalls != 1 {
+		t.Fatalf("an unreported state must not suppress the verdict, writes=%d", gc.setCalls)
 	}
 }
 
