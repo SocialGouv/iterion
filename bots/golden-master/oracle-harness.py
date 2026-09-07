@@ -2153,7 +2153,13 @@ def dirty_fingerprint(ws, path):
     large: undecidable, which is not "unchanged"."""
     full = os.path.join(ws, path)
     try:
-        if os.path.isdir(full) and not os.path.islink(full):
+        if not os.path.lexists(full):
+            # An uncommitted deletion (` D path`): a state of its own, so
+            # absent-before equals absent-after and an operator's deletion
+            # is not residue.
+            return "absent"
+        st = os.lstat(full)
+        if stat.S_ISDIR(st.st_mode):
             h, n = hashlib.sha1(), 0
             for root, dirs, files in os.walk(full):
                 dirs.sort()
@@ -2162,13 +2168,38 @@ def dirty_fingerprint(ws, path):
                     if n > 20000:
                         return "?"
                     fp = os.path.join(root, name)
-                    st = os.lstat(fp)
-                    h.update(("%s\0%d\0%d\n" % (os.path.relpath(fp, full), st.st_size, st.st_mtime_ns)).encode("utf-8", "replace"))
+                    fst = os.lstat(fp)
+                    h.update(("%s\0%d\0%d\n" % (os.path.relpath(fp, full), fst.st_size, fst.st_mtime_ns)).encode("utf-8", "replace"))
             return h.hexdigest()
+        if stat.S_ISLNK(st.st_mode):
+            return hashlib.sha1(os.readlink(full).encode("utf-8", "replace")).hexdigest()
+        if not stat.S_ISREG(st.st_mode):
+            # A FIFO or a device: opening it could block, on no leash.
+            return "?"
+        h = hashlib.sha1()
         with open(full, "rb") as f:
-            return hashlib.sha1(f.read()).hexdigest()
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
     except OSError:
         return "?"
+
+
+def porcelain_paths(out):
+    """The paths of a `git status --porcelain -z` output: NUL-separated, no
+    quoting, a rename or copy followed by its source entry (skipped — the
+    destination is the path that exists)."""
+    entries = (out or "").split("\0")
+    paths, i = [], 0
+    while i < len(entries):
+        e = entries[i]
+        i += 1
+        if len(e) < 4:
+            continue
+        paths.append(e[3:])
+        if e[0] in "RC":
+            i += 1
+    return sorted(set(paths))
 
 
 def dirty_paths_before_apply(ws):
@@ -2183,11 +2214,10 @@ def dirty_paths_before_apply(ws):
     the index is a write into the tree it is only meant to read (under a
     full disk or a size limit it left a corrupt index behind, and every
     later checkout failed)."""
-    code, out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
+    code, out = run("git --no-optional-locks status --porcelain -z", ws, timeout=120)
     if code != 0:
         return None
-    paths = sorted({l[3:] for l in (out or "").splitlines() if l.strip()})
-    return ["%s:%s" % (dirty_fingerprint(ws, q), q) for q in paths]
+    return ["%s:%s" % (dirty_fingerprint(ws, q), q) for q in porcelain_paths(out)]
 
 
 def split_dirty_record(entries):
@@ -2197,9 +2227,11 @@ def split_dirty_record(entries):
     rec = {}
     for e in entries or []:
         fp, sep, q = e.partition(":")
-        if sep and q:
+        if sep and q and (fp in ("absent", "?") or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
             rec[q] = fp
         else:
+            # No fingerprint (a marker written before they were recorded): the
+            # whole entry is the path, a colon in it included.
             rec[e] = "?"
     return rec
 
@@ -2234,6 +2266,11 @@ def write_applied_marker(ws, meta):
                        "in this run, or another harness is gating this tree; the tree is not "
                        "HEAD and nothing is applied on top of it"
                        % (prior.get("id") or "?", prior.get("dir") or marker))
+    # Read the tree BEFORE the exclusive create: the status and the hashing
+    # take real time, and a marker that exists but is empty is read as
+    # corrupt by the next gate — the create→write window must stay as short
+    # as a single write.
+    dirty_before = dirty_paths_before_apply(ws)
     try:
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as e:
@@ -2241,7 +2278,7 @@ def write_applied_marker(ws, meta):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"id": meta.get("id"), "dir": meta.get("dir"),
-                       "dirty_before": dirty_paths_before_apply(ws)}, f)
+                       "dirty_before": dirty_before}, f)
     except OSError as e:
         # The empty shell a failed write leaves behind records NOTHING — apply.sh
         # will not run — but the NEXT gate reads it as a corrupt marker: kind
@@ -2421,11 +2458,11 @@ def revert_leftover_mutant(ws, gm_dir=None):
         # wedged one must not hang the gate the way the incident behind this
         # whole guard hung it. Unanswered is reported as UNKNOWN, never as
         # clean — an empty porcelain and an absent git are not the same fact.
-        st, st_out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
+        st, st_out = run("git --no-optional-locks status --porcelain -z", ws, timeout=120)
         if st == 0:
-            dirty = st_out.strip()
+            after = porcelain_paths(st_out)
+            dirty = "\n".join(after)
             before = meta.get("dirty_before")
-            after = sorted({l[3:] for l in st_out.splitlines() if l.strip()})
             if before is not None:
                 # What is still modified now and was NOT when the mutant went
                 # down is the mutant's residue — and so is a path that was
@@ -4122,6 +4159,36 @@ def _selftest():
                   [["f.txt"], True, "still_mutated"])
             os.remove(applied_marker_for(tmp))
             sub("git", "checkout", "--", "f.txt")
+            # Une suppression non committee de l'operateur n'est pas un residu ; un
+            # renommage indexe non plus ; un chemin avec une espace edite par le
+            # mutant EST un residu (le porcelain -z ne le cite pas entre guillemets).
+            with open(os.path.join(tmp, "d.txt"), "w", encoding="utf-8") as f:
+                f.write("doomed\n")
+            with open(os.path.join(tmp, "a b.txt"), "w", encoding="utf-8") as f:
+                f.write("spaced\n")
+            sub("git", "add", "d.txt", "a b.txt")
+            sub("git", "commit", "-qm", "more files")
+            os.remove(os.path.join(tmp, "d.txt"))
+            sub("git", "mv", "a b.txt", "a c.txt")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            db = (read_applied_marker(tmp)[0] or {}).get("dirty_before") or []
+            check("une suppression est enregistree 'absent', un renommage par sa destination",
+                  ["absent:d.txt" in db, any(e.endswith(":a c.txt") for e in db), any(e.endswith(":a b.txt") for e in db)],
+                  [True, True, False])
+            left = revert_leftover_mutant(tmp)
+            check("suppression et renommage de l'operateur : pas un residu, reverti",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            scripts("printf 'mutant\\n' >> 'a c.txt'", "true")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un chemin avec une espace edite par le mutant est un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [["a c.txt"], "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            sub("git", "reset", "-q", "--hard", "HEAD")
+            # Une entree d'avant les empreintes dont le chemin contient ':' reste un chemin entier.
+            check("un chemin d'avant les empreintes avec ':' n'est pas coupe",
+                  split_dirty_record(["src/a:b.txt", "absent:d.txt"]), {"src/a:b.txt": "?", "d.txt": "absent"})
             # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
             mpath = applied_marker_for(tmp)
             os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
