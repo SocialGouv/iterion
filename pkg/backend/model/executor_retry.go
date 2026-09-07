@@ -228,12 +228,53 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return delegate.Result{}, ctx.Err()
+			// Cancelled between attempts: no output survives, but what the
+			// attempts already burned is not undone by it — the caps and
+			// the ledgers read the map, not the struct.
+			return richerSpend(result, delegate.Result{}), ctx.Err()
 		}
 
+		prev := result
 		result, err = fn()
+		result = richerSpend(prev, result)
 	}
 	return result, err
+}
+
+// richerSpend keeps the higher of two attempts' ACCOUNTING on the later
+// attempt's result — the answer is the later one's, the figure is whichever
+// is true.
+//
+// MAX, never a sum, and the reason is the same one annotateCost states for
+// the formatting passes: the CLI's usage accounting is SESSION-CUMULATIVE,
+// so a retry inside one session re-reports the running total and adding the
+// attempts would double-count it. The failure this closes is the other
+// direction: when the last attempt is the CHEAP one — attempt 1 spends an
+// agentic session, attempt 2 cannot even spawn and reports nothing — taking
+// the last attempt's figure reported the cost of nothing, and the class has
+// two documented precedents in this file (the chain's own chainSpend, and
+// validateAndRetry, whose comment records that dropping the first attempt's
+// usage "broke budget enforcement at the margins").
+func richerSpend(prev, next delegate.Result) delegate.Result {
+	pt, nt := prev.Tokens, next.Tokens
+	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
+	if pt <= nt && pc <= nc {
+		return next
+	}
+	if pt > nt {
+		next.Tokens = pt
+	}
+	// An unallocated map records nothing, and the map is what the caps read.
+	if next.Output == nil {
+		next.Output = map[string]any{}
+	}
+	if pt > nt {
+		next.Output["_tokens"] = pt
+	}
+	if pc > nc {
+		next.Output["_cost_usd"] = pc
+	}
+	return next
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +540,14 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 	}
 	r.Tokens += s.tokens
 	r.Duration += s.duration
+	// An unallocated map records nothing, and the map is what the caps read
+	// — so the shape that loses the most is the one that had no output at
+	// all: a last element that could not even spawn, folding a whole
+	// session's spend into a struct field nobody enforces on. Allocated
+	// here for the same reason typedFailure allocates it.
+	if r.Output == nil && (s.tokens > 0 || s.costUSD > 0) {
+		r.Output = map[string]any{}
+	}
 	if r.Output != nil {
 		if s.tokens > 0 {
 			r.Output["_tokens"] = r.Tokens
