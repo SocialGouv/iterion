@@ -171,6 +171,34 @@ Two mechanics worth knowing before the first run:
   not declare `seal_committed` leaves the committed held-out set to the gate that does. Give the
   second environment its own fresh set if you want it scored there too — a set is spent once.
 
+## The held-out set has to survive the run that drew it
+
+Sealing the set out of the tree is what makes the seal mechanical — the hardening loop cannot
+learn from mutants it cannot read. It is also what makes a fresh set **ephemeral**: the sealed
+pile lives under the scratch directory, keyed on the workspace path, so a workspace that dies
+with its run takes the set with it. On a pod, that is every run.
+
+A set a LATER gate must score therefore has one durable home, the tree: commit it under
+`mutants/holdout/`, and let the gate that owns it opt in (`"seal_committed": true`, or
+`GM_SEAL_COMMITTED=1` for a hand-run gate). A committed set is left in place by the seal
+precisely so it can wait for that gate.
+
+Two debts a `0/0` held-out figure can carry, both reported as FIELDS rather than prose, because
+a supervising process needs to see them:
+
+- `holdout_awaiting_gate` — a set is committed and no gate has claimed it. It narrows the
+  counter-test while reading as prepared.
+- `holdout_spent_unreplaced` with `holdout_spent_cycles` — the last set was scored and published
+  under `mutants/audit/`, and no fresh one has been drawn. One cycle is a set that did its work;
+  a long run of them is a campaign whose strongest term has been vacuously true for a while.
+  Measured on a live campaign: thirteen published cycles, nothing committed, every landing
+  reporting `0/0` through a gate line that checks `detected == total`.
+- `holdout_sealed_uncommitted` — a fresh set just left the tree without a committed copy. Said at
+  the one moment anyone can still commit it.
+
+None of the three is a refusal: the judge publishes the state and the count, and the process that
+owns the campaign's cadence decides what a debt costs.
+
 ## Re-baselining, and why it kills nets
 
 A golden master dies by re-baselining. Something breaks three screens, someone regenerates the
