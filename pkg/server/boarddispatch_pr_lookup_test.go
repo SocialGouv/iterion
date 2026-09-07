@@ -30,10 +30,7 @@ func boardPRLookupFixture(t *testing.T, gc forgeGateClient) (*Server, *countingP
 		t.Fatal(err)
 	}
 	pub := &countingPublisher{onLaunch: func(id string) { finishRunAs(t, rs, id, store.RunStatusFinished) }}
-	s.runs, err = runview.NewService("", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
 	card := readyCard("native:pr", "probe")
 	card.Tenant = "team1"
 	card.Issue.BotArgs = map[string]string{"pr_url": "https://github.com/o/r/pull/7"}
