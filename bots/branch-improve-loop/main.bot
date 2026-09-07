@@ -210,6 +210,13 @@ vars:
   ## The run itself never holds a posting credential.
   forge_publish_url: string = ""
   forge_publish_token: string = ""
+  ## The READ half of the same grant: "is this pull request still open?".
+  ## The delivery tail asks it before pushing — a squash merge leaves the
+  ## source branch present and its head no ancestor of the base, so git in the
+  ## workspace reads a merged pull request as an open one. Empty (a local run,
+  ## or no connection covering the repo) means the question cannot be asked,
+  ## which is never read as a closure.
+  forge_pr_state_url: string = ""
 
   ## ─── Plan phase ───────────────────────────────────────────────
   ## The plan phase itself — the AUTHORED triage plan the campaign fixes
@@ -961,7 +968,18 @@ schema mr_gate_output:
 ## push_back_tool output — deterministic result of the PR-branch push.
 schema push_state:
   pushed: bool
+  ## superseded: the pull request had already merged or closed, so its branch
+  ## took no more commits. The run's answer is the banked branch below, not a
+  ## verdict on a head that left the merge decision.
+  superseded: bool
   reason: string
+  ## banked_branch / how_to_take: where the fixes ARE when they could not land
+  ## on the pull request's branch, and the command that takes them. Empty when
+  ## the push landed (or when there was nothing to push). Without them, work
+  ## that cost a full run is reachable only by someone who already knows to
+  ## look for it.
+  banked_branch: string
+  how_to_take: string
 
 ## publish_verdict I/O — the deterministic verdict + merge-gate status.
 schema post_feedback_input:
@@ -970,6 +988,16 @@ schema post_feedback_input:
   branch_clean: bool
   commits_pushed: bool
   push_reason: string
+  ## Where the commits ARE when they could not land on the pull request's own
+  ## branch, and the command that takes them — rendered verbatim into the
+  ## comment. A run whose work is only reachable by someone who already knows
+  ## the convention has not delivered it.
+  banked_branch: string
+  how_to_take: string
+  ## The pull request merged or closed while the campaign ran: this comment is
+  ## the run's whole answer, and the graph routes to the typed terminal after
+  ## it instead of claiming a verdict on a head that left the merge decision.
+  superseded: bool
   ## Did the DETERMINISTIC build/test gate end green, and did it actually RUN?
   ## Part of the merge-gate count: a tree that does not build is not mergeable
   ## whatever the findings, and a build that was skipped proves nothing at all.
@@ -983,6 +1011,9 @@ schema post_feedback_input:
 schema post_feedback_output:
   posted: bool
   note: string
+  ## Echoed from the input so the graph can route on it (a `when` reads a
+  ## boolean off the SOURCE node's own output).
+  superseded: bool
 
 ## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
 ## LLM agent) is only ever entered when a push credential actually exists.
@@ -1659,6 +1690,19 @@ fail campaign_declined:
   message: "{{outputs.decline_probe.reason}}"
   resumable: false
 
+## pr_superseded — the pull request ended under the run. NOT resumable, and
+## not a failure to repair: the work exists, on the branch the comment names,
+## and nothing about a merged pull request changes by running the fixer again.
+## It wears the same typed DECLINED code as the no-op terminal above because
+## the platform reads that code as "this is the answer": the gate relaunch
+## stands down on it, the reconciler leaves no dead-review wording, and the
+## notice quotes the message below — which is what carries the difference.
+fail pr_superseded:
+  description: "the pull request merged or closed while the fixer was working"
+  code: DECLINED
+  message: "{{outputs.push_back_tool.reason}}"
+  resumable: false
+
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
 ## (~$0.69/13k tok EVERY pass); once pass 1 has authored verify.sh, re-authoring
@@ -2038,21 +2082,47 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
   output: forge_auth_state
 
 ## push_back_tool — DETERMINISTIC push of the run's HEAD onto the declared
-## forge branch (the PR's source branch). The in-repo truth decides: when
-## rev-list shows nothing new over origin/<push_branch> it no-ops cleanly, so
-## a converged-with-no-commits pass never errors. The token comes from the
-## mounted forge_token secret or a *_TOKEN env and is redacted from any
-## failure output; it is tried under the common forge basic-auth usernames
-## (x-access-token = GitHub, oauth2 = GitLab-style). No LLM — the push is a
-## mechanical act once the campaign banked the commits.
+## forge branch (the PR's source branch). Three questions decide, in order:
+##
+##   1. Is the pull request still OPEN? git alone cannot answer it — a squash
+##      merge leaves the source branch present and its head no ancestor of the
+##      base — so the run asks the iterion server through the READ half of its
+##      publish grant. A merged or closed pull request is never pushed onto:
+##      the head would leave the merge decision, and the branch is scheduled
+##      for deletion.
+##   2. Is there anything new? The in-repo truth decides: when rev-list shows
+##      nothing over origin/<push_branch> it no-ops cleanly, naming the two
+##      revisions it compared so the claim carries its own evidence.
+##   3. Did the push land? When it did not — a merged PR, a conflicting
+##      advance, a protected branch, a dead token — the commits are BANKED on
+##      a named branch and the output carries the command that takes them.
+##      Work nobody can reach is work nobody has.
+##
+## The token comes from the mounted forge_token secret or a *_TOKEN env and is
+## redacted from any failure output; it is tried under the common forge
+## basic-auth usernames (x-access-token = GitHub, oauth2 = GitLab-style), then
+## through `origin` itself for a remote no token can be injected into (ssh, a
+## local path) where git resolves the credential on its own. No LLM — the push
+## is a mechanical act once the campaign banked the commits.
+##
+## Keep this python body free of the double-quote character: the whole body is
+## wrapped by the shell in a double-quoted argument.
 tool push_back_tool:
-  command: `PUSH_BRANCH={{vars.push_branch}} python3 -c "
-import os, subprocess, json, re
+  command: `PUSH_BRANCH={{vars.push_branch}} PR_URL={{vars.pr_url}} PR_STATE_URL={{vars.forge_pr_state_url}} PR_STATE_TOKEN={{vars.forge_publish_token}} python3 -c "
+import os, subprocess, json, re, urllib.request, urllib.error, urllib.parse
 branch = os.environ.get('PUSH_BRANCH', '').strip()
+out = {'pushed': False, 'superseded': False, 'reason': '', 'banked_branch': '', 'how_to_take': ''}
+def emit(**kw):
+    out.update(kw)
+    print(json.dumps(out))
+    raise SystemExit(0)
 if not branch:
-    print(json.dumps({'pushed': False, 'reason': 'no push_branch declared'})); raise SystemExit(0)
+    emit(reason='no push_branch declared')
 def run(*a, **kw):
     return subprocess.run(list(a), capture_output=True, text=True, timeout=kw.get('timeout', 120))
+def sha(rev):
+    r = run('git', 'rev-parse', rev)
+    return (r.stdout or '').strip() if r.returncode == 0 else ''
 tok = ''
 p = '/run/iterion/secrets/forge_token'
 try:
@@ -2065,51 +2135,88 @@ if not tok:
         if os.environ.get(v):
             tok = os.environ[v].strip(); break
 if not tok:
-    print(json.dumps({'pushed': False, 'reason': 'no forge token available'})); raise SystemExit(0)
-r = run('git', 'remote', 'get-url', 'origin')
-m = re.match(r'https://(?:[^@/]+@)?([^/]+)/(.+?)(?:\\.git)?$', (r.stdout or '').strip())
-if not m:
-    print(json.dumps({'pushed': False, 'reason': 'origin is not an https remote'})); raise SystemExit(0)
-host, path = m.group(1), m.group(2)
-urls = [(u, 'https://' + u + ':' + tok + '@' + host + '/' + path + '.git') for u in ('x-access-token', 'oauth2')]
+    emit(reason='no forge token available')
 def redact(s):
     return (s or '').strip().replace(tok, '***')[-200:]
-last, rebased = '', False
-# Bounded fetch -> (rebase if remote advanced) -> push loop. A non-fast-forward
-# rejection is the EXPECTED case when the PR author (or another bot) pushed to
-# the branch while this review ran: re-fetch, replay OUR commits onto the fresh
-# remote head, and retry. Only a genuine rebase CONFLICT (the advance touched
-# the same lines we fixed) falls back to a flag — that needs a human.
-for attempt in range(3):
-    r = run('git', 'fetch', 'origin', branch)
-    if r.returncode != 0:
-        print(json.dumps({'pushed': False, 'reason': 'fetch origin/' + branch + ' failed (branch may be merged or deleted -> the fixes need a NEW PR onto the base): ' + redact(r.stderr or r.stdout)})); raise SystemExit(0)
-    ahead = run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD')
-    n = int((ahead.stdout or '0').strip() or '0') if ahead.returncode == 0 else -1
-    if n == 0:
-        print(json.dumps({'pushed': False, 'reason': 'nothing to push: HEAD not ahead of origin/' + branch})); raise SystemExit(0)
-    behind = run('git', 'rev-list', '--count', 'HEAD..FETCH_HEAD')
-    b = int((behind.stdout or '0').strip() or '0') if behind.returncode == 0 else 0
-    if b > 0:
-        mb = run('git', 'merge-base', 'FETCH_HEAD', 'HEAD')
-        base = (mb.stdout or '').strip()
-        rb = run('git', '-c', 'rebase.autoStash=true', 'rebase', '--onto', 'FETCH_HEAD', base, 'HEAD')
-        if rb.returncode != 0:
-            run('git', 'rebase', '--abort')
-            print(json.dumps({'pushed': False, 'reason': 'remote branch advanced by ' + str(b) + ' commit(s) that CONFLICT with these fixes (auto-rebase failed) -> needs a manual reconcile: ' + redact(rb.stderr or rb.stdout)})); raise SystemExit(0)
-        rebased = True
-        n = int((run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD').stdout or '0').strip() or '0')
-    nonff = False
+# Push targets: the token-injected https forms first (the cloud shape), then
+# plain origin for a remote no token can be injected into.
+urls = [('origin', 'origin')]
+r = run('git', 'remote', 'get-url', 'origin')
+m = re.match(r'https://(?:[^@/]+@)?([^/]+)/(.+?)(?:\\.git)?$', (r.stdout or '').strip())
+if m:
+    host, path = m.group(1), m.group(2)
+    urls = [(u, 'https://' + u + ':' + tok + '@' + host + '/' + path + '.git') for u in ('x-access-token', 'oauth2')] + urls
+def push_to(ref):
+    last = ''
     for user, url in urls:
-        r = run('git', 'push', url, 'HEAD:refs/heads/' + branch, timeout=180)
-        if r.returncode == 0:
-            print(json.dumps({'pushed': True, 'reason': 'pushed ' + str(n) + ' commit(s) HEAD->' + branch + ' as ' + user + (' (rebased onto advanced remote)' if rebased else '')})); raise SystemExit(0)
-        last = redact(r.stderr or r.stdout)
+        pr = run('git', 'push', url, 'HEAD:refs/heads/' + ref, timeout=180)
+        if pr.returncode == 0:
+            return True, user, ''
+        last = redact(pr.stderr or pr.stdout)
         if 'non-fast-forward' in last or 'fetch first' in last or 'rejected' in last or 'stale info' in last:
-            nonff = True; break
-    if not nonff:
-        print(json.dumps({'pushed': False, 'reason': 'push failed: ' + last})); raise SystemExit(0)
-print(json.dumps({'pushed': False, 'reason': 'push failed after 3 rebase-retries (remote kept advancing): ' + last}))
+            return False, user, last
+    return False, '', last
+# The bank: a NAMED branch on the forge carrying exactly what could not land
+# on the pull request, plus the command that takes it. Derived from the target
+# branch and this HEAD, so two runs of the same work reuse one name and a
+# reader can recognise it without knowing a run id.
+def bank(why, base):
+    head = sha('HEAD')
+    ref = 'iterion/banked/' + re.sub(r'[^A-Za-z0-9._/-]', '-', branch) + '-' + head[:12]
+    ok, _, err = push_to(ref)
+    if not ok:
+        emit(reason=why + ' -- and the fixes could NOT be banked either (' + (err or 'push refused') + '): they exist only in this run workspace')
+    take = 'git fetch origin ' + ref + ' && git cherry-pick ' + (base[:12] if base else 'origin/' + branch) + '..FETCH_HEAD'
+    emit(reason=why + ' -- the fixes are banked on ' + ref, banked_branch=ref, how_to_take=take, superseded=out['superseded'])
+# 1. The pull request's own state, read through the publish grant. No grant
+# (a local run) means no state to read, and the absence of an endpoint is
+# never a closure; an endpoint that answers badly says so in the report.
+state_note = ''
+pr_open = True
+su, st, pu = os.environ.get('PR_STATE_URL', '').strip(), os.environ.get('PR_STATE_TOKEN', '').strip(), os.environ.get('PR_URL', '').strip()
+if su and st and pu:
+    try:
+        req = urllib.request.Request(su + '?pr_url=' + urllib.parse.quote(pu, safe=''), headers={'X-Iterion-Run': st})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            js = json.loads(resp.read().decode())
+        pr_open = bool(js.get('open'))
+        if not pr_open:
+            state_note = str(js.get('state') or 'closed')
+    except urllib.error.HTTPError as e:
+        state_note = 'unreadable-http-' + str(e.code)
+    except Exception as e:
+        state_note = 'unreadable: ' + str(e)[:120]
+r = run('git', 'fetch', 'origin', branch)
+if r.returncode != 0:
+    emit(reason='fetch origin/' + branch + ' failed (branch may be merged or deleted -> the fixes need a NEW PR onto the base): ' + redact(r.stderr or r.stdout))
+mb = run('git', 'merge-base', 'FETCH_HEAD', 'HEAD')
+base = (mb.stdout or '').strip()
+ahead = run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD')
+n = int((ahead.stdout or '0').strip() or '0') if ahead.returncode == 0 else -1
+if n == 0:
+    # Name both revisions: a bare -nothing to push- is a git fact stated with
+    # no evidence, and a run whose campaign reported commits reads it as a lie
+    # (iterion#773).
+    emit(reason='nothing to push: HEAD ' + sha('HEAD')[:12] + ' is not ahead of origin/' + branch + ' at ' + sha('FETCH_HEAD')[:12])
+if not pr_open:
+    out['superseded'] = True
+    bank('the pull request is ' + state_note + ', so its branch takes no more commits', base)
+if state_note:
+    out['reason'] = 'the pull request state was ' + state_note + '; pushed anyway rather than strand the work. '
+behind = run('git', 'rev-list', '--count', 'HEAD..FETCH_HEAD')
+b = int((behind.stdout or '0').strip() or '0') if behind.returncode == 0 else 0
+rebased = False
+if b > 0:
+    rb = run('git', '-c', 'rebase.autoStash=true', 'rebase', '--onto', 'FETCH_HEAD', base, 'HEAD')
+    if rb.returncode != 0:
+        run('git', 'rebase', '--abort')
+        bank('remote branch advanced by ' + str(b) + ' commit(s) that CONFLICT with these fixes (auto-rebase failed) -> needs a manual reconcile: ' + redact(rb.stderr or rb.stdout), base)
+    rebased = True
+    n = int((run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD').stdout or '0').strip() or '0')
+ok, user, err = push_to(branch)
+if ok:
+    emit(pushed=True, reason=out['reason'] + 'pushed ' + str(n) + ' commit(s) HEAD->' + branch + ' as ' + user + (' (rebased onto advanced remote)' if rebased else ''))
+bank('push to ' + branch + ' refused (' + (err or 'unknown error') + ')', base)
 "`
   output: push_state
 
@@ -2169,15 +2276,18 @@ if u:
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool publish_verdict:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, urllib.request, urllib.error
-
-def emit(posted, note):
-    print(json.dumps({'posted': posted, 'note': note}))
-    raise SystemExit(0)
 
 def flag(name):
     return str(os.environ.get(name, '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+def emit(posted, note):
+    # superseded is echoed from the input so the graph can route the run to its
+    # typed terminal: a pull request that merged mid-campaign takes a comment,
+    # never a verdict on the head it left behind.
+    print(json.dumps({'posted': posted, 'note': note, 'superseded': flag('SUPERSEDED')}))
+    raise SystemExit(0)
 
 nl = chr(10)
 pr = os.environ.get('PR_URL', '').strip()
@@ -2207,10 +2317,16 @@ verify_ok = flag('VERIFY_OK')
 # never ran is a false statement, so a skip blocks like a red one.
 verify_skipped = flag('VERIFY_SKIPPED')
 
+banked = str(os.environ.get('BANKED_BRANCH') or '').strip()
+take = str(os.environ.get('HOW_TO_TAKE') or '').strip()
 # Nothing was pushed and no review was answered: this run has nothing to say
 # about this head, and whatever verdict already sits on it is still the truth.
 # Overwriting it would be speaking for a revision this run did not change.
-if not pushed and not ledger:
+# A BANKED branch is the exception - it is a fact about work that exists and
+# is otherwise reachable only by someone who already knows to look for it
+# (iterion#773: two runs banked 16.81 and 23.70 dollars of reviewed,
+# test-backed commits and neither verdict named the branch).
+if not pushed and not ledger and not banked:
     emit(False, 'nothing pushed and no prior review answered - left the existing verdict alone')
 
 unresolved = [e for e in ledger if str(e.get('status') or '').strip().lower() != 'fixed']
@@ -2225,6 +2341,13 @@ if pushed:
     body.append('Pushed fixes onto this branch. ' + str(os.environ.get('PUSH_REASON') or '').strip())
 else:
     body.append('No commits pushed. ' + str(os.environ.get('PUSH_REASON') or '').strip())
+if banked:
+    body.append('')
+    body.append('The commits are on ' + chr(96) + banked + chr(96) + ' on this remote. To take them:')
+    body.append('')
+    body.append(chr(96) * 3)
+    body.append(take)
+    body.append(chr(96) * 3)
 summary = str(os.environ.get('SUMMARY') or '').strip()
 if summary:
     body.append('')
@@ -2547,10 +2670,19 @@ workflow branch_improve_loop:
     branch_clean:   "{{outputs.campaign.branch_clean}}",
     commits_pushed: "{{outputs.push_back_tool.pushed}}",
     push_reason:    "{{outputs.push_back_tool.reason}}",
+    banked_branch:  "{{outputs.push_back_tool.banked_branch}}",
+    how_to_take:    "{{outputs.push_back_tool.how_to_take}}",
+    superseded:     "{{outputs.push_back_tool.superseded}}",
     finding_ledger: "{{outputs.campaign.finding_ledger}}",
     verify_ok:      "{{outputs.gate.converged}}",
     verify_skipped: "{{outputs.verify_run.skipped}}"
   }
+  ## The pull request merged (or closed) while the campaign ran. The comment
+  ## above is the whole answer — it names the branch the commits are on — and
+  ## the run ends on the typed refusal family the platform already reads:
+  ## no relaunch, no dead-review repair, no verdict on the head that left the
+  ## merge decision.
+  publish_verdict -> pr_superseded when superseded
   publish_verdict -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of

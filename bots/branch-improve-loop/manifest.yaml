@@ -1,7 +1,24 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.6.0
+version: 1.7.0
+## 1.7.0 — the delivery tail asks whether the pull request is still there,
+## and never loses what it cannot land. A fixer kept working half an hour
+## past the squash-merge of its pull request, pushed six commits onto the
+## merged branch and posted its verdict on the pre-merge head (#863): git
+## in the workspace cannot see a squash merge — the source branch is still
+## present and its head is no ancestor of the base — so `push_back_tool`
+## now asks the server through `forge_pr_state_url`, the READ half of the
+## run's publish grant. A pull request that merged or closed routes to
+## `fail pr_superseded: code: DECLINED`: one comment, no push onto a dead
+## branch, no verdict on a head that left the merge decision. Second: every
+## refusal to push — a merged pull request, a conflicting advance, a
+## protected branch, a dead token — BANKS the run's HEAD on
+## `iterion/banked/<branch>-<head12>` and the verdict names it plus the
+## cherry-pick that takes it (#773: two runs banked $16.81 and $23.70 of
+## reviewed, test-backed commits and neither verdict said where they
+## were). The no-op reason now names both revisions it compared, so
+## "nothing to push" is falsifiable instead of merely surprising.
 ## 1.6.0 — the run reaches its own DELIVERY, and may refuse the task.
 ## Three production runs died within 2s of the 2h30m cap having pushed
 ## NOTHING: the campaign spent the whole window and the delivery tail
