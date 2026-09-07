@@ -316,7 +316,6 @@ func TestFanOut_ForkPRStillBlocked(t *testing.T) {
 		return "", nil
 	}
 	cfg, pt := fanoutConfig(t, s)
-	cfg.BlockForkPRs = true
 	forkPR := strings.Replace(ghOpenPR,
 		`"head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}}`,
 		`"head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "mallory/widgets"}}`, 1)

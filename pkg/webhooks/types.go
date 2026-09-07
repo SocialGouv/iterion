@@ -202,15 +202,18 @@ type Config struct {
 	// (review_on_sync_pinned: false) to hand the field back.
 	ReviewOnSyncPinned bool `bson:"review_on_sync_pinned,omitempty" json:"review_on_sync_pinned,omitempty"`
 
-	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
-	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
-	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
-	// can open many to trigger costly bot runs), so an operator must validate it
-	// before a bot runs. Off by default (fork PRs still auto-review via Revi;
-	// the mutating branch-improve bot never runs on a PR-open regardless — the
-	// PR-open lane is review-only, see handlePRForgeReview). Recommended ON for
-	// a public repo.
-	BlockForkPRs bool `bson:"block_fork_prs,omitempty" json:"block_fork_prs,omitempty"`
+	// There is no fork switch here on purpose. A pull request whose head lives
+	// in another repository is refused on EVERY lane, unconditionally: the
+	// auto-review lane, the /command lanes, the reply-in-thread lane, the
+	// gate relaunch and the auto-fix lane all require a PROVEN same-repo head
+	// before anything launches. The launch pair a fork produces (the base
+	// repo's clone URL + a head branch that lives elsewhere) does not name one
+	// repository, so the checkout misses or — worse — hits a same-named branch
+	// on the base and the bot answers, comments and pushes grounded in the
+	// wrong code under iterion's own identity.
+	//
+	// Serving forks needs a lane of its own (read-only, no publish grant, no
+	// fixer, no repo secrets), not a boolean: see docs/webhooks.md.
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The

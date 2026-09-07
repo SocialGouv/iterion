@@ -134,7 +134,10 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
      works. This is the ONLY bespoke lane left: a reply carries no
      command for the registry to resolve, so classifying "is this a
      Revi thread" stays a dedicated gate
-     (`realWebhookNoteGate`/`gitlabNoteGateWithAPI`).
+     (`realWebhookNoteGate`/`gitlabNoteGateWithAPI`). It proves the head
+     project through the same resolver the command lane uses and launches
+     on `forge.PullRef.HeadCloneURL`/`SourceBranch`, so the pair it hands
+     the runner names ONE repository.
 - **`Issue Hook`** — adding a trigger label (e.g. `implement`) launches the
   webhook's bot, same as GitHub `issues` (below). GitLab has no `labeled`
   action, so the parser diffs `changes.labels` (previous→current) and fires
@@ -219,6 +222,19 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
   `SameRepoAsBase` behind `forkGuardRefusal`). A PR opened by iterion's **own forge bot** (another iterion
   bot's PR — see below) is also skipped.
+
+  **Fork pull requests are refused on every lane, and no configuration lifts
+  it.** The auto-review lane, the `/command` lanes, the reply-in-thread lane,
+  the gate relaunch and the gate auto-fix lane each require a head repository
+  PROVEN equal to the base before anything launches; a head the payload does
+  not name counts as unproven, which is the shape a deleted or blocked fork
+  takes. The reason is not only trust: the launch pair a fork produces — the
+  base repo's clone URL plus a head branch that lives elsewhere — does not
+  name one repository, so the checkout misses or hits a same-named branch on
+  the base and the bot reviews, comments and pushes against the wrong code
+  under iterion's own identity. Serving forks needs a lane of its own
+  (read-only, no publish grant, no fixer launch, no repo secrets, project
+  settings not honoured), not a switch on the existing ones.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —
   including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
@@ -770,7 +786,6 @@ are accepted by `POST` / `PATCH`:
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
 | `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
-| `block_fork_prs` | `false` | Persisted but **never read** by any launch path — the fork guard is unconditional on every provider (see [merge-gate.md](merge-gate.md)), so the flag has nothing left to add. |
 
 `authorized_repliers` / `min_replier_role` gate who may talk back to a
 bot in a note thread — see
