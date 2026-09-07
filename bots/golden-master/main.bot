@@ -2425,14 +2425,47 @@ tool oracle_run:
             if not stat.S_ISREG(st.st_mode):
                 return "?"
             if st.st_size > BIG_FILE_BYTES:
-                return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
-            h = hashlib.sha1()
-            with open(full, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 20), b""):
-                    h.update(chunk)
-            return h.hexdigest()
+                return stat_form(st)
+            return content_hash(full)
         except OSError:
             return "?"
+
+
+    def stat_form(st):
+        """The one stat fingerprint, "st-<size>-<mtime>": written by
+        dirty_fingerprint past the size bound and answered by fingerprint_like
+        for a stat record — one function, so the two cannot drift apart."""
+        return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
+
+
+    def content_hash(full):
+        h = hashlib.sha1()
+        with open(full, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+
+    def fingerprint_like(ws, path, recorded):
+        """The path's fingerprint in the SCHEME the record used, whatever today's
+        size bound: a stat record ("st-…") is answered by the stat form, a
+        content-hash record by the content hash — a record written under one
+        bound compared under another could never match, and an untouched file
+        was permanent residue (measured with the bound raised; the mirror
+        holds when it is lowered). Any other record is answered by
+        dirty_fingerprint."""
+        if isinstance(recorded, str) and (recorded.startswith("st-") or len(recorded) == 40):
+            full = os.path.join(repo_root_of(ws), path)
+            try:
+                if not os.path.lexists(full):
+                    return "absent"
+                st = os.lstat(full)
+                if not stat.S_ISREG(st.st_mode):
+                    return dirty_fingerprint(ws, path)
+                return stat_form(st) if recorded.startswith("st-") else content_hash(full)
+            except OSError:
+                return "?"
+        return dirty_fingerprint(ws, path)
 
 
     def status_porcelain_z(ws):
@@ -2500,8 +2533,12 @@ tool oracle_run:
                 # ("st:<size>:<mtime>:<path>"): read as the current form, so a
                 # marker across the upgrade still clears an untouched file.
                 parts = e.split(":", 3)
-                if len(parts) == 4 and parts[3]:
-                    rec[parts[3]] = "st-%s-%s" % (parts[1], parts[2])
+                try:
+                    size, mtime = int(parts[1]), int(parts[2])
+                except (ValueError, IndexError):
+                    size = mtime = None
+                if len(parts) == 4 and parts[3] and size is not None:
+                    rec[parts[3]] = "st-%d-%d" % (size, mtime)
                     continue
             if sep and q and (fp in ("absent", "?") or fp.startswith(("st-", "u-")) or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
                 rec[q] = fp
@@ -2753,7 +2790,7 @@ tool oracle_run:
                     for q in after:
                         if q not in rec:
                             residue.append(q)
-                        elif rec[q] == "?" or dirty_fingerprint(ws, q) != rec[q]:
+                        elif rec[q] == "?" or fingerprint_like(ws, q, rec[q]) != rec[q]:
                             residue.append(q)
                             if rec[q] == "?":
                                 residue_undecided = True
@@ -2801,8 +2838,8 @@ tool oracle_run:
         than silence."""
         kind, text = _leftover_disposition(left)
         if left.get("vanished"):
-            text += (" Uncommitted work that was there before the mutant is gone after the revert "
-                     "— the script undid it: %s." % ", ".join(left["vanished"][:20]))
+            text += (" Uncommitted work that was there before the mutant is clean now — undone by "
+                     "the revert, or by you since: %s." % ", ".join(left["vanished"][:20]))
         return kind, text
 
 
@@ -3164,6 +3201,7 @@ tool oracle_run:
         qui tournent, jamais une reimplementation — qui finirait par diverger d'eux.
         """
         failures, checked = [], [0]
+        skipped_under_root = []
 
         def check(name, got, want):
             checked[0] += 1
@@ -4509,6 +4547,8 @@ tool oracle_run:
                     os.chmod(secret, 0o755)
                     shutil.rmtree(secret, ignore_errors=True)
                 os.remove(os.path.join(tmp, "other.txt"))
+                if os.geteuid() == 0:
+                    skipped_under_root.append("2 permission checks (chmod 0 denies nothing)")
                 if os.geteuid() != 0:
                     check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
                           [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
@@ -4573,7 +4613,7 @@ tool oracle_run:
                 apply_mutant(lmeta, tmp)
                 left = revert_leftover_mutant(tmp)
                 check("le travail de l'operateur efface par le revert est nomme",
-                      [(left or {}).get("vanished"), leftover_disposition(left or {})[0], "gone after the revert" in leftover_disposition(left or {})[1]],
+                      [(left or {}).get("vanished"), leftover_disposition(left or {})[0], "clean now" in leftover_disposition(left or {})[1]],
                       [["f.txt"], "reverted", True])
                 # Un sous-repertoire illisible rend l'empreinte d'un repertoire indecidable.
                 os.makedirs(os.path.join(tmp, "u", "locked"), exist_ok=True)
@@ -4598,13 +4638,48 @@ tool oracle_run:
                 left = revert_leftover_mutant(tmp)
                 kind, text = leftover_disposition(left or {})
                 check("residu ET travail efface : la porte s'arrete et nomme les deux",
-                      [kind, (left or {}).get("residue"), (left or {}).get("vanished"), "gone after the revert" in text, "keep yours" in text],
+                      [kind, (left or {}).get("residue"), (left or {}).get("vanished"), "clean now" in text, "keep yours" in text],
                       ["still_mutated", ["created.txt"], ["f.txt"], True, False])
                 os.remove(applied_marker_for(tmp))
                 os.remove(os.path.join(tmp, "created.txt"))
                 # L'ancienne forme « st:taille:mtime:chemin » d'un marqueur d'avant est lue.
                 check("l'ancienne empreinte st: d'un gros fichier est lue comme la nouvelle",
                       split_dirty_record(["st:8388609:1234:big.bin"]), {"big.bin": "st-8388609-1234"})
+                # Un enregistrement par stat (ecrit sous un seuil plus bas) est compare par
+                # stat, meme si le fichier est aujourd'hui sous le seuil de hachage.
+                with open(os.path.join(tmp, "mid.bin"), "wb") as f:
+                    f.write(b"m" * 64)
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                apply_mutant(lmeta, tmp)
+                mpath = applied_marker_for(tmp)
+                mst = os.lstat(os.path.join(tmp, "mid.bin"))
+                with open(mpath, "w", encoding="utf-8") as f:
+                    json.dump({"id": "leftover-1", "dir": mdir,
+                               "dirty_before": ["st:%d:%d:mid.bin" % (mst.st_size, mst.st_mtime_ns)]}, f)
+                left = revert_leftover_mutant(tmp)
+                check("un enregistrement stat d'avant, fichier sous le seuil actuel : compare par stat, pas un residu",
+                      [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+                os.remove(os.path.join(tmp, "mid.bin"))
+                check("une entree st: sans chiffres n'est pas migree",
+                      split_dirty_record(["st:a:b:c.txt"]), {"st:a:b:c.txt": "?"})
+                # Les deux formes stat sont UNE fonction ; un enregistrement par hachage est
+                # repondu par un hachage meme au-dessus du seuil actuel (miroir du bug).
+                saved_big = g["BIG_FILE_BYTES"]
+                g["BIG_FILE_BYTES"] = 16
+                try:
+                    with open(os.path.join(tmp, "big2.bin"), "wb") as f:
+                        f.write(b"y" * 64)
+                    fp_stat = dirty_fingerprint(tmp, "big2.bin")
+                    check("au-dessus du seuil, dirty_fingerprint et fingerprint_like(st-) donnent la meme forme stat",
+                          [fp_stat.startswith("st-"), fingerprint_like(tmp, "big2.bin", fp_stat) == fp_stat], [True, True])
+                    h = hashlib.sha1(b"y" * 64).hexdigest()
+                    check("un enregistrement par hachage est repondu par un hachage, seuil ou pas",
+                          fingerprint_like(tmp, "big2.bin", h) == h, True)
+                finally:
+                    g["BIG_FILE_BYTES"] = saved_big
+                    os.remove(os.path.join(tmp, "big2.bin"))
+                check("un enregistrement legacy avec mtime negatif migre",
+                      split_dirty_record(["st:10:-5:old.bin"]), {"old.bin": "st-10--5"})
                 # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
                 mpath = applied_marker_for(tmp)
                 os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
@@ -4630,7 +4705,8 @@ tool oracle_run:
             for f in failures:
                 log("  " + f)
             return 1
-        log("harnais : %d verifications passent" % checked[0])
+        log("harnais : %d verifications passent%s" % (
+            checked[0], (" (sautees sous root : %s)" % "; ".join(skipped_under_root)) if skipped_under_root else ""))
         return 0
 
 
