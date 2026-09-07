@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.23](https://github.com/SocialGouv/iterion/compare/v3.112.22...v3.112.23) (2026-09-07)
+
+### Bug Fixes
+
+* **delegate:** the Workflow tool is withheld from every non-ultracode claude_code node — the reviewed content can no longer arm a multi-agent orchestration ([#869](https://github.com/SocialGouv/iterion/issues/869)) ([9fbb5f7](https://github.com/SocialGouv/iterion/commit/9fbb5f7a23c9611ba15ef0996cf1be4d53608766)), closes [#867](https://github.com/SocialGouv/iterion/issues/867), references [#780](https://github.com/SocialGouv/iterion/issues/780) [#785](https://github.com/SocialGouv/iterion/issues/785) [#788](https://github.com/SocialGouv/iterion/issues/788) [#780](https://github.com/SocialGouv/iterion/issues/780) [#785](https://github.com/SocialGouv/iterion/issues/785)
+
+    <details><summary>why</summary>
+
+    Claude Code arms its multi-agent Workflow tool on the word "ultracode" anywhere in the prompt, and a node's prompt carries the content it works on. Four revi/review runs on 2026-09-05 (PRs #780 and #785, both ABOUT ultracode) each launched one or two background Workflow orchestrations from a plain `high`-effort judge node, reached 1.2–3.2 M session tokens and died at $14–63 against a $12 cap — the data switched the node into a mode the operator's effort never granted.
+
+    </details>
+
 ## [3.112.22](https://github.com/SocialGouv/iterion/compare/v3.112.21...v3.112.22) (2026-09-07)
 
 ### Bug Fixes
