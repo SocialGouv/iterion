@@ -59,6 +59,31 @@ auto-routed), paused runs, runs owned by a platform continuation
 already-merged runs, and a `merge` verdict on a non-`finished` run (a stale
 checkpoint is not a verdict — downgraded to escalate).
 
+### Where the decision is made
+
+The reading of the contract lives in **[`pkg/routing`](../pkg/routing/policy.go)**,
+deliberately apart from the reactor: `routing.Evaluate(run) Verdict` is a
+**pure decision function** — no I/O, no state, no action — so the API
+surfaces that validate a policy at launch
+([`pkg/server/runs_launch.go`](../pkg/server/runs_launch.go),
+[`pkg/runview/service_launch.go`](../pkg/runview/service_launch.go)) and the
+reactor that acts on one
+([`pkg/server/outcome_router.go`](../pkg/server/outcome_router.go)) share
+exactly one reading. The `Verdict` carries the decision *and its evidence*
+(which expression produced it and what it evaluated to), which is what the
+registry row records.
+
+`routing.Validate` / `routing.ValidateRefs` are the launch-time half: a
+policy whose expressions do not parse, or that reference a node or output
+field the workflow does not have, is refused at launch rather than
+discovered at terminal time. `routing.CurrentPolicyVersion` (`1`) is the
+version frozen onto the run.
+
+Escalation is the **default in the code, not just in practice**: every
+uncertain path — an expression that cannot be read strictly, a failure the
+policy does not permit acting on, a policy that allows nothing — returns
+`escalate`. Nothing falls through to `merge`.
+
 ## The registry (audit + idempotence)
 
 - One row per episode, unique on `(run_id, outcome_seq)`; states
