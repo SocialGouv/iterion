@@ -768,11 +768,26 @@ func (s *Server) handleIssuePullCI(w http.ResponseWriter, r *http.Request) {
 		writeForgePullError(w, "get ci status", err)
 		return
 	}
-	history, _ := pc.ListCIHistory(r.Context(), repo, ref, 20)
+	// The two halves are read independently and only the STATUS one is the
+	// verdict: it answered, so the panel answers. A failed history read is
+	// named rather than dropped — an empty timeline is indistinguishable
+	// from "nothing ever ran", which is the wrong thing to tell an operator
+	// looking at a merge decision.
+	history, histErr := pc.ListCIHistory(r.Context(), repo, ref, 20)
+	historyError := ""
+	if histErr != nil {
+		history, historyError = nil, histErr.Error()
+		if s.logger != nil {
+			s.logger.Warn("board forge: ci history for %s@%s: %v", repo, ref, histErr)
+		}
+	}
 	writeJSON(w, struct {
 		Status  forge.CIStatus `json:"status"`
 		History []forge.CIRun  `json:"history"`
-	}{Status: status, History: history})
+		// HistoryError names why the history half is missing; absent when
+		// the read succeeded.
+		HistoryError string `json:"history_error,omitempty"`
+	}{Status: status, History: history, HistoryError: historyError})
 }
 
 // ---------------------------------------------------------------------------
@@ -858,11 +873,22 @@ func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, t
 // `checks: read` was requested, a fine-grained PAT short of a permission) —
 // so it is answered 422 with the permission and the operator step, the same
 // mapping the create-repo and security-read routes give a withheld
-// installation grant. Anything else is the upstream failure it always was.
+// installation grant.
+//
+// A *forge.NotFoundError is the forge saying it has no such object under this
+// credential — a PR that was deleted, a ref that moved, or (GitHub answers
+// 404 rather than 403 for what a credential may not see) a grant that was
+// never approved. It is answered 404 with the operation and the grants it is
+// gated on, not the 502 a bare sentinel used to produce. Anything else is the
+// upstream failure it always was.
 func writeForgePullError(w http.ResponseWriter, op string, err error) {
 	var pe *forge.PermissionError
 	if errors.As(err, &pe) {
 		httpError(w, http.StatusUnprocessableEntity, "%s: %v", op, err)
+		return
+	}
+	if errors.Is(err, forge.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "%s: %v", op, err)
 		return
 	}
 	httpError(w, http.StatusBadGateway, "%s: %v", op, err)

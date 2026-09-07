@@ -77,14 +77,26 @@ func DoJSONErrBody(ctx context.Context, client *http.Client, method, url, errPre
 // StatusErr maps a non-2xx status to the appropriate forge sentinel,
 // falling back to a "<prefix>: <op>: HTTP <code>" error. Shared by every
 // AdminClient so the 401/403/404 mapping stays identical across providers.
+//
+// A 404 is typed by OPERATION (notFoundFor): only a hook operation yields
+// ErrHookNotFound, everything else a *NotFoundError naming its own call.
+// Every 404 still answers errors.Is(err, ErrNotFound).
 func StatusErr(errPrefix, op string, code int) error {
+	return StatusErrNeeding(errPrefix, op, code, nil)
+}
+
+// StatusErrNeeding is StatusErr for a caller that knows the grants the
+// endpoint is gated on: they ride the typed 404, where a forge that answers
+// 404 for a resource the credential may not see leaves an absent object and
+// a withheld permission indistinguishable from the status alone.
+func StatusErrNeeding(errPrefix, op string, code int, mayNeed []string) error {
 	switch code {
 	case http.StatusUnauthorized:
 		return ErrUnauthorized
 	case http.StatusForbidden:
 		return ErrForbidden
 	case http.StatusNotFound:
-		return ErrHookNotFound
+		return notFoundFor(errPrefix, op, mayNeed)
 	default:
 		return fmt.Errorf("%s: %s: HTTP %d", errPrefix, op, code)
 	}

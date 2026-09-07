@@ -182,7 +182,7 @@ func TestGitHubCommentIssue_RoundTrip(t *testing.T) {
 
 func TestGitHubGetIssue_ErrorMapping(t *testing.T) {
 	cases := map[int]error{
-		http.StatusNotFound:     forge.ErrHookNotFound,
+		http.StatusNotFound:     forge.ErrNotFound,
 		http.StatusUnauthorized: forge.ErrUnauthorized,
 		http.StatusForbidden:    forge.ErrForbidden,
 	}
@@ -194,6 +194,9 @@ func TestGitHubGetIssue_ErrorMapping(t *testing.T) {
 		_, err := c.GetIssue(context.Background(), "o/r", 1)
 		if !errors.Is(err, want) {
 			t.Errorf("status %d → err %v, want %v", code, err, want)
+		}
+		if code == http.StatusNotFound && errors.Is(err, forge.ErrHookNotFound) {
+			t.Errorf("404 on an issue → %v: a missing issue is not a missing webhook", err)
 		}
 		srv.Close()
 	}

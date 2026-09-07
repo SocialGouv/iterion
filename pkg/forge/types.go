@@ -23,6 +23,7 @@ package forge
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -318,7 +319,12 @@ var (
 	ErrIntegrationNotFound = errors.New("forge: repo integration not found")
 	ErrOAuthAppNotFound    = errors.New("forge: oauth app not found")
 	ErrOAuthAppExists      = errors.New("forge: oauth app already exists")
-	ErrHookNotFound        = errors.New("forge: hook not found")
+	// ErrNotFound is the class every 404 belongs to. A caller that only needs
+	// "the forge has no such thing" matches on it; one that acts on a
+	// specific absence matches the resource sentinel (ErrHookNotFound) or
+	// reads the *NotFoundError the operation carries.
+	ErrNotFound     = errors.New("forge: not found")
+	ErrHookNotFound = fmt.Errorf("%w: hook", ErrNotFound)
 	// ErrForbidden is returned by an admin client when the credential lacks
 	// the scope to perform an operation (e.g. create a webhook). The
 	// orchestrator surfaces it as a structured "insufficient_scope" error so

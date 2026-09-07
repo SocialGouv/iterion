@@ -35,7 +35,12 @@ type pullPanelForge struct {
 	perms map[string]map[string]string
 	// refusedMints counts mints GitHub 422'd for want of a grant.
 	refusedMints int
-	srv          *httptest.Server
+	// checkRunCalls counts check-runs reads; failCheckRunsFrom (1-based, 0 =
+	// never) makes that call and every later one answer 502, so a test can
+	// fail the panel's HISTORY read while its status read succeeded.
+	checkRunCalls     int
+	failCheckRunsFrom int
+	srv               *httptest.Server
 }
 
 // grantCovers is GitHub's rule for a mint: a requested permission must be
@@ -122,6 +127,14 @@ func newPullPanelForge(t *testing.T, granted map[string]string) *pullPanelForge 
 	mux.HandleFunc("GET /api/v3/repos/acme/widgets/commits/{sha}/check-runs", func(w http.ResponseWriter, r *http.Request) {
 		if !bearerHas(r, "checks") {
 			notAccessible(w)
+			return
+		}
+		f.mu.Lock()
+		f.checkRunCalls++
+		fail := f.failCheckRunsFrom > 0 && f.checkRunCalls >= f.failCheckRunsFrom
+		f.mu.Unlock()
+		if fail {
+			reply(w, http.StatusBadGateway, map[string]any{"message": "upstream is having a moment"})
 			return
 		}
 		reply(w, http.StatusOK, map[string]any{"total_count": 1, "check_runs": []map[string]any{

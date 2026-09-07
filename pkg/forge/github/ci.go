@@ -191,16 +191,18 @@ func tm(p *time.Time) time.Time {
 	return *p
 }
 
-// fetchCheckRuns returns the normalized check-runs for a ref (empty on 404,
-// which a repo without GitHub Actions returns).
+// fetchCheckRuns returns the normalized check-runs for a ref.
+//
+// "No CI" is 200 + an empty list — what GitHub answers for a commit nothing
+// ran on. A 404 is the ref being absent or invisible to the credential (a
+// fine-grained PAT short of `checks:read` gets one), and it surfaces: read
+// as "no check-runs" it would drop the only failing run from the aggregate
+// and render the card green.
 func (c *AdminClient) fetchCheckRuns(ctx context.Context, repo, ref string) ([]forge.CIRun, error) {
 	var cr githubCheckRuns
 	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/check-runs", nil, &cr)
 	if err != nil {
 		return nil, err
-	}
-	if code == http.StatusNotFound {
-		return nil, nil
 	}
 	if code != http.StatusOK {
 		return nil, refusal("GET check-runs", code, errBody, "checks:read")
@@ -220,15 +222,15 @@ func (c *AdminClient) fetchCheckRuns(ctx context.Context, repo, ref string) ([]f
 	return runs, nil
 }
 
-// fetchCommitStatuses returns the normalized legacy commit-statuses for a ref.
+// fetchCommitStatuses returns the normalized legacy commit-statuses for a
+// ref. Like the check-runs read, a commit with no status is 200 + an empty
+// list; a 404 surfaces (absent ref, or a credential short of
+// `statuses:read`).
 func (c *AdminClient) fetchCommitStatuses(ctx context.Context, repo, ref string) (sha string, _ []forge.CIRun, _ error) {
 	var cs githubCombinedStatus
 	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/status", nil, &cs)
 	if err != nil {
 		return "", nil, err
-	}
-	if code == http.StatusNotFound {
-		return "", nil, nil
 	}
 	if code != http.StatusOK {
 		return "", nil, refusal("GET commit status", code, errBody, "statuses:read")
