@@ -20,6 +20,11 @@ type extendVerifyOut struct {
 	Extended      int      `json:"extended"`
 	LogTail       string   `json:"log_tail"`
 	OutOfScope    []string `json:"out_of_scope"`
+	CleanStart    bool     `json:"clean_start"`
+	IdentityOk    bool     `json:"identity_ok"`
+	ActedCommits  string   `json:"acted_commits"`
+	ActedIds      string   `json:"acted_ids"`
+	ActedBlobs    string   `json:"acted_blobs"`
 }
 
 // extendVerifyRepo is a target tree whose net carries a STUB harness: the
@@ -76,6 +81,11 @@ func runExtendVerify(t *testing.T, ws, head, pendingJSON string) extendVerifyOut
 	body = strings.ReplaceAll(body, "{{vars.oracle_dir}}", strconv.Quote(".golden-master"))
 	body = strings.ReplaceAll(body, "{{input.head}}", strconv.Quote(head))
 	body = strings.ReplaceAll(body, "{{input.pending}}", pendingJSON)
+	body = strings.ReplaceAll(body, "{{input.clean}}", "true")
+	body = strings.ReplaceAll(body, "{{input.prev_name}}", strconv.Quote(""))
+	body = strings.ReplaceAll(body, "{{input.prev_email}}", strconv.Quote(""))
+	body = strings.ReplaceAll(body, "{{vars.actor_name}}", strconv.Quote("golden-master extend"))
+	body = strings.ReplaceAll(body, "{{vars.actor_email}}", strconv.Quote("extend@golden-master.iterion"))
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in extend_verify near %q", body[i:min(i+40, len(body))])
 	}
