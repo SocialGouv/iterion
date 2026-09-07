@@ -144,6 +144,33 @@ mtime lie as soon as files arrive through git, which restores COMMIT timestamps,
 imported producer can look older than the artifact it must rebuild. Anything else is app-down and
 a fresh boot from the tree. A residual state is recovered from; it is never reported as a success.
 
+## A second environment for the same corpus
+
+A migration whose point IS the environment — a second database engine, a second runtime — is
+judged by booting the app the other way and replaying **the same references**. That is one
+declaration, not a second net: `GM_CONFIG=<name>.json` names a config file beside `config.json`,
+under the net's own directory, and the harness reads it in place of `config.json`.
+
+What differs between the two files is the ENVIRONMENT: `up`, `down`, `restore`, and where the URL
+is published (`base_url_file`). What must NOT differ is the contract — the personas, the standard,
+the probes, the test command — because the whole claim is that the same corpus renders the same
+verdict on both. A config that drops `standard` reads as a standard-2 net and the ratchet refuses
+it; one that drops the probes has no inventory to check at standard 3; one that drops `test_cmd`
+scores no mutation. Copy the file and change the environment lines, nothing else.
+
+Two mechanics worth knowing before the first run:
+
+- **The verdict carries the config it judged** (`config` in the report). A green from the second
+  environment and a green from the first are otherwise the same line, and a gate command that
+  passes a variable no one reads reports the first environment's health under the second one's
+  name — measured on a campaign whose `engine-target` check ran `GM_CONFIG=config-pg.json` for
+  three lots against a judge that read `config.json`.
+- **A named config that is absent REFUSES.** It never falls back, and neither does an empty
+  `GM_CONFIG` (a variable that did not expand is not an unset variable).
+- **The held-out opt-in is read from the config being judged**, so a second environment that does
+  not declare `seal_committed` leaves the committed held-out set to the gate that does. Give the
+  second environment its own fresh set if you want it scored there too — a set is spent once.
+
 ## Re-baselining, and why it kills nets
 
 A golden master dies by re-baselining. Something breaks three screens, someone regenerates the
