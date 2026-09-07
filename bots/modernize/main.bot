@@ -260,6 +260,11 @@ schema verify_input:
   ## subbot has run, and passed to the harness EVEN THEN: the only pass that
   ## judges a lot acting its own extension is the one where no subbot ran.
   acted_commits: string
+  ## The request ids the subbot reports having ACTED. The content rule that
+  ## lets a rewritten history through covers the act the subbot judged, not
+  ## any act naming a path it certified — without this the lot files a second
+  ## request, has it REFUSED, and acts it itself on the first one's path.
+  acted_ids: string
   acted_blobs: string
 
 schema mark_input:
@@ -662,6 +667,7 @@ tool lot_verify:
     # run) reads as "none reported", and is STILL handed to the harness —
     # presence, even empty, is what makes the certifier strict.
     acted_commits = ({{input.acted_commits}} or "")
+    acted_ids = ({{input.acted_ids}} or "")
     acted_blobs = ({{input.acted_blobs}} or "")
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
@@ -1201,7 +1207,8 @@ tool lot_verify:
             report["extension_pending"] = listing.get("pending") or []
         exempt = set()
         verdict = harness_json("extend-verify", GM_BASE=base,
-                               GM_ACTED_COMMITS=acted_commits, GM_ACTED_BLOBS=acted_blobs)
+                               GM_ACTED_COMMITS=acted_commits,
+                               GM_ACTED_IDS=acted_ids, GM_ACTED_BLOBS=acted_blobs)
         if verdict is not None and verdict is not CAPABILITY_ABSENT and not verdict.get("error"):
             exempt = set(verdict.get("ok_paths") or [])
 
@@ -1752,6 +1759,7 @@ workflow modernize:
     refs_dir:      "{{outputs.work_gate.refs_dir}}",
     exit_gate:     "{{outputs.work_gate.exit_gate}}",
     acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_ids:     "{{outputs.extend.acted_ids}}",
     acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
@@ -1800,6 +1808,7 @@ workflow modernize:
     refs_dir:      "{{outputs.work_gate.refs_dir}}",
     exit_gate:     "{{outputs.work_gate.exit_gate}}",
     acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_ids:     "{{outputs.extend.acted_ids}}",
     acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
@@ -1821,6 +1830,7 @@ workflow modernize:
     refs_dir:      "{{outputs.work_gate.refs_dir}}",
     exit_gate:     "{{outputs.work_gate.exit_gate}}",
     acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_ids:     "{{outputs.extend.acted_ids}}",
     acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 

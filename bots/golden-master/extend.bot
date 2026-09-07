@@ -117,7 +117,16 @@ prompt extend_user:
   {{input.fail_log}}
 
   Report ONE short line in `summary` — including which requests you REFUSED
-  and why, if any. Anything longer belongs in the commit message.
+  and why, if any. That line is PUBLISHED to the run that asked: it is how a
+  refusal reaches the operator, so make it name the cause.
+
+  Write NOTHING outside the extension surface — not even a report of your own
+  refusal. The `golden-master` skill tells the rite that a `REPORT.md` of its
+  own is welcome; that freedom is the RITE's, not yours. Measured in
+  production: a refusal written to a report file made this bot's own gate say
+  «paths OUTSIDE the extension surface were changed … acting more than was
+  asked is smuggling», so the verdict was right and the reason an operator
+  read was false. When you refuse everything, commit nothing at all.
 
 ## ─── Schemas ───────────────────────────────────────────────────────
 
@@ -335,7 +344,6 @@ tool extend_verify:
     base = {{input.head}}
     before = {p.get("id") for p in ({{input.pending}} or []) if p.get("id")}
     clean = bool({{input.clean}})
-    prev_name, prev_email = ({{input.prev_name}} or ""), ({{input.prev_email}} or "")
     actor_email = {{vars.actor_email}}
 
     report = {"committed": False, "scope_clean": False, "out_of_scope": [],
@@ -407,11 +415,26 @@ tool extend_verify:
         report["out_of_scope"] = outside
         report["scope_clean"] = not outside
         if outside:
+            # A run that touched NO surface path acted nothing: its only
+            # change is the out-of-scope file, and calling that smuggling
+            # sends the operator hunting for an act that was never made —
+            # the true cause is in the refusal the summary carries
+            # (production finding: a refusal written to a report file read
+            # as an attempt to smuggle it in).
+            acted_any = any(p.startswith(allowed_prefix) or p in allowed_exact
+                            for p in touched)
             problems.append(
-                "%d path(s) OUTSIDE the extension surface were changed: %s. "
-                "This bot runs inside the lot's own workspace — anything it "
-                "may write, the lot may write through it. The check is the "
-                "boundary." % (len(outside), ", ".join(outside[:20])))
+                ("%d path(s) OUTSIDE the extension surface were changed: %s. "
+                 % (len(outside), ", ".join(outside[:20])))
+                + ("This bot runs inside the lot's own workspace — anything it "
+                   "may write, the lot may write through it. The check is the "
+                   "boundary."
+                   if acted_any else
+                   "This run acted NOTHING on the surface, so this is not an "
+                   "act that overreached: it is a file written beside the "
+                   "work — a refusal belongs in `summary`, which is "
+                   "published, and in nothing else. Drop the file; the "
+                   "refusal itself is not the failure."))
 
     def harness(mode, **extra):
         env = dict(os.environ, GM_MODE=mode, GM_WORKSPACE=ws, GM_DIR=gm, **extra)
@@ -501,22 +524,13 @@ tool extend_verify:
         still = {p_.get("id") for p_ in report["still_pending"]}
         report["acted_ids"] = " ".join(sorted(i for i in before if i not in still))
 
-    # The workspace identity goes back to what it was: the lot's later
-    # commits must not wear the net's name.
-    for key, val in (("user.name", prev_name), ("user.email", prev_email)):
-        if val:
-            subprocess.run(["git", "-C", ws, "config", key, val])
-        else:
-            subprocess.run(["git", "-C", ws, "config", "--unset", key])
-    # Restored here, so the marker extend_base left for the run that would
-    # have had to repair a leak has nothing left to repair.
-    gd = subprocess.run(["git", "-C", ws, "rev-parse", "--absolute-git-dir"],
-                        capture_output=True, text=True)
-    if gd.returncode == 0 and gd.stdout.strip():
-        try:
-            os.remove(os.path.join(gd.stdout.strip(), "iterion-extend-prev-identity"))
-        except OSError:
-            pass
+    # The identity is NOT restored here: this node is on the repair loop's
+    # body, and the loop re-enters the AGENT, not extend_base. Restoring at
+    # the end of every pass left pass 2 committing under the ambient identity
+    # — `identity_ok` false for good, so a first-pass refusal could never be
+    # repaired, and in a workspace with no ambient identity the agent could
+    # not commit at all (review finding, executed). It is restored once, on
+    # the way out, by extend_restore.
 
     report["log_tail"] = "\n".join(problems)[-6000:]
     print(json.dumps(report))
@@ -525,8 +539,6 @@ schema verify_input:
   head: string
   pending: json
   clean: bool
-  prev_name: string
-  prev_email: string
 
 ## A pure CONJUNCTION, never an aggregate. An extension that is additions-ok
 ## but out of scope is not "mostly fine" — it is a lot writing in the judge's
@@ -536,6 +548,64 @@ schema verify_input:
 ## written) leaves the run not converged — the parent's gate keeps refusing
 ## on the pending term either way, and this verdict must not read greener
 ## than that gate will.
+## The identity comes back ONCE, on the way out — the only place both exits
+## of the gate pass through. Its source is the marker extend_base wrote, not
+## an edge input: the marker is the durable record (a run that dies never
+## reaches this node, and the next extend_base repairs from it), and reading
+## it here makes the restore idempotent whatever path the run took.
+tool extend_restore:
+  output: restore_report
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+
+    def git_out(*args):
+        p = subprocess.run(["git", "-C", ws] + list(args), capture_output=True, text=True)
+        return (p.stdout or "").strip() if p.returncode == 0 else ""
+
+    git_dir = git_out("rev-parse", "--absolute-git-dir")
+    marker = os.path.join(git_dir, "iterion-extend-prev-identity") if git_dir else ""
+    report = {"restored": False, "notice": ""}
+    if not marker or not os.path.isfile(marker):
+        # No marker: extend_base refused the start (dirty net) and never set
+        # an identity, so there is nothing to put back. Said, not guessed.
+        report["notice"] = ("no identity marker under %s — this run set no "
+                            "identity to restore" % (git_dir or ws))
+    else:
+        try:
+            with open(marker, encoding="utf-8") as f:
+                prev = json.load(f)
+        except (OSError, ValueError) as e:
+            prev = None
+            report["notice"] = ("the identity marker %s is unreadable (%s): the "
+                                "workspace may still commit under the net's name "
+                                "— check `git config user.email`" % (marker, e))
+        if isinstance(prev, dict):
+            for key, val in (("user.name", prev.get("name") or ""),
+                             ("user.email", prev.get("email") or "")):
+                if val:
+                    subprocess.run(["git", "-C", ws, "config", key, val])
+                else:
+                    subprocess.run(["git", "-C", ws, "config", "--unset", key])
+            report["restored"] = True
+            report["notice"] = ("the workspace identity is back to %r: the lot's "
+                                "later commits must not wear the net's name"
+                                % (prev.get("email") or "unset"))
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+
+    print(json.dumps(report))
+
+schema restore_report:
+  restored: bool
+  notice: string
+
 compute extend_gate:
   output: gate_state
   expr:
@@ -550,7 +620,12 @@ compute extend_result:
   expr:
     converged: "outputs.extend_gate.converged"
     extended: "outputs.extend_verify.extended"
-    notice: "if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say', 'the extension was REFUSED: ' + outputs.extend_gate.fail_log)"
+    ## The subbot's own line travels with the deterministic verdict, plainly
+    ## attributed: without it the cause a refusal states reaches nobody, and
+    ## an agent told to «report in summary» writes a file instead to make its
+    ## reasoning survive — a file its own gate then refuses (production
+    ## finding). Evidence beside the verdict, never in place of it.
+    notice: "if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say. The subbot said: ' + outputs.extend_campaign.summary, 'the extension was REFUSED. The subbot said: ' + outputs.extend_campaign.summary + ' — the gate says: ' + outputs.extend_gate.fail_log)"
     acted_commits: "outputs.extend_verify.acted_commits"
     acted_ids: "outputs.extend_verify.acted_ids"
     acted_blobs: "outputs.extend_verify.acted_blobs"
@@ -572,15 +647,17 @@ workflow extend:
   }
 
   extend_campaign -> extend_verify with {
-    head:       "{{outputs.extend_base.head}}",
-    pending:    "{{outputs.extend_base.pending}}",
-    clean:      "{{outputs.extend_base.clean}}",
-    prev_name:  "{{outputs.extend_base.prev_name}}",
-    prev_email: "{{outputs.extend_base.prev_email}}"
+    head:    "{{outputs.extend_base.head}}",
+    pending: "{{outputs.extend_base.pending}}",
+    clean:   "{{outputs.extend_base.clean}}"
   }
 
   extend_verify -> extend_gate
-  extend_gate -> extend_result when converged
+
+  ## Every way out of the gate goes through the restore — converged or not,
+  ## first pass or last. The loop re-enters the AGENT, so a restore inside
+  ## the loop body disarms the identity for every pass after the first.
+  extend_gate -> extend_restore when converged
 
   ## Refused → one more pass, carrying the deterministic refusal so the agent
   ## fixes the cause instead of re-deriving it.
@@ -592,6 +669,7 @@ workflow extend:
   ## Loop exhausted → report the refusal rather than swallow it. The parent's
   ## gate keeps refusing on the pending requests, so this bot failing must
   ## never be quieter than this bot not existing.
-  extend_gate -> extend_result
+  extend_gate -> extend_restore
 
+  extend_restore -> extend_result
   extend_result -> done
