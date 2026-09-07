@@ -590,6 +590,13 @@ tool extend_verify:
     # and fed only the subbot's own gate, which nothing downstream reads — so
     # the defence rested on the agent obeying prose. It rests here now.
     #
+    # The graph now takes a refused start OUT before the campaign
+    # (`extend_base -> extend_restore when not clean`), so this node should
+    # never see `clean: false`. Kept anyway, and deliberately: it is a
+    # security boundary, the node runs standalone in the tests, and an
+    # invariant that holds only because of a routing decision one edge away
+    # is an invariant the next edit reopens.
+    #
     # Deliberately NOT extended to identity_ok: the lock is the commit SET,
     # and an identity that leaked is an attribution defect, not a claim that
     # someone else committed — the parent's gate already refuses on it.
