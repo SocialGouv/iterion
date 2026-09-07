@@ -1,7 +1,13 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.8.0
+version: 0.8.1
+## 0.8.1 — budget max_cost_usd 12 → 40: the guard tier died at $36 and $30
+## on a 7-file PR, twice on one revision (the automatic relaunch included),
+## and the merge gate posted no verdict. A review that reproduces its
+## findings and answers the fixer's rounds is the workload now; a required
+## check that dies is worse than one that costs. --max-cost-usd still
+## re-budgets one run.
 ## 0.8.0 — REVIEW TIERS (SocialGouv/iterion#685): a repo's criticality or
 ## budget policy picks ONE preset (`review_tier`: glance | guard | audit)
 ## instead of five separate vars. guard is the DEFAULT and is
