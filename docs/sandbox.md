@@ -106,9 +106,11 @@ is refused rather than honoured, the default applies, and one stderr line
 per process names the variable, the value and the default that replaced
 it.
 
-The apply bound is enforced at both ends of the pipe: the phase deadline
-kills the local `kubectl`, and `--request-timeout` makes `kubectl` itself
-give up rather than wait on a wedged apiserver. `kubectl delete` (the
+The apply bound is enforced on the process: the phase deadline kills the
+local `kubectl`. It is deliberately NOT also passed as kubectl's own
+`--request-timeout` — setting that flag at any value makes `kubectl` v1.36
+discard the in-cluster configuration and dial `http://localhost:8080`, so
+every apply fails at once (measured in production on 2026-09-07). `kubectl delete` (the
 stale-pod eviction before the pod apply, every rollback, the run's own
 cleanup) shares the apply budget but reports a plain deadline — a cleanup
 is not a setup phase and is never classified as one.
@@ -461,8 +463,9 @@ iterion sandbox doctor                 # report driver + capabilities
   snippet on BOTH drivers. Unset → 30 min. Raise it for a devcontainer
   that installs a large toolchain.
 - `ITERION_SANDBOX_K8S_APPLY_TIMEOUT` — budget of one `kubectl` control
-  call on the kubernetes driver (every `apply`, every `delete`), also
-  passed as `--request-timeout`. Unset → 2 min.
+  call on the kubernetes driver (every `apply`, every `delete`), enforced
+  by killing the process; never passed as kubectl's `--request-timeout`,
+  which breaks its in-cluster configuration. Unset → 2 min.
 - `ITERION_SANDBOX_OVERRIDE` — CLI-strength mode override (`""`,
   `none`, or `auto`), same precedence tier as `iterion run --sandbox`:
   `none` beats even a workflow's inline `sandbox:` block. Honoured by

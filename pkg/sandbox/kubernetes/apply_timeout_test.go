@@ -61,11 +61,21 @@ func TestApplyManifest_StallIsBoundedAndTyped(t *testing.T) {
 	}
 }
 
-// The bound must also reach kubectl itself: without --request-timeout the
-// client waits on the apiserver indefinitely, so a phase deadline that
-// fires can only kill the process, never let it report why. The two
-// together mean a timeout is a timeout at both ends of the pipe.
-func TestApplyManifest_PassesRequestTimeoutToKubectl(t *testing.T) {
+// The bound stops at the process: kubectl's own --request-timeout must NOT
+// be passed. Setting it at any value makes kubectl v1.36 discard the
+// in-cluster configuration and fall back to http://localhost:8080, so every
+// apply fails at once — measured in production on 2026-09-07, same pod and
+// same manifest, one flag apart:
+//
+//	kubectl --namespace iterion apply --dry-run=server -f -
+//	  -> reaches the apiserver
+//	kubectl --namespace iterion --request-timeout=2m0s apply --dry-run=server -f -
+//	  -> failed to download openapi: Get "http://localhost:8080/openapi/v2
+//	     ?timeout=2m0s": dial tcp [::1]:8080: connect: connection refused
+//
+// Killing the process on the phase deadline is what bounds a wedged
+// apiserver here. This row exists so the flag is not reintroduced.
+func TestApplyManifest_PassesNoRequestTimeoutToKubectl(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not on PATH")
 	}
@@ -85,8 +95,9 @@ func TestApplyManifest_PassesRequestTimeoutToKubectl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(argv), "--request-timeout=1m30s") {
-		t.Fatalf("kubectl argv = %q, want --request-timeout carrying the phase budget", string(argv))
+	if strings.Contains(string(argv), "--request-timeout") {
+		t.Fatalf("kubectl argv = %q, want no --request-timeout — it makes kubectl "+
+			"discard the in-cluster config and every apply dial localhost:8080", string(argv))
 	}
 }
 
