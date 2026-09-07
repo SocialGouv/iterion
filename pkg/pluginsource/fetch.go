@@ -43,6 +43,13 @@ type Fetcher struct {
 	// production.
 	beforePublish func(staging, dest string)
 
+	// beforeRetire runs inside publish, immediately before it moves whatever is
+	// at `dest` aside — which for an immutable ref is only ever after its own
+	// rename has already lost. The seam a test uses to fill that gap the way a
+	// peer would: the interleaving that decides whether a complete tree can
+	// still be renamed aside. Nil in production.
+	beforeRetire func(dest string)
+
 	mu       sync.Mutex
 	keyGates map[string]chan struct{}
 }
@@ -106,9 +113,9 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 		f.beforePublish(staging, dest)
 	}
 	// Only a MOVING ref publishes over an existing tree: its content changed,
-	// so the old one must go. A pinned ref's content cannot differ from what
-	// is already at its content-addressed path.
-	if err := publish(staging, dest, !s.PinnedRef()); err != nil {
+	// so the old one must go. A pinned ref resolves to the same content every
+	// time, so a tree already under its key is what this fetch would put there.
+	if err := f.publish(staging, dest, !s.PinnedRef()); err != nil {
 		return "", fmt.Errorf("pluginsource: publish checkout for %q: %w", s.Name, err)
 	}
 	return dest, nil
@@ -133,16 +140,44 @@ func isPublished(dest string) bool {
 // rename leaves it serving.
 //
 // For an immutable (pinned) ref a tree already there IS the tree being
-// published, so it is kept and the staging copy dropped. That is not only
-// cheaper: renaming it aside makes `dest` briefly ABSENT to every other
-// publisher, and that absence is the window a peer's "was it already
-// published?" read fell into — its own rename had lost, dest was then retired
-// by a third publisher, and it reported ENOTEMPTY for a tree that was there
-// (#854). Never retiring an immutable tree removes the window rather than
-// racing it.
-func publish(staging, dest string, replaceExisting bool) error {
-	if !replaceExisting && isPublished(dest) {
-		return nil // a peer published it while we were staging
+// published, so it is kept and the staging copy dropped. The key is (git_url,
+// ref) — not a hash of the tree — so "immutable" is PinnedRef()'s reading of
+// the ref and nothing stronger; a re-pointed tag is served stale, exactly as
+// Fetch's cache hit above already serves it. Keeping a peer's tree therefore
+// adds no staleness this fetch did not already have.
+//
+// And keeping it is not only cheaper: renaming it aside makes `dest` briefly
+// ABSENT to every other publisher, and that absence is the window a peer's
+// "was it already published?" read fell into — its own rename had lost, dest
+// was then retired by a third publisher, and it reported ENOTEMPTY for a tree
+// that was there (#854).
+//
+// Closing that window takes the RENAME as the test-and-set, never a read: a
+// read is stale the syscall after it is taken, so deciding "nothing is there,
+// I may retire" on one is exactly the bug. `rename(2)` onto a non-empty
+// directory cannot land, so on a cold cache dest goes absent -> published and
+// never back, and no publisher of an immutable ref reaches the retire at all.
+// The retire stays reachable for the MOVING ref, and for a dest holding
+// something no reader can use — which this package never produces, but an
+// operator or a half-deleted cache can; the belt below re-judges what it moved
+// aside rather than assume that state away.
+func (f *Fetcher) publish(staging, dest string, replaceExisting bool) error {
+	if !replaceExisting {
+		// The rename IS the test-and-set: it lands only while dest is absent,
+		// so an immutable tree is never renamed aside on the strength of a
+		// read a peer invalidated one syscall later. What is there is judged
+		// only AFTER this publisher has lost.
+		if err := os.Rename(staging, dest); err == nil {
+			return nil
+		}
+		if isPublished(dest) {
+			return nil // a peer published it while we were staging
+		}
+		// dest holds something that is NOT a checkout: fall through, so a
+		// half-written tree is repaired rather than served forever.
+	}
+	if f.beforeRetire != nil {
+		f.beforeRetire(dest)
 	}
 	retired := ""
 	if _, err := os.Stat(dest); err == nil {
@@ -152,6 +187,16 @@ func publish(staging, dest string, replaceExisting bool) error {
 				return err
 			}
 			retired = "" // someone else retired it first
+		} else if !replaceExisting && isPublished(retired) {
+			// What we moved aside is a COMPLETE tree of immutable content: a
+			// peer repaired dest between our lost rename and this one. It IS
+			// what we were about to publish, so put it back instead of leaving
+			// the path absent for the next publisher's read (#854).
+			if err := os.Rename(retired, dest); err == nil {
+				return nil
+			}
+			// The put-back lost in turn; `retired` stays set so the read below
+			// still reaps our copy.
 		}
 	}
 	if err := os.Rename(staging, dest); err != nil {
