@@ -414,7 +414,13 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 
 	var inputSchema api.InputSchema
 	if err := json.Unmarshal(opts.ExplicitSchema, &inputSchema); err != nil {
-		return nil, fmt.Errorf("parse ExplicitSchema: %w", err)
+		// Typed AND worded: this call is made in-process by the executor
+		// and out-of-process by the claw runner, whose subprocess
+		// boundary flattens the type to text before it reaches the
+		// classifier.
+		return nil, fmt.Errorf("parse ExplicitSchema: %w", &delegate.ErrSchemaUnusable{
+			Schema: schemaName, Detail: err.Error(),
+		})
 	}
 
 	syntheticTool := api.Tool{

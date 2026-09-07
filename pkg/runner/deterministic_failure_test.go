@@ -41,6 +41,12 @@ func TestClassifyExecResult_DeterministicNodeFailureAcks(t *testing.T) {
 		{"wrapped expression failure", fmt.Errorf("engine: %w", &runtime.RuntimeError{
 			Code: store.FailureExpressionFailed, Message: "boom",
 		})},
+		// Measured 2026-09-07 on run 01a07db7: four pods for a schema the
+		// serving backend could not read. The declaration rides the IR.
+		{"a declared schema the backend cannot read", &runtime.RuntimeError{
+			Code: store.FailureSchemaUnusable, NodeID: "voter_v2",
+			Message: "parse ExplicitSchema: json: cannot unmarshal array into Go struct field InputSchema.properties.verdicts.type of type string",
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

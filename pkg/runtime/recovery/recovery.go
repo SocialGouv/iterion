@@ -162,6 +162,18 @@ func AuthFailedRecipe() Recipe {
 	})
 }
 
+// SchemaUnusableRecipe: no retry. The declaration rides the IR, so a
+// second attempt builds the same request from the same schema and is
+// refused by the same parser.
+func SchemaUnusableRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume",
+		}
+	})
+}
+
 // TransientToolRecipe: retry with linear backoff up to maxRetries
 // (model gets the error in its next turn), then fail terminal.
 func TransientToolRecipe(maxRetries int) Recipe {
@@ -294,6 +306,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeExecutionFailed:       ExecutionFailedRecipe(1),
 		runtime.ErrCodeNetworkTransient:      NetworkTransientRecipe(6),
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
+		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
 	}
 }
 
@@ -361,6 +374,13 @@ func Classify(err error) runtime.ErrorCode {
 	if errors.As(err, &authFailed) {
 		return runtime.ErrCodeAuthFailed
 	}
+	// The node's own declaration is what the backend refused. Checked by
+	// TYPE first, like the credential above: the needle below only
+	// catches today's wording.
+	var schemaUnusable *delegate.ErrSchemaUnusable
+	if errors.As(err, &schemaUnusable) {
+		return runtime.ErrCodeSchemaUnusable
+	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {
 		if rateLimited.Kind == delegate.RateLimitKindUsageWindow {
@@ -421,6 +441,14 @@ func Classify(err error) runtime.ErrorCode {
 		if strings.Contains(msg, needle) {
 			return runtime.ErrCodeAuthFailed
 		}
+	}
+	// The out-of-process host (the claw runner) flattens the typed error
+	// above into text before it reaches here, so the wording is read too
+	// — this is the shape that was actually measured in the cloud. A
+	// follow-up moves it onto the sandbox IPC's typed error channel, and
+	// this needle goes with it.
+	if strings.Contains(msg, "parse explicitschema") {
+		return runtime.ErrCodeSchemaUnusable
 	}
 	for _, needle := range networkTransientNeedles {
 		if strings.Contains(msg, needle) {

@@ -238,6 +238,60 @@ func TestClassify_APIError409_StaysExecutionFailed(t *testing.T) {
 	}
 }
 
+// Measured 2026-09-07 on run 01a07db7: a node whose `json` field emits a
+// JSON Schema type UNION, which the serving backend read into a single
+// string. The schema rides the IR and the request is never built, so no
+// sample and no wait existed to help — and yet the parse failure wore
+// EXECUTION_FAILED and was redelivered five times for four pods.
+func TestClassify_ADeclaredSchemaTheBackendCannotRead(t *testing.T) {
+	// Verbatim from the run: the claw runner is out of process, so the
+	// typed error below is text by the time it reaches the classifier.
+	measured := errors.New(`model: node "voter_v2": backend "claw" failed: claw backend: runner: ` +
+		`claw backend: structured generation: parse ExplicitSchema: json: cannot unmarshal array ` +
+		`into Go struct field InputSchema.properties.verdicts.type of type string (exit: exit status 1)`)
+
+	cases := []struct {
+		name string
+		err  error
+		want runtime.ErrorCode
+	}{
+		{"the flattened string from run 01a07db7", measured, runtime.ErrCodeSchemaUnusable},
+		{"typed, in process", &delegate.ErrSchemaUnusable{Schema: "voter_output", Detail: "cannot unmarshal array"},
+			runtime.ErrCodeSchemaUnusable},
+		{"typed, wrapped by its caller", fmt.Errorf("parse ExplicitSchema: %w",
+			&delegate.ErrSchemaUnusable{Schema: "voter_output"}), runtime.ErrCodeSchemaUnusable},
+
+		// The other half, and the distinction the whole code rests on: a
+		// request WAS served and the model's OUTPUT missed the schema.
+		// The next sample may conform, so this must stay re-executable.
+		{"output that missed its schema is not an unusable schema", &runtime.RuntimeError{
+			Code: runtime.ErrCodeSchemaValidation, Message: `field "verdicts" is required`,
+		}, runtime.ErrCodeSchemaValidation},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Classify(c.err); got != c.want {
+				t.Errorf("Classify() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// No retry: the declaration rides the IR, so a second attempt builds the
+// same request from the same schema for the same parser to refuse.
+func TestSchemaUnusableRecipe_FailsTerminalWithoutRetrying(t *testing.T) {
+	r := SchemaUnusableRecipe()
+	for _, attempts := range []int{0, 1, 5} {
+		act := r.Apply(context.Background(), &runtime.RuntimeError{Code: runtime.ErrCodeSchemaUnusable}, attempts)
+		if act.Kind != ActionFailTerminal {
+			t.Fatalf("attempts=%d: Kind = %v, want ActionFailTerminal", attempts, act.Kind)
+		}
+	}
+	if _, ok := DefaultRecipes()[runtime.ErrCodeSchemaUnusable]; !ok {
+		t.Error("no recipe registered for SCHEMA_UNUSABLE")
+	}
+}
+
 func TestClassify_PlainError(t *testing.T) {
 	if got := Classify(errors.New("something")); got != runtime.ErrCodeExecutionFailed {
 		t.Errorf("expected EXECUTION_FAILED for plain error, got %v", got)

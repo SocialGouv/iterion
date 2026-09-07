@@ -1408,6 +1408,31 @@ func (e *ErrAuthFailed) Error() string {
 	return "authentication failed: " + e.Detail
 }
 
+// ErrSchemaUnusable marks a node whose DECLARED output schema the
+// serving backend cannot read — not output that failed to validate
+// against it (that is SCHEMA_VALIDATION, and the next sample may
+// conform), but the schema itself, which the request is built from. The
+// schema rides the IR: it is the same on every attempt, and the request
+// is never sent, so no sample and no wait exist to help.
+//
+// Measured on run 01a07db7 (2026-09-07): a `json` field emits a JSON
+// Schema type UNION (`["object","array",…]`, the shape that keeps a
+// type key without narrowing the value), which the serving backend's
+// types read into a single string. The node failed five times, four
+// pods, on `parse ExplicitSchema: json: cannot unmarshal array into Go
+// struct field InputSchema.properties.verdicts.type of type string`.
+type ErrSchemaUnusable struct {
+	Schema string // the schema block's name, when known
+	Detail string // the parse failure, for diagnostics
+}
+
+func (e *ErrSchemaUnusable) Error() string {
+	if e.Schema != "" {
+		return "output schema " + e.Schema + " is unusable by this backend: " + e.Detail
+	}
+	return "the declared output schema is unusable by this backend: " + e.Detail
+}
+
 // ErrTransient marks a backend failure the dispatcher should retry
 // (subprocess killed by OOM, peer reset, network blip, …). CLI
 // backends wrap stderr-matched indicators in this type so the executor's
