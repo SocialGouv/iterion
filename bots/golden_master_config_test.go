@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -93,8 +94,10 @@ func TestGoldenMasterHarnessNamesTheConfig(t *testing.T) {
 		// Not GM_CONFIG alone: an operator input meant for the NET applied to
 		// the doubles is one class, and the same count must come out of each
 		// run — a guard that made fixtures vanish instead of hermetic would
-		// pass this loop while testing less.
-		const want = "218 verifications passent"
+		// pass this loop while testing less. The count is read from the
+		// unset run rather than written here: pinning a number would fail
+		// every branch that adds a check, and the claim is EQUALITY.
+		want := ""
 		for _, env := range [][]string{
 			nil,
 			{"GM_CONFIG=config-pg.json"},
@@ -111,8 +114,16 @@ func TestGoldenMasterHarnessNamesTheConfig(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v made the selftest fail — the gate wrapper runs it as a blocking step: %v\n%s", env, err, out)
 			}
-			if !strings.Contains(string(out), want) {
-				t.Fatalf("%v changed WHICH checks ran (want %q):\n%s", env, want, out)
+			m := regexp.MustCompile(`harnais : (\d+) verifications passent`).FindStringSubmatch(string(out))
+			if m == nil {
+				t.Fatalf("%v: no check count in the selftest output:\n%s", env, out)
+			}
+			if want == "" {
+				want = m[1]
+				continue
+			}
+			if m[1] != want {
+				t.Fatalf("%v changed WHICH checks ran: %s instead of %s", env, m[1], want)
 			}
 		}
 	})
