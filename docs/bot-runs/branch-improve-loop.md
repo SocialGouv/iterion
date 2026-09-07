@@ -1,5 +1,33 @@
 # Billy — branch-improvement validation
 
+## The delivery tail's contract (bot 1.7.0)
+
+Three properties `push_back_tool` and `publish_verdict` now hold, in the order
+they are decided. They exist because of two measured production defects
+(#863, #773); the tests that pin them execute the real command bodies against
+real git repositories (`bots/push_back_banked_branch_test.go`).
+
+- **A pull request that ended takes no more commits.** Before pushing, the
+  tool asks the iterion server whether the pull request is still open —
+  `forge_pr_state_url`, the read half of the run's publish grant. git in the
+  workspace cannot answer it: a squash merge leaves the source branch present
+  and its head no ancestor of the base, so a merged pull request reads locally
+  as an open one. A merged or closed pull request routes the run to
+  `pr_superseded` (typed `DECLINED`): one comment naming where the commits
+  are, no push onto the dead branch, no verdict on the head it left. No grant
+  (a local run) means the question cannot be asked, which is never read as a
+  closure; an endpoint that errors says so in the report and the push
+  proceeds.
+- **Work that cannot land is banked and NAMED.** Every refusal — a merged
+  pull request, a conflicting advance, a protected branch, a dead token —
+  pushes the run's HEAD to `iterion/banked/<branch>-<head12>` and the verdict
+  carries the branch plus the `git fetch … && git cherry-pick …` that takes
+  it. A run whose work is reachable only by someone who already knows the
+  convention has not delivered it.
+- **"Nothing to push" names what it compared.** The no-op reason carries both
+  revisions (HEAD and `origin/<branch>`), so a claim that contradicts the
+  campaign's own commit count is falsifiable instead of merely surprising.
+
 ## 2026-09-06 — 1.6.0 dogfooded live: three runs, the third validates the reserve and finds a real bug in the code it reviewed (runs 01a07804, 01a0782f, 01a07840)
 
 - Status: **validated** (run 3) — after two runs that validated nothing about

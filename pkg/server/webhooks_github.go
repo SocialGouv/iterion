@@ -115,7 +115,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Fork guard (UNCONDITIONAL on the auto path): a fork PR (head repo != base
 	// repo) is untrusted — an adversary can open one to run code in our runner
 	// with the forge token and to exhaust the tenant's budget. So an inbound PR
-	// event NEVER auto-launches a bot on a fork, regardless of block_fork_prs.
+	// event NEVER auto-launches a bot on a fork — there is no config that lifts it.
 	// A repo-authorized collaborator can still run one DELIBERATELY by issuing a
 	// `/command` on the PR: that path (handlePRForgeComment) gates on the
 	// commenter's CollaboratorPermission, so only a trusted user, manually,

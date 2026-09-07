@@ -334,6 +334,9 @@ func (s *Server) routes() {
 	// by injectForgePublishVars), so it intentionally bypasses requireAuth.
 	if s.forgeConnections != nil && s.forgePublishTokens != nil {
 		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/publish-review", s.handleForgePublishReview)
+		// The read half of the same grant: a delivery tail asks whether the
+		// pull request is still open before it pushes or posts.
+		s.mux.ServeMux.HandleFunc("GET /api/v1/forge/pull-request", s.handleForgePullRequest)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.

@@ -583,6 +583,21 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		out.errText = "forge returned no head sha for the PR"
 		return out
 	}
+	// A pull request that already merged or closed takes no verdict. The head
+	// resolved above is the PRE-merge revision — nobody merges it any more,
+	// nothing consults the check, and the branch it describes is scheduled for
+	// deletion — so a status there is a statement about a revision that left
+	// the merge decision. This is the ONE place every bot's gate status
+	// crosses, which is what keeps the rule out of each bot's tail.
+	//
+	// An EMPTY state is a provider that does not report one, never a closure:
+	// the same predicate the relaunch, auto-fix and reconcile lanes use, for
+	// the same reason — suppressing a required check on a guess deadlocks the
+	// pull request.
+	if pr.State != "" && pr.State != "open" {
+		out.errText = "pull request is " + pr.State + " — no gate status on a head that left the merge decision"
+		return out
+	}
 	out.sha = pr.HeadSHA
 
 	threshold := strings.TrimSpace(gate.Threshold)
@@ -655,9 +670,13 @@ func hostOfURL(raw string) string {
 // forgePublishVarURL / forgePublishVarToken are the launch vars the server
 // injects; a bot opts in by declaring them in its vars: block (undeclared
 // launch vars are dropped by the IR, so blind injection is safe).
+// forgePublishVarPRState is the read half's endpoint, injected alongside them
+// and authenticated by the SAME token: a delivery tail asks it whether the
+// pull request is still open before it pushes onto its branch.
 const (
-	forgePublishVarURL   = "forge_publish_url"
-	forgePublishVarToken = "forge_publish_token"
+	forgePublishVarURL     = "forge_publish_url"
+	forgePublishVarToken   = "forge_publish_token"
+	forgePublishVarPRState = "forge_pr_state_url"
 )
 
 // injectForgePublishVars mints a per-run forge-publish grant and injects the
@@ -733,6 +752,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		vars = map[string]string{}
 	}
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
+	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
 	vars[forgePublishVarToken] = token
 	return vars, nil
 }
