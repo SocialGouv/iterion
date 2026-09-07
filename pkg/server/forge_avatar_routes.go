@@ -167,7 +167,18 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 			// The apply's budget is spent, whatever the forge managed to send:
 			// the upload would only fail on the dead context and stamp a
 			// misleading reason on the connection.
-			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
+			//
+			// The forge's own error is DIAGNOSTIC here, never routing: it may
+			// itself be ErrForbidden / ErrUnauthorized, and %w-wrapping it
+			// would keep what it MATCHES (403, 422) while changing what the
+			// error MEANS (the deadline). This error carries the expiry it is
+			// about; the forge's partial answer is logged and rendered, not
+			// wrapped.
+			if s.logger != nil {
+				s.logger.Warn("forge avatar: connection %s on %s spent the apply budget; the forge's partial answer was: %v", conn.ID, conn.Host(), err)
+			}
+			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s within %s (the forge answered %v): %w",
+				conn.ID, conn.Host(), s.avatarApplyDeadline(), err, ctx.Err())
 		case errors.Is(err, forge.ErrUnauthorized):
 			// The credential itself is rejected. Nothing else probes a PAT,
 			// so this is where the connection learns it: mark it revoked so
@@ -285,13 +296,9 @@ func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
-		// Deliberately NOT the shared forgeUpstreamStatus table: applyBotAvatar
-		// answers every actionable state as an *avatarRefusal above, and what
-		// reaches here wraps the forge's own sentinel inside a spent-budget
-		// failure — where the expiry outranks whatever the forge managed to
-		// send. Classifying by the wrapped sentinel would let a forge that
-		// answered 403 and then stalled turn a dead context into a 403.
-		httpError(w, http.StatusBadGateway, "%v", err)
+		if !writeForgeUpstreamError(w, err, "%v", err) {
+			httpError(w, http.StatusBadGateway, "%v", err)
+		}
 		return
 	}
 	s.auditTenant(r, teamID, "forge.connection.avatar_applied", "forge_connection", conn.ID,

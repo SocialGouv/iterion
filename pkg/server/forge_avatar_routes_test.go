@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -666,6 +667,45 @@ func TestForgeConnectionAvatar_SpentBudgetOutranksTheForgesAnswer(t *testing.T) 
 	stored, _ := s.forgeConnections.Get(context.Background(), "c-stalled-403")
 	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d stored=%+v", uploads, stored)
+	}
+}
+
+// The status above is the symptom; this is the invariant behind it. A spent
+// budget MEANS the deadline, whatever the forge managed to send before it —
+// so the error must not CARRY the forge's sentinel. Wrapping it would keep
+// what the error matches (403) while changing what it means, and the shared
+// classifier every forge handler consults routes on the match.
+func TestForgeConnectionAvatar_SpentBudgetErrorMeansTheExpiryNotTheSentinel(t *testing.T) {
+	s := newForgeTestServer(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // the body never completes
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	conn := seedAvatarConn(t, s, forge.Connection{ID: "c-meaning", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL})
+	s.avatarApplyTimeout = 200 * time.Millisecond
+
+	_, _, err := s.applyBotAvatar(context.Background(), conn, brand.VariantPlain, false)
+	if err == nil {
+		t.Fatal("a forge that never finishes answering must fail the apply")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the error does not carry the expiry it is about: %v", err)
+	}
+	for name, sentinel := range map[string]error{"ErrForbidden": forge.ErrForbidden, "ErrUnauthorized": forge.ErrUnauthorized} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("a spent budget still matches forge.%s (%v) — the shared classifier would answer the forge's status for a dead context", name, err)
+		}
+	}
+	if code, _ := forgeUpstreamStatus(err); code != 0 {
+		t.Errorf("forgeUpstreamStatus(%v) = %d, want 0 — an expiry is not an answer the forge gave", err, code)
+	}
+	// The forge's partial answer stays readable: diagnostic, not routing.
+	if !strings.Contains(err.Error(), "insufficient scope") {
+		t.Errorf("the forge's partial answer was dropped instead of rendered: %v", err)
 	}
 }
 
