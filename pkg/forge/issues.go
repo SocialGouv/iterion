@@ -114,6 +114,24 @@ type PullRef struct {
 	// it — a fork's, on a fork PR; empty when unknown. It is what a lane that
 	// chooses to work on a fork's code would clone; no launch lane does today.
 	HeadCloneURL string `json:"head_clone_url,omitempty"`
+	// HeadRepoDeclared reports whether the provider's answer NAMES a head
+	// repository for this pull request at all — the API-side twin of
+	// prforge.Parsed.HeadRepoDeclared, so the payload side and this side
+	// speak one vocabulary. Declared with an EMPTY HeadRepoFullName is a head
+	// repository the forge HAS and iterion could not name (a deleted or
+	// blocked fork; a GitLab source project this credential may not read);
+	// undeclared is a provider that reports none. Neither is the base repo,
+	// which is the assumption a bare empty field invites.
+	HeadRepoDeclared bool `json:"head_repo_declared,omitempty"`
+	// HeadRepoErr is the forge's own refusal of a head-repository read that
+	// took its own call — GitLab's merge request names its source project by
+	// id, so naming it is a second request that can be answered 403 (a
+	// permission) or 404 (an absence). Kept TYPED, so a lane classifies the
+	// refusal (errors.Is(err, ErrForbidden)) instead of guessing from an
+	// empty name; nil when no separate read was needed or it succeeded.
+	// Never serialised: it is the refusing lane's diagnosis, not a field of
+	// the pull request.
+	HeadRepoErr error `json:"-"`
 	// LinkedIssues are issue numbers this PR references / closes, best-effort
 	// parsed from the title/body ("fixes #12", "Closes #7", "!?").
 	LinkedIssues []int `json:"linked_issues,omitempty"`
@@ -132,6 +150,19 @@ type PullRef struct {
 // and the gate-relaunch lane all consult this before launching.
 func (p PullRef) SameRepoAs(baseRepo string) bool {
 	return SameRepo(p.HeadRepoFullName, baseRepo)
+}
+
+// HeadRepoWithheld reports a head repository the forge HAS and iterion could
+// not name: declared, with no name. Mirrors prforge.Parsed.HeadRepoWithheld
+// on the payload side, where the same fact arrives as `head.repo: null`.
+//
+// Both refuse — SameRepoAs is false on an empty head either way — so this is
+// not a second decision but the WORDING and the diagnosis: "the credential
+// could not read the fork" is an operator action, "the provider reports no
+// head repository" is a legacy or minimal answer, and collapsing them leaves
+// a refusal nobody can act on.
+func (p PullRef) HeadRepoWithheld() bool {
+	return p.HeadRepoDeclared && p.HeadRepoFullName == ""
 }
 
 // SameRepo reports whether two "owner/repo" identifiers name the same

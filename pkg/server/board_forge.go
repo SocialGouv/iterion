@@ -881,14 +881,11 @@ func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, t
 // never approved. It is answered 404 with the operation and the grants it is
 // gated on, not the 502 a bare sentinel used to produce. Anything else is the
 // upstream failure it always was.
+// Both cases, and the rate limit and upstream 5xx behind them, come from the
+// one shared table (forgeUpstreamStatus); the 502 stays the answer for what
+// that table does not recognise as an answer from the forge.
 func writeForgePullError(w http.ResponseWriter, op string, err error) {
-	var pe *forge.PermissionError
-	if errors.As(err, &pe) {
-		httpError(w, http.StatusUnprocessableEntity, "%s: %v", op, err)
-		return
-	}
-	if errors.Is(err, forge.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "%s: %v", op, err)
+	if writeForgeUpstreamError(w, err, "%s: %v", op, err) {
 		return
 	}
 	httpError(w, http.StatusBadGateway, "%s: %v", op, err)

@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 )
@@ -46,6 +47,26 @@ func (h AdminHTTP) Do(ctx context.Context, method, path string, body, out any) (
 // the calls whose refusal reason must reach the operator verbatim.
 func (h AdminHTTP) DoErrBody(ctx context.Context, method, path string, body, out any) (int, []byte, error) {
 	return DoJSONErrBody(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, body, out)
+}
+
+// DoTyped performs one call and TYPES a non-2xx answer itself, instead of
+// handing the status back for the call site to map. It is the only path that
+// can carry a Retry-After: the header lives on the response, which nothing
+// above this layer ever sees. Returns nil on 2xx (out is decoded as in Do).
+func (h AdminHTTP) DoTyped(ctx context.Context, method, path, op string, body, out any) error {
+	code, _, hdr, err := DoJSONFull(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, body, out)
+	if err != nil {
+		return err
+	}
+	if code/100 == 2 {
+		return nil
+	}
+	statusErr := h.StatusErr(op, code)
+	var se *StatusError
+	if errors.As(statusErr, &se) {
+		se.RetryAfter = ParseRetryAfter(hdr.Get("Retry-After"))
+	}
+	return statusErr
 }
 
 // DoMultipartFile uploads one file part by delegating to DoMultipartFile,

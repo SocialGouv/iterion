@@ -20,23 +20,42 @@ import (
 // the operator as the permission to approve, not as a bare status.
 var _ forge.PullClient = (*AdminClient)(nil)
 
+// githubHead is a pull request's head ref. GitHub always models the head
+// repository and sends `"repo": null` once a fork is DELETED or blocked;
+// RepoDeclared keeps that apart from an answer that never carried the key,
+// which a plain struct collapses onto the same empty name.
+type githubHead struct {
+	Ref  string `json:"ref"`
+	SHA  string `json:"sha"`
+	Repo struct {
+		FullName string `json:"full_name"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repo"`
+	RepoDeclared bool `json:"-"`
+}
+
+func (h *githubHead) UnmarshalJSON(b []byte) error {
+	type plain githubHead // no method set ⇒ no recursion
+	var v plain
+	declared, err := forge.UnmarshalDeclaring(b, &v, "repo")
+	if err != nil {
+		return err
+	}
+	*h = githubHead(v)
+	h.RepoDeclared = declared
+	return nil
+}
+
 // githubPull is the slice of the GitHub pull-request object we map to PullRef.
 type githubPull struct {
-	Number  int    `json:"number"`
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	State   string `json:"state"` // "open" | "closed"
-	HTMLURL string `json:"html_url"`
-	Draft   bool   `json:"draft"`
-	Head    struct {
-		Ref  string `json:"ref"`
-		SHA  string `json:"sha"`
-		Repo struct {
-			FullName string `json:"full_name"`
-			CloneURL string `json:"clone_url"`
-		} `json:"repo"`
-	} `json:"head"`
-	Base struct {
+	Number  int        `json:"number"`
+	Title   string     `json:"title"`
+	Body    string     `json:"body"`
+	State   string     `json:"state"` // "open" | "closed"
+	HTMLURL string     `json:"html_url"`
+	Draft   bool       `json:"draft"`
+	Head    githubHead `json:"head"`
+	Base    struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
 	User struct {
@@ -62,6 +81,7 @@ func (gp githubPull) toRef() forge.PullRef {
 		HeadSHA:          gp.Head.SHA,
 		HeadRepoFullName: gp.Head.Repo.FullName,
 		HeadCloneURL:     gp.Head.Repo.CloneURL,
+		HeadRepoDeclared: gp.Head.RepoDeclared,
 		Author:           gp.User.Login,
 		Draft:            gp.Draft,
 		CreatedAt:        gp.CreatedAt,

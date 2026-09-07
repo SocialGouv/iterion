@@ -373,6 +373,8 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, forge.ErrConnectionNotFound):
 		httpError(w, http.StatusNotFound, "connection not found")
+	case writeForgeUpstreamError(w, err, "provisioning failed: %v", err):
+		// A forge that throttled or fell over says so itself.
 	default:
 		httpError(w, http.StatusBadGateway, "provisioning failed: %v", err)
 	}

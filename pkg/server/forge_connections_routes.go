@@ -367,6 +367,7 @@ func (s *Server) handleCreateForgeRepo(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusConflict, "%v", err)
 		case errors.Is(err, forge.ErrPermissionsNotGranted):
 			httpError(w, http.StatusUnprocessableEntity, "the GitHub App installation lacks the Administration permission — approve the App's pending permission update on GitHub, then retry: %v", err)
+		case writeForgeUpstreamError(w, err, "create repository: %v", err):
 		default:
 			httpError(w, http.StatusBadGateway, "create repository: %v", err)
 		}
@@ -477,7 +478,9 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 				httpError(w, http.StatusUnprocessableEntity, "%v", err)
 				return
 			}
-			httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
+			if !writeForgeUpstreamError(w, err, "security-read token mint: %v", err) {
+				httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
+			}
 			return
 		}
 		// Date the connection from the token we just minted — but ONLY on a
@@ -560,7 +563,9 @@ func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "connection credential rejected — reconnect")
 			return
 		}
-		httpError(w, http.StatusBadGateway, "list repos: %v", err)
+		if !writeForgeUpstreamError(w, err, "list repos: %v", err) {
+			httpError(w, http.StatusBadGateway, "list repos: %v", err)
+		}
 		return
 	}
 	if repos == nil {

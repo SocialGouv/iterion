@@ -460,7 +460,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	if !head.SameRepoAs(p.ProjectPath) {
-		filtered(gitlabCommandForkRefusal("reply", head.HeadRepoFullName))
+		filtered(gitlabCommandForkRefusal("reply", head))
 		return
 	}
 	question := strings.TrimSpace(p.NoteBody)
@@ -585,7 +585,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			return
 		}
 		if !resolved.SameRepoAs(p.ProjectPath) {
-			filtered(gitlabCommandForkRefusal(cmd, resolved.HeadRepoFullName))
+			filtered(gitlabCommandForkRefusal(cmd, resolved))
 			return
 		}
 		vars = applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg)
@@ -928,13 +928,21 @@ func gitlabForkRefusal(head string) string {
 }
 
 // gitlabCommandForkRefusal words the command lane's same-project refusal:
-// the fork's own project when the adapter resolved it, "unverifiable" when
-// the head could not be proven either way.
-func gitlabCommandForkRefusal(cmd, head string) string {
-	if head == "" {
-		return "fork MR or unverifiable head project — /" + cmd + " runs are same-project only"
+// the fork's own project when the adapter resolved it, else what the adapter
+// met — a source project the MR DECLARED and the credential could not read
+// (quoting the forge's own refusal), or no head project at all.
+func gitlabCommandForkRefusal(cmd string, head forge.PullRef) string {
+	if head.HeadRepoFullName != "" {
+		return "fork MR — the head lives in " + head.HeadRepoFullName + " — /" + cmd + " runs are same-project only"
 	}
-	return "fork MR — the head lives in " + head + " — /" + cmd + " runs are same-project only"
+	if head.HeadRepoWithheld() {
+		why := "the MR names a source project this credential could not read"
+		if head.HeadRepoErr != nil {
+			why += " (" + head.HeadRepoErr.Error() + ")"
+		}
+		return "fork MR — " + why + " — /" + cmd + " runs are same-project only"
+	}
+	return "fork MR or unverifiable head project — /" + cmd + " runs are same-project only"
 }
 
 // recordNoteDelivery inserts a terminal note-event audit row with a

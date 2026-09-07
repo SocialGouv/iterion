@@ -168,9 +168,9 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// the head repo, so the checkout misses (or hits a same-named branch on
 	// the base). SameRepoAs is false on empty HeadRepoFullName too, refusing
 	// deleted-fork payloads.
-	if !d.pr.SameRepoAs(d.repo) {
+	if reason := forkGuardRefusalFor(d.pr, d.repo); reason != "" {
 		if s.logger != nil {
-			s.logger.Warn("gate relaunch: refusing %s#%d — fork PR or unverifiable head repo (head=%q base=%q)", d.repo, d.number, d.pr.HeadRepoFullName, d.repo)
+			s.logger.Warn("gate relaunch: refusing %s#%d — %s (head=%q base=%q)", d.repo, d.number, reason, d.pr.HeadRepoFullName, d.repo)
 		}
 		return
 	}

@@ -256,12 +256,10 @@ func (c *AdminClient) CreateOAuthApp(ctx context.Context, spec forge.OAuthAppSpe
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
 	}
-	code, err := c.do(ctx, http.MethodPost, "/user/applications/oauth2", body, &out)
-	if err != nil {
+	// DoTyped, not do+statusErr: only the response carries the Retry-After a
+	// rate-limited create is owed, and the call site never sees it.
+	if err := c.http().DoTyped(ctx, http.MethodPost, "/user/applications/oauth2", "create oauth app", body, &out); err != nil {
 		return forge.OAuthAppCredentials{}, err
-	}
-	if code/100 != 2 {
-		return forge.OAuthAppCredentials{}, statusErr("create oauth app", code)
 	}
 	if out.ClientID == "" || out.ClientSecret == "" {
 		return forge.OAuthAppCredentials{}, fmt.Errorf("forgejo: create oauth app: empty credentials in response")

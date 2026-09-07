@@ -853,6 +853,39 @@ var errForgePublishGrantTenant = errors.New("forge publish grant tenant mismatch
 // asked — so the HTTP lane answers 422 rather than 502.
 var errPRLaunchForkGuard = errors.New("fork guard")
 
+// errPRLaunchNoPullCapability marks a launch pinned to a connection whose
+// provider cannot read pull requests at all: same-repo can never be proven
+// through it, so no retry helps and the answer is not 502.
+var errPRLaunchNoPullCapability = errors.New("connection cannot read pull requests")
+
+// prLaunchContextStatus maps a refusal from applyPRLaunchContext onto the HTTP
+// status a launch surface answers with. The whole table lives here because the
+// FALL-THROUGH is the dangerous half: 502 tells the caller "the forge could not
+// be asked, try again", so a refusal a retry can never fix has to be named or
+// it reads as an outage the operator hammers.
+//
+//	errPRLaunchForkGuard             422  the pull request is not admissible
+//	errForgePublishGrantTenant       422  the launch pins ANOTHER team's grant
+//	errPRLaunchNoPullCapability      422  the connection cannot prove same-repo
+//	errForgePublishGrantUnavailable  503  the server's own grant capacity, retriable as-is
+//	anything else                    502  a forge that could not be asked
+//
+// The webhook lane already answers the tenant crossing 422
+// (insertAndLaunchWebhook); this is the same verdict on the surfaces that hold
+// no delivery.
+func prLaunchContextStatus(err error) int {
+	switch {
+	case errors.Is(err, errPRLaunchForkGuard),
+		errors.Is(err, errForgePublishGrantTenant),
+		errors.Is(err, errPRLaunchNoPullCapability):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, errForgePublishGrantUnavailable):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadGateway
+	}
+}
+
 // prLaunchForkGuard is the fork guard of the launch surfaces that hold no
 // webhook payload — the studio/API launch and the cloud board coordinator —
 // over the same launch pair the webhook lanes guard: <base>.CloneURL + the
@@ -883,13 +916,14 @@ func (s *Server) prLaunchForkGuard(ctx context.Context, teamID, preferredConnID,
 		return conn, false, fmt.Errorf("fork guard: %s: cannot read the pull request through connection %s: %w", prURL, conn.ID, err)
 	}
 	if gc == nil {
-		return conn, false, fmt.Errorf("fork guard: %s: provider %s cannot read pull requests, so same-repo cannot be proven", prURL, conn.Provider)
+		return conn, false, fmt.Errorf("%w: fork guard: %s: provider %s cannot read pull requests, so same-repo cannot be proven",
+			errPRLaunchNoPullCapability, prURL, conn.Provider)
 	}
 	pr, err := gc.GetPullRequest(ctx, repo, number)
 	if err != nil {
 		return conn, false, fmt.Errorf("fork guard: %s: PR resolution: %w", prURL, err)
 	}
-	if reason := forkGuardRefusal(pr.SameRepoAs(repo), false, pr.HeadRepoFullName); reason != "" {
+	if reason := forkGuardRefusalFor(pr, repo); reason != "" {
 		return conn, false, fmt.Errorf("%w: %s: %s", errPRLaunchForkGuard, prURL, reason)
 	}
 	return conn, true, nil
