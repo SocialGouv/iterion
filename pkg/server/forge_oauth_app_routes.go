@@ -325,7 +325,10 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 }
 
 // writeForgeOAuthAppError maps store / provider errors to HTTP responses,
-// including the auto-create scope errors used in a later step.
+// including the auto-create scope errors used in a later step. The two
+// forge-shaped refusals keep their own wording (they name the remedy); the
+// rest goes through the shared upstream table, so a rate limit reads as one
+// and only an iterion fault reaches 500.
 func (s *Server) writeForgeOAuthAppError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, forge.ErrOAuthAppExists):
@@ -337,6 +340,7 @@ func (s *Server) writeForgeOAuthAppError(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, forge.ErrUnauthorized):
 		httpError(w, http.StatusBadRequest, "the token was rejected by the forge")
+	case writeForgeUpstreamError(w, err, "%v", err):
 	default:
 		httpError(w, http.StatusInternalServerError, "%v", err)
 	}

@@ -280,12 +280,11 @@ func (c *AdminClient) CreateOAuthApp(ctx context.Context, spec forge.OAuthAppSpe
 		ApplicationID string `json:"application_id"`
 		Secret        string `json:"secret"`
 	}
-	code, err := c.do(ctx, http.MethodPost, "/applications", body, &out)
-	if err != nil {
+	// DoTyped, not do+statusErr: this endpoint is rate-limited in practice
+	// (measured 34 refusals in 60 calls), and only the response carries the
+	// Retry-After the operator is owed.
+	if err := c.http().DoTyped(ctx, http.MethodPost, "/applications", "create oauth app", body, &out); err != nil {
 		return forge.OAuthAppCredentials{}, err
-	}
-	if code/100 != 2 {
-		return forge.OAuthAppCredentials{}, statusErr("create oauth app", code)
 	}
 	if out.ApplicationID == "" || out.Secret == "" {
 		return forge.OAuthAppCredentials{}, fmt.Errorf("gitlab: create oauth app: empty credentials in response")

@@ -125,7 +125,9 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 			httpError(w, http.StatusBadRequest, "the token was rejected by %s — check it has api scope", provider)
 			return
 		}
-		httpError(w, http.StatusBadGateway, "could not reach %s: %v", provider, err)
+		if !writeForgeUpstreamError(w, err, "could not reach %s: %v", provider, err) {
+			httpError(w, http.StatusBadGateway, "could not reach %s: %v", provider, err)
+		}
 		return
 	}
 	connID := uuid.NewString()

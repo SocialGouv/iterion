@@ -34,17 +34,26 @@ func DoJSON(ctx context.Context, client *http.Client, method, url, errPrefix str
 // refusal reason the operator needs verbatim (an avatar the forge rejects).
 // A 2xx body is still streamed into out and never returned.
 func DoJSONErrBody(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), body, out any) (int, []byte, error) {
+	code, errBody, _, err := DoJSONFull(ctx, client, method, url, errPrefix, setHeaders, body, out)
+	return code, errBody, err
+}
+
+// DoJSONFull is DoJSONErrBody that also hands back a NON-2xx answer's
+// headers. They are where a rate limiter says how long to wait, and the
+// response is the only place that can be read — a caller holding just the
+// status can do nothing but guess.
+func DoJSONFull(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), body, out any) (int, []byte, http.Header, error) {
 	var reqBody io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, fmt.Errorf("%s: marshal body: %w", errPrefix, err)
+			return 0, nil, nil, fmt.Errorf("%s: marshal body: %w", errPrefix, err)
 		}
 		reqBody = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	if setHeaders != nil {
 		setHeaders(req)
@@ -57,30 +66,33 @@ func DoJSONErrBody(ctx context.Context, client *http.Client, method, url, errPre
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return resp.StatusCode, errBody, nil
+		return resp.StatusCode, errBody, resp.Header, nil
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return resp.StatusCode, nil, fmt.Errorf("%s: decode response: %w", errPrefix, err)
+			return resp.StatusCode, nil, resp.Header, fmt.Errorf("%s: decode response: %w", errPrefix, err)
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	}
-	return resp.StatusCode, nil, nil
+	return resp.StatusCode, nil, resp.Header, nil
 }
 
 // StatusErr maps a non-2xx status to the appropriate forge sentinel,
-// falling back to a "<prefix>: <op>: HTTP <code>" error. Shared by every
-// AdminClient so the 401/403/404 mapping stays identical across providers.
+// falling back to a *StatusError carrying the status verbatim (its message is
+// still "<prefix>: <op>: HTTP <code>"). Shared by every AdminClient so the
+// mapping stays identical across providers.
 //
 // A 404 is typed by OPERATION (notFoundFor): only a hook operation yields
 // ErrHookNotFound, everything else a *NotFoundError naming its own call.
-// Every 404 still answers errors.Is(err, ErrNotFound).
+// Every 404 still answers errors.Is(err, ErrNotFound). Everything else is
+// typed by its STATUS, which is what lets a handler answer a rate limit as a
+// rate limit instead of as an iterion fault.
 func StatusErr(errPrefix, op string, code int) error {
 	return StatusErrNeeding(errPrefix, op, code, nil)
 }
@@ -98,7 +110,7 @@ func StatusErrNeeding(errPrefix, op string, code int, mayNeed []string) error {
 	case http.StatusNotFound:
 		return notFoundFor(errPrefix, op, mayNeed)
 	default:
-		return fmt.Errorf("%s: %s: HTTP %d", errPrefix, op, code)
+		return &StatusError{Provider: Provider(errPrefix), Op: op, Code: code}
 	}
 }
 

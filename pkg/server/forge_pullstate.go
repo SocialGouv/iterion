@@ -97,8 +97,13 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 	pr, err := gc.GetPullRequest(r.Context(), repo, number)
 	if err != nil {
 		// Explicit, never a default answer: a tail told "open" because the
-		// forge was unreachable would push onto a branch nobody checked.
-		httpError(w, http.StatusBadGateway, "read pull request %s#%d: %v", repo, number, err)
+		// forge was unreachable would push onto a branch nobody checked. The
+		// shared table says WHICH refusal it was — a rate limit the caller
+		// may wait out, a grant it will never get — instead of one 502 for
+		// every cause.
+		if !writeForgeUpstreamError(w, err, "read pull request %s#%d: %v", repo, number, err) {
+			httpError(w, http.StatusBadGateway, "read pull request %s#%d: %v", repo, number, err)
+		}
 		return
 	}
 	writeJSON(w, forgePullRequestResponse{

@@ -285,6 +285,12 @@ func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
+		// Deliberately NOT the shared forgeUpstreamStatus table: applyBotAvatar
+		// answers every actionable state as an *avatarRefusal above, and what
+		// reaches here wraps the forge's own sentinel inside a spent-budget
+		// failure — where the expiry outranks whatever the forge managed to
+		// send. Classifying by the wrapped sentinel would let a forge that
+		// answered 403 and then stalled turn a dead context into a 403.
 		httpError(w, http.StatusBadGateway, "%v", err)
 		return
 	}
