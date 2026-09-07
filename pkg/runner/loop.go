@@ -835,9 +835,18 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 // budget_exceeded — a manual-resume death whose redelivery never comes
 // back on its own — and must bank like one. classifyExecResult is pure,
 // so the bank site calls it a second time without side effects.
+//
+// The criterion is NOT "did the run succeed" but "will anything come back
+// for it": a status the runner ACKS has no successor attempt to bank what
+// this one committed in stride, so the work either reaches the forge here
+// or dies with the pod. Every acked death therefore banks —
+// budget_exceeded, deterministic_failure and deliberate_failure alike. The
+// naked statuses (interrupted, sandbox_*) do not: their redelivery
+// re-clones and banks on its own next attempt. Adding a new acked status
+// without adding it here is how a campaign silently loses forty commits.
 func bankableStatus(finalStatus string) bool {
 	switch finalStatus {
-	case "finished", "budget_exceeded", "failed":
+	case "finished", "budget_exceeded", "failed", "deterministic_failure", "deliberate_failure":
 		return true
 	}
 	return false
