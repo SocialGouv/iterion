@@ -10,7 +10,10 @@ version: 0.8.1
 ## 0.9 × cap (the engine refuses new nodes at 90%, no grace on that band),
 ## so 48 leaves ~$43 usable with the measured $36 — a lower bound, the run
 ## died there — at 75%. The pacer monitor follows (cost_gt 8 → 32, ~2/3 of
-## the cap). --max-cost-usd still re-budgets one run.
+## the cap, on 12 evals / 6m instead of 4 / 5m so it is still awake near
+## the wall). max_duration 90m → 120m: the same 90% wall applies to the
+## duration axis, and a review funded to ~$43 runs 45-60 min.
+## --max-cost-usd / --max-duration still re-budget one run.
 ## 0.8.0 — REVIEW TIERS (SocialGouv/iterion#685): a repo's criticality or
 ## budget policy picks ONE preset (`review_tier`: glance | guard | audit)
 ## instead of five separate vars. guard is the DEFAULT and is

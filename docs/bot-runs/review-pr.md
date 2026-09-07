@@ -8,6 +8,23 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-05 — two guard-tier reviews die at the cost cap, no verdict (#780, #785)
+
+- Runs: `01a072d6-24ab` (#780, head `4aee1d641`) — `budget exceeded: cost_usd (36/12)`,
+  superseded by the automatic relaunch `01a072eb-067d`, itself dead at `(30/12)`;
+  #785 (head `ecca4b03c`) dead at `(14/12)`. Push → final failure status: 84 min
+  for the two runs of #780, 53 min for #785 (the runs are not in the campaign
+  store; the timestamps are the head commit and the `revi/review` status).
+- Outcome: the merge gate posted a synthetic `failure` twice with no review — a
+  7-file PR and a 12-file one (7 of them vendor), both open since.
+- Reading: the cap (12, sized 2026-09-03 on median $3.6 / p95 $10.5) is 3× short
+  of the guard tier that reproduces its findings and answers the fixer's rounds;
+  the engine refuses new nodes at 90% of the cap with no grace, so the usable
+  spend was $10.8 — and the $36 is a lower bound (the run died there).
+- Change: `max_cost_usd` 12 → 48 (0.9 × 48 = $43 usable), `max_duration` 90m →
+  120m (same wall on the duration axis), pacer 12 evals / 6m with `cost_gt=32`
+  (manifest 0.8.1). Re-run on both PRs after the catalogue is deployed.
+
 ## 2026-09-05 — review tiers shipped (0.8.0, SocialGouv/iterion#685) — design note, live measurement pending
 - Status: implemented + covered by DSL-level tests (stub executor + expr-level
   unit tests); **not yet dogfooded live** — no LLM credentials in this
