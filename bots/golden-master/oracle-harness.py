@@ -2162,14 +2162,16 @@ def repo_root_of(ws):
     return _repo_root_cache[key]
 
 
-BIG_FILE_BYTES = 8 << 20
+BIG_FILE_BYTES = 256 << 20
 
 
 def dirty_fingerprint(ws, path):
     """What a dirty path IS, so a later sweep can tell a mutant's edit on an
     already-dirty path from the operator's untouched work. A file: the sha1
-    of its content, or "st:<size>:<mtime>" past BIG_FILE_BYTES (a bound, not
-    a leash: hashing is local and linear); a symlink: its target; a directory
+    of its content, or "st-<size>-<mtime>" past BIG_FILE_BYTES (a bound, not
+    a leash: hashing is local and linear — and a stat fingerprint moves when
+    identical content is rewritten, so the bound is high); a symlink: its
+    target; a directory
     (`?? dir/`, an untracked tree collapsed to one line): the sha1 of its
     recursive NAME listing — a file a mutant creates or removes inside moves
     it, a build tree merely rebuilt between two runs does not, and a change
@@ -2183,21 +2185,28 @@ def dirty_fingerprint(ws, path):
             return "absent"
         st = os.lstat(full)
         if stat.S_ISDIR(st.st_mode):
-            h, n = hashlib.sha1(), 0
-            for root, dirs, files in os.walk(full):
+            h, n, unreadable = hashlib.sha1(), 0, []
+            for root, dirs, files in os.walk(full, onerror=unreadable.append):
                 dirs.sort()
                 for name in sorted(files):
                     n += 1
                     if n > 20000:
                         return "?"
                     h.update((os.path.relpath(os.path.join(root, name), full) + "\n").encode("utf-8", "replace"))
+            if unreadable:
+                # A subtree that could not be listed (a 0700 cache, a
+                # docker-owned build dir): the readable part is fingerprinted
+                # and marked partial — equal to itself across two reads, so
+                # an untouched tree still clears; a change inside the
+                # unreadable part is the blind spot, said by the prefix.
+                return "u-" + h.hexdigest()
             return h.hexdigest()
         if stat.S_ISLNK(st.st_mode):
             return hashlib.sha1(os.readlink(full).encode("utf-8", "replace")).hexdigest()
         if not stat.S_ISREG(st.st_mode):
             return "?"
         if st.st_size > BIG_FILE_BYTES:
-            return "st:%d:%d" % (st.st_size, st.st_mtime_ns)
+            return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
         h = hashlib.sha1()
         with open(full, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -2220,7 +2229,7 @@ def status_porcelain_z(ws):
         return 124, "%s" % e
 
 
-PORCELAIN_STATUS = " MADRCU?!"
+PORCELAIN_STATUS = " MTADRCU?!"
 
 
 def porcelain_paths(out):
@@ -2267,7 +2276,15 @@ def split_dirty_record(entries):
     rec = {}
     for e in entries or []:
         fp, sep, q = e.partition(":")
-        if sep and q and (fp in ("absent", "?") or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
+        if e.startswith("st:"):
+            # The colon form a previous harness wrote for a big file
+            # ("st:<size>:<mtime>:<path>"): read as the current form, so a
+            # marker across the upgrade still clears an untouched file.
+            parts = e.split(":", 3)
+            if len(parts) == 4 and parts[3]:
+                rec[parts[3]] = "st-%s-%s" % (parts[1], parts[2])
+                continue
+        if sep and q and (fp in ("absent", "?") or fp.startswith(("st-", "u-")) or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
             rec[q] = fp
         else:
             # No fingerprint (a marker written before they were recorded): the
@@ -2489,7 +2506,7 @@ def revert_leftover_mutant(ws, gm_dir=None):
         code, out = run_script(script, ws)
     else:
         code, out = None, "the mutant's revert.sh is no longer there: %s" % script
-    dirty, unknown, residue, residue_undecided = "", "", [], False
+    dirty, unknown, residue, residue_undecided, vanished, undecided_cause = "", "", [], False, [], ""
     if code == 0:
         # Through run(), and on a short leash. This sweep runs in EVERY mode,
         # record included, and the harness's contract is to answer with a
@@ -2521,6 +2538,11 @@ def revert_leftover_mutant(ws, gm_dir=None):
                         residue.append(q)
                         if rec[q] == "?":
                             residue_undecided = True
+                            undecided_cause = "unknown_content"
+                # Work that was uncommitted before the mutant and is clean now
+                # was undone by the revert (a `git checkout -- .`): not the
+                # residue this sweep stops on, but said — the operator lost it.
+                vanished = sorted(q for q in rec if q not in after and rec[q] != "absent")
             elif after:
                 # No record of what was dirty before the mutant went down
                 # (git did not answer then, or the marker predates the
@@ -2529,6 +2551,7 @@ def revert_leftover_mutant(ws, gm_dir=None):
                 # residue, the marker stays, an operator decides.
                 residue = after
                 residue_undecided = True
+                undecided_cause = "no_record"
         else:
             # A git that answered nothing is more undecidable still than one
             # that answered with no record to compare against: the marker
@@ -2540,7 +2563,8 @@ def revert_leftover_mutant(ws, gm_dir=None):
     return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
             "marker": marker, "refused": False, "kept": code != 0 or bool(residue) or residue_undecided,
             "dirty": dirty[:400], "dirty_unknown": unknown, "residue": residue[:50],
-            "residue_undecided": residue_undecided}
+            "residue_undecided": residue_undecided, "vanished": vanished[:50],
+            "undecided_cause": undecided_cause}
 
 
 # The dispositions on which the gate STOPS rather than judges. Only "reverted"
@@ -2551,6 +2575,19 @@ LEFTOVER_BAIL_KINDS = ("still_mutated", "unusable", "refused")
 
 
 def leftover_disposition(left):
+    """The disposition text, with the operator's destroyed work named on EVERY
+    kind: a revert that erased uncommitted work and left residue stops the
+    gate, and the stop is where the operator is told what to do — a text
+    that says "keep yours" after the script already removed it is worse
+    than silence."""
+    kind, text = _leftover_disposition(left)
+    if left.get("vanished"):
+        text += (" Uncommitted work that was there before the mutant is gone after the revert "
+                 "— the script undid it: %s." % ", ".join(left["vanished"][:20]))
+    return kind, text
+
+
+def _leftover_disposition(left):
     """What the gate says about a leftover, and whether it may proceed.
 
     Returns (kind, text): "reverted" — revert.sh exit 0, a note (with what
@@ -2590,19 +2627,21 @@ def leftover_disposition(left):
             % (left.get("id"), left.get("dirty_unknown") or "no record", left.get("marker")))
     if left.get("code") == 0 and left.get("residue"):
         if left.get("residue_undecided"):
+            why = ("nothing recorded what was already uncommitted when the mutant went down"
+                   if left.get("undecided_cause") != "unknown_content" else
+                   "their content when the mutant went down could not be read or listed")
             return "still_mutated", (
                 "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
-                "exit 0), but the tree still shows changes and nothing recorded what was already "
-                "uncommitted when the mutant went down, so their origin is UNDECIDABLE: %s. "
-                "Undecidable is not clean — the tree will be neither judged nor recorded. Check "
+                "exit 0), but the tree still shows changes and %s, so their origin is UNDECIDABLE: "
+                "%s. Undecidable is not clean — the tree will be neither judged nor recorded. Check "
                 "those paths (git diff), revert the mutant's by hand, then delete the marker %s."
-                % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
+                % (left.get("id"), why, ", ".join(left["residue"][:20]), left.get("marker")))
         return "still_mutated", (
             "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
             "exit 0), but these paths changed since the mutant went down and the harness cannot "
             "attribute the change — the mutant's residue, or work done in between: %s. The tree "
             "will be neither judged nor recorded. Inspect them (git diff), revert the mutant's by "
-            "hand, keep yours, then delete the marker %s."
+            "hand, then delete the marker %s."
             % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
     if left.get("code") == 0:
         text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
@@ -4251,8 +4290,9 @@ def _selftest():
                 os.chmod(secret, 0o755)
                 shutil.rmtree(secret, ignore_errors=True)
             os.remove(os.path.join(tmp, "other.txt"))
-            check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
-                  [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
+            if os.geteuid() != 0:
+                check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
+                      [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
             # Un repertoire non suivi RECONSTRUIT entre deux runs (memes noms, autres
             # contenus/mtimes) n'est pas un residu ; un fichier cree dedans l'est.
             os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
@@ -4271,8 +4311,81 @@ def _selftest():
             big = os.path.join(tmp, "big.bin")
             with open(big, "wb") as f:
                 f.truncate(BIG_FILE_BYTES + 1)
-            check("un gros fichier s'empreinte par stat", dirty_fingerprint(tmp, "big.bin").startswith("st:"), True)
+            check("un gros fichier s'empreinte par stat", dirty_fingerprint(tmp, "big.bin").startswith("st-"), True)
             os.remove(big)
+            # Un changement de TYPE (fichier -> lien) est un chemin modifie : enregistre,
+            # et residu si le revert ne le restaure pas.
+            os.remove(os.path.join(tmp, "f.txt"))
+            os.symlink("d.txt", os.path.join(tmp, "f.txt"))
+            check("un changement de type est un chemin modifie",
+                  any(e.endswith(":f.txt") for e in (dirty_paths_before_apply(tmp) or [])), True)
+            os.remove(os.path.join(tmp, "f.txt"))
+            sub("git", "checkout", "--", "f.txt")
+            scripts("rm f.txt && ln -s d.txt f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un mutant qui remplace un fichier par un lien laisse un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [["f.txt"], "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            os.remove(os.path.join(tmp, "f.txt"))
+            sub("git", "checkout", "--", "f.txt")
+            # Un gros fichier deja modifie fait l'aller-retour marqueur -> balayage sans residu.
+            saved_big = g["BIG_FILE_BYTES"]
+            g["BIG_FILE_BYTES"] = 16
+            try:
+                with open(os.path.join(tmp, "big.bin"), "wb") as f:
+                    f.write(b"x" * 64)
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                apply_mutant(lmeta, tmp)
+                db = (read_applied_marker(tmp)[0] or {}).get("dirty_before") or []
+                check("un gros fichier s'enregistre par stat, sans deux-points",
+                      [any(e.startswith("st-") and e.endswith(":big.bin") for e in db),
+                       "big.bin" in split_dirty_record(db)], [True, True])
+                left = revert_leftover_mutant(tmp)
+                check("un gros fichier intact de l'operateur n'est pas un residu",
+                      [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            finally:
+                g["BIG_FILE_BYTES"] = saved_big
+                os.remove(os.path.join(tmp, "big.bin"))
+            # Un revert qui EFFACE le travail de l'operateur (git checkout -- .) le dit.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- .")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("le travail de l'operateur efface par le revert est nomme",
+                  [(left or {}).get("vanished"), leftover_disposition(left or {})[0], "gone after the revert" in leftover_disposition(left or {})[1]],
+                  [["f.txt"], "reverted", True])
+            # Un sous-repertoire illisible rend l'empreinte d'un repertoire indecidable.
+            os.makedirs(os.path.join(tmp, "u", "locked"), exist_ok=True)
+            with open(os.path.join(tmp, "u", "locked", "x"), "w", encoding="utf-8") as f:
+                f.write("x")
+            os.chmod(os.path.join(tmp, "u", "locked"), 0)
+            try:
+                if os.geteuid() != 0:
+                    check("un sous-repertoire illisible donne une empreinte partielle, stable",
+                          [dirty_fingerprint(tmp, "u/").startswith("u-"), dirty_fingerprint(tmp, "u/") == dirty_fingerprint(tmp, "u/")],
+                          [True, True])
+            finally:
+                os.chmod(os.path.join(tmp, "u", "locked"), 0o755)
+                shutil.rmtree(os.path.join(tmp, "u"), ignore_errors=True)
+            # Le travail efface est nomme AUSSI quand la porte s'arrete : un revert
+            # `git checkout -- .` efface l'edition de l'operateur ET laisse un fichier
+            # cree par le mutant.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' > created.txt", "git checkout -- .")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            kind, text = leftover_disposition(left or {})
+            check("residu ET travail efface : la porte s'arrete et nomme les deux",
+                  [kind, (left or {}).get("residue"), (left or {}).get("vanished"), "gone after the revert" in text, "keep yours" in text],
+                  ["still_mutated", ["created.txt"], ["f.txt"], True, False])
+            os.remove(applied_marker_for(tmp))
+            os.remove(os.path.join(tmp, "created.txt"))
+            # L'ancienne forme « st:taille:mtime:chemin » d'un marqueur d'avant est lue.
+            check("l'ancienne empreinte st: d'un gros fichier est lue comme la nouvelle",
+                  split_dirty_record(["st:8388609:1234:big.bin"]), {"big.bin": "st-8388609-1234"})
             # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
             mpath = applied_marker_for(tmp)
             os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
