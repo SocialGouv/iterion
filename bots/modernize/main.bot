@@ -176,10 +176,15 @@ schema lot_report:
   ## harness's own code, and routed to the net's extension subbot. A lot may
   ## ASK for a new observation point; it may never write one.
   extension_pending: json
-  ## An act in the ledger was not the net subbot's: introduced by a commit
-  ## the subbot did not report, or a certified path rewritten since. Refused
-  ## and TYPED — a resume from the banked branch would find the act at its
-  ## base and certify it, so this is a stop, never a repair pass.
+  ## An act in the ledger was not the net subbot's — introduced by a commit
+  ## the subbot did not report, or a certified path rewritten since — or the
+  ## net's harness could not say it applied the provenance rule at all (an
+  ## older copy, which judges by the bypassable same-commit rule). Refused and
+  ## TYPED, and terminal on its own edge: neither shape is repairable by a
+  ## pass. Dropping the act block breaks ledger_append_only, deleting the
+  ## reference makes the recorded path absent at HEAD, amending yields a sha
+  ## still outside the subbot's commits, and a harness sync is the net
+  ## owner's act, not the worker's.
   extension_forged: bool
   ## The worker wrote `done` into the contract. `done` is the gate's word: this
   ## verdict is refused BEFORE any gate command runs, so the revert costs the
@@ -236,6 +241,11 @@ schema gate_state:
   oracle_not_run: bool
   ## The verifier could not read the contract. Fails the run at once.
   unreadable: bool
+  ## An extension act the certifier refused on PROVENANCE — written by the
+  ## constrained party, or judged by a harness that could not say it applied
+  ## the rule. Terminal on its own edge, ahead of the repair loop: no pass of
+  ## this lot can produce the missing commit or the missing sync.
+  forged: bool
   fail_log: string
   needs_reanchor: bool
   needs_extend: bool
@@ -662,6 +672,24 @@ tool lot_verify:
               "contract_rewritten": []}
     problems = []
 
+    def emit():
+        """The ONE exit of this node — and the one place this rule holds.
+
+        A refused verdict is never a clean stop. `stop` is
+        `converged || lot_blocked`, `lot_blocked` is what the CONSTRAINED
+        party wrote into its own contract, and `lot_gate -> done when stop`
+        is declared ahead of the fail edges: a lot that writes
+        `status: blocked` for itself would carry ANY refusal out through the
+        green door — run `finished`, work banked, mergeable. Two refusals
+        cleared the flag at their own site, the third did not, and two of the
+        three early exits are prints a rule written at the tail never reaches
+        (review finding, executed). One rule, on the one path out.
+        """
+        if report["done_self_written"] or report["contract_rewritten"] \
+                or report["extension_forged"]:
+            report["lot_blocked"] = False
+        print(json.dumps(report))
+
     # 0. Who wrote the status? The contract is read at HEAD and at the run's
     #    base, and the two claims it can carry are believed asymmetrically.
     #    `blocked` is believed as a STOP: it had to be committed to be said, and
@@ -692,7 +720,7 @@ tool lot_verify:
         sys.stderr.write("modernize: CONTRACT_UNREADABLE: %s\n" % why)
         report["contract_unreadable"] = True
         report["log_tail"] = "CONTRACT_UNREADABLE: %s" % why
-        print(json.dumps(report))
+        emit()
         raise SystemExit(0)
 
     def plan_doc(text, what):
@@ -770,9 +798,9 @@ tool lot_verify:
         report["block_reason"] = ((head_lot or {}).get("title") or "") + " -- see the committed report"
     if head_status == "done" and (base_lot or {}).get("status") != "done":
         report["done_self_written"] = True
-        # Not a stop: a self-written verdict goes back to the worker with the
-        # refusal in fail_log, whatever else the contract says.
-        report["lot_blocked"] = False
+        # Not a stop — cleared once, at the end of this node, for every
+        # refusal: the verdict goes back to the worker with the refusal in
+        # fail_log, whatever else the contract says.
         report["block_reason"] = ""
         problems.append(
             "the contract marks lot %s `done` in the working tree while it was `%s` at base "
@@ -782,7 +810,7 @@ tool lot_verify:
             "ran no command."
             % ({{input.lot_id}}, (base_lot or {}).get("status") or "absent", base[:12]))
         report["log_tail"] = "\n".join(problems)[-6000:]
-        print(json.dumps(report))
+        emit()
         raise SystemExit(0)
 
     # 0b. The contract is read-only inside a lot — and that is checked in git,
@@ -830,11 +858,10 @@ tool lot_verify:
                                  % (bl.get("id"), bl.get("status"), hl.get("status")))
         if rewritten:
             report["contract_rewritten"] = rewritten
-            # A rewritten contract is never a clean stop, even under a lot the
-            # worker declared blocked: `stop` would end the run with the rewrite
-            # landed (adversarial finding, executed). It goes back to the
-            # worker with the refusal in fail_log.
-            report["lot_blocked"] = False
+            # Never a clean stop either, even under a lot the worker declared
+            # blocked: `stop` would end the run with the rewrite landed
+            # (adversarial finding, executed). Cleared at the same one point
+            # as every other refusal; the worker gets it in fail_log.
             report["block_reason"] = ""
             problems.append(
                 "the contract was rewritten during lot %s (%s). The plan is "
@@ -845,7 +872,7 @@ tool lot_verify:
                 "This verdict ran no command."
                 % ({{input.lot_id}}, "; ".join(rewritten)[:1500]))
             report["log_tail"] = "\n".join(problems)[-6000:]
-            print(json.dumps(report))
+            emit()
             raise SystemExit(0)
 
     def run(cmd, timeout=None):
@@ -1289,9 +1316,31 @@ tool lot_verify:
             # at its base and certify it.
             if any(r.get("forged") for r in (verdict.get("acted") or [])):
                 report["extension_forged"] = True
+                report["refs_untouched"] = False
                 report["block_reason"] = ("EXTENSION_FORGED: " + "; ".join(
                     "%s: %s" % (r.get("id"), "; ".join(r.get("problems") or []))
                     for r in (verdict.get("acted") or []) if r.get("forged")))[:600]
+            # The certifier must SAY it honoured the provenance it was handed.
+            # A net synced before the rule answers `extend-verify`, passes the
+            # capability probe, and judges by the same-commit rule alone — the
+            # one a lot passes by acting in a second commit. Nothing in the run
+            # report said so, and the deploy order makes the net's sync a step
+            # of its own AFTER the engine's (review finding, executed). Acts to
+            # certify + no echo = refused, terminal: the remedy is the net
+            # owner's sync, and no pass of this lot can produce it.
+            fresh = [r for r in (verdict.get("acted") or [])
+                     if not r.get("acted_at_base")]
+            if fresh and verdict.get("provenance") != "strict":
+                report["extension_forged"] = True
+                report["refs_untouched"] = False
+                report["block_reason"] = (
+                    "EXTENSION_UNCERTIFIED: the net's harness answered without "
+                    "honouring the provenance handed to it (provenance=%r), so "
+                    "%d act(s) were judged by the same-commit rule alone — the "
+                    "rule a lot passes by acting in a second commit. Sync the "
+                    "net's harness from the bot (a lot may not: it is judged), "
+                    "then relaunch."
+                    % (verdict.get("provenance"), len(fresh)))[:600]
         else:
             # No verdict is not "nothing to refuse". The certifier runs on
             # ledger content the constrained party writes, so a crash there
@@ -1307,7 +1356,7 @@ tool lot_verify:
             report["refs_untouched"] = False
 
     report["log_tail"] = "\n".join(problems)[-6000:]
-    print(json.dumps(report))
+    emit()
 
 ## A pure CONJUNCTION, never an aggregate. Two of three green is not "mostly
 ## done" — it is a lot that built and lies, or one that behaves and cheated.
@@ -1317,6 +1366,9 @@ compute lot_gate:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
     refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
+    ## Its own term, because it takes its own door: a refusal no pass can
+    ## repair must not be paid for max_passes times (see the edge below).
+    forged: "outputs.lot_verify.extension_forged"
     timed_out: "outputs.lot_verify.gate_timed_out"
     oracle_not_run: "outputs.lot_verify.oracle_not_run"
     unreadable: "outputs.lot_verify.contract_unreadable"
@@ -1352,6 +1404,18 @@ fail gate_timeout:
 fail oracle_environment:
   description: "the behavioural oracle delivered no verdict"
   code: ORACLE_NOT_RUN
+  message: "{{outputs.lot_verify.block_reason}}"
+  resumable: false
+
+## extension_provenance — an act in the extension ledger was not the net
+## subbot's, or the net's harness could not say it applied the provenance
+## rule. Typed rather than left on the bare `fail`, because the operator's
+## action differs per shape and the code is what routes it: a forged act is a
+## finding about the lot, an uncertified one is a net whose harness is behind
+## the bot. Terminal: no pass produces the missing commit or the missing sync.
+fail extension_provenance:
+  description: "an extension act was refused on provenance"
+  code: EXTENSION_PROVENANCE
   message: "{{outputs.lot_verify.block_reason}}"
   resumable: false
 
@@ -1704,6 +1768,20 @@ workflow modernize:
   lot_gate -> gate_timeout when timed_out
   lot_gate -> oracle_environment when oracle_not_run
   lot_gate -> contract_unreadable when unreadable
+
+  ## An extension act refused on PROVENANCE — written by the constrained
+  ## party, or judged by a net harness that could not say it applied the rule.
+  ## Declared here, ahead of the subbot and loop edges, for the same reason
+  ## the timeout is: the engine takes the first `when` that holds, and this
+  ## verdict may ALSO carry a pending request — routed to `extend`, the net's
+  ## own subbot would act on a tree that already carries a forged reference.
+  ## And it is structurally unrepairable by a pass: dropping the act block
+  ## breaks `ledger_append_only`, deleting the reference makes the recorded
+  ## path absent at HEAD, amending yields a sha still outside the subbot's
+  ## commits, and a harness sync is the net owner's act — so each repair pass
+  ## would be a guaranteed-red campaign plus a full exit gate, paid
+  ## max_passes times (review finding, executed).
+  lot_gate -> extension_provenance when forged
 
   ## Repair the net BEFORE deciding the lot, and on every outcome — a converged
   ## lot is exactly the case where a lost mutant would never be noticed. Bounded
