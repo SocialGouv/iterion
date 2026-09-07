@@ -682,6 +682,23 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 	return e.recordBudget(rs, nodeID, output, false)
 }
 
+// recordFailedNodeSpend books what a node burned before it failed.
+//
+// Accounting only: the node's own failure is the run's verdict, and a
+// budget verdict raised here would replace a named cause with a generic
+// one on a run that is already ending. The figure still has to land —
+// max_cost_usd, the org monthly cap and a lending donor's ledger read the
+// same totals, and a failed agent node can be the most expensive thing a
+// run did.
+func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[string]any) {
+	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+		return
+	}
+	if err := e.recordBudget(rs, nodeID, output, false); err != nil {
+		e.logger.Debug("budget: node %q failed over its budget; the failure is the verdict: %v", nodeID, err)
+	}
+}
+
 // recordAndDeferBudget records usage and DEFERS a hard overrun to the
 // next node boundary — see the deferral rationale below. Only the
 // standard node path may use it: it is the one that computes a

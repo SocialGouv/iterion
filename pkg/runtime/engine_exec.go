@@ -431,6 +431,24 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 	span.End()
 	if execErr != nil {
+		// A node that FAILED still spent: the delegate stamps the pass's
+		// cost on the result it returns with the error, and until now
+		// nothing read it — `recordBudget` runs only on the success path, so
+		// the run's totals, the daily cap and a donor's ledger all missed
+		// whatever the failing node burned. On a long agent node that is a
+		// whole session.
+		//
+		// NOT recorded when this node will run again in the SAME session: an
+		// in-place retry continues a session whose usage is cumulative, so
+		// counting the failed attempt and then the retry would bill the same
+		// tokens twice, and an interaction pause resumes the very call that
+		// asked the question. Both set the flag before returning; every other
+		// exit here is terminal for this attempt, and a resume re-executes
+		// the node in a FRESH session whose usage is genuinely additional.
+		// Booked at each TERMINAL exit below rather than deferred: a
+		// deferred call runs AFTER the return expression, so the failure
+		// handlers would already have written the checkpoint a resume reads
+		// its budget carry from (measured — the checkpoint showed zero).
 		// If the RUN's own context is done, the run is being torn down —
 		// cancelled by a drain/operator/heartbeat, or past its wall-clock
 		// deadline — WHILE this node was executing. Route through the
@@ -446,11 +464,14 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// own internal Canceled error with a live run ctx still takes the
 		// normal recovery path below.
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			e.recordFailedNodeSpend(rs, currentNodeID, output)
 			return nil, false, e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
 		}
 		// Check if the delegate needs user interaction.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(execErr, &needsInput) {
+			// NOT booked: the paused call resumes where it stopped, and its
+			// spend is the resumed call's to report.
 			ierr := e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput, 0)
 			if ierr == nil {
 				// interaction: llm / llm_or_human auto-answered and
@@ -472,6 +493,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// misclassified as a budget stop.
 		if errors.Is(execErr, context.DeadlineExceeded) {
 			if used, limit, bounded := rs.budget.DurationStatus(); bounded && limit > 0 && used >= limit*budgetHardThreshold {
+				e.recordFailedNodeSpend(rs, currentNodeID, output)
 				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
 					exceeded: true, dimension: "duration", used: used, limit: limit,
 				})
@@ -485,9 +507,13 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// node session.
 		retry, code, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr)
 		if recoveryErr != nil {
+			e.recordFailedNodeSpend(rs, currentNodeID, output)
 			return nil, false, recoveryErr
 		}
 		if retry {
+			// NOT booked: the node runs again, and a recovery retry can
+			// continue the same session — whose usage is cumulative, so
+			// booking this attempt and then the retry bills it twice.
 			return nil, true, nil
 		}
 		// Fail terminally carrying BOTH the classified code and the
@@ -499,6 +525,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		if code == "" {
 			code = ErrCodeExecutionFailed
 		}
+		e.recordFailedNodeSpend(rs, currentNodeID, output)
 		return nil, false, e.failRunErrWithCheckpoint(rs, currentNodeID, &RuntimeError{
 			Code:    code,
 			NodeID:  currentNodeID,
