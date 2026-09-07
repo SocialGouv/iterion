@@ -20,8 +20,17 @@ import (
 // all — that write run statuses on a ticker. Left running, they write into
 // the store (almost always a t.TempDir()) after the test has returned,
 // which surfaces as "TempDir RemoveAll cleanup: directory not empty" on
-// whichever test is cleaning up at that moment. Stop cancels and AWAITS
-// them, so the store belongs to nobody once the cleanup returns.
+// whichever test is cleaning up at that moment. Stop cancels and AWAITS the
+// goroutines that touch the store — the reconcile scan, the pipeline
+// scheduler, the run manager — so it belongs to nobody once the cleanup
+// returns.
+//
+// Scoped to those deliberately: Stop does NOT reap the alert manager's
+// stall poll, which runview builds on context.Background() and only Drain
+// signals (service_lifecycle.go:524). That poll fires sinks rather than
+// writing runs, and no test in this package passes runview.WithAlerts — it
+// is production-only wiring — so nothing here needs it today. A test that
+// starts supplying alert settings needs Drain, not Stop.
 //
 // Cleanups run LIFO, so this one fires before the t.TempDir() removal
 // registered by the caller when it made the store.

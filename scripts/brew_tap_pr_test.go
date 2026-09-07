@@ -67,10 +67,13 @@ esac
 // TestBrewTapSupersedeSweep drives the publish path against the stub and
 // asserts on the open-PR set the sweep leaves behind.
 //
-// Every row here fails on the pre-fix script (which selected on
+// Non-vacuity, measured against the pre-fix script (which selected on
 // `headRefName != "$branch"` alone, over an untruncated-by-luck 30-entry
-// page, and returned before the sweep when nothing was pushed), so the file
-// is not vacuous.
+// page, and returned before the sweep when nothing was pushed): four of the
+// five rows fail on it — both destructive ones, the >30-page one, and the
+// no-op one. The fifth, "a newer release supersedes the older slot", passes
+// on both: it is the case the old predicate got right by accident, and it is
+// here to pin that the fix did not trade the sweep away for safety.
 func TestBrewTapSupersedeSweep(t *testing.T) {
 	t.Parallel()
 	for _, bin := range []string{"bash", "git", "jq", "awk", "sort"} {
