@@ -84,7 +84,7 @@ func TestBoardDispatcher_E2E_BotCreatesAndDispatches(t *testing.T) {
 		func() bool {
 			list, _ := ns.List(native.ListFilter{})
 			for _, iss := range list {
-				st := ns.Board().StateByName(iss.State)
+				st := mustBoard(t, ns).StateByName(iss.State)
 				if st == nil || !st.Terminal || iss.Claim != "" {
 					return false
 				}

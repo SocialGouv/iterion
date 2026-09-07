@@ -129,7 +129,11 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: bot %q is disabled", entry.Name)
 		return
 	}
-	board := boardStore.Board()
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: read board: %v", err)
+		return
+	}
 	if board == nil || len(board.States) == 0 {
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: native board has no states")
 		return
@@ -424,10 +428,15 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board ready: invalid request: %v", err)
 		return
 	}
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board ready: read board: %v", err)
+		return
+	}
 	// Unstage → backlog (prefer StateBacklog; StateInbox is the historical
 	// unstage target for boards that still use it as the first column).
 	target := native.StateBacklog
-	if board := boardStore.Board(); board != nil && board.StateByName(target) == nil {
+	if board != nil && board.StateByName(target) == nil {
 		target = native.StateInbox
 	}
 	if req.Ready {
@@ -438,7 +447,7 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		}
 		ok, open := native.BlockersSatisfiedForIssue(boardStore, iss)
 		if !ok {
-			if board := boardStore.Board(); board != nil && board.StateByName(native.StateWaitingDeps) != nil {
+			if board != nil && board.StateByName(native.StateWaitingDeps) != nil {
 				target = native.StateWaitingDeps
 			} else {
 				s.writeJSONError(w, r, http.StatusConflict, map[string]any{

@@ -26,11 +26,11 @@ func TestAddState(t *testing.T) {
 	if err := s.AddState(State{Name: "triage", Display: "Triage"}); err != nil {
 		t.Fatalf("AddState: %v", err)
 	}
-	if s.Board().StateByName("triage") == nil {
+	if mustBoard(t, s).StateByName("triage") == nil {
 		t.Fatal("triage not added")
 	}
 	// Appended last.
-	states := s.Board().States
+	states := mustBoard(t, s).States
 	if states[len(states)-1].Name != "triage" {
 		t.Fatalf("triage not appended last: %v", states)
 	}
@@ -57,10 +57,10 @@ func TestRenameStateCascades(t *testing.T) {
 	if touched != 2 {
 		t.Fatalf("touched = %d, want 2", touched)
 	}
-	if s.Board().StateByName("backlog") != nil {
+	if mustBoard(t, s).StateByName("backlog") != nil {
 		t.Fatal("old state still present")
 	}
-	if s.Board().StateByName("todo") == nil {
+	if mustBoard(t, s).StateByName("todo") == nil {
 		t.Fatal("new state missing")
 	}
 	for _, id := range []string{a.ID, b.ID} {
@@ -108,7 +108,7 @@ func TestDeleteStateEmpty(t *testing.T) {
 	if _, err := s.DeleteState("review", ""); err != nil {
 		t.Fatalf("DeleteState empty: %v", err)
 	}
-	if s.Board().StateByName("review") != nil {
+	if mustBoard(t, s).StateByName("review") != nil {
 		t.Fatal("review not removed")
 	}
 }
@@ -121,7 +121,7 @@ func TestDeleteStateNonEmptyRequiresTarget(t *testing.T) {
 		t.Fatalf("want ErrStateNotEmpty, got %v", err)
 	}
 	// still present after the refused delete
-	if s.Board().StateByName("backlog") == nil {
+	if mustBoard(t, s).StateByName("backlog") == nil {
 		t.Fatal("backlog wrongly removed on refused delete")
 	}
 
@@ -132,7 +132,7 @@ func TestDeleteStateNonEmptyRequiresTarget(t *testing.T) {
 	if touched != 1 {
 		t.Fatalf("touched = %d, want 1", touched)
 	}
-	if s.Board().StateByName("backlog") != nil {
+	if mustBoard(t, s).StateByName("backlog") != nil {
 		t.Fatal("backlog not removed")
 	}
 	if countState(t, s, "ready") != 1 {
@@ -174,7 +174,7 @@ func TestUpdateState(t *testing.T) {
 	if err := s.UpdateState("backlog", StatePatch{Display: &disp, Color: &color, Eligible: &elig}); err != nil {
 		t.Fatalf("UpdateState: %v", err)
 	}
-	st := s.Board().StateByName("backlog")
+	st := mustBoard(t, s).StateByName("backlog")
 	if st.Display != disp || st.Color != color || !st.Eligible {
 		t.Fatalf("update not applied: %+v", st)
 	}
@@ -186,7 +186,7 @@ func TestUpdateState(t *testing.T) {
 
 func TestReorderStates(t *testing.T) {
 	s := newTestStore(t)
-	orig := s.Board().States
+	orig := mustBoard(t, s).States
 	names := make([]string, len(orig))
 	for i, st := range orig {
 		names[i] = st.Name
@@ -199,7 +199,7 @@ func TestReorderStates(t *testing.T) {
 	if err := s.ReorderStates(rev); err != nil {
 		t.Fatalf("ReorderStates: %v", err)
 	}
-	got := s.Board().States
+	got := mustBoard(t, s).States
 	for i := range rev {
 		if got[i].Name != rev[i] {
 			t.Fatalf("order[%d] = %q, want %q", i, got[i].Name, rev[i])
@@ -237,10 +237,10 @@ func TestStateManagementPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if s2.Board().StateByName("triage") == nil {
+	if mustBoard(t, s2).StateByName("triage") == nil {
 		t.Fatal("triage did not persist")
 	}
-	if s2.Board().StateByName("todo") == nil || s2.Board().StateByName("backlog") != nil {
+	if mustBoard(t, s2).StateByName("todo") == nil || mustBoard(t, s2).StateByName("backlog") != nil {
 		t.Fatal("rename did not persist")
 	}
 }

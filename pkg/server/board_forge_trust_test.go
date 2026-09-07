@@ -12,7 +12,7 @@ import (
 
 func TestUpsertForgeCard_TrustStamping(t *testing.T) {
 	board := newTestBoard(t)
-	b := board.Board()
+	b := mustBoard(t, board)
 	openCol, doneCol := defaultOpenColumn(b), terminalColumn(b)
 
 	// Trusted author → triage:auto on the fresh open card.

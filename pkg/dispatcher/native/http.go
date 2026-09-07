@@ -453,7 +453,12 @@ func (h *BoardAPI) handleListLabels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.AggregateLabels())
+	labels, err := s.AggregateLabels()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, labels)
 }
 
 type labelRenameReq struct {
@@ -535,7 +540,7 @@ func (h *BoardAPI) handleGetBoard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handlePutBoard(w http.ResponseWriter, r *http.Request) {
@@ -552,7 +557,7 @@ func (h *BoardAPI) handlePutBoard(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 // stateUpdateReq is the PATCH /board/states/{name} body. A non-nil Name that
@@ -596,7 +601,7 @@ func (h *BoardAPI) handleAddState(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleUpdateState(w http.ResponseWriter, r *http.Request) {
@@ -633,7 +638,7 @@ func (h *BoardAPI) handleUpdateState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleDeleteState(w http.ResponseWriter, r *http.Request) {
@@ -660,7 +665,7 @@ func (h *BoardAPI) handleDeleteState(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleReorderStates(w http.ResponseWriter, r *http.Request) {
@@ -681,7 +686,7 @@ func (h *BoardAPI) handleReorderStates(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 // mustList returns the current issues for the 409 count; on error it returns
@@ -723,7 +728,7 @@ func (h *BoardAPI) handleAddField(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleUpdateField(w http.ResponseWriter, r *http.Request) {
@@ -760,7 +765,7 @@ func (h *BoardAPI) handleUpdateField(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleDeleteField(w http.ResponseWriter, r *http.Request) {
@@ -776,7 +781,7 @@ func (h *BoardAPI) handleDeleteField(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleReorderFields(w http.ResponseWriter, r *http.Request) {
@@ -797,7 +802,7 @@ func (h *BoardAPI) handleReorderFields(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleSaveView(w http.ResponseWriter, r *http.Request) {
@@ -818,7 +823,7 @@ func (h *BoardAPI) handleSaveView(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 func (h *BoardAPI) handleDeleteView(w http.ResponseWriter, r *http.Request) {
@@ -834,7 +839,7 @@ func (h *BoardAPI) handleDeleteView(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Board())
+	writeBoard(w, s)
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +860,18 @@ func statusForErr(err error) int {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	httpx.WriteJSON(w, status, v)
+}
+
+// writeBoard answers the board configuration. Every /board route ends here so
+// a backend that could not read its config answers 500 once, instead of each
+// route serving whatever the read fell back to.
+func writeBoard(w http.ResponseWriter, s BoardStore) {
+	b, err := s.Board()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
 }
 
 func writeErr(w http.ResponseWriter, status int, err error) {

@@ -373,7 +373,10 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if err != nil {
 		return err
 	}
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	terminal := ""
 	for _, st := range board.States {
 		if st.Terminal {
@@ -602,7 +605,10 @@ func RunIssueBoardShow(p *Printer, opts IssueCommonOptions) error {
 	if err != nil {
 		return err
 	}
-	b := s.Board()
+	b, err := s.Board()
+	if err != nil {
+		return err
+	}
 	if p.Format == OutputJSON {
 		p.JSON(b)
 		return nil

@@ -132,7 +132,11 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	if runs != nil {
 		builder.rs = runs.RunStore()
 	}
-	if board := boardStore.Board(); board != nil {
+	board, err := boardStore.Board()
+	if err != nil {
+		return PipelineBoardResponse{}, fmt.Errorf("read native board: %w", err)
+	}
+	if board != nil {
 		for _, state := range board.States {
 			if state.Terminal {
 				builder.terminalStates[state.Name] = struct{}{}

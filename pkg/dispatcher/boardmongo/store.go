@@ -174,17 +174,25 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 // writing back) keeps reads race-free; the next SetBoard from the column
 // editor persists the upgraded shape naturally, and SetState validation
 // (which reads through this method) accepts the upgraded states either way.
-func (s *Store) Board() *native.Board {
+// Board reads the tenant's board config. A tenant that has never written one
+// legitimately gets DefaultBoard; any OTHER failure is reported, because a
+// board is what every caller resolves a column against — answering
+// DefaultBoard for an unreachable Mongo files cards into columns the tenant
+// never declared and renders the studio's grid as somebody else's board.
+func (s *Store) Board() (*native.Board, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	var doc configDoc
 	err := s.config.FindOne(ctx, bson.M{"_id": s.tenant}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return native.DefaultBoard(), nil
+	}
 	if err != nil {
-		return native.DefaultBoard()
+		return nil, fmt.Errorf("boardmongo: read board config: %w", err)
 	}
 	b := doc.Board
 	native.UpgradeBoardSchema(&b)
-	return &b
+	return &b, nil
 }
 
 // SetBoard persists the tenant's board config after validating it.
@@ -211,7 +219,10 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 	if in.Title == "" {
 		return nil, errors.New("issue: title required")
 	}
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return nil, err
+	}
 	if in.State == "" {
 		in.State = board.States[0].Name
 	}
@@ -490,7 +501,11 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 	if err != nil {
 		return nil, err
 	}
-	changed := applyPatch(iss, p, s.Board())
+	board, err := s.Board()
+	if err != nil {
+		return nil, err
+	}
+	changed := applyPatch(iss, p, board)
 	if len(changed.fields) == 0 {
 		return iss, changed.err
 	}
@@ -569,7 +584,10 @@ func (s *Store) SetStateWithReason(id, newState, reason string) (*native.Issue, 
 func (s *Store) setStateReason(id, newState, reason string) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return nil, err
+	}
 	if board.StateByName(newState) == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
 	}
@@ -1007,12 +1025,12 @@ func (s *Store) ScanEvents(visit func(*native.Event) bool) error {
 	return cur.Err()
 }
 
-func (s *Store) AggregateLabels() []native.LabelUsage {
+func (s *Store) AggregateLabels() ([]native.LabelUsage, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	all, err := s.listAll(ctx)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("boardmongo: read the label vocabulary: %w", err)
 	}
 	type acc struct {
 		count int
@@ -1045,7 +1063,7 @@ func (s *Store) AggregateLabels() []native.LabelUsage {
 		}
 		return out[i].Label < out[j].Label
 	})
-	return out
+	return out, nil
 }
 
 // --- helpers ---

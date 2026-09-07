@@ -154,7 +154,10 @@ func (s *Store) AddState(st native.State) error {
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	if board.StateByName(st.Name) != nil {
 		return fmt.Errorf("boardmongo: state %q already exists", st.Name)
 	}
@@ -180,7 +183,10 @@ func (s *Store) RenameState(from, to string) (int, error) {
 		return 0, nil
 	}
 	sweep := sweepCtx()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	idx := stateIndex(board, from)
 	if idx < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown state %q", from)
@@ -208,7 +214,10 @@ func (s *Store) RenameState(from, to string) (int, error) {
 // Mirrors native.Store.DeleteState.
 func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 	sweep := sweepCtx()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	if stateIndex(board, name) < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown state %q", name)
 	}
@@ -267,7 +276,10 @@ func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 func (s *Store) UpdateState(name string, p native.StatePatch) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	idx := stateIndex(board, name)
 	if idx < 0 {
 		return fmt.Errorf("boardmongo: unknown state %q", name)
@@ -300,7 +312,10 @@ func (s *Store) UpdateState(name string, p native.StatePatch) error {
 func (s *Store) ReorderStates(order []string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	reordered, err := reorderByName(board.States, order, func(st native.State) string { return st.Name }, "state")
 	if err != nil {
 		return err
@@ -364,7 +379,10 @@ func (s *Store) AddField(f native.Field) error {
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	if board.FieldByName(f.Name) != nil {
 		return fmt.Errorf("boardmongo: field %q already exists", f.Name)
 	}
@@ -384,7 +402,10 @@ func (s *Store) AddField(f native.Field) error {
 func (s *Store) UpdateField(name string, p native.FieldPatch) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	idx := fieldIndex(board, name)
 	if idx < 0 {
 		return fmt.Errorf("boardmongo: unknown field %q", name)
@@ -422,7 +443,10 @@ func (s *Store) RenameField(from, to string) (int, error) {
 		return 0, nil
 	}
 	sweep := sweepCtx()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	idx := fieldIndex(board, from)
 	if idx < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown field %q", from)
@@ -462,7 +486,10 @@ func (s *Store) RenameField(from, to string) (int, error) {
 // Mirrors native.Store.DeleteField.
 func (s *Store) DeleteField(name string) (int, error) {
 	sweep := sweepCtx()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	idx := fieldIndex(board, name)
 	if idx < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown field %q", name)
@@ -498,7 +525,10 @@ func (s *Store) DeleteField(name string) (int, error) {
 func (s *Store) ReorderFields(order []string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	reordered, err := reorderByName(board.Fields, order, func(f native.Field) string { return f.Name }, "field")
 	if err != nil {
 		return err
@@ -525,7 +555,10 @@ func (s *Store) SaveView(v native.View) error {
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	replaced := false
 	for i := range board.Views {
 		if board.Views[i].Name == v.Name {
@@ -551,7 +584,10 @@ func (s *Store) SaveView(v native.View) error {
 func (s *Store) DeleteView(name string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	idx := -1
 	for i := range board.Views {
 		if board.Views[i].Name == name {

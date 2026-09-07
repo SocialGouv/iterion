@@ -98,7 +98,7 @@ func TestAddComment_RetriesAGivenUpCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Board().StateByName(StateBlocked) == nil || !st.Board().StateByName(StateBlocked).Terminal {
+	if mustBoard(t, st).StateByName(StateBlocked) == nil || !mustBoard(t, st).StateByName(StateBlocked).Terminal {
 		t.Skip("this board's give-up column is not a sink — nothing to prove")
 	}
 	st.SetCommentDispatcher(func(Issue, string) (string, map[string]string, string, bool) {

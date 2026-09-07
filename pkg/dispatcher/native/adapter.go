@@ -34,22 +34,28 @@ func (a *Adapter) Name() string { return "native" }
 // tracker.LaunchStateLister. One definition, shared with ListCandidates
 // below, so the watchdog and the poller can never disagree about which
 // column a launch started in.
-func (a *Adapter) LaunchStates() []string {
-	b := a.store.Board()
+func (a *Adapter) LaunchStates() ([]string, error) {
+	b, err := a.store.Board()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, 0, len(b.States))
 	for _, s := range b.States {
 		if s.Eligible {
 			out = append(out, s.Name)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (a *Adapter) ListCandidates(ctx context.Context) ([]tracker.Issue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	eligible := a.LaunchStates()
+	eligible, err := a.LaunchStates()
+	if err != nil {
+		return nil, err
+	}
 	if len(eligible) == 0 {
 		return nil, nil
 	}
@@ -254,7 +260,10 @@ func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 // awaiting_input stay with ListAwaitingInput / reconcileParked.
 // Consumed by reconcileStrandedPaused via optional-interface assertion.
 func (a *Adapter) ListForRepark(_ string) ([]tracker.Issue, error) {
-	b := a.store.Board()
+	b, err := a.store.Board()
+	if err != nil {
+		return nil, err
+	}
 	seen := make(map[string]bool, len(b.States))
 	states := make([]string, 0, len(b.States))
 	for _, s := range b.States {

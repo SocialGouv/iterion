@@ -13,11 +13,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// Board returns a defensive copy of the current board config.
-func (s *Store) Board() *Board {
+// Board returns a defensive copy of the current board config. The
+// filesystem store loads its config at open and serves it from memory, so
+// this read has no failure mode of its own; the error is the contract's
+// (see BoardStore.Board) and is always nil here.
+func (s *Store) Board() (*Board, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return cloneBoard(s.board)
+	return cloneBoard(s.board), nil
 }
 
 // SetBoard validates and replaces the board configuration. The disk

@@ -157,7 +157,10 @@ func (s *Store) SetStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*native.Issue, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return nil, err
+	}
 	dst := board.StateByName(newState)
 	if dst == nil {
 		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
@@ -275,7 +278,10 @@ func (s *Store) setStateOwnedReason(id, newState string, tok tracker.ClaimToken,
 func (s *Store) SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (*native.Issue, bool, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return nil, false, err
+	}
 	if board.StateByName(to) == nil {
 		return nil, false, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, to)
 	}
@@ -668,7 +674,10 @@ func (s *Store) Reopen(id, toState string) (*native.Issue, error) {
 	if err != nil {
 		return nil, err
 	}
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return nil, err
+	}
 	st := board.StateByName(iss.State)
 	if st == nil || !st.Terminal {
 		return nil, fmt.Errorf("%w: %q is not terminal — use an ordinary state move", tracker.ErrTransitionRejected, iss.State)
@@ -735,7 +744,10 @@ func (s *Store) SetStateFrom(id, from, to string) (*native.Issue, bool, error) {
 func (s *Store) SetStateFromReason(id, from, to, reason string) (*native.Issue, bool, error) {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return nil, false, err
+	}
 	if board.StateByName(to) == nil {
 		return nil, false, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, to)
 	}

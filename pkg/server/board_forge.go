@@ -198,7 +198,10 @@ func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider 
 	if err != nil {
 		return 0, 0, fmt.Errorf("list issues: %w", err)
 	}
-	b := board.Board()
+	b, err := board.Board()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read board: %w", err)
+	}
 	openCol := defaultOpenColumn(b)
 	doneCol := terminalColumn(b)
 	trustMemo := map[string]bool{}

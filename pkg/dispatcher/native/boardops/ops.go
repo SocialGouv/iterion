@@ -580,6 +580,14 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	if err != nil {
 		return nil, err
 	}
+	// One read for the whole target resolution: a failure to read the board
+	// is an error, never a board with no terminal state (which the branches
+	// below would report as "declare one" — a lie the operator would act on),
+	// and on a cloud board it is one round-trip instead of three.
+	board, err := store.Board()
+	if err != nil {
+		return nil, err
+	}
 	target := args.To
 	if target == "" {
 		// A card ALREADY in a terminal state stays where it is: closing a
@@ -589,7 +597,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 		// dispatcher's give-up stamp on a card the bot never asked to
 		// move). No-op, current issue returned.
 		if cur, err := store.Get(resolved); err == nil {
-			if st := store.Board().StateByName(cur.State); st != nil && st.Terminal {
+			if st := board.StateByName(cur.State); st != nil && st.Terminal {
 				// Still an acknowledgment: the give-up stamp goes (same
 				// best-effort contract as below — nothing moved).
 				_ = store.SetGaveUp(resolved, nil)
@@ -600,7 +608,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 			}
 		}
 		// Find the first terminal state on the board.
-		for _, st := range store.Board().States {
+		for _, st := range board.States {
 			if st.Terminal {
 				target = st.Name
 				break
@@ -610,7 +618,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 			return nil, errors.New("board has no terminal state; specify 'to' explicitly")
 		}
 	} else {
-		st := store.Board().StateByName(target)
+		st := board.StateByName(target)
 		if st == nil {
 			return nil, fmt.Errorf("unknown state %q", target)
 		}
@@ -669,7 +677,11 @@ func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, erro
 }
 
 func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, error) {
-	return json.Marshal(store.AggregateLabels())
+	labels, err := store.AggregateLabels()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(labels)
 }
 
 func doGet(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
