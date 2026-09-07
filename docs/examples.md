@@ -53,6 +53,13 @@ These bots are shipped in the repository and are discoverable by the CLI and stu
 | 📖 Wikky | [`wiki-gen`](../bots/wiki-gen/) | Generate and incrementally maintain a validated Open Knowledge Format wiki. |
 | 🪞 Goldy | [`golden-master`](../bots/golden-master/) | Build a behavioural non-regression net (golden master) for an existing app and prove it is neither blind nor hysterical with a deterministic mutation counter-test; the safety net under a migration or refactor. |
 | 🧱 Morphy | [`modernize`](../bots/modernize/) | Carry a repo through modernisation lots (toolchain/runtime/framework/datastore) one deterministic gate-to-gate step at a time, each proven by a behavioural oracle — refuses to start without a golden-master net. |
+| 🧭 Campy | [`campaign`](../bots/campaign/) | Supervise a WHOLE modernisation programme lot after lot, running `modernize` as a subbot in a bounded loop; needs a `.modernize/plan.yaml` contract and a behavioural net. |
+| ⚖️ Themis | [`arbitrate`](../bots/arbitrate/) | Judge the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine. |
+| 🕸️ Endy | [`e2e-coverage`](../bots/e2e-coverage/) | Complete an application's end-to-end / anti-regression net, and maintain the [e2e coverage matrix](e2e-coverage-matrix.md). |
+| 📡 Obsy | [`instrument`](../bots/instrument/) | Observability instrumentation campaign: wire a repo for error tracking and standardized logging behind a verified semantic gate. |
+| 🧭 Prody | [`product-docs`](../bots/product-docs/) | Write and maintain a product's BUSINESS-audience functional documentation ("what it does for its users"), with a platform-agnostic publish tail. |
+| 🌐 Envy | [`review-env`](../bots/review-env/) | Deploy the current workspace's already-CI-published image to the attached platform and hand back a live https URL. |
+| 🛡️ Senti | [`vuln-watch`](../bots/vuln-watch/) | Inventory-scoped vulnerability sentinel: a deterministic, zero-LLM watch over a git-versioned inventory in the target repo. |
 
 The manifests are authoritative for inputs, invocation modes, required capabilities, forge events, and suggested schedules. Nexie’s generated [bot decision catalogue](../bots/whats-next/skills/iterion-bot-catalog.md) is the routing-oriented view.
 
