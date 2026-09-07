@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/alert"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -239,15 +240,7 @@ func TestOutcomeRouter_MergesAndCountsEpisodes(t *testing.T) {
 	repo := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t",
-			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, repo, args...)
 	}
 	git("init", "-q", "-b", "main")
 	// Repo-local identity: PerformMergeCtx's squash commit runs without
@@ -265,13 +258,7 @@ func TestOutcomeRouter_MergesAndCountsEpisodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("commit", "-qam", "work")
-	sha := func() string {
-		out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return strings.TrimSpace(string(out))
-	}()
+	sha := gittest.Run(t, repo, "rev-parse", "HEAD")
 	git("checkout", "-q", "main")
 
 	r := h.seedRun(t, "i1-converged", func(r *store.Run) {

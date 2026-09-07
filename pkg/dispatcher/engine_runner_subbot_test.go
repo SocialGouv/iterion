@@ -3,7 +3,6 @@ package dispatcher
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -446,18 +446,10 @@ func TestEngineRunner_SubbotChildNeverAdoptsParentWorktree(t *testing.T) {
 		{"config", "user.name", "T"},
 		{"commit", "-q", "--allow-empty", "-m", "seed"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = mainRepo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
+		gittest.Run(t, mainRepo, args...)
 	}
 	workspace := filepath.Join(t.TempDir(), "issue-ws")
-	cmd := exec.Command("git", "worktree", "add", "--detach", workspace, "HEAD")
-	cmd.Dir = mainRepo
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add: %v (%s)", err, out)
-	}
+	gittest.Run(t, mainRepo, "worktree", "add", "--detach", workspace, "HEAD")
 	marker := `{"validated":true,"echoed":"from-workspace"}`
 	if err := os.WriteFile(filepath.Join(workspace, "marker.json"), []byte(marker), 0o644); err != nil {
 		t.Fatalf("write marker: %v", err)

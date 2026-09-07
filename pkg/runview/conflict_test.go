@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -45,17 +46,7 @@ func TestPerformMerge_ConflictPath(t *testing.T) {
 	}
 	runGit := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repoDir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t",
-			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"LC_ALL=C",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\noutput: %s", args, err, string(out))
-		}
+		gittest.Run(t, repoDir, args...)
 	}
 	writeRepo := func(name, content string) {
 		t.Helper()
@@ -230,17 +221,7 @@ func TestAbortMergeConflict_RestoresWorktree(t *testing.T) {
 	}
 	runGit := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repoDir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t",
-			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"LC_ALL=C",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\noutput: %s", args, err, string(out))
-		}
+		gittest.Run(t, repoDir, args...)
 	}
 	writeRepo := func(name, content string) {
 		t.Helper()
@@ -321,12 +302,5 @@ func TestAbortMergeConflict_RestoresWorktree(t *testing.T) {
 
 func captureGitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git %v: %v", args, err)
-	}
-	return string(out)
+	return gittest.Run(t, dir, args...)
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -209,13 +210,7 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	ws := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
+		return gittest.Run(t, ws, args...)
 	}
 	git("init", "-q", "-b", "main")
 	git("config", "user.email", "lot@run")

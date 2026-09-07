@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 type extendVerifyOut struct {
@@ -34,14 +36,7 @@ func extendVerifyRepo(t *testing.T, verdict, pending string) (string, string) {
 	ws := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		full := append([]string{"-C", ws}, args...)
-		cmd := exec.Command("git", full...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
+		return gittest.Run(t, ws, args...)
 	}
 	git("init", "-q", "-b", "main")
 	git("config", "user.email", "t@example.com")

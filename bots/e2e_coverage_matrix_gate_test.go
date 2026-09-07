@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestE2ECoverageMatrixGate guards the deterministic MATRIX CONTRACT half of
@@ -81,9 +83,7 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 	gitWorkspace := func(t *testing.T) string {
 		t.Helper()
 		ws := t.TempDir()
-		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v (%s)", err, out)
-		}
+		gittest.Run(t, ws, "init", "-q")
 		return ws
 	}
 

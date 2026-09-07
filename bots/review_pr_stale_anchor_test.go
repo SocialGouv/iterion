@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestReviewPRStaleAnchorStillPublishes pins what a review owes the PR it is
@@ -37,15 +39,7 @@ func TestReviewPRStaleAnchorStillPublishes(t *testing.T) {
 	ws := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = ws
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
+		return gittest.Run(t, ws, args...)
 	}
 	git("init", "--quiet", "-b", "main")
 	if err := os.WriteFile(ws+"/a.txt", []byte("one\n"), 0o644); err != nil {

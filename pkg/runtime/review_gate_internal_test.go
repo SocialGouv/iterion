@@ -4,9 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -21,17 +21,7 @@ import (
 
 func gitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=iterion", "GIT_AUTHOR_EMAIL=iterion@example.test",
-		"GIT_COMMITTER_NAME=iterion", "GIT_COMMITTER_EMAIL=iterion@example.test",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-	return strings.TrimSpace(string(out))
+	return gittest.Run(t, dir, args...)
 }
 
 // gateRepo is a git worktree with one commit, ready to be anchored.
@@ -54,9 +44,8 @@ func gateRepo(t *testing.T) string {
 
 func refExists(t *testing.T, dir, ref string) bool {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	cmd.Dir = dir
-	return cmd.Run() == nil
+	_, err := gittest.Try(dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	return err == nil
 }
 
 func TestMarkReviewGate_WritesTheRefAndIsIdempotent(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestDocsRefreshHintsProducer executes docs-refresh v3's scan_hints
@@ -234,14 +236,8 @@ and the [dead anchor](docs/guide.md#not-there).
 		// 43% noise on live run 019f8ba3 without this rule.
 		ws := t.TempDir()
 		git := func(args ...string) {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = ws
-			cmd.Env = append(os.Environ(),
-				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("git %v: %v\n%s", args, err, out)
-			}
+			t.Helper()
+			gittest.Run(t, ws, args...)
 		}
 		git("init", "-q")
 		write(t, ws, "bots/real/tracked.go", "package real\n")
@@ -359,16 +355,8 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		// the code changed SINCE it. A periodic run re-aligns only the delta.
 		ws := t.TempDir()
 		git := func(args ...string) string {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = ws
-			cmd.Env = append(os.Environ(),
-				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("git %v: %v\n%s", args, err, out)
-			}
-			return strings.TrimSpace(string(out))
+			t.Helper()
+			return gittest.Run(t, ws, args...)
 		}
 		git("init", "-q")
 		write(t, ws, "README.md", "# fixture\n")
@@ -415,14 +403,8 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		// corpus. A clean degrade to full, never an error.
 		ws := t.TempDir()
 		git := func(args ...string) {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = ws
-			cmd.Env = append(os.Environ(),
-				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("git %v: %v\n%s", args, err, out)
-			}
+			t.Helper()
+			gittest.Run(t, ws, args...)
 		}
 		git("init", "-q")
 		write(t, ws, "README.md", "# fixture\n")
@@ -445,16 +427,8 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		// base_ref) even though the mode var is the "full" default.
 		ws := t.TempDir()
 		git := func(args ...string) string {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = ws
-			cmd.Env = append(os.Environ(),
-				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("git %v: %v\n%s", args, err, out)
-			}
-			return strings.TrimSpace(string(out))
+			t.Helper()
+			return gittest.Run(t, ws, args...)
 		}
 		git("init", "-q")
 		write(t, ws, "README.md", "# fixture\n")
@@ -494,14 +468,8 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		// remote-tracking ref in the run's clone. scan_hints must still resolve
 		// the delta against origin/main.
 		gitIn := func(dir string, args ...string) {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(),
-				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
-			}
+			t.Helper()
+			gittest.Run(t, dir, args...)
 		}
 		origin := t.TempDir()
 		gitIn(origin, "init", "-q", "-b", "main")

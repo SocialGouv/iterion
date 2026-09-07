@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
@@ -24,13 +25,7 @@ func TestResolveCloneRoot(t *testing.T) {
 	repo := filepath.Join(dir, "clone")
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	git("init", "-q", repo)
 	git("-C", repo, "commit", "-q", "--allow-empty", "-m", "init")
@@ -74,13 +69,7 @@ func TestFixupWorkspaceGitScript(t *testing.T) {
 	dir := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	git("init", "-q", dir)
 	// The runner's credential store, recorded with a HOST path that does
@@ -100,12 +89,8 @@ func TestFixupWorkspaceGitScript(t *testing.T) {
 		t.Fatalf("fixup script: %v\n%s", err, out)
 	}
 
-	out, err := exec.Command("git", "-C", dir, "config", "credential.helper").Output()
-	if err != nil {
-		t.Fatalf("read credential.helper: %v", err)
-	}
 	want := "store --file=" + credPath
-	if got := strings.TrimSpace(string(out)); got != want {
+	if got := gittest.Run(t, dir, "config", "credential.helper"); got != want {
 		t.Errorf("credential.helper = %q, want %q", got, want)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git", "worktrees")); !os.IsNotExist(err) {
@@ -135,9 +120,7 @@ func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
+	gittest.Run(t, dir, "init", "-q")
 	credPath := filepath.Join(dir, ".git", "iterion-credentials")
 	if err := os.WriteFile(credPath, []byte("https://oauth2:tok@example.com\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -146,8 +129,8 @@ func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
 	// Sanity: the knob must actually break repository discovery on this
 	// host's git (≥2.35.2). If it doesn't (ancient git), the regression
 	// can't be exercised here.
-	probe := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
-	probe.Env = append(os.Environ(), "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+	probe := gittest.Cmd(dir, "rev-parse", "--git-dir")
+	probe.Env = append(probe.Env, "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
 	if err := probe.Run(); err == nil {
 		t.Skip("this git does not honour GIT_TEST_ASSUME_DIFFERENT_OWNER; cannot simulate the root-owned pod workspace")
 	}
@@ -176,8 +159,8 @@ func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("fixup with safe.directory env: %v\n%s", err, out)
 	}
-	read := exec.Command("git", "-C", dir, "config", "credential.helper")
-	read.Env = append(os.Environ(),
+	read := gittest.Cmd(dir, "config", "credential.helper")
+	read.Env = append(read.Env,
 		"GIT_TEST_ASSUME_DIFFERENT_OWNER=1",
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=safe.directory",
