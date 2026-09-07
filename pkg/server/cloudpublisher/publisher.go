@@ -1864,7 +1864,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 		rbCtx, rbCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rbCancel()
-		if uerr := p.store.UpdateRunStatusCoded(rbCtx, runID, store.RunStatusFailed, cause, store.FailureLaunchFailed); uerr != nil {
+		if uerr := store.FailRunAtLaunch(rbCtx, p.store, runID, cause); uerr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
 		}
 	}()

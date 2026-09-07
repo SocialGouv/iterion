@@ -373,7 +373,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
 		// as a phantom "running" run forever — mark it failed instead.
-		if uerr := s.store.UpdateRunStatus(context.Background(), runID, store.RunStatusFailed, "runner failed to start: "+err.Error()); uerr != nil {
+		if uerr := store.FailRunAtLaunch(context.Background(), s.store, runID, "runner failed to start: "+err.Error()); uerr != nil {
 			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
 		}
 		s.dropRunLog(runID)

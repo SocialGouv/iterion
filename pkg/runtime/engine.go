@@ -516,11 +516,44 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 			time.Sleep(delay)
 		}
 		if err = e.store.UpdateRunStatusCoded(writeCtx, runID, status, msg, code); err == nil {
+			e.emitSetupFailure(writeCtx, runID, phase, status, msg, code)
 			return
 		}
 	}
 	if e.logger != nil {
 		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
+	}
+}
+
+// emitSetupFailure puts a setup-phase death on the run's TIMELINE, not only
+// on its document. Every other terminal transition emits one; this one did
+// not, so a run killed before its first node ended `failed` with three
+// sandbox markers and nothing else — no code, no reason. A headless router
+// that triages terminals by the tree (run_failed.code, the error) cannot
+// classify that at all, and an infrastructure timeout lands in a human
+// queue. Measured 2026-09-05 on a pod that never became Ready.
+//
+// `phase` names the setup step, which is what an operator acts on: a
+// sandbox that would not start and a bundle skill that would not mirror are
+// the same status and a very different morning.
+func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, status store.RunStatus, reason string, code store.FailureCode) {
+	data := map[string]any{"error": reason, "phase": phase}
+	if code != "" {
+		data["code"] = string(code)
+	}
+	if status == store.RunStatusCancelled {
+		// The operator stopped it during setup: the same event the node
+		// loop writes for a cancel, so a consumer reads one vocabulary.
+		if err := e.emit(ctx, runID, store.EventRunCancelled, "", map[string]any{"reason": reason, "phase": phase}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: failed to emit run_cancelled for run %s during %s: %v", runID, phase, err)
+		}
+		return
+	}
+	if status == store.RunStatusFailedResumable {
+		data["resumable"] = true
+	}
+	if err := e.emit(ctx, runID, store.EventRunFailed, "", data); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: failed to emit run_failed for run %s during %s: %v", runID, phase, err)
 	}
 }
 

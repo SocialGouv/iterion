@@ -672,7 +672,7 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		// "running" run forever — mark it failed, visibly. Only real
 		// start failures land here: a degraded .pid write is a warning
 		// on a HEALTHY run, never a failure (the runner is executing).
-		if uerr := st.UpdateRunStatus(ctx, runID, store.RunStatusFailed, "runner failed to start: "+err.Error()); uerr != nil {
+		if uerr := store.FailRunAtLaunch(ctx, st, runID, "runner failed to start: "+err.Error()); uerr != nil {
 			return "", false, fmt.Errorf("start runner: %w (and marking the run failed also failed: %v)", err, uerr)
 		}
 		return "", false, fmt.Errorf("start runner: %w", err)

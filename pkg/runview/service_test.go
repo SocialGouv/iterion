@@ -114,6 +114,49 @@ func TestReconcileOrphans(t *testing.T) {
 			t.Errorf("%s: status = %q, want %q", c.id, r.Status, c.want)
 		}
 	}
+
+	// The sweep's verdict must reach the TIMELINE too. A consumer that
+	// triages terminals by the tree (the run console, a headless outcome
+	// router) reads a reaped orphan as a run that simply stopped
+	// mid-flight, with no code and no reason, when only the document says
+	// what happened.
+	for _, id := range []string{"run-orphan-no-cp", "run-orphan-cp"} {
+		events, err := verify.LoadEvents(context.Background(), id)
+		if err != nil {
+			t.Errorf("LoadEvents %s: %v", id, err)
+			continue
+		}
+		var failed *store.Event
+		for _, e := range events {
+			if e.Type == store.EventRunFailed {
+				failed = e
+			}
+		}
+		if failed == nil {
+			t.Errorf("%s: no run_failed event after the orphan sweep", id)
+			continue
+		}
+		if got, _ := failed.Data["code"].(string); got != string(store.FailureProcessOrphaned) {
+			t.Errorf("%s: run_failed.code = %q, want %s", id, got, store.FailureProcessOrphaned)
+		}
+		if got, _ := failed.Data["error"].(string); got != ReasonProcessOrphaned {
+			t.Errorf("%s: run_failed.error = %q, want the sweep's reason", id, got)
+		}
+	}
+	// The reaped orphan that kept a checkpoint says so, so a router can
+	// tell a park from a death.
+	cpEvents, err := verify.LoadEvents(context.Background(), "run-orphan-cp")
+	if err != nil {
+		t.Fatalf("LoadEvents run-orphan-cp: %v", err)
+	}
+	for _, e := range cpEvents {
+		if e.Type != store.EventRunFailed {
+			continue
+		}
+		if resumable, _ := e.Data["resumable"].(bool); !resumable {
+			t.Error("run-orphan-cp: run_failed carries no resumable flag, though the sweep parked it failed_resumable")
+		}
+	}
 }
 
 // TestCancelInactive_FlipsResumableStatuses verifies that operator
