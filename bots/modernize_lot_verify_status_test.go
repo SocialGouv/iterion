@@ -25,6 +25,7 @@ type modernizeLotVerifyOut struct {
 	OracleNotRun    bool           `json:"oracle_not_run"`
 	OracleInvalid   []any          `json:"oracle_invalid"`
 	OracleReport    map[string]any `json:"oracle_report"`
+	ExtensionForged bool           `json:"extension_forged"`
 }
 
 // modernizeNet drops the smallest net lot_verify accepts into ws: a runner
@@ -79,6 +80,9 @@ func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate strin
 	body = strings.ReplaceAll(body, "{{input.base_sha}}", strconv.Quote(base))
 	body = strings.ReplaceAll(body, "{{input.refs_dir}}", strconv.Quote(".golden-master/refs"))
 	body = strings.ReplaceAll(body, "{{input.exit_gate}}", strconv.Quote(exitGate))
+	// The net subbot's provenance: what an edge renders before the subbot ran.
+	body = strings.ReplaceAll(body, "{{input.acted_commits}}", "null")
+	body = strings.ReplaceAll(body, "{{input.acted_blobs}}", "null")
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in lot_verify near %q", body[i:min(i+40, len(body))])
 	}
