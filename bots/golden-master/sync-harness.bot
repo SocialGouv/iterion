@@ -3149,6 +3149,7 @@ tool sync_harness:
         qui tournent, jamais une reimplementation — qui finirait par diverger d'eux.
         """
         failures, checked = [], [0]
+        skipped_under_root = []
 
         def check(name, got, want):
             checked[0] += 1
@@ -4609,6 +4610,24 @@ tool sync_harness:
                 os.remove(os.path.join(tmp, "mid.bin"))
                 check("une entree st: sans chiffres n'est pas migree",
                       split_dirty_record(["st:a:b:c.txt"]), {"st:a:b:c.txt": "?"})
+                # Les deux formes stat sont UNE fonction ; un enregistrement par hachage est
+                # repondu par un hachage meme au-dessus du seuil actuel (miroir du bug).
+                saved_big = g["BIG_FILE_BYTES"]
+                g["BIG_FILE_BYTES"] = 16
+                try:
+                    with open(os.path.join(tmp, "big2.bin"), "wb") as f:
+                        f.write(b"y" * 64)
+                    fp_stat = dirty_fingerprint(tmp, "big2.bin")
+                    check("au-dessus du seuil, dirty_fingerprint et fingerprint_like(st-) donnent la meme forme stat",
+                          [fp_stat.startswith("st-"), fingerprint_like(tmp, "big2.bin", fp_stat) == fp_stat], [True, True])
+                    h = hashlib.sha1(b"y" * 64).hexdigest()
+                    check("un enregistrement par hachage est repondu par un hachage, seuil ou pas",
+                          fingerprint_like(tmp, "big2.bin", h) == h, True)
+                finally:
+                    g["BIG_FILE_BYTES"] = saved_big
+                    os.remove(os.path.join(tmp, "big2.bin"))
+                check("un enregistrement legacy avec mtime negatif migre",
+                      split_dirty_record(["st:10:-5:old.bin"]), {"old.bin": "st-10--5"})
                 # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
                 mpath = applied_marker_for(tmp)
                 os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
@@ -4634,7 +4653,8 @@ tool sync_harness:
             for f in failures:
                 log("  " + f)
             return 1
-        log("harnais : %d verifications passent" % checked[0])
+        log("harnais : %d verifications passent%s" % (
+            checked[0], (" (sautees sous root : %s)" % "; ".join(skipped_under_root)) if skipped_under_root else ""))
         return 0
 
 
