@@ -130,12 +130,20 @@ func (m *Manager) Observe(evt store.Event) {
 	if evt.RunID == "" {
 		return
 	}
-	// The persisted twin of our own alerts (run_health) must not count
-	// as run progress nor re-arm stall detection: replayed through the
-	// file tail it would reset the once-per-episode dedup and turn a
-	// single stall into an alert every poll window. Structural
-	// loop-freedom lives here.
-	if evt.Type == store.EventRunHealth {
+	// Events that are not the RUN working must not count as progress nor
+	// re-arm stall detection.
+	//
+	//   run_health — the persisted twin of our own alerts: replayed
+	//     through the file tail it would reset the once-per-episode dedup
+	//     and turn a single stall into an alert every poll window.
+	//     Structural loop-freedom lives here.
+	//   run_workspace_checkpoint — the runner's own timer, laid to
+	//     preserve a pod's work. A run stuck on a frozen key or a hung
+	//     tool still ticks, and a safety net that keeps its run reading
+	//     as alive would blind the alarm it was laid beside — including
+	//     when the tick is a FAILING push, which repeats forever.
+	if evt.Type == store.EventRunHealth ||
+		evt.Type == store.EventRunWorkspaceCheckpoint {
 		return
 	}
 
