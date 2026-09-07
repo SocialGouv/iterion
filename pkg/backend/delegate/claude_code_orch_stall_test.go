@@ -191,8 +191,9 @@ func TestSpawnsBackgroundWork(t *testing.T) {
 	}
 }
 
-// The opt-in withholding knob: off by default (full native toolset), on it
-// removes the orchestration surface from non-ultracode nodes only.
+// The orchestration surface of a claude_code node: the Workflow tool is
+// withheld from every non-ultracode node by default, the opt-in knob removes
+// the single-subagent surface from them too, an ultracode node keeps all.
 func TestBuildTransportOptions_OrchestrationToolsKnob(t *testing.T) {
 	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
 	argsFor := func(task Task) []string {
@@ -212,14 +213,22 @@ func TestBuildTransportOptions_OrchestrationToolsKnob(t *testing.T) {
 		return "", false
 	}
 
+	// The multi-agent Workflow tool is withheld from every non-ultracode
+	// node by default: the harness arms it on the word "ultracode" anywhere
+	// in the prompt, and a node's prompt carries the content it works on.
 	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
-	if v, ok := hasDisallow(argsFor(Task{NodeID: "n"})); ok {
-		t.Fatalf("default must keep the full toolset, got --disallowedTools %s", v)
+	v, ok := hasDisallow(argsFor(Task{NodeID: "n"}))
+	if !ok || v != "Workflow" {
+		t.Fatalf("default must withhold the Workflow tool alone, got %q (%v)", v, ok)
+	}
+	if v, ok := hasDisallow(argsFor(Task{NodeID: "n", Ultracode: true})); ok {
+		t.Fatalf("an ultracode node keeps the Workflow tool, got --disallowedTools %s", v)
 	}
 
+	// The opt-in knob adds the single-subagent surface on top.
 	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "1")
-	v, ok := hasDisallow(argsFor(Task{NodeID: "n"}))
-	if !ok || v != "Agent,Task,TaskOutput,Monitor" {
+	v, ok = hasDisallow(argsFor(Task{NodeID: "n"}))
+	if !ok || v != "Workflow,Agent,Task,TaskOutput,Monitor" {
 		t.Fatalf("opt-in must withhold the whole orchestration surface, got %q (%v)", v, ok)
 	}
 	if v, ok := hasDisallow(argsFor(Task{NodeID: "n", Ultracode: true})); ok {
