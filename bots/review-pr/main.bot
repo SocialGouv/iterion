@@ -1508,12 +1508,16 @@ workflow review_pr:
     ## catch a hung run. 45m killed real reviews mid-publish (a forfait
     ## retry or a big diff walks past it while spending nothing).
     max_duration: "90m"
-    ## Sized from production: median ~$3.6/run, p95 ~$10.5 (2026-09-03
-    ## sample). The exit grace (cap × 1.1) still walks an over-cap run
-    ## forward to publish, so a big-diff review delivers at ~$13 instead
-    ## of dying. Re-budget a deliberate deep review per run with
-    ## --max-cost-usd.
-    max_cost_usd: 12
+    ## Sized from production, twice. The 2026-09-03 sample said median
+    ## ~$3.6/run, p95 ~$10.5, and the cap was 12 with the exit grace
+    ## (cap × 1.1) walking an over-cap run forward to publish. Three days
+    ## later the guard tier died at $36 and $30 on a 7-file PR — twice on
+    ## one revision, the relaunch included — and the merge gate posted no
+    ## verdict at all: a required check that dies is worse than one that
+    ## costs. A review that reproduces its findings and answers the fixer's
+    ## rounds is the workload now; the cap follows it. Re-budget a
+    ## deliberate deep review per run with --max-cost-usd.
+    max_cost_usd: 40
 
   ## EFFICIENCY: an empty review diff skips tier resolution, both LLM
   ## reviewers, and emit.
