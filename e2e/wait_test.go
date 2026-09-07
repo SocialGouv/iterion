@@ -82,12 +82,21 @@ func waitUntil(t *testing.T, within time.Duration, what string, cond func() bool
 //     them share the CPU with the background loop each is waiting on.
 //     Multiplying by that count is what keeps a wait describing the handoff
 //     rather than the scheduler.
-//   - The harness deadline. The result is clamped to what is left of
-//     `-timeout` minus a margin, so a scaled wait always fails as this
-//     assertion (naming what never happened, with the goroutine dump) rather
-//     than as a package-wide panic naming whichever test was in flight.
+//   - The harness deadline. The scale-up is clamped to what is left of
+//     `-timeout` minus a margin, so a wait that grew for load still fails as
+//     this assertion (naming what never happened, with the goroutine dump)
+//     rather than as a package-wide panic naming whichever test was in
+//     flight.
 //
-// Never returns less than `within`: the clamp may only shorten a scale-up.
+// The clamp may only shorten a SCALE-UP: `within` itself is a floor. Clamping
+// below it would fail a wait the caller never budgeted for, on a machine that
+// might have been about to pass — so when `-timeout` has less than `within`
+// left the caller's own figure wins and the wait may outlive the harness
+// deadline. That is reachable only in the last `within + waitDeadlineMargin`
+// of the package budget (at the widest caller, 90 s of 900 s), where the run
+// is already lost; it is logged rather than silently taken, so a package
+// panic there is attributable to this line instead of to whichever test the
+// dump happens to name.
 func waitBudget(t *testing.T, within time.Duration) time.Duration {
 	t.Helper()
 	budget := within * time.Duration(waitLoadFactor())
@@ -97,6 +106,8 @@ func waitBudget(t *testing.T, within time.Duration) time.Duration {
 		}
 	}
 	if budget < within {
+		t.Logf("wait budget floored at the caller's own %s: -timeout has %s left, so this wait may outrun the harness deadline",
+			within, budget)
 		budget = within
 	}
 	return budget

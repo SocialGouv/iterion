@@ -7,15 +7,24 @@ import (
 	"testing"
 )
 
-// TestCapParallelism pins the three answers of the cap: it lowers an
-// untouched default, it leaves an explicit `-parallel` alone, and the env
-// var replaces the number. Without this the cap could silently become a
-// no-op (a Go release renaming the flag, say) and the suite would go back to
-// oversubscribing the machine — slower AND flaky, which is what it exists to
-// prevent.
+// TestCapParallelism pins the answers of the cap: the ordering the mechanism
+// rests on, then that it lowers an untouched default, leaves an explicit
+// `-parallel` alone, and lets the env var replace the number. Without this
+// the cap could silently become a no-op (a Go release renaming the flag, say)
+// and the suite would go back to oversubscribing the machine — slower AND
+// flaky, which is what it exists to prevent.
 //
 // Serial: it mutates the process-wide `test.parallel` flag.
 func TestCapParallelism(t *testing.T) {
+	// The ordering IS the mechanism. capParallelism runs pre-parse, so it
+	// rewrites the default and the later flag.Parse re-applies an explicit
+	// `-parallel N` over it. Were flags parsed by the time TestMain ran, the
+	// cap would instead be overwriting an operator's own choice — and the
+	// rows below, which all run post-parse, would keep passing while it did.
+	if capParallelismSawParsedFlags {
+		t.Fatal("flags were already parsed when capParallelism ran: it now overrides an explicit -parallel instead of setting the default")
+	}
+
 	f := flag.Lookup("test.parallel")
 	if f == nil {
 		t.Fatal("test.parallel is gone — capParallelism is a no-op and the cap no longer applies")

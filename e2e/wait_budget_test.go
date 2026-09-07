@@ -58,12 +58,25 @@ func TestWaitBudgetScalesWithLoad(t *testing.T) {
 		t.Fatalf("budget with no deadline = %s, want %s (6x)", got, want)
 	}
 
-	// A budget wider than what -timeout has left is clamped, never grown.
+	// A budget wider than what -timeout has left is clamped, never grown —
+	// down to the caller's own figure, which is the floor. Asserted as an
+	// equality rather than tolerated as an alternative: `g != huge && …`
+	// passes for ANY value when g happens to equal huge, so it could not
+	// tell the floor from a clamp that skipped. The floor is the one place
+	// waitBudget knowingly outlives the harness deadline, so it has to be
+	// pinned rather than permitted.
 	huge := 24 * time.Hour
 	if dl, ok := t.Deadline(); ok {
 		room := time.Until(dl) - waitDeadlineMargin
-		if g := waitBudget(t, huge); g != huge && g > room {
-			t.Fatalf("budget for a %s wait = %s, above the %s remaining", huge, g, room)
+		g := waitBudget(t, huge)
+		switch {
+		case room >= huge:
+			// Only under `-timeout 0` or a budget past 24h: nothing to clamp.
+			if g < huge {
+				t.Fatalf("budget for a %s wait = %s with %s of room — clamped when there was nothing to clamp", huge, g, room)
+			}
+		case g != huge:
+			t.Fatalf("budget for a %s wait = %s, want the caller's own figure as the floor (only %s remaining)", huge, g, room)
 		}
 	}
 }
