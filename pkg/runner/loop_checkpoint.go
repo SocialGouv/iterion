@@ -65,13 +65,14 @@ GIT_INDEX_FILE="$idx" git add -A
 tree=$(GIT_INDEX_FILE="$idx" git write-tree)
 rm -f "$idx"
 if [ "$tree" = "$(git rev-parse "$head^{tree}")" ]; then
-  echo "$head"
+  echo "$head $tree $head"
   exit 0
 fi
-GIT_AUTHOR_NAME=iterion GIT_AUTHOR_EMAIL=checkpoint@iterion.invalid \
+sha=$(GIT_AUTHOR_NAME=iterion GIT_AUTHOR_EMAIL=checkpoint@iterion.invalid \
 GIT_COMMITTER_NAME=iterion GIT_COMMITTER_EMAIL=checkpoint@iterion.invalid \
   git commit-tree "$tree" -p "$head" \
-    -m "iterion: workspace checkpoint — the run's uncommitted tree, preserved by the runner (not the run's own commit)"
+    -m "iterion: workspace checkpoint — the run's uncommitted tree, preserved by the runner (not the run's own commit)")
+echo "$head $tree $sha"
 `
 
 // checkpointWorkspaceLoop preserves the sandbox's work on a cadence until
@@ -119,8 +120,16 @@ func (r *Runner) checkpointWorkspaceOnce(ctx context.Context, o sandboxObserverO
 			o.runID, err, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 		return last
 	}
-	sha := lastLine(string(res.Stdout))
-	if sha == "" || sha == last {
+	// WHAT MOVED is (HEAD, tree) — never the checkpoint commit, which
+	// embeds a timestamp: on a dirty tree that has stopped changing, every
+	// tick produces a different sha for identical content (measured: three
+	// ticks a second apart, three shas, one tree). Comparing the commit
+	// meant a force-push every tick for nothing, and worse: each push
+	// emitted an event, every event re-arms stall detection, so a run that
+	// was stuck with a dirty tree would have read as alive forever — the
+	// safety net blinding the alarm it was laid beside.
+	state, sha := checkpointState(string(res.Stdout))
+	if sha == "" || state == last {
 		return last
 	}
 
@@ -137,7 +146,24 @@ func (r *Runner) checkpointWorkspaceOnce(ctx context.Context, o sandboxObserverO
 	}
 	r.cfg.Logger.Info("runner: run %s: workspace checkpoint pushed: %s -> %s", o.runID, sha[:min(12, len(sha))], ref)
 	r.recordCheckpoint(o, map[string]any{"ref": ref, "commit": sha})
-	return sha
+	return state
+}
+
+// checkpointState splits the script's answer into what identifies the WORK
+// ("<head> <tree>") and the commit that carries it. The first is content:
+// two ticks over an unchanged workspace produce the same pair whether or not
+// anything is committed. The second is not: a checkpoint commit is made
+// fresh each time and its timestamp moves.
+//
+// Both halves of the pair matter. The tree alone would go quiet when the run
+// commits exactly what was already checkpointed — same content, new history,
+// and that history is what a resume reads.
+func checkpointState(out string) (string, string) {
+	f := strings.Fields(lastLine(out))
+	if len(f) != 3 {
+		return "", ""
+	}
+	return f[0] + " " + f[1], f[2]
 }
 
 // recordCheckpoint puts the checkpoint on the run's timeline. A safety net

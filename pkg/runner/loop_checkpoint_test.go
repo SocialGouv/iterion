@@ -54,12 +54,12 @@ func (f *checkpointRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts
 	if strings.HasPrefix(script, "git push") {
 		return sandbox.ExecResult{ExitCode: f.pushRC, Stderr: []byte(f.pushEr)}, nil
 	}
-	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	answer := "h0 t0 aaaaaaaa"
 	if len(f.shas) > 0 {
-		sha = f.shas[0]
+		answer = f.shas[0]
 		f.shas = f.shas[1:]
 	}
-	return sandbox.ExecResult{Stdout: []byte(sha + "\n")}, nil
+	return sandbox.ExecResult{Stdout: []byte(answer + "\n")}, nil
 }
 
 func (f *checkpointRun) pushes() []string {
@@ -79,11 +79,11 @@ func (f *checkpointRun) pushes() []string {
 // sits idle for hours costs one exec per tick and no network.
 func TestCheckpointOncePushesOnlyWhatMoved(t *testing.T) {
 	r := checkpointRunner(t, "R1")
-	run := &checkpointRun{shas: []string{"c0ffee", "c0ffee", "beef01"}}
+	run := &checkpointRun{shas: []string{"h1 t1 c0ffee", "h1 t1 c0ffee", "h1 t2 beef01"}}
 	o := sandboxObserverOpts{runID: "R1", tenantID: "team-a", checkpoint: true}
 
 	last := r.checkpointWorkspaceOnce(context.Background(), o, run, "")
-	if last != "c0ffee" || len(run.pushes()) != 1 {
+	if last != "h1 t1" || len(run.pushes()) != 1 {
 		t.Fatalf("first checkpoint must push: last=%q pushes=%v", last, run.pushes())
 	}
 	if !strings.Contains(run.pushes()[0], "c0ffee:refs/heads/iterion/run-R1-checkpoint") {
@@ -94,8 +94,45 @@ func TestCheckpointOncePushesOnlyWhatMoved(t *testing.T) {
 		t.Fatalf("an unchanged tree must not push again: %v", run.pushes())
 	}
 	last = r.checkpointWorkspaceOnce(context.Background(), o, run, last)
-	if last != "beef01" || len(run.pushes()) != 2 {
+	if last != "h1 t2" || len(run.pushes()) != 2 {
 		t.Fatalf("a moved tree must push: last=%q pushes=%v", last, run.pushes())
+	}
+}
+
+// TestCheckpointOnceComparesTheWorkNotTheCommit pins what "nothing moved"
+// means. A checkpoint commit embeds a timestamp, so a dirty tree that has
+// STOPPED changing still yields a fresh sha every tick. Comparing the commit
+// force-pushed the target repository every ten minutes for identical content
+// — and, worse, emitted an event each time: every event re-arms stall
+// detection, so a run stuck with a dirty workspace would have read as alive
+// forever, the safety net blinding the alarm it was laid beside.
+func TestCheckpointOnceComparesTheWorkNotTheCommit(t *testing.T) {
+	r := checkpointRunner(t, "R1")
+	// Same HEAD, same tree, a different commit sha every tick — exactly what
+	// `git commit-tree` produces over an unchanged dirty workspace.
+	run := &checkpointRun{shas: []string{"h1 t1 c0ffee01", "h1 t1 c0ffee02", "h1 t1 c0ffee03"}}
+	o := sandboxObserverOpts{runID: "R1", tenantID: "team-a", checkpoint: true}
+
+	last := r.checkpointWorkspaceOnce(context.Background(), o, run, "")
+	for i := 0; i < 2; i++ {
+		last = r.checkpointWorkspaceOnce(context.Background(), o, run, last)
+	}
+	if n := len(run.pushes()); n != 1 {
+		t.Fatalf("an unchanged workspace pushed %d times — the comparison is on the commit, not the work", n)
+	}
+	// And a moved tree still pushes: the guard must not silence the net.
+	// Then a new HEAD over the SAME tree — the run committed exactly what was
+	// checkpointed — must push too: the content is already held, but the
+	// HISTORY that carries it is what a resume reads. Threaded through the
+	// state the previous tick RETURNED, so a state that dropped HEAD would
+	// go quiet here instead of pushing.
+	run.shas = []string{"h1 t2 c0ffee04", "h2 t2 c0ffee05"}
+	last = r.checkpointWorkspaceOnce(context.Background(), o, run, last)
+	if len(run.pushes()) != 2 {
+		t.Fatalf("a changed tree must still be preserved: %v", run.pushes())
+	}
+	if r.checkpointWorkspaceOnce(context.Background(), o, run, last); len(run.pushes()) != 3 {
+		t.Fatalf("a new commit over an unchanged tree must be preserved: %v", run.pushes())
 	}
 }
 
@@ -105,7 +142,7 @@ func TestCheckpointOncePushesOnlyWhatMoved(t *testing.T) {
 // this whole file exists against.
 func TestCheckpointOnceKeepsTheLastGoodOnAFailedPush(t *testing.T) {
 	r := checkpointRunner(t, "R1")
-	run := &checkpointRun{shas: []string{"beef01", "beef01"}, pushRC: 128, pushEr: "fatal: could not read Username"}
+	run := &checkpointRun{shas: []string{"h1 t1 beef01", "h1 t1 beef01"}, pushRC: 128, pushEr: "fatal: could not read Username"}
 	o := sandboxObserverOpts{runID: "R1", tenantID: "team-a", checkpoint: true}
 
 	last := r.checkpointWorkspaceOnce(context.Background(), o, run, "")
@@ -208,9 +245,37 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkpoint script: %v (%s)", err, out)
 	}
-	sha := strings.TrimSpace(string(out))
-	if sha == head {
-		t.Fatal("a dirty tree must produce a checkpoint commit, not HEAD")
+	state, sha := checkpointState(string(out))
+	if sha == head || state == "" {
+		t.Fatalf("a dirty tree must produce a checkpoint commit, not HEAD: state=%q sha=%q", state, sha)
+	}
+	if state != head+" "+git("rev-parse", sha+"^{tree}") {
+		t.Fatalf("the state must be (HEAD, tree) — what a second tick compares: %q", state)
+	}
+	// The property the comparison rests on: over an UNCHANGED dirty tree the
+	// state is stable while the commit is not (commit-tree stamps a time).
+	sh2 := exec.Command("sh", "-c", checkpointScript)
+	sh2.Dir = ws
+	// git stamps a commit to the SECOND, so two back-to-back ticks land on
+	// the same sha and the property would be invisible. Production ticks are
+	// ten minutes apart; here the second one's date is pinned, so the
+	// difference is deterministic instead of clock-dependent. It was a
+	// t.Skip — which calls runtime.Goexit and took the NINE assertions below
+	// with it, on essentially every run (measured: 3/3 skipped), turning the
+	// guard this test exists for into a green no-op (review finding).
+	sh2.Env = append(append([]string(nil), sh.Env...),
+		"GIT_AUTHOR_DATE=2023-11-14T22:23:20+00:00",
+		"GIT_COMMITTER_DATE=2023-11-14T22:23:20+00:00")
+	out2, err2 := sh2.Output()
+	if err2 != nil {
+		t.Fatalf("second tick: %v (%s)", err2, out2)
+	}
+	state2, sha2 := checkpointState(string(out2))
+	if state2 != state {
+		t.Fatalf("an unchanged workspace changed state: %q -> %q", state, state2)
+	}
+	if sha2 == sha {
+		t.Fatalf("a second tick over an unchanged workspace must still yield a NEW commit sha — the state, not the commit, is what a tick may compare")
 	}
 
 	// The run's own state: untouched, in all three places it lives.
@@ -246,14 +311,14 @@ func TestCheckpointScriptPreservesTheTreeAndTouchesNothing(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-qm", "the lot commits its work")
 	head2 := git("rev-parse", "HEAD")
-	sh2 := exec.Command("sh", "-c", checkpointScript)
-	sh2.Dir = ws
-	sh2.Env = sh.Env
-	out2, err := sh2.Output()
+	sh3 := exec.Command("sh", "-c", checkpointScript)
+	sh3.Dir = ws
+	sh3.Env = sh.Env
+	out3, err := sh3.Output()
 	if err != nil {
-		t.Fatalf("checkpoint script on a clean tree: %v (%s)", err, out2)
+		t.Fatalf("checkpoint script on a clean tree: %v (%s)", err, out3)
 	}
-	if got := strings.TrimSpace(string(out2)); got != head2 {
+	if _, got := checkpointState(string(out3)); got != head2 {
 		t.Fatalf("a clean tree must checkpoint HEAD itself, got %q want %q", got, head2)
 	}
 }

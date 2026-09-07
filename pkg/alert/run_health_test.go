@@ -74,6 +74,38 @@ func TestObserve_RunHealthReplayIsInert(t *testing.T) {
 	}
 }
 
+// TestObserve_WorkspaceCheckpointIsNotProgress: the runner's own timer is
+// not the run working. A run stuck on a frozen key or a hung tool keeps a
+// dirty workspace and keeps being checkpointed — and a failing push repeats
+// its event forever — so counting either as progress would let a safety net
+// blind the alarm it was laid beside.
+func TestObserve_WorkspaceCheckpointIsNotProgress(t *testing.T) {
+	base := time.Now()
+	clock := base
+	m := NewManager(WithStallTimeout(5 * time.Minute))
+	m.now = func() time.Time { return clock }
+
+	m.Observe(store.Event{RunID: "r1", Type: store.EventNodeStarted, NodeID: "agent", Timestamp: base})
+	// Two ticks of the checkpoint loop while the run makes no progress.
+	clock = base.Add(2 * time.Minute)
+	m.Observe(store.Event{RunID: "r1", Type: store.EventRunWorkspaceCheckpoint, Timestamp: clock})
+	clock = base.Add(4 * time.Minute)
+	m.Observe(store.Event{RunID: "r1", Type: store.EventRunWorkspaceCheckpoint, Timestamp: clock})
+
+	clock = base.Add(6 * time.Minute)
+	if fired := m.checkStalls(clock); len(fired) != 1 {
+		t.Fatalf("the checkpoint ticks kept a stalled run reading as alive: %+v", fired)
+	}
+	// And a REAL event still re-arms: the exclusion is about the timer,
+	// not about silencing the run.
+	clock = base.Add(7 * time.Minute)
+	m.Observe(store.Event{RunID: "r1", Type: store.EventNodeStarted, NodeID: "agent", Timestamp: clock})
+	clock = base.Add(8 * time.Minute)
+	if fired := m.checkStalls(clock); len(fired) != 0 {
+		t.Fatalf("a real event did not re-arm the run: %+v", fired)
+	}
+}
+
 // TestStoreSink_PanicContained: a panicking store sink must never take
 // down the dispatch path.
 func TestStoreSink_PanicContained(t *testing.T) {
