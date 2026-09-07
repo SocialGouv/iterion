@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -39,9 +40,17 @@ type gitlabMR struct {
 // headProject is where a merge request's head branch lives, as far as it is
 // proven: the project's path, and — for a fork — its own clone URL. The zero
 // value is UNPROVEN, which every same-project lane reads as a refusal.
+//
+// declared says the merge request NAMES a source project (its ids), whether
+// or not the lookup could name it; err carries the forge's own refusal of
+// that lookup, typed. Together they are what keeps an unreadable fork from
+// arriving at a caller looking like "no head repository", one step from
+// "therefore the base project".
 type headProject struct {
 	path     string
 	cloneURL string
+	declared bool
+	err      error
 }
 
 // sourceProjectTTL bounds how long a resolved source project is reused: the
@@ -73,16 +82,20 @@ type sourceProjectEntry struct {
 // names and a refusal can name the fork.
 //
 // Two shapes stay UNPROVEN on purpose rather than failing the read: an MR
-// object without the ids, and a source project the token cannot see (404 /
-// 403 — a private or deleted fork). Every same-project lane refuses an
-// unproven head, which is the right answer for a fork it cannot inspect,
-// and the MR's own fields still serve the lanes that only need its branches.
+// object without the ids, and a source project the credential cannot read
+// (404 — gone; 403 — refused). Every same-project lane refuses an unproven
+// head, which is the right answer for a fork it cannot inspect, and the MR's
+// own fields still serve the lanes that only need its branches. The two are
+// not the same fact and are not returned as one: the second is DECLARED (the
+// MR names a source project id) and carries the forge's typed refusal, so a
+// lane says which of "the fork is gone" and "this credential may not read
+// it" it met — and neither can be mistaken for the target project.
 func (c *AdminClient) headProjectFor(ctx context.Context, project string, mr gitlabMR) (headProject, error) {
 	switch {
 	case mr.SourceProjectID <= 0 || mr.TargetProjectID <= 0:
 		return headProject{}, nil
 	case mr.SourceProjectID == mr.TargetProjectID:
-		return headProject{path: strings.TrimSpace(project)}, nil
+		return headProject{path: strings.TrimSpace(project), declared: true}, nil
 	}
 	key := c.BaseURL + "#" + strconv.FormatInt(mr.SourceProjectID, 10)
 	sourceProjects.mu.Lock()
@@ -95,19 +108,26 @@ func (c *AdminClient) headProjectFor(ctx context.Context, project string, mr git
 		PathWithNamespace string `json:"path_with_namespace"`
 		HTTPURLToRepo     string `json:"http_url_to_repo"`
 	}
+	op := "get source project " + strconv.FormatInt(mr.SourceProjectID, 10)
 	code, err := c.do(ctx, http.MethodGet, "/projects/"+strconv.FormatInt(mr.SourceProjectID, 10), nil, &out)
 	if err != nil {
 		return headProject{}, err
 	}
 	switch {
-	case code == http.StatusNotFound || code == http.StatusForbidden:
-		return headProject{}, nil
+	case code == http.StatusNotFound:
+		// The project is gone, or GitLab will not confirm it exists.
+		return headProject{declared: true, err: statusErr(op, code)}, nil
+	case code == http.StatusForbidden:
+		// A permission ANSWER, not an absence: the project exists and this
+		// credential may not read it. Typed on ErrForbidden and naming its
+		// own operation, so a lane refuses on what the forge said.
+		return headProject{declared: true, err: fmt.Errorf("%w: gitlab: %s: the credential may not read the merge request's source project", forge.ErrForbidden, op)}, nil
 	case code != http.StatusOK:
-		return headProject{}, statusErr("get source project", code)
+		return headProject{}, statusErr(op, code)
 	}
-	head := headProject{path: strings.TrimSpace(out.PathWithNamespace), cloneURL: strings.TrimSpace(out.HTTPURLToRepo)}
+	head := headProject{path: strings.TrimSpace(out.PathWithNamespace), cloneURL: strings.TrimSpace(out.HTTPURLToRepo), declared: true}
 	if head.path == "" {
-		return headProject{}, nil
+		return headProject{declared: true, err: fmt.Errorf("gitlab: %s: the project answered with no path", op)}, nil
 	}
 	sourceProjects.mu.Lock()
 	sourceProjects.m[key] = sourceProjectEntry{headProject: head, at: time.Now()}
@@ -129,6 +149,8 @@ func (mr gitlabMR) toRef(head headProject) forge.PullRef {
 		HeadSHA:          mr.SHA,
 		HeadRepoFullName: head.path,
 		HeadCloneURL:     head.cloneURL,
+		HeadRepoDeclared: head.declared,
+		HeadRepoErr:      head.err,
 		Author:           mr.Author.Username,
 		Draft:            mr.Draft || mr.WorkInProgress,
 		CreatedAt:        mr.CreatedAt,

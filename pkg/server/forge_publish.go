@@ -889,7 +889,7 @@ func (s *Server) prLaunchForkGuard(ctx context.Context, teamID, preferredConnID,
 	if err != nil {
 		return conn, false, fmt.Errorf("fork guard: %s: PR resolution: %w", prURL, err)
 	}
-	if reason := forkGuardRefusal(pr.SameRepoAs(repo), false, pr.HeadRepoFullName); reason != "" {
+	if reason := forkGuardRefusalFor(pr, repo); reason != "" {
 		return conn, false, fmt.Errorf("%w: %s: %s", errPRLaunchForkGuard, prURL, reason)
 	}
 	return conn, true, nil

@@ -1268,17 +1268,34 @@ const prClosedRunReason = store.RunEndReasonPRClosed
 // /command lanes refuse the same states (same-repo only, silently), so no
 // refusal may advertise them as an escape hatch: fork work needs a branch in
 // the base repo before any bot runs on it.
+// Both sources reach it, so the wording names no source: `head.repo: null`
+// on a payload and a source project the credential may not read on an API
+// resolution are the same fact — a head repository that EXISTS and was not
+// named.
 func forkGuardRefusal(sameRepoProven, withheld bool, headRepo string) string {
 	switch {
 	case sameRepoProven:
 		return ""
 	case withheld:
-		return "head repo withheld by the payload (head.repo: null) — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name; the /command lanes refuse it too (same-repo only)"
+		return "head repo withheld — the forge declared one and did not name it — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name; the /command lanes refuse it too (same-repo only)"
 	case headRepo == "":
-		return "head repo not named by the payload — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere); the /command lanes refuse it too (same-repo only)"
+		return "head repo not named — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere); the /command lanes refuse it too (same-repo only)"
 	default:
 		return "fork PR — auto-launch blocked (untrusted; the /command lanes are same-repo only too, so the fork's work needs a branch in this repo before any bot runs on it)"
 	}
+}
+
+// forkGuardRefusalFor is forkGuardRefusal for a pull request resolved through
+// the forge API, where the head repository may have taken its own request:
+// it reads the withheld flag off the ref and quotes the forge's own typed
+// refusal, which the payload lanes never hold. A refusal that cannot name why
+// the head stayed unproven sends the operator looking in the wrong place.
+func forkGuardRefusalFor(pr forge.PullRef, baseRepo string) string {
+	reason := forkGuardRefusal(pr.SameRepoAs(baseRepo), pr.HeadRepoWithheld(), pr.HeadRepoFullName)
+	if reason != "" && pr.HeadRepoErr != nil {
+		reason += " (" + pr.HeadRepoErr.Error() + ")"
+	}
+	return reason
 }
 
 // prRequeuedRunReason names the auto-heal cancel for the same reason: a

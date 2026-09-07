@@ -265,10 +265,12 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	// BASE repo's CloneURL and RepoRef is the PR's SourceBranch), so a fork
 	// PR — or one whose head repo cannot be verified — would push LLM
 	// commits to a branch on the BASE repo. SameRepoAs returns false on
-	// empty HeadRepoFullName (deleted-fork payloads), so refuse both.
-	if !pr.SameRepoAs(repo) {
+	// empty HeadRepoFullName (deleted-fork payloads), so refuse both; the
+	// shared wording says WHICH of the three it met, and quotes the forge's
+	// refusal when the head repo took its own request.
+	if reason := forkGuardRefusalFor(pr, repo); reason != "" {
 		if s.logger != nil {
-			s.logger.Warn("gate auto-fix: refusing %s#%d — fork PR or unverifiable head repo (head=%q base=%q)", repo, number, pr.HeadRepoFullName, repo)
+			s.logger.Warn("gate auto-fix: refusing %s#%d — %s (head=%q base=%q)", repo, number, reason, pr.HeadRepoFullName, repo)
 		}
 		return nil
 	}
