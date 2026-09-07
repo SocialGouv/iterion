@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.113.2](https://github.com/SocialGouv/iterion/compare/v3.113.1...v3.113.2) (2026-09-07)
+
+### Bug Fixes
+
+* **ultracode:** the model gate admits the Claude 5 family, shared by the compiler and the studio endpoint ([#780](https://github.com/SocialGouv/iterion/issues/780)) ([9d39bc5](https://github.com/SocialGouv/iterion/commit/9d39bc5784d42fbaa0a19771353a61a41c534b9b))
+
+    <details><summary>why</summary>
+
+    `reasoning_effort: ultracode` warned C089 on every model but Opus 4.8, and the studio's effort-capabilities endpoint offered the mode on Opus 4.8 alone — two copies of the same predicate, written when Opus 4.8 was the only model carrying the orchestration half. The Claude 5 family (Opus 5, Fable 5.1) carries it too, and the campaign bots now default to claude-opus-5: on them ultracode compiled with a stale warning and the studio never offered the mode. The prerogative itself was never gated on…
+
+    </details>
+
 ## [3.113.1](https://github.com/SocialGouv/iterion/compare/v3.113.0...v3.113.1) (2026-09-07)
 
 ### Bug Fixes
