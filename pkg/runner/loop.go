@@ -155,12 +155,12 @@ type preconditionOutcome struct {
 	skippedRetry store.FailureCode
 	skippedCause string
 	finalStatus  string
-	op          string // for logDeliveryErr
-	action      deliveryAction
-	delay       time.Duration // actionNakDelayed only
-	level       logLevel
-	logFmt      string
-	logArgs     []any
+	op           string // for logDeliveryErr
+	action       deliveryAction
+	delay        time.Duration // actionNakDelayed only
+	level        logLevel
+	logFmt       string
+	logArgs      []any
 }
 
 // execOutcome describes the result of classifying engine.Run's
@@ -1701,6 +1701,12 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		<-hbDone
 	}()
 
+	// Stamped under the lock, before any work: the pair (launcher build,
+	// runner build) is what makes a version skew readable from the run
+	// itself, and an IR that will not load must not be the first place an
+	// operator learns of one.
+	r.recordRunnerBuild(runCtx, msg, pre.preRun)
+
 	var usage *metricsEmitter
 	err := r.executeRun(runCtx, msg, &usage)
 	// Stop the heartbeat before finalizing (Ack/Nak) the delivery. The
@@ -1831,6 +1837,37 @@ func (r *Runner) recordRedeliveryDeferred(msg *queue.RunMessage, outcome execOut
 		Data: data,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_redelivery_deferred: %v", msg.RunID, err)
+	}
+}
+
+// recordRunnerBuild stamps the build that is about to EXECUTE this run
+// beside the one that launched it, and says out loud when the two differ.
+//
+// A WARN, never a refusal: skew is normal for the whole length of every
+// rolling deploy, and refusing on it would stop the fleet each time. What
+// was NOT normal is that the run said nothing — five runs died in 75 s on
+// a five-release skew and the operator had to compare the healthz of two
+// deployments to find out. The pair on the document is what makes it
+// answerable from the run alone.
+func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, launched *store.Run) {
+	self := appinfo.FullVersion()
+	launcher := ""
+	if launched != nil {
+		launcher = strings.TrimSpace(launched.IterionVersion)
+	}
+	if launcher != "" && launcher != self {
+		r.cfg.Logger.Warn("runner: run %s was launched by iterion %s and runs on %s — a workflow compiled by one build is executing on another (normal during a rolling deploy; if the run fails to load its IR, align the two)",
+			msg.RunID, launcher, self)
+	}
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if err := r.cfg.Store.SetRunnerVersion(idCtx, msg.RunID, self); err != nil {
+		// Observational: a run whose build stamp did not land still runs.
+		r.cfg.Logger.Warn("runner: run %s: could not stamp the runner build: %v", msg.RunID, err)
 	}
 }
 

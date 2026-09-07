@@ -106,6 +106,16 @@ type RunStore interface {
 	// the resume has already CAS-transitioned the doc to `queued`.
 	SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error
 
+	// SetRunnerVersion records the iterion build that EXECUTED the run,
+	// beside the launcher's own (Run.IterionVersion). In cloud the two are
+	// separate deployments that move independently, and the pair is what
+	// makes a version skew readable FROM THE RUN instead of by comparing
+	// two healthz endpoints. Granular for the same reason as the budget
+	// setters: the claiming runner's copy of the doc is stale by the time
+	// it writes, and a whole-doc SaveRun from it would revert a cancel or a
+	// peer's terminal write that landed in between.
+	SetRunnerVersion(ctx context.Context, runID, version string) error
+
 	// SetRunBudgetSnapshot updates the persisted EFFECTIVE caps
 	// (Run.Budget, the studio Overview's denominator) — the display twin
 	// of the ask above. Written by every resume surface that raises a

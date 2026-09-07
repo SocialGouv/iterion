@@ -840,6 +840,20 @@ type Run struct {
 	// without git-bisecting blindly. Empty for legacy runs.
 	IterionVersion string `json:"iterion_version,omitempty" bson:"iterion_version,omitempty"`
 
+	// RunnerVersion is the iterion build that EXECUTED the run, stamped by
+	// the runner when it claims the delivery. On a laptop it always equals
+	// IterionVersion; in cloud they are two deployments that move
+	// independently, and the pair is the only place the run itself records
+	// which two builds it was made of.
+	//
+	// It exists because that skew is not hypothetical: a server following
+	// `:edge` moved five releases ahead of a digest-pinned runner fleet
+	// between two pod recreations, and the IR one compiled would not load
+	// on the other. The runs said nothing — the operator had to compare the
+	// healthz of two deployments to find out. Empty for a run no runner has
+	// claimed, and for legacy rows.
+	RunnerVersion string `json:"runner_version,omitempty" bson:"runner_version,omitempty"`
+
 	// ForkedFrom, when non-empty, identifies the parent run this run
 	// was forked from via POST /api/runs/{id}/fork. ForkAnchor records
 	// the (node_id, turn_index) snapshot the fork was anchored at.

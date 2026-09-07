@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -674,27 +675,51 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 	return rs
 }
 
-// loopBoundsPayload builds the run_started event payload carrying each
-// named loop's iteration bound (MaxIterations), so the runview snapshot
-// can render a run-level loop indicator (current/max). Returns nil when
-// the workflow has no declared loops (payload stays absent). Literal
-// caps only — expression / unbounded caps report 0 (max unknown), which
-// the studio renders as a bare current count.
-func loopBoundsPayload(wf *ir.Workflow) map[string]any {
-	if wf == nil || len(wf.Loops) == 0 {
-		return nil
+// runStartedPayload builds the run_started event payload.
+//
+// It carries each named loop's iteration bound (MaxIterations), so the
+// runview snapshot can render a run-level loop indicator (current/max) —
+// the current counter comes from each node_started's iteration_path.
+// Literal caps only; expression / unbounded caps report 0 (max unknown),
+// which the studio renders as a bare current count.
+//
+// And it carries the PROVENANCE of the execution: which build is running
+// the workflow, which build compiled it (they are separate deployments in
+// cloud), and the workflow hash that identifies the source revision. A run
+// whose IR was produced by one release and executed by another had nothing
+// on its timeline saying so — the operator had to compare the healthz of
+// two deployments to find out.
+func runStartedPayload(wf *ir.Workflow, run *store.Run) map[string]any {
+	data := map[string]any{
+		"engine_version": appinfo.Version,
 	}
-	bounds := make(map[string]any, len(wf.Loops))
-	for name, loop := range wf.Loops {
-		if loop == nil {
-			continue
+	if c := appinfo.Commit; c != "" {
+		data["engine_commit"] = c
+	}
+	if run != nil {
+		if run.WorkflowHash != "" {
+			data["workflow_hash"] = run.WorkflowHash
 		}
-		bounds[name] = loop.MaxIterations
+		// Only when they DIFFER: on a laptop they are the same build, and
+		// a field that is always present and always equal teaches a reader
+		// to stop looking at it.
+		if lv := run.IterionVersion; lv != "" && lv != appinfo.FullVersion() {
+			data["launched_by_version"] = lv
+		}
 	}
-	if len(bounds) == 0 {
-		return nil
+	if wf != nil && len(wf.Loops) > 0 {
+		bounds := make(map[string]any, len(wf.Loops))
+		for name, loop := range wf.Loops {
+			if loop == nil {
+				continue
+			}
+			bounds[name] = loop.MaxIterations
+		}
+		if len(bounds) > 0 {
+			data["loops"] = bounds
+		}
 	}
-	return map[string]any{"loops": bounds}
+	return data
 }
 
 // leaseInputKey is the node-input key under which a node's acquired

@@ -201,7 +201,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// (e.g. review_loop 48/50) — the current counter comes from each
 	// node_started's iteration_path, the bound (max) from here. Literal
 	// caps only; expression / unbounded caps emit 0 (max unknown).
-	if err := e.emit(ctx, runID, store.EventRunStarted, "", loopBoundsPayload(e.workflow)); err != nil {
+	if err := e.emit(ctx, runID, store.EventRunStarted, "", runStartedPayload(e.workflow, run)); err != nil {
 		e.markFailedBestEffort(ctx, runID, "emit run_started", err)
 		return e.setupErr(ctx, fmt.Errorf("runtime: emit run_started: %w", err))
 	}
