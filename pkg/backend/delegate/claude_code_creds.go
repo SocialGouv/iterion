@@ -85,6 +85,10 @@ func strictMCPFromEnv() bool {
 // without a waiter leaves background results unreadable.
 var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
 
+// workflowOrchestrationTools is the multi-agent surface ultracode grants:
+// withheld from every node that is not in ultracode mode, knob or not.
+var workflowOrchestrationTools = []string{"Workflow"}
+
 // disallowOrchestrationToolsFromEnv reads
 // ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;
 // "1"/"true"/"on"/"yes" → true).

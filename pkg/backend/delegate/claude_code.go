@@ -140,15 +140,22 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	if strictMCPFromEnv() {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
-	// Opt-in: withhold the subagent/orchestration tool surface from nodes
-	// that are not in ultracode mode. Off by default — a claude_code node
-	// keeps its full native toolset, subagents included; that adaptivity is
-	// the point of the backend. A deployment whose served model family
-	// hallucinates task ids and deadlocks on TaskOutput can switch the
-	// surface off wholesale instead of relying on the stall recovery.
-	// Ultracode nodes keep it: orchestration is what the mode grants.
-	if disallowOrchestrationToolsFromEnv() && !task.Ultracode {
-		opts = append(opts, claudesdk.WithDisallowedTools(orchestrationTools...))
+	// The multi-agent Workflow tool is the ultracode prerogative, so a node
+	// that is not in ultracode mode never sees it. Claude Code arms that
+	// tool on the word "ultracode" anywhere in the prompt, and a node's
+	// prompt carries the content it works on (a PR title, a diff): left in
+	// the toolset, it would let the DATA switch the node into an
+	// orchestration the operator's effort never granted. The single-subagent
+	// surface (Agent/Task/TaskOutput/Monitor) stays by default — that
+	// adaptivity is the point of the backend — and goes with the opt-in knob
+	// for a deployment whose served model family hallucinates task ids and
+	// deadlocks on TaskOutput. Ultracode nodes keep everything.
+	if !task.Ultracode {
+		disallowed := append([]string(nil), workflowOrchestrationTools...)
+		if disallowOrchestrationToolsFromEnv() {
+			disallowed = append(disallowed, orchestrationTools...)
+		}
+		opts = append(opts, claudesdk.WithDisallowedTools(disallowed...))
 	}
 	// Cwd handling differs by sandbox state. On the host (no sandbox)
 	// we pass the workdir straight through to claudesdk → cmd.Dir.

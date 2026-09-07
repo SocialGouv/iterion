@@ -31,7 +31,11 @@ When a node declares `reasoning_effort: ultracode`, iterion:
 3. **Makes the subagent tool available.** On the `claw` backend, the `agent`
    subagent tool is added to the node's allowlist when the node restricts its
    tools (an unrestricted set already exposes the claw builtins). The
-   `claude_code` backend orchestrates through its native subagent mechanism.
+   `claude_code` backend orchestrates through its native subagent mechanism,
+   and its multi-agent `Workflow` tool is withheld from every node that is
+   NOT ultracode: the harness arms that tool on the word `ultracode` anywhere
+   in the prompt, content included, so only the effort may grant it (see
+   [backends.md](backends.md#claude_code)).
 4. **Warns off Opus 4.8.** Compiling `ultracode` on a model that isn't
    `claude-opus-4-8` emits diagnostic **C089** (a warning, not an error): the
    orchestration half won't be reliable and the node runs as plain `xhigh`.

@@ -681,8 +681,17 @@ call that follows real background work keeps the full hot budget. For a
 deployment that would rather not expose the surface at all,
 `ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS=1` withholds `Agent`,
 `Task`, `TaskOutput` and `Monitor` from non-`ultracode` nodes (opt-in; the
-default keeps the full native toolset — see
+default keeps that single-subagent surface — see
 [environment-variables.md](environment-variables.md)).
+
+The multi-agent **`Workflow`** tool is a different matter: it is withheld
+from every node that is not `reasoning_effort: ultracode`, knob or not.
+Claude Code arms that tool on the word `ultracode` anywhere in its prompt,
+and a node's prompt carries the content it works on — a PR whose title or
+diff mentions the mode would otherwise switch a reviewer into a background
+multi-agent orchestration the operator never asked for (measured on
+2026-09-05: four `revi/review` runs died at 3–5× their cost cap that way).
+The mode grants the tool; the effort is the escape hatch.
 
 ### `codex`
 
