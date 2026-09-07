@@ -170,7 +170,14 @@ schema verify_report:
   ## The run started on a clean net (extend_base's word, carried into the
   ## conjunction so a refused start cannot read as a converged run).
   clean_start: bool
-  ## Every commit of this run carries the identity the engine set.
+  ## Every commit of this run carries the identity the engine set —
+  ## REPORTED, never a term of convergence. The lock is `acted_commits`;
+  ## the author is prose, and this PR's own doctrine says so. Making it a
+  ## conjunct also made it UNSATISFIABLE wherever the environment exports
+  ## GIT_AUTHOR_EMAIL / GIT_COMMITTER_EMAIL — those outrank every config
+  ## source, the agent cannot change the process environment, and the
+  ## subbot would burn max_passes campaigns against a wall no pass can
+  ## move (review finding, reproduced).
   identity_ok: bool
   ## What the parent cross-checks in the harness: the commits this run
   ## made (base..HEAD, 40-hex, space-separated), the request ids it acted,
@@ -244,8 +251,18 @@ tool extend_base:
     # it as surely as one moved in — `R  old -> new` matched neither side.
     # extend_verify already passes `-c core.quotePath=false` for this exact
     # reason; the two halves of one file disagreed.
+    #
+    # And a status this run cannot READ is not a clean net. `clean` decides
+    # whether the identity is set, whether the agent is handed the pending
+    # requests, and — through extend_verify — whether any certificate is
+    # published at all: its unknown must fail CLOSED, like every other
+    # unknown in this feature ("an unprovable act is refused, not assumed";
+    # "a certificate the judge cannot read is refused, not dropped"). It
+    # failed OPEN: a locked index granted exactly the window the refusal
+    # exists to close (review finding).
     dirty_paths = []
-    if dirty.returncode == 0:
+    status_ok = dirty.returncode == 0
+    if status_ok:
         toks = [t for t in dirty.stdout.split("\0") if t]
         i = 0
         while i < len(toks):
@@ -256,8 +273,14 @@ tool extend_base:
                 dirty_paths.append(toks[i])
                 i += 1
     net_dirty = [q for q in dirty_paths if q.startswith(gm.rstrip("/") + "/")]
-    clean = not net_dirty
-    if net_dirty:
+    clean = status_ok and not net_dirty
+    if not status_ok:
+        why = ((dirty.stderr or "").strip() or "exit %d" % dirty.returncode)[:300]
+        notice = ("REFUSED at start: git could not report the workspace state "
+                  "(%s) — whether the net is clean is UNKNOWN, and an unknown "
+                  "is refused, not assumed" % why)
+        pending = []
+    elif net_dirty:
         # REFUSED, not said: an uncommitted file under the net is either the
         # constrained party's write into the judge's territory or a leftover,
         # and this run committing it would certify it as the net's own —
@@ -403,8 +426,14 @@ tool extend_verify:
     others = [l for l in (out.splitlines() if code == 0 else []) if l.strip() and l.split()[-1] != actor_email]
     report["identity_ok"] = code == 0 and not others
     if others:
+        # SAID, not refused: attribution is evidence and the lock is the
+        # commit set. An environment that exports GIT_AUTHOR_EMAIL outranks
+        # every config source, so a refusal here would be one no pass could
+        # repair — and the acts would be exactly as certifiable.
         problems.append("%d commit(s) of this run carry another identity than the engine set "
-                        "(%s): %s — the parent attributes acts to their author"
+                        "(%s): %s — attribution only; the lock is the commit set, "
+                        "and an environment exporting GIT_AUTHOR_EMAIL/GIT_COMMITTER_EMAIL "
+                        "outranks the identity this run configured"
                         % (len(others), actor_email, ", ".join(o[:12] for o in others[:6])))
 
     # 1. Committed. The verdict below reads git; uncommitted work is a tree
@@ -687,7 +716,7 @@ schema restore_report:
 compute extend_gate:
   output: gate_state
   expr:
-    converged: "outputs.extend_verify.clean_start && outputs.extend_verify.identity_ok && outputs.extend_verify.committed && outputs.extend_verify.scope_clean && outputs.extend_verify.additions_ok && outputs.extend_verify.no_new_requests && length(outputs.extend_verify.still_pending) == 0"
+    converged: "outputs.extend_verify.clean_start && outputs.extend_verify.committed && outputs.extend_verify.scope_clean && outputs.extend_verify.additions_ok && outputs.extend_verify.no_new_requests && length(outputs.extend_verify.still_pending) == 0"
     fail_log: "outputs.extend_verify.log_tail"
 
 ## What the parent reads back. `extended` is the harness's count, never the
