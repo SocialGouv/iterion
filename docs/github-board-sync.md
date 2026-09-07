@@ -43,19 +43,38 @@ bug until you know it is a decision:
    at issue ingest. Items with no card are counted and their **repositories are
    named**, so you know which issue syncs to run — the cloud one on a cloud
    instance, see [Troubleshooting](#troubleshooting).
-2. **It never reopens a closed card.** Leaving a terminal column (`done`,
-   `blocked`) is a *reopen* — an operator gesture with a dependents check and
-   an audit trail. Dragging a card out of *Done* on GitHub is reported
-   (`refused_terminal`, and the log line `project import: state write refused
-   … is terminal — leaving it requires an explicit reopen`) and the two boards
-   stay divergent until a human reopens the card in iterion. **The sanctioned
-   reopen is the API transition** — `iterion remote issues transition
-   <card-id> <state>`, or the studio move — because `SetStateOrReopen`
-   treats a transition OUT of a terminal state through the HTTP surface as
-   the explicit reopen the sink demands, while the project import
-   deliberately does not take that path. Whether a human's move on the
-   GitHub board should count as that reopen is an open decision:
-   [#839](https://github.com/SocialGouv/iterion/issues/839).
+2. **It never reopens a card out of *Done*.** Leaving a terminal column is a
+   *reopen* — an operator gesture with a dependents check and an audit trail —
+   and the two terminal columns are treated differently, because only one of
+   them promotes anyone:
+
+   - **Out of *Blocked*: honoured.** A parked card is one its operator parked,
+     and nothing consumed that state (only `done` satisfies a dependent's hard
+     blockers). Dragging it to *Inbox* / *Planned* on GitHub IS the explicit
+     reopen the sink demands: the pass applies it through `Reopen` — the one
+     sanctioned exit — counts it as `reopened_terminal`, stamps `reopened_at`
+     on the card's sync record, and logs `project import: a board move
+     reopened a terminal card`.
+   - **Out of *Done*: still refused.** A finished card may already have
+     promoted dependents whose launch consumed its completion, and that
+     arbitration cannot be taken on a board the promoted work does not
+     appear on. The move is reported (`refused_terminal`), **written on the
+     card** (`external.project.sync_conflict` — from/to, the column, the
+     item, when) and **on the binding's health** (`sync_conflict_reason`, shown
+     by the studio's Project board card, `GET /api/teams/{id}/board-binding`
+     and `iterion remote board show`). The sanctioned gesture is the native
+     one: `iterion remote issues transition <card-id> <state>`, or the studio
+     move — both route through `SetStateOrReopen`.
+
+   The honoured case is narrow ON PURPOSE, and the sink itself is untouched.
+   Only a move this pass can attribute to a person reopens: the board's status
+   changed while the card did not (`native.ReopenableByBoardMove` +
+   the pass's own "only the board moved" arm). A **contested** move (something
+   moved the card too — a run's verdict, the watchdog) and a **first sight**
+   (a card this board has never synchronized, so nothing has *changed*) both
+   stay refused, and every machine writer — `SetState`, the CAS, the owned
+   family, a bot's `board.move` — still meets the sink with no exemption.
+   Decision: [#839](https://github.com/SocialGouv/iterion/issues/839).
 3. **Unmapped states are inert.** A card in `review` or `waiting_deps` leaves
    the board showing the last true thing it was told, rather than being
    collapsed onto *In progress* — which the next pass would read back and undo.
@@ -314,10 +333,16 @@ permanent divergence.
 - **Logs**: one line per pass.
 
 ```
-board sync: team=t_123 board=SocialGouv/203 items=214 moved=2 reflected=1 \
-  labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 reflect_no_column=0 \
-  reflect_machine=0 skipped_no_card=4 skipped_archived=3 skipped=11 took=812ms
+board sync: team=t_123 board=SocialGouv/203 items=214 moved=2 reopened_terminal=0 \
+  reflected=1 labelled=3 conflicts=0 refused_terminal=0 reflect_failed=0 \
+  reflect_no_column=0 reflect_machine=0 skipped_no_card=4 skipped_archived=3 \
+  skipped=11 took=812ms
 ```
+
+The buckets are **disjoint** — every item is accounted for exactly once, so
+"nothing happened" is always explainable. `reopened_terminal` is not part of
+`moved`: leaving a sink is not an ordinary move, and a pass that performed one
+has to say so in its own numbers.
 
 A failed pass logs `Warn` and **does not block the next tick**; one team's
 revoked token skips that team, not the sweep.
@@ -416,11 +441,19 @@ repository under a supported one is the fix.
 
 **A card moved on GitHub but not in iterion.**
 Check the column is in the map (`iterion remote board show` — a `!` marks a
-mapped column the board lacks). Then check it is not a terminal card:
-`refused_terminal > 0` means automation declined to resurrect a closed card,
-which is by design — reopen it in iterion: `iterion remote issues transition
-<card-id> <state>` (or the studio move) is the explicit reopen the terminal
-sink accepts; see [What syncs](#what-syncs-and-which-way), item 2, and #839.
+mapped column the board lacks). Then read the binding's **Refused moves** line
+(same command; `sync_conflict_reason` on the API, a banner on the studio's
+Project board card): it names the cards whose move the terminal sink refused
+and how to land them. That is the *Done* case — reopening finished work stays a
+native gesture: `iterion remote issues transition <card-id> <state>`, or the
+studio move.
+
+A drag out of *Blocked* needs none of that: the pass takes it as the reopen
+(`reopened_terminal > 0` in the pass line). If one did not land, the pass could
+not attribute it — the card was moved on BOTH sides since the last sync
+(`conflicts > 0`), or this board had never synchronized that card before, in
+which case one pass records it and the next honours a real move. See
+[What syncs](#what-syncs-and-which-way), item 2.
 
 **A card moved in iterion but not on GitHub.**
 Five causes, in order of likelihood: the state is unmapped (`review`,

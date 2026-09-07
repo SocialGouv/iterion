@@ -287,6 +287,7 @@ func (e *ExternalRef) Clone() *ExternalRef {
 	out := *e
 	if e.Project != nil {
 		p := *e.Project
+		p.SyncConflict = e.Project.SyncConflict.Clone()
 		out.Project = &p
 	}
 	return &out
@@ -319,6 +320,62 @@ type ExternalProject struct {
 	// rule reads the card's own Issue.StateAt; this stays as the fallback for
 	// a card whose last transition predates that stamp.
 	StateAt time.Time `json:"state_at,omitempty"`
+	// ReopenedAt is when a move on the bound board last took this card OUT of
+	// a terminal column — the operator's drag standing as the explicit reopen
+	// the sink demands (ADR-097 §7). Zero on every card no board move ever
+	// reopened, which is nearly all of them.
+	ReopenedAt time.Time `json:"reopened_at,omitempty"`
+	// SyncConflict is the last board move the terminal sink REFUSED, or nil.
+	// Cleared by the pass that no longer meets the refusal — the operator
+	// reopened the card natively, or moved the item back.
+	SyncConflict *ProjectSyncConflict `json:"sync_conflict,omitempty"`
+}
+
+// ProjectSyncConflict is one board move iterion could not apply, kept ON THE
+// CARD so the operator reads it where they made the gesture rather than in the
+// server's log.
+//
+// It exists for exactly one shape today: a drag out of the COMPLETION column,
+// which stays a deliberate native reopen (see ReopenableByBoardMove). The
+// symptom it answers — "I moved it and nothing happened" — has no other
+// channel: the pass declines to record the status it could not apply, so every
+// later pass re-derives the same divergence and changes nothing on either side.
+type ProjectSyncConflict struct {
+	// From / To are the native columns: where the card sits, and where the
+	// board's status would have taken it.
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Status is the board column the operator moved the item into, in the
+	// board's own vocabulary, and ItemID the item they moved.
+	Status string `json:"status,omitempty"`
+	ItemID string `json:"item_id,omitempty"`
+	// At is when this refusal was FIRST observed. A refusal that keeps
+	// repeating keeps its original stamp: the pass runs on its interval, and
+	// re-stamping would rewrite the card every tick — which bumps UpdatedAt
+	// and emits card.updated, relaunching every label-matching subscription.
+	At time.Time `json:"at,omitempty"`
+	// Reason is the store's own refusal, verbatim.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Equal reports whether two refusals describe the same fact. Deliberately NOT
+// comparing At: it is the first-observation stamp, so an equal refusal keeps
+// the older one.
+func (c *ProjectSyncConflict) Equal(o *ProjectSyncConflict) bool {
+	if c == nil || o == nil {
+		return c == o
+	}
+	return c.From == o.From && c.To == o.To && c.Status == o.Status &&
+		c.ItemID == o.ItemID && c.Reason == o.Reason
+}
+
+// Clone returns a deep copy, or nil.
+func (c *ProjectSyncConflict) Clone() *ProjectSyncConflict {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	return &out
 }
 
 // Equal reports whether two sync states carry the same information.
@@ -342,7 +399,9 @@ func (p *ExternalProject) Equal(o ExternalProject) bool {
 		p.ItemID == o.ItemID &&
 		p.Status == o.Status &&
 		p.StatusAt.Equal(o.StatusAt) &&
-		p.StateAt.Equal(o.StateAt)
+		p.StateAt.Equal(o.StateAt) &&
+		p.ReopenedAt.Equal(o.ReopenedAt) &&
+		p.SyncConflict.Equal(o.SyncConflict)
 }
 
 // Comment is a single append-only note on a native issue. Author is a

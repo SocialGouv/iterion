@@ -707,6 +707,51 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if _, changed, err := store.SetStateFrom(sink.ID, native.StateInProgress, native.StateInProgress); err != nil || changed {
 		t.Fatalf("SetStateFrom(x→x) = (changed=%t, %v), want a no-op reported as unchanged", changed, err)
 	}
+	// The project-board sync state, INCLUDING the terminal-sink arbitration
+	// (ADR-097 §7): the reopen a board move performed, and the refusal it met.
+	// Both are durable operator-facing facts — the studio and
+	// `iterion remote issues get` read them — so a twin that drops them tells
+	// half the fleet "I moved it and nothing happened" with nothing to show.
+	syncAt := time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)
+	if _, err := store.Update(sink.ID, native.Patch{External: &native.ExternalRef{
+		Provider: "github", Repo: "SocialGouv/iterion", Number: 613,
+		Project: &native.ExternalProject{
+			Owner: "SocialGouv", Number: 203, ItemID: "PVTI_1",
+			Status: "Done", StatusAt: syncAt, StateAt: syncAt,
+			ReopenedAt: syncAt.Add(time.Minute),
+			SyncConflict: &native.ProjectSyncConflict{
+				From: native.StateDone, To: native.StateInbox, Status: "Inbox",
+				ItemID: "PVTI_1", At: syncAt.Add(2 * time.Minute), Reason: "terminal state is a sink",
+			},
+		},
+	}}); err != nil {
+		t.Fatalf("write the project sync state: %v", err)
+	}
+	synced := mustGetIssue(t, store, sink.ID)
+	if synced.External == nil || synced.External.Project == nil {
+		t.Fatalf("the project sync state did not round-trip: %+v", synced.External)
+	}
+	if got := synced.External.Project.ReopenedAt; !got.Equal(syncAt.Add(time.Minute)) {
+		t.Errorf("ExternalProject.ReopenedAt = %v, want %v", got, syncAt.Add(time.Minute))
+	}
+	sc := synced.External.Project.SyncConflict
+	if sc == nil {
+		t.Fatalf("ExternalProject.SyncConflict did not round-trip: %+v", synced.External.Project)
+	}
+	if sc.From != native.StateDone || sc.To != native.StateInbox || sc.Status != "Inbox" ||
+		sc.ItemID != "PVTI_1" || sc.Reason == "" || !sc.At.Equal(syncAt.Add(2*time.Minute)) {
+		t.Errorf("SyncConflict round-tripped lossily: %+v", sc)
+	}
+	// Clearing it is the remedy landing — a nil must persist as absent, not be
+	// read as "leave what you had".
+	cleared := synced.External.Clone()
+	cleared.Project.SyncConflict = nil
+	if _, err := store.Update(sink.ID, native.Patch{External: cleared}); err != nil {
+		t.Fatalf("clear the sync conflict: %v", err)
+	}
+	if got := mustGetIssue(t, store, sink.ID).External.Project.SyncConflict; got != nil {
+		t.Errorf("SyncConflict survived its clear: %+v", got)
+	}
 	// The sink guard must hold under CONCURRENCY, which is the only place
 	// it can be broken: a read-then-validate-then-unguarded-write is
 	// check-then-act, and the Mongo twin's ordinary SetState was exactly

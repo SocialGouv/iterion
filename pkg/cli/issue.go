@@ -517,8 +517,16 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 		if projectRes.Conflicts > 0 {
 			p.KV("Conflicts", strconv.Itoa(projectRes.Conflicts))
 		}
+		if projectRes.ReopenedTerminal > 0 {
+			p.KV("Reopened (board move)", strconv.Itoa(projectRes.ReopenedTerminal))
+		}
 		if projectRes.RefusedTerminal > 0 {
 			p.KV("Refused (terminal)", strconv.Itoa(projectRes.RefusedTerminal))
+			// Name the cards: reopening a finished one is a native gesture, and
+			// the ids ARE the command that performs it.
+			for _, id := range projectRes.RefusedCards {
+				p.Line("    %s — iterion issue move %s <state>", id, id)
+			}
 		}
 		if projectRes.SkippedArchived > 0 {
 			p.KV("Skipped (archived)", strconv.Itoa(projectRes.SkippedArchived))

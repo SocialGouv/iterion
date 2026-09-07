@@ -173,6 +173,13 @@
             },
             "type": "object"
           },
+          "sync_conflict_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sync_conflict_reason": {
+            "type": "string"
+          },
           "sync_every": {
             "type": "integer"
           },
@@ -824,6 +831,10 @@
           "owner": {
             "type": "string"
           },
+          "reopened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "state_at": {
             "format": "date-time",
             "type": "string"
@@ -834,6 +845,9 @@
           "status_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "sync_conflict": {
+            "$ref": "#/components/schemas/ProjectSyncConflict"
           }
         },
         "type": "object"
@@ -1680,6 +1694,34 @@
           "active",
           "waiting",
           "reserved"
+        ],
+        "type": "object"
+      },
+      "ProjectSyncConflict": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
         ],
         "type": "object"
       },

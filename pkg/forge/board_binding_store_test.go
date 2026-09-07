@@ -487,6 +487,69 @@ func runBoardBindingStoreSuite(t *testing.T, store forge.BoardBindingStore) {
 		}
 	})
 
+	// The sync-conflict readout is the SECOND health channel, and it has to be
+	// its own: `DegradedReason` is recomputed level-triggered from the status
+	// vocabulary on every pass, so a refused board move written there would be
+	// cleared two minutes later by a reconciliation that never looked at it.
+	t.Run("the sync-conflict readout is independent of the degradation", func(t *testing.T) {
+		if err := store.Upsert(ctx, binding("team-cf", time.Minute)); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := store.MarkSyncConflict(ctx, "team-cf", ""); err == nil {
+			t.Error("a sync conflict with no reason must be refused — the reason IS what the operator reads")
+		}
+		const reason = `1 board move refused: "done" is terminal`
+		if err := store.MarkSyncConflict(ctx, "team-cf", reason); err != nil {
+			t.Fatalf("MarkSyncConflict: %v", err)
+		}
+		got, err := store.GetByTenant(ctx, "team-cf")
+		if err != nil {
+			t.Fatalf("GetByTenant: %v", err)
+		}
+		if !got.SyncConflicted() || got.SyncConflictReason != reason || got.SyncConflictAt == nil {
+			t.Fatalf("binding must carry the refusal with a timestamp: %+v", got)
+		}
+		if got.Degraded() {
+			t.Error("a refused board move is not a broken column — it must not read as degraded")
+		}
+
+		// Neither health channel may clear the other.
+		if err := store.MarkDegraded(ctx, "team-cf", "the Status field no longer carries \"Blocked\""); err != nil {
+			t.Fatalf("MarkDegraded: %v", err)
+		}
+		if err := store.ClearDegraded(ctx, "team-cf"); err != nil {
+			t.Fatalf("ClearDegraded: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-cf"); !got.SyncConflicted() {
+			t.Error("clearing the degradation cleared the sync conflict — the two readouts must be independent")
+		}
+
+		// A re-bind re-reads the board's SCHEMA; it does not un-refuse a move
+		// the sink still refuses, and the next pass re-derives or clears it.
+		if err := store.Upsert(ctx, binding("team-cf", time.Minute)); err != nil {
+			t.Fatalf("re-bind: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-cf"); !got.SyncConflicted() {
+			t.Error("a re-bind dropped the sync conflict; the sink still refuses the move")
+		}
+
+		if err := store.ClearSyncConflict(ctx, "team-cf"); err != nil {
+			t.Fatalf("ClearSyncConflict: %v", err)
+		}
+		if got, _ := store.GetByTenant(ctx, "team-cf"); got.SyncConflicted() || got.SyncConflictAt != nil {
+			t.Errorf("ClearSyncConflict left %+v", got)
+		}
+
+		for _, err := range []error{
+			store.MarkSyncConflict(ctx, "nobody", "why"),
+			store.ClearSyncConflict(ctx, "nobody"),
+		} {
+			if !errors.Is(err, forge.ErrBoardBindingNotFound) {
+				t.Errorf("health write on a missing binding: want ErrBoardBindingNotFound, got %v", err)
+			}
+		}
+	})
+
 	t.Run("tenants are isolated", func(t *testing.T) {
 		if err := store.Upsert(ctx, binding("team-x", time.Minute)); err != nil {
 			t.Fatalf("Upsert: %v", err)

@@ -176,6 +176,21 @@ type BoardBinding struct {
 	DegradedReason string     `bson:"degraded_reason,omitempty" json:"degraded_reason,omitempty"`
 	DegradedAt     *time.Time `bson:"degraded_at,omitempty" json:"degraded_at,omitempty"`
 
+	// SyncConflictReason is the SECOND health readout: board moves the native
+	// board's terminal sink refused on the last pass — a drag out of the
+	// completion column, which stays a deliberate native reopen (ADR-097 §7).
+	// Without it the operator's only symptom is "I moved it and nothing
+	// happened", with the explanation in the server's log.
+	//
+	// A channel of its own, not a second use of DegradedReason: that one is
+	// recomputed level-triggered from the status vocabulary on every pass, so
+	// a refusal written there would be cleared by the next reconciliation that
+	// never looked at it. Level-triggered all the same — a pass that refuses
+	// nothing clears it, so the readout describes the board NOW rather than
+	// the worst thing that ever happened to it.
+	SyncConflictReason string     `bson:"sync_conflict_reason,omitempty" json:"sync_conflict_reason,omitempty"`
+	SyncConflictAt     *time.Time `bson:"sync_conflict_at,omitempty" json:"sync_conflict_at,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -225,6 +240,11 @@ func (b BoardBinding) OptionForState(state string) (string, bool) {
 // board no longer carries. A degraded binding still syncs every state it CAN
 // resolve — it is a partial outage, not a stop.
 func (b BoardBinding) Degraded() bool { return b.DegradedReason != "" }
+
+// SyncConflicted reports whether the last pass met a board move the native
+// board's terminal sink refused. Orthogonal to Degraded: the board is fully
+// readable, one card's move simply cannot be applied by automation.
+func (b BoardBinding) SyncConflicted() bool { return b.SyncConflictReason != "" }
 
 // DueAt reports when this binding's next periodic pass is due. The zero time
 // means "not scheduled" (SyncEvery == 0).
@@ -330,6 +350,14 @@ type BoardBindingStore interface {
 	// the readout has exactly two writers (the pluginsource precedent).
 	MarkDegraded(ctx context.Context, tenantID, reason string) error
 	ClearDegraded(ctx context.Context, tenantID string) error
+
+	// MarkSyncConflict / ClearSyncConflict write the terminal-sink readout —
+	// board moves automation may not apply, and their disappearance. Separate
+	// from the degradation pair because the two are recomputed from different
+	// evidence on every pass, and either clearing the other would erase a
+	// standing fact the operator still has to act on.
+	MarkSyncConflict(ctx context.Context, tenantID, reason string) error
+	ClearSyncConflict(ctx context.Context, tenantID string) error
 }
 
 // ---- in-memory store (tests / local) ----
@@ -362,6 +390,11 @@ func (m *MemoryBoardBindingStore) Upsert(_ context.Context, b BoardBinding) erro
 		// never names the field in its $set, so dropping it here would make
 		// the two twins disagree on whether the board is held.
 		b.SyncLeaseUntil, b.SyncLeaseOwner = prev.SyncLeaseUntil, prev.SyncLeaseOwner
+		// A re-bind re-reads the board's SCHEMA; it does not un-refuse a move
+		// the sink still refuses. Carried over explicitly because the Mongo
+		// twin's $set never names these fields, so dropping them here would
+		// make the two twins disagree.
+		b.SyncConflictReason, b.SyncConflictAt = prev.SyncConflictReason, prev.SyncConflictAt
 	}
 	// A re-bind CLEARS the degradation: it re-read the board and re-resolved
 	// every column by name, which is the documented remedy. Written explicitly
@@ -410,6 +443,36 @@ func (m *MemoryBoardBindingStore) ClearDegraded(_ context.Context, tenantID stri
 		return ErrBoardBindingNotFound
 	}
 	b.DegradedReason, b.DegradedAt = "", nil
+	b.UpdatedAt = time.Now().UTC()
+	m.items[tenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) MarkSyncConflict(_ context.Context, tenantID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("forge: board binding: a sync conflict needs a reason")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	now := time.Now().UTC()
+	b.SyncConflictReason, b.SyncConflictAt = reason, &now
+	b.UpdatedAt = now
+	m.items[tenantID] = b
+	return nil
+}
+
+func (m *MemoryBoardBindingStore) ClearSyncConflict(_ context.Context, tenantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.items[tenantID]
+	if !ok {
+		return ErrBoardBindingNotFound
+	}
+	b.SyncConflictReason, b.SyncConflictAt = "", nil
 	b.UpdatedAt = time.Now().UTC()
 	m.items[tenantID] = b
 	return nil
@@ -633,6 +696,42 @@ func (s *MongoBoardBindingStore) ClearDegraded(ctx context.Context, tenantID str
 		})
 	if err != nil {
 		return fmt.Errorf("forge: clear board binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
+}
+
+// MarkSyncConflict records that the last pass met a board move the native
+// board's terminal sink refused, and why.
+func (s *MongoBoardBindingStore) MarkSyncConflict(ctx context.Context, tenantID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("forge: board binding: a sync conflict needs a reason")
+	}
+	now := time.Now().UTC()
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{"$set": bson.M{"sync_conflict_reason": reason, "sync_conflict_at": now, "updated_at": now}})
+	if err != nil {
+		return fmt.Errorf("forge: mark board binding sync conflict: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBoardBindingNotFound
+	}
+	return nil
+}
+
+// ClearSyncConflict records a pass that refused nothing.
+func (s *MongoBoardBindingStore) ClearSyncConflict(ctx context.Context, tenantID string) error {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{
+			"$unset": bson.M{"sync_conflict_reason": "", "sync_conflict_at": ""},
+			"$set":   bson.M{"updated_at": time.Now().UTC()},
+		})
+	if err != nil {
+		return fmt.Errorf("forge: clear board binding sync conflict: %w", err)
 	}
 	if res.MatchedCount == 0 {
 		return ErrBoardBindingNotFound

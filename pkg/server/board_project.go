@@ -149,10 +149,24 @@ type ProjectImportResult struct {
 	// repository names ARE the next command they have to run.
 	MissingRepos []MissingRepo `json:"missing_repos,omitempty"`
 	// RefusedTerminal is the moves the native board's terminal-state sink
-	// refused. Leaving done/blocked is a REOPEN — an operator gesture with its
-	// own audit trail and dependents check — and automation never reopens. The
-	// two boards stay legitimately divergent until someone reopens the card.
+	// refused: a drag out of the COMPLETION column, which stays a deliberate
+	// native reopen (a done card may have promoted dependents whose launch
+	// consumed its completion). The two boards stay legitimately divergent
+	// until someone reopens the card — and the refusal is written on the card
+	// and on the binding's health so they can find out why.
 	RefusedTerminal int `json:"refused_terminal,omitempty"`
+	// ReopenedTerminal is the moves the sink refused and a PERSON's drag on
+	// the roadmap board authorised anyway: a parked card its operator
+	// un-parked, applied through Reopen — the one sanctioned exit — rather
+	// than through the automated CAS. Its own bucket, disjoint from Moved:
+	// leaving a sink is not an ordinary move, and a pass that performs one has
+	// to say so in its own numbers.
+	ReopenedTerminal int `json:"reopened_terminal,omitempty"`
+	// RefusedCards names the cards behind RefusedTerminal, capped at
+	// maxNamedRefusals. "3 refused" is not something an operator can act on;
+	// the card ids ARE the next command (`iterion remote issues transition
+	// <card> <state>`). Same reading as MissingRepos.
+	RefusedCards []string `json:"refused_cards,omitempty"`
 	// SkippedArchived is the items the operator archived. The forge removes
 	// them from every board view but PRESERVES their field values, so one
 	// archived mid-column keeps reading as that column forever — driving a
@@ -217,8 +231,86 @@ func ImportProjectBoard(
 		cursor = page.NextCursor
 	}
 	res.MissingRepos = rankMissingRepos(missing)
+	recordSinkHealth(ctx, opts, res)
 	return res, nil
 }
+
+// maxNamedRefusals bounds how many refused cards the pass names. One drag is
+// the ordinary case; a bulk column move on the board would otherwise write a
+// list as long as the board onto the binding record.
+const maxNamedRefusals = 5
+
+// recordSinkHealth publishes this pass's terminal-sink refusals on the
+// binding, which is where an operator can read them — `GET
+// /api/teams/{id}/board-binding`, `iterion remote board show`, the studio.
+// Before it, the only trace was a server log line and a counter in a pass
+// summary, so the whole symptom was "I moved it and nothing happened".
+//
+// LEVEL-triggered, like the degradation beside it: the reason is recomputed
+// from THIS pass, and a pass that refused nothing clears it. An edge-triggered
+// flag would outlive its own remedy — the operator reopens the card, the next
+// pass applies the status, and the binding would still read conflicted.
+//
+// Only reached when the item loop completed: a pass abandoned on a card-store
+// outage saw an arbitrary prefix of the board, and a health readout derived
+// from a prefix is a guess.
+//
+// Persisting is best-effort, like the vocabulary repair: a store outage must
+// not abandon the reconciliation the operator is watching. The in-memory
+// binding is updated either way, which is what the one-shot CLI reads.
+func recordSinkHealth(ctx context.Context, opts *ProjectImportOptions, res ProjectImportResult) {
+	binding := opts.binding()
+	if binding == nil {
+		return
+	}
+	was := binding.SyncConflictReason
+	reason := sinkConflictReason(res)
+	store := opts.bindingStore()
+	switch {
+	case reason != "":
+		binding.SyncConflictReason = reason
+		if was == reason {
+			return // unchanged standing state: no store write, no second Warn
+		}
+		binding.SyncConflictAt = ptrTime(opts.now())
+		logProjectWarn(opts, "project board: a board move the terminal sink refuses",
+			"team", binding.TenantID, "board", binding.Ref().String(), "reason", reason)
+		if store != nil {
+			if err := store.MarkSyncConflict(ctx, binding.TenantID, reason); err != nil {
+				logProjectWarn(opts, "project board: the refused move could not be recorded on the binding",
+					"team", binding.TenantID, "error", err.Error())
+			}
+		}
+	case was != "":
+		binding.SyncConflictReason, binding.SyncConflictAt = "", nil
+		if store != nil {
+			if err := store.ClearSyncConflict(ctx, binding.TenantID); err != nil {
+				logProjectWarn(opts, "project board: the refused-move readout could not be cleared",
+					"team", binding.TenantID, "error", err.Error())
+			}
+		}
+	}
+}
+
+// sinkConflictReason renders the readout an operator acts on: how many moves
+// did not land, which cards, and the gesture that lands them.
+func sinkConflictReason(res ProjectImportResult) string {
+	if res.RefusedTerminal == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d board move(s) refused: leaving a terminal column is a reopen, which stays a native gesture", res.RefusedTerminal)
+	if len(res.RefusedCards) > 0 {
+		fmt.Fprintf(&b, " — %s", strings.Join(res.RefusedCards, ", "))
+		if res.RefusedTerminal > len(res.RefusedCards) {
+			fmt.Fprintf(&b, " and %d more", res.RefusedTerminal-len(res.RefusedCards))
+		}
+	}
+	b.WriteString(` (iterion remote issues transition <card> <state>)`)
+	return b.String()
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
 
 // repairBinding re-resolves the binding's cached status vocabulary — the
 // (state → option id) map and the column NAMES those ids carried — against the
@@ -456,7 +548,8 @@ func applyProjectItem(
 		logProjectConflict(opts, cardID, it, statusName, statusAt, nativeAt, sync, decision)
 	}
 
-	applied, refused := false, false
+	applied, refused, reopened := false, false, false
+	var sinkRefusal *native.ProjectSyncConflict
 	if targetState != "" && targetState != card.State {
 		// CAS on the snapshot: an operator who moved the card between our read
 		// and this write wins — the board must not clobber a fresh decision
@@ -469,12 +562,48 @@ func applyProjectItem(
 		// one-shot `iterion issue import --project` path nothing ever repairs
 		// it. A refused write and a lost CAS are the same fact here: nothing
 		// landed.
+		//
+		// The CAS is also how this pass ASKS whether the move leaves a sink:
+		// the guard's own answer, never a second copy of it (a copy drifts the
+		// day a board declares another terminal column). The write is validated
+		// before anything is touched on both twins, so a refusal costs nothing.
 		switch _, changed, err := board.SetStateFrom(cardID, card.State, targetState); {
+		case errors.Is(err, tracker.ErrTerminalStateExit) && boardMoveIsAReopen(card.State, decision, sync):
+			// A person dragged a PARKED card out of its column on the roadmap
+			// board. That gesture is the explicit reopen the sink demands, and
+			// it is honoured through Reopen — the one sanctioned exit, with its
+			// own dependents check and its own audit marker — never through the
+			// automated write the sink just refused.
+			if _, rerr := board.Reopen(cardID, targetState); rerr != nil {
+				// Not the sink: the dependents check, or the card moving under
+				// the reopen's own CAS. Declining to record the status keeps
+				// the next pass re-deriving it.
+				refused = true
+				logProjectWarn(opts, "project import: board-originated reopen refused", "card", cardID,
+					"from", card.State, "to", targetState, "error", rerr.Error())
+				break
+			}
+			reopened = true
+			res.ReopenedTerminal++
+			logProjectWarn(opts, "project import: a board move reopened a terminal card",
+				"card", cardID, "item", it.ID, "from", card.State, "to", targetState, "status", statusName)
+		case errors.Is(err, tracker.ErrTerminalStateExit):
+			// The completion column, a contested move, or a card this board has
+			// never synchronized. The refusal stands — and is recorded on the
+			// card below, so the operator reads it where they made the gesture.
+			refused = true
+			res.RefusedTerminal++
+			if len(res.RefusedCards) < maxNamedRefusals {
+				res.RefusedCards = append(res.RefusedCards, cardID)
+			}
+			sinkRefusal = &native.ProjectSyncConflict{
+				From: card.State, To: targetState, Status: statusName,
+				ItemID: it.ID, Reason: err.Error(),
+			}
+			logProjectWarn(opts, "project import: state write refused", "card", cardID,
+				"from", card.State, "to", targetState, "error", err.Error())
 		case err != nil:
 			refused = true
-			if errors.Is(err, tracker.ErrTerminalStateExit) {
-				res.RefusedTerminal++
-			}
 			logProjectWarn(opts, "project import: state write refused", "card", cardID,
 				"from", card.State, "to", targetState, "error", err.Error())
 		case !changed:
@@ -508,9 +637,17 @@ func applyProjectItem(
 		sync.Status = statusName
 		sync.StatusAt = statusAt
 	}
-	if applied {
+	if applied || reopened {
 		sync.StateAt = opts.now()
 	}
+	if reopened {
+		sync.ReopenedAt = opts.now()
+	}
+	// The sink's arbitration, kept where the operator made the gesture. A
+	// refusal the pass no longer meets is CLEARED here by the same assignment
+	// — the record describes this pass, not the worst thing that ever happened
+	// to the card.
+	sync.SyncConflict = carryProjectConflict(sync.SyncConflict, sinkRefusal, opts.now())
 
 	// The OTHER direction, on the same pass and the same board read. It runs
 	// in exactly the two cases where the native side holds the truth:
@@ -568,6 +705,51 @@ func applyProjectItem(
 		logProjectWarn(opts, "project import: card update failed", "card", cardID, "error", err.Error())
 	}
 	return nil
+}
+
+// boardMoveIsAReopen reports whether this pass may take a card OUT of its
+// terminal column on the strength of the board move it just read (ADR-097 §7).
+// The sink stands unless both halves hold.
+//
+// **The move is attributable to a person.** `projectStatusApply` over a
+// RECORDED status is the pass's own "only the board moved" arm: the status
+// iterion last synchronized still maps to the card's column, so nothing but a
+// hand on the roadmap board changed anything — the same oracle that answers
+// "who moved?" for the reflect direction. A first sight (no recorded status)
+// is not a move: binding a board would otherwise drag every parked card out of
+// its column at once. A contested move is not one either — something else moved
+// the card too, and a board that cannot see what did must not arbitrate it into
+// a resurrection.
+//
+// **The column allows it** (native.ReopenableByBoardMove): a parked card its
+// operator un-parks, never the completion column.
+//
+// Machine writers never reach here: they meet the sink through the ordinary
+// SetState family and are refused with no exemption.
+func boardMoveIsAReopen(from string, decision projectStatusDecision, sync native.ExternalProject) bool {
+	return decision == projectStatusApply &&
+		strings.TrimSpace(sync.Status) != "" &&
+		native.ReopenableByBoardMove(from)
+}
+
+// carryProjectConflict folds this pass's refusal (nil = none) into the record
+// the card already carried.
+//
+// A repeat of the SAME refusal keeps its FIRST stamp. The card is rewritten
+// only when ExternalProject.Equal reports a change, and a re-stamped `At`
+// would rewrite it on every tick — bumping UpdatedAt and emitting an
+// EvtIssueUpdated the trigger spine consumes as `card.updated`, relaunching
+// every label-matching board subscription. A quiet pass has to be silent.
+func carryProjectConflict(prev, next *native.ProjectSyncConflict, now time.Time) *native.ProjectSyncConflict {
+	if next == nil {
+		return nil
+	}
+	if prev.Equal(next) {
+		return prev
+	}
+	out := *next
+	out.At = now
+	return &out
 }
 
 // reflectNativeState pushes a native move onto the board (ADR-097 §2, the

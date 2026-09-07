@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
@@ -54,6 +55,39 @@ func TestPrintBoardBindingMarksALostColumnThatKeptItsID(t *testing.T) {
 		if strings.Contains(line, "→ ready") && strings.HasPrefix(line, "! ") {
 			t.Errorf("a column the board still carries must render unmarked, got %q", line)
 		}
+	}
+}
+
+// A board move the native board's terminal sink refuses has exactly one
+// symptom for the operator — "I moved it and nothing happened" — so `board
+// show` has to name it. It is NOT a degradation: the board reads fine, and a
+// binding that renders the two the same way sends the operator hunting a
+// column that is not missing.
+func TestPrintBoardBindingShowsRefusedMoves(t *testing.T) {
+	var out bytes.Buffer
+	p := NewPrinter(OutputHuman)
+	p.W = &out
+
+	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	printBoardBinding(p, forge.BoardBinding{
+		TenantID: "team-a", Provider: forge.ProviderGitHub,
+		Owner: "SocialGouv", OwnerKind: forge.ProjectOwnerOrg, Number: 203,
+		ConnectionID: "conn-1", ProjectID: "PVT_p", StatusFieldID: "PVTSSF_status",
+		StatusMapping:      []forge.StatusMapping{{Status: "Done", State: "done"}},
+		StatusOptions:      map[string]string{"done": "o_done"},
+		SyncConflictReason: "1 board move(s) refused: native:abc",
+		SyncConflictAt:     &at,
+	})
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "native:abc") {
+		t.Errorf("the refused move must name the card, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, at.Format(time.RFC3339)) {
+		t.Errorf("the refused move must say since when, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Degraded") {
+		t.Errorf("a refused move is not a broken column, got:\n%s", rendered)
 	}
 }
 
