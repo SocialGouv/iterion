@@ -1,8 +1,10 @@
 package e2e
 
 import (
+	"flag"
 	"fmt"
 	goruntime "runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -31,11 +33,22 @@ import (
 // `what` completes the sentence "timed out waiting for …". Optional `detail`
 // closures are evaluated AT FAILURE TIME (a snapshot captured at call time
 // would predate the wait, which is exactly when it is useless).
+//
+// `within` is the budget on an unloaded machine. What actually FAILS the wait
+// is waitBudget(t, within) — that figure scaled by how many tests share the
+// CPU and clamped to the test's own deadline. A caller's hand-picked wall
+// clock is fine as a description of the handoff; it is not a bound a loaded
+// runner should be able to reach, which is how a healthy suite ejects PRs
+// from the merge queue (#860, and TestDispatcherE2E_CancelInFlight at
+// 10.07 s of a 10 s budget on a five-group merge build). The drift log below
+// still measures against the UNSCALED `within`, so the "it is getting
+// slower" signal keeps its original sensitivity.
 func waitUntil(t *testing.T, within time.Duration, what string, cond func() bool, detail ...func() string) {
 	t.Helper()
 	const poll = 20 * time.Millisecond
+	budget := waitBudget(t, within)
 	start := time.Now()
-	deadline := start.Add(within)
+	deadline := start.Add(budget)
 	for {
 		if cond() {
 			// Half the budget: enough headroom that a normally-scheduled run
@@ -52,13 +65,61 @@ func waitUntil(t *testing.T, within time.Duration, what string, cond func() bool
 		}
 		time.Sleep(poll)
 	}
-	msg := fmt.Sprintf("timed out after %s waiting for %s", within, what)
+	msg := fmt.Sprintf("timed out after %s (%s scaled for load) waiting for %s", budget, within, what)
 	for _, d := range detail {
 		if d != nil {
 			msg += "\n" + d()
 		}
 	}
 	t.Fatalf("%s\n%s", msg, goroutineDump())
+}
+
+// waitBudget turns a caller's unloaded-machine budget into the one that
+// actually fails the wait.
+//
+// Two derivations, no hand-picked number:
+//   - Load. This package runs its tests in parallel, so up to `-parallel` of
+//     them share the CPU with the background loop each is waiting on.
+//     Multiplying by that count is what keeps a wait describing the handoff
+//     rather than the scheduler.
+//   - The harness deadline. The result is clamped to what is left of
+//     `-timeout` minus a margin, so a scaled wait always fails as this
+//     assertion (naming what never happened, with the goroutine dump) rather
+//     than as a package-wide panic naming whichever test was in flight.
+//
+// Never returns less than `within`: the clamp may only shorten a scale-up.
+func waitBudget(t *testing.T, within time.Duration) time.Duration {
+	t.Helper()
+	budget := within * time.Duration(waitLoadFactor())
+	if dl, ok := t.Deadline(); ok {
+		if room := time.Until(dl) - waitDeadlineMargin; room < budget {
+			budget = room
+		}
+	}
+	if budget < within {
+		budget = within
+	}
+	return budget
+}
+
+// waitDeadlineMargin is how much of `-timeout` a scaled wait leaves for the
+// failure to be reported (the goroutine dump alone can be 64 KiB) and for
+// the rest of the package to unwind.
+const waitDeadlineMargin = 30 * time.Second
+
+// waitLoadFactor is the effective `-parallel`, i.e. how many of this
+// package's tests may be running at once. 1 when the flag is unreadable, so
+// an unknown harness never inflates a budget.
+func waitLoadFactor() int {
+	f := flag.Lookup("test.parallel")
+	if f == nil {
+		return 1
+	}
+	n, err := strconv.Atoi(f.Value.String())
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
 }
 
 // goroutineDump renders every goroutine's stack, capped so a failure stays
