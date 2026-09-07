@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.20](https://github.com/SocialGouv/iterion/compare/v3.112.19...v3.112.20) (2026-09-07)
+
+### Bug Fixes
+
+* **bots:** lot_verify's report search is bounded — a chatty stdout with no report is typed in seconds, not minutes ([#852](https://github.com/SocialGouv/iterion/issues/852)) ([e6a1f12](https://github.com/SocialGouv/iterion/commit/e6a1f12d19be98813b9d00a8d798d064536ca581))
+
+    <details><summary>why</summary>
+
+    Measured by the reviewer on the shipped function: for every stdout line ending in `}` the search retried a parse against every earlier line whose lstrip started with `{`, re-joining the slice each time — 30 s of CPU for 2000 lines of 33 characters, 86 s at 500, linear in line length, on the very no-report path the reader exists to type.
+
+    </details>
+
 ## [3.112.19](https://github.com/SocialGouv/iterion/compare/v3.112.18...v3.112.19) (2026-09-06)
 
 ### Bug Fixes
