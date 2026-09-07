@@ -15,15 +15,26 @@ import (
 // nodes (extend_gate, extend_result) are the engine's own — they are what
 // these tests pin.
 //
-// The defaults must carry EVERY term the gate reads: a term missing here
-// renders false, so a test expecting a refusal would pass without ever
+// The defaults must carry EVERY term downstream reads: a term missing here
+// reaches a compute node as nil (falsy) and an edge condition as "skip this
+// edge" — either way a test expecting a refusal would pass without ever
 // exercising the term it names.
 func extendStubs(exec *scenarioExecutor, report func(pass int) map[string]any) {
+	extendStubsFromBase(exec, map[string]any{
+		"head": "0123456789abcdef", "dirty": "", "notice": "",
+		"pending": []any{map[string]any{"id": "E-1", "lot": "L1"}},
+		"clean":   true, "_tokens": 1,
+	}, report)
+}
+
+// extendStubsFromBase is extendStubs with extend_base's answer chosen by the
+// caller — the node whose `clean` decides whether the run reaches the agent
+// at all. An edge condition on a field the stub omits is SKIPPED (see
+// pkg/runtime/edges.go), so a missing `clean` would quietly take the campaign
+// path and a test named for the refusal would never exercise it.
+func extendStubsFromBase(exec *scenarioExecutor, base map[string]any, report func(pass int) map[string]any) {
 	exec.on("extend_base", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{
-			"head": "0123456789abcdef", "dirty": "", "notice": "",
-			"pending": []any{map[string]any{"id": "E-1", "lot": "L1"}}, "_tokens": 1,
-		}, nil
+		return base, nil
 	})
 	pass := 0
 	exec.on("extend_campaign", func(_ map[string]any) (map[string]any, error) {
@@ -130,5 +141,57 @@ func TestGoldenMasterExtend_GreenTermsWithAPendingRequestStillRefuse(t *testing.
 	run := runExtend(t, exec, "run-extend-green-but-pending")
 	if res := run.Checkpoint.Outputs["extend_result"]; res["converged"] != false {
 		t.Fatalf("extend_result.converged = %v with a pending request, want false", res["converged"])
+	}
+}
+
+// TestGoldenMasterExtend_ARefusedStartNeverReachesTheAgent pins the routing.
+// `clean` is read ONCE, by extend_base, and no pass can flip it — yet a dirty
+// net used to be routed through the campaign and then re-entered by
+// `repair_loop(max_passes)` on a conjunct that is false forever: max_passes+1
+// full claude_code passes, guaranteed red, to report the refusal node 1
+// already had. And extend_base's own comment says the agent receives nothing,
+// while the agent ran inside the very workspace whose dirt is being refused.
+//
+// The run must leave by the restore, report the refusal extend_base stated,
+// and certify NOTHING — an empty provenance is what keeps the parent's
+// certifier strict.
+func TestGoldenMasterExtend_ARefusedStartNeverReachesTheAgent(t *testing.T) {
+	t.Parallel()
+	exec := newScenarioExecutor()
+	extendStubsFromBase(exec, map[string]any{
+		"head": "0123456789abcdef", "dirty": "?? .golden-master/refs/9.txt",
+		"notice":  "REFUSED at start: the net's directory was already dirty when this extension started",
+		"pending": []any{}, "clean": false, "_tokens": 1,
+	}, func(int) map[string]any { return nil })
+	run := runExtend(t, exec, "run-extend-refused-start")
+	if got := exec.callCount("extend_campaign"); got != 0 {
+		t.Fatalf("extend_campaign called %d times on a refused start, want 0 — "+
+			"the agent is paid for passes that cannot go green", got)
+	}
+	if got := exec.callCount("extend_verify"); got != 0 {
+		t.Fatalf("extend_verify called %d times on a refused start, want 0", got)
+	}
+	res, ok := run.Checkpoint.Outputs["extend_result"]
+	if !ok {
+		t.Fatal("checkpoint carries no extend_result output — the refusal never reached the parent")
+	}
+	if res["converged"] != false {
+		t.Fatalf("extend_result.converged = %v on a refused start, want false", res["converged"])
+	}
+	if n, _ := res["notice"].(string); !strings.Contains(n, "REFUSED") || !strings.Contains(n, "dirty") {
+		t.Fatalf("notice = %q, want extend_base's own stated cause", n)
+	}
+	for _, k := range []string{"acted_commits", "acted_ids", "acted_blobs"} {
+		if v, _ := res[k].(string); v != "" {
+			t.Fatalf("%s = %q on a refused start — a refused start certifies NOTHING, "+
+				"and the parent's certifier exempts what it is handed", k, v)
+		}
+		if _, present := res[k]; !present {
+			t.Fatalf("%s is absent, not empty — the parent renders it into GM_ACTED_* "+
+				"and present-but-empty is what keeps the certifier strict", k)
+		}
+	}
+	if _, ok := run.Checkpoint.Outputs["extend_restore"]; !ok {
+		t.Fatal("the refused start did not pass through extend_restore")
 	}
 }

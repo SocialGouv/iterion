@@ -678,21 +678,33 @@ compute extend_gate:
 
 ## What the parent reads back. `extended` is the harness's count, never the
 ## agent's claim.
+## A start refused at extend_base reaches here with NO campaign, verify or
+## gate output — every term below would be nil, and `'…' + nil` is not a
+## degraded string, it is an evaluation error that fails this node and takes
+## down a run that was only reporting a refusal. `if(...)` is short-circuit
+## (pkg/dsl/expr: only the taken branch is evaluated), so the clean-guard is
+## also what keeps the nil out of the concatenation.
+## The refusal values are EMPTY, never absent: the parent renders
+## `({{input.acted_commits}} or "")` and hands the certifier a
+## present-but-empty GM_ACTED_COMMITS, which is what keeps it strict and
+## exempts nothing — exactly what extend_verify already does on `not clean`.
 compute extend_result:
   output: extend_result
   publish: notice
   expr:
-    converged: "outputs.extend_gate.converged"
-    extended: "outputs.extend_verify.extended"
+    converged: "if(outputs.extend_base.clean, outputs.extend_gate.converged, false)"
+    extended: "if(outputs.extend_base.clean, outputs.extend_verify.extended, 0)"
     ## The subbot's own line travels with the deterministic verdict, plainly
     ## attributed: without it the cause a refusal states reaches nobody, and
     ## an agent told to «report in summary» writes a file instead to make its
     ## reasoning survive — a file its own gate then refuses (production
-    ## finding). Evidence beside the verdict, never in place of it.
-    notice: "if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say. The subbot said: ' + outputs.extend_campaign.summary, 'the extension was REFUSED. The subbot said: ' + outputs.extend_campaign.summary + ' — the gate says: ' + outputs.extend_gate.fail_log)"
-    acted_commits: "outputs.extend_verify.acted_commits"
-    acted_ids: "outputs.extend_verify.acted_ids"
-    acted_blobs: "outputs.extend_verify.acted_blobs"
+    ## finding). Evidence beside the verdict, never in place of it. On a
+    ## refused start there is no subbot line to carry: extend_base's own
+    ## notice IS the cause, and it names it.
+    notice: "if(outputs.extend_base.clean, if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say. The subbot said: ' + outputs.extend_campaign.summary, 'the extension was REFUSED. The subbot said: ' + outputs.extend_campaign.summary + ' — the gate says: ' + outputs.extend_gate.fail_log), 'the extension was REFUSED before it started, and no agent ran: ' + outputs.extend_base.notice)"
+    acted_commits: "if(outputs.extend_base.clean, outputs.extend_verify.acted_commits, '')"
+    acted_ids: "if(outputs.extend_base.clean, outputs.extend_verify.acted_ids, '')"
+    acted_blobs: "if(outputs.extend_base.clean, outputs.extend_verify.acted_blobs, '')"
 
 workflow extend:
   entry: extend_base
@@ -704,6 +716,17 @@ workflow extend:
     max_parallel_branches: 1
     max_duration: "1h"
     max_cost_usd: 20
+
+  ## A REFUSED start leaves before the agent. `clean` is read ONCE, in
+  ## extend_base, and nothing downstream can flip it — so routing a dirty net
+  ## through the campaign bought `max_passes` full claude_code passes (a
+  ## $20/1h subbot budget each) on a conjunct that is false forever, to report
+  ## a refusal node 1 already had. Worse than the cost: extend_base states
+  ## «the agent receives no pending request», and the agent still ran, inside
+  ## the workspace whose dirt is what is being refused.
+  ## extend_restore is the right door: it reads the marker, finds none (a
+  ## refused start sets no identity) and says so.
+  extend_base -> extend_restore when not clean
 
   extend_base -> extend_campaign with {
     pending:  "{{outputs.extend_base.pending}}",
