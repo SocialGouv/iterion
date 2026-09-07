@@ -59,11 +59,13 @@ publish)
   existing="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
   if [ -n "$existing" ]; then
     echo "PR #${existing} already open for ${branch}; the push above updated it"
+  elif ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+    # Nothing pushed for this tag and no open PR: the tap was already current.
+    # Not an exit — the supersede sweep below still has to run, or a stale
+    # older slot sits there with auto-merge armed, waiting to publish a
+    # downgrade the moment its checks go green.
+    echo "nothing pushed for ${tag} and no open PR — the tap was already current"
   else
-    if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-      echo "nothing pushed for ${tag} and no open PR — the tap was already current"
-      exit 0
-    fi
     gh pr create \
       --base main \
       --head "$branch" \
@@ -82,11 +84,42 @@ PR behind it rebuild."
 
   # A tap PR for an EARLIER tag is superseded, not to be merged: its formula
   # would downgrade the published version. Close it and drop its branch.
-  gh pr list --state open --json number,headRefName \
-    --jq ".[] | select(.headRefName | startswith(\"chore/brew-tap-\")) | select(.headRefName != \"${branch}\") | .number" |
-    while read -r other; do
+  #
+  # "Earlier" is a VERSION comparison, not "any branch that is not mine".
+  # `workflow_dispatch` backfills an arbitrary old tag on purpose (`inputs.tag`
+  # in brew-update.yml), so a v0.5.0 backfill run reaches this loop with
+  # branch=chore/brew-tap-v0.5.0 while the current release's PR is open — and
+  # a name-inequality test would close and `--delete-branch` the NEWER slot,
+  # keeping the release iterion actually shipped out of the tap.
+  #
+  # --limit: the sweep filters client-side, and `gh pr list` returns 30 by
+  # default, newest-first. The entries that fall off that page are precisely
+  # the older ones this loop exists to close.
+  #
+  # Anything whose suffix is not a v-prefixed version is left alone: the only
+  # safe direction for a name this script cannot order is "not mine to close".
+  gh pr list --state open --limit 200 --json number,headRefName \
+    --jq ".[] | select(.headRefName | startswith(\"chore/brew-tap-\")) | select(.headRefName != \"${branch}\") | [.number, .headRefName] | @tsv" |
+    while read -r other otherRef; do
       [ -n "$other" ] || continue
-      echo "closing superseded tap PR #${other}"
+      otherTag="${otherRef#chore/brew-tap-}"
+      case "$otherTag" in
+      v[0-9]*) ;;
+      *)
+        echo "leaving tap PR #${other} (${otherRef}): suffix is not a version this script can order"
+        continue
+        ;;
+      esac
+      # STRICTLY older, by version sort: `sort -V` orders v3.112.9 before
+      # v3.112.25, which a lexical compare does not. The equality arm is
+      # redundant with the jq filter above and kept anyway — it is what makes
+      # "not strictly older" the default for any pair `sort -V` ranks equal.
+      if [ "$otherTag" = "$tag" ] ||
+        [ "$(printf '%s\n%s\n' "$otherTag" "$tag" | sort -V | head -n1)" != "$otherTag" ]; then
+        echo "leaving tap PR #${other} (${otherTag}): not older than ${tag}"
+        continue
+      fi
+      echo "closing superseded tap PR #${other} (${otherTag} < ${tag})"
       gh pr close "$other" --delete-branch \
         --comment "Superseded by the tap update for \`${tag}\`."
     done
