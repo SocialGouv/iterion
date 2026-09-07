@@ -33,6 +33,57 @@ still be pushed straight to `main` (e.g. un-break a red main fast). Use it
 sparingly; the queue is the default path. Non-admins must go through a PR + the
 queue.
 
+### The fast lane for an incident fix, and its exact procedure
+
+The queue is a single writer with one lane: a green incident fix waits behind
+every comfort PR enqueued before it. Measured on 2026-09-06, a fix that closed
+a production incident class waited **4 h 42** at ~1 PR/h, with the head group
+rebuilt every ~15 minutes (each rebuild restarts the ~35-minute test workflow
+for every member), while `estimatedTimeToMerge` reported ~2 h throughout.
+
+There is **no automatic fast lane, by decision**: a label-driven direct merge
+would bypass the very rebuild that closes the semantic inter-PR conflict class
+the queue exists for. The escape hatch is a **human admin**, deliberately, and
+this is how it is done — the shape matters, because two of the three obvious
+invocations do the wrong thing:
+
+```sh
+# 1. `gh pr merge <n> --squash` WITHOUT --admin does NOT merge: it enqueues.
+# 2. `--admin` on a PR already in the queue answers "already queued".
+# So: dequeue first, then merge with --admin.
+gh api graphql -f query='mutation($id:ID!){ dequeuePullRequest(input:{pullRequestId:$id}){ clientMutationId } }' \
+  -f id="$(gh pr view <n> --repo <owner>/<repo> --json id --jq .id)"
+gh pr merge <n> --repo <owner>/<repo> --squash --admin
+```
+
+Before using it, the same proofs the queue would have demanded must already be
+green **on the PR head**: every required check (`test`, `race`, `vendor-check`,
+`mongo-conformance`, `golangci`) and `revi/review`. The bypass skips the
+*rebuild against the queue's other members*, nothing else — so it is legitimate
+when the PR is small, or touches files no queued PR touches, and reckless when
+it is a wide refactor.
+
+After an admin merge, **verify what actually landed**: the queue has merged a
+stale head before (see the note below), and a bypass has no group build to
+catch it.
+
+```sh
+git fetch origin main
+git diff --stat <pr-head-sha> origin/main -- $(git diff --name-only "$(git merge-base <pr-head-sha> origin/main)" <pr-head-sha>)
+```
+
+An empty diff means the merge carries the head you reviewed.
+
+Two consequences worth stating plainly:
+
+- **The autonomous pilot cannot use this.** An agent has no admin rights and
+  must not be given them; an incident fix launched by a bot waits in the queue
+  like everything else, or a human takes it through the hatch above.
+- **The durable fix is queue throughput, not exceptions.** Every direct push to
+  `main` — the release commit, and until recently the brew-tap commit —
+  invalidates and replays the head group. Removing the tap push from `main` is
+  what buys every PR back its second CI run; an exception buys it for one.
+
 ## For the bot factory
 
 A bot opens a PR → the operator/agent reviews (the adversarial in-loop review

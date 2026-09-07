@@ -29,6 +29,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -246,7 +247,7 @@ func TestRunnerEpochHighWaterRejectsLiveRegression(t *testing.T) {
 		t.Fatalf("connect current epoch: %v", err)
 	}
 	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		_ = current.JetStream().DeleteStream(cleanupCtx, cfg.StreamName)
 		_ = current.JetStream().DeleteStream(cleanupCtx, cfg.DLQStream)
@@ -324,7 +325,7 @@ func schemaRolloutConn(t *testing.T, uri string) (*natsq.Conn, string) {
 		t.Fatalf("claim rollout epoch: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		_ = conn.JetStream().DeleteStream(ctx, stream)
 		_ = conn.JetStream().DeleteStream(ctx, dlq)
@@ -366,7 +367,7 @@ func publishForeignVersion(t *testing.T, conn *natsq.Conn, v int, runID, tenantI
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	if _, err := conn.JetStream().Publish(ctx, natsq.SubjectRuns, payload, jetstream.WithMsgID(runID)); err != nil {
 		t.Fatalf("publish: %v", err)

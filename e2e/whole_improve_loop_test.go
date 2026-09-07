@@ -105,6 +105,7 @@ func toStr(v any) string {
 //   - the verify gate runs each pass (verify_run == 2);
 //   - the run finishes (converged → mr_gate → done, open_mr default false).
 func TestWholeImproveLoop_ContinuesUntilComplete(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &campaignState{axisCompleteBy: 2}
@@ -144,6 +145,7 @@ func TestWholeImproveLoop_ContinuesUntilComplete(t *testing.T) {
 // reports axis_complete=true on the first pass and the gate is green, so the
 // run converges immediately — one campaign pass, straight to done.
 func TestWholeImproveLoop_ConvergesFirstPass(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &campaignState{axisCompleteBy: 1}
@@ -176,6 +178,7 @@ func TestWholeImproveLoop_ConvergesFirstPass(t *testing.T) {
 //   - the second campaign pass received the real build-failure log as input;
 //   - the run finishes once the gate goes green.
 func TestWholeImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &campaignState{axisCompleteBy: 1} // the agent claims done every pass
@@ -216,6 +219,7 @@ func TestWholeImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
 // TestWholeImproveLoop_MRPathOnConverge pins the opt-in MR path: with
 // open_mr=true a converged run opens the MR/PR (finalize_mr) before finishing.
 func TestWholeImproveLoop_MRPathOnConverge(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &campaignState{axisCompleteBy: 1}
@@ -243,6 +247,7 @@ func TestWholeImproveLoop_MRPathOnConverge(t *testing.T) {
 // the v2 sweep: a happy-path run persists node lifecycle + edge-selection events
 // covering the core nodes. This is the regression net for engine event emission.
 func TestWholeImproveLoop_EventTrace(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &campaignState{axisCompleteBy: 1}
@@ -285,6 +290,7 @@ func TestWholeImproveLoop_EventTrace(t *testing.T) {
 // machinery and the per-item review nodes). Drift here (e.g. reintroducing a
 // blocking upfront enumerate, or a review node) breaks the mechanism silently.
 func TestWholeImproveLoop_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 
 	// Entry is the deterministic workspace precondition (a tool node, no

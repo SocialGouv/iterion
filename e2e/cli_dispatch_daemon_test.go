@@ -30,20 +30,6 @@ import (
 // wrong prefix and the calls 404; swallow the httpErrCh send and the
 // bind-failure case returns nil.
 
-// freePort reserves and releases a loopback port, returning its number.
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-	return port
-}
-
 // writeDispatchConfig lays down a minimal native-tracker dispatcher YAML and
 // returns its path.
 func writeDispatchConfig(t *testing.T, dir string) string {
@@ -107,10 +93,11 @@ func waitHealthy(t *testing.T, base string, done <-chan error) {
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeDispatchConfig(t, dir)
 	storeDir := filepath.Join(dir, "store")
-	port := freePort(t)
+	port := reserveLoopbackPort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	done := make(chan error, 1)
@@ -190,6 +177,7 @@ func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {
 }
 
 func TestDispatchDaemonFailsLoudlyOnABusyPort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeDispatchConfig(t, dir)
 
@@ -220,6 +208,7 @@ func TestDispatchDaemonFailsLoudlyOnABusyPort(t *testing.T) {
 }
 
 func TestDispatchDaemonRejectsAnInvalidConfig(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "broken.yaml")
 	// A tracker kind with no workflow: the daemon must refuse to boot rather

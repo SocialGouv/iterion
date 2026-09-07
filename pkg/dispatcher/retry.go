@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"time"
@@ -108,6 +109,19 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 	default:
 		c.logger.Info("dispatcher: %s retry queued (attempt=%d, in=%s, resume=%s)", prev.Identifier, attempt, delay, prev.RunID)
 	}
+}
+
+// runtimeFailureCode extracts the engine's classification from an error
+// chain, or "" when the error carries none. It is what feeds the shared
+// automatic-resume table (pkg/retrypolicy): the dispatcher's own retry is
+// the local counterpart of the cloud redelivery, and the two must not
+// disagree about which failures a re-execution can cure.
+func runtimeFailureCode(err error) store.FailureCode {
+	var rtErr *runtime.RuntimeError
+	if errors.As(err, &rtErr) && rtErr != nil {
+		return rtErr.Code
+	}
+	return ""
 }
 
 // isResumeSourceChanged reports whether runErr is the runtime's refusal
@@ -259,6 +273,21 @@ func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemR
 		// its ticket until this write lands — worth a Warn, not a Debug.
 		c.logger.Warn("dispatcher: orphan promotion of run %s → %s failed: %v — the ticket stays held until the status write succeeds", cur.ID, newStatus, err)
 		return status
+	}
+	// The timeline too, not only the document: a consumer that triages
+	// terminals by the tree reads a reaped orphan as a run that simply
+	// stopped mid-flight. Best-effort — a missed event must never leave the
+	// ticket held by a dead run.
+	data := map[string]any{
+		"error":       "process orphaned: dispatcher found run '" + string(cur.Status) + "' with no live owner",
+		"code":        string(store.FailureProcessOrphaned),
+		"interrupted": true,
+	}
+	if newStatus == store.RunStatusFailedResumable {
+		data["resumable"] = true
+	}
+	if _, aerr := s.AppendEvent(ctx, cur.ID, store.Event{Type: store.EventRunFailed, RunID: cur.ID, Data: data}); aerr != nil {
+		c.logger.Warn("dispatcher: orphan promotion of run %s: append run_failed: %v", cur.ID, aerr)
 	}
 	c.logger.Info("dispatcher: last run %s was %s with no live owner — promoted to %s", cur.ID, cur.Status, newStatus)
 	return newStatus

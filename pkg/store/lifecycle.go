@@ -46,6 +46,14 @@ const (
 	FailureJoinFailed       FailureCode = "JOIN_FAILED"
 	FailureResumeInvalid    FailureCode = "RESUME_INVALID"
 	FailureSchemaValidation FailureCode = "SCHEMA_VALIDATION"
+	// FailureExpressionFailed: a `compute` node's expression could not be
+	// evaluated (an unknown reference, a type the operator cannot
+	// multiply, an overflow). Distinct from FailureExecutionFailed, which
+	// covers a BACKEND fault an automatic resume can genuinely outlast: a
+	// compute node runs no LLM and no shell, so re-executing it against
+	// the same checkpoint produces the same error, forever. That is what
+	// the automatic-resume classification reads it by.
+	FailureExpressionFailed FailureCode = "EXPRESSION_FAILED"
 	FailureRateLimited      FailureCode = "RATE_LIMITED"
 	// FailureUsageLimitBlocked: the provider's subscription/quota WINDOW
 	// is exhausted (Anthropic forfait 5h / session / weekly cap) —
@@ -162,6 +170,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureJoinFailed,
 	FailureResumeInvalid,
 	FailureSchemaValidation,
+	FailureExpressionFailed,
 	FailureRateLimited,
 	FailureUsageLimitBlocked,
 	FailureContextLengthExceeded,

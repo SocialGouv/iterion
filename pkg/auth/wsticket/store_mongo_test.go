@@ -1,7 +1,6 @@
 package wsticket
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // TestMongoStore runs the ticket flow against a real Mongo (same gating
@@ -24,7 +24,7 @@ func TestMongoStore(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo wsticket suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -34,7 +34,7 @@ func TestMongoStore(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_wsticket_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

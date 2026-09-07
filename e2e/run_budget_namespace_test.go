@@ -17,6 +17,7 @@ import (
 // route — through the real CLI entry point with the scenario stub, so the
 // readout is which tail the run took, not a unit-tested accessor.
 func TestRunBudgetNamespaceDrivesACompute(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	const runID = "run-budget-ns"
 

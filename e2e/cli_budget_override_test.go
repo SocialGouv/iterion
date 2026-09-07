@@ -75,6 +75,7 @@ func runHasEvent(t *testing.T, storeDir, runID string, typ store.EventType) bool
 // the bot's own too-small budget stops the run, and only the CLI
 // override lets it through — or tightens it on another dimension.
 func TestRunBudgetOverrideCapsTheRun(t *testing.T) {
+	t.Parallel()
 	// --- baseline: the declared budget is authoritative ---------------
 	// 4 nodes × 10 tokens against max_tokens: 25.
 	baselineStore := t.TempDir()

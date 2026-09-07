@@ -393,7 +393,10 @@ vars:
 ## exploration, re-reads, long silence without finalisation) it posts a
 ## single "wrap up now" steering message the reviewer picks up at its
 ## next turn. It never judges code and never adds findings. Cost is
-## bounded by design: ≤4 haiku evals on a 5m cooldown (~cents/run).
+## bounded by design: ≤12 haiku evals on a 6m cooldown (~cents/run) — a
+## window that still exists when spend nears the wall: with 4 evals on 5m
+## the coordinator refused every wake ("eval budget exhausted") long
+## before a $32 trigger could match on a review that runs 40-60 minutes.
 ## The cost_gt monitor rides the debounced mid-node usage_progress
 ## samples (plus budget_warning), so it fires WHILE the review runs —
 ## the cooldown wakes cover pacing between samples.
@@ -401,9 +404,13 @@ supervisor pacer:
   watches: [reviewer_claude, reviewer_gpt]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-haiku-4-5}"
   system: pacer_policy
-  cooldown: "5m"
-  max_evals: 4
-  monitors: ["cost_gt=8"]
+  cooldown: "6m"
+  max_evals: 12
+  ## An ABSOLUTE dollar trigger, kept at ~2/3 of the cap (it was 8 of 12):
+  ## calibrated lower it fires in the cheap early phase, spends its four
+  ## evals telling a review to wrap up before it has reproduced anything,
+  ## and is silent by the time spend nears the real wall.
+  monitors: ["cost_gt=32"]
 
 prompt pacer_policy:
   You pace a READ-ONLY code reviewer that has a hard cost budget. Its
@@ -1506,14 +1513,30 @@ workflow review_pr:
     max_parallel_branches: 2
     ## The money guard is max_cost_usd; the duration cap only needs to
     ## catch a hung run. 45m killed real reviews mid-publish (a forfait
-    ## retry or a big diff walks past it while spending nothing).
-    max_duration: "90m"
-    ## Sized from production: median ~$3.6/run, p95 ~$10.5 (2026-09-03
-    ## sample). The exit grace (cap × 1.1) still walks an over-cap run
-    ## forward to publish, so a big-diff review delivers at ~$13 instead
-    ## of dying. Re-budget a deliberate deep review per run with
-    ## --max-cost-usd.
-    max_cost_usd: 12
+    ## retry or a big diff walks past it while spending nothing). The same
+    ## 90% wall applies here, no grace: 90m refused new nodes at 81 min.
+    ## The two deaths sized above ran ~40 min each (push → death: 84 min
+    ## for two runs of one PR, 53 min for the other); a review funded to
+    ## ~$43 may run 45-60 min, so 120m keeps its 108-minute wall clear of
+    ## the workload the cost cap now admits.
+    max_duration: "120m"
+    ## Sized from production, twice. The 2026-09-03 sample said median
+    ## ~$3.6/run, p95 ~$10.5, and the cap was 12 with the exit grace
+    ## (cap × 1.1) walking an over-cap run forward to publish. Three days
+    ## later the guard tier died at $36 and $30 on a 7-file PR — twice on
+    ## one revision, the relaunch included — and the merge gate posted no
+    ## verdict at all: a required check that dies is worse than one that
+    ## costs. A review that reproduces its findings and answers the fixer's
+    ## rounds is the workload now; the cap follows it.
+    ##
+    ## The EFFECTIVE ceiling is 0.9 × cap, not the cap: the engine refuses
+    ## any new node — the publish tail included — once an axis sits at 90%
+    ## of its cap, with no grace on that band (pkg/runtime/budget.go). And
+    ## $36 was the spend at the kill, a lower bound on the workload, since
+    ## the run never paid for converge + publish. 48 puts $36 at 75% and
+    ## leaves ~$43 before the wall. Re-budget a deliberate deep review per
+    ## run with --max-cost-usd.
+    max_cost_usd: 48
 
   ## EFFICIENCY: an empty review diff skips tier resolution, both LLM
   ## reviewers, and emit.

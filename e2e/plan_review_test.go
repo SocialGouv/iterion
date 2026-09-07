@@ -113,6 +113,7 @@ func requireProvenance(t *testing.T, in map[string]any, want string) {
 // stamped as unreviewed, with EMPTY critique/responses (never
 // placeholders).
 func TestPlanReview_OffAuthorsThePlanUnreviewed(t *testing.T) {
+	t.Parallel()
 	exec, ins := runPlanReview(t, "e2e-plan-off", map[string]any{"plan_review": "off"}, false)
 	if !exec.wasCalled("plan") {
 		t.Error("off: plan never ran — plan_review must gate the review, not the phase")
@@ -136,6 +137,7 @@ func TestPlanReview_OffAuthorsThePlanUnreviewed(t *testing.T) {
 // harness) must behave exactly like off — the conservative default for
 // the REVIEW; the plan itself is still authored.
 func TestPlanReview_AutoUnresolvedBehavesOff(t *testing.T) {
+	t.Parallel()
 	exec, ins := runPlanReview(t, "e2e-plan-auto", nil, false)
 	if !exec.wasCalled("plan") {
 		t.Error("auto/unresolved: plan never ran — the phase is on by default")
@@ -149,6 +151,7 @@ func TestPlanReview_AutoUnresolvedBehavesOff(t *testing.T) {
 // plan_phase off → the whole phase is bypassed (the explicit opt-out) and
 // the campaign receives EMPTY hand-off fields, never placeholders.
 func TestPlanReview_PlanPhaseOffBypassesPlanning(t *testing.T) {
+	t.Parallel()
 	exec, ins := runPlanReview(t, "e2e-plan-phase-off", map[string]any{"plan_phase": "off"}, false)
 	for _, id := range []string{"plan", "plan_review", "plan_revise"} {
 		if exec.wasCalled(id) {
@@ -165,6 +168,7 @@ func TestPlanReview_PlanPhaseOffBypassesPlanning(t *testing.T) {
 // campaign on pass 1 and BLANKED on pass 2 (the back-edge wins over the
 // re-applied forward mapping — passes 2+ read git log, not a stale plan).
 func TestPlanReview_OnRunsAuthorPeerRevise(t *testing.T) {
+	t.Parallel()
 	exec, ins := runPlanReview(t, "e2e-plan-on", map[string]any{"plan_review": "on"}, false)
 	for _, id := range []string{"plan", "plan_review", "plan_revise", "campaign"} {
 		if !exec.wasCalled(id) {
@@ -201,6 +205,7 @@ func TestPlanReview_OnRunsAuthorPeerRevise(t *testing.T) {
 // plan reaches the campaign, stamped "skipped", with a present-and-empty
 // critique.
 func TestPlanReview_SkippedRoutesAroundRevise(t *testing.T) {
+	t.Parallel()
 	exec, ins := runPlanReview(t, "e2e-plan-skip", map[string]any{
 		"plan_review": "on", "plan_review_policy": "skip",
 	}, true)

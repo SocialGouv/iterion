@@ -4,9 +4,11 @@ package delegate
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,6 +77,19 @@ func orchStallEnv(t *testing.T, stall, recovery string) {
 }
 
 func runFakeOrchSession(t *testing.T, scenario, wait string) (rm *claudesdk.ResultMessage, stalls []OrchestrationStall, stdin string, err error) {
+	rm, stalls, stdin, _, err = runFakeOrchSessionLogged(t, scenario, wait)
+	return
+}
+
+// runFakeOrchSessionLogged additionally returns iterion's OWN warn+ log
+// lines. The fake CLI's stdin log records what the child managed to append
+// before it was killed, which is not the same fact as what iterion wrote:
+// the abort ladder closes the child on a 100 ms grace, so a loaded machine
+// SIGKILLs the shell between its `read` and its `printf` and the log misses
+// a line that WAS sent (2 failures in 85 -race runs under load, 0 in 80 on a
+// quiet machine — it ejected #872 from the merge queue). Iterion's own log
+// line is the same claim observed on the side that made it.
+func runFakeOrchSessionLogged(t *testing.T, scenario, wait string) (rm *claudesdk.ResultMessage, stalls []OrchestrationStall, stdin string, warns []string, err error) {
 	t.Helper()
 	script, stdinLog := writeFakeClaudeOrch(t)
 	task := Task{NodeID: "node", Iteration: 0}
@@ -85,12 +100,32 @@ func runFakeOrchSession(t *testing.T, scenario, wait string) (rm *claudesdk.Resu
 		claudesdk.WithEnv("FAKE_CLAUDE_STDIN_LOG", stdinLog),
 		claudesdk.WithEnv("FAKE_CLAUDE_WAIT", wait),
 	}
-	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	logger := iterlog.New(iterlog.LevelWarn, io.Discard)
+	var mu sync.Mutex
+	logger.SetHook(func(_ iterlog.Level, msg string, _ map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		warns = append(warns, msg)
+	})
+	b := &ClaudeCodeBackend{Logger: logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	rm, _, err = b.runSession(ctx, "do the work", task, opts)
+	logger.SetHook(nil)
 	raw, _ := os.ReadFile(stdinLog)
-	return rm, stalls, string(raw), err
+	mu.Lock()
+	defer mu.Unlock()
+	return rm, stalls, string(raw), append([]string(nil), warns...), err
+}
+
+// containsLine reports whether any of lines contains sub.
+func containsLine(lines []string, sub string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestOrchStall_RecoversInPlace: a TaskOutput wait on a task the session
@@ -120,7 +155,7 @@ func TestOrchStall_RecoversInPlace(t *testing.T) {
 // retryable error text the executor keys on.
 func TestOrchStall_AbortsWhenTheInterruptIsIgnored(t *testing.T) {
 	orchStallEnv(t, "300ms", "300ms")
-	_, stalls, stdin, err := runFakeOrchSession(t, "ignore-interrupt", "0")
+	_, stalls, _, warns, err := runFakeOrchSessionLogged(t, "ignore-interrupt", "0")
 	if err == nil {
 		t.Fatal("runSession: want an abort, got nil")
 	}
@@ -130,8 +165,13 @@ func TestOrchStall_AbortsWhenTheInterruptIsIgnored(t *testing.T) {
 	if len(stalls) != 1 || stalls[0].Recovered {
 		t.Fatalf("stall hook = %+v, want one aborted stall", stalls)
 	}
-	if !strings.Contains(stdin, `"subtype":"interrupt"`) {
-		t.Fatalf("the interrupt must have been attempted, stdin:\n%s", stdin)
+	// Read from iterion's own log, not the fake's stdin log: the abort kills
+	// the child on a 100 ms grace, so the shell can be SIGKILLed between
+	// reading the interrupt and appending it, and the fixture's record loses
+	// a line the runtime did write. "interrupting the call" is emitted on
+	// the branch reached only when Session.Interrupt() returned nil.
+	if !containsLine(warns, "interrupting the call") {
+		t.Fatalf("the interrupt must have been attempted; iterion's warn log:\n%s", strings.Join(warns, "\n"))
 	}
 }
 
@@ -157,7 +197,7 @@ func TestOrchStall_LegitimateWaitIsNotAStall(t *testing.T) {
 // keeps the pre-recovery behaviour — abort on classification.
 func TestOrchStall_DisabledRecoveryAbortsImmediately(t *testing.T) {
 	orchStallEnv(t, "300ms", "0")
-	_, stalls, stdin, err := runFakeOrchSession(t, "recover", "0")
+	_, stalls, stdin, warns, err := runFakeOrchSessionLogged(t, "recover", "0")
 	if err == nil || !strings.Contains(err.Error(), "session idle for") || !strings.Contains(err.Error(), "recovery disabled") {
 		t.Fatalf("error = %v, want the immediate abort", err)
 	}
@@ -166,6 +206,12 @@ func TestOrchStall_DisabledRecoveryAbortsImmediately(t *testing.T) {
 	}
 	if strings.Contains(stdin, `"subtype":"interrupt"`) {
 		t.Fatalf("no interrupt may be sent when recovery is disabled, stdin:\n%s", stdin)
+	}
+	// The stdin log can only LOSE a line (the abort kills the child), so
+	// its absence alone would also read green on a fixture that recorded
+	// nothing at all. Iterion's own log cannot lose one.
+	if containsLine(warns, "interrupting the call") {
+		t.Fatalf("an interrupt was attempted with recovery disabled; iterion's warn log:\n%s", strings.Join(warns, "\n"))
 	}
 }
 

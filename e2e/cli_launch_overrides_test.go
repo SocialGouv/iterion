@@ -52,6 +52,7 @@ func runPresetFixture(t *testing.T, runID, preset string, vars map[string]string
 }
 
 func TestRunPresetAppliesValuesAndVarWins(t *testing.T) {
+	t.Parallel()
 	t.Run("no preset falls back to the declared defaults", func(t *testing.T) {
 		got, err := runPresetFixture(t, "preset-none", "", nil)
 		if err != nil {

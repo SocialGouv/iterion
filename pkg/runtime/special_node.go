@@ -176,8 +176,13 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 	for _, ce := range cn.Exprs {
 		v, err := evalComputeExpr(ce.AST, exprCtx)
 		if err != nil {
+			// EXPRESSION_FAILED, not EXECUTION_FAILED: a compute node runs
+			// no LLM and no shell, and its inputs come from a checkpoint
+			// that does not move, so re-executing it reaches the same
+			// verdict. That is what keeps an automatic resume from
+			// re-burning a pod per attempt on it (pkg/retrypolicy).
 			return nil, &RuntimeError{
-				Code:    ErrCodeExecutionFailed,
+				Code:    ErrCodeExpressionFailed,
 				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, ce.Raw, err),
 				NodeID:  nodeID,
 				Hint:    "check the compute node's expressions for type mismatches or unknown references",

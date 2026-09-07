@@ -76,11 +76,7 @@ func newGatedSpineServer(t *testing.T, spec gateSpec, pub *spinePublisher) *Serv
 		t.Fatal(err)
 	}
 	s.cfg.Store = rs
-	svc, err := runview.NewService("", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
 	return s
 }
 

@@ -86,6 +86,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
+	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
@@ -2932,6 +2933,48 @@ func testSetRunBudgetSnapshot(t *testing.T, s store.RunStore) {
 	}
 	if err := s.SetRunBudgetSnapshot(ctx, "does-not-exist", &store.RunBudget{MaxCostUSD: 1}); err == nil {
 		t.Fatal("SetRunBudgetSnapshot on a missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// testSetRunnerVersion exercises the granular stamp of the build that
+// EXECUTED the run, beside the launcher's own. Contract: sets
+// Run.RunnerVersion, touches nothing else, and reports ErrRunNotFound for
+// a run that is not there. The concurrent-transition case is the same one
+// the budget setters guard: a runner writes its build at claim, and a
+// whole-doc replace from its already-stale copy would revert a cancel.
+func testSetRunnerVersion(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "rv_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	launcher, err := s.LoadRun(ctx, "rv_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, "rv_run", store.RunStatusCancelled, "cancelled by the operator", store.FailureCancelled); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	if err := s.SetRunnerVersion(ctx, "rv_run", "v3.112.7+abc123def456"); err != nil {
+		t.Fatalf("SetRunnerVersion: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "rv_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.RunnerVersion != "v3.112.7+abc123def456" {
+		t.Fatalf("RunnerVersion = %q, want the executing build", got.RunnerVersion)
+	}
+	if got.IterionVersion != launcher.IterionVersion {
+		t.Fatalf("IterionVersion = %q, want the launcher's %q untouched — the PAIR is what makes a skew readable",
+			got.IterionVersion, launcher.IterionVersion)
+	}
+	if got.Status != store.RunStatusCancelled || got.FailureCode != store.FailureCancelled {
+		t.Fatalf("status/code after SetRunnerVersion = %s/%q, want cancelled/CANCELLED untouched", got.Status, got.FailureCode)
+	}
+	if err := s.SetRunnerVersion(ctx, "does-not-exist", "v1"); err == nil {
+		t.Fatal("SetRunnerVersion on a missing run returned nil, want ErrRunNotFound")
 	}
 }
 

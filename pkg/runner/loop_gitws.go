@@ -260,6 +260,7 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 			return "", "", err
 		}
 	}
+	r.ensureBaseRef(ctx, dir, tok, gitEnv, msg)
 	// A re-execution is not a fresh start: whatever the earlier attempt
 	// banked or parked on the forge is this run's own state, and the resumed
 	// nodes must find it in the tree, not only in the checkpoint's outputs.
@@ -307,6 +308,71 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
 	return dir, baseline, nil
+}
+
+// baseRefOfRun reads the run's `base_ref` launch var — the integration base
+// a PR targets, set uniformly for ANY bot launched on a pull request. It is a
+// generic launch var, so this reads a value, never a bot.
+func baseRefOfRun(msg *queue.RunMessage) string {
+	if msg == nil {
+		return ""
+	}
+	s, _ := msg.Vars["base_ref"].(string)
+	return strings.TrimSpace(s)
+}
+
+// ensureBaseRef makes the run's `base_ref` resolvable in the per-run clone,
+// under the bare name AND under `origin/<base_ref>`.
+//
+// A clone gives every remote branch a remote-tracking ref but a LOCAL branch
+// only for the default one, and git's revision lookup does not fall back from
+// a bare name to `refs/remotes/origin/<name>`. So on a STACKED pull request —
+// one whose base is another feature branch — every bot's `git merge-base
+// <base_ref> HEAD` idiom dies with "Not a valid object name", while the same
+// command works on a PR based on the default branch. Measured on `/billy`
+// against a PR based on a feature branch: the campaign's plan step exited 128
+// before reading a line of the diff.
+//
+// Degrades LOUDLY rather than failing the clone: `base_ref` is a hint bots
+// read, not a runner precondition, and an operator may legitimately pass a
+// value no `git fetch` can name (a bare sha, a ref already deleted on the
+// forge). The warning names the ref and git's own words, so a bot that then
+// cannot resolve it has its cause in the run log rather than in a guess.
+func (r *Runner) ensureBaseRef(ctx context.Context, dir, tok string, gitEnv []string, msg *queue.RunMessage) {
+	base := baseRefOfRun(msg)
+	if base == "" {
+		return
+	}
+	// base_ref arrives from a forge payload, so it reaches a git subprocess
+	// under the same flag/transport-injection rule as RepoURL/RepoSHA above.
+	if err := gitlib.ValidateBranchName(base); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: not fetching base_ref %q — %v", msg.RunID, base, err)
+		return
+	}
+	// The checked-out ref already IS this branch: git refuses to fetch into
+	// the current branch, and there is nothing to make resolvable.
+	if base == strings.TrimSpace(msg.RepoSHA) {
+		return
+	}
+	// Already a local branch: the default branch the clone checked out, or a
+	// re-execution that fetched it on an earlier attempt.
+	if _, err := r.runGitOutEnv(ctx, dir, "", nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+base); err == nil {
+		return
+	}
+	// One fetch, two destinations: the local branch is what makes the bare
+	// name resolve (the shape bots write), the remote-tracking ref is what
+	// makes `origin/<base>` resolve (the shape the review scope anchors on).
+	// The local ref is fetched WITHOUT `+`, so a divergence is refused
+	// instead of silently rewritten.
+	if err := r.runGitEnv(ctx, dir, tok, gitEnv,
+		"-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin",
+		base+":refs/heads/"+base,
+		"+"+base+":refs/remotes/origin/"+base,
+	); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: base_ref %q could not be fetched from origin — a bot diffing against it will not resolve it: %v", msg.RunID, base, err)
+		return
+	}
+	r.cfg.Logger.Info("runner: run %s: fetched base_ref %q into the clone (the PR's base is not the default branch)", msg.RunID, base)
 }
 
 // gitAuthorName / gitAuthorEmail are the identity seeded into a cloud clone's

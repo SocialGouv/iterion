@@ -79,11 +79,7 @@ func newGatedBoardServer(t *testing.T, spec gateSpec, pub *countingPublisher) (*
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
 	return s, rs
 }
 

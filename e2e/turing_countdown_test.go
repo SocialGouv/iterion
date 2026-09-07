@@ -19,6 +19,7 @@ import (
 // times; a run that only stopped because it ran out of fuel would execute it
 // ~200 times. Counting proves the former.
 func TestTuringCountdown(t *testing.T) {
+	t.Parallel()
 	// The bot's `start` var defaults to 5; the run uses that default.
 	const start = 5
 	wf := compileFixture(t, "turing/countdown.bot")

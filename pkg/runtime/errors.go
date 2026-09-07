@@ -33,6 +33,7 @@ const (
 	ErrCodeJoinFailed            = store.FailureJoinFailed
 	ErrCodeResumeInvalid         = store.FailureResumeInvalid
 	ErrCodeSchemaValidation      = store.FailureSchemaValidation
+	ErrCodeExpressionFailed      = store.FailureExpressionFailed
 	ErrCodeRateLimited           = store.FailureRateLimited
 	ErrCodeUsageLimitBlocked     = store.FailureUsageLimitBlocked
 	ErrCodeContextLengthExceeded = store.FailureContextLengthExceeded

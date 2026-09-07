@@ -61,7 +61,8 @@ node's diagnosis as its error and the collector decides the run's fate.)
 runner's retry both gate on a closed allow-list of engine codes
 (`EXECUTION_FAILED`, `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`,
 `NETWORK_TRANSIENT`, `TOOL_FAILED_TRANSIENT`, and `BUDGET_EXCEEDED` with a
-raised cap). A bot-defined code is outside it, and deliberately so: the run
+raised cap — one table, see *An ENGINE code can be un-retryable too*
+below). A bot-defined code is outside it, and deliberately so: the run
 refused on purpose, and nothing an unattended retry can do changes the
 verdict — only an operator can (a raised cap, a different `--var`). The run
 stays parked at `failed_resumable` for a human, and the log says "not
@@ -94,6 +95,37 @@ runner synthesises a resume → the guard refuses identically → repeat to
 `DLQ_PARKED` — a pod and a sandbox per turn, and the diagnosis destroyed at
 the end of it. The run now stays `failed_resumable` with its own code,
 waiting for a human who changed something.
+
+### An ENGINE code can be un-retryable too
+
+Being one of the engine's own codes does not make a verdict re-decidable.
+`EXPRESSION_FAILED` (a `compute` node: no LLM, no shell, inputs from a
+checkpoint that does not move), `CONTEXT_LENGTH_EXCEEDED` (the in-node
+recipe already compacted twice and gave up; a resume rehydrates the same
+conversation), `IR_UNLOADABLE`, `WORKSPACE_SAFETY`,
+`TOOL_FAILED_PERMANENT` and their peers reach the same verdict on every
+attempt. Which codes those are is **one table**,
+[`pkg/retrypolicy`'s classification](../pkg/retrypolicy/classify.go), read
+by every surface that decides "resume this failure automatically": the
+cloud runner's `classifyExecResult` and its redelivery disposition, the
+CLI's `--auto-resume` gate, and the dispatcher's retry ladder. Every code
+the engine declares has a row, guarded against drift by a conformance test.
+
+The bar for *deterministic* is deliberately high: a resume **re-executes
+the failing node** on freshly resolved inputs, so anything an LLM decided
+— a `SCHEMA_VALIDATION` on an agent's output, a `NO_OUTGOING_EDGE` chosen
+from it — can differ on the next attempt and keeps its retries. So can
+`AUTH_FAILED`: every claim re-materialises the sealed OAuth-forfait blob
+into a fresh file and refreshes it when it is at or past its expiry lead,
+so the *effective* token can differ even though the sealed blob does not.
+
+When a surface declines to bring a run back, it says so on the timeline:
+**`run_retry_skipped {reason: deterministic, code, error}`** — the
+counterpart of `run_retry_scheduled`. Without it a `failed_resumable` row
+whose redelivery was dropped on purpose reads exactly like one still
+waiting for a pod. Measured on run `01a07804` before the classification
+existed: seven resumes of one compute-expression failure in ten minutes,
+each a fresh pod, clone and sandbox.
 
 ## CLI
 

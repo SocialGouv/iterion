@@ -104,6 +104,7 @@ const langsGoJsPython = `["go","js","python"]`
 // not run, and surface partial gaps without false-failing a genuinely clean
 // repo. Runs the ACTUAL bot command, so a regression in the gate fails here.
 func TestSecAuditSource_ScanHealth_GuardsAgainstFacade(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		if os.Getenv("CI") != "" {
 			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the scan_health façade guard")

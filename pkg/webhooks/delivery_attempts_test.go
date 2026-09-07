@@ -10,6 +10,8 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // The unattended gate lanes read their launch-failure budget off the delivery
@@ -67,7 +69,7 @@ func onDeliveryStoreTwins(t *testing.T, run func(*testing.T, DeliveryStore)) {
 		if uri == "" {
 			t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo delivery suite")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		client, err := mongo.Connect(options.Client().ApplyURI(uri))
 		if err != nil {
@@ -77,7 +79,7 @@ func onDeliveryStoreTwins(t *testing.T, run func(*testing.T, DeliveryStore)) {
 		_, _ = rand.Read(nonce)
 		db := client.Database("iterion_webhooks_" + hex.EncodeToString(nonce))
 		t.Cleanup(func() {
-			drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			drop, dropCancel := mongotest.TeardownCtx()
 			defer dropCancel()
 			_ = db.Drop(drop)
 			_ = client.Disconnect(drop)

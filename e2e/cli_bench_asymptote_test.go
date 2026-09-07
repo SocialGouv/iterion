@@ -97,6 +97,7 @@ func num(t *testing.T, row map[string]any, key string) float64 {
 }
 
 func TestBenchAsymptoteMeasuresTheConvergenceCurve(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	// Three runs of the same bot converging at different speeds: the judge
 	// approves on its 3rd, 2nd and 3rd verdict. Everyone is disapproved at
@@ -153,6 +154,7 @@ func TestBenchAsymptoteMeasuresTheConvergenceCurve(t *testing.T) {
 }
 
 func TestBenchAsymptoteComparesTwoGroups(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	benchRunFixture(t, storeDir, "bench-base", 3)
 	benchRunFixture(t, storeDir, "bench-variant", 1)
@@ -186,6 +188,7 @@ func TestBenchAsymptoteComparesTwoGroups(t *testing.T) {
 }
 
 func TestBenchAsymptoteWritesTheMarkdownReport(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	benchRunFixture(t, storeDir, "bench-md", 2)
 
@@ -215,6 +218,7 @@ func TestBenchAsymptoteWritesTheMarkdownReport(t *testing.T) {
 }
 
 func TestBenchAsymptoteRefusesAnIncompleteRequest(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	benchRunFixture(t, storeDir, "bench-guard", 1)
 

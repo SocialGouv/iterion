@@ -40,14 +40,10 @@ func (p *queueOutageTestPublisher) SubmitResume(context.Context, runview.ResumeS
 
 func installQueueOutageTestPublisher(t *testing.T, srv *Server, publishErr error) {
 	t.Helper()
-	svc, err := runview.NewService(srv.cfg.StoreDir,
+	srv.runs = newTestRunviewService(t, srv.cfg.StoreDir,
 		runview.WithLogger(iterlog.Nop()),
 		runview.WithLaunchPublisher(&queueOutageTestPublisher{err: publishErr}),
 	)
-	if err != nil {
-		t.Fatalf("NewService with queue outage publisher: %v", err)
-	}
-	srv.runs = svc
 }
 
 func newQueueOutageHTTPTestServer(t *testing.T) *Server {

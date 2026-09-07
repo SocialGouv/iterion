@@ -753,11 +753,7 @@ func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
 
 	// processBoardCard blocks polling the run on a 3s ticker; cancelling
 	// releases it (the loop selects on ctx.Done) so the goroutine is joined
@@ -1250,12 +1246,8 @@ func TestBoardIssueRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatal(err)
-	}
 	s := &Server{}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
 
 	ctx := context.Background()
 	ended := time.Now()
@@ -2908,11 +2900,7 @@ func TestProcessBoardCardRefusesAForkPR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
 
 	err = s.processBoardCard(context.Background(), "team1", native.Issue{
 		ID: "card-fork", Bot: "fixer", State: native.StateReady,
