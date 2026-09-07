@@ -816,9 +816,13 @@ declares `crane` needs `crane` whatever repo it is pointed at.
 
 A declined source is **reported, not dropped** — the
 `sandbox_devbox_provisioned` event carries `skipped_sources: ["repo"]`
-with the config it declined, and the run logs it. Without that, the only
-trace of the decision would be a binary missing later, which reads as an
-agent bug.
+with the config and the reason it declined
+(`skipped_configs` / `skipped_reasons`), and the run logs it. Without
+that, the only trace of the decision would be a binary missing later,
+which reads as an agent bug. The same channel reports the other decline:
+a **bot's** `devbox.json` on a driver with no host bind mounts, where its
+bundle cannot reach the container at all
+([sandbox.md](sandbox.md#best-effort-never-silent)).
 
 The override does **not** travel onto the cloud queue: what a cloud runner
 needs is the *workflow's* declaration, which rides the `.bot` itself. So a

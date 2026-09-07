@@ -87,20 +87,31 @@ below as one that does not.
 
 | Phase | Driver | Bound | Env override (Go duration) |
 |---|---|---|---|
+| `kubectl apply` (per-run Secret, CA Secret, pod, NetworkPolicy, mid-run secret refresh) | kubernetes | 2 min each | `ITERION_SANDBOX_K8S_APPLY_TIMEOUT` |
 | Pod Ready wait | kubernetes | 10 min | `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` |
 | Workspace copy (host tar → `kubectl exec` tar) | kubernetes | 15 min | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
 | Workspace git fixup | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
 | `post_create` snippet | kubernetes | 30 min | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
 | Image pull | docker | 10 min | `ITERION_SANDBOX_PULL_TIMEOUT` |
-| `post_create` snippet | docker | **unbounded** — a hung snippet blocks the run until `max_duration` fires | — |
+| `post_create` snippet | docker | 30 min (the same knob as kubernetes) | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
 
-`post_create` gets its own, larger budget because installing a toolchain
-legitimately outlasts a copy; raising one knob does not move the other.
-Both take a Go duration (`5m`, `45m`, `2h`), and both fail **closed**: a
-value that is not a positive duration — including `5`, which Go reads as
-five *nanoseconds*, not five minutes — is refused rather than honoured,
-the default applies, and one stderr line per process names the variable,
-the value and the default that replaced it.
+A budget belongs to the **phase**, not to the driver: `post_create` reads
+one knob wherever it runs, so an operator raising it for a slow toolchain
+install raises it everywhere. `post_create` gets its own, larger budget
+because installing a toolchain legitimately outlasts a copy; raising one
+knob does not move another. Every knob takes a Go duration (`5m`, `45m`,
+`2h`) and fails **closed**: a value that is not a positive duration —
+including `5`, which Go reads as five *nanoseconds*, not five minutes —
+is refused rather than honoured, the default applies, and one stderr line
+per process names the variable, the value and the default that replaced
+it.
+
+The apply bound is enforced at both ends of the pipe: the phase deadline
+kills the local `kubectl`, and `--request-timeout` makes `kubectl` itself
+give up rather than wait on a wedged apiserver. `kubectl delete` (the
+stale-pod eviction before the pod apply, every rollback, the run's own
+cleanup) shares the apply budget but reports a plain deadline — a cleanup
+is not a setup phase and is never classified as one.
 
 A phase that burns its budget fails with `sandbox.ErrPhaseTimeout`, which
 the engine classifies as `SANDBOX_SETUP_TIMEOUT`: the run parks
@@ -168,6 +179,38 @@ executor, and `delegate.mirrorStateFileIntoSandbox` (pi's extension,
 system prompt and codex credential). A unit test whose fake
 `sandbox.Run` omits this interface tests the shared-filesystem half of
 the world only.
+
+#### A promise the driver drops takes its variable with it
+
+The mirror rule for anything the runtime hands the container as a PATH:
+every optional host bind (the run's attachments, its run-files
+directory, the bot's bundle) is dropped on a copy-based driver, and the
+promise made on it must go with it. On the pod backend:
+
+| Promise | On docker | On kubernetes |
+|---|---|---|
+| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
+| Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
+| The bot's bundle `devbox.json` | provisioned | declined and reported (see [devbox provisioning](#best-effort-never-silent)) |
+
+The measured cost of getting this wrong: the run-files variable once
+named a directory the pod never had, a gate wrapper redirecting its
+report into it died on "Directory nonexistent", and four lots read an
+oracle verdict out of an environment failure.
+
+**Known gap — run-files on pods.** Nothing collects a pod's run files:
+the collector reads the host directory the bind would have served, and
+the pod writes to a temp dir that dies with it. Closing it needs a
+read-back seam the driver does not have — an emptyDir at the container
+path plus a drain at teardown, i.e. `WorkspaceExporter`'s shape widened
+past the workspace. Until then the artifact-files panel is empty for a
+pod run, and the variable stays honestly unset rather than naming a
+directory nobody reads.
+`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt`
+([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walks
+every `spec.Env` value and every path in `spec.PostCreate` against the
+mounts the driver keeps, so the next promise made on a dropped bind
+fails in CI rather than in a campaign.
 
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 
@@ -414,9 +457,12 @@ iterion sandbox doctor                 # report driver + capabilities
   driver's workspace copy AND of the git fixup that follows, each
   end-to-end. Unset → 15 min. See [setup phases and their
   timeouts](#setup-phases-and-their-timeouts).
-- `ITERION_SANDBOX_POST_CREATE_TIMEOUT` — budget of the kubernetes
-  driver's `post_create` snippet. Unset → 30 min. Raise it for a
-  devcontainer that installs a large toolchain.
+- `ITERION_SANDBOX_POST_CREATE_TIMEOUT` — budget of the `post_create`
+  snippet on BOTH drivers. Unset → 30 min. Raise it for a devcontainer
+  that installs a large toolchain.
+- `ITERION_SANDBOX_K8S_APPLY_TIMEOUT` — budget of one `kubectl` control
+  call on the kubernetes driver (every `apply`, every `delete`), also
+  passed as `--request-timeout`. Unset → 2 min.
 - `ITERION_SANDBOX_OVERRIDE` — CLI-strength mode override (`""`,
   `none`, or `auto`), same precedence tier as `iterion run --sandbox`:
   `none` beats even a workflow's inline `sandbox:` block. Honoured by
@@ -556,7 +602,25 @@ Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
 `errors` on the host target when something failed) so you can audit
 what was picked up — and see when a declared toolchain could **not**
-be provisioned.
+be provisioned. A source that EXISTS and was deliberately declined is
+named on the same event, with its own reason:
+`skipped_sources` / `skipped_configs` / `skipped_reasons` (parallel
+arrays; `reason` joins the distinct ones).
+
+Two declines ship today:
+
+- `repo_devbox off` — the target repo pins a toolchain this run does not
+  need (see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox)).
+- `no host bind mount on this driver` — the **bot's** `devbox.json` lives
+  in its bundle, which reaches the container as a host bind mount, and
+  the kubernetes driver has no host filesystem. The bundle is then not
+  declared at all, so no snippet is baked and no `PATH` entry promises a
+  directory nothing will populate. A bot that needs a tool on the pod
+  backend must get it from its `sandbox.image:` instead. The alternative
+  — a pod-side delivery channel for the bundle — would need a copy-in
+  seam that runs BEFORE `post_create`; the driver's only copy-in today is
+  the workspace tar, and the only writes it accepts afterwards
+  (`RefreshWorkspaceFile`) land after setup is over.
 
 ### Cost
 
@@ -722,6 +786,21 @@ across the channel.
     nothing left to cut) is refused and reported on the runner's stderr,
     which the launcher folds into the node's error: one lost
     observation, never a dead channel, and never a silent one.
+  - **The reply direction is bounded the same way.** A host-side tool
+    result travelling BACK to the container (an MCP call's result, a
+    large file read, a `go test ./...` transcript) is cut to
+    `delegate.MaxToolResultBytes` (1 MiB) with a marker naming the bytes
+    produced on the host — the same ceiling the executor's own hooks
+    apply to an unsandboxed node's tool payload, so a sandboxed run and
+    an in-process one show the model the same amount of the same output.
+    A `ask_user` payload is the exception: its conversation is the
+    pre-pause LLM state the runner rebuilds from, so it crosses whole or
+    becomes an explicit tool error naming its size — a cut one would
+    resume onto a corrupted conversation. And whatever the producer,
+    `EnvelopeWriter` **refuses** an over-cap line at the source with a
+    typed error naming the envelope type: a writer that forgot to clamp
+    fails where it is, instead of killing the peer's reader with a
+    payload it can only report the size of.
   - **A turn's conversation crosses whole or not at all.** The snapshot a
     fork replays is relayed up to 2 MiB (a full 200k-token context, with
     room under the line cap); a larger one is left out and the turn

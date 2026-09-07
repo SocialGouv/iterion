@@ -391,7 +391,17 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		spec.Env[runFilesEnvVar] = runFilesContainerPath
 	}
 	seedDefaultLocale(spec)
-	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
+	// The bundle is a host bind and nothing else: a driver with no host
+	// filesystem would have it dropped below, leaving every promise made
+	// on it — the devbox prologue's staged copy first — naming a path the
+	// container never had. Not declaring it is what makes the promises
+	// downstream honest: applyDevboxProvisioning sees no container path
+	// and REPORTS the bot source as declined instead of baking a snippet
+	// that fails soft.
+	bundleContainerPath := ""
+	if caps.SupportsHostBindMounts {
+		bundleContainerPath = addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
+	}
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
 	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
 	// sub-bot children — separate runs in separate containers — can hand
