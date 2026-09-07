@@ -75,8 +75,10 @@ The manifests are authoritative for inputs, invocation modes, required capabilit
 | [`cursors/`](../examples/cursors/) | Cursor declarations and per-node calibration. |
 | [`events/`](../examples/events/) | In-run `emit`/`wait` coordination. |
 | [`turing/`](../examples/turing/) | Fuelled expression/loop semantics. |
+| [`phase-budget-guard.bot`](../examples/phase-budget-guard.bot) | The `run.*` namespace — a `compute` reading the run's own consumption against its effective caps — plus a named `fail` node stamping `failure_code`/`error` onto the run. |
 | [`supervisor/`](../examples/supervisor/) | Concurrent supervisor declarations and steering. |
-| [`ultracode/`](../examples/ultracode/) | Ultracode compression mode. |
+| [`ultracode/`](../examples/ultracode/) | `reasoning_effort: ultracode` — `xhigh` on the wire plus the standing multi-agent orchestration prerogative, with the `agent` subagent tool added to a restricted `tools:` list. |
+| [`fallbacks/`](../examples/fallbacks/) | `fallbacks:` cross-backend routes (ADR-087): an alternative backend + model + credential taken when the primary fails, and the `model_fallback` event / `_served_by` stamps that keep the degrade loud. |
 | [`web-search/`](../examples/web-search/) | Tiered web-search capability use. |
 | [`keepalive/`](../examples/keepalive/) | Sub-minute always-on schedule shape and overlap policy. |
 | [`nested-subbots-demo/`](../examples/nested-subbots-demo/) | Multi-level child-run nesting. |
