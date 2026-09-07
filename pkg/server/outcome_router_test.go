@@ -35,10 +35,7 @@ func newRouterHarness(t *testing.T) *routerHarness {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	svc, err := runview.NewService("", runview.WithLogger(iterlog.Nop()), runview.WithStore(st))
-	if err != nil {
-		t.Fatalf("runview.NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithLogger(iterlog.Nop()), runview.WithStore(st))
 	t.Setenv(outcomeRouterEnv, "on")
 	s := newOrgTestServer(t)
 	s.cfg.Store = st

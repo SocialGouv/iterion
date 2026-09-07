@@ -8,7 +8,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -45,10 +44,7 @@ func TestPipelineReservedSetKeepsNonTerminalForkDespiteHumanGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs, err := runview.NewService(filepath.Join(dir, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	runs := newTestRunviewService(t, filepath.Join(dir, "runs"))
 	issue, err := board.Create(native.Issue{Title: "epic", Bot: "review", State: native.StateInProgress})
 	if err != nil {
 		t.Fatal(err)
@@ -94,10 +90,7 @@ func TestPipelineReservedSetKeepsRunningForkDespitePausedParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs, err := runview.NewService(filepath.Join(dir, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	runs := newTestRunviewService(t, filepath.Join(dir, "runs"))
 	issue, err := board.Create(native.Issue{Title: "epic", Bot: "review", State: native.StateInProgress})
 	if err != nil {
 		t.Fatal(err)
@@ -147,10 +140,7 @@ func TestPipelineReservedSetReleasesNonForkTreeAwaitingHuman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs, err := runview.NewService(filepath.Join(dir, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	runs := newTestRunviewService(t, filepath.Join(dir, "runs"))
 	issue, err := board.Create(native.Issue{Title: "epic", Bot: "review", State: native.StateInProgress})
 	if err != nil {
 		t.Fatal(err)

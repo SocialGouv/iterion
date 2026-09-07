@@ -27,7 +27,7 @@ func TestReconcileSandboxK8sResources_SafeNoOp(t *testing.T) {
 			t.Fatalf("NewService: %v", err)
 		}
 		defer svc.Stop(context.Background())
-		svc.reconcileSandboxK8sResources() // off-cluster → Detect fails → no-op
+		svc.reconcileSandboxK8sResources(context.Background()) // off-cluster → Detect fails → no-op
 	})
 
 	t.Run("without lock authority", func(t *testing.T) {
@@ -37,6 +37,6 @@ func TestReconcileSandboxK8sResources_SafeNoOp(t *testing.T) {
 		}
 		defer svc.Stop(context.Background())
 		// Must return at the authority gate, before any k8s probe.
-		svc.reconcileSandboxK8sResources()
+		svc.reconcileSandboxK8sResources(context.Background())
 	})
 }
