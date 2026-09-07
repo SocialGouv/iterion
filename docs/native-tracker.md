@@ -462,13 +462,16 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 | `/api/v1/pipeline-board` | GET | Global projection: 4 fixed lanes (Opened, In progress, Needs attention, Closed) + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency). Optional `?since=<duration\|RFC3339>` prunes CLOSED cards last changed before the cutoff (live pipelines are never pruned) so a long-lived store escapes the ≤500-card truncation banner; the prune is reported via `hidden_closed_count` / `hidden_closed_before` |
 | `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required; optional `blockers`, `upsert`; `{start:true}` → ready when deps OK else `waiting_deps` |
 | `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` stages Ready when hard deps are done, else parks in `waiting_deps` (or 409); unstage → backlog |
+| `/api/v1/pipeline-board/tasks/{id}/launch` | POST | Launch now, jumping the admission loop's priority/oldest-first ordering — the Opened → In progress drag. Bypasses **ranking only**: still 409s on open hard dependencies, on a ticket that already has an active or finished run (that is Reset/Retry), and when every concurrency slot is taken (launching anyway would silently park the run as `queued`, contradicting the drop) |
 | `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
 | `/api/v1/pipeline-board/tasks/{id}` | DELETE | Delete a ticket (issue only, never a run); 409 while any run in its tree is active |
 | `/api/v1/pipeline-board/tasks/{id}/reset` | POST | Cancel every active run in the ticket's tree, then restage it to Ready |
 | `/api/v1/pipeline-board/tasks/{id}/close` | POST | Cancel the ticket's tree and file it terminal (`blocked`, never `done`); also clears a dispatcher give-up stamp — Close is the acknowledgement |
 | `/api/v1/pipeline-board/tasks/{id}/dependency-graph` | GET | Limited-depth hard-dep graph (also `GET /api/v1/native/issues/{id}/dependency-graph`) |
 | `/api/v1/pipeline-board/bulk/ready` | POST | `{ids?\|family_id?\|pipeline_kind?}` stage many tickets Ready (skip open blockers by default) |
+| `/api/v1/pipeline-board/bulk/delete` | POST | `{ids}` delete many Opened tickets — the multi-select "Delete selected". Same guards as the single DELETE (issue only, never a run); a ticket with a live run in its tree, a missing id, or a non-pipeline ticket is **skipped, not a 404**, and reported in `skipped` / `skipped_why` |
 | `/api/v1/pipeline-board/bulk/recompute-deps` | POST | Re-promote `waiting_deps` tickets whose blockers are now satisfied |
+| `/api/v1/pipeline-board/workspace-images/{path...}` | GET | Serve one image from the studio workdir for the card sidebar's input thumbnails. Deliberately not a generic file read: an extension allowlist (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) keeps it image-only, and containment goes through the same symlink-aware `safePath` boundary as the file editor. `Cache-Control: no-cache` because reference images are regenerated in place under the same filename |
 
 **Local concurrency cap.** `iterion studio` caps concurrent **root** pipelines
 at `--max-concurrent-pipelines` (default 3; also
