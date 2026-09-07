@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 func TestNextRun(t *testing.T) {
@@ -76,7 +77,7 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo orgsweep suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -86,7 +87,7 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_orgsweep_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dropCancel := mongotest.TeardownCtx()
 		defer dropCancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

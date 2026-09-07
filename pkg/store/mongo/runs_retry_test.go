@@ -9,6 +9,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -40,7 +41,7 @@ func retryTestStore(t *testing.T) *Store {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo retry tests")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	s, err := New(ctx, Config{
 		URI:      uri,

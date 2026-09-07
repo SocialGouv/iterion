@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // runBoardBindingStoreSuite exercises the forge.BoardBindingStore contract. It
@@ -523,7 +524,7 @@ func TestMongoBoardBindingStore_Conformance(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_binding_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

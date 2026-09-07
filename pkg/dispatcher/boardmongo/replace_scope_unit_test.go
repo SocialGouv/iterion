@@ -8,12 +8,12 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // In-package on purpose: the refusals below fire BEFORE any Mongo call,
@@ -57,7 +57,7 @@ func TestLabelSweep_DoesNotResurrectAConsumedOneShot(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -67,7 +67,7 @@ func TestLabelSweep_DoesNotResurrectAConsumedOneShot(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("sweepguard_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 10*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = db.Drop(c)
 		_ = client.Disconnect(c)
@@ -137,7 +137,7 @@ func TestLabelSweep_ExhaustionIsLoud(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -147,7 +147,7 @@ func TestLabelSweep_ExhaustionIsLoud(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("sweeploud_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 10*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = db.Drop(c)
 		_ = client.Disconnect(c)

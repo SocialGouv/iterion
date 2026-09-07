@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -29,7 +30,7 @@ func newMongoFixture(t *testing.T) (*mongostore.Store, *MongoSource, context.Con
 		t.Fatalf("mongostore.New: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := mongotest.TeardownCtx()
 		defer cancel()
 		_ = st.DB().Drop(ctx)
 		_ = st.Close(ctx)
