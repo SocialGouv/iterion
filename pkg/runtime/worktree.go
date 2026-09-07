@@ -534,7 +534,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		return res
 
 	case "squash":
-		message := buildSquashMessage(wc.anchor(), wc.originalTip, finalSHA, opts.runName)
+		message := BuildSquashMessageForMerge(wc.anchor(), wc.originalTip, target, finalSHA, opts.runName)
 		merged, mergeErr := trySquashMerge(wc.anchor(), target, finalName, wc.originalBranch, message, logger)
 		if mergeErr != nil {
 			res.MergeStatus = "failed"
@@ -744,6 +744,66 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 // Identical semantics — see buildSquashMessage docs.
 func BuildSquashMessage(repoRoot, base, head, runName string) string {
 	return buildSquashMessage(repoRoot, base, head, runName)
+}
+
+// BuildSquashMessageForMerge is BuildSquashMessage for a merge that knows its
+// TARGET, which is what lets the range be bounded when the run's recorded base
+// is missing or does not resolve in this repository.
+func BuildSquashMessageForMerge(repoRoot, base, target, head, runName string) string {
+	return buildSquashMessage(repoRoot, squashRangeBase(repoRoot, base, target, head), head, runName)
+}
+
+// squashRangeBase resolves the commit the squash message's range starts at.
+//
+// The run's recorded base is authoritative when it resolves HERE: it is the
+// exact commit the run started from, which merge-base only approximates once
+// the target has moved on. But a repo-targeted merge materialises its own
+// clone, where that base is frequently absent — and an unresolvable base makes
+// gitlib.Log walk `git log <head>`, i.e. the whole repository from its root,
+// whose --reverse ordering then makes the OLDEST commit the message's title.
+// That is how a lot delivery landed on a production target under the subject
+// "Initial commit" with 204 lines of the repository's own past.
+//
+// The rungs, in order:
+//
+//  1. base, when it names a commit head descends from;
+//  2. merge-base(target, head) — the point the work branch left the target;
+//  3. "" when the TARGET itself does not resolve. A greenfield run
+//     (`worktree: auto` degrading in place, the bot `git init`-ing from slice
+//  0. genuinely owns every commit in the repository, so the full walk is
+//     the right answer there — the only case where it is;
+//  4. head itself otherwise: the target exists but shares no history with the
+//     head, so no range describes the run. An empty range degrades to the
+//     run's own name as the title, which says nothing false — enumerating an
+//     unrelated history would.
+func squashRangeBase(repoRoot, base, target, head string) string {
+	if repoRoot == "" || head == "" {
+		return base
+	}
+	if base != "" && gitlib.IsAncestor(repoRoot, base, head) {
+		return base
+	}
+	if target != "" {
+		if mb := gitlib.MergeBase(repoRoot, target, head); mb != "" {
+			return mb
+		}
+		if resolveCommitish(repoRoot, target) != "" {
+			return head
+		}
+	}
+	return ""
+}
+
+// resolveCommitish returns the full SHA target names in repoRoot, or "" when
+// it names nothing (an unborn branch, a repository with no commits).
+func resolveCommitish(repoRoot, target string) string {
+	cmd, cancel := gitCmd("-C", repoRoot, "rev-parse", "--verify", "--quiet", target+"^{commit}")
+	out, err := cmd.Output()
+	cancel()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // BuildSquashMessageFromCommits is the cached-input form for callers
