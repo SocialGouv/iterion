@@ -497,7 +497,7 @@ unreachable. `--restore-scope none` (formerly `--keep-files`) opts out.
 A run **without** a worktree cannot use that path at all: its workspace is the
 operator's live checkout, and `git add -A` there would stage their own
 uncommitted work as a side effect of running a bot. That is the default shape
-(17 of 30 catalog bots), so those runs are versioned by iterion itself —
+(21 of 35 catalog bots), so those runs are versioned by iterion itself —
 see [workspace versioning](workspace-versioning.md). The rewind picks the
 mechanism per run and reports which one ran:
 
