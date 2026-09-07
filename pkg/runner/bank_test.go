@@ -304,6 +304,25 @@ func TestBankableStatusFollowsClassification(t *testing.T) {
 		// bank here strands the work with no next attempt to bank it.
 		{"budget-carrying interruption banks like a budget death",
 			errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), true},
+		// The other two acked deaths, for the same reason as the budget
+		// one: nothing comes back for them on its own, so there is no
+		// successor attempt to bank what this one committed in stride. A
+		// campaign that commits per unit and then trips a compute guard —
+		// or its own `fail` node — would otherwise lose every commit with
+		// the pod. Both used to classify as the generic `failed` (bankable)
+		// and lost the bank when they got a status of their own.
+		{"deterministic failure banks", &runtime.RuntimeError{
+			Code: store.FailureExpressionFailed, NodeID: "delivery_reserve",
+			Message: `compute "delivery_reserve": expr: max() takes 2 arguments, got 3`,
+		}, true},
+		{"permanent tool failure banks", &runtime.RuntimeError{
+			Code: store.FailureToolFailedPermanent, Message: "exit status 2",
+		}, true},
+		{"deliberate refusal banks", &runtime.RuntimeError{
+			Code: "PLAN_BUDGET_EXHAUSTED", NodeID: "plan_exhausted",
+			Message: "planning used 77% of max_duration",
+			Cause:   runtime.ErrDeliberateFailure,
+		}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -355,6 +374,17 @@ func TestBankGateWiredToOutcome(t *testing.T) {
 		{"finished banks", nil, true},
 		{"budget death banks", fmt.Errorf("%w: duration (14401/14400)", runtime.ErrBudgetExceeded), true},
 		{"generic failure banks", errors.New("boom"), true},
+		// The acked deaths: nothing comes back for them, so this attempt is
+		// the only one that can put the work on the forge.
+		{"deterministic failure banks", &runtime.RuntimeError{
+			Code: store.FailureExpressionFailed, NodeID: "delivery_reserve",
+			Message: `compute "delivery_reserve": expr: max() takes 2 arguments, got 3`,
+		}, true},
+		{"deliberate refusal banks", &runtime.RuntimeError{
+			Code: "PLAN_BUDGET_EXHAUSTED", NodeID: "plan_exhausted",
+			Message: "planning used 77% of max_duration",
+			Cause:   runtime.ErrDeliberateFailure,
+		}, true},
 		{"paused does not bank", runtime.ErrRunPaused, false},
 		{"interrupted does not bank", runtime.ErrRunInterrupted, false},
 		{"cancelled does not bank", runtime.ErrRunCancelled, false},

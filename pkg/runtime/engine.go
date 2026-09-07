@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -515,12 +516,78 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-		if err = e.store.UpdateRunStatusCoded(writeCtx, runID, status, msg, code); err == nil {
+		var changed bool
+		if changed, err = e.recordSetupOutcome(writeCtx, runID, status, msg, code); err == nil {
+			if changed {
+				// Only the writer that RECORDED the stop announces it: a
+				// declined CAS means a peer got there first with its own
+				// reason, and a second event would contradict the document.
+				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code)
+			}
 			return
 		}
 	}
 	if e.logger != nil {
 		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
+	}
+}
+
+// recordSetupOutcome writes the setup phase's verdict on the run and reports
+// whether THIS call is the one that recorded it.
+//
+// A CANCELLED outcome is compare-and-set from `running`, like the resume
+// arm's: in cloud the publisher CASes the doc to `cancelled` with the
+// operator's own reason BEFORE the cancel subject reaches the engine, and an
+// unconditional write here replaced that reason with a generic "sandbox
+// start cancelled before the first node" — which is then what the run list,
+// the board card and the merge gate's synthetic status display. A decline is
+// the nominal shape, not an error, so it reports changed=false and the
+// caller stays quiet.
+//
+// Every other outcome stays an unconditional write: the run is `running` and
+// owned by this engine, nothing competes for it, and the 3-attempt retry
+// above exists precisely because the store may be the thing that just
+// failed.
+func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status store.RunStatus, msg string, code store.FailureCode) (bool, error) {
+	if status == store.RunStatusCancelled {
+		return e.store.UpdateRunStatusIfCoded(ctx, runID, status, msg, code,
+			[]store.RunStatus{store.RunStatusRunning})
+	}
+	if err := e.store.UpdateRunStatusCoded(ctx, runID, status, msg, code); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// emitSetupFailure puts a setup-phase death on the run's TIMELINE, not only
+// on its document. Every other terminal transition emits one; this one did
+// not, so a run killed before its first node ended `failed` with three
+// sandbox markers and nothing else — no code, no reason. A headless router
+// that triages terminals by the tree (run_failed.code, the error) cannot
+// classify that at all, and an infrastructure timeout lands in a human
+// queue. Measured 2026-09-05 on a pod that never became Ready.
+//
+// `phase` names the setup step, which is what an operator acts on: a
+// sandbox that would not start and a bundle skill that would not mirror are
+// the same status and a very different morning.
+func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, status store.RunStatus, reason string, code store.FailureCode) {
+	data := map[string]any{"error": reason, "phase": phase}
+	if code != "" {
+		data["code"] = string(code)
+	}
+	if status == store.RunStatusCancelled {
+		// The operator stopped it during setup: the same event the node
+		// loop writes for a cancel, so a consumer reads one vocabulary.
+		if err := e.emit(ctx, runID, store.EventRunCancelled, "", map[string]any{"reason": reason, "phase": phase}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: failed to emit run_cancelled for run %s during %s: %v", runID, phase, err)
+		}
+		return
+	}
+	if status == store.RunStatusFailedResumable {
+		data["resumable"] = true
+	}
+	if err := e.emit(ctx, runID, store.EventRunFailed, "", data); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: failed to emit run_failed for run %s during %s: %v", runID, phase, err)
 	}
 }
 
@@ -641,27 +708,51 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 	return rs
 }
 
-// loopBoundsPayload builds the run_started event payload carrying each
-// named loop's iteration bound (MaxIterations), so the runview snapshot
-// can render a run-level loop indicator (current/max). Returns nil when
-// the workflow has no declared loops (payload stays absent). Literal
-// caps only — expression / unbounded caps report 0 (max unknown), which
-// the studio renders as a bare current count.
-func loopBoundsPayload(wf *ir.Workflow) map[string]any {
-	if wf == nil || len(wf.Loops) == 0 {
-		return nil
+// runStartedPayload builds the run_started event payload.
+//
+// It carries each named loop's iteration bound (MaxIterations), so the
+// runview snapshot can render a run-level loop indicator (current/max) —
+// the current counter comes from each node_started's iteration_path.
+// Literal caps only; expression / unbounded caps report 0 (max unknown),
+// which the studio renders as a bare current count.
+//
+// And it carries the PROVENANCE of the execution: which build is running
+// the workflow, which build compiled it (they are separate deployments in
+// cloud), and the workflow hash that identifies the source revision. A run
+// whose IR was produced by one release and executed by another had nothing
+// on its timeline saying so — the operator had to compare the healthz of
+// two deployments to find out.
+func runStartedPayload(wf *ir.Workflow, run *store.Run) map[string]any {
+	data := map[string]any{
+		"engine_version": appinfo.Version,
 	}
-	bounds := make(map[string]any, len(wf.Loops))
-	for name, loop := range wf.Loops {
-		if loop == nil {
-			continue
+	if c := appinfo.Commit; c != "" {
+		data["engine_commit"] = c
+	}
+	if run != nil {
+		if run.WorkflowHash != "" {
+			data["workflow_hash"] = run.WorkflowHash
 		}
-		bounds[name] = loop.MaxIterations
+		// Only when they DIFFER: on a laptop they are the same build, and
+		// a field that is always present and always equal teaches a reader
+		// to stop looking at it.
+		if lv := run.IterionVersion; lv != "" && lv != appinfo.FullVersion() {
+			data["launched_by_version"] = lv
+		}
 	}
-	if len(bounds) == 0 {
-		return nil
+	if wf != nil && len(wf.Loops) > 0 {
+		bounds := make(map[string]any, len(wf.Loops))
+		for name, loop := range wf.Loops {
+			if loop == nil {
+				continue
+			}
+			bounds[name] = loop.MaxIterations
+		}
+		if len(bounds) > 0 {
+			data["loops"] = bounds
+		}
 	}
-	return map[string]any{"loops": bounds}
+	return data
 }
 
 // leaseInputKey is the node-input key under which a node's acquired

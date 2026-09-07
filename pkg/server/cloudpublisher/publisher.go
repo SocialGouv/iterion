@@ -38,6 +38,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -1699,10 +1700,17 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// credential-derived topology injection below reaches both carriers.
 	inputs := varsAsAny(spec.Vars)
 	r := &store.Run{
-		FormatVersion:   store.RunFormatVersion,
-		ID:              runID,
-		WorkflowName:    wf.Name,
-		WorkflowHash:    hash,
+		FormatVersion: store.RunFormatVersion,
+		ID:            runID,
+		WorkflowName:  wf.Name,
+		WorkflowHash:  hash,
+		// The build that RESOLVED and COMPILED this workflow. A local
+		// launch gets it from CreateRun; the cloud path builds its own doc
+		// and never stamped it, so every queued run carried an empty
+		// iterion_version — on the one path where launcher and runner are
+		// separate deployments that move independently, and where the IR
+		// one compiles has to load on the other.
+		IterionVersion:  appinfo.FullVersion(),
 		FilePath:        spec.FilePath,
 		Status:          store.RunStatusQueued,
 		Inputs:          inputs,
@@ -1864,7 +1872,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 		rbCtx, rbCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rbCancel()
-		if uerr := p.store.UpdateRunStatusCoded(rbCtx, runID, store.RunStatusFailed, cause, store.FailureLaunchFailed); uerr != nil {
+		if uerr := store.FailRunAtLaunch(rbCtx, p.store, runID, cause); uerr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
 		}
 	}()

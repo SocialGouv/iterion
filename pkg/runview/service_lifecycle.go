@@ -273,6 +273,11 @@ func (s *Service) reconcileOrphans(parent context.Context) {
 		if err := s.store.UpdateRunStatusCoded(ctx, id, newStatus, ReasonProcessOrphaned, store.FailureProcessOrphaned); err != nil {
 			s.logger.Warn("runview: reconcile %s: %v", id, err)
 		} else {
+			// The document alone is not the record: every other terminal
+			// transition writes the timeline too, and a consumer that
+			// triages by the events (the run console, a headless router)
+			// would otherwise read a run that simply stopped mid-flight.
+			s.emitOrphanReaped(ctx, id, newStatus)
 			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
 		}
 		_ = lock.Unlock()
@@ -600,6 +605,30 @@ func (s *Service) markInterrupted(runID string) {
 	}
 	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, reason, store.FailureInterrupted); err != nil {
 		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
+	}
+}
+
+// emitOrphanReaped writes the orphan sweep's verdict on the run's
+// TIMELINE. The document alone leaves a consumer that triages by the
+// events — the run console, a headless outcome router — reading a run
+// that simply stopped mid-flight, with no code and no reason: the same
+// defect as a terminal status with an empty error. Best-effort: a missed
+// event must never keep an orphan flagged `running`.
+func (s *Service) emitOrphanReaped(ctx context.Context, runID string, status store.RunStatus) {
+	data := map[string]any{
+		"error":       ReasonProcessOrphaned,
+		"code":        string(store.FailureProcessOrphaned),
+		"interrupted": true,
+	}
+	if status == store.RunStatusFailedResumable {
+		data["resumable"] = true
+	}
+	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
+		Type:  store.EventRunFailed,
+		RunID: runID,
+		Data:  data,
+	}); err != nil {
+		s.logger.Warn("runview: reconcile %s: append run_failed: %v", runID, err)
 	}
 }
 

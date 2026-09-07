@@ -109,6 +109,17 @@ const (
 	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
 	//     paths must be visible, not silent
 	EventRunRetryScheduled EventType = "run_retry_scheduled"
+	// EventRunRetrySkipped marks a failure the platform deliberately did
+	// NOT bring back. It is the counterpart of run_retry_scheduled: without
+	// it, a failed_resumable row whose redelivery was dropped on purpose
+	// reads exactly like one whose next attempt is still in flight, and the
+	// operator waits for a pod that will never come. Data:
+	//   - reason: why no attempt follows ("deterministic" — re-executing
+	//     would run the same step against the same inputs)
+	//   - code: the failure code that decided it (EXPRESSION_FAILED,
+	//     SCHEMA_VALIDATION, AUTH_FAILED, …)
+	//   - error: the engine's own words, so the offending step is named
+	EventRunRetrySkipped EventType = "run_retry_skipped"
 	// EventUsageCap marks the provider's subscription telemetry crossing a
 	// cap the OPERATOR set, below the provider's own wall (see
 	// pkg/usagecap). It is the difference between "the provider refused

@@ -2,6 +2,7 @@ package ir
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -1202,6 +1203,19 @@ func (c *compiler) compileTools() {
 // Nodes — Compute
 // ---------------------------------------------------------------------------
 
+// exprDiagCode separates the two ways an expression can be refused at the
+// parse boundary: a call the evaluator cannot satisfy (C138 — the argument
+// count) versus everything else (C040 — syntax, an unknown name). The
+// distinction is what tells an operator "this bot needs a newer engine"
+// apart from "this expression is malformed".
+func exprDiagCode(err error) DiagCode {
+	var arity *expr.ArityError
+	if errors.As(err, &arity) {
+		return DiagBuiltinArity
+	}
+	return DiagBadExpr
+}
+
 func (c *compiler) compileComputes() {
 	for _, cd := range c.file.Computes {
 		if _, exists := c.nodes[cd.Name]; exists {
@@ -1222,7 +1236,7 @@ func (c *compiler) compileComputes() {
 		for _, e := range cd.Expr {
 			ast, err := expr.Parse(e.Expr)
 			if err != nil {
-				c.errorfAt(DiagBadExpr, cd.Name, "",
+				c.errorfAt(exprDiagCode(err), cd.Name, "",
 					"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, e.Expr, err)
 				continue
 			}
@@ -1459,7 +1473,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			if ae.When.Expr != "" {
 				ast, err := expr.Parse(ae.When.Expr)
 				if err != nil {
-					c.errorfAt(DiagBadExpr, "", edgeID(ae.From, ae.To),
+					c.errorfAt(exprDiagCode(err), "", edgeID(ae.From, ae.To),
 						"edge %s -> %s: invalid `when` expression %q: %v",
 						ae.From, ae.To, ae.When.Expr, err)
 				} else {

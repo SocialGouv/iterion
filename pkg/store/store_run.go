@@ -1040,6 +1040,21 @@ func (s *FilesystemRunStore) SetRunBudgetOverrides(_ context.Context, runID stri
 	return s.writeRun(r)
 }
 
+// SetRunnerVersion records the build that executed the run (see RunStore).
+// Load-modify-save under the store mutex, like the other fs-side patches,
+// so a status transition racing this write is never reverted.
+func (s *FilesystemRunStore) SetRunnerVersion(_ context.Context, runID, version string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.RunnerVersion = version
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // SetRunBudgetSnapshot persists the effective caps (see RunStore).
 // Load-modify-save under the store mutex, like the other fs-side
 // patches, so a status transition racing this write is never reverted.

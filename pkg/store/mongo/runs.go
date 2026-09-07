@@ -751,6 +751,23 @@ func (s *Store) SetRunBudgetOverrides(ctx context.Context, id string, o *store.R
 	return nil
 }
 
+// SetRunnerVersion records the build that executed the run (see
+// store.RunStore). Granular $set, like the budget setters, so a terminal
+// write or a cancel that landed since the runner loaded its copy stays
+// intact.
+func (s *Store) SetRunnerVersion(ctx context.Context, id, version string) error {
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	update := bson.M{"$set": bson.M{"runner_version": version, "updated_at": time.Now().UTC()}}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return fmt.Errorf("store/mongo: set runner version: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 // SetRunBudgetSnapshot persists the effective caps (see store.RunStore).
 // Granular $set (with $unset for nil), like SetRunBudgetOverrides, so the
 // status transition a resume just applied stays intact.

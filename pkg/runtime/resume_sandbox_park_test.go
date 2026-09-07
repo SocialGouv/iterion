@@ -143,6 +143,17 @@ func (s wedgedStore) UpdateRunStatusCoded(ctx context.Context, id string, status
 	return s.RunStore.UpdateRunStatusCoded(ctx, id, status, runErr, code)
 }
 
+// The filesystem store ignores its ctx entirely (`_ context.Context`), so a
+// write handed a dead one still lands there and certifies nothing. Mongo
+// refuses it. Honour the ctx here so a timeline write on a spent budget is
+// visible in a test the way it is in production.
+func (s wedgedStore) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("append event %s: %w", runID, err)
+	}
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
 // When the park's own write times out, the terminal fallback must still
 // get a chance: on its own budget it lands `failed`; on the park's spent
 // budget it is dead code and the run stays `running`.
@@ -166,6 +177,20 @@ func TestParkResumeSandboxFailure_FallbackHasItsOwnBudget(t *testing.T) {
 	if r.Status != store.RunStatusFailed {
 		t.Fatalf("status = %s after the park's write timed out, want failed from the fallback — on the park's spent budget the fallback is dead code and the run sits running until the redelivery adopts it", r.Status)
 	}
+	// And the timeline write with it: the fallback branch is reached ONLY
+	// because the park's budget expired, so an emit sharing that budget is
+	// dead code on exactly the path it exists for — the run would go
+	// terminal with nothing on its timeline saying why.
+	events, err := fs.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type == store.EventRunFailed {
+			return
+		}
+	}
+	t.Fatal("no run_failed event after the terminal fallback — the emit rode the park's already-spent budget")
 }
 
 // The nominal cloud cancel: the publisher CASes the doc to `cancelled`
