@@ -359,19 +359,22 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 			t.Fatalf("a run under the engine's identity on a clean net must converge: %+v", res)
 		}
 	})
-	// The marker is the repair channel for a run that DIES; it must not
-	// outlive one that lives, or the next extension "repairs" a leak that is
-	// not there and restores a stale identity over the current one.
-	t.Run("the identity marker does not outlive the run that set it", func(t *testing.T) {
+	// extend_verify runs on the repair loop's body, so it must NOT restore:
+	// the loop re-enters the agent, and a restored identity there disarms
+	// every pass after the first.
+	t.Run("the identity stays set while the loop can still run", func(t *testing.T) {
 		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
-		act(t, ws, "extend@golden-master.iterion")
-		marker := filepath.Join(gitInNet(t, ws, "rev-parse", "--absolute-git-dir"), "iterion-extend-prev-identity")
-		if err := os.WriteFile(marker, []byte(`{"name": "t", "email": "t@example.com"}`), 0o644); err != nil {
+		// The state extend_base leaves behind: the net's identity on the
+		// workspace, and the marker holding the one it displaced.
+		gitInNet(t, ws, "config", "user.email", "extend@golden-master.iterion")
+		if err := os.WriteFile(filepath.Join(gitInNet(t, ws, "rev-parse", "--absolute-git-dir"),
+			"iterion-extend-prev-identity"), []byte(`{"name": "t", "email": "t@example.com"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		act(t, ws, "extend@golden-master.iterion")
 		runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
-		if _, err := os.Stat(marker); !os.IsNotExist(err) {
-			t.Fatalf("the marker survived the restore: the next run would repair a leak that is not there (%v)", err)
+		if got := gitInNet(t, ws, "config", "--get", "user.email"); got != "extend@golden-master.iterion" {
+			t.Fatalf("the identity was restored inside the loop body — pass 2's agent would commit as %q and identity_ok could never hold again", got)
 		}
 	})
 	t.Run("a commit under another identity is said", func(t *testing.T) {
@@ -417,5 +420,165 @@ func TestGoldenMasterExtendBaseRepairsALeakedIdentity(t *testing.T) {
 	}
 	if got := gitInNet(t, ws, "config", "--get", "user.email"); got != "extend@golden-master.iterion" {
 		t.Fatalf("this run still commits under the net's identity, got %q", got)
+	}
+}
+
+// runExtendRestore runs the subbot's terminal restore node against ws.
+func runExtendRestore(t *testing.T, ws string) map[string]any {
+	t.Helper()
+	body := toolScript(t, "golden-master/extend.bot", "extend_restore")
+	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
+	if i := strings.Index(body, "{{"); i >= 0 {
+		t.Fatalf("unresolved template ref in extend_restore near %q", body[i:min(i+40, len(body))])
+	}
+	p := filepath.Join(t.TempDir(), "extend_restore.py")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("python3", p).Output()
+	if err != nil {
+		t.Fatalf("extend_restore failed: %v (out %q)", err, out)
+	}
+	var res map[string]any
+	if uerr := json.Unmarshal(out, &res); uerr != nil {
+		t.Fatalf("extend_restore output is not JSON: %v (%q)", uerr, out)
+	}
+	return res
+}
+
+// TestGoldenMasterExtendVerifyNamesTheRightCauseForAReportFile pins the
+// production finding: a subbot that REFUSES everything and writes its refusal
+// to a file has acted nothing, and calling that "smuggling" sends the operator
+// hunting for an act nobody made.
+func TestGoldenMasterExtendVerifyNamesTheRightCauseForAReportFile(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	write := func(t *testing.T, ws, rel, body string) {
+		t.Helper()
+		p := filepath.Join(ws, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitInNet(t, ws, "add", "-A")
+		gitInNet(t, ws, "-c", "user.email=extend@golden-master.iterion", "-c", "user.name=x",
+			"commit", "-qm", "refusal")
+	}
+	t.Run("acted nothing: the file is not an act that overreached", func(t *testing.T) {
+		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
+		write(t, ws, ".modernize/E-1-refusal.md", "the request needs judge code\n")
+		res := runExtendVerify(t, ws, base, `[{"id": "E-1"}]`)
+		if res.ScopeClean {
+			t.Fatalf("a path outside the surface must still refuse: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "acted NOTHING on the surface") ||
+			strings.Contains(res.LogTail, "may write through it") {
+			t.Fatalf("the reason must name the real situation, not smuggling: %q", res.LogTail)
+		}
+	})
+	t.Run("acted on the surface too: the boundary is stated as smuggling", func(t *testing.T) {
+		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
+		if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		write(t, ws, ".modernize/E-1-note.md", "and a file beside it\n")
+		res := runExtendVerify(t, ws, base, `[{"id": "E-1"}]`)
+		if res.ScopeClean || !strings.Contains(res.LogTail, "may write through it") {
+			t.Fatalf("an act PLUS an outside path is the smuggling case: %+v", res)
+		}
+	})
+}
+
+// TestGoldenMasterExtendRestoreReturnsTheIdentityOnce pins the terminal node:
+// the identity comes back on the way OUT of the subbot — once, from the
+// marker, idempotently — instead of at the end of every verify pass, which is
+// inside the repair loop's body.
+func TestGoldenMasterExtendRestoreReturnsTheIdentityOnce(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	ws, _ := extendVerifyRepo(t, verdict, `{"pending": []}`)
+	gitInNet(t, ws, "config", "user.name", "golden-master extend")
+	gitInNet(t, ws, "config", "user.email", "extend@golden-master.iterion")
+	marker := filepath.Join(gitInNet(t, ws, "rev-parse", "--absolute-git-dir"), "iterion-extend-prev-identity")
+	if err := os.WriteFile(marker, []byte(`{"name": "t", "email": "t@example.com"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runExtendRestore(t, ws)
+	if res["restored"] != true {
+		t.Fatalf("the identity was not restored: %+v", res)
+	}
+	if got := gitInNet(t, ws, "config", "--get", "user.email"); got != "t@example.com" {
+		t.Fatalf("the lot's later commits would still wear the net's name, got %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the marker survived: the next run would repair a leak that is not there (%v)", err)
+	}
+	// Idempotent: nothing to restore is said, not guessed at.
+	again := runExtendRestore(t, ws)
+	if again["restored"] != false || !strings.Contains(again["notice"].(string), "no identity marker") {
+		t.Fatalf("a second restore must be a stated no-op: %+v", again)
+	}
+}
+
+// TestGoldenMasterExtendRestoreIsOnEveryWayOut pins the WIRING the finding
+// named: the repair loop re-enters the agent, so a restore anywhere in the
+// loop body disarms the identity for every pass after the first. Every
+// non-loop edge out of the gate must reach the restore.
+func TestGoldenMasterExtendRestoreIsOnEveryWayOut(t *testing.T) {
+	const rel = "golden-master/extend.bot"
+	src, err := os.ReadFile(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := parser.Parse(rel, string(src))
+	if pr.File == nil {
+		t.Fatal("extend.bot does not parse")
+	}
+	cr := ir.Compile(pr.File)
+	if cr.Workflow == nil {
+		t.Fatal("extend.bot does not compile")
+	}
+	seen := 0
+	for _, e := range cr.Workflow.Edges {
+		if e.From != "extend_gate" {
+			continue
+		}
+		if e.LoopName != "" {
+			continue // the repair pass, which must NOT restore
+		}
+		seen++
+		if e.To != "extend_restore" {
+			t.Fatalf("edge extend_gate -> %q leaves the subbot without restoring the identity it set", e.To)
+		}
+	}
+	if seen < 2 {
+		t.Fatalf("expected both exits of the gate (converged and exhausted), saw %d", seen)
+	}
+	for _, e := range cr.Workflow.Edges {
+		if e.From == "extend_restore" && e.To != "extend_result" {
+			t.Fatalf("extend_restore -> %q: the restore must sit between the gate and the report", e.To)
+		}
+	}
+
+	// The refusal the subbot states must travel with the verdict, or an agent
+	// told to "report in summary" writes a file to make its reasoning survive
+	// — and its own gate then refuses the file (production finding).
+	node, ok := cr.Workflow.Nodes["extend_result"].(*ir.ComputeNode)
+	if !ok {
+		t.Fatal("extend_result is not a compute node")
+	}
+	var notice string
+	for _, ex := range node.Exprs {
+		if ex.Key == "notice" {
+			notice = ex.Raw
+		}
+	}
+	if notice == "" {
+		t.Fatal("extend_result publishes no notice")
+	}
+	for _, want := range []string{"outputs.extend_campaign.summary", "outputs.extend_gate.fail_log"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("the published notice drops %s — the subbot's stated cause and the gate's deterministic verdict travel together, never one without the other: %s", want, notice)
+		}
 	}
 }

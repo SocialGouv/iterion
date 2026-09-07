@@ -82,6 +82,7 @@ func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate strin
 	body = strings.ReplaceAll(body, "{{input.exit_gate}}", strconv.Quote(exitGate))
 	// The net subbot's provenance: what an edge renders before the subbot ran.
 	body = strings.ReplaceAll(body, "{{input.acted_commits}}", "null")
+	body = strings.ReplaceAll(body, "{{input.acted_ids}}", "null")
 	body = strings.ReplaceAll(body, "{{input.acted_blobs}}", "null")
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in lot_verify near %q", body[i:min(i+40, len(body))])
