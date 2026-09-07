@@ -18,24 +18,17 @@ import (
 // closes the in-process half of the race, which is the half this package
 // created; a collision with an unrelated process on the host is the same risk
 // it always had.
+//
+// Claim-then-release, in that order: the port is in the set before this
+// process stops holding it, so the window is closed to siblings rather than
+// merely narrowed.
 func reserveLoopbackPort(t *testing.T) int {
 	t.Helper()
-	const attempts = 20
-	for i := 0; i < attempts; i++ {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("reserve port: %v", err)
-		}
-		port := l.Addr().(*net.TCPAddr).Port
-		if err := l.Close(); err != nil {
-			t.Fatalf("release port: %v", err)
-		}
-		if claimLoopbackPort(port) {
-			return port
-		}
+	l, port := reserveBusyLoopbackPort(t)
+	if err := l.Close(); err != nil {
+		t.Fatalf("release port %d: %v", port, err)
 	}
-	t.Fatalf("the kernel re-offered an already-claimed loopback port %d times running", attempts)
-	return 0
+	return port
 }
 
 // reserveBusyLoopbackPort returns a listener still HOLDING its loopback port,
