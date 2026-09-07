@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.112.21](https://github.com/SocialGouv/iterion/compare/v3.112.20...v3.112.21) (2026-09-07)
+
+### Bug Fixes
+
+* **golden-master:** a revert that says 0 without restoring leaves a residue the sweep names and stops on ([#856](https://github.com/SocialGouv/iterion/issues/856)) ([3ececd4](https://github.com/SocialGouv/iterion/commit/3ececd4411ad0281e9fc4957dd6f9fffa25eaaf0))
+
+    <details><summary>why</summary>
+
+    Revi's open question on the fourth round: "reverted" let the gate through whenever revert.sh exited 0, even when git status still showed changes; the note said so, nothing stopped, and record mode has no dirty check — an under-specified revert.sh would have references sealed over the residue, the harm the sweep runs in record mode to prevent.
+
+    </details>
+* **pluginsource:** the rename is the test-and-set, so an immutable tree is never retired on a stale read ([#862](https://github.com/SocialGouv/iterion/issues/862)) ([a05060a](https://github.com/SocialGouv/iterion/commit/a05060a165b24e7677eff2d989e8205de9e38c82)), references [#854](https://github.com/SocialGouv/iterion/issues/854) [#822](https://github.com/SocialGouv/iterion/issues/822)
+
+    <details><summary>why</summary>
+
+    The early-accept added for #854 is a READ, and the retire it was meant to prevent is decided two syscalls later — nothing serialises them across publishers. Replay with pinned A/B/C over one cache dir: C reads `dest` absent; A renames its tree in; B's rename loses ENOTEMPTY and enters the fallback; C's `os.Stat` now sees A's tree and retires it, so `dest` is ABSENT; B's read finds nothing and returns the ENOTEMPTY cause. The exact message that ejected #822 from the merge queue, still reachable.
+
+    </details>
+
 ## [3.112.20](https://github.com/SocialGouv/iterion/compare/v3.112.19...v3.112.20) (2026-09-07)
 
 ### Bug Fixes
