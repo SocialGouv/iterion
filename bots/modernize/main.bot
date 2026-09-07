@@ -882,57 +882,70 @@ tool lot_verify:
         harness prints it, or a pretty-printed block: the wrapper prints
         exactly one, after the harness has logged to stderr. A format is not
         a verdict, so both shapes read the same."""
-        # Bounded AND lossless. Every line that opens with a "{" is a
-        # candidate start, tried ONCE, in place, with `raw_decode` — which
-        # parses one object and stops. So a one-line report costs one parse
-        # wherever it sits, and a pretty-printed block, an `indent=0` dump
-        # (whose list objects sit at column 0) and a block a wrapper
-        # indented all read the same: no candidate start is ever dropped.
-        # At most one parse per line of the window — never a re-join of the
-        # slice above every closing line, which was quadratic on the very
-        # path this reader exists to type (a chatty stdout with no report),
-        # and never a global budget, which noise printed AFTER the report
-        # could spend to type a green oracle ORACLE_NOT_RUN.
-        # A candidate whose first token is neither a key string nor "}" is
-        # not a JSON object: refused in O(1), so the dict reprs a chatty
-        # harness logs (`{'line': 0, …}`) never reach the parser. That
-        # refusal is what keeps the bound — a FAILED parse is the expensive
-        # one, `json` re-deriving line:column over the whole blob for the
-        # error it raises.
-        # The report is the object whose parse ENDS last, so an inner
-        # fragment never shadows the report that contains it.
-        # And only a REPORT is handed back — an object carrying at least one
-        # of the harness's verdict fields (an older harness writes no
-        # `mode`, it always writes `invalid`/`stable`/`ok`). A `{}` or a
-        # fragment `{"name": …}` printed after the report is skipped, not
-        # read as a mode-less gate verdict with an empty `invalid` list.
-        def is_report(obj):
-            return isinstance(obj, dict) and any(
-                k in obj for k in ("mode", "stable", "ok", "invalid", "blind_lanes", "holdout_total"))
+        # One in-place decoder pass per "{" line of the window, from the
+        # last upward (raw_decode(text, idx)): a noise line — a python repr
+        # the harness logged — fails on its first bad token, a report parses
+        # once whatever follows it. No join per pair of lines (30 s on 2000
+        # lines), no budget that noise printed after the report could spend
+        # (a green oracle was typed ORACLE_NOT_RUN by one), no guess at
+        # which "{" starts a block (`indent=0` puts a list's objects at
+        # column 0; a logger indents — the line is lstripped).
+        #
+        # Only a REPORT is handed back: an object naming itself (`mode`) or
+        # carrying two of the verdict's fields — what every mode-less
+        # harness generation writes, and what a progress line ({"ok": true})
+        # or a ledger entry an agent wrote never has both of.
+        REPORT_FIELDS = ("stable", "ok", "invalid", "blind_lanes", "holdout_total")
 
-        lines = (text or "").splitlines()[-2000:]
-        blob = "\n".join(lines)
-        decode = json.JSONDecoder().raw_decode
-        found, found_end = None, -1
-        at = 0
-        for line in lines:
-            head = line.lstrip()
-            start = at + len(line) - len(head)  # the "{" itself, its indent skipped
-            at += len(line) + 1                 # the next line, past the "\n" the join put back
-            if not head.startswith("{"):
-                continue
-            probe = start + 1
-            while probe < len(blob) and blob[probe] in " \t\r\n":
-                probe += 1
-            if probe >= len(blob) or blob[probe] not in ('"', '}'):
-                continue
+        def is_report(obj):
+            return isinstance(obj, dict) and ("mode" in obj or sum(k in obj for k in REPORT_FIELDS) >= 2)
+
+        # The window is capped in characters as well as lines: a failing
+        # parse counts lines up to its offset, quadratic on a 40 MB stdout
+        # (7.9 s measured, 0.02 s capped). split("\n"), not splitlines():
+        # the latter also cuts on U+2028/U+2029/U+0085, which a report
+        # printed with ensure_ascii=False may carry inside a string.
+        text = text or ""
+        cut = len(text) > 2000000 or text.count("\n") >= 2000
+        lines = text[-2000000:].split("\n")[-2000:]
+        window = "\n".join(lines)
+        starts, pos = [], 0
+        for l in lines:
+            body = l.lstrip()
+            if body.startswith("{"):
+                starts.append(pos + len(l) - len(body))
+            pos += len(l) + 1
+        decoder = json.JSONDecoder()
+        # Selection, scanning last → first. A candidate ENCLOSING the one
+        # held (its parse ends at or after it) always replaces it: the
+        # outermost object of a block is the report, its nested entries —
+        # a lane carrying `mode`, a ledger block carrying `ok` — are not.
+        # Among disjoint candidates a NAMED report never loses to an
+        # unnamed one (an object with two verdict fields printed after the
+        # report would be read as a gate by the mode default); otherwise
+        # the last one wins. No early stop — a stop on the first
+        # non-enclosing candidate fired between two siblings of one block.
+        best = None  # (named, end, report)
+        for at in reversed(starts):
             try:
-                obj, end = decode(blob, start)
-            except ValueError:
+                obj, end = decoder.raw_decode(window, at)
+            except (ValueError, RecursionError):
                 continue
-            if end > found_end and is_report(obj):
-                found, found_end = obj, end
-        return found
+            if not is_report(obj):
+                continue
+            named = "mode" in obj
+            if best is None or end >= best[1] or (named and not best[0]):
+                best = (named, end, obj)
+        if best is None:
+            return None
+        if cut and window[best[1]:].lstrip()[:1] in (",", "}", "]"):
+            # The window lost its head, and the object held is followed by
+            # a separator or a closer: by JSON's own grammar that makes it
+            # an entry of a report whose first line the cut took, named or
+            # not — an intact trailing report is followed by nothing, or by
+            # a log line. Without the report itself there is no verdict.
+            return None
+        return best[2]
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True

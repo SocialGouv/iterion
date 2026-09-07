@@ -193,9 +193,9 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 	})
 
 	t.Run("a pretty-printed report buried under chatter and followed by noise is still read", func(t *testing.T) {
-		// Every line that opens with a "{" is a candidate start: forty
-		// brace-first lines above and two below must not push the block out
-		// of reach, whatever the search spends on the noise.
+		// The block starts at the nearest column-0 "{" above its closing
+		// line: forty brace-first lines above and two below must not push it
+		// out of reach, whatever the search spends on the noise.
 		buried := scratchWrapperHead +
 			"i=0; while [ $i -lt 40 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
 			"printf '{\\n  \"mode\": \"gate\",\\n  \"ok\": true,\\n  \"invalid\": []\\n}\\n'\n" +
@@ -212,18 +212,12 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
-	t.Run("an indent=0 report buried under chatter is read whole, not as a fragment", func(t *testing.T) {
-		// json.dumps(indent=0) puts every object of a list at column 0, so the
-		// openings nearest the closing brace start INNER objects and the
-		// report's own is only reachable as a candidate in its own right. The
-		// chatter above is what makes this non-vacuous: a scan that fell back
-		// to the window's first column-0 "{" read the report only when
-		// nothing had been logged before it, and lost it behind one noise
-		// line — a whole RED/GREEN verdict typed ORACLE_NOT_RUN.
+	t.Run("an indent=0 report whose list objects sit at column 0 is read whole, not as a fragment", func(t *testing.T) {
+		// json.dumps(indent=0) puts every object of a list at column 0; the
+		// nearest opening line above the closing brace then starts an inner
+		// object, and a fragment without a mode was read as a green gate.
 		zero := scratchWrapperHead +
-			"i=0; while [ $i -lt 40 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
 			"printf '{\\n\"mode\": \"gate\",\\n\"invalid\": [\\n{\\n\"name\": \"m1\"\\n},\\n{\\n\"name\": \"m2\"\\n}\\n],\\n\"stable\": true\\n}\\n'\n" +
-			"echo \"{'teardown': 'one more brace-first line after the report'}\"\n" +
 			"exit 0\n"
 		ws, base := scratchWorkspace(t, zero)
 		res := scratchVerify(t, script, ws, base)
@@ -235,6 +229,275 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		}
 	})
 
+	t.Run("an indent=0 report preceded by chatter is read whole — the block starts at its own line, never at the window's first", func(t *testing.T) {
+		// R46d257: with the block's start guessed among the nearest opening
+		// lines and the window's FIRST one, an indent=0 report whose two
+		// list objects sit at column 0 was lost as soon as any brace-first
+		// line preceded it (fragments filtered, the first line of the window
+		// not the report's) — a green oracle typed ORACLE_NOT_RUN.
+		zero := scratchWrapperHead +
+			"i=0; while [ $i -lt 5 ]; do echo \"{'line': $i, 'note': 'a dict repr the harness logged before its report'}\"; i=$((i+1)); done\n" +
+			"printf '{\\n\"mode\": \"gate\",\\n\"invalid\": [\\n{\\n\"name\": \"m1\"\\n},\\n{\\n\"name\": \"m2\"\\n}\\n],\\n\"stable\": true\\n}\\n'\n" +
+			"echo \"{'teardown': 'one more brace-first line after the report'}\"\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, zero)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("an indent=0 report preceded by chatter was lost: %+v", res)
+		}
+		if len(res.OracleInvalid) != 2 {
+			t.Fatalf("the report's invalid list was lost — a fragment was read instead of the report: %+v", res)
+		}
+	})
+
+	t.Run("an indented pretty-printed block is read from its own first line", func(t *testing.T) {
+		// A logger prefix or a tee that indents the wrapper's stdout must not
+		// leave the block without a start: the block begins at the first
+		// "{" of a line, wherever that line's indentation puts it.
+		indentedBlock := scratchWrapperHead +
+			"printf '    {\\n      \"mode\": \"gate\",\\n      \"ok\": true,\\n      \"invalid\": []\\n    }\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, indentedBlock)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed || res.OracleReport["mode"] != "gate" {
+			t.Fatalf("an indented pretty-printed report was lost: %+v", res)
+		}
+	})
+
+	t.Run("a nested object carrying a verdict field never shadows the report that encloses it", func(t *testing.T) {
+		// An indented block's nested objects are candidates too and sit
+		// lower than the outer "{": a ledger block an agent wrote inside
+		// pending_extensions with an `ok` key was read as the report — no
+		// mode, so a gate PASS — while the report itself said selfcheck.
+		nested := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"selfcheck\",\\n  \"ok\": true,\\n  \"invalid\": [],\\n  \"pending_extensions\": [\\n    {\\n      \"id\": \"E1\",\\n      \"ok\": true,\\n      \"notice\": \"agent-authored\"\\n    }\\n  ]\\n}\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, nested)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a selfcheck report was read as a gate pass — its nested object shadowed it: %+v", res)
+		}
+		if !strings.Contains(res.BlockReason, "mode=selfcheck") {
+			t.Fatalf("the typed cause does not carry the report's own mode: %q", res.BlockReason)
+		}
+	})
+
+	t.Run("two nested entries of a selfcheck report: the second sibling never shadows the report", func(t *testing.T) {
+		// A stop on the first non-enclosing candidate fired between two
+		// siblings of one block and handed the lower sibling back — a
+		// selfcheck report with two pending_extensions entries read as a
+		// gate PASS; a gate-subset report with two invalid mutants likewise.
+		nested := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"selfcheck\",\\n  \"ok\": true,\\n  \"invalid\": [],\\n  \"pending_extensions\": [\\n    {\\n      \"id\": \"E1\",\\n      \"ok\": true,\\n      \"invalid\": []\\n    },\\n    {\\n      \"id\": \"E2\",\\n      \"ok\": true,\\n      \"invalid\": []\\n    }\\n  ]\\n}\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, nested)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed || !strings.Contains(res.BlockReason, "mode=selfcheck") {
+			t.Fatalf("a selfcheck report with two nested entries was not read as itself: %+v", res)
+		}
+		subset := scratchWrapperHead +
+			"printf '{\\n  \"mode\": \"gate-subset\",\\n  \"stable\": true,\\n  \"invalid\": [\\n    {\\n      \"name\": \"m1\"\\n    },\\n    {\\n      \"name\": \"m2\",\\n      \"ok\": false,\\n      \"stable\": false\\n    }\\n  ]\\n}\\n'\n" +
+			"exit 0\n"
+		ws, base = scratchWorkspace(t, subset)
+		res = scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed || !strings.Contains(res.BlockReason, "mode=gate-subset") {
+			t.Fatalf("a gate-subset report with nested mutant objects was read as a pass: %+v", res)
+		}
+	})
+
+	t.Run("a single verdict key does not make a report: an ok line after a selfcheck report is not the verdict", func(t *testing.T) {
+		single := scratchWrapperHead +
+			"echo '{\"mode\":\"selfcheck\",\"ok\":true,\"invalid\":[]}'\n" +
+			"echo '{\"ok\": true}'\n" +
+			"echo '{\"invalid\": []}'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, single)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed || !strings.Contains(res.BlockReason, "mode=selfcheck") {
+			t.Fatalf("a one-key object after a selfcheck report became the verdict: %+v", res)
+		}
+	})
+
+	t.Run("a report whose head the window cut is not replaced by one of its nested objects", func(t *testing.T) {
+		// 700 pretty-printed entries push the report's own first line out
+		// of the 2000-line window; the surviving nested objects carry two
+		// verdict fields each. Without the report's own mode: no verdict.
+		huge := scratchWrapperHead +
+			"printf '{\\n\"mode\": \"gate\",\\n\"invalid\": [\\n'; i=0; while [ $i -lt 700 ]; do printf '{\\n\"name\": \"m%d\",\\n\"ok\": true,\\n\"invalid\": []\\n},\\n' $i; i=$((i+1)); done; printf '{\\n\"name\": \"last\",\\n\"ok\": true,\\n\"invalid\": []\\n}\\n]\\n}\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, huge)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a head-cut report was replaced by a nested object and passed: %+v", res)
+		}
+	})
+
+	t.Run("a named report never loses to an unnamed object that ends after it", func(t *testing.T) {
+		// An object with two verdict fields printed after the report — or
+		// an envelope holding the report — ended last and won; the mode
+		// default then read it as a gate: a selfcheck became a PASS, a RED
+		// lost its invalid list.
+		trailing := scratchWrapperHead +
+			"echo '{\"mode\":\"selfcheck\",\"ok\":true,\"invalid\":[]}'\n" +
+			"echo '{\"stable\": true, \"invalid\": []}'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, trailing)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed || !strings.Contains(res.BlockReason, "mode=selfcheck") {
+			t.Fatalf("an unnamed trailing object replaced the selfcheck report: %+v", res)
+		}
+		red := scratchWrapperHead +
+			"echo '{\"mode\":\"gate\",\"ok\":false,\"invalid\":[\"m1\",\"m2\"]}'\n" +
+			"echo '{\"ok\": true, \"stable\": true}'\n" +
+			"exit 1\n"
+		ws, base = scratchWorkspace(t, red)
+		res = scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed || len(res.OracleInvalid) != 2 {
+			t.Fatalf("an unnamed trailing object erased a RED report's invalid list: %+v", res)
+		}
+	})
+
+	t.Run("the enclosing report wins over a named entry nested in it", func(t *testing.T) {
+		// A mode-less RED report whose lanes list carries entries with a
+		// `mode` of their own: ranking named over unnamed handed back the
+		// entry — the RED lost its invalid list, a green one with a
+		// selfcheck entry would have been typed. The outermost object of a
+		// block is the report, whatever its entries carry.
+		envelope := scratchWrapperHead +
+			"printf '{\\n \"ok\": false,\\n \"stable\": false,\\n \"invalid\": [\"m1\"],\\n \"lanes\": [\\n  {\\n   \"mode\": \"gate\",\\n   \"ok\": true,\\n   \"stable\": true\\n  }\\n ]\\n}\\n'\n" +
+			"exit 1\n"
+		ws, base := scratchWorkspace(t, envelope)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed || len(res.OracleInvalid) != 1 {
+			t.Fatalf("a named nested entry replaced the RED report enclosing it: %+v", res)
+		}
+	})
+
+	t.Run("a head-cut report is no verdict even when its surviving entries are named", func(t *testing.T) {
+		// 800 lanes carrying {"mode": "gate"} push a selfcheck report's own
+		// first line out of the window; the last surviving entry is named
+		// and would read as a gate PASS. Something follows it — the
+		// parent's closers — so it is an entry, not a report.
+		shadow := scratchWrapperHead +
+			"printf '{\\n\"mode\": \"selfcheck\",\\n\"ok\": true,\\n\"stable\": true,\\n\"invalid\": [],\\n\"lanes\": [\\n'; i=0; while [ $i -lt 800 ]; do printf '{\\n\"mode\": \"gate\",\\n\"ok\": true,\\n\"stable\": true\\n},\\n'; i=$((i+1)); done; printf '{\\n\"mode\": \"gate\",\\n\"ok\": true,\\n\"stable\": true\\n}\\n]\\n}\\n'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, shadow)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a named entry of a head-cut selfcheck report was read as a gate pass: %+v", res)
+		}
+	})
+
+	t.Run("a one-key object is never a report: alone it is no verdict, after a mode-less RED it does not replace it", func(t *testing.T) {
+		// Pins the two-field threshold itself, which the named clause hid
+		// from every other test: with one key accepted, {"ok": true} alone
+		// was a green gate, and it erased a mode-less RED's invalid list.
+		alone := scratchWrapperHead +
+			"echo '{\"ok\": true}'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, alone)
+		res := scratchVerify(t, script, ws, base)
+		if !res.OracleNotRun || res.OraclePassed {
+			t.Fatalf("a one-key object alone was read as a verdict: %+v", res)
+		}
+		after := scratchWrapperHead +
+			"echo '{\"ok\":false,\"invalid\":[\"m1\"],\"stable\":false}'\n" +
+			"echo '{\"ok\": true}'\n" +
+			"exit 1\n"
+		ws, base = scratchWorkspace(t, after)
+		res = scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed || len(res.OracleInvalid) != 1 {
+			t.Fatalf("a one-key object replaced the mode-less RED report before it: %+v", res)
+		}
+	})
+
+	t.Run("an intact report followed by a log line is read however long the stdout before it", func(t *testing.T) {
+		// The cut guard must recognise an ENTRY (a separator or a closer
+		// follows it, by JSON's grammar), not "anything follows": above
+		// 2000 lines a report followed by `done in 41s` was discarded.
+		long := scratchWrapperHead +
+			"i=0; while [ $i -lt 2100 ]; do echo \"noise line $i\"; i=$((i+1)); done\n" +
+			"echo '{\"mode\":\"gate\",\"ok\":true,\"invalid\":[]}'\n" +
+			"echo 'done in 41s'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, long)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("an intact report followed by a log line was discarded above the line cap: %+v", res)
+		}
+	})
+
+	t.Run("an intact trailing mode-less report after thousands of log lines ending in a colon is read", func(t *testing.T) {
+		long := scratchWrapperHead +
+			"i=0; while [ $i -lt 2500 ]; do echo \"Caused by:\"; i=$((i+1)); done\n" +
+			"echo '{\"stable\":true,\"ok\":true,\"invalid\":[],\"blind_lanes\":[],\"holdout_total\":3}'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, long)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("an intact trailing mode-less report after colon-ended lines was dropped: %+v", res)
+		}
+	})
+
+	t.Run("an intact mode-less report on the last line is read however long the stdout before it", func(t *testing.T) {
+		// The cut guard is about a report whose OWN head the window cut;
+		// a trailing report of an older harness after 2100 lines of noise
+		// is intact and stays the verdict.
+		long := scratchWrapperHead +
+			"i=0; while [ $i -lt 2100 ]; do echo \"noise line $i\"; i=$((i+1)); done\n" +
+			"echo '{\"ok\":false,\"invalid\":[\"m1\"],\"stable\":false}'\n" +
+			"exit 1\n"
+		ws, base := scratchWorkspace(t, long)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed || len(res.OracleInvalid) != 1 {
+			t.Fatalf("an intact trailing mode-less report was dropped by the cut guard: %+v", res)
+		}
+	})
+
+	t.Run("a progress line carrying a harmless key after a RED report does not become the verdict", func(t *testing.T) {
+		noisy := scratchWrapperHead +
+			"echo '{\"mode\":\"gate\",\"ok\":false,\"invalid\":[\"m1\"]}'\n" +
+			"echo '{\"notice\": \"step 3/7 done\"}'\n" +
+			"echo '{\"collateral\": 0}'\n" +
+			"exit 1\n"
+		ws, base := scratchWorkspace(t, noisy)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || res.OraclePassed || len(res.OracleInvalid) != 1 {
+			t.Fatalf("a RED report followed by progress lines was not read as the RED it is: %+v", res)
+		}
+	})
+
+	t.Run("a report after megabytes of long noise lines is read in seconds", func(t *testing.T) {
+		// A failing parse counts lines up to its offset: quadratic in bytes
+		// on a huge stdout (7.9 s measured on 40 MB). The window is capped
+		// in bytes as well as lines, and the report after the noise is read.
+		long := scratchWrapperHead +
+			"line=$(printf 'x%.0s' $(seq 1 20000)); i=0; while [ $i -lt 300 ]; do echo \"{'noise': $i, 'pad': '$line'}\"; i=$((i+1)); done\n" +
+			"echo '{\"mode\":\"gate\",\"ok\":true,\"invalid\":[]}'\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, long)
+		started := time.Now()
+		res := scratchVerify(t, script, ws, base)
+		if d := time.Since(started); d > 8*time.Second {
+			t.Fatalf("reading a report after 6 MB of noise took %s", d)
+		}
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("the report after the long noise was lost: %+v", res)
+		}
+	})
+
+	t.Run("a line that nests deeper than the parser allows is skipped, never a crash of the node", func(t *testing.T) {
+		deep := scratchWrapperHead +
+			"echo '{\"mode\":\"gate\",\"ok\":true,\"invalid\":[]}'\n" +
+			"printf '{\"a\":'; i=0; while [ $i -lt 30000 ]; do printf '['; i=$((i+1)); done; echo\n" +
+			"exit 0\n"
+		ws, base := scratchWorkspace(t, deep)
+		res := scratchVerify(t, script, ws, base)
+		if res.OracleNotRun || !res.OraclePassed {
+			t.Fatalf("a deeply nested noise line hid the report or crashed the reader: %+v", res)
+		}
+	})
+
 	t.Run("an indented one-line report is read wherever it sits", func(t *testing.T) {
 		indented := scratchWrapperHead +
 			"echo '   {\"mode\":\"gate\",\"ok\":true,\"invalid\":[]}'\n" +
@@ -243,23 +506,6 @@ func TestModernizeLotVerifyOracleReportNeverDependsOnAMount(t *testing.T) {
 		res := scratchVerify(t, script, ws, base)
 		if res.OracleNotRun || !res.OraclePassed || res.OracleReport["mode"] != "gate" {
 			t.Fatalf("an indented one-line report was lost: %+v", res)
-		}
-	})
-
-	t.Run("a pretty-printed report a wrapper indented is read too", func(t *testing.T) {
-		// Nothing promises the block reaches stdout at column 0 — a tee, a
-		// textwrap.indent or a logger prefix shifts it. The indentation is a
-		// format, and a format is not a verdict: the block reads the same.
-		shifted := scratchWrapperHead +
-			"printf '  {\\n    \"mode\": \"gate\",\\n    \"ok\": true,\\n    \"invalid\": []\\n  }\\n'\n" +
-			"exit 0\n"
-		ws, base := scratchWorkspace(t, shifted)
-		res := scratchVerify(t, script, ws, base)
-		if res.OracleNotRun || !res.OraclePassed {
-			t.Fatalf("an indented pretty-printed report was discarded: %+v", res)
-		}
-		if res.OracleReport == nil || res.OracleReport["mode"] != "gate" {
-			t.Fatalf("the indented pretty-printed report is not in the verdict: %+v", res)
 		}
 	})
 
