@@ -108,23 +108,27 @@ type AttachmentWriter interface {
 	WriteAttachment(ctx context.Context, runID string, rec store.AttachmentRecord, body io.Reader) error
 }
 
-// ToolBlobWriter is the optional capability filesystem stores satisfy
-// for the per-tool-call sidecar I/O persistence path. When present, tool
-// inputs/outputs exceeding `toolInlineThreshold` are written through it
-// and the event carries a small head preview + a ref instead of the
-// full body. Mongo (cloud) stores don't satisfy it today; the hook
-// layer falls back to inline truncation in that case.
+// ToolBlobWriter is the optional capability for the per-tool-call
+// sidecar I/O persistence path. When present, tool inputs/outputs
+// exceeding `toolInlineThreshold` are written through it and the event
+// carries a small head preview + a ref instead of the full body. Both
+// store families satisfy it — the filesystem store writes a sidecar
+// file, the Mongo store PUTs the body to object storage — and in cloud
+// mode the runner's metricsEmitter forwards it to the wrapped store.
+// Emitters without it (test fakes) fall back to inline truncation.
 type ToolBlobWriter interface {
 	WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error)
 }
 
-// TurnWriter is the optional capability filesystem stores satisfy for
-// the per-LLM-turn snapshot persistence path. Each tool-loop iteration
-// completing inside the claw backend (or a delegate-call boundary for
-// claude_code) is persisted as a store.TurnCheckpoint so the studio's
-// timeline + the Fork API have a stable anchor. Mongo (cloud) stores
-// don't satisfy it today; the hook layer skips the write when the
-// capability is missing rather than failing the LLM call.
+// TurnWriter is the optional capability for the per-LLM-turn snapshot
+// persistence path. Each tool-loop iteration completing inside the claw
+// backend (or a delegate-call boundary for claude_code) is persisted as
+// a store.TurnCheckpoint so the studio's timeline + the Fork API have a
+// stable anchor. Both store families satisfy it — the filesystem store
+// writes runs/<id>/turns/…, the Mongo store upserts one document per
+// (run, node, iter, turn) — and in cloud mode the runner's
+// metricsEmitter forwards it to the wrapped store. Emitters without it
+// (test fakes) skip the write rather than failing the LLM call.
 type TurnWriter interface {
 	WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error
 }
@@ -164,9 +168,9 @@ type NodeServedRecorder interface {
 //     (total bytes), and `data[key+"_ref"]` (= toolUseID — the path is
 //     deterministic from run_id + tool_use_id + kind).
 //
-// When blobSink is nil or toolUseID is empty (legacy paths, cloud
-// stores), falls back to capped inline persistence so the studio still
-// shows *something*.
+// When blobSink is nil or toolUseID is empty (an emitter without the
+// capability, a call with no tool_use id), falls back to capped inline
+// persistence so the studio still shows *something*.
 func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink ToolBlobWriter, runID, toolUseID, key string, content []byte, data map[string]any) {
 	if len(content) == 0 {
 		return
@@ -713,9 +717,9 @@ func isLikelyStructuredPayload(text string) bool {
 // onLLMTurnCapture implements the OnLLMTurnCapture hook.
 func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 	if h.turnSink == nil {
-		// Cloud stores don't satisfy TurnWriter yet; skip silently
-		// so the timeline + fork features simply don't light up
-		// for those runs (the rest of the LLM loop is unaffected).
+		// An emitter without a TurnWriter (test fakes) skips silently
+		// so the timeline + fork features simply don't light up for
+		// those runs (the rest of the LLM loop is unaffected).
 		return
 	}
 	// info.Iteration is threaded through applyHooks /
