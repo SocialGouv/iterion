@@ -68,11 +68,26 @@ func TestForgeOAuthApp_CRUD(t *testing.T) {
 		t.Fatalf("bad provider: code=%d", w.Code)
 	}
 
-	// auto mode is not available yet in this phase → 400
-	w = httptest.NewRecorder()
-	s.handleRegisterForgeOAuthApp(w, oauthAppReq(ctx, "POST", base, `{"provider":"gitlab","mode":"auto","admin_token":"t"}`, "t1", ""))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("auto mode (phase 1): code=%d", w.Code)
+	// auto mode: the refusals that are ITERION's, asserted without leaving
+	// this process.
+	//
+	// This row used to send mode=auto WITH a bogus admin_token, which walks
+	// past every local check into a live POST to gitlab.com and then asserts
+	// on GITLAB's answer. That is not a property of iterion: it made every CI
+	// run send a credential-shaped request to a third party, and it turned
+	// their rate limiter into a red build — measured 34 failures in 60 runs
+	// once gitlab.com started answering `HTTP 429`, which the handler maps to
+	// 500 ("auto mode (phase 1): code=500"), fast and load-independent.
+	for _, tc := range []struct{ name, body string }{
+		{"auto without a token", `{"provider":"gitlab","mode":"auto"}`},
+		{"auto_from_connection without a connection", `{"provider":"gitlab","mode":"auto_from_connection","admin_token":"t"}`},
+		{"auto on a provider with no create-app API", `{"provider":"github","mode":"auto","admin_token":"t"}`},
+	} {
+		w = httptest.NewRecorder()
+		s.handleRegisterForgeOAuthApp(w, oauthAppReq(ctx, "POST", base, tc.body, "t1", ""))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: code=%d body=%s, want 400", tc.name, w.Code, w.Body.String())
+		}
 	}
 
 	// valid manual create → 200, secret not serialised

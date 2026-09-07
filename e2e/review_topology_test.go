@@ -58,6 +58,7 @@ func runTopology(t *testing.T, runID string, inputs map[string]any) *scenarioExe
 // Dual: both families must run (alternation), converging on the first
 // cross-family double-approval (pass 0 claude, pass 1 gpt → stop).
 func TestReviewTopology_DualAlternates(t *testing.T) {
+	t.Parallel()
 	exec := runTopology(t, "e2e-topo-dual", map[string]any{"review_mode": "dual"})
 	if !exec.wasCalled("reviewer_claude") {
 		t.Error("dual: reviewer_claude never ran")
@@ -88,6 +89,7 @@ func firstReviewer(exec *scenarioExecutor) string {
 // Auto with no explicit mode still behaves dual (parity) — the
 // non-regression path when the resolver isn't wired.
 func TestReviewTopology_AutoDefaultsDual(t *testing.T) {
+	t.Parallel()
 	exec := runTopology(t, "e2e-topo-auto", nil)
 	if !exec.wasCalled("reviewer_gpt") {
 		t.Error("auto: expected dual behaviour (gpt should run), gpt never ran")
@@ -97,6 +99,7 @@ func TestReviewTopology_AutoDefaultsDual(t *testing.T) {
 // Mono/claude: ONLY claude runs; gpt is never spawned (the frugality
 // guarantee). Converges on two consecutive self-approvals.
 func TestReviewTopology_MonoClaudeSingleFamily(t *testing.T) {
+	t.Parallel()
 	exec := runTopology(t, "e2e-topo-mono-claude", map[string]any{
 		"review_mode": "mono", "mono_family": "claude",
 	})
@@ -110,6 +113,7 @@ func TestReviewTopology_MonoClaudeSingleFamily(t *testing.T) {
 
 // Mono/gpt: symmetric — only gpt runs.
 func TestReviewTopology_MonoGptSingleFamily(t *testing.T) {
+	t.Parallel()
 	exec := runTopology(t, "e2e-topo-mono-gpt", map[string]any{
 		"review_mode": "mono", "mono_family": "gpt",
 	})

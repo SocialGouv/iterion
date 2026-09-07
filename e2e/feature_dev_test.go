@@ -97,6 +97,7 @@ func stubFeatureDevCampaign(exec *scenarioExecutor, st *featureDevState) {
 // the run converges immediately — one campaign pass, straight to done
 // (open_mr defaults false → no MR).
 func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1}
@@ -128,6 +129,7 @@ func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
 // loops back to the campaign; pass 2 the review is clean and it converges.
 // Two campaign passes — the review is a genuine convergence gate, not decorative.
 func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1} // campaign claims complete every pass
@@ -167,6 +169,7 @@ func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
 // on pass 2, the deterministic gate is green both times, and the continuation
 // loop runs a second campaign pass before converging.
 func TestVibeFeatureDev_ContinuesUntilComplete(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 2}
@@ -206,6 +209,7 @@ func TestVibeFeatureDev_ContinuesUntilComplete(t *testing.T) {
 // must route back to campaign WITH the failure log even though the agent
 // claimed completion.
 func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1} // the agent claims done every pass
@@ -246,6 +250,7 @@ func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
 // open_mr=true a converged run opens the MR/PR (finalize_mr) before
 // finishing — the issue-label → PR lineage.
 func TestVibeFeatureDev_MRPathOnConverge(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1}
@@ -276,6 +281,7 @@ func TestVibeFeatureDev_MRPathOnConverge(t *testing.T) {
 // commit machinery). Drift here — e.g. reintroducing a blocking upfront
 // plan node or a reviewer — breaks the ADR-058 mechanism silently.
 func TestVibeFeatureDev_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 
 	// Entry is the deterministic workspace precondition (a tool node, no
@@ -338,6 +344,7 @@ func TestVibeFeatureDev_Structural(t *testing.T) {
 // (observed live on the 2026-07-22 treatment runs: probe reason stuck on
 // "first pass of this run" across 4 passes).
 func TestVibeFeatureDev_ProbeSeesLoopIteration(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 3}

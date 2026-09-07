@@ -36,6 +36,14 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Stop joins the orphan reconciler and every run goroutine before the
+	// TempDir goes: a service left running writes into a directory RemoveAll
+	// is already walking.
+	t.Cleanup(func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		svc.Stop(stopCtx)
+	})
 
 	// 1. Launch the parent under a cancelable context (the "process").
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -50,25 +58,37 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	//    recorded it on the re-attach map (written before the child engine
 	//    runs, so it is the durable state a restart depends on).
 	childID := ""
-	deadline := time.Now().Add(30 * time.Second)
+	var lastChildStatus store.RunStatus
+	var lastRecord map[string]string
+	budget := waitBudget(t, 30*time.Second)
+	deadline := time.Now().Add(budget)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatal("child never reached paused_waiting_human with a recorded re-attach key")
+			// Name WHICH half is missing: "the child never got there" is a
+			// slow machine, "the child parked but the key is absent" is the
+			// product invariant this row exists for, and the old message
+			// could not tell them apart.
+			t.Fatalf("after %s: child=%q status=%q, parent.SubbotChildren=%v — want a paused_waiting_human child recorded under run_child",
+				budget, childID, lastChildStatus, lastRecord)
 		}
 		runs, lerr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
 		if lerr != nil {
 			t.Fatalf("list runs: %v", lerr)
 		}
 		for _, r := range runs {
-			if r.ParentRunID == parentID && r.Status == store.RunStatusPausedWaitingHuman {
-				childID = r.ID
+			if r.ParentRunID == parentID {
+				lastChildStatus = r.Status
+				if r.Status == store.RunStatusPausedWaitingHuman {
+					childID = r.ID
+				}
 			}
 		}
-		if childID != "" {
-			p, _ := svc.store.LoadRun(context.Background(), parentID)
-			if p != nil && p.SubbotChildren["run_child"] == childID {
-				break
-			}
+		p, _ := svc.store.LoadRun(context.Background(), parentID)
+		if p != nil {
+			lastRecord = p.SubbotChildren
+		}
+		if childID != "" && lastRecord["run_child"] == childID {
+			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -78,7 +98,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	cancel()
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(waitBudget(t, 30*time.Second)):
 		t.Fatal("parent goroutine did not exit after context cancel")
 	}
 	parent, err := svc.store.LoadRun(context.Background(), parentID)
@@ -119,7 +139,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	}
 	select {
 	case <-pres.Done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(waitBudget(t, 30*time.Second)):
 		t.Fatal("parent did not finish after resume")
 	}
 
@@ -167,7 +187,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 
 func waitStatus(t *testing.T, svc *Service, runID string, want store.RunStatus) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(waitBudget(t, 30*time.Second))
 	for time.Now().Before(deadline) {
 		r, err := svc.store.LoadRun(context.Background(), runID)
 		if err == nil && r.Status == want {

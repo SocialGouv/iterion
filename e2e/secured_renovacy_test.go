@@ -86,6 +86,7 @@ func onceTrueThenFalse() func() bool {
 // Asserts: emit_sbom ran once, no per-package nodes touched, no
 // reviewer ran (phase2_decider short-circuits to done).
 func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
@@ -234,6 +235,7 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 //	p2_campaign(review_clean) → p2_verify_build → p2_verify_run →
 //	p2_gate(converged) → emit_sbom → done
 func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
@@ -423,6 +425,7 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 // returns stable=true on the second invocation. The run then proceeds
 // through commit and exits via the Phase-2 review campaign.
 func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 

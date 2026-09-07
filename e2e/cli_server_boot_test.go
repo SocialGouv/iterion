@@ -75,23 +75,6 @@ func iterionBinary(t *testing.T) string {
 	return iterionBinaryPath
 }
 
-// freeLoopbackPort reserves and immediately releases a loopback port so the
-// subprocess can bind it. Between release and re-bind is a TOCTOU race in
-// principle; on loopback with no other binder it is deterministic in
-// practice.
-func freeLoopbackPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-	return port
-}
-
 // cleanEnvForSubprocess strips ITERION_* and HOME from the host environment
 // so operator settings (an ITERION_MODE=cloud in the operator's shell, a
 // stray ~/.iterion) never leak into the subprocess. Callers append their
@@ -227,6 +210,7 @@ func assertLameDuck(t *testing.T, base string, exitCh <-chan error, stderr *byte
 //     pkg/server/server_routes.go → the /healthz poll returns 404 and
 //     times out.
 func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -239,7 +223,7 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	iterionHome := t.TempDir()
 	workDir := t.TempDir()
 	storeDir := filepath.Join(workDir, ".iterion")
-	port := freeLoopbackPort(t)
+	port := reserveLoopbackPort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -377,6 +361,7 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 // Mutation coverage: swallow ListenAndServe's error in RunStudio (or in
 // runServer) so the process exits 0 → this assertion fires.
 func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -440,6 +425,7 @@ func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
 // error is refactored, this test flags that the operator-facing message
 // changed.
 func TestRunnerCommandRefusesLocalMode(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -491,6 +477,7 @@ func TestRunnerCommandRefusesLocalMode(t *testing.T) {
 // `ITERION_MODE "" invalid` OR the runner charges into NATS. Either
 // downstream error lacks the "load config" substring below.
 func TestRunnerCommandRefusesBrokenConfig(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}

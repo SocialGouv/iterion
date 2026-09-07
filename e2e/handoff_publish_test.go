@@ -22,6 +22,7 @@ import (
 // pull request to notice: every unit test wrote the artifact by hand, so the
 // one thing that had to be true in production was the one thing never asserted.
 func TestOnlyAPublishedNodeLeavesAnArtifact(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "handoff_publish_mini.bot")
 	exec := newScenarioExecutor()
 	out := map[string]any{

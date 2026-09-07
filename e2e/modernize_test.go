@@ -27,6 +27,7 @@ import (
 // nothing_to_do=false per plan_read's not_actionable() contract) and
 // work_gate must route to a typed fail BEFORE upgrade_campaign ever runs.
 func TestModernize_OnlyLotBlockedFailsTyped(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "modernize/main.bot")
 	exec := newScenarioExecutor()
 	exec.on("plan_read", func(_ map[string]any) (map[string]any, error) {
@@ -83,6 +84,7 @@ func TestModernize_OnlyLotBlockedFailsTyped(t *testing.T) {
 // lot_not_actionable=false — and must still exit the run FINISHED, exactly
 // as before native:670.
 func TestModernize_UnfilteredNothingToDoStaysGreen(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "modernize/main.bot")
 	exec := newScenarioExecutor()
 	exec.on("plan_read", func(_ map[string]any) (map[string]any, error) {

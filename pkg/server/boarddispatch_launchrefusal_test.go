@@ -213,12 +213,8 @@ func TestProcessBoardCard_LaunchRefusalIsTyped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs),
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs),
 		runview.WithLaunchPublisher(refusingPublisher{err: errors.New("cloudpublisher: seal run bundle: kms unavailable")}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
 	err = s.processBoardCard(context.Background(), "team1", native.Issue{ID: "native:1", Bot: "probe"})
 	if !errors.Is(err, errCardLaunchRefused) {
 		t.Fatalf("processBoardCard = %v, want errCardLaunchRefused — no run started, no verdict belongs on the card", err)

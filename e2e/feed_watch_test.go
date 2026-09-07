@@ -166,6 +166,7 @@ func runPlan(t *testing.T, wf *ir.Workflow, ws, mode, category string) map[strin
 // cross-source dedup, queue snapshot semantics, webhook delivery
 // (httptest) and archive-based semantic-dedup context all run for real.
 func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -417,6 +418,7 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 // ends the run before the LLM step, and a full digest runs
 // synthesize → notify → commit_state in order.
 func TestFeedWatch_GraphRouting(t *testing.T) {
+	t.Parallel()
 	planOut := func(collect bool) map[string]any {
 		return map[string]any{
 			"collect": collect, "digest": !collect, "category": "demo",
@@ -554,6 +556,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 // an injected editorial produces to phish or exfiltrate — hard-fails the
 // run before delivery.
 func TestFeedWatch_VerifyMessageBlocksInjectedLinks(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -596,6 +599,7 @@ func TestFeedWatch_VerifyMessageBlocksInjectedLinks(t *testing.T) {
 // loudly rather than yielding an empty-but-green collect. No network is
 // touched: the addresses are rejected at resolution or scheme check.
 func TestFeedWatch_FetchRejectsSSRF(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -746,6 +750,7 @@ func (s *notifySink) texts(channel string) []string {
 // cannot open. Covers the per-sink budget override, the max_messages
 // ceiling, and the intra-sink partial failure.
 func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1003,6 +1008,7 @@ func tail(s string) string {
 // commit_state purged overflow items that were never synthesized nor
 // published — silent data loss on any backlog larger than max_items.
 func TestFeedWatch_OverflowItemsSurviveCommit(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}

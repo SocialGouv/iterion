@@ -102,6 +102,7 @@ func createIssueViaCLI(t *testing.T, opts cli.IssueCreateOptions) native.Issue {
 }
 
 func TestIssueCLILifecycleCreateMoveUpdateClose(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	common := cli.IssueCommonOptions{StoreDir: storeDir}
 
@@ -348,6 +349,7 @@ func containsInOrder(got, want []native.EventType) bool {
 // where it was — an operator who typed `close` and saw success would
 // otherwise carry a card that never left the board.
 func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	common := cli.IssueCommonOptions{StoreDir: storeDir}
 
@@ -398,6 +400,7 @@ func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
 //
 // Mutation check: drop the guard and the live case clears the pointer.
 func TestIssueCLIClearLastRunRefusesWhileTheRunIsAlive(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		status     store.RunStatus
@@ -482,6 +485,7 @@ func TestIssueCLIClearLastRunRefusesWhileTheRunIsAlive(t *testing.T) {
 //
 // Mutation check: drop the clear and the stamp survives the close.
 func TestIssueCLICloseAcknowledgesADispatcherGiveUp(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	common := cli.IssueCommonOptions{StoreDir: storeDir}
 
@@ -530,6 +534,7 @@ func TestIssueCLICloseAcknowledgesADispatcherGiveUp(t *testing.T) {
 // Mutation check: keep the pointer and the "cleared" assertion fails; wipe
 // Runs along with it and the history assertion fails.
 func TestIssueCLIUpdateClearsLastRunPointerKeepingHistory(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	common := cli.IssueCommonOptions{StoreDir: storeDir}
 

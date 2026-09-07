@@ -89,6 +89,7 @@ func stubEndyCampaign(exec *scenarioExecutor, st *endyState) {
 // empty fail_log both times (green gates; the loop-back is remaining WORK,
 // not a failure).
 func TestE2ECoverage_ContinuesUntilComplete(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -132,6 +133,7 @@ func TestE2ECoverage_ContinuesUntilComplete(t *testing.T) {
 // coverage_complete does not converge the run while the matrix still counts
 // uncovered rows — the deterministic count outranks the agent's claim.
 func TestE2ECoverage_WholeAppRunBlocksOnUncoveredRows(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -167,6 +169,7 @@ func TestE2ECoverage_WholeAppRunBlocksOnUncoveredRows(t *testing.T) {
 // completion even though out-of-scope matrix rows remain uncovered — they
 // are the next run's backlog, not this run's failure.
 func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -200,6 +203,7 @@ func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
 // run and cannot converge while uncovered rows remain. (The trimming
 // itself is proven at the gate in bots/e2e_coverage_matrix_gate_test.go.)
 func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -231,6 +235,7 @@ func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
 // matrix-problems log, even though the suite itself is green and the agent
 // claimed completion.
 func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{completeBy: 1}
@@ -278,6 +283,7 @@ func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
 // floor shared with the fleet: a red suite routes back to the campaign with
 // the real failure log.
 func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{completeBy: 1}
@@ -322,6 +328,7 @@ func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
 // TestE2ECoverage_EventTrace establishes the event-coherence baseline: a
 // happy-path run persists node lifecycle events for the core nodes.
 func TestE2ECoverage_EventTrace(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{completeBy: 1}
@@ -360,6 +367,7 @@ func TestE2ECoverage_EventTrace(t *testing.T) {
 // its own first move), the two adaptive agents, the deterministic
 // verify_run tool + gate compute, and the single bounded continuation loop.
 func TestE2ECoverage_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 
 	if wf.Entry != "workspace_probe" {

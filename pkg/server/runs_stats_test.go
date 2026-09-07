@@ -15,10 +15,7 @@ func TestAggregateRunStatsBucketsCostByEventDay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatalf("runview.NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(rs))
 
 	created := time.Date(2026, 5, 1, 23, 30, 0, 0, time.UTC)
 	nextDay := created.Add(2 * time.Hour)

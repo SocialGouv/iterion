@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -124,6 +125,14 @@ func TestEngineRunner_ViaServiceMatchesDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// The service's orphan reconciler writes run statuses on a ticker;
+	// stopping it here (Stop cancels and awaits) keeps those writes out of
+	// the TempDir the cleanup below removes.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		svc.Stop(ctx)
+	})
 	viaSvc := runOneDispatch(t, botPath, storeDir, "run-viasvc-0002", ServiceRunLauncher{Svc: svc})
 
 	// Terminal error: both suspend on the human gate.

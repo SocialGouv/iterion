@@ -142,11 +142,7 @@ func TestProcessBoardCard_PreconditionsAreUnlaunchable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -195,11 +191,7 @@ func TestServerAdmitBoardCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.runs = svc
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
 	if err := s.admitBoardCard(context.Background(), "team1", native.Issue{ID: "native:nobot"}); !errors.Is(err, errCardUnlaunchable) {
 		t.Fatalf("admit(no bot) = %v, want errCardUnlaunchable", err)
 	}

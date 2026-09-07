@@ -31,6 +31,7 @@ var expectedSecAuditDepsNodes = []string{
 }
 
 func TestBundle_SecAuditDeps_PackOpenCompile(t *testing.T) {
+	t.Parallel()
 	srcDir, err := filepath.Abs("../bots/sec-audit-deps")
 	if err != nil {
 		t.Fatalf("resolve src: %v", err)
@@ -85,6 +86,7 @@ func TestBundle_SecAuditDeps_PackOpenCompile(t *testing.T) {
 }
 
 func TestBundle_SecAuditDeps_OpenDirMatchesPack(t *testing.T) {
+	t.Parallel()
 	srcDir, err := filepath.Abs("../bots/sec-audit-deps")
 	if err != nil {
 		t.Fatalf("resolve src: %v", err)

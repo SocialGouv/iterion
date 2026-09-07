@@ -65,6 +65,7 @@ func runExtend(t *testing.T, exec *scenarioExecutor, runID string) *store.Run {
 // child came back `converged: true, extended: 1` with its one request
 // refused, and the parent announced "extensions acted by pure addition".
 func TestGoldenMasterExtend_PendingRequestIsNotConverged(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	extendStubs(exec, func(int) map[string]any {
 		return map[string]any{
@@ -95,6 +96,7 @@ func TestGoldenMasterExtend_PendingRequestIsNotConverged(t *testing.T) {
 // TestGoldenMasterExtend_EverythingActedConverges: the green path — every
 // request acted by this run, nothing pending, converged on the first pass.
 func TestGoldenMasterExtend_EverythingActedConverges(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	extendStubs(exec, func(int) map[string]any { return nil })
 	run := runExtend(t, exec, "run-extend-green")
@@ -112,6 +114,7 @@ func TestGoldenMasterExtend_EverythingActedConverges(t *testing.T) {
 // already at the base) and one request pending — the term alone must keep
 // the verdict red.
 func TestGoldenMasterExtend_GreenTermsWithAPendingRequestStillRefuse(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	extendStubs(exec, func(int) map[string]any {
 		return map[string]any{"still_pending": []any{map[string]any{"id": "E-1"}}}

@@ -1,7 +1,6 @@
 package boardmongo_test
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -16,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // TestReplacePreservesUnknownIssueFields pins the mixed-fleet contract of
@@ -30,7 +30,7 @@ func TestReplacePreservesUnknownIssueFields(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -40,7 +40,7 @@ func TestReplacePreservesUnknownIssueFields(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_replace_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -115,13 +115,13 @@ func TestOrdinaryWritesNeverRewindTheFence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mongo connect: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	nonce := make([]byte, 4)
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_fence_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -223,13 +223,13 @@ func TestTokenlessReleaseCannotStealFromTheReaper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mongo connect: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	nonce := make([]byte, 4)
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_relsteal_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -298,13 +298,13 @@ func TestDroppedFenceRefusesEveryoneAndStaysRecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mongo connect: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	nonce := make([]byte, 4)
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_heal_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -420,13 +420,13 @@ func TestEpochIsMonotoneAcrossAFamilyDrop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mongo connect: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	nonce := make([]byte, 4)
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_mono_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -495,13 +495,13 @@ func TestUnleasedArmDoesNotStarveTheBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mongo connect: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	nonce := make([]byte, 4)
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_starve_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

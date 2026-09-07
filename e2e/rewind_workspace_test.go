@@ -29,6 +29,7 @@ import (
 // It also covers the case unit tests cannot: a node whose product is
 // FILES rather than its output map, on a run with no git worktree.
 func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	dir := t.TempDir()
@@ -140,6 +141,7 @@ func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
 // No unit test reaches this: it needs a real resume between the failure
 // and the rewind, which is what re-captures the boundary.
 func TestRewindAfterResumeKeepsTriageEdits(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	dir := t.TempDir()
@@ -236,6 +238,7 @@ func TestRewindAfterResumeKeepsTriageEdits(t *testing.T) {
 //
 // The review gate resumes the same way.
 func TestRewindScopeAfterHumanGatePause(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_human_mini.bot")
 
 	dir := t.TempDir()
@@ -316,6 +319,7 @@ func TestRewindScopeAfterHumanGatePause(t *testing.T) {
 // Both halves are asserted: the operator's file survives, the agent's
 // post-answer file does not.
 func TestRewindScopeAfterDelegatePause(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_delegate_mini.bot")
 
 	dir := t.TempDir()
@@ -414,6 +418,7 @@ func TestRewindScopeAfterDelegatePause(t *testing.T) {
 //
 // So: rewinding to the node that failed must still undo what it wrote.
 func TestRewindScopeCoversAFailedNodesDebris(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	dir := t.TempDir()

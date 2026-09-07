@@ -1,7 +1,6 @@
 package boardmongo_test
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -26,7 +26,7 @@ func TestMongoStore_TriggerPrimitives(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo trigger suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -36,7 +36,7 @@ func TestMongoStore_TriggerPrimitives(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_trigger_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

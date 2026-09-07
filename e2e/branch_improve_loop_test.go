@@ -109,6 +109,7 @@ func stubBranchCampaign(exec *scenarioExecutor, st *branchCampaignState) {
 //   - the verify gate runs each pass (verify_run == 2);
 //   - the run finishes (converged → mr_gate → done, open_mr default false).
 func TestBranchImproveLoop_ContinuesUntilClean(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &branchCampaignState{cleanBy: 2}
@@ -148,6 +149,7 @@ func TestBranchImproveLoop_ContinuesUntilClean(t *testing.T) {
 // reports branch_clean=true on the first pass and the gate is green, so the run
 // converges immediately — one campaign pass, straight to done.
 func TestBranchImproveLoop_ConvergesFirstPass(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &branchCampaignState{cleanBy: 1}
@@ -180,6 +182,7 @@ func TestBranchImproveLoop_ConvergesFirstPass(t *testing.T) {
 //   - the second campaign pass received the real build-failure log as input;
 //   - the run finishes once the gate goes green.
 func TestBranchImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &branchCampaignState{cleanBy: 1} // the agent claims clean every pass
@@ -220,6 +223,7 @@ func TestBranchImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
 // TestBranchImproveLoop_MRPathOnConverge pins the opt-in MR path: with
 // open_mr=true a converged run opens the MR/PR (finalize_mr) before finishing.
 func TestBranchImproveLoop_MRPathOnConverge(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &branchCampaignState{cleanBy: 1}
@@ -250,6 +254,7 @@ func TestBranchImproveLoop_MRPathOnConverge(t *testing.T) {
 // blocking upfront plan_chunks, or a reviewer node) breaks the mechanism
 // silently.
 func TestBranchImproveLoop_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 
 	// Entry is the deterministic workspace precondition (a tool node, no
@@ -403,6 +408,7 @@ func gateOutput(t *testing.T, run *store.Run) map[string]any {
 // re-evaluates it — and `campaign` never started (the delivery reserve
 // this guard exists to protect).
 func TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	planBudgetGateStubs(exec, planOverShareUSD)
@@ -469,6 +475,7 @@ func TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign(t *testing.T) 
 // the guard is silent — campaign runs normally, receiving the
 // plan/critique/responses exactly as the pre-guard edges handed them off.
 func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	planBudgetGateStubs(exec, planUnderShareUSD)
@@ -515,6 +522,7 @@ func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
 // not: `iterion run --max-cost-usd 200` never reached it, so the guard
 // went on refusing against a literal nobody had updated.
 func TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	if wf.Budget == nil {
 		t.Fatal("branch-improve-loop declares no budget: block — the guard has no cap to read")
@@ -553,6 +561,7 @@ func TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce(t *testing.T) {
 // guard on each comparison, an uncapped run refuses on its first pass —
 // every spend is "over" a share of zero.
 func TestBranchImproveLoop_PlanBudgetUnboundedNeverTrips(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	if wf.Budget == nil {
 		t.Fatal("branch-improve-loop declares no budget: block")
@@ -597,6 +606,7 @@ func TestBranchImproveLoop_PlanBudgetUnboundedNeverTrips(t *testing.T) {
 // input has to rebuild from the edge that was selected. The readout is the
 // node-start counts: the guard twice, the fail node once, campaign once.
 func TestBranchImproveLoop_PlanBudgetResumeRunsTheCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	s := tmpStore(t)
 	const runID = "run-bil-plan-budget-resume"
