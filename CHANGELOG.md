@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.115.2](https://github.com/SocialGouv/iterion/compare/v3.115.1...v3.115.2) (2026-09-07)
+
+### Bug Fixes
+
+* **forge,server:** a head repository the credential may not read is declared, and a forge refusal answers as the forge, not as an iterion fault ([#903](https://github.com/SocialGouv/iterion/issues/903)) ([f47ff6e](https://github.com/SocialGouv/iterion/commit/f47ff6e11da384b135b60b14789b70e9f5524685)), closes [#887](https://github.com/SocialGouv/iterion/issues/887) [#888](https://github.com/SocialGouv/iterion/issues/888) [#893](https://github.com/SocialGouv/iterion/issues/893)
+
+    <details><summary>why</summary>
+
+    pkg/forge/gitlab's source-project lookup mapped BOTH 403 and 404 onto an empty headProject with a nil error. A permission ANSWER — the project exists, this credential may not read it — therefore arrived at every caller as the same value a merge request that names no source project produces, and the only thing standing between that and "therefore the base project" was that SameRepoAs happens to fail closed on an empty name. Nothing in the function said the result must not be trusted, and the…
+
+    </details>
+
 ## [3.115.1](https://github.com/SocialGouv/iterion/compare/v3.115.0...v3.115.1) (2026-09-07)
 
 ### Bug Fixes
