@@ -67,10 +67,12 @@ type RunArtifactSummary struct {
 
 // ListAllArtifacts enumerates the latest published artifact per node for a
 // run — the data behind the centralized Artifacts view. It walks
-// runs/<id>/artifacts/*/ (filesystem store only; cloud mode returns an
-// empty list, mirroring ListArtifacts) and loads each node's latest
-// version to surface its labels + title. Sorted by node id for stable
-// rendering. Few artifacts per run, so the per-node body read is cheap.
+// runs/<id>/artifacts/*/ when the run's artifact directory is on this
+// host, and otherwise serves the run document's artifact_index (the case
+// of a cloud server pod: the directory lives on the runner that wrote it).
+// Each node's latest version is loaded to surface its labels + title.
+// Sorted by node id for stable rendering. Few artifacts per run, so the
+// per-node body read is cheap.
 func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 	if err := validatePathComponent("run ID", runID); err != nil {
 		return nil, err
@@ -79,7 +81,7 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 	nodes, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return s.listAllArtifactsFromIndex(runID)
 		}
 		return nil, fmt.Errorf("runview: list artifacts: %w", err)
 	}
@@ -104,6 +106,34 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 			Labels:    art.Labels,
 			Title:     artifactTitle(art.Data),
 			WrittenAt: latest.WrittenAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out, nil
+}
+
+// listAllArtifactsFromIndex serves the listing from run.ArtifactIndex
+// (node id → latest version), which every store maintains on WriteArtifact.
+// Reached when no artifact directory exists on this host; an unknown run
+// is an empty list, like the directory walk.
+func (s *Service) listAllArtifactsFromIndex(runID string) ([]RunArtifactSummary, error) {
+	ctx := context.Background()
+	run, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, nil
+	}
+	out := make([]RunArtifactSummary, 0, len(run.ArtifactIndex))
+	for nodeID, version := range run.ArtifactIndex {
+		art, lerr := s.store.LoadArtifact(ctx, runID, nodeID, version)
+		if lerr != nil || art == nil {
+			continue
+		}
+		out = append(out, RunArtifactSummary{
+			NodeID:    nodeID,
+			Version:   version,
+			Labels:    art.Labels,
+			Title:     artifactTitle(art.Data),
+			WrittenAt: art.WrittenAt,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })

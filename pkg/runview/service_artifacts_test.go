@@ -70,3 +70,53 @@ func TestListAllArtifacts(t *testing.T) {
 		t.Errorf("unknown run returned %d artifacts, want 0", len(empty))
 	}
 }
+
+// TestListAllArtifacts_FromIndexWhenNoDirectory is the cloud shape: the
+// server pod has no runs/<id>/artifacts directory (the runner that wrote
+// the artifacts has it), but the run document carries artifact_index and
+// the store can load every version. The listing must come from there
+// instead of reading as an empty run.
+func TestListAllArtifacts_FromIndexWhenNoDirectory(t *testing.T) {
+	storeRoot := t.TempDir()
+	logger := iterlog.Nop()
+	seed, err := store.New(storeRoot, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := seed.CreateRun(ctx, "run2", "wf", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	for _, v := range []int{0, 1} {
+		if err := seed.WriteArtifact(ctx, &store.Artifact{RunID: "run2", NodeID: "report", Version: v, Labels: []string{"report"}, Data: map[string]any{"title": "Report v" + string(rune('0'+v))}}); err != nil {
+			t.Fatalf("write artifact v%d: %v", v, err)
+		}
+	}
+	if err := seed.WriteArtifact(ctx, &store.Artifact{RunID: "run2", NodeID: "verdict", Version: 0, Data: map[string]any{"ok": true}}); err != nil {
+		t.Fatalf("write verdict: %v", err)
+	}
+
+	// A service whose storeDir holds NO artifact directory for the run,
+	// backed by the store that does know the run.
+	svc, err := NewService(t.TempDir(), WithLogger(logger), WithStore(seed))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.ListAllArtifacts("run2")
+	if err != nil {
+		t.Fatalf("ListAllArtifacts: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d artifacts, want 2 (from artifact_index): %+v", len(got), got)
+	}
+	if got[0].NodeID != "report" || got[0].Version != 1 || got[0].Title != "Report v1" || len(got[0].Labels) != 1 {
+		t.Errorf("report: %+v, want the latest version with its label and title", got[0])
+	}
+	if got[1].NodeID != "verdict" || got[1].Version != 0 {
+		t.Errorf("verdict: %+v", got[1])
+	}
+	empty, err := svc.ListAllArtifacts("unknown")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("unknown run: got %v, %v; want empty, nil", empty, err)
+	}
+}
