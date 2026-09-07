@@ -95,6 +95,16 @@ const (
 	// operator changing the model or the image, then resuming.
 	FailureModelUnavailable FailureCode = "MODEL_UNAVAILABLE"
 
+	// FailureSchemaUnusable: the node's DECLARED output schema could not
+	// be read by the backend serving it, so no request was ever built.
+	// Distinct from FailureSchemaValidation, where a request WAS served
+	// and the model's output missed the schema — that one is decided by
+	// a sample and the next may conform. This one rides the IR: the same
+	// declaration reaches the same parser on every attempt. The cure is
+	// fixing the schema (or the backend that cannot read it), then
+	// resuming.
+	FailureSchemaUnusable FailureCode = "SCHEMA_UNUSABLE"
+
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
 	// Previously only visible as the run_failed event's
@@ -192,6 +202,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureNetworkTransient,
 	FailureAuthFailed,
 	FailureModelUnavailable,
+	FailureSchemaUnusable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,

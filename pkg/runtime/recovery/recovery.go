@@ -162,6 +162,18 @@ func AuthFailedRecipe() Recipe {
 	})
 }
 
+// SchemaUnusableRecipe: no retry. The declaration rides the IR, so a
+// second attempt builds the same request from the same schema and is
+// refused by the same parser.
+func SchemaUnusableRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume",
+		}
+	})
+}
+
 // ModelUnavailableRecipe: no retry at all. The provider answered about
 // the MODEL, not about this request, so a second call from the same
 // image asks the same question and is told the same thing — and the
@@ -308,6 +320,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeNetworkTransient:      NetworkTransientRecipe(6),
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
+		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
 	}
 }
 
@@ -374,6 +387,13 @@ func Classify(err error) runtime.ErrorCode {
 	var authFailed *delegate.ErrAuthFailed
 	if errors.As(err, &authFailed) {
 		return runtime.ErrCodeAuthFailed
+	}
+	// The node's own declaration is what the backend refused. Checked by
+	// TYPE first, like the credential above: the needle below only
+	// catches today's wording.
+	var schemaUnusable *delegate.ErrSchemaUnusable
+	if errors.As(err, &schemaUnusable) {
+		return runtime.ErrCodeSchemaUnusable
 	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {
@@ -443,6 +463,12 @@ func Classify(err error) runtime.ErrorCode {
 		if strings.Contains(msg, needle) {
 			return runtime.ErrCodeAuthFailed
 		}
+	}
+	// The out-of-process host (the claw runner) flattens the typed error
+	// above into text before it reaches here, so the wording is read too
+	// — this is the shape that was actually measured in the cloud.
+	if strings.Contains(msg, "parse explicitschema") {
+		return runtime.ErrCodeSchemaUnusable
 	}
 	// Checked through the SAME list the typed branch reads, and after
 	// the credential needles: a rejection that names both a credential

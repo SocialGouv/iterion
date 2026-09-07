@@ -128,6 +128,13 @@ var classification = map[store.FailureCode]Disposition{
 	// — eight pods, eight sandboxes — because the 400 wore
 	// EXECUTION_FAILED, whose disposition promises that waiting helps.
 	store.FailureModelUnavailable: DispositionDeterministic,
+	// The DECLARED schema, not the output measured against it: it rides
+	// the IR, the request is never built, and no sample exists to differ.
+	// Measured on 2026-09-07 (run 01a07db7): a `json` field's type union
+	// the serving backend read as a single string — five attempts, four
+	// pods, one verdict. SchemaValidation stays re-executable: there, a
+	// request WAS served and the next sample may conform.
+	store.FailureSchemaUnusable: DispositionDeterministic,
 }
 
 // Classify reports what an automatic resume can achieve for this code.

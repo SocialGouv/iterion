@@ -73,6 +73,10 @@ func TestDispositionsAreDistinct(t *testing.T) {
 		// no sample differs, no wait helps. The one provider rejection
 		// that clears the deterministic bar.
 		{store.FailureModelUnavailable, true, false},
+		// The DECLARED schema, refused before any request was built —
+		// unlike FailureSchemaValidation two rows above, where a request
+		// was served and the next sample may conform.
+		{store.FailureSchemaUnusable, true, false},
 	}
 	for _, c := range cases {
 		if got := IsDeterministic(c.code); got != c.deterministic {
