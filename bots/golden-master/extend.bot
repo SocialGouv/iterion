@@ -216,8 +216,21 @@ tool extend_base:
 
     head = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
                           capture_output=True, text=True)
-    dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
-                           capture_output=True, text=True)
+    # `-z`, not the default `--porcelain` lines. That form QUOTES any path
+    # carrying a non-ASCII byte, a `"`, a `\` or a control char
+    # (`".golden-master/refs/\303\251.txt"`) and renders a staged rename as
+    # `orig -> dest` — so a raw prefix match misses BOTH, and a dirty net reads
+    # CLEAN. Reproduced against real git: planting the reference under a
+    # non-ASCII name, or `git mv`-ing a tracked file INTO the net, each left
+    # `net_dirty` empty — the absorption this refusal exists to stop, walked
+    # straight through. `-z` never quotes, and it carries a rename's origin as
+    # the NEXT NUL-terminated token, so a reference moved OUT of the net
+    # dirties it as surely as one moved in. `surrogateescape` because `-z`
+    # hands back the raw filename bytes: an undecodable name would otherwise
+    # raise inside subprocess.run and take the node down instead of refusing.
+    dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain", "-z"],
+                           capture_output=True, text=True,
+                           errors="surrogateescape")
 
     pending, notice = [], ""
     if head.returncode != 0:
@@ -232,10 +245,33 @@ tool extend_base:
         except (ValueError, IndexError):
             notice = ("the harness did not answer GM_MODE=extensions (exit %d): %s"
                       % (p.returncode, (p.stdout + p.stderr)[-400:]))
-    dirty_paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()] if dirty.returncode == 0 else []
-    net_dirty = [q for q in dirty_paths if q.startswith(gm.rstrip("/") + "/")]
-    clean = not net_dirty
-    if net_dirty:
+    entries = []
+    toks = [t for t in dirty.stdout.split("\0") if t] if dirty.returncode == 0 else []
+    i = 0
+    while i < len(toks):
+        xy = toks[i][:2]
+        entries.append((xy, toks[i][3:]))
+        i += 1
+        if ("R" in xy or "C" in xy) and i < len(toks):
+            entries.append((xy, toks[i]))   # the origin side of the rename/copy
+            i += 1
+    dirty_paths = [q for _, q in entries]
+    # The net's own prefix, NORMALISED: `oracle_dir` is an operator var, and a
+    # `./.golden-master` spelling matches nothing in git's repository-relative
+    # output — which would silently disarm the refusal below rather than
+    # tighten it.
+    gmp = os.path.normpath(gm).replace(os.sep, "/")
+    net_dirty = [q for q in dirty_paths if q == gmp or q.startswith(gmp + "/")]
+    # UNABLE TO PROVE CLEAN is not CLEAN. A status that failed (a corrupt
+    # index, an ownership refusal) left the list empty, and the run then
+    # certified as the net's own whatever it found under the net.
+    clean = dirty.returncode == 0 and not net_dirty
+    if dirty.returncode != 0:
+        notice = ("REFUSED at start: git could not report the state of %s (%s). "
+                  "A net that cannot be SHOWN clean is not clean, so nothing is "
+                  "acted." % (ws, (dirty.stderr or "").strip()[-300:]))
+        pending = []
+    elif net_dirty:
         # REFUSED, not said: an uncommitted file under the net is either the
         # constrained party's write into the judge's territory or a leftover,
         # and this run committing it would certify it as the net's own —
@@ -308,7 +344,11 @@ tool extend_base:
         subprocess.run(["git", "-C", ws, "config", "user.name", {{vars.actor_name}}])
         subprocess.run(["git", "-C", ws, "config", "user.email", {{vars.actor_email}}])
 
-    print(json.dumps({"head": head.stdout.strip(), "dirty": dirty.stdout.strip(),
+    # `dirty` is the record a human reads, rebuilt from the SAME parse the
+    # verdict used — reprinting the raw `-z` blob would carry NULs, and a
+    # second `status` call would be a second answer to the one question.
+    print(json.dumps({"head": head.stdout.strip(),
+                      "dirty": "\n".join("%s %s" % e for e in entries),
                       "pending": pending, "notice": notice, "clean": clean,
                       "prev_name": prev_name, "prev_email": prev_email}))
 

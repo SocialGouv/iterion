@@ -251,9 +251,16 @@ type extendBaseOut struct {
 
 func runExtendBase(t *testing.T, ws string) extendBaseOut {
 	t.Helper()
+	return runExtendBaseIn(t, ws, ".golden-master")
+}
+
+// runExtendBaseIn is runExtendBase with the operator's own spelling of
+// `oracle_dir` — the var whose value decides which paths the refusal watches.
+func runExtendBaseIn(t *testing.T, ws, oracleDir string) extendBaseOut {
+	t.Helper()
 	body := toolScript(t, "golden-master/extend.bot", "extend_base")
 	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
-	body = strings.ReplaceAll(body, "{{vars.oracle_dir}}", strconv.Quote(".golden-master"))
+	body = strings.ReplaceAll(body, "{{vars.oracle_dir}}", strconv.Quote(oracleDir))
 	body = strings.ReplaceAll(body, "{{vars.actor_name}}", strconv.Quote("golden-master extend"))
 	body = strings.ReplaceAll(body, "{{vars.actor_email}}", strconv.Quote("extend@golden-master.iterion"))
 	if i := strings.Index(body, "{{"); i >= 0 {
@@ -332,6 +339,68 @@ func TestGoldenMasterExtendBaseRefusesADirtyNet(t *testing.T) {
 		}
 		if got := gitInNet(t, ws, "config", "--get", "user.email"); got != "t@example.com" {
 			t.Fatalf("a refused start must not touch the identity, got %q", got)
+		}
+	})
+	// The three ways the refusal was walked through while reading CLEAN. Each
+	// was reproduced against real git before the fix; each is the SAME
+	// absorption — a planted reference the run then commits as the net's own —
+	// wearing a spelling the prefix match could not see.
+	for _, c := range []struct {
+		name string
+		dirt func(t *testing.T, ws string)
+	}{{
+		// `--porcelain` quotes a path with a non-ASCII byte, a `"`, a `\` or a
+		// control char, so `l[3:]` starts with `"` and matches no prefix.
+		"a reference planted under a non-ASCII name",
+		func(t *testing.T, ws string) {
+			if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "é.txt"), []byte("planted\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}, {
+		// A staged rename reads `orig -> dest`: the DESTINATION — the side that
+		// lands under the net — is invisible to a match on the whole line.
+		"a tracked file renamed INTO the net",
+		func(t *testing.T, ws string) {
+			if err := os.WriteFile(filepath.Join(ws, "outside.txt"), []byte("the lot's own file\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitInNet(t, ws, "add", "outside.txt")
+			gitInNet(t, ws, "commit", "-qm", "a tracked file outside the net")
+			gitInNet(t, ws, "mv", "outside.txt", ".golden-master/refs/moved.txt")
+		},
+	}, {
+		// A status that cannot answer is not an answer that the net is clean.
+		"git cannot report the state at all",
+		func(t *testing.T, ws string) {
+			if err := os.WriteFile(filepath.Join(ws, ".git", "index"), []byte("not an index"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}} {
+		t.Run(c.name+": refused", func(t *testing.T) {
+			ws, _ := extendVerifyRepo(t, verdict, pending)
+			c.dirt(t, ws)
+			res := runExtendBase(t, ws)
+			if res.Clean || len(res.Pending) != 0 || !strings.HasPrefix(res.Notice, "REFUSED") {
+				t.Fatalf("the net is dirty and the run read it clean — the absorption "+
+					"this refusal exists to stop is reachable: %+v", res)
+			}
+			if got := gitInNet(t, ws, "config", "--get", "user.email"); got != "t@example.com" {
+				t.Fatalf("a refused start must not touch the identity, got %q", got)
+			}
+		})
+	}
+	// `oracle_dir` is an operator var: a `./` spelling that matched nothing
+	// would disarm the refusal wholesale rather than tighten it.
+	t.Run("the net's prefix is normalised before it is matched", func(t *testing.T) {
+		ws, _ := extendVerifyRepo(t, verdict, pending)
+		if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("forged by the lot\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res := runExtendBaseIn(t, ws, "./.golden-master/")
+		if res.Clean || !strings.HasPrefix(res.Notice, "REFUSED") {
+			t.Fatalf("a ./-spelled net must refuse the same dirt: %+v", res)
 		}
 	})
 }
