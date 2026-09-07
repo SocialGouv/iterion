@@ -42,6 +42,15 @@ func TestQueueBotBundleRef(t *testing.T) {
 	if got == nil || got.TenantID != "platform:" || got.Slug != "review-pr" || got.Version != 7 {
 		t.Fatalf("wire ref = %+v", got)
 	}
+	ref := &runview.BotBundleRef{Slug: "catalog", Snapshot: []byte(`{"root":"catalog"}`), SnapshotDigest: "digest"}
+	got = queueBotBundleRef(ref)
+	if string(got.Snapshot) != string(ref.Snapshot) || got.SnapshotDigest != ref.SnapshotDigest {
+		t.Fatal("snapshot lost in wire conversion")
+	}
+	ref.Snapshot[0] = 'x'
+	if got.Snapshot[0] != '{' {
+		t.Fatal("wire snapshot aliases mutable launch bytes")
+	}
 }
 
 // Without a resolver the publisher keeps its previous local-only behaviour, so

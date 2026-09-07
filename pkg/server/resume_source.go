@@ -68,7 +68,7 @@ func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, fileP
 	}
 	var lb *launchBot
 	if s.cfg.Mode == "cloud" {
-		resolved, rerr := s.resolveResumeBot(ctx, botSourceTenant, filePath)
+		resolved, rerr := s.resolveResumeBot(ctx, botSourceTenant, filePath, source)
 		switch {
 		case rerr == nil:
 			lb = resolved
@@ -126,7 +126,7 @@ func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, fileP
 // legacy run) it keeps the launch-surface resolution: platform override
 // first, then the baked catalog — so an override pushed after the launch
 // applies on resume, matching "effective at the next launch".
-func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath string) (*launchBot, error) {
+func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath string, sourceOverride ...string) (*launchBot, error) {
 	slug := inferCatalogBotID(filePath)
 	if botSourceTenant != "" {
 		if slug == "" || s.botSources == nil {
@@ -147,9 +147,17 @@ func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath
 		if botsource.IsPlatform(botSourceTenant) {
 			origin = "platform"
 		}
-		return s.storedLaunchBot(bs, origin)
+		lb, err := s.storedLaunchBot(bs, origin)
+		if err != nil {
+			return nil, err
+		}
+		teamID := botSourceTenant
+		if botsource.IsPlatform(teamID) {
+			teamID = ""
+		}
+		return s.snapshotResumeBot(ctx, teamID, lb, sourceOverride...)
 	}
-	lb, err := s.resolveBotTiered(ctx, "", "", filePath)
+	lb, err := s.resolveBotTieredRaw(ctx, "", "", filePath)
 	if err != nil {
 		// resolveBotTiered only errors on a store/FS failure — a genuine
 		// "not found" returns (nil, nil). A blip is transient here exactly
@@ -157,5 +165,16 @@ func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath
 		// sweeper RE-ARMS instead of permanently abandoning the retry.
 		return nil, fmt.Errorf("%w: resolve bot: %v", errResumeResolveTransient, err)
 	}
+	if lb != nil && s.cfg.Mode == "cloud" {
+		return s.snapshotResumeBot(ctx, "", lb, sourceOverride...)
+	}
 	return lb, nil
+}
+
+func (s *Server) snapshotResumeBot(ctx context.Context, teamID string, lb *launchBot, sourceOverride ...string) (*launchBot, error) {
+	resolved, err := s.snapshotLaunchBot(ctx, teamID, lb, sourceOverride...)
+	if errors.Is(err, errBotSnapshotResolve) {
+		return nil, fmt.Errorf("%w: %v", errResumeResolveTransient, err)
+	}
+	return resolved, err
 }

@@ -11,7 +11,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// materializeBotBundle rebuilds a STORED bot bundle (team-authored bot or
+// materializeBotBundle first verifies and materializes an immutable snapshot.
+// Only a legacy ref without one rebuilds a STORED bot bundle (team-authored or
 // platform override) from the botsource store into the pod's ephemeral
 // scratch (os.MkdirTemp → the emptyDir every other runner temp write uses)
 // and opens it as the run's bundle. The dir is a re-derivable cache: a
@@ -24,6 +25,37 @@ import (
 // The caller routes the error through nak/redelivery; a resume re-resolves
 // the current version end-to-end and self-heals.
 func (r *Runner) materializeBotBundle(ctx context.Context, ref *queue.BotBundleRef) (*bundle.Bundle, func(), error) {
+	if ref.SnapshotDigest != "" || len(ref.Snapshot) > 0 || ref.SnapshotRef != nil {
+		body := ref.Snapshot
+		if ref.SnapshotRef != nil {
+			if len(body) > 0 {
+				return nil, nil, fmt.Errorf("snapshot has both inline and stored payload")
+			}
+			blobs := store.AsIRBlobStore(r.cfg.Store)
+			if blobs == nil {
+				return nil, nil, fmt.Errorf("snapshot blob store unavailable")
+			}
+			var err error
+			body, err = blobs.GetIRBlob(ctx, ref.SnapshotRef.StorageKey)
+			if err != nil {
+				return nil, nil, fmt.Errorf("fetch snapshot: %w", err)
+			}
+		}
+		snapshot, err := bundle.DecodeSnapshot(body, ref.SnapshotDigest)
+		if err != nil {
+			return nil, nil, err
+		}
+		dir, cleanup, err := snapshot.Materialize()
+		if err != nil {
+			return nil, nil, err
+		}
+		b, err := bundle.OpenDir(dir)
+		if err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		return b, cleanup, nil
+	}
 	if r.cfg.BotSources == nil {
 		return nil, nil, fmt.Errorf("no bot-source store wired (the message names a stored bundle this runner cannot fetch)")
 	}

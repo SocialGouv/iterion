@@ -41,21 +41,19 @@ import (
 // resolved through — a run's BotSourceTenant, stamped at launch — asks
 // teamBotManifest first instead.
 
-// launchBot is a resolved, launch-ready bot: its source, provenance, and —
-// for a STORED bot (team or platform botsource row) — the materialized
-// bundle dir the compile path merges prompts from, plus the ref the cloud
-// publisher stamps on the queue message.
+// launchBot is a resolved, launch-ready bot. Cloud resolution freezes its
+// collection before compile and carries the same snapshot to the runner.
 type launchBot struct {
 	BotID  string
 	Origin string // "team" | "platform" | "catalog"
 	Path   string // logical label for stored bots, FS path for catalog
 	Source string
-	// BundleDir is the server-side temp materialization of a stored bundle
-	// ("" for catalog bots — their bundle lives on the pod FS at Path's
-	// dir). The resolver owns it; call Cleanup once the launch returned.
+	// BundleDir is the server-side materialization used for compilation.
+	// Cloud catalog and stored bots both use it; Cleanup owns the collection.
 	BundleDir string
-	// Ref identifies the stored row (nil for catalog bots).
-	Ref *runview.BotBundleRef
+	// Ref carries the snapshot and, for stored origins, the row provenance.
+	Ref             *runview.BotBundleRef
+	cleanupSnapshot func()
 }
 
 // Stamp applies the resolution onto a LaunchSpec.
@@ -66,10 +64,8 @@ func (lb *launchBot) Stamp(spec *runview.LaunchSpec) {
 	lb.StampBundle(spec)
 }
 
-// StampBundle stamps only the stored-bundle fields (compile dir + runner
-// ref) — for callers that resolved path/source separately (the studio
-// launch derives an absolute path first). Nil-safe: a catalog/loose bot
-// stamps nothing.
+// StampBundle stamps the compile dir and runner ref for callers that resolved
+// path/source separately (the studio derives an absolute path first). Nil-safe.
 func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 	if lb == nil {
 		return
@@ -80,6 +76,10 @@ func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 
 // Cleanup removes the materialized bundle dir, if any. Safe on nil.
 func (lb *launchBot) Cleanup() {
+	if lb != nil && lb.cleanupSnapshot != nil {
+		lb.cleanupSnapshot()
+		return
+	}
 	if lb != nil && lb.BundleDir != "" {
 		_ = os.RemoveAll(lb.BundleDir)
 	}
@@ -92,6 +92,16 @@ func (lb *launchBot) Cleanup() {
 // materialize is an explicit error, never a silent fall-through to the baked
 // tier (that would pair this launch with resources the operator replaced).
 func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath string) (*launchBot, error) {
+	lb, err := s.resolveBotTieredRaw(ctx, teamID, botID, filePath)
+	if err != nil || lb == nil || s.cfg.Mode != "cloud" {
+		return lb, err
+	}
+	return s.snapshotLaunchBot(ctx, teamID, lb)
+}
+
+// Raw resolution is also used while collecting a snapshot's child bundles;
+// recursively snapshotting each child would lose the shared collection root.
+func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePath string) (*launchBot, error) {
 	slug := strings.TrimSpace(botID)
 	if slug == "" {
 		slug = inferCatalogBotID(filePath)
