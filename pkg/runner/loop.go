@@ -52,6 +52,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -145,9 +146,15 @@ const (
 // loaded preRun; otherwise action + finalStatus + op tell the caller
 // which terminal transition to perform on the delivery.
 type preconditionOutcome struct {
-	proceed     bool
-	preRun      *store.Run
-	finalStatus string
+	proceed bool
+	preRun  *store.Run
+	// skippedRetry, when set, is the failure code that made this delivery
+	// a deliberate DROP rather than a resume. The caller records it on the
+	// run's timeline: without it a failed_resumable row whose redelivery
+	// was dropped on purpose reads like one still waiting for a pod.
+	skippedRetry store.FailureCode
+	skippedCause string
+	finalStatus  string
 	op          string // for logDeliveryErr
 	action      deliveryAction
 	delay       time.Duration // actionNakDelayed only
@@ -332,14 +339,27 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 		// so only a reserved (engine) code may be auto-resumed. An empty
 		// code means UNKNOWN (legacy rows, paused_operator, which never
 		// carries one) and keeps resuming, as it always has.
-		if run.FailureCode != "" && !run.FailureCode.Reserved() {
+		//
+		// The same answer for an ENGINE code the shared classification
+		// calls deterministic (pkg/retrypolicy): a compute expression, a
+		// schema the output cannot meet, a credential the sealed bundle
+		// cannot refresh. Being the engine's own vocabulary does not make a
+		// verdict re-decidable — this arm is what turned each of the seven
+		// redeliveries of run 01a07804 back into a run.
+		if code := run.FailureCode; code != "" && (!code.Reserved() || retrypolicy.IsDeterministic(code)) {
+			origin := "bot-defined"
+			if code.Reserved() {
+				origin = "deterministic"
+			}
 			return preconditionOutcome{
-				finalStatus: string(run.Status),
-				op:          "ack-deliberate-failure",
-				action:      actionAck,
-				level:       logWarn,
-				logFmt:      "runner: run %s is parked on the bot-defined code %q — dropping the redelivery, NOT auto-resuming (the same guard would refuse identically; an operator resume with changed inputs re-queues it)",
-				logArgs:     []any{msg.RunID, run.FailureCode},
+				finalStatus:  string(run.Status),
+				op:           "ack-deliberate-failure",
+				action:       actionAck,
+				level:        logWarn,
+				skippedRetry: code,
+				skippedCause: strings.TrimSpace(run.Error),
+				logFmt:       "runner: run %s is parked on the %s code %q — dropping the redelivery, NOT auto-resuming (the same step would fail identically; an operator resume with changed inputs re-queues it)",
+				logArgs:      []any{msg.RunID, origin, code},
 			}
 		}
 		if msg.Resume == nil {
@@ -771,6 +791,28 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			level:       logInfo,
 			logFmt:      "runner: run %s checkpointed (%v)",
 			logArgs:     []any{runID, execErr},
+		}
+	}
+	// A DETERMINISTIC engine failure: re-executing would run the same step
+	// against the same checkpoint and reach the same verdict, so every
+	// redelivery is a pod, a clone and a sandbox spent to be told the same
+	// thing — then the DLQ park overwrites the diagnosis with DLQ_PARKED.
+	// Measured on run 01a07804: seven attempts in ten minutes on a compute
+	// node's expression error. Ack; the run stays exactly as the engine left
+	// it and waits for an operator who changed something.
+	//
+	// Keyed on the code, through the one table both this path and the CLI's
+	// `--auto-resume` loop read (pkg/retrypolicy). The carve-outs above stay
+	// ahead of it: each names a specific remedy (arm a retry, re-offer to a
+	// fresh pod, bank the work) this generic arm does not know about.
+	if code := runtimeCodeOf(execErr); retrypolicy.IsDeterministic(code) {
+		return execOutcome{
+			finalStatus: "deterministic_failure",
+			op:          "ack-deterministic-failure",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s failed deterministically (%s) — failed_resumable, NOT redelivering (the same inputs produce the same failure; fix the cause, then resume): %v",
+			logArgs:     []any{runID, code, execErr},
 		}
 	}
 	// Generic error → caller checks DLQ trigger before falling back to
@@ -1599,6 +1641,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	logAt(logger, pre.level, preFmt, preArgs...)
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
+		if pre.skippedRetry != "" {
+			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause)
+		}
 		dispatchPrecondition(logger, delivery, pre, msg.RunID)
 		return
 	}
@@ -1752,6 +1797,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			r.recordRedeliveryDeferred(msg, outcome, err, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
 		}
 	}
+	if outcome.finalStatus == "deterministic_failure" {
+		r.recordRetrySkipped(msg, runtimeCodeOf(err), err.Error())
+	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchExecOutcome(logger, delivery, outcome, msg.RunID)
@@ -1783,6 +1831,32 @@ func (r *Runner) recordRedeliveryDeferred(msg *queue.RunMessage, outcome execOut
 		Data: data,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_redelivery_deferred: %v", msg.RunID, err)
+	}
+}
+
+// recordRetrySkipped puts on the run's timeline the fact that no further
+// attempt follows. A failed_resumable row is otherwise ambiguous — a
+// redelivery in flight and a redelivery deliberately dropped look the same
+// — so the operator either waits for a pod that never comes or reads the
+// two deployments' logs to find out. Best-effort and bounded like every
+// teardown-path timeline write.
+func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string) {
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunRetrySkipped,
+		Data: map[string]any{
+			"reason": "deterministic",
+			"code":   string(code),
+			"error":  cause,
+			"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
+		},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", msg.RunID, err)
 	}
 }
 

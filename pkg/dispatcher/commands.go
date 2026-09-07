@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
@@ -594,6 +595,20 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// stop as ErrRunInterrupted (default arm → retry).
 		c.logger.Info("dispatcher: %s cancelled (run=%s)", r.Identifier, r.RunID)
 		plan.kind = finishRevert
+	case retrypolicy.IsDeterministic(runtimeFailureCode(err)):
+		// A failure the shared classification says a resume cannot cure:
+		// the same step, the same checkpoint, the same verdict. Retrying it
+		// to the attempt ceiling spends a workspace and a model budget per
+		// attempt to be told the same thing, and only then shows the
+		// operator a blocked card. Give up NOW — same terminal move, same
+		// board signal, without the burn.
+		c.logger.Warn("dispatcher: %s failed deterministically (run=%s, %s): %v — NOT retrying (re-executing would reach the same verdict); moving to %q",
+			r.Identifier, r.RunID, runtimeFailureCode(err), err, cfg.Agent.FailedState)
+		plan.kind = finishGiveUp
+		plan.failedState = cfg.Agent.FailedState
+		plan.attemptCount = r.Attempt + 1
+		plan.runID = r.RunID
+		plan.runErrText = err.Error()
 	default:
 		// Non-cancellation failure → retry, unless the attempt ceiling is
 		// reached. On exhaustion, give up: move the issue to a terminal
