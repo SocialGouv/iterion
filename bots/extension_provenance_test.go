@@ -323,6 +323,50 @@ func TestGoldenMasterExtendBaseRefusesADirtyNet(t *testing.T) {
 	})
 }
 
+// TestGoldenMasterExtendBaseSeesQuotedAndRenamedDirt pins the refusal against
+// the shapes git does not print plainly. `--porcelain` QUOTES a path with a
+// non-ASCII byte, so a raw prefix match read a planted reference as a clean
+// net — and the absorption attack the refusal exists to stop needs exactly
+// one accented file name. A rename prints its origin as a second token, and a
+// reference moved OUT of the net dirties it as surely as one moved in.
+func TestGoldenMasterExtendBaseSeesQuotedAndRenamedDirt(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	const pending = `{"pending": [{"id": "E-1", "lot": "L"}]}`
+
+	t.Run("a planted reference with a non-ASCII name", func(t *testing.T) {
+		ws, _ := extendVerifyRepo(t, verdict, pending)
+		if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "é.txt"),
+			[]byte("planted by the lot\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res := runExtendBase(t, ws)
+		if res.Clean || len(res.Pending) != 0 || !strings.HasPrefix(res.Notice, "REFUSED") {
+			t.Fatalf("a quoted path read as a clean net — the absorption attack is open: %+v", res)
+		}
+	})
+	t.Run("a reference renamed OUT of the net", func(t *testing.T) {
+		ws, _ := extendVerifyRepo(t, verdict, pending)
+		gitInNet(t, ws, "mv", ".golden-master/refs/001.txt", "moved-away.txt")
+		res := runExtendBase(t, ws)
+		if res.Clean || !strings.HasPrefix(res.Notice, "REFUSED") {
+			t.Fatalf("a reference moved out of the net left it reading clean: %+v", res)
+		}
+	})
+	t.Run("dirt outside the net is still only SAID", func(t *testing.T) {
+		ws, _ := extendVerifyRepo(t, verdict, pending)
+		if err := os.WriteFile(filepath.Join(ws, "élan.txt"), []byte("the lot's own work\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res := runExtendBase(t, ws)
+		if !res.Clean || len(res.Pending) != 1 {
+			t.Fatalf("a quoted path OUTSIDE the net must not refuse the run: %+v", res)
+		}
+		if !strings.Contains(res.Notice, "already dirty") {
+			t.Fatalf("outside dirt must still be said: %q", res.Notice)
+		}
+	})
+}
+
 // TestGoldenMasterExtendVerifyPublishesItsProvenance pins the subbot's half:
 // the commits of this run (base..HEAD), the blob certified per surface path,
 // the ids acted, the identity of every commit — and that its own harness
@@ -589,6 +633,36 @@ func TestGoldenMasterExtendRestoreIsOnEveryWayOut(t *testing.T) {
 		}
 	}
 
+	// A deterministic refusal must not buy an LLM pass. `clean` is read once
+	// and carried unchanged, so the conjunct it feeds is false forever: the
+	// campaign edge would pay a full agent run, then max_passes more of them,
+	// to report what node 1 already knew — and would hand the workspace to an
+	// agent on a start that was refused.
+	var refusedAt, campaignAt = -1, -1
+	for i, e := range cr.Workflow.Edges {
+		if e.From != "extend_base" {
+			continue
+		}
+		switch e.To {
+		case "extend_refused":
+			refusedAt = i
+			if e.Condition != "clean" || !e.Negated {
+				t.Fatalf("the refusal edge must be `when not clean`, got condition=%q negated=%v", e.Condition, e.Negated)
+			}
+		case "extend_campaign":
+			campaignAt = i
+		}
+	}
+	if refusedAt < 0 {
+		t.Fatal("no `extend_base -> extend_refused when not clean` edge: a refused start still buys an agent pass")
+	}
+	if campaignAt >= 0 && campaignAt < refusedAt {
+		t.Fatal("the campaign edge is declared before the refusal: the engine takes the first `when` that holds, and an unconditional edge is only the fallback — but declaration order is what the reader checks")
+	}
+	if _, ok := cr.Workflow.Nodes["extend_refused"]; !ok {
+		t.Fatal("extend_refused is not a node")
+	}
+
 	// The refusal the subbot states must travel with the verdict, or an agent
 	// told to "report in summary" writes a file to make its reasoning survive
 	// — and its own gate then refuses the file (production finding).
@@ -605,7 +679,11 @@ func TestGoldenMasterExtendRestoreIsOnEveryWayOut(t *testing.T) {
 	if notice == "" {
 		t.Fatal("extend_result publishes no notice")
 	}
-	for _, want := range []string{"outputs.extend_campaign.summary", "outputs.extend_gate.fail_log"} {
+	// Read from extend_verify, not from the agent node: a summary the agent
+	// omitted renders null, and `string + null` is a typed error that would
+	// fail the compute and take down a run that was only reporting a refusal.
+	// The tool node makes it a string once.
+	for _, want := range []string{"outputs.extend_verify.agent_summary", "outputs.extend_gate.fail_log"} {
 		if !strings.Contains(notice, want) {
 			t.Fatalf("the published notice drops %s — the subbot's stated cause and the gate's deterministic verdict travel together, never one without the other: %s", want, notice)
 		}
