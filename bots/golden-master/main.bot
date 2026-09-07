@@ -2413,9 +2413,12 @@ tool oracle_run:
                             return "?"
                         h.update((os.path.relpath(os.path.join(root, name), full) + "\n").encode("utf-8", "replace"))
                 if unreadable:
-                    # A subtree that could not be listed: the fingerprint would be
-                    # stable across a real change inside it — undecidable instead.
-                    return "?"
+                    # A subtree that could not be listed (a 0700 cache, a
+                    # docker-owned build dir): the readable part is fingerprinted
+                    # and marked partial — equal to itself across two reads, so
+                    # an untouched tree still clears; a change inside the
+                    # unreadable part is the blind spot, said by the prefix.
+                    return "u-" + h.hexdigest()
                 return h.hexdigest()
             if stat.S_ISLNK(st.st_mode):
                 return hashlib.sha1(os.readlink(full).encode("utf-8", "replace")).hexdigest()
@@ -2492,7 +2495,15 @@ tool oracle_run:
         rec = {}
         for e in entries or []:
             fp, sep, q = e.partition(":")
-            if sep and q and (fp in ("absent", "?") or fp.startswith("st-") or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
+            if e.startswith("st:"):
+                # The colon form a previous harness wrote for a big file
+                # ("st:<size>:<mtime>:<path>"): read as the current form, so a
+                # marker across the upgrade still clears an untouched file.
+                parts = e.split(":", 3)
+                if len(parts) == 4 and parts[3]:
+                    rec[parts[3]] = "st-%s-%s" % (parts[1], parts[2])
+                    continue
+            if sep and q and (fp in ("absent", "?") or fp.startswith(("st-", "u-")) or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
                 rec[q] = fp
             else:
                 # No fingerprint (a marker written before they were recorded): the
@@ -2714,7 +2725,7 @@ tool oracle_run:
             code, out = run_script(script, ws)
         else:
             code, out = None, "the mutant's revert.sh is no longer there: %s" % script
-        dirty, unknown, residue, residue_undecided, vanished = "", "", [], False, []
+        dirty, unknown, residue, residue_undecided, vanished, undecided_cause = "", "", [], False, [], ""
         if code == 0:
             # Through run(), and on a short leash. This sweep runs in EVERY mode,
             # record included, and the harness's contract is to answer with a
@@ -2746,6 +2757,7 @@ tool oracle_run:
                             residue.append(q)
                             if rec[q] == "?":
                                 residue_undecided = True
+                                undecided_cause = "unknown_content"
                     # Work that was uncommitted before the mutant and is clean now
                     # was undone by the revert (a `git checkout -- .`): not the
                     # residue this sweep stops on, but said — the operator lost it.
@@ -2758,6 +2770,7 @@ tool oracle_run:
                     # residue, the marker stays, an operator decides.
                     residue = after
                     residue_undecided = True
+                    undecided_cause = "no_record"
             else:
                 # A git that answered nothing is more undecidable still than one
                 # that answered with no record to compare against: the marker
@@ -2769,7 +2782,8 @@ tool oracle_run:
         return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
                 "marker": marker, "refused": False, "kept": code != 0 or bool(residue) or residue_undecided,
                 "dirty": dirty[:400], "dirty_unknown": unknown, "residue": residue[:50],
-                "residue_undecided": residue_undecided, "vanished": vanished[:50]}
+                "residue_undecided": residue_undecided, "vanished": vanished[:50],
+                "undecided_cause": undecided_cause}
 
 
     # The dispositions on which the gate STOPS rather than judges. Only "reverted"
@@ -2780,6 +2794,19 @@ tool oracle_run:
 
 
     def leftover_disposition(left):
+        """The disposition text, with the operator's destroyed work named on EVERY
+        kind: a revert that erased uncommitted work and left residue stops the
+        gate, and the stop is where the operator is told what to do — a text
+        that says "keep yours" after the script already removed it is worse
+        than silence."""
+        kind, text = _leftover_disposition(left)
+        if left.get("vanished"):
+            text += (" Uncommitted work that was there before the mutant is gone after the revert "
+                     "— the script undid it: %s." % ", ".join(left["vanished"][:20]))
+        return kind, text
+
+
+    def _leftover_disposition(left):
         """What the gate says about a leftover, and whether it may proceed.
 
         Returns (kind, text): "reverted" — revert.sh exit 0, a note (with what
@@ -2819,19 +2846,21 @@ tool oracle_run:
                 % (left.get("id"), left.get("dirty_unknown") or "no record", left.get("marker")))
         if left.get("code") == 0 and left.get("residue"):
             if left.get("residue_undecided"):
+                why = ("nothing recorded what was already uncommitted when the mutant went down"
+                       if left.get("undecided_cause") != "unknown_content" else
+                       "their content when the mutant went down could not be read or listed")
                 return "still_mutated", (
                     "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
-                    "exit 0), but the tree still shows changes and nothing recorded what was already "
-                    "uncommitted when the mutant went down, so their origin is UNDECIDABLE: %s. "
-                    "Undecidable is not clean — the tree will be neither judged nor recorded. Check "
+                    "exit 0), but the tree still shows changes and %s, so their origin is UNDECIDABLE: "
+                    "%s. Undecidable is not clean — the tree will be neither judged nor recorded. Check "
                     "those paths (git diff), revert the mutant's by hand, then delete the marker %s."
-                    % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
+                    % (left.get("id"), why, ", ".join(left["residue"][:20]), left.get("marker")))
             return "still_mutated", (
                 "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
                 "exit 0), but these paths changed since the mutant went down and the harness cannot "
                 "attribute the change — the mutant's residue, or work done in between: %s. The tree "
                 "will be neither judged nor recorded. Inspect them (git diff), revert the mutant's by "
-                "hand, keep yours, then delete the marker %s."
+                "hand, then delete the marker %s."
                 % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
         if left.get("code") == 0:
             text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
@@ -2844,9 +2873,6 @@ tool oracle_run:
             elif left.get("dirty_unknown"):
                 text += (" Whether the tree actually came back could not be checked: %s. "
                          "Unknown, not clean." % left["dirty_unknown"])
-            if left.get("vanished"):
-                text += (" Uncommitted work that was there before the mutant is gone after the revert "
-                         "— the script undid it: %s." % ", ".join(left["vanished"][:20]))
             return "reverted", text
         how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
         return "still_mutated", (
@@ -4483,8 +4509,9 @@ tool oracle_run:
                     os.chmod(secret, 0o755)
                     shutil.rmtree(secret, ignore_errors=True)
                 os.remove(os.path.join(tmp, "other.txt"))
-                check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
-                      [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
+                if os.geteuid() != 0:
+                    check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
+                          [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
                 # Un repertoire non suivi RECONSTRUIT entre deux runs (memes noms, autres
                 # contenus/mtimes) n'est pas un residu ; un fichier cree dedans l'est.
                 os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
@@ -4554,10 +4581,30 @@ tool oracle_run:
                     f.write("x")
                 os.chmod(os.path.join(tmp, "u", "locked"), 0)
                 try:
-                    check("un sous-repertoire illisible rend l'empreinte indecidable", dirty_fingerprint(tmp, "u/"), "?")
+                    if os.geteuid() != 0:
+                        check("un sous-repertoire illisible donne une empreinte partielle, stable",
+                              [dirty_fingerprint(tmp, "u/").startswith("u-"), dirty_fingerprint(tmp, "u/") == dirty_fingerprint(tmp, "u/")],
+                              [True, True])
                 finally:
                     os.chmod(os.path.join(tmp, "u", "locked"), 0o755)
                     shutil.rmtree(os.path.join(tmp, "u"), ignore_errors=True)
+                # Le travail efface est nomme AUSSI quand la porte s'arrete : un revert
+                # `git checkout -- .` efface l'edition de l'operateur ET laisse un fichier
+                # cree par le mutant.
+                with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                    f.write("operator edit\n")
+                scripts("printf 'mutant\\n' > created.txt", "git checkout -- .")
+                apply_mutant(lmeta, tmp)
+                left = revert_leftover_mutant(tmp)
+                kind, text = leftover_disposition(left or {})
+                check("residu ET travail efface : la porte s'arrete et nomme les deux",
+                      [kind, (left or {}).get("residue"), (left or {}).get("vanished"), "gone after the revert" in text, "keep yours" in text],
+                      ["still_mutated", ["created.txt"], ["f.txt"], True, False])
+                os.remove(applied_marker_for(tmp))
+                os.remove(os.path.join(tmp, "created.txt"))
+                # L'ancienne forme « st:taille:mtime:chemin » d'un marqueur d'avant est lue.
+                check("l'ancienne empreinte st: d'un gros fichier est lue comme la nouvelle",
+                      split_dirty_record(["st:8388609:1234:big.bin"]), {"big.bin": "st-8388609-1234"})
                 # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
                 mpath = applied_marker_for(tmp)
                 os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
