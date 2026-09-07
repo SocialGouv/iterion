@@ -41,8 +41,27 @@ task test:bundle
 task test:live:compile     # compile every -tags=live test without running/cost
 task openapi:check         # regenerate OpenAPI + studio types, fail on diff
 task sdk:ts:check          # TypeScript SDK build/typecheck/tests
+task pi-ext:check          # typecheck the pi extension + verify the embedded asset matches its source
+task brand:check           # verify the committed brand assets match what assets/brand/ generates
 task desktop:test
 task chart:lint
+```
+
+Studio UI end-to-end (Playwright against the real server). Not part of `check`
+— the browser download is opt-in and the target skips cleanly without it:
+
+```bash
+task test:e2e:ui:install   # one-time: download the Playwright chromium build
+task test:e2e:ui           # run the studio UI e2e suite
+```
+
+Regeneration targets. Run one when you change its source, then commit the
+regenerated output — `brand:check` and `openapi:check` fail on drift:
+
+```bash
+task brand:gen             # every committed brand asset (favicons, app icon, docs logo, pkg/brand, studio mark) from assets/brand/
+task brand:og              # the docs OpenGraph card (docs/public/og.png) from docs/scripts/og-card.html — needs the chromium above
+task changelog:gen         # CHANGELOG.md (current major) + docs/changelog/ archives, from git history
 ```
 
 `task test:live` and the narrower `test:live:*` tasks call real backends and require the credentials named in each task description. `test:goldens:record` also calls a real LLM and rewrites fixtures; ordinary verification should use `test:goldens`.
