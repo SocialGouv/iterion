@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.115.1](https://github.com/SocialGouv/iterion/compare/v3.115.0...v3.115.1) (2026-09-07)
+
+### Bug Fixes
+
+* **server:** retry PR lookup failures before board launches ([#897](https://github.com/SocialGouv/iterion/issues/897)) ([b9d6e2c](https://github.com/SocialGouv/iterion/commit/b9d6e2ce194881117dc9c472cf52a971ececa45b))
+
 ## [3.115.0](https://github.com/SocialGouv/iterion/compare/v3.114.0...v3.115.0) (2026-09-07)
 
 ### Features
