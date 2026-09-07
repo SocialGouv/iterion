@@ -268,18 +268,66 @@ first — on the CLI output and the API response. "12 skipped" tells an operator
 nothing they can act on; "8 in SocialGouv/iterion, 4 in SocialGouv/infra" *is*
 the next two commands.
 
-### 7. A terminal card is never reopened by the import
+### 7. A person's move out of a sink is the reopen; a machine's never is
 
 Leaving a `Terminal: true` native column is a **reopen** — an operator surface
 op with a dependents check and an audit trail, and the native board's guard
 (`ValidateStateExit`) refuses it to every automated writer, deliberately: the
 silent resurrection of a closed card was the failure that guard exists for.
 
-The import does not carve an exception. A board Status that would drag a card
-out of `done`/`blocked` is **refused, counted (`refused_terminal`) and
-logged**; the two boards stay legitimately divergent until a human reopens the
-card. Making automation the one writer allowed to resurrect work would trade
-that invariant for a convenience.
+**Amended (issue #839).** The first shipping rule was "the import does not
+carve an exception", and production disproved it: an operator moved a card from
+*Blocked* to *Inbox* on the roadmap board, and every pass since logged a
+refusal while the two boards diverged for ever. The sink protects a card from a
+MACHINE — the watchdog, a sweep, a stale event. A drag on the roadmap board is
+not a machine; it is the operator's hand, arriving through the only channel
+they have. Dropping it was not conservatism, it was losing an instruction.
+
+So the rule now distinguishes WHO moved the card and WHICH sink it left:
+
+- **A person's move out of a non-completion sink is honoured**, through
+  `Reopen` — the sanctioned exit, with its own dependents check and its own
+  audit marker — never through the automated write the sink refused. Counted
+  as `reopened_terminal` (its own bucket, disjoint from `moved`) and stamped
+  `reopened_at` on the card's sync record. Nothing consumed a parked card's
+  state: only `StateDone` satisfies a dependent's hard blockers
+  (`BlockerSatisfied`), which is exactly the line `native.ReopenableByBoardMove`
+  draws.
+- **A move out of the COMPLETION column is still refused.** A done card may
+  have promoted dependents whose launch consumed its completion — the case
+  `ReopenBlockedByDependents` refuses one card at a time — and that arbitration
+  cannot be taken on a board the promoted work does not appear on. Reopening
+  finished work stays a native gesture.
+- **"A person" is not a guess.** The pass honours a move only where it can
+  attribute it: `projectStatusApply` over a RECORDED status — the pass's own
+  "only the board moved" arm, where the status iterion last synchronized still
+  maps to the card's column, so nothing but a hand on the board changed
+  anything. That is the same oracle the reflect direction uses to answer "who
+  moved?", so the two directions cannot disagree. A **contested** move (both
+  sides moved) is refused: something else moved the card, and a board that
+  cannot see what did must not arbitrate it into a resurrection. A **first
+  sight** is refused too — a card with no recorded status has nothing that
+  CHANGED, and without that rule binding a board would drag every parked card
+  out of its column at once.
+- **The sink itself is untouched.** `ValidateStateExit` is unchanged, and the
+  pass consults it by TRYING the ordinary CAS rather than re-deriving the rule
+  — a second copy would drift the day a board declares another terminal column.
+  Every other writer (`SetState`, `SetStateFrom`, the owned family, a bot's
+  `board.move`) meets it with no exemption.
+
+**A refusal is a fact in the tool, not a log line.** The symptom of the old
+rule was "I moved it and nothing happened", with the explanation in
+`kubectl logs`. A refused move is now written **on the card**
+(`ExternalProject.SyncConflict`: from/to, the board column, the item, when it
+was FIRST observed) and **on the binding's health** (`SyncConflictReason` /
+`SyncConflictAt`, a second readout beside `DegradedReason` — separate because
+that one is recomputed level-triggered from the status vocabulary on every pass
+and would clear a refusal it never looked at). Both are level-triggered: the
+pass that no longer meets the refusal clears them, so the readout describes the
+board now rather than the worst thing that ever happened to it. The card's
+record keeps its FIRST timestamp across repeats, because a re-stamped one would
+rewrite the card every tick — bumping `UpdatedAt` and emitting the
+`card.updated` the trigger spine relaunches subscriptions on.
 
 ### 8. Idempotency: the card id IS the key
 

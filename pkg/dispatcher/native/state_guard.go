@@ -30,6 +30,12 @@ import (
 // but it is held to Reopen's dependents check (see
 // reopenMigrationAllowedLocked), because a bulk reopen must not be a way
 // around the refusal a single-card reopen would get.
+//
+// "Operator surface" includes a person's move on a BOUND roadmap board,
+// which the project sync relays through Reopen (ADR-097 §7) under
+// ReopenableByBoardMove below. That is a caller of the exit, not a hole in
+// the guard: it is still Reopen, still refused for the completion column,
+// and every machine writer still meets ValidateStateExit unchanged.
 
 // ValidateStateExit is the shared gate both twins' SetState family
 // calls. from == to never reaches it (no-ops return earlier).
@@ -48,6 +54,28 @@ func ValidateStateExit(b *Board, from, to string) error {
 	return fmt.Errorf("%w: %q is terminal — leaving it requires an explicit reopen (state %q refused)",
 		tracker.ErrTerminalStateExit, from, to)
 }
+
+// ReopenableByBoardMove reports whether a PERSON's move out of `from` on a
+// bound roadmap board (ADR-097) stands as the explicit reopen the sink
+// demands. It answers about the operator's own gesture arriving through the
+// only channel they have — never about a machine writer, which still meets
+// ValidateStateExit above with no exemption of any kind.
+//
+// A parked card qualifies: nothing consumed its terminal state, because only
+// StateDone satisfies a dependent's hard blockers (BlockerSatisfied), so the
+// drag un-parks a ticket the operator parked themselves.
+//
+// The COMPLETION column does not. A done card may already have promoted
+// dependents whose launch consumed its completion, which is exactly what
+// ReopenBlockedByDependents refuses one card at a time — and a reopen taken
+// from a board the promoted work never appears on could not be arbitrated
+// there. Reopening finished work stays a native gesture (`iterion remote
+// issues transition <card> <state>`, or the studio move, both of which route
+// through SetStateOrReopen).
+//
+// The caller supplies the source column of a move the sink already refused;
+// on any other move the answer is meaningless and unused.
+func ReopenableByBoardMove(from string) bool { return from != StateDone }
 
 // TerminalStateNames lists the board's sink columns. The Mongo twin
 // needs them as a CAS precondition: it cannot check-then-act without

@@ -5426,6 +5426,9 @@ export interface components {
             status_options?: {
                 [key: string]: string;
             };
+            /** Format: date-time */
+            sync_conflict_at?: string;
+            sync_conflict_reason?: string;
             sync_every: number;
             sync_every_seconds: number;
             sync_lease_owner?: string;
@@ -5663,10 +5666,13 @@ export interface components {
             number?: number;
             owner?: string;
             /** Format: date-time */
+            reopened_at?: string;
+            /** Format: date-time */
             state_at?: string;
             status?: string;
             /** Format: date-time */
             status_at?: string;
+            sync_conflict?: components["schemas"]["ProjectSyncConflict"];
         };
         ExternalRef: {
             author?: string;
@@ -5925,6 +5931,15 @@ export interface components {
             max: number;
             reserved: number;
             waiting: number;
+        };
+        ProjectSyncConflict: {
+            /** Format: date-time */
+            at?: string;
+            from: string;
+            item_id?: string;
+            reason?: string;
+            status?: string;
+            to: string;
         };
         RepoSummary: {
             can_admin: boolean;

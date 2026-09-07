@@ -269,8 +269,14 @@ export default function ProjectBoardTab({
  * BindingSummary renders what is actually bound: the board, the cadence, and
  * the EFFECTIVE column map with the columns the board does not carry flagged —
  * a mapped-but-absent column is silently inert, so it has to be visible here.
+ *
+ * It also carries the binding's two HEALTH readouts, which answer different
+ * questions and are rendered apart: a DEGRADATION is a bound column the board
+ * no longer has, a SYNC CONFLICT is a move a person made on the board that the
+ * native board's terminal sink refuses (ADR-097 §7). The second one's only
+ * other symptom is "I moved it and nothing happened".
  */
-function BindingSummary({ binding }: { binding: BoardBinding }) {
+export function BindingSummary({ binding }: { binding: BoardBinding }) {
   const missing = new Set(binding.missing_statuses ?? []);
   const sync = binding.sync_every_seconds ?? 0;
   return (
@@ -299,6 +305,19 @@ function BindingSummary({ binding }: { binding: BoardBinding }) {
         <InlineBanner tone="warning" layout="inline">
           This board has no <code>Status</code> field — labels are imported, but there is no
           status projection in either direction.
+        </InlineBanner>
+      )}
+
+      {binding.degraded_reason && (
+        <InlineBanner tone="warning" layout="inline">
+          {binding.degraded_reason}
+        </InlineBanner>
+      )}
+
+      {binding.sync_conflict_reason && (
+        <InlineBanner tone="warning" layout="inline">
+          {binding.sync_conflict_reason} Moving a card out of a terminal column is a
+          reopen, so it stays a deliberate action on the iterion board.
         </InlineBanner>
       )}
 

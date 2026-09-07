@@ -99,6 +99,12 @@ Automated writers use `SetStateFrom` (CAS on the declared source). Bots
 (`board.move`) get the refusal with **no** fallback — a run must not
 drag a card out of done.
 
+"Operator surfaces" gained one member in ADR-097 §7 (issue #839): a person's
+move out of a NON-completion sink on a bound roadmap board, which the project
+pass relays through this same `Reopen` when it can attribute the move to the
+board side having changed while the card did not. It is a caller of the exit,
+not a hole in the guard — the sink and every machine writer are unchanged.
+
 **6. The fence cannot repeat, and a lost fence is refused rather than
 guessed.** The epoch is floored at the server clock, so it is monotone
 even across a write that DROPS it: derived from the document alone it

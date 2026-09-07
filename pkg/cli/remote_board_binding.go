@@ -195,6 +195,17 @@ func printBoardBinding(p *Printer, b forge.BoardBinding) {
 		}
 		p.KV("Degraded", b.DegradedReason+since)
 	}
+	if b.SyncConflicted() {
+		// A move a person made on the forge board that the native board's
+		// terminal sink refuses. Not a degradation — the board reads fine —
+		// but the one shape whose only symptom is "I moved it and nothing
+		// happened", so it has to be readable here rather than in the log.
+		since := ""
+		if b.SyncConflictAt != nil {
+			since = " (since " + b.SyncConflictAt.Format(time.RFC3339) + ")"
+		}
+		p.KV("Refused moves", b.SyncConflictReason+since)
+	}
 	p.Blank()
 	p.Line("Status map:")
 	if b.StatusFieldID == "" {
