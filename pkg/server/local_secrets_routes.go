@@ -37,16 +37,50 @@ type localSecretView struct {
 }
 
 type createLocalSecretReq struct {
-	Name         string   `json:"name"`
-	Secret       string   `json:"secret"`
-	Scope        string   `json:"scope,omitempty"` // "global" (default) | "project"
+	Name   string `json:"name"`
+	Secret string `json:"secret"`
+	Scope  string `json:"scope,omitempty"` // "global" (default) | "project"
+	// Kind names the shape the value must have — "token" | "json" | "pem" |
+	// "raw". Empty infers it from the value (a PEM header, a JSON opener,
+	// else a bare token); "raw" stores it unchecked.
+	Kind         string   `json:"kind,omitempty"`
 	AllowedHosts []string `json:"allowed_hosts,omitempty"`
 }
 
 type updateLocalSecretReq struct {
-	Name         *string   `json:"name,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// Secret rotates the value; when present it goes through the same shape
+	// gate as a create — a rotation is a fresh paste.
 	Secret       *string   `json:"secret,omitempty"`
+	Kind         string    `json:"kind,omitempty"`
 	AllowedHosts *[]string `json:"allowed_hosts,omitempty"`
+}
+
+// checkLocalSecretShape is the studio door's half of the ingestion gate
+// `iterion secret set` runs. Without it the local store had a checked door and
+// an unchecked one, and a value that could not possibly authenticate — a
+// terminal transcript pasted as a token, a truncated credential document —
+// reached disk through the studio and surfaced as a provider 401 in the middle
+// of a run hours later.
+//
+// The refusal names the kind the value was read as and the `raw` opt-out, so
+// the remedy travels with the message; the value never appears in it.
+func checkLocalSecretShape(w http.ResponseWriter, kind, name, value string) bool {
+	shape, err := secrets.ResolveSecretShape(kind, value)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return false
+	}
+	if err := secrets.ValidateSecretShape(shape, name, value); err != nil {
+		var se *secrets.ShapeError
+		if errors.As(err, &se) {
+			httpError(w, http.StatusBadRequest, `%s (read as kind %q; send "kind":"raw" to store it unchecked)`, se.Error(), shape)
+			return false
+		}
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return false
+	}
+	return true
 }
 
 func toLocalSecretView(rec secrets.GenericSecret, scope string) localSecretView {
@@ -93,6 +127,9 @@ func (s *Server) handleCreateLocalSecret(w http.ResponseWriter, r *http.Request)
 	name := strings.TrimSpace(req.Name)
 	if !validGenericSecretName(name) || req.Secret == "" {
 		httpError(w, http.StatusBadRequest, "name + secret required")
+		return
+	}
+	if !checkLocalSecretShape(w, req.Kind, name, req.Secret) {
 		return
 	}
 	// Resolve the effective scope: "project" degrades to "global" when no
@@ -150,6 +187,9 @@ func (s *Server) handleUpdateLocalSecret(w http.ResponseWriter, r *http.Request)
 		rec.AllowedHosts = *req.AllowedHosts
 	}
 	if req.Secret != nil && *req.Secret != "" {
+		if !checkLocalSecretShape(w, req.Kind, rec.Name, *req.Secret) {
+			return
+		}
 		if err := secrets.SealInto(s.sealer, &rec, *req.Secret); err != nil {
 			httpError(w, http.StatusInternalServerError, "seal: %v", err)
 			return

@@ -175,6 +175,23 @@ func InferSecretShapeKind(value string) SecretShapeKind {
 	return SecretShapeToken
 }
 
+// ResolveSecretShape decides WHICH gate applies to a stored secret: the kind
+// the operator named, or — when they named none — the one the value itself
+// says (InferSecretShapeKind). An unrecognised kind is an error, never a
+// silent pass-through to no checking.
+//
+// It is shared by every door into the generic secret store (`iterion secret
+// set`, the studio's local Secrets view) so the two cannot disagree on what a
+// value is: the reason a check-free door existed at all is that the rule lived
+// at one of them. Each caller phrases its own remedy — the CLI names
+// `--kind raw`, an API names the field — from the kind returned here.
+func ResolveSecretShape(kind, value string) (SecretShapeKind, error) {
+	if strings.TrimSpace(kind) == "" {
+		return InferSecretShapeKind(value), nil
+	}
+	return ParseSecretShapeKind(kind)
+}
+
 // ValidateSecretShape is the ingestion gate for a stored secret whose
 // shape the operator named (or that InferSecretShapeKind read off the
 // value). field phrases the refusal — pass the secret's name so an

@@ -358,6 +358,23 @@ func readForfaitAccessToken(dir string) string {
 // sandboxed reports that the CLI subprocess will execute inside a REAL
 // sandbox container (docker/kubernetes — not the host-passthrough noop), so
 // forfait credential paths must resolve to in-container locations.
+// zaiEnv is the ONE place a z.ai key becomes CLI env, so the endpoint it is
+// sent to cannot depend on where the key came from. An operator's
+// ANTHROPIC_BASE_URL is an explicit routing choice — a self-hosted
+// z.ai-compatible endpoint, a regional facade, a debugging proxy — and it
+// applies to a tenant-provisioned key exactly as it does to one read from the
+// process env. Unset, the vendor default stands.
+func zaiEnv(key string) map[string]string {
+	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+	if baseURL == "" {
+		baseURL = secrets.ZAIDefaultBaseURL
+	}
+	return map[string]string{
+		"ANTHROPIC_BASE_URL":   baseURL,
+		"ANTHROPIC_AUTH_TOKEN": key,
+	}
+}
+
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
@@ -397,21 +414,11 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	if providerHint == "zai" {
 		if hasCreds {
 			if k := creds.APIKey(secrets.ProviderZAI); k != "" {
-				return map[string]string{
-					"ANTHROPIC_BASE_URL":   secrets.ZAIDefaultBaseURL,
-					"ANTHROPIC_AUTH_TOKEN": k,
-				}
+				return zaiEnv(k)
 			}
 		}
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-			if baseURL == "" {
-				baseURL = secrets.ZAIDefaultBaseURL
-			}
-			return map[string]string{
-				"ANTHROPIC_BASE_URL":   baseURL,
-				"ANTHROPIC_AUTH_TOKEN": zai,
-			}
+			return zaiEnv(zai)
 		}
 		// No z.ai key reachable — clear hostile env and let downstream
 		// surface the "no credential" error rather than silently
@@ -426,10 +433,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	if hasCreds {
 		switch {
 		case creds.APIKey(secrets.ProviderZAI) != "":
-			return map[string]string{
-				"ANTHROPIC_BASE_URL":   secrets.ZAIDefaultBaseURL,
-				"ANTHROPIC_AUTH_TOKEN": creds.APIKey(secrets.ProviderZAI),
-			}
+			return zaiEnv(creds.APIKey(secrets.ProviderZAI))
 		case creds.APIKey(secrets.ProviderAnthropic) != "":
 			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
 		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
@@ -442,14 +446,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	// from the inherited env stays authoritative.
 	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-			if baseURL == "" {
-				baseURL = secrets.ZAIDefaultBaseURL
-			}
-			return map[string]string{
-				"ANTHROPIC_BASE_URL":   baseURL,
-				"ANTHROPIC_AUTH_TOKEN": zai,
-			}
+			return zaiEnv(zai)
 		}
 	}
 	// Host path: nil = let the spawned CLI inherit whatever ambient

@@ -119,13 +119,9 @@ func RunSecretSet(p *Printer, opts SecretOptions) error {
 // the explicit opt-out for a value that is none of the three — the
 // refusal names it, so the remedy travels with the message.
 func validateSecretShape(kind, name, value string) error {
-	shape := secrets.InferSecretShapeKind(value)
-	if strings.TrimSpace(kind) != "" {
-		parsed, err := secrets.ParseSecretShapeKind(kind)
-		if err != nil {
-			return err
-		}
-		shape = parsed
+	shape, err := secrets.ResolveSecretShape(kind, value)
+	if err != nil {
+		return err
 	}
 	if err := secrets.ValidateSecretShape(shape, name, value); err != nil {
 		var se *secrets.ShapeError
