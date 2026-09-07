@@ -277,11 +277,24 @@ func runExtendBase(t *testing.T, ws string) extendBaseOut {
 	return res
 }
 
+// gitInNet runs git in the fixture with the AMBIENT identity dropped. The
+// tests below assert who authored a commit, and they say it with
+// `-c user.email=…` — which is CONFIG, and `GIT_AUTHOR_EMAIL` outranks
+// config. Every forge runner exports one (this repository's own does), so
+// without this filter the fixture commits under the host's name and
+// `identity_ok` reads false: a red that is the machine, not the code.
 func gitInNet(t *testing.T, ws string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-C", ws}, args...)
 	cmd := exec.Command("git", full...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	env := []string{}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GIT_AUTHOR_") || strings.HasPrefix(kv, "GIT_COMMITTER_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v (%s)", args, err, out)
@@ -353,6 +366,15 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 		return runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
 	}
 	t.Run("commits, blobs, ids and identity are published", func(t *testing.T) {
+		// The host's own identity, set hostile on purpose: GIT_AUTHOR_EMAIL
+		// outranks the `-c user.email` the fixture commits with, so a fixture
+		// that does not drop it reads the HOST as the author and identity_ok
+		// goes false — a red that is the machine. Set here so the guard is
+		// exercised on every host, not only the ones that export it.
+		t.Setenv("GIT_AUTHOR_NAME", "hostile")
+		t.Setenv("GIT_AUTHOR_EMAIL", "hostile@host")
+		t.Setenv("GIT_COMMITTER_NAME", "hostile")
+		t.Setenv("GIT_COMMITTER_EMAIL", "hostile@host")
 		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
 		sha, blob := act(t, ws, "extend@golden-master.iterion")
 		res := runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
@@ -790,4 +812,35 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 			t.Fatalf("the refusal must name what it could not read: %q", msg)
 		}
 	})
+}
+
+// TestGoldenMasterHarnessSelftestSurvivesAHostIdentity pins the harness's own
+// selftest — the gate that decides whether this harness may be synced into a
+// target tree — against the host it runs on. Its extension fixture asserts WHO
+// authored a commit, and it says so with `-c user.email=…`, which is config;
+// `GIT_AUTHOR_EMAIL` outranks config and every forge runner exports one (this
+// repository's own does). Unpinned, the fixture commits under the host's name
+// and the provenance check reads a stranger: the sync bot then refuses forever,
+// on a machine rather than on a defect. Measured red before the fix, on
+// exactly this environment.
+func TestGoldenMasterHarnessSelftestSurvivesAHostIdentity(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	harness, err := filepath.Abs("golden-master/oracle-harness.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	cmd := exec.Command("python3", harness)
+	cmd.Dir = ws
+	cmd.Env = append(os.Environ(),
+		"GM_MODE=selftest", "GM_WORKSPACE="+ws, "GM_DIR=.golden-master",
+		"GIT_AUTHOR_NAME=hostile", "GIT_AUTHOR_EMAIL=hostile@host",
+		"GIT_COMMITTER_NAME=hostile", "GIT_COMMITTER_EMAIL=hostile@host")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the harness selftest is RED under a host identity — the sync gate "+
+			"would refuse on the machine, not on the code: %v\n%s", err, out)
+	}
 }

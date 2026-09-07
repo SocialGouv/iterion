@@ -3638,8 +3638,18 @@ tool sync_harness:
                 json.dump({"entries": [base_entry]}, f)
             with open(os.path.join(xgm, "refs", "1.txt"), "w", encoding="utf-8") as f:
                 f.write("ref-1\n")
+            # `-c user.email` is CONFIG, and GIT_AUTHOR_EMAIL outranks config —
+            # every forge runner exports one, so on such a host the fixture below
+            # commits under the HOST's name and the provenance checks read someone
+            # else's author: a red that is the machine, not a defect, on the
+            # selftest that GATES this harness's own sync into a target tree.
+            # Pinned in the environment, where nothing outranks it.
+            def xident(email):
+                return ("GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=%s "
+                        "GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=%s " % (email, email))
+
             for cmd in ("git init -q", "git add -A",
-                        "git -c user.email=t@t -c user.name=t commit -qm seed"):
+                        xident("t@t") + "git commit -qm seed"):
                 run(cmd, xroot, timeout=60)
             xbase = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
 
@@ -3650,8 +3660,7 @@ tool sync_harness:
 
             def xcommit(email="t@t"):
                 run("git add -A", xroot, timeout=60)
-                run("git -c user.email=%s -c user.name=t commit -qm x" % email,
-                    xroot, timeout=60)
+                run(xident(email) + "git commit -qm x", xroot, timeout=60)
 
             def xrequest(req):
                 """The lot files its request and commits. A fixture that stages a
