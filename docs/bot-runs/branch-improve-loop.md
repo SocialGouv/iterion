@@ -1,5 +1,74 @@
 # Billy — branch-improvement validation
 
+## 2026-09-06 — 1.6.0 dogfooded live: three runs, the third validates the reserve and finds a real bug in the code it reviewed (runs 01a07804, 01a0782f, 01a07840)
+
+- Status: **validated** (run 3) — after two runs that validated nothing about
+  the bot and everything about how a bot reaches production.
+- Versions: bot `branch-improve-loop` 1.6.0 · run 1 on runner v3.112.7 (engine
+  WITHOUT the variadic `min`/`max` of #830) via a platform override · run 2 on
+  runner v3.112.14 with the server still at v3.112.6 · run 3 on server
+  v3.112.15 (`98334d181`) + runner v3.112.14 (`ba3db5361`), baked catalog.
+- Method: `/billy` on a real PR each time, cloud, sandboxed, claude_code
+  `claude-opus-5` on the anthropic forfait; `plan_review` peer = claw /
+  `openai/gpt-5.6-sol` (platform codex forfait). Run 1 on #850 (a stacked PR),
+  runs 2–3 on #855 (one commit, Revi green, nothing blocking to fix).
+- Result:
+  - **run 1** (`01a07804`, 18:38Z, override pushed with `iterion remote admin
+    bots push`): plan phase fine, then `compute "delivery_reserve"` →
+    `expr: max() takes …` — the runner's engine predates #830 — and the
+    runner **auto-resumed the same deterministic failure seven times in ten
+    minutes** (a fresh sandbox each time) until cancelled. Also: `git …
+    fix/board-dispatch-launch-refusal-is-transient` failed in the plan step —
+    the per-run clone does not fetch a PR base that is not the default
+    branch.
+  - **run 2** (`01a0782f`, 19:25Z, override removed, runner bumped to an image
+    carrying 1.6.0): `plan_budget_gate → campaign` with no `delivery_reserve`
+    node — the run was 1.5.x. The SERVER resolves team → platform → baked from
+    its own baked catalog; bumping the runner alone changes nothing.
+    Cancelled; server restarted.
+  - **run 3** (`01a07840`, 19:45Z): `delivery_reserve` → `{cap 10800,
+    reserve 1620, window 9180, left 8632}`, `delivery_deadline` →
+    `2026-09-06T22:19:53Z`, campaign prompt carries `STOP WORKING AT (UTC):
+    2026-09-06T22:19:53Z` — the checklist's numbers exactly. `plan_review`
+    hit `429 usage limit` on the codex forfait three times → ADR-091 skip
+    route, `plan_gate` stamped `provenance: … SKIPPED mid-run`. Campaign
+    64 min, $8.47, `commits_this_pass: 6`, `stopped_on_reserve: false`,
+    `declined: false`; `verify_run` exit 0; `gate {converged: true,
+    ship_now: true}`; `publish_verdict` posted `revi/review=success`.
+- Value: **high, and not the value expected.** The expected outcome was a
+  `DECLINED` (nothing to fix on a green PR). Instead the campaign judged
+  Revi's two sub-gate findings real, then found a **residual race in the very
+  fix under review** (#855's early-accept was a READ two syscalls before the
+  retire it exists to prevent, so #854 stayed reachable), **reproduced it**
+  with a scripted three-party interleaving on the pre-fix code, fixed it (the
+  rename becomes the test-and-set), added the first test of an untested arm,
+  and corrected three comments that overstated the code — with a green gate
+  (`task test` 136 packages, `-race -count=30`, a 9,600-publisher stress).
+  Six commits, all real. Re-based as PR #862.
+- Findings / misses:
+  - The campaign **pushed those six commits at 21:04Z onto a branch whose PR
+    had merged at 20:34Z**, and its verdict landed on the pre-merge head: the
+    stop-on-close cancel covers reviewers, not fixers, and the delivery tail
+    never checks that the PR is still open. Real work, invisible (#863).
+  - `reserve_seconds` and the absolute deadline are correct; whether the
+    agent HONOURS the deadline is unproven — this run finished at 39 % of its
+    window. The 40-minute-cap re-launch of the checklist is still owed.
+  - The `DECLINED` path is still unexercised live (the PR had things to fix).
+  - The codex forfait was exhausted from ~18:47Z on (Saturday evening); every
+    `plan_review` of the evening was skipped — the plan review's value is
+    zero on a shut window, by design and visibly (#647).
+- Engine hardening: #857 (P1 — a deterministic node failure is auto-resumed
+  in a loop), #858 (a platform override can outrun the runner's engine, no
+  guard), #859 (a stacked PR's base ref is not fetched), #863 (a fixer keeps
+  working after its PR merged), and `docs/platform-bots.md` § "Shipping a
+  baked-catalog change — two halves" (#861).
+- Lessons for next run: bump the runner image AND restart the server before
+  dogfooding a catalog change; never use a platform override for a bot that
+  needs an engine feature newer than the deployed runner; pick a PR that will
+  still be open for the whole run (or expect #863); run the 40-minute-cap
+  variant next to prove the deadline is obeyed, and a truly-clean PR to prove
+  `DECLINED`.
+
 ## 2026-09-06 — the delivery reserve, the no-op terminal, and two gates that lied (no run; bot 1.6.0)
 
 - Status: **partial** — validated by the engine and by shell-level tests of
