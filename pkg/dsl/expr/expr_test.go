@@ -431,15 +431,17 @@ func TestExpr_FuncCall_Tail(t *testing.T) {
 		}
 	}
 
-	// Wrong arity / non-numeric n are errors.
-	for _, bad := range []string{"tail(vars.items)", "tail(vars.items, vars.items)"} {
-		ast, err := Parse(bad)
-		if err != nil {
-			t.Fatalf("Parse(%q) error: %v", bad, err)
-		}
-		if _, err := ast.Eval(ctx); err == nil {
-			t.Errorf("tail(%q) expected error, got nil", bad)
-		}
+	// Wrong arity is refused at PARSE; a non-numeric n needs the values, so
+	// it stays an eval error.
+	if _, err := Parse("tail(vars.items)"); err == nil {
+		t.Error(`Parse("tail(vars.items)") expected an arity refusal, got nil`)
+	}
+	ast, err := Parse("tail(vars.items, vars.items)")
+	if err != nil {
+		t.Fatalf(`Parse("tail(vars.items, vars.items)") error: %v`, err)
+	}
+	if _, err := ast.Eval(ctx); err == nil {
+		t.Error("tail(items, items) expected an error, got nil")
 	}
 }
 

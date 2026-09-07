@@ -827,6 +827,12 @@ func (p *parser) parseFuncCallArgs(name string) (node, error) {
 		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, p.cur.value)
 	}
 	p.advance() // consume ')'
+	// Arity is an authoring error like an unknown name, and belongs at the
+	// same boundary: a call the evaluator cannot satisfy must never reach a
+	// compiled workflow, where it costs a sandbox and a clone to discover.
+	if err := checkArity(name, len(args)); err != nil {
+		return nil, err
+	}
 	return &funcCallNode{name: name, args: args}, nil
 }
 
@@ -1347,27 +1353,84 @@ func mulCheckedInt64(a, b int64) (int64, bool) {
 // Builtin functions
 // ---------------------------------------------------------------------------
 
+// builtin is one entry of the function registry: the implementation plus
+// the argument counts it accepts. The arity lives HERE, beside the
+// dispatch, so the parser (which refuses a bad call up front) and the
+// evaluator (which dispatches) read one declaration. A second copy would
+// drift, and the drift reads as "it compiled, then died mid-run".
+type builtin struct {
+	fn func(args []any) (any, error)
+	// min is the smallest accepted argument count; max the largest, or
+	// arityUnbounded when the builtin is variadic.
+	min, max int
+}
+
+// arityUnbounded marks a builtin with no upper bound on its arguments.
+const arityUnbounded = -1
+
 // builtins is the function registry. Kept private — extending the language
 // is a deliberate act, not an accidental side-effect of importing the
 // package. Future additions should live here.
-var builtins = map[string]func(args []any) (any, error){
-	"length":   builtinLength,
-	"concat":   builtinConcat,
-	"unique":   builtinUnique,
-	"contains": builtinContains,
-	"join":     builtinJoin,
-	"tail":     builtinTail,
-	"if":       builtinIf,
-	"sort":     builtinSort,
-	"keys":     builtinKeys,
-	"values":   builtinValues,
-	"slice":    builtinSlice,
-	"sum":      builtinSum,
-	"min":      builtinMin,
-	"max":      builtinMax,
-	"flatten":  builtinFlatten,
-	"floor":    builtinFloor,
-	"round":    builtinRound,
+var builtins = map[string]builtin{
+	"length":   {builtinLength, 1, 1},
+	"concat":   {builtinConcat, 1, arityUnbounded},
+	"unique":   {builtinUnique, 1, 1},
+	"contains": {builtinContains, 2, 2},
+	"join":     {builtinJoin, 2, 2},
+	"tail":     {builtinTail, 2, 2},
+	"if":       {builtinIf, 3, 3},
+	"sort":     {builtinSort, 1, 1},
+	"keys":     {builtinKeys, 1, 1},
+	"values":   {builtinValues, 1, 1},
+	"slice":    {builtinSlice, 3, 3},
+	"sum":      {builtinSum, 1, 1},
+	"min":      {builtinMin, 1, arityUnbounded},
+	"max":      {builtinMax, 1, arityUnbounded},
+	"flatten":  {builtinFlatten, 1, 1},
+	"floor":    {builtinFloor, 1, 1},
+	"round":    {builtinRound, 1, 1},
+}
+
+// ArityError reports a builtin call whose argument count the evaluator
+// cannot satisfy. Typed so a compiler raises its own diagnostic instead of
+// pattern-matching a message: the whole point is that an old engine refuses
+// a bot authored against a newer one BEFORE the run starts.
+type ArityError struct {
+	Func string
+	Got  int
+	Min  int
+	Max  int // arityUnbounded when the builtin is variadic
+}
+
+func (e *ArityError) Error() string {
+	switch {
+	case e.Max == arityUnbounded:
+		return fmt.Sprintf("expr: %s() takes at least %s, got %d", e.Func, plural(e.Min), e.Got)
+	case e.Min == e.Max:
+		return fmt.Sprintf("expr: %s() takes %s, got %d", e.Func, plural(e.Min), e.Got)
+	default:
+		return fmt.Sprintf("expr: %s() takes %d to %s, got %d", e.Func, e.Min, plural(e.Max), e.Got)
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return "1 argument"
+	}
+	return fmt.Sprintf("%d arguments", n)
+}
+
+// checkArity validates a call against the registry. Reports nil for a name
+// that is not a builtin — the unknown-function check owns that answer.
+func checkArity(name string, got int) error {
+	b, ok := builtins[name]
+	if !ok {
+		return nil
+	}
+	if got < b.min || (b.max != arityUnbounded && got > b.max) {
+		return &ArityError{Func: name, Got: got, Min: b.min, Max: b.max}
+	}
+	return nil
 }
 
 func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
@@ -1389,12 +1452,18 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		return evalNode(n.args[2], st)
 	}
 
-	fn, ok := builtins[n.name]
+	b, ok := builtins[n.name]
 	if !ok {
 		// Belt-and-suspenders: parser already rejects unknown names, but
 		// keep the runtime check in case an AST is constructed by other
 		// means in the future.
 		return nil, fmt.Errorf("expr: unknown function %q", n.name)
+	}
+	// Same belt for the arity: the registry is the one authority the parser
+	// and this dispatch share, so an AST built by other means is refused
+	// here on the same terms.
+	if err := checkArity(n.name, len(n.args)); err != nil {
+		return nil, err
 	}
 	args := make([]any, len(n.args))
 	for i, a := range n.args {
@@ -1404,7 +1473,7 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		}
 		args[i] = v
 	}
-	return fn(args)
+	return b.fn(args)
 }
 
 func builtinLength(args []any) (any, error) {

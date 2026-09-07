@@ -131,6 +131,10 @@ const (
 	DiagVarEnumNonString    DiagCode = "C125" // enum constraint on a non-string var type (error)
 	DiagVarDefaultNotInEnum DiagCode = "C126" // var default value not in the enum list (error)
 	DiagVarEnumDuplicate    DiagCode = "C127" // duplicate enum values in a var constraint (warning; deduped)
+	// Expression builtins: a call the evaluator cannot satisfy. The NAME is
+	// already refused at parse (C040); the ARITY is not visible there, so a
+	// call with the wrong argument count used to compile and die mid-run.
+	DiagBuiltinArity DiagCode = "C138" // builtin call whose argument count the evaluator cannot satisfy (error)
 	// Event-driven primitives (ADR-051): emit/wait nodes.
 	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
 	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)

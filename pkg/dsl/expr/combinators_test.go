@@ -206,7 +206,6 @@ func TestExpr_FloorRound(t *testing.T) {
 		{"floor(input.s)", "expects a number"},
 		{"round(input.s)", "expects a number"},
 		{"floor(input.inf)", "not a finite"},
-		{"floor(input.f, 2)", "takes 1 argument"},
 	}
 	for _, c := range errCases {
 		ast, err := Parse(c.src)
@@ -218,6 +217,12 @@ func TestExpr_FloorRound(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.contains) {
 			t.Errorf("Eval(%q) error = %v, want substring %q", c.src, err, c.contains)
 		}
+	}
+
+	// A wrong argument count is refused at PARSE — it needs no values, so it
+	// must never survive to a run.
+	if _, err := Parse("floor(input.f, 2)"); err == nil || !strings.Contains(err.Error(), "takes 1 argument") {
+		t.Errorf(`Parse("floor(input.f, 2)") error = %v, want an arity refusal`, err)
 	}
 }
 
