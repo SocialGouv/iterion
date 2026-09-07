@@ -178,7 +178,7 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 
 ## Key contracts
 
-- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL ranges C001–C199 and async C240–C242; bundle checks use C200–C234.
+- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL ranges C001–C199 and C240–C248; bundle checks use C200–C234. The C24x band is not only async: C240–C242 are the async-interaction / `await_answers` codes, C243 scopes `session: persist` out of a fan-out body, C244–C246 are the parallel-branch ownership checks, and C247–C248 guard a `fail` node's typed `code:`. The authoritative table is [`pkg/dsl/ir/diagnostics_codes.go`](../pkg/dsl/ir/diagnostics_codes.go), rendered for readers in [references/diagnostics.md](references/diagnostics.md).
 - `pkg/server` registers the HTTP route table that generates `openapi.json`; `task openapi:check` guards the committed spec and studio types.
 - `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
 - Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.
