@@ -3,6 +3,30 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.113.1](https://github.com/SocialGouv/iterion/compare/v3.113.0...v3.113.1) (2026-09-07)
+
+### Bug Fixes
+
+* **dsl,boardmongo:** a group param expands in one pass, and a cascade budgets one round-trip per write instead of the whole sweep ([#889](https://github.com/SocialGouv/iterion/issues/889)) ([565ae40](https://github.com/SocialGouv/iterion/commit/565ae4077f5ed46ee22f0f2b1681dc90ab8596e2)), closes [#879](https://github.com/SocialGouv/iterion/issues/879) [#883](https://github.com/SocialGouv/iterion/issues/883)
+
+    <details><summary>why</summary>
+
+    The bind loop called strings.ReplaceAll once per key, so a bound value containing `{{params.<other>}}` text was re-expanded on a later iteration, and Go's random map order decided which value won: two compiles of the same .bot could produce different node commands, edge conditions and loop caps.
+
+    </details>
+
+## [3.113.0](https://github.com/SocialGouv/iterion/compare/v3.112.25...v3.113.0) (2026-09-07)
+
+### Features
+
+* **modernize:** a lot QUALIFIES a moved reference before asking to re-record it ([#890](https://github.com/SocialGouv/iterion/issues/890)) ([21f4839](https://github.com/SocialGouv/iterion/commit/21f48398709ecb128af7ce3b8f7a7c6b3c3d02aa))
+
+    <details><summary>why</summary>
+
+    The net stays off-limits and a moved reference stays a regression until proven otherwise; what the doctrine did not say is that naming WHICH of three things moved is the lot's job, and that the gesture differs:
+
+    </details>
+
 ## [3.112.25](https://github.com/SocialGouv/iterion/compare/v3.112.24...v3.112.25) (2026-09-07)
 
 ### Bug Fixes
