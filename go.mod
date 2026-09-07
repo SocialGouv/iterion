@@ -121,7 +121,7 @@ require (
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
-	github.com/SocialGouv/claw-code-go v0.1.1-0.20260905191936-28eefe727f57
+	github.com/SocialGouv/claw-code-go v0.1.1-0.20260907213801-b6e34a390fad
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.37

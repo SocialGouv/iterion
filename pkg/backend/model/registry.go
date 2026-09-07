@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -313,11 +314,14 @@ func withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
 // codexCLIVersion resolves the Codex CLI version string to send in the
 // `version:` HTTP header when claw operates in ChatGPT-OAuth mode. OpenAI's
 // backend gates model availability on this value (e.g. gpt-5.5 requires
-// codex-cli >= 0.130). Resolution precedence:
-//  1. ITERION_CODEX_VERSION env var (operator override; lets a fresh-but-
-//     binary-stale environment claim newer model access)
-//  2. `codex --version` parsed at most once per process (cached)
-//  3. "" — claw-code-go falls back to its baked-in version string
+// codex-cli >= 0.130, gpt-6-astra >= 0.144). Resolution precedence:
+//  1. ITERION_CODEX_VERSION env var (operator override, sent as-is; lets a
+//     fresh-but-binary-stale environment claim newer model access)
+//  2. the newer of `codex --version` (parsed at most once per process) and
+//     claw's baked api.ChatGPTClientVersion — a stale codex binary on the
+//     host must not downgrade the identity below what claw alone would
+//     present (measured: a runner image shipping 0.139.0 was refused a
+//     model the 0.144.6 baseline is served)
 var (
 	codexVersionOnce   sync.Once
 	codexVersionCached string
@@ -343,7 +347,60 @@ func codexCLIVersion() string {
 		}
 		codexVersionCached = fields[len(fields)-1]
 	})
-	return codexVersionCached
+	return newerCodexVersion(codexVersionCached, api.ChatGPTClientVersion)
+}
+
+// newerCodexVersion returns the higher of two dotted numeric versions. A
+// side that does not parse loses; when neither parses, b (the baked value)
+// is returned.
+func newerCodexVersion(a, b string) string {
+	av, aok := parseDottedVersion(a)
+	bv, bok := parseDottedVersion(b)
+	switch {
+	case !aok:
+		return b
+	case !bok:
+		return a
+	}
+	for i := 0; i < len(av) || i < len(bv); i++ {
+		var x, y int
+		if i < len(av) {
+			x = av[i]
+		}
+		if i < len(bv) {
+			y = bv[i]
+		}
+		if x != y {
+			if x > y {
+				return a
+			}
+			return b
+		}
+	}
+	return a
+}
+
+// parseDottedVersion reads "0.144.6" / "v0.145.0-beta.1" into its numeric
+// components (a pre-release suffix is dropped from the component carrying
+// it). ok is false when any component is not a number.
+func parseDottedVersion(s string) ([]int, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if s == "" {
+		return nil, false
+	}
+	parts := strings.Split(s, ".")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		if i := strings.IndexAny(p, "-+"); i >= 0 {
+			p = p[:i]
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
 }
 
 // Register adds a provider factory under the given name.
