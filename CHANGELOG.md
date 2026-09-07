@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.113.0](https://github.com/SocialGouv/iterion/compare/v3.112.25...v3.113.0) (2026-09-07)
+
+### Features
+
+* **modernize:** a lot QUALIFIES a moved reference before asking to re-record it ([#890](https://github.com/SocialGouv/iterion/issues/890)) ([21f4839](https://github.com/SocialGouv/iterion/commit/21f48398709ecb128af7ce3b8f7a7c6b3c3d02aa))
+
+    <details><summary>why</summary>
+
+    The net stays off-limits and a moved reference stays a regression until proven otherwise; what the doctrine did not say is that naming WHICH of three things moved is the lot's job, and that the gesture differs:
+
+    </details>
+
 ## [3.112.25](https://github.com/SocialGouv/iterion/compare/v3.112.24...v3.112.25) (2026-09-07)
 
 ### Bug Fixes
