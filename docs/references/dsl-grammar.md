@@ -12,7 +12,7 @@ file = { top_level_decl } ;
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
                | agent | judge | router | human | tool | compute
-               | emit | wait | await_answers | subbot | group | use | workflow ;
+               | emit | wait | await_answers | fail | subbot | group | use | workflow ;
 ```
 
 At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
@@ -160,8 +160,9 @@ They share the exact property surface:
 | `await` | `wait_all`, `best_effort` |
 | `compress` | `off`, `on`, `ultra` |
 | `permission` | `off`, `ask`, `deny` |
+| `auto_memory` | `on`, `off` |
 | `needs` | one resource identifier or an identifier list |
-| `mcp`, `compaction`, `memory`, `sandbox`, `cursors` | nested blocks described here |
+| `mcp`, `compaction`, `memory`, `sandbox`, `cursors`, `fallbacks` | nested blocks described here |
 
 Nested blocks:
 
@@ -175,7 +176,21 @@ memory = "memory:" INDENT
            | "read:" BOOL | "write:" BOOL | "pre_compact_inject:" BOOL
            | "project_root:" BOOL | "visibility:" STRING }
          DEDENT ;
+
+fallbacks = "fallbacks:" INDENT { fallback_route } DEDENT ;
+fallback_route = IDENT ":" INDENT
+                   { "backend:" STRING | "model:" STRING | "provider:" STRING
+                   | "on:" ident_list | "metered:" BOOL
+                   | "action:" IDENT | "when:" STRING }
+                 DEDENT ;
 ```
+
+Fallback routes are NAMED rather than a bullet list because the lexer has no
+sequence token (`-` only ever starts `->`), and a name gives each route a
+stable id for the fall-through event and the run report. Declaration order is
+the try order and is preserved. `action:` accepts a bare identifier (`skip`);
+`when:` is a quoted expr over vars. See
+[ADR-087](../adr/087-cross-backend-model-fallback-chain.md).
 
 ## Routers
 
@@ -250,6 +265,11 @@ wait = "wait" IDENT ":" INDENT
          | "timeout:" STRING | "output:" IDENT }
        DEDENT ;
 
+await_answers = "await_answers" IDENT ":" INDENT
+                  { "description:" STRING | "from:" ( IDENT | STRING )
+                  | "timeout:" STRING }
+                DEDENT ;
+
 subbot = "subbot" IDENT ":" INDENT
            { "description:" STRING | "source:" STRING | with_block
            | "output:" IDENT | "needs:" needs_value | "isolated:" BOOL }
@@ -257,6 +277,25 @@ subbot = "subbot" IDENT ":" INDENT
 ```
 
 `wait` requires a timeout. A subbot launches the child source as a real nested run.
+`await_answers` is the deterministic sync point for async human questions: it
+parks its own branch until every pending question of the `from:` node (or the
+whole run) is answered, and also requires a timeout. See
+[async-interaction.md](../async-interaction.md).
+
+## Terminal failure nodes
+
+```ebnf
+fail = "fail" IDENT ":" INDENT
+         { "code:" ( IDENT | STRING ) | "message:" STRING
+         | "resumable:" BOOL | "description:" STRING }
+       DEDENT ;
+```
+
+A named `fail` declaration is a typed terminal failure, distinct from the bare
+`fail` target usable in an edge (see `node_ref` below). `code:` is accepted as
+a bare identifier or a quoted string; its UPPER_SNAKE shape is a compile-time
+check (C247), not a lexical one, so a malformed code is reported as its own
+diagnostic rather than an opaque parse error.
 
 ## Groups and uses
 
