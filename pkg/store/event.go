@@ -260,6 +260,21 @@ const (
 	//     stays recoverable from the git-meta snapshot) — the failure
 	//     shape; exactly one of ref/error is present
 	EventRunBankAttempt EventType = "run_bank_attempt"
+	// EventRunWorkspaceCheckpoint marks the runner preserving a
+	// COPY-BASED sandbox's work outside the pod, mid-run, on
+	// iterion/run-<id>-checkpoint. On such a driver nothing a run
+	// produces leaves the pod before teardown, so a hard pod death takes
+	// everything — measured: eight hours and 655 tool calls lost with an
+	// export that could no longer read the pod. The checkpoint is not a
+	// bank: the run doc is untouched (no FinalBranch — a half-done run
+	// must not read as merge-eligible), the commit is authored by
+	// iterion rather than by the run, and this event is the only durable
+	// record that the ref exists. Data:
+	//   - ref / commit: the checkpoint ref and what it holds — the
+	//     success shape
+	//   - ref / error: why the push failed and the work is still only
+	//     inside the pod — the failure shape
+	EventRunWorkspaceCheckpoint EventType = "run_workspace_checkpoint"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from

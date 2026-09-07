@@ -256,7 +256,7 @@ func TestSandboxRunObserver(t *testing.T) {
 	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelWarn, &buf)}}
 
 	// No refreshable refs: still registers, no warning.
-	obs := r.sandboxRunObserver(context.Background(), "run-1", "team-1", nil)
+	obs := r.sandboxRunObserver(context.Background(), sandboxObserverOpts{runID: "run-1", tenantID: "team-1"})
 	obs(fakeSandboxRun{})
 	if r.sandboxRunFor("run-1") == nil {
 		t.Fatal("observer must register the live sandbox run")
@@ -269,7 +269,8 @@ func TestSandboxRunObserver(t *testing.T) {
 		t.Fatal("unregister must drop the run from the registry")
 	}
 
-	obs = r.sandboxRunObserver(context.Background(), "run-2", "team-1", map[string]string{"forge_token": "id-1"})
+	obs = r.sandboxRunObserver(context.Background(), sandboxObserverOpts{
+		runID: "run-2", tenantID: "team-1", secretRefs: map[string]string{"forge_token": "id-1"}})
 	obs(fakeSandboxRun{})
 	out := buf.String()
 	if !strings.Contains(out, "does not support mid-run secret refresh") || !strings.Contains(out, "fake-driver") {
