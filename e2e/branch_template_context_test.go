@@ -76,6 +76,7 @@ func nodeOutputsFor(events []*store.Event, nodeID string) []map[string]any {
 // only in the branch's own outputs view, so it also pins whose view the
 // snapshot was taken from.
 func TestTemplateContextReachesFanOutBranches(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "branch_template_context_mini.bot")
 	s := tmpStore(t)
 	const runID = "e2e-branch-template-ctx"

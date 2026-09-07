@@ -227,6 +227,7 @@ func assertLameDuck(t *testing.T, base string, exitCh <-chan error, stderr *byte
 //     pkg/server/server_routes.go → the /healthz poll returns 404 and
 //     times out.
 func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -377,6 +378,7 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 // Mutation coverage: swallow ListenAndServe's error in RunStudio (or in
 // runServer) so the process exits 0 → this assertion fires.
 func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -440,6 +442,7 @@ func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
 // error is refactored, this test flags that the operator-facing message
 // changed.
 func TestRunnerCommandRefusesLocalMode(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -491,6 +494,7 @@ func TestRunnerCommandRefusesLocalMode(t *testing.T) {
 // `ITERION_MODE "" invalid` OR the runner charges into NATS. Either
 // downstream error lacks the "load config" substring below.
 func TestRunnerCommandRefusesBrokenConfig(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}

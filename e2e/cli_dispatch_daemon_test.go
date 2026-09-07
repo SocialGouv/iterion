@@ -107,6 +107,7 @@ func waitHealthy(t *testing.T, base string, done <-chan error) {
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeDispatchConfig(t, dir)
 	storeDir := filepath.Join(dir, "store")
@@ -190,6 +191,7 @@ func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {
 }
 
 func TestDispatchDaemonFailsLoudlyOnABusyPort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeDispatchConfig(t, dir)
 
@@ -220,6 +222,7 @@ func TestDispatchDaemonFailsLoudlyOnABusyPort(t *testing.T) {
 }
 
 func TestDispatchDaemonRejectsAnInvalidConfig(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "broken.yaml")
 	// A tracker kind with no workflow: the daemon must refuse to boot rather

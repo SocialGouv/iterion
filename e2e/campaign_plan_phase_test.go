@@ -92,6 +92,7 @@ func captureCampaignInputs(exec *scenarioExecutor, into *[]map[string]any) {
 // authored, no peer or revise node runs, and the campaign receives the
 // author's plan with a provenance stamp saying no peer looked at it.
 func TestCampaignPlanPhase_ReviewOffStillAuthorsThePlan(t *testing.T) {
+	t.Parallel()
 	for _, tc := range campaignBotCases {
 		t.Run(tc.name, func(t *testing.T) {
 			wf := compileFixtureStubSafe(t, tc.fixture)
@@ -144,6 +145,7 @@ func TestCampaignPlanPhase_ReviewOffStillAuthorsThePlan(t *testing.T) {
 // explicit opt-out — no plan node, the campaign starts immediately with
 // every hand-off field present-and-empty (the plan-in-stride shape).
 func TestCampaignPlanPhase_OffSkipsPlanningExplicitly(t *testing.T) {
+	t.Parallel()
 	for _, tc := range campaignBotCases {
 		t.Run(tc.name, func(t *testing.T) {
 			wf := compileFixtureStubSafe(t, tc.fixture)
@@ -179,6 +181,7 @@ func TestCampaignPlanPhase_OffSkipsPlanningExplicitly(t *testing.T) {
 // alert sinks read — through the named `workspace_not_a_repo` fail node,
 // not only on the probe's persisted output.
 func TestCampaignPrecondition_NotARepoFailsBeforeAnyLLM(t *testing.T) {
+	t.Parallel()
 	for _, tc := range campaignBotCases {
 		t.Run(tc.name, func(t *testing.T) {
 			runProbeRefusal(t, tc, "workspace_dir '/tmp/nowhere' does not exist")
@@ -190,6 +193,7 @@ func TestCampaignPrecondition_NotARepoFailsBeforeAnyLLM(t *testing.T) {
 // shape — a repository whose base ref is not reachable from HEAD — takes the
 // same typed exit, on the bot whose mission is anchored on base_ref.
 func TestCampaignPrecondition_UnreachableBaseFailsTyped(t *testing.T) {
+	t.Parallel()
 	for _, tc := range campaignBotCases {
 		if tc.name != "branch-improve-loop" {
 			continue

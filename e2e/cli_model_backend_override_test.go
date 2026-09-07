@@ -56,6 +56,7 @@ func runOverrideFixture(t *testing.T, fixture, runID string, models, backends []
 }
 
 func TestRunBackendOverrideRetargetsNodes(t *testing.T) {
+	t.Parallel()
 	t.Run("no override: the node's DSL backend is what executes", func(t *testing.T) {
 		msg, status := runOverrideFixture(t, "model_backend_override_mini.bot", "backend-ov-none", nil, nil)
 		if !strings.Contains(msg, "dsl_backend_absent") {
@@ -98,6 +99,7 @@ func TestRunBackendOverrideRetargetsNodes(t *testing.T) {
 }
 
 func TestRunModelOverrideRetargetsNodes(t *testing.T) {
+	t.Parallel()
 	t.Run("no override: the node's DSL model spec is what executes", func(t *testing.T) {
 		msg, status := runOverrideFixture(t, "model_override_claw_mini.bot", "model-ov-none", nil, nil)
 		if !strings.Contains(msg, "dslprovider") {

@@ -30,6 +30,7 @@ func compileSource(t *testing.T, name, src string) *ir.Workflow {
 // the persisted artifact / downstream refs. The ladder itself is unit-tested
 // in pkg/backend/model; this pins the engine glue with the stub executor.
 func TestVerifiedActionEngineEmitsAndStrips(t *testing.T) {
+	t.Parallel()
 	src := `tool commit_changes:
   command: "echo wip"
   postcondition: "git rev-parse HEAD"

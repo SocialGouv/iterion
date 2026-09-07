@@ -103,6 +103,7 @@ func toolText(t *testing.T, resp map[string]any) string {
 // for the run to finish in the store, then read it back through a
 // SECOND MCP server (local_run_get + local_run_report).
 func TestMCPServer_DetachedRunSurvivesServerExit(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}

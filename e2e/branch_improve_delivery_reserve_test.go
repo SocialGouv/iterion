@@ -79,6 +79,7 @@ func runReserveScenario(t *testing.T, id string, tweak func(*ir.Workflow)) *stor
 // the bot's own budget: the ratio dominates the floor, so the campaign is told
 // to stop with 15% of the run still unspent.
 func TestBranchImproveLoop_DeliveryReserveOnTheShippedCap(t *testing.T) {
+	t.Parallel()
 	run := runReserveScenario(t, "run-bil-reserve-default", nil)
 	res := reserveOutput(t, run)
 
@@ -109,6 +110,7 @@ func TestBranchImproveLoop_DeliveryReserveOnTheShippedCap(t *testing.T) {
 // the proportional slice is smaller than the tail's absolute cost, so the
 // floor takes over — and the clamp still leaves the campaign half the run.
 func TestBranchImproveLoop_DeliveryReserveFloorHoldsOnASmallCap(t *testing.T) {
+	t.Parallel()
 	run := runReserveScenario(t, "run-bil-reserve-small", func(wf *ir.Workflow) {
 		wf.Budget.MaxDuration = "40m" // what `iterion run --max-duration 40m` resolves to
 	})
@@ -129,6 +131,7 @@ func TestBranchImproveLoop_DeliveryReserveFloorHoldsOnASmallCap(t *testing.T) {
 // that the floor would eat it must still leave the campaign half the window —
 // a reserve is worth nothing if there is no work to deliver.
 func TestBranchImproveLoop_DeliveryReserveClampLeavesHalfTheRun(t *testing.T) {
+	t.Parallel()
 	run := runReserveScenario(t, "run-bil-reserve-clamp", func(wf *ir.Workflow) {
 		wf.Budget.MaxDuration = "10m"
 	})
@@ -146,6 +149,7 @@ func TestBranchImproveLoop_DeliveryReserveClampLeavesHalfTheRun(t *testing.T) {
 // guard plan_budget_gate carries. An unbudgeted run must not be told to stop
 // working immediately.
 func TestBranchImproveLoop_DeliveryReserveUnboundedIsZero(t *testing.T) {
+	t.Parallel()
 	run := runReserveScenario(t, "run-bil-reserve-unbounded", func(wf *ir.Workflow) {
 		wf.Budget.MaxDuration = ""
 	})
@@ -172,6 +176,7 @@ func TestBranchImproveLoop_DeliveryReserveUnboundedIsZero(t *testing.T) {
 // It must therefore follow the EFFECTIVE cap, not the DSL literal. This drives
 // the real clamp, not a hand-set field.
 func TestBranchImproveLoop_DeliveryReserveFollowsAPlatformClamp(t *testing.T) {
+	t.Parallel()
 	run := runReserveScenario(t, "run-bil-reserve-clamped", func(wf *ir.Workflow) {
 		// Exactly what ITERION_CLOUD_MAX_DURATION=2h30m does on the pod.
 		wf.Budget.ClampToCeiling(&ir.Budget{MaxDuration: "2h30m"})
@@ -206,6 +211,7 @@ func TestBranchImproveLoop_DeliveryReserveFollowsAPlatformClamp(t *testing.T) {
 // what publish_verdict posts as the merge-gate's build verdict, so widening it
 // would green a gate on a pass that ran out of time.
 func TestBranchImproveLoop_WindowStoppedPassLeavesTheLoop(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	st := &branchCampaignState{cleanBy: 99} // never reports clean by itself
@@ -264,6 +270,7 @@ func TestBranchImproveLoop_WindowStoppedPassLeavesTheLoop(t *testing.T) {
 // exempt by construction — it re-enters the same campaign whose window the
 // reserve already published, and outputs persist.
 func TestBranchImproveLoop_DeliveryReserveIsTheOnlyWayIn(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	if _, ok := wf.Nodes["delivery_reserve"].(*ir.ComputeNode); !ok {
 		t.Fatalf("delivery_reserve is %T, want *ir.ComputeNode (deterministic arithmetic, no LLM and no shell)", wf.Nodes["delivery_reserve"])

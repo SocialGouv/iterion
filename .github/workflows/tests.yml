@@ -140,15 +140,20 @@ jobs:
       - name: E2E tests
         # The ONLY run of the e2e package in this job (the unit step excludes
         # it). The number bounds a HANG, not a slow machine: a timeout that a
-        # healthy run can reach is a coin flip
-        # that ejects PRs from the merge queue with a panic dump naming
-        # whichever test happened to be in flight. Measured on green
-        # merge-group builds: 568-572 s for the whole package (2026-09-06,
-        # five groups building in parallel on shared runners), so 600 s left
-        # 5 % of headroom and one build crossed it. 900 s = the race job's
-        # budget for the same package; the structural fix — sharding or
-        # t.Parallel() so the wall-clock stops tracking the suite's size — is
-        # SocialGouv/iterion#842. A true hang still trips this.
+        # healthy run can reach is a coin flip that ejects PRs from the merge
+        # queue with a panic dump naming whichever test happened to be in
+        # flight.
+        #
+        # The suite runs its tests in parallel (t.Parallel() on every row that
+        # owns its state; e2e/main_test.go caps how many run at once, because
+        # these tests wait on background loops and oversubscription starves
+        # them). Measured 2026-09-07 on a 32-core box, whole package, the two
+        # runs back to back: 503.8 s at -parallel 1, 114.5 s capped — a 4.4x
+        # cut, so the wall clock no longer tracks the suite's size the way the
+        # 568-572 s merge-group builds of 2026-09-06 did. Slowest parallel run
+        # observed across six measurements: 259 s, on a box shared with other
+        # builds. 900 s is past 2x that, so it stays as the hang bound rather
+        # than being re-tightened onto the new figure.
         run: go test -mod=vendor -v -timeout 900s ./e2e/...
 
   race:
@@ -190,15 +195,13 @@ jobs:
           yq --version
 
       - name: Race tests (unit + e2e)
-        # 1800s: -race runs the e2e package 2-3x slower than the plain job —
-        # measured 862 s on a green merge-group build and over 900 s (panic) on
-        # 2026-09-06 as the suite grew; the structural fix is #842. Old note:
-        # 900s, not the plain job's 600s: -race runs the e2e package 2-3x
-        # slower (~170-200s plain → 400-600s under -race), so 600s left ZERO
-        # headroom and a loaded runner crossed it — a 10m panic dump naming
-        # whichever test happened to be in flight (seen on main 2026-08-25
-        # and on the pr-523 merge-group). The number bounds a HANG, not a
-        # slow machine; the 20-minute job budget still caps the whole run.
+        # 1800s bounds a HANG, not a slow machine. -race runs the e2e package
+        # 2-3x slower than the plain job; before the suite went parallel that
+        # measured 862 s on a green merge-group build and crossed 900 s
+        # (panic) on 2026-09-06. With t.Parallel() the same package measures
+        # 153.8 s under -race (2026-09-07, 32-core box, race detector clean),
+        # so the budget now carries an order of magnitude of headroom and
+        # stays as the hang bound. The 45-minute job budget caps the run.
         run: go test -race -mod=vendor -timeout 1800s ./...
 
   mongo-conformance:
