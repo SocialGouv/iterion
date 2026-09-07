@@ -89,3 +89,16 @@ first bilan for a bot lands.
 | Themis | `arbitrate` | doctrine-bound judge for the divergence cases a programme leaves blocked | _not yet_ |
 | Envy | `review-env` | live review environment — deploys the current commit, hands back a real https URL | _not yet_ |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |
+
+## Cross-bot campaign records
+
+A campaign that sweeps the whole catalog in one session belongs to no single
+bot, so it gets its own dated file rather than a section in each. The per-bot
+detail still lands in the `<bot>.md` bilans; these record the sweep — what was
+run, what broke, and the fleet-wide conclusions.
+
+| Date | Campaign |
+|---|---|
+| 2026-06-24 | [Fleet dogfood — every catalog bot, one night](2026-06-24-fleet-dogfood-campaign.md) |
+| 2026-06-23 | [Catalog re-test campaign + Verified Action delivery](2026-06-23-retest-campaign.md) |
+| 2026-06-23 | [GLM-5.2 dogfood campaign (Wave 1 + Wave 2 + integration)](2026-06-23-glm-dogfood-campaign.md) |
