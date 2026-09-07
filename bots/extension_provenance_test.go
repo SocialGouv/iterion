@@ -348,6 +348,10 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 		gitInNet(t, ws, "-c", "user.email="+email, "-c", "user.name=x", "commit", "-qm", "act")
 		return gitInNet(t, ws, "rev-parse", "HEAD"), gitInNet(t, ws, "rev-parse", "HEAD:.golden-master/refs/002.txt")
 	}
+	res := func(t *testing.T, ws, base string) extendVerifyOut {
+		t.Helper()
+		return runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
+	}
 	t.Run("commits, blobs, ids and identity are published", func(t *testing.T) {
 		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
 		sha, blob := act(t, ws, "extend@golden-master.iterion")
@@ -375,6 +379,31 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 		runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
 		if got := gitInNet(t, ws, "config", "--get", "user.email"); got != "extend@golden-master.iterion" {
 			t.Fatalf("the identity was restored inside the loop body — pass 2's agent would commit as %q and identity_ok could never hold again", got)
+		}
+	})
+	// Two certified paths, one of them carrying a SPACE: the certificate must
+	// come back as one entry per LINE. Space-joined, those two entries are
+	// indistinguishable from four tokens, and the reader drops the halves —
+	// which is how a certified reference loses its content binding and can be
+	// rewritten later while keeping its exemption.
+	t.Run("the certificate is one entry per line, spaces and all", func(t *testing.T) {
+		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
+		spaced := ".golden-master/refs/a b.txt"
+		if err := os.WriteFile(filepath.Join(ws, filepath.FromSlash(spaced)), []byte("STATUS 200\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		act(t, ws, "extend@golden-master.iterion")
+		lines := strings.Split(res(t, ws, base).ActedBlobs, "\n")
+		if len(lines) != 2 {
+			t.Fatalf("two certified paths must publish two lines, got %q", lines)
+		}
+		seen := map[string]bool{}
+		for _, l := range lines {
+			p := l[:strings.LastIndex(l, "=")]
+			seen[p] = true
+		}
+		if !seen[spaced] || !seen[".golden-master/refs/002.txt"] {
+			t.Fatalf("a path with a space did not survive the encoding: %q", lines)
 		}
 	})
 	t.Run("a commit under another identity is said", func(t *testing.T) {
@@ -581,4 +610,184 @@ func TestGoldenMasterExtendRestoreIsOnEveryWayOut(t *testing.T) {
 			t.Fatalf("the published notice drops %s — the subbot's stated cause and the gate's deterministic verdict travel together, never one without the other: %s", want, notice)
 		}
 	}
+}
+
+// TestGoldenMasterExtendVerifyCertifiesNothingOnARefusedStart pins the second
+// half of the absorption refusal. extend_base refuses a dirty net by handing
+// the agent no pending request — prose, which the agent may ignore — while
+// this node published the run's commits as the net subbot's provenance
+// regardless. The lot's route: leave the reference and its act block
+// uncommitted, commit only the request so it routes here, and let the
+// subbot's tidy-up commit introduce the act inside `acted_commits`.
+func TestGoldenMasterExtendVerifyCertifiesNothingOnARefusedStart(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
+	// Whatever gets committed in that window — here, the very content that
+	// made the net dirty.
+	if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("the lot's own file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInNet(t, ws, "add", "-A")
+	gitInNet(t, ws, "-c", "user.email=extend@golden-master.iterion", "-c", "user.name=x",
+		"commit", "-qm", "tidy-up")
+
+	clean := runExtendVerifyClean(t, ws, base, `[{"id": "E-1"}]`, true)
+	if clean.ActedCommits == "" {
+		t.Fatal("fixture is wrong: a CLEAN start must publish the run's commits")
+	}
+	refused := runExtendVerifyClean(t, ws, base, `[{"id": "E-1"}]`, false)
+	if refused.ActedCommits != "" || refused.ActedIds != "" || refused.ActedBlobs != "" {
+		t.Fatalf("a refused start certified something: %+v", refused)
+	}
+	if refused.CleanStart {
+		t.Fatalf("clean_start must carry the refusal: %+v", refused)
+	}
+}
+
+// TestHarnessReadsTheCertificateOneEntryPerLine pins the parser against the
+// encoding, end to end: a surface path with a SPACE (both ids and paths are
+// lot-authored, and their guards reject slashes and dots, not whitespace) used
+// to split into two tokens — the left dropped, the right a bogus key — so the
+// real path had no certified blob and the post-act rewrite check never fired
+// for it. An entry the judge cannot read is now refused, not dropped.
+func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	harness, err := filepath.Abs("golden-master/oracle-harness.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, env ...string) (map[string]any, int) {
+		t.Helper()
+		ws := t.TempDir()
+		gm := filepath.Join(ws, ".golden-master")
+		if merr := os.MkdirAll(gm, 0o755); merr != nil {
+			t.Fatal(merr)
+		}
+		g := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+			if out, gerr := cmd.CombinedOutput(); gerr != nil {
+				t.Fatalf("git %v: %v (%s)", args, gerr, out)
+			}
+		}
+		g("init", "-q", "-b", "main")
+		g("config", "user.email", "t@t")
+		g("config", "user.name", "t")
+		if werr := os.WriteFile(filepath.Join(gm, "corpus.json"), []byte(`{"entries": []}`), 0o644); werr != nil {
+			t.Fatal(werr)
+		}
+		g("add", "-A")
+		g("commit", "-qm", "base")
+		cmd := exec.Command("python3", harness)
+		cmd.Dir = ws
+		cmd.Env = append(append(os.Environ(),
+			"GM_MODE=extend-verify", "GM_WORKSPACE="+ws, "GM_DIR=.golden-master",
+			"GM_BASE=HEAD"), env...)
+		out, _ := cmd.Output()
+		exit := 0
+		if cmd.ProcessState != nil {
+			exit = cmd.ProcessState.ExitCode()
+		}
+		var v map[string]any
+		if uerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &v); uerr != nil {
+			t.Fatalf("no verdict: %v (out %q)", uerr, out)
+		}
+		return v, exit
+	}
+
+	t.Run("a path with a space keeps its certificate", func(t *testing.T) {
+		v, exit := run(t, "GM_ACTED_COMMITS=", "GM_ACTED_IDS=E 1",
+			"GM_ACTED_BLOBS=.golden-master/refs/a b.txt=1111111111111111111111111111111111111111")
+		if exit != 0 || v["error"] != nil {
+			t.Fatalf("a legal path was refused: exit %d %v", exit, v["error"])
+		}
+		// The proof the entry survived whole: `provenance` says the strict
+		// rule ran, and nothing was dropped on the floor.
+		if v["provenance"] != "strict" {
+			t.Fatalf("the provenance was not honoured: %v", v)
+		}
+	})
+	// The ids carry the same defect as the blobs, and it is the one Revi's
+	// finding did not name: an id with a space split OUT of the set, so the
+	// act it covers silently lost the content rule's protection. Driven
+	// through a real ledger, because only an act that NEEDS the hatch can
+	// show whether its id survived the parser.
+	t.Run("an act id with a space keeps its cover", func(t *testing.T) {
+		ws := t.TempDir()
+		gm := filepath.Join(ws, ".golden-master")
+		if err := os.MkdirAll(filepath.Join(gm, "refs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		g := func(args ...string) string {
+			t.Helper()
+			cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+			out, gerr := cmd.CombinedOutput()
+			if gerr != nil {
+				t.Fatalf("git %v: %v (%s)", args, gerr, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		g("init", "-q", "-b", "main")
+		g("config", "user.email", "t@t")
+		g("config", "user.name", "t")
+		if err := os.WriteFile(filepath.Join(gm, "corpus.json"), []byte(`{"entries": []}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		g("add", "-A")
+		g("commit", "-qm", "base")
+		base := g("rev-parse", "HEAD")
+		ledger := func(blocks string) {
+			if err := os.WriteFile(filepath.Join(gm, "EXTENSIONS.md"), []byte(blocks), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		const id = "E 1"
+		req := "<!-- iterion:extension-request\n" + `{"id": "` + id + `", "lot": "L", "type": "add-file", "paths": [".golden-master/refs/2.txt"]}` + "\n-->\n"
+		ledger(req)
+		g("add", "-A")
+		g("commit", "-qm", "the lot files it")
+		ledger(req + "<!-- iterion:extension-act\n" + `{"id": "` + id + `", "lot": "L", "recorded_paths": [".golden-master/refs/2.txt"]}` + "\n-->\n")
+		if err := os.WriteFile(filepath.Join(gm, "refs", "2.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		g("add", "-A")
+		g("commit", "-qm", "acted")
+		blob := g("rev-parse", "HEAD:.golden-master/refs/2.txt")
+
+		// Strict provenance, no subbot commit reported: only the CONTENT rule
+		// can cover this act, and only if its id survived the parser.
+		cmd := exec.Command("python3", harness)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GM_MODE=extend-verify", "GM_WORKSPACE="+ws,
+			"GM_DIR=.golden-master", "GM_BASE="+base, "GM_ACTED_COMMITS=",
+			"GM_ACTED_IDS="+id,
+			"GM_ACTED_BLOBS=.golden-master/refs/2.txt="+blob)
+		out, _ := cmd.Output()
+		var v struct {
+			Acted []struct {
+				OK     bool `json:"ok"`
+				Forged bool `json:"forged"`
+			} `json:"acted"`
+		}
+		if uerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &v); uerr != nil {
+			t.Fatalf("no verdict: %v (%q)", uerr, out)
+		}
+		if len(v.Acted) != 1 || !v.Acted[0].OK || v.Acted[0].Forged {
+			t.Fatalf("an id with a space lost its cover — the parser split it out of the set: %+v", v.Acted)
+		}
+	})
+	t.Run("an entry the judge cannot read is refused, not dropped", func(t *testing.T) {
+		v, exit := run(t, "GM_ACTED_COMMITS=", "GM_ACTED_BLOBS=no-equals-sign-here")
+		if exit == 0 {
+			t.Fatalf("an unreadable certificate passed: %v", v)
+		}
+		msg, _ := v["error"].(string)
+		if !strings.Contains(msg, "not `path=blob`") {
+			t.Fatalf("the refusal must name what it could not read: %q", msg)
+		}
+	})
 }
