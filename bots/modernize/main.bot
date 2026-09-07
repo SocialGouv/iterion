@@ -66,7 +66,13 @@ prompt campaign_system:
   2. Never touch the oracle. The behavioural net that judges this work is
      off-limits: not its references, not its comparators, not its fixtures. A
      reference that moves is a REGRESSION YOU CAUSED until proven otherwise,
-     and the proof is not yours to write.
+     and the proof is not yours to write. QUALIFYING it is: a behaviour
+     someone chose is repaired in the product and its reference stays; an
+     artefact nobody specified (the order of ties, an id, a timestamp) is
+     made deterministic in the product, and the references that move then
+     are still announced. ONE written request per red episode, naming
+     exactly what the report shows, classified path by path inside it. See
+     `modernize-lots`.
   3. Never weaken the gate. Skipping a check, loosening a version constraint to
      dodge a conflict, or excluding a failing module are all ways of passing
      without having done the work.
