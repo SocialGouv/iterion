@@ -44,6 +44,7 @@ func stubDeclineTail(exec *scenarioExecutor, honoured bool, reason string) {
 // ends the run on the typed code, and never pays for — nor reaches — any of
 // the verify/ship tail. Reaching the push is the failure this exists to stop.
 func TestBranchImproveLoop_DeclineEndsTypedWithoutShipping(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	const reason = "the queue ejected this PR on an unrelated flaky test; the diff introduces no defect [verified: HEAD unmoved, tree clean]"
@@ -90,6 +91,7 @@ func TestBranchImproveLoop_DeclineEndsTypedWithoutShipping(t *testing.T) {
 // commits behind a failure. The refused decline falls through to the ordinary
 // verify/ship tail.
 func TestBranchImproveLoop_RefusedDeclineShipsAnyway(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "branch-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 	stubDeclineTail(exec, false, "declined but HEAD moved from abc123456789 to def987654321: the pass committed work")

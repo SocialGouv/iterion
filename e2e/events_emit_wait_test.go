@@ -15,6 +15,7 @@ import (
 // receiving the event, so a value of 42 at convergence proves the emit→wait
 // handoff worked across branches. No LLM, no shell.
 func TestEventsEmitWait(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "events/pingpong.bot")
 
 	s := tmpStore(t)

@@ -57,6 +57,7 @@ func waitForRun(t *testing.T, s store.RunStore, runID string) {
 // node-scoped delivery, the queued-message assertion fails (that
 // delivery is what carries the reply back to the asking agent).
 func TestRunsQuestionsThenAnswerReleasesAwaitGate(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	s, err := store.New(storeDir)
 	if err != nil {
@@ -165,6 +166,7 @@ func TestRunsQuestionsThenAnswerReleasesAwaitGate(t *testing.T) {
 // drops off the pending list — the operator's "what still needs me?"
 // view must not keep showing settled questions.
 func TestRunsQuestionsListsNothingWhenAnswered(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	s, err := store.New(storeDir)
 	if err != nil {
@@ -202,6 +204,7 @@ func TestRunsQuestionsListsNothingWhenAnswered(t *testing.T) {
 // specified to enforce — an operator typo must produce a clear error,
 // never a silently dropped answer.
 func TestRunsAnswerRejectsBadInput(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	s, err := store.New(storeDir)
 	if err != nil {

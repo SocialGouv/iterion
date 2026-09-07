@@ -16,6 +16,7 @@ import (
 // sinks all read `failure_code` / `error`, and before this every
 // deliberate termination handed them the same two constants.
 func TestTypedFailStampsTheRun(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	const runID = "run-typed-fail"
 
@@ -81,6 +82,7 @@ func TestTypedFailStampsTheRun(t *testing.T) {
 // terminal `failed`, the FAIL_NODE code, the historical wording. Operator
 // greps and the resume matrix both key on it.
 func TestBareFailNodeIsUnchanged(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	const runID = "run-bare-fail"
 
@@ -119,6 +121,7 @@ func TestBareFailNodeIsUnchanged(t *testing.T) {
 // reproduce the identical outcome with no progress, so the promise is a
 // lie and raising the cap changes nothing (R345e7d).
 func TestResumableFailReExecutesTheGuard(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	const runID = "run-typed-fail-resume"
 	botFile := filepath.Join("testdata", "typed_fail_resume_mini.bot")

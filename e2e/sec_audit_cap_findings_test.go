@@ -23,6 +23,7 @@ import (
 // This runs the ACTUAL command embedded in the bot's cap_findings node, so a
 // regression in the cap logic (or its removal) fails here.
 func TestSecAuditSource_CapFindings_BoundsScannerOutput(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not in PATH — skipping cap_findings regression test")
 	}

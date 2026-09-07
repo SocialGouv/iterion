@@ -70,6 +70,7 @@ func (e *ctxProbeExecutor) probes(t *testing.T, nodeID string, want int) []ctxPr
 // So: branch dispatch carries the snapshot and NOT the identity; the trunk
 // carries both.
 func TestFanOutBranchesCarryTheSnapshotNotTheIdentity(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "branch_template_context_mini.bot")
 	s := tmpStore(t)
 	const runID = "e2e-branch-ctx-identity"

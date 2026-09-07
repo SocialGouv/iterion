@@ -77,6 +77,7 @@ func runReviewPRTier(t *testing.T, runID string, inputs map[string]any) *scenari
 // Glance/claude: routes to the cheaper glance variant, never the
 // full-strength reviewer, and never the second family.
 func TestReviewPRTier_GlanceRoutesToCheapReviewer(t *testing.T) {
+	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-glance-claude", map[string]any{
 		"review_tier": "glance", "mono_family": "claude",
 	})
@@ -94,6 +95,7 @@ func TestReviewPRTier_GlanceRoutesToCheapReviewer(t *testing.T) {
 // Glance/gpt: symmetric — the gpt glance variant, never the full-strength
 // reviewer_gpt.
 func TestReviewPRTier_GlanceRoutesToCheapReviewerGPT(t *testing.T) {
+	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-glance-gpt", map[string]any{
 		"review_tier": "glance", "mono_family": "gpt",
 	})
@@ -109,6 +111,7 @@ func TestReviewPRTier_GlanceRoutesToCheapReviewerGPT(t *testing.T) {
 // bot's pre-#685 behaviour: the full-strength reviewer, never the glance
 // variant.
 func TestReviewPRTier_GuardMatchesHistoricalDefaults(t *testing.T) {
+	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-guard", map[string]any{
 		"mono_family": "claude",
 	})
@@ -127,6 +130,7 @@ func TestReviewPRTier_GuardMatchesHistoricalDefaults(t *testing.T) {
 // firing is asserted indirectly: both full-strength reviewers ran, which
 // is only possible via the fan-out (mono routes to exactly one).
 func TestReviewPRTier_AuditForcesDual(t *testing.T) {
+	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-audit", map[string]any{
 		"review_tier": "audit", "mono_family": "claude",
 	})
@@ -143,6 +147,7 @@ func TestReviewPRTier_AuditForcesDual(t *testing.T) {
 // expressible combination — the explicit knob wins). Same indirect
 // assertion as TestReviewPRTier_AuditForcesDual — see its comment.
 func TestReviewPRTier_ExplicitReviewModeWinsOverGlance(t *testing.T) {
+	t.Parallel()
 	exec := runReviewPRTier(t, "e2e-tier-explicit-override", map[string]any{
 		"review_tier": "glance", "review_mode": "dual", "mono_family": "claude",
 	})

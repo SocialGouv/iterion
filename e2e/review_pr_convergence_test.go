@@ -17,6 +17,7 @@ import (
 // The event log is the judge, so compute nodes (never seen by the
 // executor) count too.
 func TestReviewPRDual_CollectorChainFiresOnce(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "review-pr/main.bot")
 	exec := newScenarioExecutor()
 	wireReviewPRStubs(exec)
@@ -62,6 +63,7 @@ func TestReviewPRDual_CollectorChainFiresOnce(t *testing.T) {
 // The two shipped mono/dual topologies elect their declared collector, not
 // the reviewer both routers reach.
 func TestShippedDualTopologies_ElectTheDeclaredCollector(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ bot, router, want string }{
 		{"review-pr/main.bot", "fan", "merge_reviews"},
 		{"evolve/main.bot", "review_fanout", "aggregate_review"},

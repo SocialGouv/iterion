@@ -61,6 +61,7 @@ func runModernize(t *testing.T, exec *scenarioExecutor, runID string) *store.Run
 // TestModernize_ConvergedLotIsMarkedByTheGate: the green path — the
 // conjunction holds, the gate writes `done` (mark_done), the run finishes.
 func TestModernize_ConvergedLotIsMarkedByTheGate(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	modernizeStubs(exec, func(int) map[string]any {
 		return map[string]any{"gate_passed": true, "oracle_passed": true, "refs_untouched": true}
@@ -87,6 +88,7 @@ func TestModernize_ConvergedLotIsMarkedByTheGate(t *testing.T) {
 // change that introduced the refusal: the unconditional `lot_gate -> done`
 // exhaustion edge let it through — a term true by absence.
 func TestModernize_RefusedVerdictNeverEndsGreen(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		refusal map[string]any
@@ -122,6 +124,7 @@ func TestModernize_RefusedVerdictNeverEndsGreen(t *testing.T) {
 // an hour against the same wall, never a `finished` the programme would
 // relaunch into it.
 func TestModernize_GateTimeoutFailsAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		extra map[string]any
@@ -163,6 +166,7 @@ func TestModernize_GateTimeoutFailsAtOnce(t *testing.T) {
 // word and a STOP, never a success — the run ends without mark_done, on the
 // first pass.
 func TestModernize_DeclaredBlockedStopsWithoutMarking(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	modernizeStubs(exec, func(int) map[string]any {
 		return map[string]any{"lot_blocked": true, "block_reason": "needs a decision"}
@@ -186,6 +190,7 @@ func TestModernize_DeclaredBlockedStopsWithoutMarking(t *testing.T) {
 // Never a tool error: the engine retries those once and leaves the run
 // `failed_resumable`, a terminal a router may probe-resume for nothing.
 func TestModernize_RefusalsAreVerdicts(t *testing.T) {
+	t.Parallel()
 	t.Run("plan_read refused: failed before any campaign pass", func(t *testing.T) {
 		exec := newScenarioExecutor()
 		modernizeStubs(exec, func(int) map[string]any { return nil })

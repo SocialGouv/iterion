@@ -261,6 +261,7 @@ func TestRunIssueImport_RejectsUnsupportedForge(t *testing.T) {
 // GITUB_TOKEN`) from resolving to an empty string and reaching out
 // anonymously — which would then leak "no such issues" into the board.
 func TestRunIssueImport_RejectsEmptyToken(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	// Deliberately DO NOT set the env var — os.Getenv returns "" for
 	// missing keys. Use a random name so a real env in the caller's

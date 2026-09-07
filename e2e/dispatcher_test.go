@@ -84,6 +84,7 @@ func newDispatcherFixture(t *testing.T, polling time.Duration) (
 }
 
 func TestDispatcherE2E_DispatchAndRelease(t *testing.T) {
+	t.Parallel()
 	dispatched := make(chan dispatcher.DispatchSpec, 4)
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
@@ -128,6 +129,7 @@ func TestDispatcherE2E_DispatchAndRelease(t *testing.T) {
 }
 
 func TestDispatcherE2E_RetryAfterFailure(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
@@ -149,6 +151,7 @@ func TestDispatcherE2E_RetryAfterFailure(t *testing.T) {
 }
 
 func TestDispatcherE2E_CancelInFlight(t *testing.T) {
+	t.Parallel()
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 
@@ -181,6 +184,7 @@ func TestDispatcherE2E_CancelInFlight(t *testing.T) {
 }
 
 func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {
+	t.Parallel()
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 
@@ -209,6 +213,7 @@ func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {
 }
 
 func TestDispatcherE2E_HTTPSurface(t *testing.T) {
+	t.Parallel()
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 
@@ -257,6 +262,7 @@ func statusOrZero(r *http.Response) int {
 // Sanity check that the dispatcher's snapshot stays JSON-stable across
 // ticks even when nothing is dispatched.
 func TestDispatcherE2E_SnapshotShape(t *testing.T) {
+	t.Parallel()
 	c, _, _, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 	snap := c.Snapshot()

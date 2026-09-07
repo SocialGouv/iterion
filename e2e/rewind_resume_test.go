@@ -21,6 +21,7 @@ import (
 // `plan` execute a second time, the operator paid twice and the rewind
 // bought nothing over a plain re-run.
 func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	storeDir := t.TempDir()
@@ -127,6 +128,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 // TestRewind_RefusesRunningRun_E2E guards the concurrency precondition
 // against the real store rather than a hand-built run doc.
 func TestRewind_RefusesRunningRun_E2E(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	st, err := store.New(storeDir)
 	if err != nil {

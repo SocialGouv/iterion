@@ -38,6 +38,7 @@ func seedAsyncInteraction(t *testing.T, s store.RunStore, runID, nodeID, id, que
 // await node runs → it passes immediately (level-triggered predicate,
 // no park).
 func TestAwaitAnswersAlreadyAnswered(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_mini.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-answered"
@@ -67,6 +68,7 @@ func TestAwaitAnswersAlreadyAnswered(t *testing.T) {
 // converges. Also proves branch isolation: the sibling compute finished
 // while the question was still pending.
 func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_mini.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-released"
@@ -127,6 +129,7 @@ func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 // the launch/answer cycle many times to stress every possible
 // interleaving of the ring with the branch scheduler.
 func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
+	t.Parallel()
 	// Force the fallback poll well outside the test's convergence
 	// budget. If the doorbell is missed, nothing else releases the
 	// gate within 3s.
@@ -189,6 +192,7 @@ func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
 // the node's mandatory timeout and fails the run with an explicit
 // timeout error naming the pending interaction.
 func TestAwaitAnswersTimeout(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_timeout.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-timeout"
@@ -219,6 +223,7 @@ func TestAwaitAnswersTimeout(t *testing.T) {
 // workflow with an unconditional sync point does not hang when the
 // agent had nothing to ask.
 func TestAwaitAnswersNoQuestions(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_mini.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-noq"

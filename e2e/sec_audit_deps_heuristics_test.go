@@ -151,6 +151,7 @@ func runGenericHeuristic(t *testing.T, wsDir string) depHeuristicOut {
 // scanner half of native:3a81df64: install-hook (npm lifecycle scripts) and
 // locale-anomaly (homoglyph package name), emitted in the catalogue shape.
 func TestSecAuditDeps_GenericHeuristic_DetectsMalwareSignals(t *testing.T) {
+	t.Parallel()
 	ws := t.TempDir()
 	nm := filepath.Join(ws, "node_modules")
 	writeNpmPkg(t, nm, "leftpad", `{"name":"leftpad","version":"1.0.0"}`)                                            // clean
@@ -198,6 +199,7 @@ func TestSecAuditDeps_GenericHeuristic_DetectsMalwareSignals(t *testing.T) {
 // govulncheck -json stream into known-vuln signals (called=high, import-only=
 // medium) instead of the old `stub: implementation pending` discard.
 func TestSecAuditDeps_GoHeuristic_ParsesGovulncheck(t *testing.T) {
+	t.Parallel()
 	// A realistic govulncheck -json stream: config + progress noise, then a
 	// CALLED vuln (trace has a function frame) and an IMPORT-ONLY vuln (no
 	// function frame). Concatenated objects, as govulncheck emits them.
@@ -257,6 +259,7 @@ func TestSecAuditDeps_GoHeuristic_ParsesGovulncheck(t *testing.T) {
 // {dependencies:[{name,version,vulns:[...]}]} shape, skipping deps with empty
 // vulns, extracting id / fix_versions / aliases.
 func TestSecAuditDeps_PyHeuristic_ParsesPipAudit(t *testing.T) {
+	t.Parallel()
 	fixture := `{"dependencies": [
   {"name": "flask", "version": "0.5", "vulns": [
     {"id": "PYSEC-2019-179", "fix_versions": ["1.0"], "aliases": ["CVE-2019-1010083"], "description": "Flask before 1.0 DoS via crafted encoded JSON."}
@@ -286,6 +289,7 @@ func TestSecAuditDeps_PyHeuristic_ParsesPipAudit(t *testing.T) {
 // v7+ vulnerabilities{} map with severity + via advisory details, and the
 // legacy v6 advisories{} fallback.
 func TestSecAuditDeps_JsHeuristic_ParsesNpmAudit(t *testing.T) {
+	t.Parallel()
 	t.Run("v7_vulnerabilities_map", func(t *testing.T) {
 		fixture := `{"auditReportVersion": 2, "vulnerabilities": {
   "lodash": {"name": "lodash", "severity": "high", "isDirect": true,
