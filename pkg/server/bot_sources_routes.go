@@ -83,6 +83,9 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 	}
 	// Strip Files from the list payload — it is metadata only. Digest gives
 	// "what exactly is deployed" a comparable answer without the content.
+	// One catalog walk for the whole listing: resolving the baked version per
+	// row would re-discover every configured bot root for each one.
+	baked := s.bakedVersions()
 	views := make([]botSourceMetaView, 0, len(list))
 	for _, b := range list {
 		digest := botsource.Digest(b.Files)
@@ -90,13 +93,13 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 		if m := b.Manifest(); m != nil {
 			bundleVersion = strings.TrimSpace(m.Version)
 		}
-		baked, shadowed := s.overrideShadowsNewerBake(b.Slug, bundleVersion)
+		bakedVersion, shadowed := shadowsNewerBake(baked, b.Slug, bundleVersion)
 		b.Files = nil
 		views = append(views, botSourceMetaView{
 			BotSource:        b,
 			Digest:           digest,
 			BundleVersion:    bundleVersion,
-			BakedVersion:     baked,
+			BakedVersion:     bakedVersion,
 			ShadowsNewerBake: shadowed,
 		})
 	}

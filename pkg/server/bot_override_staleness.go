@@ -1,13 +1,11 @@
 package server
 
 import (
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
-	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
 // A stored bundle (team or platform botsource row) OUTRANKS the baked catalog
@@ -18,8 +16,8 @@ import (
 // The override is never REFUSED: pinning an older bundle is a legitimate
 // operator choice, and this package warns rather than rejects wherever an
 // operator could want the thing. What changes is that a shadowed newer bake is
-// no longer silent — it is reported once per drift state in the log, and on
-// every row the operator's own inventory returns.
+// no longer silent — it is reported once per distinct shadow in the log, and
+// on every row the operator's own inventory returns.
 
 // bundleVersionOrder compares two free-form bundle version strings by their
 // dotted numeric components: -1, 0 or +1, with ok=false when either side
@@ -32,6 +30,11 @@ import (
 // Components are compared numerically (so 0.10.0 > 0.9.0, which a string
 // compare gets backwards), and a shorter version is padded with zeros
 // (1.2 == 1.2.0).
+//
+// KNOWN BLIND SPOT: a suffixed version (0.8.0-rc1) is unorderable, so an
+// override pinned at one is never flagged against a plain 0.8.0 bake. Widening
+// this to semver precedence would mean deciding that -rc1 sorts BEFORE 0.8.0
+// for every operator, which the free-form contract does not license.
 func bundleVersionOrder(a, b string) (int, bool) {
 	pa, okA := numericVersionParts(a)
 	pb, okB := numericVersionParts(b)
@@ -77,54 +80,82 @@ func numericVersionParts(v string) ([]int, bool) {
 	return out, true
 }
 
-// bakedBundleVersion returns the version this image bakes for slug, or "" when
-// the slug has no baked bundle (a stored-only bot shadows nothing) or its
-// manifest carries no version.
-func (s *Server) bakedBundleVersion(slug string) string {
-	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())
+// bakedVersions walks the catalog ONCE and returns slug → manifest version.
+//
+// Callers comparing several rows build it once and reuse it: resolving a
+// version per row would re-walk every configured bot root and re-parse every
+// manifest for each one, turning a listing into O(rows × catalog) filesystem
+// work. The version comes straight off botregistry.Entry, which already
+// mirrors the manifest field — loading the manifest again would re-read what
+// the walk just produced.
+//
+// "Baked" means whatever THIS server discovers on disk, deliberately the same
+// source every other bot lookup uses: the field answers "what would serve if
+// this override were removed", not "what some image ships". With no
+// --bots-path pinned that follows the live WorkDir, so on a local studio the
+// answer legitimately changes with the open project — which is the correct
+// answer to the question the field asks.
+func (s *Server) bakedVersions() map[string]string {
+	entries, err := botregistry.List(s.botListOptions())
 	if err != nil {
-		return ""
+		return nil
 	}
-	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(path), bundle.ManifestFile))
-	if err != nil || m == nil {
-		return ""
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if v := strings.TrimSpace(e.Version); v != "" {
+			out[e.Name] = v
+		}
 	}
-	return strings.TrimSpace(m.Version)
+	return out
 }
 
-// overrideShadowsNewerBake reports the baked version for slug and whether the
-// stored bundle at storedVersion is strictly OLDER than it — i.e. whether this
-// override is holding back what the deployment already ships.
-func (s *Server) overrideShadowsNewerBake(slug, storedVersion string) (baked string, shadowed bool) {
-	baked = s.bakedBundleVersion(slug)
-	if baked == "" || strings.TrimSpace(storedVersion) == "" {
-		return baked, false
+// shadowsNewerBake reports the baked version for slug and whether the stored
+// bundle at storedVersion is strictly OLDER than it — i.e. whether this
+// override is holding back what this deployment would otherwise serve. Takes
+// the catalog map so a caller comparing N rows pays for one walk.
+func shadowsNewerBake(baked map[string]string, slug, storedVersion string) (string, bool) {
+	b := baked[slug]
+	if b == "" || strings.TrimSpace(storedVersion) == "" {
+		return b, false
 	}
-	cmp, ok := bundleVersionOrder(storedVersion, baked)
-	return baked, ok && cmp < 0
+	cmp, ok := bundleVersionOrder(storedVersion, b)
+	return b, ok && cmp < 0
 }
 
-// staleOverrideWarned dedups the resolve-time warning per drift state, so a
-// shadowed override costs one line per (slug, stored, baked) triple instead of
-// one per launch — a bot serving every webhook would otherwise drown its own
-// signal.
+// staleOverrideWarned dedups the resolve-time warning, so a shadowed override
+// costs one line per distinct shadow instead of one per launch — a bot serving
+// every webhook would otherwise drown its own signal.
+//
+// The key carries the TENANT and the origin, not just the slug: on the team
+// tier many tenants hold a row for the same slug, and a slug-only key would
+// let the first team to launch consume it and silence every other team —
+// exactly the silence this file exists to end. The baked version is
+// deliberately NOT in the key: it cannot change without a new image, and a new
+// image is a new process with a fresh map.
 var staleOverrideWarned sync.Map
 
-// warnIfOverrideShadowsNewerBake logs, once per drift state, that a stored
-// bundle is serving while this image bakes a newer one for the same slug.
-// Deliberately observational: the launch proceeds on the override.
-func (s *Server) warnIfOverrideShadowsNewerBake(slug, origin, storedVersion string) {
-	if s.logger == nil {
+// warnIfOverrideShadowsNewerBake logs, once per (tenant, origin, slug, stored
+// version), that a stored bundle is serving while this deployment would
+// otherwise serve a newer one. Deliberately observational: the launch proceeds
+// on the override.
+//
+// The dedup check runs BEFORE the catalog walk, so a repeat launch of the same
+// row costs a map lookup rather than a full discovery pass.
+func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVersion string) {
+	if s.logger == nil || strings.TrimSpace(storedVersion) == "" {
 		return
 	}
-	baked, shadowed := s.overrideShadowsNewerBake(slug, storedVersion)
-	if !shadowed {
-		return
-	}
-	key := slug + "\x00" + storedVersion + "\x00" + baked
+	key := strings.Join([]string{tenantID, origin, slug, storedVersion}, "\x00")
 	if _, seen := staleOverrideWarned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
-	s.logger.Warn("bot %q serves the %s override at version %s while this image bakes %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s)",
-		slug, origin, storedVersion, baked, slug, slug)
+	// Not a shadow: the key stays stored. The answer cannot change within a
+	// process, so re-walking the catalog on every later launch of the same row
+	// would buy nothing.
+	baked, shadowed := shadowsNewerBake(s.bakedVersions(), slug, storedVersion)
+	if !shadowed {
+		return
+	}
+	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s)",
+		slug, origin, tenantID, storedVersion, baked, slug, slug)
 }

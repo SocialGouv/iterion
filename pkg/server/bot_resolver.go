@@ -172,7 +172,7 @@ func (s *Server) storedLaunchBot(bs botsource.BotSource, origin string) (*launch
 	// image bakes a NEWER bundle for the same slug, or a bot pinned by one
 	// push keeps serving across releases with nothing naming the shadow.
 	if m := bs.Manifest(); m != nil {
-		s.warnIfOverrideShadowsNewerBake(bs.Slug, origin, m.Version)
+		s.warnIfOverrideShadowsNewerBake(bs.TenantID, bs.Slug, origin, m.Version)
 	}
 	return &launchBot{
 		BotID:     bs.Slug,

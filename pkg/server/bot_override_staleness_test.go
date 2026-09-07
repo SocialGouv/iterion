@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 func TestBundleVersionOrder(t *testing.T) {
@@ -136,12 +138,51 @@ func TestBotSourceListing_ReportsAnOverrideShadowingANewerBake(t *testing.T) {
 	}
 }
 
-// A slug the image does not bake shadows nothing — the common case for a
+// A slug the catalog does not carry shadows nothing — the common case for a
 // team's own bot, which must not be flagged.
-func TestOverrideShadowsNewerBake_StoredOnlySlugIsNotStale(t *testing.T) {
+func TestShadowsNewerBake_StoredOnlySlugIsNotStale(t *testing.T) {
 	s, _, _ := newBotSourceTestServer(t)
 	seedBakedBot(t, s, "reviewer", "0.8.0")
-	if baked, shadowed := s.overrideShadowsNewerBake("a-bot-only-this-team-has", "0.1.0"); shadowed || baked != "" {
+	if baked, shadowed := shadowsNewerBake(s.bakedVersions(), "a-bot-only-this-team-has", "0.1.0"); shadowed || baked != "" {
 		t.Errorf("a stored-only slug must shadow nothing; got baked=%q shadowed=%v", baked, shadowed)
+	}
+}
+
+// The dedup key must carry the tenant. A slug-only key let the FIRST team to
+// launch a shadowed override consume it and silenced every other team holding
+// the same one — the very silence this file exists to end (Revi R7c09d4).
+func TestWarnOverrideShadow_DedupsPerTenantNotPerSlug(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+	var buf bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	staleOverrideWarned.Range(func(k, _ any) bool { staleOverrideWarned.Delete(k); return true })
+
+	s.warnIfOverrideShadowsNewerBake("team-a", "reviewer", "team", "0.7.0")
+	s.warnIfOverrideShadowsNewerBake("team-b", "reviewer", "team", "0.7.0")
+	// Count LINES, not slug occurrences — the message names the slug three
+	// times (subject + both remedies).
+	if got := strings.Count(buf.String(), "serves the"); got != 2 {
+		t.Errorf("two tenants shadowing the same slug must BOTH warn; got %d line(s):\n%s", got, buf.String())
+	}
+	for _, want := range []string{"team-a", "team-b", "0.7.0", "0.8.0"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the warning must name %q; got:\n%s", want, buf.String())
+		}
+	}
+
+	// Same tenant again: deduped, or a bot serving every webhook drowns its
+	// own signal.
+	before := buf.Len()
+	s.warnIfOverrideShadowsNewerBake("team-a", "reviewer", "team", "0.7.0")
+	if buf.Len() != before {
+		t.Errorf("a repeat of the same shadow must be deduped; got:\n%s", buf.String()[before:])
+	}
+
+	// An override that shadows nothing stays silent.
+	buf.Reset()
+	s.warnIfOverrideShadowsNewerBake("team-c", "reviewer", "team", "0.9.0")
+	if buf.Len() != 0 {
+		t.Errorf("an override newer than the bake must not warn; got:\n%s", buf.String())
 	}
 }

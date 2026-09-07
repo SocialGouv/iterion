@@ -135,8 +135,11 @@ bundle is a legitimate choice — a rollback is exactly this):
   `shadows_newer_bake` on every row. The last one is omitted unless true,
   so a healthy inventory stays quiet. This is the check to run after any
   release that touched a bot you have overridden.
-- The resolver logs one `Warn` per drift state naming both versions and the
-  two ways out. Once per `(slug, stored, baked)` triple, not per launch.
+- The resolver logs one `Warn` naming the tenant, both versions and the two
+  ways out — once per `(tenant, origin, slug, stored version)`, not per
+  launch. The tenant is in the key on purpose: many teams can hold a row for
+  the same slug, and a slug-only key would let the first one to launch
+  silence all the others.
 
 Versions are compared as dotted numeric components, so `0.10.0` correctly
 beats `0.9.0`. `Manifest.version` is free-form, so a pair that does not
