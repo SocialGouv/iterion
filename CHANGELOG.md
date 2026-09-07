@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.115.3](https://github.com/SocialGouv/iterion/compare/v3.115.2...v3.115.3) (2026-09-07)
+
+### Bug Fixes
+
+* **delegate:** the two terminal returns that walked past the spend stamp ([#908](https://github.com/SocialGouv/iterion/issues/908)) ([4e55cf0](https://github.com/SocialGouv/iterion/commit/4e55cf0077f31f57b78ce2b64f7b2c0cc8ba4bcb))
+
+    <details><summary>why</summary>
+
+    A delegation that ends badly still SPENT. The caps, the fallback chain's carried spend and a donor's ledger all read the cost from the output map, so a terminal return that skips the stamp records nothing — the money is gone either way, only the accounting disappears. `typedFailure` exists as that choke point, and its own docstring says so; two returns walked past it.
+
+    </details>
+
 ## [3.115.2](https://github.com/SocialGouv/iterion/compare/v3.115.1...v3.115.2) (2026-09-07)
 
 ### Bug Fixes
