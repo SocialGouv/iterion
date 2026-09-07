@@ -1914,6 +1914,13 @@ def seal_holdout(gm_dir, sealed_dir):
     only widen what the gate consumes, never soften a verdict.
 
     Returns True when the set now lives outside the workspace.
+
+    Sealing OUT of the tree is what makes the seal mechanical, and it is also
+    what makes a fresh set EPHEMERAL: the sealed pile is keyed on the
+    workspace path under the scratch directory, so a run whose workspace dies
+    with it — a pod — takes the set along. A set that must be scored by a
+    LATER run has exactly one durable home, the tree, and the caller says so
+    rather than letting the next gate report 0/0 for a set that was drawn.
     """
     src = os.path.join(gm_dir, "mutants", "holdout")
     if os.path.isdir(src) and holdout_committed_in_tree(gm_dir) \
@@ -1981,6 +1988,40 @@ def spent_fingerprints(gm_dir):
             if os.path.isdir(d):
                 out[mutant_fingerprint(d)] = cycle + "/" + name
     return out
+
+
+def spent_cycles(gm_dir):
+    """How many held-out cycles were scored and published under mutants/audit/.
+
+    The figure is what turns a legitimate state into a DEBT: one spent cycle
+    is a set that did its work, thirteen with none pending is a campaign whose
+    strongest term has been vacuous for a while. The judge does not set the
+    policy — it publishes the count so the process that owns the cadence can.
+
+    Counted from the directory, not from `spent_fingerprints`: that map is
+    keyed by FINGERPRINT, so two cycles that drew the same mutation collapse
+    into one entry — the right behaviour for refusing a repeat, the wrong one
+    for counting history (measured: three published mutants over two cycles
+    counted as one).
+    """
+    root = os.path.join(gm_dir, "mutants", "audit")
+    if not os.path.isdir(root):
+        return 0
+    return len([c for c in sorted(os.listdir(root))
+                if os.path.isdir(os.path.join(root, c))])
+
+
+def sealed_but_ephemeral(committed_before, sealed_now):
+    """True when a held-out set left the tree WITHOUT a committed copy.
+
+    Sealing out of the tree is what makes the seal mechanical; it is also what
+    makes the set ephemeral, because the sealed pile is keyed on the workspace
+    path under the scratch directory. A workspace that dies with its run — a
+    pod — takes the set with it, and the next gate reports 0/0 for a set that
+    was drawn. A committed set is the exception: it is left in place, which is
+    the only home that crosses a run boundary.
+    """
+    return bool(sealed_now) and not committed_before
 
 
 def load_mutants(gm_dir, holdout, sealed_dir=None):
@@ -3397,6 +3438,23 @@ def _selftest():
                os.path.isdir(os.path.join(gmd2, "mutants", "holdout", "t01")),
                os.path.isdir(sealed2)],
               [False, True, False])
+        # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
+        # sont pas la meme, et aucune n'est un echec : ce sont des etats que
+        # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
+        # est l'endroit ou les dettes se cachent.
+        check("jeu frais scelle hors de l'arbre -> ephemere ; jeu committe -> non",
+              [sealed_but_ephemeral(False, True), sealed_but_ephemeral(True, True),
+               sealed_but_ephemeral(False, False)],
+              [True, False, False])
+        adir = os.path.join(sroot, "audited", ".golden-master")
+        for cyc, name in (("01a0-un", "m1"), ("01a0-un", "m2"), ("01a0-deux", "m3")):
+            d = os.path.join(adir, "mutants", "audit", cyc, name)
+            os.makedirs(d)
+            with open(os.path.join(d, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+        check("cycles depenses comptes par CYCLE, pas par mutant",
+              [spent_cycles(adir), spent_cycles(gmd)], [2, 0])
+
         prev_seal = os.environ.get("GM_SEAL_COMMITTED")
         os.environ["GM_SEAL_COMMITTED"] = "1"
         try:
@@ -4678,6 +4736,8 @@ def main():
               "standard": 2, "unmapped_features": [], "stale_features": [],
               "features_total": 0, "features_excluded": 0,
               "holdout_awaiting_gate": False,
+              "holdout_spent_unreplaced": False, "holdout_spent_cycles": 0,
+              "holdout_sealed_uncommitted": False,
               "pending_rebaselines": [],
               "pending_extensions": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
@@ -4867,11 +4927,26 @@ def main():
 
     if mode != "record":
         try:
-            seal_holdout(gm_dir, sealed_dir)
+            committed_before = holdout_committed_in_tree(gm_dir)
+            sealed_now = seal_holdout(gm_dir, sealed_dir)
             awaiting = holdout_committed_in_tree(gm_dir) and \
                 not seal_committed_opted_in(gm_dir)
         except SystemExit as e:
             bail(str(e))
+        # A set sealed out of an UNCOMMITTED state lives only as long as the
+        # sealed pile does, and that pile is keyed on the workspace path under
+        # the scratch directory: a run whose workspace dies with it takes the
+        # set along, and the next gate reports 0/0 for a set that was drawn.
+        # Said here, once, at the moment the set leaves the tree — the only
+        # moment anyone can still commit it.
+        if sealed_but_ephemeral(committed_before, sealed_now):
+            report["holdout_sealed_uncommitted"] = True
+            note(report, "the held-out set was sealed OUT of the tree into %s and is "
+                         "NOT committed: it survives exactly as long as that directory "
+                         "does. A set a LATER run must score has one durable home — "
+                         "commit it under mutants/holdout/ and let the gate that owns "
+                         "it opt in (`\"seal_committed\": true`). Otherwise this run is "
+                         "the only one that will ever see it." % sealed_dir)
         if awaiting:
             # Machine-readable, not only prose: a set nobody ever consumes is
             # a debt of the NET's owner, and a supervising process needs a
@@ -4897,16 +4972,27 @@ def main():
         holdout_spent = bool(spent_fingerprints(gm_dir))
         if not held_meta and not os.path.isdir(os.path.join(gm_dir, "mutants", "holdout")):
             if holdout_spent:
-                # Legitimate: this cycle's set was scored once and published as
-                # evidence. The blindness proof was MADE and is replayable from
-                # mutants/audit/ — it is simply not being re-made here, and the
-                # report must say so rather than let 0 == 0 read as a pass.
+                # Legitimate for ONE replay: this cycle's set was scored once
+                # and published as evidence, and the blindness proof is
+                # replayable from mutants/audit/. It stops being legitimate
+                # when nobody draws the next one — and THAT is a debt, so it
+                # gets a field. A notice string is where debts go to hide: the
+                # sibling debt (a committed set nobody consumes) has carried
+                # `holdout_awaiting_gate` since it was measured, while this one
+                # was prose only. Measured on a live campaign: thirteen spent
+                # cycles, no set committed, every landing reporting 0/0 through
+                # a term the wrapper checks as `detected == total` — vacuously
+                # true, announced in a sentence nothing reads.
+                cycles = spent_cycles(gm_dir)
+                report["holdout_spent_unreplaced"] = True
+                report["holdout_spent_cycles"] = cycles
                 note(report, "the held-out set for this cycle is SPENT and published "
-                             "under mutants/audit/. This replay re-checks the visible "
+                             "under mutants/audit/ (%d cycle(s) there, none pending). "
+                             "This replay re-checks the visible "
                              "counter-test only; the held-out figure below is 0/0 and "
                              "proves nothing on its own. Draw a fresh set to harden "
                              "again — the gate refuses one that repeats a published "
-                             "fingerprint.")
+                             "fingerprint." % cycles)
             else:
                 bail("the sealed held-out set is missing from %s and no longer in the "
                      "workspace. It was relocated by an earlier gate and the sealed "
