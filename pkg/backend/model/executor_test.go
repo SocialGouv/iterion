@@ -1096,6 +1096,25 @@ func TestResolveScriptTemplate(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+	// The other half of the contract a tool script depends on: an input the
+	// edge did not provide (a node that never ran) renders as the language's
+	// null literal, so the script PARSES and can read the absence itself. A
+	// bare `{{input.x}}` left as text, or rendered as the empty token, is a
+	// SyntaxError before any user logic runs — and a bot that hands a
+	// subbot's provenance to a deterministic gate would die at the gate
+	// instead of judging with "none reported".
+	t.Run("absent input renders the null literal", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"acted_commits"}, Raw: "{{input.acted_commits}}"}}
+		got := resolveScriptTemplate("x = ({{input.acted_commits}} or \"\")", refs, map[string]any{}, nil, nil)
+		want := `x = (null or "")`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		gotNil := resolveScriptTemplate("x = {{input.acted_commits}}", refs, map[string]any{"acted_commits": nil}, nil, nil)
+		if gotNil != "x = null" {
+			t.Errorf("explicit nil rendered %q, want %q", gotNil, "x = null")
+		}
+	})
 	t.Run("bang form still raw", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{!input.name}}", Unquoted: true}}
 		input := map[string]any{"name": "foo"}

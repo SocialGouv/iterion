@@ -137,6 +137,27 @@ func TestResolveMapping_MissingReferenceRendersEmpty(t *testing.T) {
 	}
 }
 
+// A WHOLE-value reference to a node that never ran resolves to nil, not to
+// the empty string — the half of the contract a tool script depends on: the
+// script renderer turns nil into the language's null literal, so
+// `x = ({{input.x}} or "")` parses and reads as absent. Were it "" or the
+// literal text, a bot handing a subbot's output to a gate would either fail
+// to parse or hand the gate a bogus value that reads as PRESENT (golden-master
+// hands the net subbot's commits to the certifier this way; present-even-empty
+// is what makes the certifier strict, so the difference is a verdict).
+func TestResolveMapping_WholeReferenceToAnUnrunNodeIsNil(t *testing.T) {
+	e := &Engine{}
+	sc := resolveScope{outputs: map[string]map[string]any{}}
+	if got := e.resolveMapping(mapping(t, "{{outputs.extend.acted_commits}}"), sc); got != nil {
+		t.Errorf("resolveMapping of a whole reference to an unrun node = %#v (%T), want nil", got, got)
+	}
+	// And a node that ran without the field: same answer, same reason.
+	sc = resolveScope{outputs: map[string]map[string]any{"extend": {"other": "x"}}}
+	if got := e.resolveMapping(mapping(t, "{{outputs.extend.acted_commits}}"), sc); got != nil {
+		t.Errorf("resolveMapping of a missing field = %#v (%T), want nil", got, got)
+	}
+}
+
 // Structured values spliced into a larger template render as compact
 // JSON, matching what the prompt renderer does.
 func TestResolveMapping_StructuredValueRendersAsJSON(t *testing.T) {

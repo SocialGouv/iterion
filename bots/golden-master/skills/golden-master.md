@@ -97,7 +97,9 @@ notice that the bytes reaching the browser changed, and a scan of source files c
 6. **Stop.** The runner and the report are emitted by the workflow, not by you. Writing a
    `REPORT.md` of your own is welcome when you have something the template cannot say — your
    documented blind spots, the causes behind your canonicalisation rules — and it will not be
-   overwritten. Do not write `verify-oracle.sh`.
+   overwritten. Do not write `verify-oracle.sh`. This freedom is the RITE's: inside the extension
+   subbot the only writable paths are the extension surface, and a refusal is reported in the
+   node's `summary`, never in a file (see «Extensions: who may act, and how the gate knows»).
 
 ## Putting the runner in CI, and the three ways that job goes green without judging
 

@@ -1170,7 +1170,8 @@ def _entry_observation_key(entry):
                       sort_keys=True, ensure_ascii=False)
 
 
-def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None):
+def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
+                      acted_ids=None):
     """Judge every ACTED extension against `base`, in git — never against the
     acting party's word.
 
@@ -1191,6 +1192,11 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None):
     `acted_blobs` also bounds the exemption: a certified path whose blob at
     HEAD moved since the act was rewritten by someone after the subbot —
     the certificate covers the content it certified, not the path forever.
+    `acted_ids` bounds WHICH act the certificate covers: the ones the subbot
+    reports having acted, and no other. Without it the content rule exempts
+    any act naming a certified path, which a lot reaches by filing two
+    requests, getting the second REFUSED, and appending its own act for it
+    recording the first one's path (review finding, executed).
 
     Per acted request, every recorded path must be a pure addition:
       - under refs/: absent at base, present at HEAD. A path that existed at
@@ -1445,14 +1451,22 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None):
         # the subbot ran).
         if acted_commits is not None and req is not None and act_sha \
                 and act_sha not in acted_commits:
-            # The way back in is CONTENT, so there must BE content: an act
-            # recording only the ledger leaves the generator empty, `all([])`
-            # is true, and the escape hatch opens for an act that certified
-            # no surface path at all (review finding, executed).
-            surface = [p for p in paths if p != ledger_rel]
-            blobs_match = bool(surface) and acted_blobs is not None and all(
-                acted_blobs.get(p) and blob_id("HEAD", p) == acted_blobs.get(p)
-                for p in surface)
+            # The way back in is CONTENT, so there must BE content, it must
+            # be the content of an act the subbot ACTUALLY acted, and the
+            # comparison must be over paths whose blob is expected to stand
+            # still. Each clause was a hole: an act recording only the ledger
+            # left the generator empty and `all([])` true; an act naming a
+            # path the subbot certified for ANOTHER request rode that
+            # request's certificate (the lot writes its own request, so the
+            # paths it declares are its own); corpus.json legitimately moves
+            # when a later act adds entries, so comparing its blob would
+            # refuse a rewritten history for the one file expected to change
+            # (review findings, executed).
+            surface = [p for p in paths if p not in (ledger_rel, corpus_rel)]
+            blobs_match = bool(surface) and acted_blobs is not None \
+                and act.get("id") in (acted_ids or set()) and all(
+                    acted_blobs.get(p) and blob_id("HEAD", p) == acted_blobs.get(p)
+                    for p in surface)
             if not blobs_match:
                 row["forged"] = True
                 row["problems"].append(
@@ -3536,9 +3550,18 @@ def _selftest():
         check("l'acte introduit par un commit du subbot passe, chemin exempte",
               [v_sub["acted"][0]["ok"], v_sub["ok_paths"]], [True, [".golden-master/refs/2.txt"]])
         v_blob = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
-                                   acted_blobs={".golden-master/refs/2.txt": blob_b})
+                                   acted_blobs={".golden-master/refs/2.txt": blob_b},
+                                   acted_ids={"E-1"})
         check("sha inconnu mais contenu certifie identique (historique reecrit) : passe",
               v_blob["acted"][0]["ok"], True)
+        # Le certificat couvre l'ACTE que le subbot a acte, pas n'importe quel
+        # acte nommant un chemin certifie : sans l'id, l'echappatoire par
+        # contenu s'ouvre pour un acte que le subbot n'a jamais rendu.
+        v_noid = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                   acted_blobs={".golden-master/refs/2.txt": blob_b})
+        check("meme contenu, acte NON acte par le subbot : refuse",
+              [v_noid["acted"][0]["ok"], v_noid["acted"][0].get("forged")],
+              [False, True])
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("reecrit apres l'acte\n")
         xcommit(email="lot@run")                         # commit C, le lot reecrit
@@ -3559,6 +3582,41 @@ def _selftest():
               [v_old.get("provenance"), v_strict.get("provenance"),
                v_sub.get("provenance"), v_rw2.get("provenance")],
               ["legacy", "strict", "strict", "strict"])
+
+        # LE SCENARIO DE CONTREBANDE, rejoue en entier : le lot depose DEUX
+        # demandes, le subbot en acte une et REFUSE l'autre, puis le lot
+        # s'acte la refusee en enregistrant le chemin que le subbot a
+        # certifie pour la premiere. Tous les controles de contenu passent —
+        # seul l'id ferme la porte.
+        req_e2 = ('{"id": "E-2", "lot": "L", "type": "add-file",'
+                  ' "paths": [".golden-master/refs/2.txt"]}')
+        act_e2 = ('{"id": "E-2", "lot": "L",'
+                  ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+        xreset()
+        # Les DEUX demandes sont deposees d'abord : l'acte de E-2 arrivera dans
+        # un commit ulterieur, donc la regle du commit unique ne le voit pas —
+        # c'est ce qui rend la contrebande possible.
+        xledger(("request", req2), ("request", req_e2))
+        xcommit()                                        # le lot depose E-1 et E-2
+        xledger(("request", req2), ("request", req_e2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2 certifiee par le subbot\n")
+        xcommit(email="extend@golden-master.iterion")     # le subbot acte E-1, REFUSE E-2
+        sha_sub = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_sub = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                       xroot, timeout=60)[1].strip()
+        xledger(("request", req2), ("request", req_e2),
+                ("act", act2), ("act", act_e2))
+        xcommit(email="lot@run")                          # le lot s'acte la refusee
+        v_smug = extension_verdict(xroot, ".golden-master", xbase,
+                                   acted_commits={sha_sub},
+                                   acted_blobs={".golden-master/refs/2.txt": blob_sub},
+                                   acted_ids={"E-1"})
+        smug = [r for r in v_smug["acted"] if r["id"] == "E-2"][0]
+        check("acte auto-appose sur un chemin certifie pour UNE AUTRE demande : refuse",
+              [smug["ok"], smug.get("forged")], [False, True])
+        check("l'acte du subbot, lui, reste certifie",
+              [r["ok"] for r in v_smug["acted"] if r["id"] == "E-1"], [True])
 
         # Un acte qui n'enregistre QUE le registre : aucun chemin de surface
         # a certifier, donc aucune echappatoire par contenu.
@@ -4684,9 +4742,16 @@ def main():
                 path, sep, sha = tok.rpartition("=")
                 if sep and path and sha:
                     acted_blobs[path] = sha
+        # The ids the subbot reports having acted. Absent = no act is
+        # covered by the content rule, which is the safe direction: the
+        # rule only ever EXEMPTS.
+        acted_ids = None
+        if "GM_ACTED_IDS" in os.environ:
+            acted_ids = set(os.environ.get("GM_ACTED_IDS", "").split())
         print(json.dumps(extension_verdict(
             ws, os.environ.get("GM_DIR", ".golden-master"), base,
-            acted_commits=acted_commits, acted_blobs=acted_blobs)))
+            acted_commits=acted_commits, acted_blobs=acted_blobs,
+            acted_ids=acted_ids)))
         raise SystemExit(0)
 
     report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
