@@ -209,7 +209,11 @@ type Server struct {
 	botVarsStore    platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
-	platformBots   *platformcfg.Resolver[platformBotSet]
+	platformBots *platformcfg.Resolver[platformBotSet]
+	// bakedCatalog caches slug → version for the on-disk catalog, so the
+	// override-staleness comparison can be recomputed on every launch without
+	// re-walking every bot root each time (bot_override_staleness.go).
+	bakedCatalog   *platformcfg.Resolver[bakedCatalog]
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
@@ -637,6 +641,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// tests wire s.botSources after New, and the resolver must already
 	// exist for them — same reason the roles/sandbox resolvers are.
 	s.platformBots = s.newPlatformBotsResolver()
+	s.bakedCatalog = s.newBakedCatalogResolver()
 	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
 	// A malformed env policy leaves it nil — the health echo reports the
 	// invalid value (existing behaviour) instead of a resolver quietly

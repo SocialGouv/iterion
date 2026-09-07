@@ -46,6 +46,17 @@ func TestBundleVersionOrder(t *testing.T) {
 	}
 }
 
+// shadowsNewerVersionFor resolves the tier below tenantID and compares one
+// row against it, failing the test when the catalog could not be read at all.
+func shadowsNewerVersionFor(t *testing.T, s *Server, tenantID, slug, stored string) (string, bool) {
+	t.Helper()
+	versions, ok := s.versionsBelow(tenantID)
+	if !ok {
+		t.Fatalf("the catalog must be readable in this test")
+	}
+	return shadowsNewerVersion(versions, slug, stored)
+}
+
 // seedBakedBot writes a one-bot catalog and pins the server to it.
 func seedBakedBot(t *testing.T, s *Server, slug, version string) {
 	t.Helper()
@@ -144,7 +155,7 @@ func TestBotSourceListing_ReportsAnOverrideShadowingANewerBake(t *testing.T) {
 func TestShadowsNewerVersion_StoredOnlySlugIsNotStale(t *testing.T) {
 	s, _, _ := newBotSourceTestServer(t)
 	seedBakedBot(t, s, "reviewer", "0.8.0")
-	if baked, shadowed := shadowsNewerVersion(s.versionsBelow("t1"), "a-bot-only-this-team-has", "0.1.0"); shadowed || baked != "" {
+	if baked, shadowed := shadowsNewerVersionFor(t, s, "t1", "a-bot-only-this-team-has", "0.1.0"); shadowed || baked != "" {
 		t.Errorf("a stored-only slug must shadow nothing; got below=%q shadowed=%v", baked, shadowed)
 	}
 }
@@ -170,15 +181,115 @@ func TestVersionsBelow_ATeamRowIsShadowedByThePlatformTier(t *testing.T) {
 	s.invalidatePlatformBots()
 
 	// A team row NEWER than the bake but OLDER than the platform override.
-	below, shadowed := shadowsNewerVersion(s.versionsBelow("t1"), "reviewer", "0.9.0")
+	below, shadowed := shadowsNewerVersionFor(t, s, "t1", "reviewer", "0.9.0")
 	if !shadowed || below != "1.0.0" {
 		t.Errorf("a team row at 0.9.0 shadows the 1.0.0 platform override; got below=%q shadowed=%v", below, shadowed)
 	}
 
 	// The platform row itself is measured against the bake — never itself.
-	below, shadowed = shadowsNewerVersion(s.versionsBelow(botsource.PlatformTenantID), "reviewer", "1.0.0")
+	below, shadowed = shadowsNewerVersionFor(t, s, botsource.PlatformTenantID, "reviewer", "1.0.0")
 	if shadowed || below != "0.8.0" {
 		t.Errorf("a platform row compares against the bake; got below=%q shadowed=%v", below, shadowed)
+	}
+}
+
+// A shadow that appears MID-PROCESS must still be reported. Caching the
+// negative verdict burned the key on the first quiet launch, so a platform
+// override pushed afterwards was silenced for the process's lifetime — and the
+// platform overlay is a TTL cache that every `admin bots push` refills, so
+// this is a routine sequence, not a corner (Revi Rac8574).
+func TestWarnOverrideShadow_ReportsAShadowThatAppearsMidProcess(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+	var buf bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	staleOverrideWarned.Range(func(k, _ any) bool { staleOverrideWarned.Delete(k); return true })
+
+	// A team row at 0.9.0 is ahead of the 0.8.0 bake: nothing to report yet.
+	s.warnIfOverrideShadowsNewerBake("t1", "reviewer", "team", "0.9.0")
+	if buf.Len() != 0 {
+		t.Fatalf("nothing shadowed yet; got:\n%s", buf.String())
+	}
+
+	// A super-admin pushes a platform override at 1.0.0. The SAME team row now
+	// holds it back.
+	pctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+	if _, err := s.botSources.Create(pctx, botsource.BotSource{
+		TenantID: botsource.PlatformTenantID,
+		Slug:     "reviewer",
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: reviewer\nversion: 1.0.0\n",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.invalidatePlatformBots()
+
+	s.warnIfOverrideShadowsNewerBake("t1", "reviewer", "team", "0.9.0")
+	if !strings.Contains(buf.String(), "1.0.0") {
+		t.Errorf("a shadow appearing mid-process must warn; got:\n%s", buf.String())
+	}
+}
+
+// An unreadable catalog must read as UNKNOWN, never as a clean inventory — on
+// the very endpoint the runbook calls the check to run after a release
+// (Revi Re7858f).
+func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) {
+	s, editor, _ := newBotSourceTestServer(t)
+	edCtx := auth.WithIdentity(context.Background(), editor)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+
+	files := map[string]string{
+		botsource.MainBotFile: testBotMain,
+		"manifest.yaml":       "name: reviewer\nversion: 0.7.0\n",
+	}
+	body, _ := json.Marshal(botSourcePutReq{Files: files})
+	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/reviewer", strings.NewReader(string(body))).WithContext(edCtx)
+	r.SetPathValue("id", "t1")
+	r.SetPathValue("slug", "reviewer")
+	w := httptest.NewRecorder()
+	s.handlePutBotSource(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("store = %d: %s", w.Code, w.Body.String())
+	}
+
+	// Break the catalog: a manifest the loader refuses.
+	broken := t.TempDir()
+	dir := filepath.Join(broken, "reviewer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, botsource.MainBotFile), []byte(testBotMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("name: [unterminated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{broken}
+	s.bakedCatalog = s.newBakedCatalogResolver()
+
+	req := httptest.NewRequest("GET", "/api/teams/t1/bot-sources", nil).WithContext(edCtx)
+	req.SetPathValue("id", "t1")
+	rec := httptest.NewRecorder()
+	s.handleListBotSources(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ShadowCheckUnavailable bool                `json:"shadow_check_unavailable"`
+		BotSources             []botSourceMetaView `json:"bot_sources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.ShadowCheckUnavailable {
+		t.Errorf("an unreadable catalog must be reported, not read as clean; got %s", rec.Body.String())
+	}
+	for _, v := range got.BotSources {
+		if v.ShadowsNewerVersion {
+			t.Errorf("no row may claim a verdict when the check could not run; got %+v", v)
+		}
 	}
 }
 

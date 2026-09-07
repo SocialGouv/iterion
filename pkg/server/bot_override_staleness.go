@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 )
 
 // A stored bundle (team or platform botsource row) OUTRANKS the baked catalog
@@ -96,18 +99,42 @@ func numericVersionParts(v string) ([]int, bool) {
 // --bots-path pinned that follows the live WorkDir, so on a local studio the
 // answer legitimately changes with the open project — which is the correct
 // answer to the question the field asks.
-func (s *Server) bakedVersions() map[string]string {
-	entries, err := botregistry.List(s.botListOptions())
-	if err != nil {
-		return nil
-	}
-	out := make(map[string]string, len(entries))
-	for _, e := range entries {
-		if v := strings.TrimSpace(e.Version); v != "" {
-			out[e.Name] = v
+// bakedCatalog is the cached slug → version projection of the on-disk catalog.
+// A struct rather than a bare map so "never read successfully" (nil) stays
+// distinguishable from "read, and it holds nothing" (empty map): reporting a
+// broken catalog as a clean inventory would be a lie told by the very endpoint
+// the runbook calls the check to run after a release.
+type bakedCatalog struct {
+	versions map[string]string
+}
+
+// newBakedCatalogResolver builds the TTL cache. Walking the catalog is the
+// expensive half of the comparison, so it is the DATA that is cached, never
+// the verdict: a cached verdict would outlive the platform-override overlay it
+// was computed against. A walk failure propagates, so the resolver logs it and
+// serves the LAST-KNOWN map rather than an empty one.
+func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
+	return platformcfg.NewResolverFunc(func(context.Context) (*bakedCatalog, error) {
+		entries, err := botregistry.List(s.botListOptions())
+		if err != nil {
+			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %w", err)
 		}
+		out := bakedCatalog{versions: make(map[string]string, len(entries))}
+		for _, e := range entries {
+			if v := strings.TrimSpace(e.Version); v != "" {
+				out.versions[e.Name] = v
+			}
+		}
+		return &out, nil
+	}, s.logger.Warn)
+}
+
+func (s *Server) bakedVersions() (map[string]string, bool) {
+	c := s.bakedCatalog.Get(context.Background())
+	if c == nil {
+		return nil, false
 	}
-	return out
+	return c.versions, true
 }
 
 // versionsBelow returns what would serve for each slug if tenantID's own row
@@ -116,17 +143,25 @@ func (s *Server) bakedVersions() map[string]string {
 // by the platform override when one exists, not by the baked catalog behind
 // it: comparing a team row against the bake alone would call a 0.9.0 team
 // override "current" while it holds back a 1.0.0 platform one.
-func (s *Server) versionsBelow(tenantID string) map[string]string {
-	out := s.bakedVersions()
+// The bool is false when the catalog could not be read at all: the caller must
+// then report "unknown", never "nothing is shadowed".
+func (s *Server) versionsBelow(tenantID string) (map[string]string, bool) {
+	baked, ok := s.bakedVersions()
+	if !ok {
+		return nil, false
+	}
 	if tenantID == botsource.PlatformTenantID {
-		return out
+		return baked, true
 	}
 	set := s.platformBotSetCached()
 	if set == nil {
-		return out
+		return baked, true
 	}
-	if out == nil {
-		out = make(map[string]string, len(set.manifests))
+	// Copy: the cached catalog map is shared, and the platform overlay is
+	// per-tenant-tier.
+	out := make(map[string]string, len(baked)+len(set.manifests))
+	for k, v := range baked {
+		out[k] = v
 	}
 	for slug, m := range set.manifests {
 		if m == nil {
@@ -136,7 +171,7 @@ func (s *Server) versionsBelow(tenantID string) map[string]string {
 			out[slug] = v
 		}
 	}
-	return out
+	return out, true
 }
 
 // shadowsNewerVersion reports what would serve for slug without this row, and
@@ -159,9 +194,14 @@ func shadowsNewerVersion(below map[string]string, slug, storedVersion string) (s
 // The key carries the TENANT and the origin, not just the slug: on the team
 // tier many tenants hold a row for the same slug, and a slug-only key would
 // let the first team to launch consume it and silence every other team —
-// exactly the silence this file exists to end. The baked version is
-// deliberately NOT in the key: it cannot change without a new image, and a new
-// image is a new process with a fresh map.
+// exactly the silence this file exists to end.
+//
+// Only a POSITIVE verdict is ever stored. Caching "nothing to report" would
+// silence a shadow that appears later in the same process, and both inputs do
+// change at runtime: a team row is measured against the platform overlay,
+// which is a TTL cache that every `admin bots push` refills. Recomputing is
+// cheap because what is cached is the catalog walk (bakedCatalog), not the
+// verdict.
 var staleOverrideWarned sync.Map
 
 // warnIfOverrideShadowsNewerBake logs, once per (tenant, origin, slug, stored
@@ -175,15 +215,19 @@ func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVe
 	if s.logger == nil || strings.TrimSpace(storedVersion) == "" {
 		return
 	}
-	key := strings.Join([]string{tenantID, origin, slug, storedVersion}, "\x00")
-	if _, seen := staleOverrideWarned.LoadOrStore(key, struct{}{}); seen {
+	versions, ok := s.versionsBelow(tenantID)
+	if !ok {
+		// The catalog could not be read; the resolver already warned about
+		// that. Staying silent here is honest — claiming "nothing shadowed"
+		// would not be.
 		return
 	}
-	// Not a shadow: the key stays stored. The answer cannot change within a
-	// process, so re-walking the catalog on every later launch of the same row
-	// would buy nothing.
-	below, shadowed := shadowsNewerVersion(s.versionsBelow(tenantID), slug, storedVersion)
+	below, shadowed := shadowsNewerVersion(versions, slug, storedVersion)
 	if !shadowed {
+		return
+	}
+	key := strings.Join([]string{tenantID, origin, slug, storedVersion}, "\x00")
+	if _, seen := staleOverrideWarned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
 	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s)",

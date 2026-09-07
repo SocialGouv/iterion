@@ -2550,6 +2550,23 @@
         ],
         "type": "object"
       },
+      "botSourceListView": {
+        "properties": {
+          "bot_sources": {
+            "items": {
+              "$ref": "#/components/schemas/botSourceMetaView"
+            },
+            "type": "array"
+          },
+          "shadow_check_unavailable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bot_sources"
+        ],
+        "type": "object"
+      },
       "botSourceMetaView": {
         "properties": {
           "bundle_version": {
@@ -3458,18 +3475,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "bot_sources": {
-                      "items": {
-                        "$ref": "#/components/schemas/botSourceMetaView"
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "bot_sources"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/botSourceListView"
                 }
               }
             },

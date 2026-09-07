@@ -6193,6 +6193,10 @@ export interface components {
         botSourceForkReq: {
             from: string;
         };
+        botSourceListView: {
+            bot_sources: components["schemas"]["botSourceMetaView"][];
+            shadow_check_unavailable?: boolean;
+        };
         botSourceMetaView: {
             bundle_version?: string;
             /** Format: date-time */
@@ -6510,9 +6514,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        bot_sources: components["schemas"]["botSourceMetaView"][];
-                    };
+                    "application/json": components["schemas"]["botSourceListView"];
                 };
             };
         };

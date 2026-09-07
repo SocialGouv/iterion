@@ -139,6 +139,10 @@ bundle is a legitimate choice — a rollback is exactly this):
   always the bake: resolution is team → platform → baked, so a team row is
   measured against the platform override when one exists. The same fields
   appear on the team listing (`GET /api/teams/{id}/bot-sources`).
+  If the catalog itself cannot be read, the response carries
+  `shadow_check_unavailable: true` and the per-row shadow fields are absent —
+  an inventory that looks clean because the check could not run would be
+  worse than one that admits it did not run.
 - The resolver logs one `Warn` naming the tenant, both versions and the two
   ways out — once per `(tenant, origin, slug, stored version)`, not per
   launch. The tenant is in the key on purpose: many teams can hold a row for

@@ -83,9 +83,9 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 	}
 	// Strip Files from the list payload — it is metadata only. Digest gives
 	// "what exactly is deployed" a comparable answer without the content.
-	// One catalog walk for the whole listing: resolving what sits below each
+	// One catalog read for the whole listing: resolving what sits below each
 	// row would re-discover every configured bot root for each one.
-	below := s.versionsBelow(tenantID)
+	below, shadowCheckOK := s.versionsBelow(tenantID)
 	views := make([]botSourceMetaView, 0, len(list))
 	for _, b := range list {
 		digest := botsource.Digest(b.Files)
@@ -103,7 +103,22 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 			ShadowsNewerVersion: shadowed,
 		})
 	}
-	s.writeJSONFor(w, r, map[string]any{"bot_sources": views})
+	s.writeJSONFor(w, r, botSourceListView{
+		BotSources:             views,
+		ShadowCheckUnavailable: !shadowCheckOK,
+	})
+}
+
+// botSourceListView is the listing payload. A named type, shared by the
+// handler and the OpenAPI declaration, so the shape the spec promises and the
+// shape the server writes cannot drift apart.
+type botSourceListView struct {
+	BotSources []botSourceMetaView `json:"bot_sources"`
+	// ShadowCheckUnavailable reports that the catalog could not be read, so
+	// every row's shadow fields are absent. An inventory that looks clean
+	// because the check could not run is worse than one that admits it did
+	// not run.
+	ShadowCheckUnavailable bool `json:"shadow_check_unavailable,omitempty"`
 }
 
 // botSourceMetaView is one list row: the metadata plus the content digest.
