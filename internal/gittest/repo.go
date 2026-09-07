@@ -73,12 +73,10 @@ func RemoveWorktree(t testing.TB, repo, path string) {
 	if err != nil {
 		t.Fatalf("locate git common dir of %s: %v", repo, err)
 	}
-	if pruned, err := pruneRegistration(common, resolved); err != nil {
+	// A false return is not a failure: `worktree remove` above may already
+	// have taken the entry, or the worktree was never registered here.
+	if _, err := pruneRegistration(common, resolved); err != nil {
 		t.Fatalf("prune worktree registration for %s: %v", resolved, err)
-	} else if !pruned {
-		// Nothing named it: `worktree remove` above already took the entry,
-		// or the worktree was never registered here. Both are fine.
-		return
 	}
 }
 
