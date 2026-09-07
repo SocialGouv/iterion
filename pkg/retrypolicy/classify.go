@@ -102,6 +102,7 @@ var classification = map[store.FailureCode]Disposition{
 	// Deterministic — the same step against the same checkpoint, always the
 	// same verdict. Nothing here is decided by a model.
 	store.FailureExpressionFailed:    DispositionDeterministic, // a compute node: no LLM, no shell
+	store.FailureModelUnavailable:    DispositionDeterministic, // the provider refuses the same model to the same credential every time
 	store.FailureToolFailedPermanent: DispositionDeterministic, // a fixed exit code on unchanged inputs
 	store.FailureWorkspaceSafety:     DispositionDeterministic, // a static property of the graph
 	store.FailureNodeNotFound:        DispositionDeterministic, // the graph does not change between attempts

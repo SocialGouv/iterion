@@ -175,9 +175,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	}
 
 	ioRes := delegate.ToIOResult(result)
-	if err != nil {
-		ioRes.Error = err.Error()
-	}
+	delegate.StampIOError(&ioRes, err)
 	resultEnv, marshalErr := delegate.NewResultEnvelope(ioRes)
 	if marshalErr != nil {
 		return emitFatal(dispatcher, stderr, marshalErr)

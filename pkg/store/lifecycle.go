@@ -81,6 +81,15 @@ const (
 	// dispatcher pauses for human instead of burning the retry budget;
 	// the run is resumable once the credential is refreshed.
 	FailureAuthFailed FailureCode = "AUTH_FAILED"
+	// FailureModelUnavailable: the upstream provider refused the requested
+	// model to this credential — an unknown or withdrawn id, an account not
+	// entitled to it, or a client the backend deems too old to serve it.
+	// Deterministic: the same (credential, model) pair is refused again on
+	// every attempt, so a redelivery must park the run instead of resuming
+	// it (measured: ten resumes in eighty seconds, one sandbox pod each,
+	// before the run parked on its own). An operator changes the model or
+	// the credential (a launch override) and resumes.
+	FailureModelUnavailable FailureCode = "MODEL_UNAVAILABLE"
 
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
@@ -178,6 +187,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureToolFailedPermanent,
 	FailureNetworkTransient,
 	FailureAuthFailed,
+	FailureModelUnavailable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,

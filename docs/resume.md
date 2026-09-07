@@ -103,7 +103,7 @@ Being one of the engine's own codes does not make a verdict re-decidable.
 checkpoint that does not move), `CONTEXT_LENGTH_EXCEEDED` (the in-node
 recipe already compacted twice and gave up; a resume rehydrates the same
 conversation), `IR_UNLOADABLE`, `WORKSPACE_SAFETY`,
-`TOOL_FAILED_PERMANENT` and their peers reach the same verdict on every
+`TOOL_FAILED_PERMANENT`, `MODEL_UNAVAILABLE` and their peers reach the same verdict on every
 attempt. Which codes those are is **one table**,
 [`pkg/retrypolicy`'s classification](../pkg/retrypolicy/classify.go), read
 by every surface that decides "resume this failure automatically": the

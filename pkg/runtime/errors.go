@@ -41,6 +41,7 @@ const (
 	ErrCodeToolFailedPermanent   = store.FailureToolFailedPermanent
 	ErrCodeNetworkTransient      = store.FailureNetworkTransient
 	ErrCodeAuthFailed            = store.FailureAuthFailed
+	ErrCodeModelUnavailable      = store.FailureModelUnavailable
 )
 
 // RuntimeError is a structured error carrying a machine-readable code,

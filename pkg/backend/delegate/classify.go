@@ -75,7 +75,14 @@ type ErrModelUnavailable struct {
 	// unavailability may clear. Reserved for ADR-087 stage 3; callers must
 	// fail open when it is zero.
 	ResetAt time.Time
+	// Cause is the upstream error the refusal was recognised in (the typed
+	// *api.APIError in-process, the runner exit across the sandbox IPC), kept
+	// reachable for errors.As / errors.Is consumers.
+	Cause error
 }
+
+// Unwrap exposes Cause to errors.Is / errors.As.
+func (e *ErrModelUnavailable) Unwrap() error { return e.Cause }
 
 func (e *ErrModelUnavailable) Error() string {
 	msg := "model unavailable"

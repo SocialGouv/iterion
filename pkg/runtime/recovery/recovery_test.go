@@ -335,3 +335,17 @@ func TestDefaultRecipes_HasAllClasses(t *testing.T) {
 		}
 	}
 }
+
+// A provider refusing the model to the credential is deterministic: the
+// typed error classifies to MODEL_UNAVAILABLE and the recipe fails terminal
+// at once, so the run parks instead of being retried and redelivered.
+func TestClassify_ModelUnavailableByType(t *testing.T) {
+	err := fmt.Errorf("claw backend: runner: %w", &delegate.ErrModelUnavailable{Provider: "claw", Model: "openai/gpt-6-astra", Detail: "requires a newer version of Codex"})
+	if got := Classify(err); got != runtime.ErrCodeModelUnavailable {
+		t.Fatalf("Classify = %q, want %q", got, runtime.ErrCodeModelUnavailable)
+	}
+	act := DefaultRecipes()[runtime.ErrCodeModelUnavailable].Apply(context.Background(), &runtime.RuntimeError{Code: runtime.ErrCodeModelUnavailable}, 0)
+	if act.Kind != ActionFailTerminal {
+		t.Errorf("recipe = %v, want FailTerminal", act.Kind)
+	}
+}

@@ -162,6 +162,19 @@ func AuthFailedRecipe() Recipe {
 	})
 }
 
+// ModelUnavailableRecipe: the provider refuses this model to this
+// credential; no retry can change that verdict, so fail terminal at once.
+// The run parks resumable under MODEL_UNAVAILABLE (deterministic), and an
+// operator resumes it with another model or credential.
+func ModelUnavailableRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the provider refuses this model to this credential (unknown id, no entitlement, or a client too old to serve it); retrying cannot change it — pick another model or credential, then resume",
+		}
+	})
+}
+
 // TransientToolRecipe: retry with linear backoff up to maxRetries
 // (model gets the error in its next turn), then fail terminal.
 func TransientToolRecipe(maxRetries int) Recipe {
@@ -294,6 +307,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeExecutionFailed:       ExecutionFailedRecipe(1),
 		runtime.ErrCodeNetworkTransient:      NetworkTransientRecipe(6),
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
+		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
 	}
 }
 
@@ -360,6 +374,13 @@ func Classify(err error) runtime.ErrorCode {
 	var authFailed *delegate.ErrAuthFailed
 	if errors.As(err, &authFailed) {
 		return runtime.ErrCodeAuthFailed
+	}
+	// A model the credential cannot reach, by TYPE: claw rebuilds it from
+	// the provider's 400/404 refusal on both sides of its sandbox IPC, so
+	// a flattened "API error 400" no longer lands in the retried catch-all.
+	var unavailable *delegate.ErrModelUnavailable
+	if errors.As(err, &unavailable) {
+		return runtime.ErrCodeModelUnavailable
 	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {

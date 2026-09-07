@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/plugin"
@@ -118,6 +119,43 @@ type IOResult struct {
 	PendingConversation json.RawMessage `json:"pending_conversation,omitempty"`
 	PendingToolUseID    string          `json:"pending_tool_use_id,omitempty"`
 	Error               string          `json:"error,omitempty"`
+	// ErrorKind names the typed class of Error when the runner recognised
+	// one (IOErrorKindModelUnavailable today). Error alone is flattened
+	// text; the launcher rebuilds the typed error from this field so the
+	// engine classifies the failure the way an in-process node would.
+	ErrorKind string `json:"error_kind,omitempty"`
+	// ErrorModel is the model id the provider refused (ErrorKind
+	// IOErrorKindModelUnavailable).
+	ErrorModel string `json:"error_model,omitempty"`
+}
+
+// IOErrorKindModelUnavailable is the ErrorKind of a provider refusing the
+// requested model to the run's credential.
+const IOErrorKindModelUnavailable = "model_unavailable"
+
+// StampIOError records err on r for the IPC: the flattened text always, and
+// the typed class when the runner can name one.
+func StampIOError(r *IOResult, err error) {
+	if err == nil {
+		return
+	}
+	r.Error = err.Error()
+	var unavailable *ErrModelUnavailable
+	if errors.As(err, &unavailable) {
+		r.ErrorKind = IOErrorKindModelUnavailable
+		r.ErrorModel = unavailable.Model
+	}
+}
+
+// TypedIOError rebuilds the typed error a runner stamped on r, wrapping
+// cause (typically the runner process exit) so it stays reachable. Nil
+// when the envelope carries no recognised kind.
+func TypedIOError(r IOResult, cause error) error {
+	switch r.ErrorKind {
+	case IOErrorKindModelUnavailable:
+		return &ErrModelUnavailable{Provider: BackendClaw, Model: r.ErrorModel, Detail: r.Error, Cause: cause}
+	}
+	return nil
 }
 
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and

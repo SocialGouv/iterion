@@ -199,6 +199,63 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // [delegate.IOTask] and in docs/sandbox.md: no MCP servers, no
 // mid-tool-loop ask_user resume.
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
+	res, err := b.execute(ctx, task)
+	if err != nil {
+		err = withModelRefusal(err, task.Model)
+	}
+	return res, err
+}
+
+// withModelRefusal recognises a provider refusing the requested model in
+// the typed *api.APIError claw surfaces and returns it as the engine's
+// *delegate.ErrModelUnavailable (deterministic for this credential/model
+// pair), wrapping the original. Any other error is returned unchanged.
+func withModelRefusal(err error, model string) error {
+	var already *delegate.ErrModelUnavailable
+	if errors.As(err, &already) {
+		return err
+	}
+	var apiErr *api.APIError
+	if !errors.As(err, &apiErr) || !isModelRefusal(apiErr) {
+		return err
+	}
+	return &delegate.ErrModelUnavailable{Provider: delegate.BackendClaw + "/" + apiErr.Provider, Model: model, Detail: apiErr.Message, Cause: err}
+}
+
+// modelRefusalNeedles are the wordings providers use when the requested
+// model cannot be served to the caller: OpenAI's model_not_found /
+// "does not exist", the ChatGPT-Codex "requires a newer version of Codex"
+// (measured 2026-09-07), Anthropic's not_found_error on a model id.
+var modelRefusalNeedles = []string{
+	"requires a newer version",
+	"model_not_found",
+	"model not found",
+	"no such model",
+	"unknown model",
+	"invalid model",
+	"not_found_error",
+	"does not exist",
+	"is not available",
+	"not supported",
+}
+
+// isModelRefusal reports whether a 400/404 carries one of the model
+// refusal wordings. Other statuses (401/403 auth, 429 windows, 5xx) keep
+// their own classification.
+func isModelRefusal(e *api.APIError) bool {
+	if e == nil || (e.StatusCode != 400 && e.StatusCode != 404) {
+		return false
+	}
+	msg := strings.ToLower(e.Message)
+	for _, needle := range modelRefusalNeedles {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *ClawBackend) execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
 	// Carry the resolved compression mode + rewriter chain into the tool loop
 	// so the bash builtin can compress command output (rewrite via context).
 	// Off is a no-op. For the sandboxed path the mode + chain specs ride the
@@ -1016,6 +1073,12 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, stderrBuf.String())
 	}
 	if ioRes.Error != "" {
+		// A typed class the runner stamped survives the IPC as the same
+		// typed error an in-process node would surface, so the engine
+		// parks a deterministic refusal instead of redelivering it.
+		if typed := delegate.TypedIOError(ioRes, waitErr); typed != nil {
+			return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %w", typed)
+		}
 		// Preserve waitErr for errors.Is / errors.As consumers when
 		// the runner emitted a structured error AND exited non-zero
 		// (the normal error path). Without %w on waitErr, downstream
