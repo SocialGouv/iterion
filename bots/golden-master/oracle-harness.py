@@ -44,7 +44,15 @@ Stdlib only, deliberately: no venv, no pip, no network install. The oracle must
 run in any sandbox, including one with no egress.
 """
 
+# `import hashlib` is the FIRST line of the harness body, and three files
+# locate that body by this exact line: sync-harness.py's BODY_START, the
+# byte-identity test's bodyStart, and sync-harness.bot's own extraction
+# guard. An import added ABOVE it falls outside every inlined copy, and the
+# materialised judge dies on a NameError at the first call that needs it
+# (measured). New imports go BELOW — alphabetical order loses to that.
 import hashlib
+import base64
+import binascii
 import http.cookiejar
 import importlib.util
 import json
@@ -201,8 +209,12 @@ class Session:
         data = None
         headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
         if fields:
-            data = urllib.parse.urlencode(fields).encode()
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            if any(is_file_part(v) for v in fields.values()):
+                data, ctype = encode_multipart(fields)
+                headers["Content-Type"] = ctype
+            else:
+                data = urllib.parse.urlencode(fields).encode()
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         opener = self.opener if follow else self.no_redirect_opener
         try:
@@ -230,6 +242,103 @@ class Session:
                 fields[token_field] = tok
         status, _, _ = self.fetch(spec.get("method", "POST"), path, fields=fields)
         return status
+
+
+# ─── Uploads: multipart, and a boundary that does not move ─────────────────
+#
+# A corpus that declares a file field had it flattened by urlencode, which
+# serialises a structured value through its repr: the application received a
+# form field whose value was the TEXT of a Python object, the request was
+# refused for the wrong reason, and the reference recorded that refusal as
+# the behaviour. An observation point that cannot express its own request
+# does not observe anything.
+#
+# The boundary is DERIVED, never random. A random boundary is the textbook
+# way to write a multipart body and the wrong one here: two replays of one
+# request would differ byte for byte, and anything the application echoes
+# back — a validation message quoting the raw part, a stored name — moves
+# with it. The usual repair is a canonicalisation rule that erases the
+# boundary from the capture, which buys stability by making the net blind to
+# a region of every upload response. A request that is byte-identical on
+# every replay needs no rule at all.
+
+FILE_PART_BOUNDARY = "iterion-golden-master-boundary"
+
+
+def is_file_part(value):
+    """A field declared as a FILE: an object naming the file it stands for.
+
+    `{"filename": ..., "text": ...}` or `{"filename": ..., "b64": ...}`, with
+    an optional `content_type`. Anything else is an ordinary form field, so a
+    corpus that declares no upload is encoded exactly as before.
+    """
+    return isinstance(value, dict) and isinstance(value.get("filename"), str)
+
+
+def file_part_bytes(value):
+    """The part's payload. `text` is UTF-8 (a corpus stays readable and
+    replayable by hand); `b64` carries what text cannot."""
+    if "b64" in value:
+        try:
+            return base64.b64decode(value["b64"], validate=True)
+        except (ValueError, binascii.Error) as e:
+            raise SystemExit("file field %r: `b64` is not valid base64 (%s) — "
+                             "a payload the harness cannot decode would be "
+                             "sent as its own error text"
+                             % (value.get("filename"), e))
+    text = value.get("text")
+    if text is None:
+        raise SystemExit("file field %r declares neither `text` nor `b64` — "
+                         "an upload with no payload records the refusal of an "
+                         "empty file as if it were the behaviour"
+                         % (value.get("filename"),))
+    if not isinstance(text, str):
+        raise SystemExit("file field %r: `text` must be a string, got %s"
+                         % (value.get("filename"), type(text).__name__))
+    return text.encode("utf-8")
+
+
+def multipart_boundary(payloads):
+    """A boundary that no part contains — derived from the parts, not drawn
+    at random, so the same request encodes to the same bytes forever.
+
+    RFC 7578 requires the delimiter to appear in no part. The base name is a
+    constant (readable in a capture, and the same across every net); when a
+    payload happens to contain it, a counter is appended until it does not.
+    Deterministic in both branches: the collision is a property of the
+    content, and the same content yields the same boundary.
+    """
+    boundary = FILE_PART_BOUNDARY
+    n = 0
+    while any(boundary.encode("utf-8") in p for p in payloads):
+        n += 1
+        boundary = "%s-%d" % (FILE_PART_BOUNDARY, n)
+    return boundary
+
+
+def encode_multipart(fields):
+    """(body, Content-Type) for a form carrying at least one file part.
+
+    Fields are emitted in the order the corpus declares them — dicts preserve
+    insertion order, and an ordering that follows the declaration is one the
+    reader of a reference can predict.
+    """
+    parts, payloads = [], []
+    for name, value in fields.items():
+        if is_file_part(value):
+            payloads.append(file_part_bytes(value))
+        else:
+            payloads.append(("" if value is None else str(value)).encode("utf-8"))
+    boundary = multipart_boundary(payloads)
+    for (name, value), payload in zip(fields.items(), payloads):
+        head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (boundary, name)
+        if is_file_part(value):
+            head += '; filename="%s"' % value["filename"]
+            head += "\r\nContent-Type: %s" % (value.get("content_type")
+                                               or "application/octet-stream")
+        parts.append(head.encode("utf-8") + b"\r\n\r\n" + payload + b"\r\n")
+    parts.append(("--%s--\r\n" % boundary).encode("utf-8"))
+    return b"".join(parts), 'multipart/form-data; boundary=%s' % boundary
 
 
 def extract_input_value(body, name):
@@ -3229,6 +3338,104 @@ def _selftest():
         check("login variante sans difference de casse -> manque",
               [x["probe"] for x in missing_corpus_probes(full, deg_cfg)],
               ["auth_case"])
+
+        # 7b. Televersements : un champ FICHIER s'encode en multipart, et la
+        #     frontiere est DERIVEE — deux rejeux de la meme requete rendent
+        #     les memes octets, donc rien de ce que l'application renvoie n'a
+        #     besoin d'etre efface par une regle de canonicalisation.
+        import email.parser
+
+        def parse_multipart(body, ctype):
+            raw = b"Content-Type: " + ctype.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+            msg = email.parser.BytesParser().parsebytes(raw)
+            out = {}
+            for part in msg.get_payload():
+                out[part.get_param("name", header="content-disposition")] = (
+                    part.get_param("filename", header="content-disposition"),
+                    part.get_content_type(),
+                    part.get_payload(decode=True))
+            return out
+
+        check("un champ ordinaire n'est pas un fichier ; un objet nomme l'est",
+              [is_file_part("x"), is_file_part({"a": 1}),
+               is_file_part({"filename": "a.pdf", "text": "x"})],
+              [False, False, True])
+        up = {"titre": "rapport", "doc": {"filename": "a.pdf",
+                                          "content_type": "application/pdf",
+                                          "text": "PDF-ish"}}
+        body, ctype = encode_multipart(up)
+        parsed = parse_multipart(body, ctype)
+        # Relu par un parseur STANDARD, pas par notre propre opinion des octets.
+        check("relu par un parseur standard : le champ, le fichier, son nom et son type",
+              [parsed["titre"][2], parsed["doc"][0], parsed["doc"][1], parsed["doc"][2]],
+              [b"rapport", "a.pdf", "application/pdf", b"PDF-ish"])
+        check("deux encodages de la meme requete rendent les MEMES octets",
+              encode_multipart(up), (body, ctype))
+        # Le piege de la frontiere : une charge utile qui la contient.
+        clash = {"doc": {"filename": "a.txt", "text": "avant\n--%s\napres"
+                         % FILE_PART_BOUNDARY}}
+        cbody, cctype = encode_multipart(clash)
+        check("charge utile contenant la frontiere -> une AUTRE frontiere, deterministe",
+              [FILE_PART_BOUNDARY + "-1" in cctype, encode_multipart(clash) == (cbody, cctype)],
+              [True, True])
+        check("et le corps reste relisible par un parseur standard",
+              parse_multipart(cbody, cctype)["doc"][2],
+              ("avant\n--%s\napres" % FILE_PART_BOUNDARY).encode())
+        check("payload base64 decode, ordre des champs = ordre declare",
+              [parse_multipart(*encode_multipart(
+                  {"doc": {"filename": "a.bin", "b64": "aGVsbG8="}}))["doc"][2],
+               [p.split(b'name="')[1].split(b'"')[0]
+                for p in body.split(b"--" + ctype.split("=")[1].encode())[1:-1]]],
+              [b"hello", [b"titre", b"doc"]])
+        # Et le CHOIX, pas seulement l'encodeur : une session qui parle a un
+        # vrai serveur, parce qu'un encodeur juste que `fetch` n'appelle pas
+        # laisse le defaut exactement ou il etait.
+        import http.server
+        import threading
+
+        received = {}
+
+        class _Echo(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 (stdlib naming)
+                n_ = int(self.headers.get("Content-Length") or 0)
+                received["ctype"] = self.headers.get("Content-Type") or ""
+                received["body"] = self.rfile.read(n_)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *_a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _Echo)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            sess = Session("http://127.0.0.1:%d" % srv.server_address[1])
+            sess.fetch("POST", "/upload", fields={"titre": "r", "doc": {
+                "filename": "a.pdf", "content_type": "application/pdf", "text": "P"}})
+            check("une requete portant un fichier part en multipart, frontiere annoncee",
+                  [received["ctype"].startswith("multipart/form-data; boundary="),
+                   FILE_PART_BOUNDARY in received["ctype"],
+                   b'filename="a.pdf"' in received["body"]],
+                  [True, True, True])
+            sess.fetch("POST", "/plain", fields={"titre": "r"})
+            check("une requete sans fichier reste urlencodee (aucun changement)",
+                  [received["ctype"], received["body"]],
+                  ["application/x-www-form-urlencoded", b"titre=r"])
+        finally:
+            srv.shutdown()
+
+        def refuses(name, fn):
+            try:
+                fn()
+                check(name, "aucun-refus", "SystemExit")
+            except SystemExit:
+                check(name, "SystemExit", "SystemExit")
+        refuses("fichier sans charge utile -> refus nomme",
+                lambda: encode_multipart({"d": {"filename": "a.txt"}}))
+        refuses("base64 invalide -> refus nomme, jamais envoye tel quel",
+                lambda: encode_multipart({"d": {"filename": "a", "b64": "!!!"}}))
 
         # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
         routes = [{"method": "GET", "pattern": "/list"},
