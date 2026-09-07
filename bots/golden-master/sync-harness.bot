@@ -5143,7 +5143,19 @@ tool sync_harness:
         # qu'ETRE PLUS STRICTE sur des doubles, jamais adoucir un verdict.
         if mode == "selftest":
             for _ambient in ("GM_CONFIG", "GM_SEAL_COMMITTED", "GM_SEALED_DIR",
-                             "GM_MUTATION_FLOOR", "GM_MUTANTS", "GM_RECORD_IDS"):
+                             "GM_MUTATION_FLOOR", "GM_MUTANTS", "GM_RECORD_IDS",
+                             # Git's identity ENV outranks every config source,
+                             # `-c user.email` included, so a host that exports
+                             # it (devcontainer, CI image, agent sandbox) made
+                             # every fixture commit under the caller's name and
+                             # turned the author checks red — in a step the gate
+                             # wrapper runs BLOCKING, so a campaign's exit gate
+                             # failed for a reason unrelated to the code under
+                             # test (review finding, reproduced). Same class as
+                             # the GM_* above: the doubles are the selftest's,
+                             # and nothing about the caller may reach them.
+                             "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                             "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
                 os.environ.pop(_ambient, None)
             raise SystemExit(_selftest())
 

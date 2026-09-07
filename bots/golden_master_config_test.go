@@ -106,6 +106,12 @@ func TestGoldenMasterHarnessNamesTheConfig(t *testing.T) {
 			{"GM_SEALED_DIR=" + filepath.Join(t.TempDir(), "pile")},
 			{"GM_MUTATION_FLOOR=1"},
 			{"GM_CONFIG=config-pg.json", "GM_SEAL_COMMITTED=1"},
+			// Not only the judge's own variables: git's identity ENV
+			// outranks every config source, so a host that exports it made
+			// every fixture commit under the caller's name and turned the
+			// author checks red — in a step the gate wrapper runs BLOCKING.
+			{"GIT_AUTHOR_EMAIL=ambient@host", "GIT_COMMITTER_EMAIL=ambient@host",
+				"GIT_AUTHOR_NAME=ambient", "GIT_COMMITTER_NAME=ambient"},
 		} {
 			cmd := exec.Command("python3", harness)
 			cmd.Dir = t.TempDir()

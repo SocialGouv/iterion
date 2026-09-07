@@ -344,6 +344,23 @@ func TestGoldenMasterExtendBaseSeesQuotedAndRenamedDirt(t *testing.T) {
 			t.Fatalf("a quoted path read as a clean net — the absorption attack is open: %+v", res)
 		}
 	})
+	t.Run("a status git cannot read is not a clean net", func(t *testing.T) {
+		ws, _ := extendVerifyRepo(t, verdict, pending)
+		// The repository made unreadable: git exits non-zero, and whether
+		// the net is clean becomes unknown. Every other unknown in this
+		// feature fails closed; this one used to fail OPEN, granting exactly
+		// the window the refusal exists to close.
+		if err := os.Rename(filepath.Join(ws, ".git"), filepath.Join(ws, ".git-moved")); err != nil {
+			t.Fatal(err)
+		}
+		res := runExtendBase(t, ws)
+		if res.Clean || len(res.Pending) != 0 {
+			t.Fatalf("an unreadable status read as a clean net: %+v", res)
+		}
+		if !strings.Contains(res.Notice, "UNKNOWN") {
+			t.Fatalf("the refusal must name the unknown: %q", res.Notice)
+		}
+	})
 	t.Run("a reference renamed OUT of the net", func(t *testing.T) {
 		ws, _ := extendVerifyRepo(t, verdict, pending)
 		gitInNet(t, ws, "mv", ".golden-master/refs/001.txt", "moved-away.txt")
@@ -448,6 +465,47 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 		}
 		if !seen[spaced] || !seen[".golden-master/refs/002.txt"] {
 			t.Fatalf("a path with a space did not survive the encoding: %q", lines)
+		}
+	})
+	// The same thing driven through the real tool: an ambient identity is
+	// REPORTED and the provenance is published all the same, so the acts stay
+	// certifiable. Reported, not refused.
+	t.Run("an ambient git identity is said, and certifies all the same", func(t *testing.T) {
+		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
+		cmd := exec.Command("git", "-C", ws, "add", "-A")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(filepath.Join(ws, ".golden-master", "EXTENSIONS.md"), os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, werr := f.WriteString("<!-- iterion:extension-act\n{\"id\": \"E-L29-1\", \"lot\": \"L29\", \"recorded_paths\": [\".golden-master/refs/002.txt\"]}\n-->\n"); werr != nil {
+			t.Fatal(werr)
+		}
+		f.Close()
+		if out, aerr := cmd.CombinedOutput(); aerr != nil {
+			t.Fatalf("git add: %v (%s)", aerr, out)
+		}
+		// The environment wins over `-c user.email`, which is the whole point.
+		commit := exec.Command("git", "-C", ws, "-c", "user.email=extend@golden-master.iterion",
+			"-c", "user.name=x", "commit", "-qm", "act")
+		commit.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+			"GIT_AUTHOR_EMAIL=ambient@host", "GIT_COMMITTER_EMAIL=ambient@host",
+			"GIT_AUTHOR_NAME=ambient", "GIT_COMMITTER_NAME=ambient")
+		if out, cerr := commit.CombinedOutput(); cerr != nil {
+			t.Fatalf("git commit: %v (%s)", cerr, out)
+		}
+		res := runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
+		if res.IdentityOk {
+			t.Fatal("an ambient identity must be reported, not hidden")
+		}
+		if res.ActedCommits == "" || res.ActedBlobs == "" {
+			t.Fatalf("the provenance must still be published: the lock is the commit set, not the author: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "attribution only") {
+			t.Fatalf("the report must say what the difference costs: %q", res.LogTail)
 		}
 	})
 	t.Run("a commit under another identity is said", func(t *testing.T) {
@@ -661,6 +719,22 @@ func TestGoldenMasterExtendRestoreIsOnEveryWayOut(t *testing.T) {
 	}
 	if _, ok := cr.Workflow.Nodes["extend_refused"]; !ok {
 		t.Fatal("extend_refused is not a node")
+	}
+
+	// Attribution is EVIDENCE, never a term of convergence. Git's identity
+	// ENV outranks every config source and the agent cannot change the
+	// process environment, so a conjunct on it is unsatisfiable wherever a
+	// host exports it — the subbot would burn max_passes campaigns against a
+	// wall no pass can move. The lock is the commit set; this PR's own
+	// doctrine says the author is prose.
+	gate, ok := cr.Workflow.Nodes["extend_gate"].(*ir.ComputeNode)
+	if !ok {
+		t.Fatal("extend_gate is not a compute node")
+	}
+	for _, ex := range gate.Exprs {
+		if ex.Key == "converged" && strings.Contains(ex.Raw, "identity_ok") {
+			t.Fatalf("identity_ok is a conjunct of convergence: an ambient GIT_AUTHOR_EMAIL would make it unsatisfiable, and no pass of the agent can move it — %s", ex.Raw)
+		}
 	}
 
 	// The refusal the subbot states must travel with the verdict, or an agent
