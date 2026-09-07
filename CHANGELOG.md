@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.115.0](https://github.com/SocialGouv/iterion/compare/v3.114.0...v3.115.0) (2026-09-07)
+
+### Features
+
+* **golden-master:** the judge reads the declaration it was asked about, and the verdict says which one ([#894](https://github.com/SocialGouv/iterion/issues/894)) ([7bc419d](https://github.com/SocialGouv/iterion/commit/7bc419d0a21158013c2c32b2b579509b6c421643))
+
+    <details><summary>why</summary>
+
+    A net can declare a second ENVIRONMENT for the same corpus — a second database engine, a second runtime — and judging it means booting the app the other way and replaying the SAME references. Until now the harness opened `config.json` in two places, hard-coded, so a gate command passing `GM_CONFIG=<other>.json` ran a judge that never read the variable.
+
+    </details>
+
+### Bug Fixes
+
+* **sandbox:** never pass kubectl --request-timeout — it discards the in-cluster config and every apply dials localhost ([#899](https://github.com/SocialGouv/iterion/issues/899)) ([d9a3a7c](https://github.com/SocialGouv/iterion/commit/d9a3a7cea1d2e9b6bf1d55c4c30b0ec5a0f09b05)), references [#823](https://github.com/SocialGouv/iterion/issues/823)
+
+    <details><summary>why</summary>
+
+    Deployed to production at 18:27Z and rolled back at 18:50Z: with the flag set, every kubernetes sandbox creation fails at "apply file secrets secret".
+
+    </details>
+
 ## [3.114.0](https://github.com/SocialGouv/iterion/compare/v3.113.3...v3.114.0) (2026-09-07)
 
 ### Features
