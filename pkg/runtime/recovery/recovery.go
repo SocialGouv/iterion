@@ -462,10 +462,13 @@ func Classify(err error) runtime.ErrorCode {
 // provider will not serve the MODEL, whatever the request contains. ALL
 // entries MUST be lowercase — both callers lowercase first.
 var modelUnavailableNeedles = []string{
-	"requires a newer version", // ChatGPT backend gating a model on the client release claw announces
-	"api error 404",            // claw/openai verbatim: the model id reached no endpoint
-	"model_not_found",          // OpenAI error code field
-	"unknown model",            // gateway wording for an id no backend claims
+	// Scoped to the MODEL on purpose: a bare "requires a newer version"
+	// is any tool announcing a version floor, and a false positive here
+	// PARKS a run — the disposition is deterministic.
+	"model requires a newer version",
+	"api error 404",   // claw/openai verbatim: the model id reached no endpoint
+	"model_not_found", // OpenAI error code field
+	"unknown model",   // gateway wording for an id no backend claims
 }
 
 // matchesModelUnavailable is the ONE reading of that list. Both the

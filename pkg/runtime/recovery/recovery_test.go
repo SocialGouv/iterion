@@ -275,6 +275,11 @@ func TestClassify_ModelTheProviderWillNotServe(t *testing.T) {
 		// recovers on its own.
 		{"a bare 400 is not a model verdict", &api.APIError{StatusCode: 400, Message: "bad request"},
 			runtime.ErrCodeExecutionFailed},
+		// A version floor that is NOT about a model: any tool can announce
+		// one, and reading it as a model verdict would park a run over a
+		// devbox package.
+		{"a version floor that names no model", errors.New("devbox: package pinned: requires a newer version of nix"),
+			runtime.ErrCodeExecutionFailed},
 		// The credential is read first: a rejection naming both is one to
 		// re-authenticate, not one to re-model.
 		{"401 naming a model is still a credential", &api.APIError{
