@@ -66,6 +66,22 @@ var gateReasonWrappers = []*regexp.Regexp{
 // so the 140 characters a forge allows go to the remedy.
 const gateDLQDescription = "review parked on the DLQ — operator replay needed (iterion remote admin dlq)"
 
+// gateDeclineDescription is what a run that DECLINED its task leaves on the
+// head when nothing else answered the check. The generic trailer would be
+// false twice over here: the review did not die, and a push does not change
+// the refusal — the next dispatch reads the same premise and refuses again.
+// It is a `failure` like every other synthetic status, because a bot that
+// deliberately changed nothing has approved nothing either.
+const gateDeclineDescription = "a bot was dispatched here and declined the task — nothing was pushed, a human decides from here"
+
+// gateBudgetRemedy replaces the generic remedy when the run died on its own
+// budget. "Push again or comment the bot's command" is the one instruction
+// that cannot work: the next run reviews the same diff against the same cap
+// and dies at the same place. Measured on iterion#780 (#788) — three deaths
+// at 30–36 $ against a 12 $ cap, the lane's recovery exhausted, and a
+// developer told each time to reproduce it.
+const gateBudgetRemedy = ") — needs a human reviewer, or a higher budget"
+
 // gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
 // the run doc can say (budget exceeded, provider error, …). GitHub truncates
 // commit-status descriptions at 140 characters, so the reason is bounded and
@@ -76,6 +92,9 @@ const gateDLQDescription = "review parked on the DLQ — operator replay needed 
 func gateInterruptedDescriptionFor(run *store.Run) string {
 	if run != nil && run.FailureCode == store.FailureDLQParked {
 		return gateDLQDescription
+	}
+	if run != nil && run.FailureCode == declinedFailureCode {
+		return gateDeclineDescription
 	}
 	reason := ""
 	if run != nil {
@@ -107,6 +126,9 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 		}
 		reason = reason[:cut] + "…"
 	}
+	if run != nil && run.FailureCode == store.FailureBudgetExceeded {
+		return gateDiedDescriptionPrefix + reason + gateBudgetRemedy
+	}
 	return gateDiedDescriptionPrefix + reason + ") — push again or comment the bot's command to re-run"
 }
 
@@ -120,6 +142,7 @@ const gateDiedDescriptionPrefix = "review died ("
 func isSyntheticGateInterruption(description string) bool {
 	d := strings.TrimSpace(description)
 	return d == gateInterruptedDescription || d == gateDLQDescription ||
+		d == gateDeclineDescription ||
 		strings.HasPrefix(d, gateDiedDescriptionPrefix)
 }
 
