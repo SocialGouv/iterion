@@ -126,6 +126,81 @@ func TestMarkFailedBestEffort_EmitsRunFailedWithACode(t *testing.T) {
 	}
 }
 
+// The nominal cloud cancel during SETUP: the publisher CASes the doc to
+// `cancelled` with the operator's reason before the cancel subject reaches
+// the engine. The launch arm wrote the status unconditionally, so it
+// overwrote that reason with its own — and now that it also emits, it would
+// publish the overwriting reason on the timeline as well. The resume arm
+// has guarded this since it was written (UpdateRunStatusIfCoded + an emit
+// gated on `changed`); the two arms must not disagree about it.
+func TestMarkFailedBestEffort_KeepsAPeerRecordedCancelReason(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-setup-cancel-first"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusCancelled, "cancelled by user", store.FailureCancelled); err != nil {
+		t.Fatalf("publisher-first cancel: %v", err)
+	}
+	eng := New(devboxTestWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	eng.markFailedBestEffort(runCtx, runID, "sandbox start", errors.New("docker start: context canceled"))
+
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusCancelled || r.Error != "cancelled by user" {
+		t.Fatalf("doc = %s/%q, want the publisher's cancel and reason kept", r.Status, r.Error)
+	}
+	events, err := s.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == store.EventRunCancelled {
+			t.Fatalf("a run_cancelled was emitted for a stop this arm did not record (%v) — the writer that recorded it owns its event", e.Data)
+		}
+	}
+}
+
+// The same arm still records a cancel it IS the first to see (a plain local
+// SIGINT during setup) — the guard must not make the arm inert.
+func TestMarkFailedBestEffort_RecordsACancelItIsFirstToSee(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-setup-cancel-own"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	eng := New(devboxTestWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	eng.markFailedBestEffort(runCtx, runID, "sandbox start", errors.New("docker start: context canceled"))
+
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled", r.Status)
+	}
+	events, err := s.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == store.EventRunCancelled {
+			return
+		}
+	}
+	t.Fatalf("no run_cancelled event — the guard made the arm inert (events: %v)", eventTypes(events))
+}
+
 func eventTypes(events []*store.Event) []string {
 	out := make([]string, 0, len(events))
 	for _, e := range events {

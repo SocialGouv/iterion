@@ -873,7 +873,6 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		// redelivery adopts the `running` doc under the lock, so say so.
 		fbCtx, cancelFb := context.WithTimeout(context.WithoutCancel(ctx), resumeParkFallbackBudget)
 		uerr := e.store.UpdateRunStatusCoded(fbCtx, runID, store.RunStatusFailed, msg, code)
-		cancelFb()
 		switch {
 		case uerr != nil:
 			if e.logger != nil {
@@ -883,9 +882,13 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 			// would be the only thing on the timeline, and false.
 		default:
 			// The fallback landed a TERMINAL failed, not the park the
-			// status line promised — say that, not `status`.
-			e.emitSetupFailure(writeCtx, runID, "sandbox start", store.RunStatusFailed, msg, code)
+			// status line promised — say that, not `status`. On the
+			// FALLBACK's budget, never the park's: this branch is reached
+			// only because writeCtx expired, so an emit riding it would be
+			// dead code on exactly the path it exists for.
+			e.emitSetupFailure(fbCtx, runID, "sandbox start", store.RunStatusFailed, msg, code)
 		}
+		cancelFb()
 	} else {
 		e.emitSetupFailure(writeCtx, runID, "sandbox start", status, msg, code)
 	}

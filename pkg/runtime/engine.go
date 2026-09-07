@@ -516,14 +516,47 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-		if err = e.store.UpdateRunStatusCoded(writeCtx, runID, status, msg, code); err == nil {
-			e.emitSetupFailure(writeCtx, runID, phase, status, msg, code)
+		var changed bool
+		if changed, err = e.recordSetupOutcome(writeCtx, runID, status, msg, code); err == nil {
+			if changed {
+				// Only the writer that RECORDED the stop announces it: a
+				// declined CAS means a peer got there first with its own
+				// reason, and a second event would contradict the document.
+				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code)
+			}
 			return
 		}
 	}
 	if e.logger != nil {
 		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
 	}
+}
+
+// recordSetupOutcome writes the setup phase's verdict on the run and reports
+// whether THIS call is the one that recorded it.
+//
+// A CANCELLED outcome is compare-and-set from `running`, like the resume
+// arm's: in cloud the publisher CASes the doc to `cancelled` with the
+// operator's own reason BEFORE the cancel subject reaches the engine, and an
+// unconditional write here replaced that reason with a generic "sandbox
+// start cancelled before the first node" — which is then what the run list,
+// the board card and the merge gate's synthetic status display. A decline is
+// the nominal shape, not an error, so it reports changed=false and the
+// caller stays quiet.
+//
+// Every other outcome stays an unconditional write: the run is `running` and
+// owned by this engine, nothing competes for it, and the 3-attempt retry
+// above exists precisely because the store may be the thing that just
+// failed.
+func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status store.RunStatus, msg string, code store.FailureCode) (bool, error) {
+	if status == store.RunStatusCancelled {
+		return e.store.UpdateRunStatusIfCoded(ctx, runID, status, msg, code,
+			[]store.RunStatus{store.RunStatusRunning})
+	}
+	if err := e.store.UpdateRunStatusCoded(ctx, runID, status, msg, code); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // emitSetupFailure puts a setup-phase death on the run's TIMELINE, not only
