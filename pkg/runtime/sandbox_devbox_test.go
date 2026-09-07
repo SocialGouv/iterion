@@ -92,6 +92,76 @@ func TestApplyDevboxProvisioning_BotOnly(t *testing.T) {
 	}
 }
 
+// #834: on a driver with no host filesystem the bundle bind is never
+// declared, so the staged copy the install prologue would run has nothing
+// to read. The old shape baked the snippet anyway and let it fail soft
+// (`|| echo … >&2`), so a bot shipping a devbox.json provisioned NOTHING
+// on cloud and the run proceeded on whatever the image happened to bake —
+// a missing binary the operator reads as an agent bug. The decision must
+// be visible instead: no snippet, no PATH entry, and the event names the
+// declined source and why.
+func TestApplyDevboxProvisioning_BotSourceDeclinedWhenTheBundleIsNotMounted(t *testing.T) {
+	f := newDevboxFixture(t, false, true)
+	emit := func(ev store.EventType, data map[string]any) error {
+		f.events = append(f.events, ev)
+		f.eventData = append(f.eventData, data)
+		return nil
+	}
+	applyDevboxProvisioning(f.spec, f.params, "", emit, iterlog.Nop())
+
+	if strings.Contains(f.spec.PostCreate, botDevboxDir) || strings.Contains(f.spec.PostCreate, "devbox install") {
+		t.Errorf("a snippet was baked for a bundle the container never had:\n%s", f.spec.PostCreate)
+	}
+	if p := f.spec.Env["PATH"]; strings.Contains(p, botDevboxDir) {
+		t.Errorf("PATH promises %s, a directory nothing will ever populate: %q", botDevboxDir, p)
+	}
+	if len(f.events) != 1 || f.events[0] != store.EventSandboxDevboxProvisioned {
+		t.Fatalf("want a single %s event naming the decline, got %v", store.EventSandboxDevboxProvisioned, f.events)
+	}
+	data := f.eventData[0]
+	sources, _ := data["skipped_sources"].([]string)
+	if len(sources) != 1 || sources[0] != "bot" {
+		t.Fatalf("skipped_sources = %v, want [bot]", data["skipped_sources"])
+	}
+	configs, _ := data["skipped_configs"].([]string)
+	if len(configs) != 1 || !strings.HasPrefix(configs[0], f.params.BundleHostDir) {
+		t.Errorf("skipped_configs = %v, want the bot's own devbox.json path", data["skipped_configs"])
+	}
+	reasons, _ := data["skipped_reasons"].([]string)
+	if len(reasons) != 1 || reasons[0] != devboxSkipNoBundleMount {
+		t.Errorf("skipped_reasons = %v, want [%s]", data["skipped_reasons"], devboxSkipNoBundleMount)
+	}
+	if got, _ := data["reason"].(string); got != devboxSkipNoBundleMount {
+		t.Errorf("reason = %q, want %q", got, devboxSkipNoBundleMount)
+	}
+}
+
+// Both sources declined, for DIFFERENT reasons: the event must say which
+// is which, or an operator reads one decision and chases the other.
+func TestApplyDevboxProvisioning_TwoDeclinesKeepTheirOwnReasons(t *testing.T) {
+	f := newDevboxFixture(t, true, true)
+	f.params.RepoDevboxOverride = "off"
+	emit := func(ev store.EventType, data map[string]any) error {
+		f.events = append(f.events, ev)
+		f.eventData = append(f.eventData, data)
+		return nil
+	}
+	applyDevboxProvisioning(f.spec, f.params, "", emit, iterlog.Nop())
+
+	if len(f.events) != 1 {
+		t.Fatalf("want one event, got %v", f.events)
+	}
+	data := f.eventData[0]
+	sources, _ := data["skipped_sources"].([]string)
+	reasons, _ := data["skipped_reasons"].([]string)
+	if len(sources) != 2 || sources[0] != "repo" || sources[1] != "bot" {
+		t.Fatalf("skipped_sources = %v, want [repo bot]", data["skipped_sources"])
+	}
+	if len(reasons) != 2 || reasons[0] != devboxSkipRepoOff || reasons[1] != devboxSkipNoBundleMount {
+		t.Fatalf("skipped_reasons = %v, want [%s %s]", data["skipped_reasons"], devboxSkipRepoOff, devboxSkipNoBundleMount)
+	}
+}
+
 // TestApplyDevboxProvisioning_RepoOnly covers a target repo declaring a
 // devbox.json at its workspace root with no bot devbox. It installs in
 // place (relative package refs only resolve next to the config).
@@ -346,8 +416,8 @@ func TestResolveDevboxProjects_RejectsPathPoisoningDir(t *testing.T) {
 	}
 	// Dropped for being unusable, NOT declined by repo_devbox — the two
 	// reasons must not be conflated in what the operator is told.
-	if skipped != "" {
-		t.Errorf("a poisoned dir is not a repo_devbox refusal, got skipped=%q", skipped)
+	if len(skipped) != 0 {
+		t.Errorf("a poisoned dir is not a repo_devbox refusal, got skipped=%+v", skipped)
 	}
 }
 

@@ -180,6 +180,38 @@ system prompt and codex credential). A unit test whose fake
 `sandbox.Run` omits this interface tests the shared-filesystem half of
 the world only.
 
+#### A promise the driver drops takes its variable with it
+
+The mirror rule for anything the runtime hands the container as a PATH:
+every optional host bind (the run's attachments, its run-files
+directory, the bot's bundle) is dropped on a copy-based driver, and the
+promise made on it must go with it. On the pod backend:
+
+| Promise | On docker | On kubernetes |
+|---|---|---|
+| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
+| Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
+| The bot's bundle `devbox.json` | provisioned | declined and reported (see [devbox provisioning](#best-effort-never-silent)) |
+
+The measured cost of getting this wrong: the run-files variable once
+named a directory the pod never had, a gate wrapper redirecting its
+report into it died on "Directory nonexistent", and four lots read an
+oracle verdict out of an environment failure.
+
+**Known gap — run-files on pods.** Nothing collects a pod's run files:
+the collector reads the host directory the bind would have served, and
+the pod writes to a temp dir that dies with it. Closing it needs a
+read-back seam the driver does not have — an emptyDir at the container
+path plus a drain at teardown, i.e. `WorkspaceExporter`'s shape widened
+past the workspace. Until then the artifact-files panel is empty for a
+pod run, and the variable stays honestly unset rather than naming a
+directory nobody reads.
+`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt`
+([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walks
+every `spec.Env` value and every path in `spec.PostCreate` against the
+mounts the driver keeps, so the next promise made on a dropped bind
+fails in CI rather than in a campaign.
+
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 
 When `host_state: auto` (the default), iterion also bind-mounts:
@@ -570,7 +602,25 @@ Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
 `errors` on the host target when something failed) so you can audit
 what was picked up — and see when a declared toolchain could **not**
-be provisioned.
+be provisioned. A source that EXISTS and was deliberately declined is
+named on the same event, with its own reason:
+`skipped_sources` / `skipped_configs` / `skipped_reasons` (parallel
+arrays; `reason` joins the distinct ones).
+
+Two declines ship today:
+
+- `repo_devbox off` — the target repo pins a toolchain this run does not
+  need (see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox)).
+- `no host bind mount on this driver` — the **bot's** `devbox.json` lives
+  in its bundle, which reaches the container as a host bind mount, and
+  the kubernetes driver has no host filesystem. The bundle is then not
+  declared at all, so no snippet is baked and no `PATH` entry promises a
+  directory nothing will populate. A bot that needs a tool on the pod
+  backend must get it from its `sandbox.image:` instead. The alternative
+  — a pod-side delivery channel for the bundle — would need a copy-in
+  seam that runs BEFORE `post_create`; the driver's only copy-in today is
+  the workspace tar, and the only writes it accepts afterwards
+  (`RefreshWorkspaceFile`) land after setup is over.
 
 ### Cost
 
