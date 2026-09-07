@@ -1105,12 +1105,12 @@ func TestResolveScriptTemplate(t *testing.T) {
 	// instead of judging with "none reported".
 	t.Run("absent input renders the null literal", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"acted_commits"}, Raw: "{{input.acted_commits}}"}}
-		got := resolveScriptTemplate("x = ({{input.acted_commits}} or \"\")", refs, map[string]any{}, nil, nil)
+		got := resolveScriptTemplate("x = ({{input.acted_commits}} or \"\")", refs, map[string]any{}, nil, nil, "")
 		want := `x = (null or "")`
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
-		gotNil := resolveScriptTemplate("x = {{input.acted_commits}}", refs, map[string]any{"acted_commits": nil}, nil, nil)
+		gotNil := resolveScriptTemplate("x = {{input.acted_commits}}", refs, map[string]any{"acted_commits": nil}, nil, nil, "")
 		if gotNil != "x = null" {
 			t.Errorf("explicit nil rendered %q, want %q", gotNil, "x = null")
 		}

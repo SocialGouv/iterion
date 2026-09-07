@@ -14,6 +14,10 @@ import (
 // the verifier answers with what `report` returns for the pass. The compute
 // nodes (extend_gate, extend_result) are the engine's own — they are what
 // these tests pin.
+//
+// The defaults must carry EVERY term the gate reads: a term missing here
+// renders false, so a test expecting a refusal would pass without ever
+// exercising the term it names.
 func extendStubs(exec *scenarioExecutor, report func(pass int) map[string]any) {
 	exec.on("extend_base", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{
@@ -31,6 +35,10 @@ func extendStubs(exec *scenarioExecutor, report func(pass int) map[string]any) {
 			"committed": true, "scope_clean": true, "out_of_scope": []any{},
 			"additions_ok": true, "refused": []any{}, "no_new_requests": true,
 			"still_pending": []any{}, "extended": 1, "log_tail": "", "_tokens": 1,
+			"clean_start": true, "identity_ok": true,
+			"acted_commits": "fedcba9876543210fedcba9876543210fedcba98",
+			"acted_ids":     "E-1",
+			"acted_blobs":   "captures/E-1.json=1111111111111111111111111111111111111111",
 		}
 		for k, v := range report(pass) {
 			out[k] = v
