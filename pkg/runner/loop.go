@@ -2286,7 +2286,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	defer stopSbObs()
 	defer r.unregisterSandboxRun(msg.RunID)
 	engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(
-		r.sandboxRunObserver(sbObsCtx, msg.RunID, msg.TenantID, r.sandboxFileSecretRefs(ctx, wf))))
+		r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{
+			runID: msg.RunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
+			secretRefs: r.sandboxFileSecretRefs(ctx, wf),
+			checkpoint: true,
+		})))
 	// Bundle resources: a bot-qualified run attaches its bundle so the
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
 	// provisions the bot's devbox.json (host devbox provisioning — the

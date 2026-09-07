@@ -221,7 +221,13 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
 			runtime.WithWorkDir(childWorkDir),
-			runtime.WithSandboxRunObserver(r.sandboxRunObserver(sbObsCtx, childRunID, msg.TenantID, r.sandboxFileSecretRefs(ctx, childWf))),
+			runtime.WithSandboxRunObserver(r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{
+				runID: childRunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
+				secretRefs: r.sandboxFileSecretRefs(ctx, childWf),
+				// No second checkpoint loop: a shared child is handed its
+				// parent's sandbox, and the parent's loop already preserves
+				// the one workspace they both work in.
+			})),
 			runtime.WithSandboxDefault(r.cfg.SandboxDefault),
 			runtime.WithSandboxDefaultImage(msg.SandboxImage),
 			runtime.WithSandboxHostStateDefault(r.cfg.SandboxHostState),
