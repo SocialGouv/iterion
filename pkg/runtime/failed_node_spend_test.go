@@ -1,0 +1,123 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// checkpointCapturingStore keeps the last checkpoint the engine wrote, which
+// is where a resume reads the budget carry from.
+type checkpointCapturingStore struct {
+	store.RunStore
+	last *store.Checkpoint
+}
+
+func (s *checkpointCapturingStore) SaveCheckpoint(ctx context.Context, runID string, cp *store.Checkpoint) error {
+	s.last = cp
+	return s.RunStore.SaveCheckpoint(ctx, runID, cp)
+}
+
+func (s *checkpointCapturingStore) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	if cp != nil {
+		s.last = cp
+	}
+	return s.RunStore.FailRunResumable(ctx, id, cp, runErr, code)
+}
+
+func (s *checkpointCapturingStore) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	if cp != nil {
+		s.last = cp
+	}
+	return s.RunStore.FailRunTerminal(ctx, id, cp, runErr, code)
+}
+
+// A node that FAILED still spent. The delegate stamps the pass's cost on the
+// result it returns beside the error; until this landed, nothing read it —
+// `recordBudget` runs on the success path only, so the run's totals, the
+// daily cap and a lending donor's ledger all missed whatever the failing node
+// burned. On a long agent node that is a whole session.
+func TestFailedNodeSpendIsRecorded(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 10_000}
+	engine := New(wf, tmpStore(t), newStubExecutor())
+	shared := newSharedBudget(wf.Budget, engine.logger)
+	rs := &runState{budget: shared, loopBudgetMarks: make(map[string]loopBudgetMark)}
+
+	engine.recordFailedNodeSpend(rs, "agent", map[string]any{"_tokens": 4_000, "_cost_usd": 1.25})
+	tokens, cost, _, _, _, _ := shared.Snapshot()
+	if tokens != 4_000 {
+		t.Fatalf("the failed node's tokens never reached the run: %d", tokens)
+	}
+	if cost != 1.25 {
+		t.Fatalf("the failed node's cost never reached the run: %v", cost)
+	}
+
+	// Over the cap is not this function's verdict: the node's own failure is
+	// the run's, and raising a budget error here would replace a named cause
+	// with a generic one on a run that is already ending. It must still book.
+	engine.recordFailedNodeSpend(rs, "agent", map[string]any{"_tokens": 20_000})
+	if tokens, _, _, _, _, _ := shared.Snapshot(); tokens != 24_000 {
+		t.Fatalf("an over-budget failure was not booked: %d", tokens)
+	}
+
+	// A node that spent nothing books nothing — no phantom zero rows.
+	before, _, _, _, _, _ := shared.Snapshot()
+	engine.recordFailedNodeSpend(rs, "tool", map[string]any{"ok": true})
+	if after, _, _, _, _, _ := shared.Snapshot(); after != before {
+		t.Fatalf("a spendless failure moved the totals: %d -> %d", before, after)
+	}
+	engine.recordFailedNodeSpend(rs, "tool", nil)
+}
+
+// And the WIRING, which is the half a helper test cannot show: a node that
+// fails terminally books its spend, while one the engine retries IN PLACE
+// does not — the retry continues a session whose usage is cumulative, so
+// counting both would bill the same tokens twice.
+func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
+	build := func() *ir.Workflow {
+		return &ir.Workflow{
+			Name:  "spend_test",
+			Entry: "agent",
+			Nodes: map[string]ir.Node{
+				"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}},
+				"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			},
+			Edges:   []*ir.Edge{{From: "agent", To: "done"}},
+			Schemas: map[string]*ir.Schema{},
+			Prompts: map[string]*ir.Prompt{},
+			Vars:    map[string]*ir.Var{},
+			Loops:   map[string]*ir.Loop{},
+			Budget:  &ir.Budget{MaxTokens: 1_000_000},
+		}
+	}
+
+	t.Run("a terminal failure books what it burned", func(t *testing.T) {
+		exec := newStubExecutor()
+		exec.on("agent", func(_ map[string]any) (map[string]any, error) {
+			// The shape the delegate returns on a failure: the pass's spend
+			// stamped on the result that travels with the error.
+			return map[string]any{"_tokens": 7_000, "_cost_usd": 2.10}, errors.New("stream closed")
+		})
+		st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+		eng := New(build(), st, exec)
+		if err := eng.Run(context.Background(), "run-spend-1", nil); err == nil {
+			t.Fatal("the run was supposed to fail")
+		}
+		// Read where a RESUME reads it: the checkpoint's budget carry, which
+		// is what stops a resumed run from re-granting the whole allowance.
+		cp := st.last
+		if cp == nil {
+			t.Fatal("no checkpoint to read the budget from")
+		}
+		if cp.BudgetTokensUsed != 7_000 {
+			t.Fatalf("a failed node's session was not booked: %d", cp.BudgetTokensUsed)
+		}
+		if cp.BudgetCostUSD != 2.10 {
+			t.Fatalf("a failed node's cost was not booked: %v", cp.BudgetCostUSD)
+		}
+	})
+}
