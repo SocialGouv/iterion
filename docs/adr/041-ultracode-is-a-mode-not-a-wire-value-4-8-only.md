@@ -13,7 +13,9 @@ The mode also carries a behavioural meaning beyond model compute: xhigh reasonin
 
 ## Decision
 
-The validator in [`pkg/dsl/ir/validate.go`](../../pkg/dsl/ir/validate.go) accepts `reasoning_effort: ultracode` as a valid DSL value. It warns with diagnostic `C089` when the selected model is not `claude-opus-4-8`, because the orchestration prerogative is considered reliable only for that model and degrades elsewhere.
+The validator accepts `reasoning_effort: ultracode` as a valid DSL value. It warns with diagnostic `C089` when the selected model does not carry the orchestration prerogative, because it degrades elsewhere.
+
+> **The model set is superseded.** As accepted, this ADR gated the warning on `claude-opus-4-8` alone — the only model carrying the orchestration half at the time. The **Claude 5 family** (`claude-opus-5`, `claude-fable-5-1`) carries it too, so the gate admits it as well, and the predicate now lives in one exported function, [`ir.ModelSupportsUltracode`](../../pkg/dsl/ir/validate_nodes.go), shared with the studio's `/api/effort-capabilities` endpoint — previously a second, separate copy that disagreed with the compiler. The *decision* recorded here — ultracode is a mode remapped to `xhigh` on the wire, gated by an advisory warning rather than an error — is unchanged. Current contract: [docs/ultracode.md](../ultracode.md).
 
 The backend effort mapping in [`pkg/backend/model/effort.go`](../../pkg/backend/model/effort.go) treats `ultracode` as the highest internal rank but maps it to `xhigh` before provider-wire coercion. This prevents an unsupported literal `ultracode` from being sent to APIs that do not accept it.
 

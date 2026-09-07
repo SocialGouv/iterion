@@ -37,9 +37,17 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    NOT ultracode: the harness arms that tool on the word `ultracode` anywhere
    in the prompt, content included, so only the effort may grant it (see
    [backends.md](backends.md#claude_code)).
-4. **Warns off Opus 4.8.** Compiling `ultracode` on a model that isn't
-   `claude-opus-4-8` emits diagnostic **C089** (a warning, not an error): the
-   orchestration half won't be reliable and the node runs as plain `xhigh`.
+4. **Warns off the models that carry it.** Compiling `ultracode` on a model
+   that is neither `claude-opus-4-8` nor a Claude 5 model (`claude-opus-5`,
+   `claude-fable-5-1`) emits diagnostic **C089** (a warning, not an error):
+   the orchestration half won't be reliable and the node runs as plain
+   `xhigh`. The predicate is
+   [`ir.ModelSupportsUltracode`](../pkg/dsl/ir/validate_nodes.go) — one
+   exported function shared by the compiler gate and the studio's
+   `/api/effort-capabilities` endpoint, so the two never disagree. It also
+   accepts the bare `opus` / `fable` aliases (they resolve to the newest of
+   their line in claw's registry), an empty `model:` (the default), and
+   `${VAR}` forms, which are deferred to runtime rather than warned on.
 
 Adaptive thinking is enabled automatically for Opus 4.8 by the claw backend
 (`thinking: {type: "adaptive"}`), so ultracode gets extended thinking without

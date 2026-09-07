@@ -1118,14 +1118,18 @@ is the shipped use — carried by all seven campaign bots on their
 value**: Anthropic's API only accepts up to `xhigh`/`max`. It means
 **xhigh + a standing prerogative to orchestrate multi-agent
 workflows**, delivered via a `## Workflow Orchestration` system-prompt
-section, and is **reliable only on `claude-opus-4-8`** (the
-orchestration half rides Anthropic mid-conversation system messages,
-4.8-only). The runtime remaps `ultracode` to `xhigh` on the wire
+section, and is **reliable on `claude-opus-4-8` and the Claude 5 family**
+(`claude-opus-5`, `claude-fable-5-1`) — the models carrying the
+orchestration half, which rides Anthropic mid-conversation system
+messages. The runtime remaps `ultracode` to `xhigh` on the wire
 ([model.wireEffort](pkg/backend/model/effort.go)), makes the `agent`
 subagent tool available, and emits diagnostic **C089** (warning) when
-the node's model isn't 4.8 — degrading to plain `xhigh`. Adaptive
-thinking is auto-enabled for 4.8 by the claw backend. The studio
-effort picker only offers `ultracode` on 4.8. Full contract:
+the node's model carries none of them — degrading to plain `xhigh`.
+Adaptive thinking is auto-enabled for 4.8 by the claw backend. One
+exported predicate,
+[`ir.ModelSupportsUltracode`](pkg/dsl/ir/validate_nodes.go), backs both
+the C089 gate and the studio's `/api/effort-capabilities` endpoint, so
+the compiler and the effort picker never disagree. Full contract:
 [docs/ultracode.md](docs/ultracode.md).
 
 ## Building the desktop app
