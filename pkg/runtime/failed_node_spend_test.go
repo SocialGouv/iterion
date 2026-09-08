@@ -121,3 +121,81 @@ func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
 		}
 	})
 }
+
+// Booking is ACCOUNTING, never a verdict. A failing node whose spend also
+// crosses the cap must not have the booking speak for the run: the immediate
+// budget path does not merely return an error, it emits budget_exceeded and
+// WRITES the run failed_resumable(BUDGET_EXCEEDED) — so on the recovery-pause
+// exit it would bury a just-parked paused_waiting_human (and the operator's
+// pending question with it), and on the terminal exit it would replace the
+// node's named cause with a generic one.
+func TestFailedNodeSpendDoesNotSpeakForTheRun(t *testing.T) {
+	// One token of headroom, and a failing node that burns far past it.
+	build := func() *ir.Workflow {
+		return &ir.Workflow{
+			Name:    "spend_verdict_test",
+			Entry:   "agent",
+			Nodes:   map[string]ir.Node{"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}}, "done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}}},
+			Edges:   []*ir.Edge{{From: "agent", To: "done"}},
+			Schemas: map[string]*ir.Schema{},
+			Prompts: map[string]*ir.Prompt{},
+			Vars:    map[string]*ir.Var{},
+			Loops:   map[string]*ir.Loop{},
+			Budget:  &ir.Budget{MaxTokens: 1_000},
+		}
+	}
+	overBudgetFailure := func() *stubExecutor {
+		exec := newStubExecutor()
+		exec.on("agent", func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"_tokens": 50_000, "_cost_usd": 9.99}, errors.New("stream closed")
+		})
+		return exec
+	}
+
+	t.Run("a recovery pause survives the booking", func(t *testing.T) {
+		dispatch := RecoveryDispatch(func(_ context.Context, _ error, _ func(ErrorCode) int) (RecoveryAction, ErrorCode) {
+			return RecoveryAction{Kind: RecoveryPauseForHuman, Reason: "ask the operator"}, ErrCodeExecutionFailed
+		})
+		st := tmpStore(t)
+		eng := New(build(), st, overBudgetFailure(), WithRecoveryDispatch(dispatch))
+		if err := eng.Run(context.Background(), "run-verdict-pause", nil); err != ErrRunPaused {
+			t.Fatalf("expected the run to park on the recovery question, got %v", err)
+		}
+		r, err := st.LoadRun(context.Background(), "run-verdict-pause")
+		if err != nil {
+			t.Fatalf("load run: %v", err)
+		}
+		if r.Status != store.RunStatusPausedWaitingHuman {
+			t.Fatalf("the booking overwrote the parked run: status %v, failure %q", r.Status, r.FailureCode)
+		}
+		if r.Checkpoint == nil || r.Checkpoint.InteractionID == "" {
+			t.Fatal("the operator's pending recovery question was lost")
+		}
+	})
+
+	t.Run("a terminal failure keeps its own cause", func(t *testing.T) {
+		st := tmpStore(t)
+		eng := New(build(), st, overBudgetFailure())
+		err := eng.Run(context.Background(), "run-verdict-fail", nil)
+		if err == nil {
+			t.Fatal("the run was supposed to fail")
+		}
+		var rtErr *RuntimeError
+		if !errors.As(err, &rtErr) {
+			t.Fatalf("expected a RuntimeError, got %T: %v", err, err)
+		}
+		if rtErr.Code != ErrCodeExecutionFailed {
+			t.Fatalf("the booking replaced the node's cause: %s", rtErr.Code)
+		}
+		r, loadErr := st.LoadRun(context.Background(), "run-verdict-fail")
+		if loadErr != nil {
+			t.Fatalf("load run: %v", loadErr)
+		}
+		if r.FailureCode != store.FailureExecutionFailed {
+			t.Fatalf("the persisted verdict is not the node's own: %s", r.FailureCode)
+		}
+		if r.Checkpoint == nil || r.Checkpoint.BudgetTokensUsed != 50_000 {
+			t.Fatalf("the failed node's spend was not booked: %+v", r.Checkpoint)
+		}
+	})
+}

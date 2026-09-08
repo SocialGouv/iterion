@@ -694,8 +694,19 @@ func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[s
 	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
 		return
 	}
-	if err := e.recordBudget(rs, nodeID, output, false); err != nil {
-		e.logger.Debug("budget: node %q failed over its budget; the failure is the verdict: %v", nodeID, err)
+	// DEFERRING variant, and that is the whole contract: the immediate one
+	// routes an exceeded axis through graceOrFailBudget → failBudgetExceeded,
+	// which EMITS budget_exceeded and WRITES the run failed_resumable
+	// (captureFailureBoundary + FailRunResumable + a run_failed event) —
+	// side effects swallowing the returned error does not undo. On the
+	// recovery-pause exit that would overwrite a just-parked
+	// paused_waiting_human, losing the operator's pending question; on the
+	// others it prepends a phantom budget verdict to the real one. Deferred,
+	// the overrun is only NOTED, and the note is taken exclusively at
+	// execLoopAfterExec — a success-path boundary no failure exit reaches —
+	// so it stays what this helper says it is: accounting.
+	if err := e.recordBudget(rs, nodeID, output, true); err != nil {
+		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
 	}
 }
 
