@@ -1379,9 +1379,12 @@ tool sync_harness:
         the same-commit rule saw nothing, and the lot's own file became a
         reference of the net that judges it.
 
-        `acted_blobs` also bounds the exemption: a certified path whose blob at
-        HEAD moved since the act was rewritten by someone after the subbot —
-        the certificate covers the content it certified, not the path forever.
+        `acted_blobs` also bounds the exemption, on the path SET as much as on
+        the content: a certified path whose blob at HEAD moved since the act was
+        rewritten by someone after the subbot, and a recorded path the subbot
+        certified no blob for was never acted at all — the act's own block is
+        above the run's base, so append-only leaves it mutable and first-wins
+        provenance keeps naming the subbot's commit however it is edited.
         `acted_ids` bounds WHICH act the certificate covers: the ones the subbot
         reports having acted, and no other. Without it the content rule exempts
         any act naming a certified path, which a lot reaches by filing two
@@ -1760,15 +1763,32 @@ tool sync_harness:
                     "the act records no path on the extension surface (refs/ or "
                     "corpus.json) — filing paperwork is not an extension")
             if acted_blobs is not None and req is not None:
-                # The certificate covers the CONTENT the subbot committed, not
-                # the path forever: a reference rewritten after the act — by the
-                # lot, in its own later commit — is the masking vector again, and
-                # the exemption must not follow it.
+                # The certificate binds the act's recorded path SET, not only the
+                # content of the paths it happens to name. Both halves are the same
+                # masking vector, reached through the same door:
+                #   - a certified path whose blob moved was rewritten after the
+                #     act, by the lot, in its own later commit;
+                #   - a recorded path with NO certificate was never acted at all.
+                #     `introducing_commits` resolves an act FIRST-WINS on
+                #     (kind, id), so it keeps naming the subbot's commit however
+                #     the block is edited afterwards, and append-only only pins the
+                #     text below the RUN's base — the subbot's own block sits above
+                #     it, in the mutable region. Widening that block with the lot's
+                #     own path made an uncertified file a reference of the net that
+                #     judges it. The strict provenance arm already demands a
+                #     certificate for every surface path; this is that same demand
+                #     on the arm standing in for it.
                 for p in paths:
                     if p == ledger_rel or p == corpus_rel:
                         continue
                     certified = acted_blobs.get(p)
-                    if certified and blob_id("HEAD", p) != certified:
+                    if not certified:
+                        row["forged"] = True
+                        row["problems"].append(
+                            "%s is recorded by the act but the subbot certified no "
+                            "blob for it — a path appended to the record after the "
+                            "act is not part of the act" % p)
+                    elif blob_id("HEAD", p) != certified:
                         row["forged"] = True
                         row["problems"].append(
                             "%s was rewritten after the act: HEAD carries blob %s, "
@@ -4076,6 +4096,44 @@ tool sync_harness:
             check("l'acte du subbot reste certifie, lui",
                   [v_dup["acted"][0]["ok"], v_dup["ok_paths"]],
                   [True, [".golden-master/refs/2.txt"]])
+
+            # LE MEME TROU PAR L'AUTRE BATTANT : au lieu d'apposer un SECOND bloc,
+            # le lot ELARGIT celui du subbot. La provenance se resout premier-gagnant
+            # sur (kind, id), donc `act_sha` reste le commit du subbot quoi qu'il
+            # arrive au bloc ; l'append-only ne fige que le texte sous la base, et le
+            # bloc du subbot est au-dessus. Le chemin ajoute n'a aucun blob certifie
+            # — et une absence de certificat passait, la garde ne mordant que sur un
+            # certificat present.
+            act_widened = ('{"id": "E-1", "lot": "L",'
+                           ' "recorded_paths": [".golden-master/refs/2.txt",'
+                           ' ".golden-master/refs/9.txt"]}')
+            xreset()
+            xledger(("request", req_two))
+            xcommit()                                          # le lot depose
+            xledger(("request", req_two), ("act", act_one))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("acte par le subbot\n")
+            xcommit(email="extend@golden-master.iterion")      # le subbot acte
+            sha_w = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_w = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                         xroot, timeout=60)[1].strip()
+            xledger(("request", req_two), ("act", act_widened))
+            with open(os.path.join(xgm, "refs", "9.txt"), "w", encoding="utf-8") as f:
+                f.write("ecrit par le lot\n")
+            xcommit(email="lot@run")                           # le lot elargit l'acte
+            v_wide = extension_verdict(xroot, ".golden-master", xbase,
+                                       acted_commits={sha_w},
+                                       acted_blobs={".golden-master/refs/2.txt": blob_w},
+                                       acted_ids={"E-1"})
+            wide = v_wide["acted"][0]
+            check("bloc `act` du subbot elargi apres coup : refuse, forge, "
+                  "et le chemin ajoute n'est pas exempte",
+                  [wide["ok"], wide.get("forged"),
+                   ".golden-master/refs/9.txt" in v_wide["ok_paths"]],
+                  [False, True, False])
+            check("et le chemin que le subbot a bien certifie n'exempte plus rien "
+                  "non plus : c'est l'acte entier qui est refuse",
+                  v_wide["ok_paths"], [])
 
             # Un acte qui n'enregistre QUE le registre : aucun chemin de surface
             # a certifier, donc aucune echappatoire par contenu.
