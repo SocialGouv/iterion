@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.118.1](https://github.com/SocialGouv/iterion/compare/v3.118.0...v3.118.1) (2026-09-08)
+
+### Bug Fixes
+
+* **runner:** reserve the last usage-window retry for the authoritative reset ([#922](https://github.com/SocialGouv/iterion/issues/922)) ([#953](https://github.com/SocialGouv/iterion/issues/953)) ([4e74590](https://github.com/SocialGouv/iterion/commit/4e74590f2440e43e412a54ebac0dbf1ece605cb9)), references [#684](https://github.com/SocialGouv/iterion/issues/684) [#684](https://github.com/SocialGouv/iterion/issues/684)
+
+    <details><summary>why</summary>
+
+    A usage-window retry arms on the EARLIER of the failed credential's own reset and the reopening of a credential the launch's walk passed over (#684). That earlier wake is speculative — the skipped credential may be refused too — yet it spends an attempt of the same budget: every arming `$inc`s `retry_state.attempts` and `ScheduleRunRetry` refuses past `max_attempts`.
+
+    </details>
+
 ## [3.118.0](https://github.com/SocialGouv/iterion/compare/v3.117.0...v3.118.0) (2026-09-08)
 
 ### Features
