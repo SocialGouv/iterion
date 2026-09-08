@@ -73,7 +73,7 @@ func NoProcessLeaks(run func() int) int {
 		children, err := childPIDs()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: inspect test descendants: %v\n", err)
-			return 1
+			return failing(code)
 		}
 		if len(children) == 0 {
 			// A thread can exit and hand its children to another thread
@@ -86,7 +86,7 @@ func NoProcessLeaks(run func() int) int {
 			}
 			if err != nil && !errors.Is(err, unix.EINTR) {
 				fmt.Fprintf(os.Stderr, "FAIL: inspect remaining test children: %v\n", err)
-				return 1
+				return failing(code)
 			}
 		}
 		now := time.Now()
@@ -138,7 +138,7 @@ func NoProcessLeaks(run func() int) int {
 		firstSeen = alive
 		if time.Now().After(deadline) {
 			fmt.Fprintln(os.Stderr, "FAIL: test descendants did not exit after cleanup")
-			return 1
+			return failing(code)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -149,6 +149,15 @@ func NoProcessLeaks(run func() int) int {
 		return 1
 	}
 	return code
+}
+
+// failing turns a teardown verdict into an exit code without overwriting the
+// suite's own: both are failures, and the one the reader needs is the test's.
+func failing(code int) int {
+	if code != 0 {
+		return code
+	}
+	return 1
 }
 
 // settleWindow reads [settleEnv], falling back to [defaultSettle]. A zero
