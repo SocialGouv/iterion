@@ -88,7 +88,14 @@ push can actually happen.)
   the repo's real build+test into `<scratch_dir>/verify.sh`; a tool node
   re-runs it and gates on the **real exit code** (no LLM judgment). This is
   both the tight real-feedback loop AND the anti-Goodhart truth oracle — the
-  agent can't self-certify. `verify_build` does **not** fix code.
+  agent can't self-certify. `verify_build` does **not** fix code. The tool
+  also reds the gate on three script-quality conditions a green suite would
+  hide: a gating command **piped into an output filter** (`exit 5` — the
+  script is rejected and regenerated next pass), a **missing
+  codegen-drift gate** when the repo's CI enforces one (`exit 3`), and
+  **uncommitted regen output** left by an otherwise-green verify
+  (`exit 4`). A missing `verify.sh` counts as a pass but is surfaced; a
+  timeout yields `exit 124`.
 - **`gate`** (deterministic compute) decides continuation: `converged =`
   the gate is **green** AND the campaign reported **`axis_complete`**. Not
   converged → back to `campaign`; a RED gate carries the failure log so the

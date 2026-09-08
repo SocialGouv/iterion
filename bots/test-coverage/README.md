@@ -63,7 +63,16 @@ gate → done            (loop exhausted — ship what is banked)
   (see `skills/verify-build.md` + `skills/verify-tests.md`), a tool node
   re-runs it, gates on the real exit code, and checks the diff for
   genuinely-new test code (universal test-naming conventions — the
-  in-tree `.test_coverage.verify.sh` scratch of v1 is gone).
+  in-tree `.test_coverage.verify.sh` scratch of v1 is gone). It also reds
+  the gate on three script-quality conditions a green suite alone would
+  hide, each with a synthetic exit code that is not the suite's own: a
+  gating command **piped into an output filter** (`exit 5` — checked
+  before the run, the script is moved to `verify.sh.rejected` and
+  regenerated next pass), a **missing codegen-drift gate** when the
+  repo's own CI enforces one (`exit 3`), and **uncommitted regen output**
+  left by an otherwise-green verify (`exit 4`). The last two fire only on
+  an otherwise-green run. A missing `verify.sh` counts as a pass but is
+  surfaced; the script is killed at 1800 s (`exit 124`).
 - `gate` — deterministic compute:
   `converged = passed && new_test_code && coverage_complete`.
 - `supervisor persy:` — the perseverance coach watching `campaign`

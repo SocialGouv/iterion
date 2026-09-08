@@ -63,8 +63,11 @@ gate ──more work──▶ author             (bounded continuation loop; val
 ## Usage
 
 ```sh
-# Bootstrap / refresh a wiki for the current repo
-iterion run bots/wiki-gen/main.bot --var workspace_dir="$PWD"
+# Bootstrap / refresh a wiki for the current repo.
+# Don't pass --var workspace_dir: this bot runs `worktree: auto`, and
+# ${PROJECT_DIR} already resolves to the run's clean worktree. A literal
+# $PWD aims the agent at the main checkout instead.
+iterion run bots/wiki-gen/main.bot
 
 # Custom output dir, operator brief
 iterion run bots/wiki-gen/main.bot \
