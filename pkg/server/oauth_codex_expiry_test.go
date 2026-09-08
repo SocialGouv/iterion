@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -119,5 +122,41 @@ func TestCodexConnect_FallsBackToExpiresIn(t *testing.T) {
 	}
 	if d := time.Until(*rec.AccessTokenExpiresAt); d < 55*time.Minute || d > 65*time.Minute {
 		t.Errorf("expiry in %s, want ~1h from expires_in", d)
+	}
+}
+
+// A codex blob whose access token is already expired AND carries no refresh
+// token is dead on arrival: nothing can renew it, so every run that draws
+// this credential fails its first LLM call — with an error naming neither
+// the credential nor the reason. Stamping the `exp` claim is what makes
+// that state readable at connect for the first time, so it is said here,
+// where the operator is still looking.
+//
+// Said, not refused: the record is stored and the upload succeeds. The
+// operator may legitimately upload before logging in again, and the
+// deployment keeps the choice — the log is the thing that was missing.
+func TestCodexConnect_DeadOnArrivalCredentialSaysSo(t *testing.T) {
+	srv, hs, signer, oauthStore := oauthTestServer(t)
+	var logs bytes.Buffer
+	srv.logger = iterlog.New(iterlog.LevelWarn, &logs)
+	jo := oauthJWT(t, signer, "jo")
+
+	expired := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	blob := `{"tokens":{"access_token":"` + codexJWTAccessToken(t, expired) +
+		`","account_id":"acct-1"},"auth_mode":"chatgpt"}`
+
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/credentials", jo, blob)
+	if code != http.StatusOK {
+		t.Fatalf("upload = %d body=%s, want 200 — this is a warning, not a refusal", code, body)
+	}
+	rec, err := oauthStore.Get(t.Context(), "jo", secrets.OAuthKindCodex)
+	if err != nil {
+		t.Fatalf("store Get: %v", err)
+	}
+	if !rec.NotRefreshable {
+		t.Fatal("a blob with no refresh token must be stored NotRefreshable")
+	}
+	if l := logs.String(); !strings.Contains(l, "NO refresh") || !strings.Contains(l, expired.Format(time.RFC3339)) {
+		t.Fatalf("want a Warn naming the expiry and the missing refresh token; got:\n%s", l)
 	}
 }

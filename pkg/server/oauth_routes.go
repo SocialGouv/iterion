@@ -530,6 +530,19 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 				"forfait will need a manual re-connect when it expires", ownerKey, kind)
 		}
 		rec.NotRefreshable = v.Tokens.RefreshToken == ""
+		// Now that the deadline is readable, the dead-on-arrival case can be
+		// named at last: an expired token with nothing to renew it serves no
+		// run, and every one that draws this credential dies on its first
+		// LLM call. Said, not refused — the operator keeps the choice
+		// (uploading first and logging in after is a legitimate order), and
+		// the claude_code path already refuses the same shape only because
+		// its own "Not logged in" symptom is unreadable.
+		if rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(now) {
+			s.logger.Warn("oauth: owner=%s kind=%s stored with an access token that expired at %s and NO refresh "+
+				"token — nothing can renew it, so every run drawing this credential fails its first LLM call; "+
+				"re-run `codex login` and upload the fresh ~/.codex/auth.json",
+				ownerKey, kind, rec.AccessTokenExpiresAt.Format(time.RFC3339))
+		}
 	}
 	sealed, err := secrets.SealOAuthPayload(s.sealer, ownerKey, kind, blob)
 	if err != nil {
