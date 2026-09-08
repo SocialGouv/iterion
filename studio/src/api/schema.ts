@@ -6036,6 +6036,7 @@ export interface components {
             work_dir?: string;
             workflow_hash?: string;
             workflow_name: string;
+            workspace_checkpoint?: components["schemas"]["WorkspaceCheckpoint"];
             worktree?: boolean;
             worktree_available: boolean;
         };
@@ -6168,6 +6169,16 @@ export interface components {
             name: string;
             nodes: components["schemas"]["WireNode"][];
             stale_hash?: boolean;
+        };
+        WorkspaceCheckpoint: {
+            commit: string;
+            event_seq: number;
+            fetch_command: string;
+            /** Format: date-time */
+            recorded_at: string;
+            ref: string;
+            source: string;
+            warning: string;
         };
         apiKeyView: {
             alive_runs?: number;

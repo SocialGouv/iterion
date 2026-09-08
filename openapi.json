@@ -2013,6 +2013,9 @@
           "workflow_name": {
             "type": "string"
           },
+          "workspace_checkpoint": {
+            "$ref": "#/components/schemas/WorkspaceCheckpoint"
+          },
           "worktree": {
             "type": "boolean"
           },
@@ -2466,6 +2469,42 @@
           "entry",
           "nodes",
           "edges"
+        ],
+        "type": "object"
+      },
+      "WorkspaceCheckpoint": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "event_seq": {
+            "type": "integer"
+          },
+          "fetch_command": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "commit",
+          "source",
+          "event_seq",
+          "recorded_at",
+          "fetch_command",
+          "warning"
         ],
         "type": "object"
       },

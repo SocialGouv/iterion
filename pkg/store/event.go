@@ -280,7 +280,9 @@ const (
 	// bank: the run doc is untouched (no FinalBranch — a half-done run
 	// must not read as merge-eligible), the commit is authored by
 	// iterion rather than by the run, and this event is the only durable
-	// record that the ref exists. Data:
+	// record of the successful push. Run inspection projects the latest
+	// success as workspace_checkpoint, separately from final-bank fields.
+	// Data:
 	//   - ref / commit: the checkpoint ref and what it holds — the
 	//     success shape
 	//   - ref / error: why the push failed and the work is still only
