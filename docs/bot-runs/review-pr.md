@@ -8,6 +8,63 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-08 — ticket conformance validated on a REAL private Jira, and the cross-tenant write it exposed (runs 01a082a0 / 01a082a8 / 01a082b2)
+
+- Status: **validated** — the feature works end-to-end on the cloud instance
+  against a real, private Jira Cloud ticket. One engine defect found on the way.
+- Versions: bot review-pr 0.6.0 (baked, prod) · instance
+  iterion.fabrique.social.gouv.fr
+- Method, in three runs:
+  1. `01a082a0` — **probe** on `SocialGouv/iterion-test-appy-e2e` (GitHub) with
+     `tracker_api_base=https://api.github.com` pinned in the integration's
+     `launch_vars`, no credential bound. Proved the half the local dogfood
+     could not: the ref is extracted from the PR body with no `ticket_refs`,
+     the tracker is reachable **from the k8s sandbox**, and the
+     `### Ticket conformance` section lands on a real PR. It also reported,
+     unprompted, that `/run/iterion/secrets/tracker_token` was absent and that
+     the authenticated attempt 401'd — i.e. it named the limit of my own probe.
+  2. `01a082a8` — **first real Jira run** on the GitLab MR
+     `…/dematamiante/code/demat-amiante!2` (ticket `DAM-1978`, private Jira
+     Cloud `jira-mcas.atlassian.net`). Verdict: `unverifiable — tracker token
+     file does not exist; anonymous GET returned HTTP 404`. **The canary was
+     red**, and it was right: the secret was not reaching the run (see below).
+  3. `01a082b2` — same MR, same ticket, after fixing the wiring. Verdict:
+     `DAM-1978: not covered — ticket demands cutting the multi-hour
+     Elasticsearch reindexation runtime to enable a daily run; the branch adds
+     only a readme.md changelog template and changes no Java, batch, or
+     configuration code, while the PR body claims "Closes DAM-1978"` — content
+     it could only know by reading the private ticket. Plus a `[high]
+     requirements` finding and four sharp questions, one of them load-bearing
+     (*does `Closes DAM-1978` actually drive a Jira transition here? the
+     blocking severity hinges on it*).
+- Value: red-then-green on the SAME MR and the SAME ticket. The verdict flips
+  only because the credential arrives, so this is a test that bites in both
+  directions rather than a screenshot of a success.
+- Secret hygiene, measured (not asserted): over the run's 112 KB of events,
+  where the Jira host appears 5× and `DAM-1978` 112×, the token appears **0×**
+  — verbatim, as an 8-char fragment, as the base64 of the `Basic` header, and
+  as its `ATATT` prefix. The positive controls are what make that zero mean
+  something.
+- **Engine defect found (the reason run 2 was red): a team-scoped write goes
+  to the tenant of the CALLER'S TOKEN, not the team in the path.**
+  `POST /api/teams/{id}/secrets` and `POST /api/teams/{id}/bots/{bot}/bindings`
+  authorize on the path team (`canManageTeam`, which a super-admin or org admin
+  passes for any team) but never re-scope the request context —
+  `generic_secrets_routes.go` and `bot_bindings_routes.go` contain **zero**
+  `store.WithTenant`, where `forge_provisioning_routes.go` has four. The row is
+  written into the JWT's tenant partition carrying the path team's scope, so it
+  is invisible from BOTH teams' list endpoints and can never be resolved for a
+  run — and every call returns 200/201. `iterion remote secrets set --team X`
+  inherits the same fate. Reproduced twice here (secret, then binding); the
+  workaround is `iterion remote teams switch <target>` **before** creating
+  either. Issue #997.
+- Lessons for next run: (a) wire secret + binding from the target team, never
+  by path/`--team` from another one, until #997 lands; (b) `/revi` on a note is
+  the fidelity path — it applies the integration's `launch_vars`, a manual
+  launch does not; (c) `iterion remote runs list` is scoped to the active team,
+  so a run launched on another team is simply absent — switch before concluding
+  it never started.
+
 ## 2026-09-08 — a green gate is one pass, not a property: 1 finding → 0 across a docs-only commit, and four defects still there (#851)
 
 - Status: **observation**, not a bilan of a launched run — recorded because it
