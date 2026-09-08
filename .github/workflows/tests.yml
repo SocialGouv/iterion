@@ -52,6 +52,12 @@ concurrency:
 # pod on our network. A same-repo branch is a different thing — pushing it
 # already requires write access, which is the same trust boundary.
 #
+# Three jobs stay GitHub-hosted whatever the ref, because the self-hosted
+# image is upstream's and deliberately minimal — no C compiler, and its user
+# is not in the docker group. Each says so at its own definition. Measured
+# 2026-09-08: the other six pass on self-hosted, nine runner pods starting at
+# once with no queueing at all.
+#
 # So the expression below reads: fork pull request -> GitHub-hosted;
 # everything else (same-repo PR, push, merge_group) -> self-hosted. It is
 # repeated per job because `runs-on` cannot read workflow-level `env`, and
@@ -200,7 +206,9 @@ jobs:
     # (ubuntu-latest ships gcc). Runs in parallel with `test`; a compile error
     # surfaces here too, so no `needs:` ordering. ~2-3x slower than the plain
     # test job, hence the wider -timeout and job budget.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    # GitHub-hosted: -race needs cgo, and the self-hosted image has no C
+    # compiler (`cgo: C compiler "gcc" not found`, every package build-failed).
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CGO_ENABLED: "1"
@@ -248,7 +256,10 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    # GitHub-hosted: service containers need the runner to reach the docker
+    # daemon, and the upstream runner image does not put its user in the
+    # docker group (`dial unix /run/docker/docker.sock`).
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
       # Plain mongo here because GitHub-Actions service containers can't
@@ -427,7 +438,9 @@ jobs:
     # image and a Go compile error surfaces here too. The previous
     # `needs: test` was purely defensive and cost 3-4 min of
     # wall-clock per push.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    # GitHub-hosted: same missing docker access as mongo-conformance — kind
+    # comes up but kubectl cannot authenticate to it.
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
       KIND_CLUSTER: iterion-e2e
