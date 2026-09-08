@@ -196,3 +196,40 @@ func TestACarriedSessionGetsOneChanceThenTheBudgetGoesToACleanAttempt(t *testing
 		t.Error("the optional flag outlived the id it qualifies")
 	}
 }
+
+// A fall-through starts a fresh conversation on ANOTHER backend, and the
+// builder clears the session id for that reason. `SessionOptional`
+// qualifies that id and must go with it: while only the declared modes set
+// the flag it was unreachable, but a retry that carries a session forward
+// is a SECOND writer, so a stale `true` can now ride into an element that
+// was handed no session at all.
+func TestFallThroughClearsTheOptionalFlagWithTheSessionItQualifies(t *testing.T) {
+	head := &poisonedSessionBackend{name: delegate.BackendClaudeCode}
+	tail := &resumeScriptedBackend{name: delegate.BackendClaw}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, _ string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review"}, nil
+		})
+	_, _ = e.dispatchChain(context.Background(), "review", []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5"},
+	}, "claude-opus-5", build)
+
+	if len(head.tasks) < 2 || head.tasks[1].SessionID != "s-poison" {
+		t.Fatalf("the head must have carried its session before falling through: %+v", head.tasks)
+	}
+	if len(tail.tasks) == 0 {
+		t.Fatal("the chain never fell through to the tail")
+	}
+	if tail.tasks[0].SessionID != "" {
+		t.Fatalf("a session crossed backends: %q", tail.tasks[0].SessionID)
+	}
+	if tail.tasks[0].SessionOptional {
+		t.Error("the optional flag crossed backends without the id it qualifies — the fall-through reset does not clear it")
+	}
+}
