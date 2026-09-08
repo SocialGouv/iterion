@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.121.3](https://github.com/SocialGouv/iterion/compare/v3.121.2...v3.121.3) (2026-09-08)
+
+### Bug Fixes
+
+* **golden-master,modernize:** an extension is acted by the net's subbot only — the gate knows it by the subbot's commits and certified blobs ([#882](https://github.com/SocialGouv/iterion/issues/882)) ([e46e357](https://github.com/SocialGouv/iterion/commit/e46e357cc46f171d36a7b14c80b5176061d4c105))
+
+    <details><summary>why</summary>
+
+    Measured on a live campaign: a lot filed an extension request in one commit and acted it in the next — added the reference, appended the act block — and the harness's provenance rule, which refuses a request and an act introduced by the SAME commit, saw nothing; the lot's own file became a reference of the net that judges it, exempted as a pure addition, and the lot landed with a caveat.
+
+    </details>
+
 ## [3.121.2](https://github.com/SocialGouv/iterion/compare/v3.121.1...v3.121.2) (2026-09-08)
 
 ### Bug Fixes
