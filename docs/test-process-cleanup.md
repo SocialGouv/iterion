@@ -18,16 +18,28 @@ runtime, CLI and E2E. On Linux it makes the test binary a child subreaper before
 running the suite: an orphaned descendant is adopted by this binary instead of
 escaping to init ([Linux subreaper semantics](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)).
 After all test cleanups, it checks every OS thread's direct children, reports
-live survivors, kills only its own children and repeats as grandchildren are
+survivors, kills only its own children and repeats as grandchildren are
 adopted. Already-exited adopted children are reaped. A leak makes a successful
 suite fail, while an existing failure exit code is preserved.
 
+"Cleanups returned" is not "the kernel finished the teardown", so a child is
+only a leak once it is **still alive after a settle window** — 500 ms, or
+`ITERION_PROCTEST_SETTLE`. A helper a cleanup signalled without joining, or one
+a test joins by proxy (a pidfile disappearing), gets to run its exit path and is
+forgiven — counted on stderr as `proctest: forgave N settling child(ren)`, never
+killed inside the window. The window is a ceiling, not a wait: a suite with no
+children breaks out immediately, and a child that exits at 30 ms is forgiven at
+30 ms. Survivors past it are still reported and reclaimed, so the canary the
+guard exists for is unchanged. The window and the tracking are per process,
+keyed on PID *and* start time, so a recycled PID cannot inherit an expired one.
+
 The guard never reaps while tests execute, where os/exec owns Wait. It never
 scans or signals another session's process tree: historical orphans and sibling
-package tests are outside its ancestry. Its five-second bound covers reclaiming
-a reported leak. Fixture cancellation is portable; the orphan-adoption guard
-is Linux-only. Like other TestMain postconditions it requires m.Run to return;
-a forced kill of the test binary cannot execute the postcondition.
+package tests are outside its ancestry. Its five-second bound, which starts
+after the settle window, covers reclaiming a reported leak. Fixture
+cancellation is portable; the orphan-adoption guard is Linux-only. Like other
+TestMain postconditions it requires m.Run to return; a forced kill of the test
+binary cannot execute the postcondition.
 
 ## Shell and helper sweep
 

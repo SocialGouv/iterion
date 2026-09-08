@@ -21,10 +21,13 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	os.Exit(NoProcessLeaks(func() int {
-		if strings.HasPrefix(mode, "orphan") {
+		if lifetime := os.Getenv("ITERION_PROCTEST_LIFETIME"); lifetime != "" {
 			// Intentionally orphan a helper after its launcher exits; the suite
 			// guard must find it even though the immediate parent has disappeared.
-			c := exec.Command("sh", "-c", `"$1" 600 </dev/null >/dev/null 2>&1 & echo $! > "$2"`, "sh", os.Getenv("ITERION_PROCTEST_HELPER"), os.Getenv("ITERION_PROCTEST_PIDFILE"))
+			// Its lifetime picks the side of the settle boundary under test: one
+			// that outlives the window is a leak, one that exits inside it is
+			// forgiven.
+			c := exec.Command("sh", "-c", `"$1" "$3" </dev/null >/dev/null 2>&1 & echo $! > "$2"`, "sh", os.Getenv("ITERION_PROCTEST_HELPER"), os.Getenv("ITERION_PROCTEST_PIDFILE"), lifetime)
 			if err := c.Run(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 8
@@ -38,11 +41,23 @@ func TestMain(m *testing.M) {
 }
 
 func TestNoProcessLeaks(t *testing.T) {
+	// Both sides of the settle boundary, made explicit: `settle` orphans a
+	// helper that exits well inside a widened window (forgiven, silent, still
+	// reaped), the `orphan` pair one that outlives a narrowed one (reported).
+	// Without the `settle` row the guard could latch on first sight — the
+	// behaviour this table exists to forbid — and stay green.
 	for _, tc := range []struct {
-		mode string
-		code int
+		mode     string
+		code     int
+		settle   string // ITERION_PROCTEST_SETTLE; empty leaves the default
+		lifetime string // seconds the orphaned helper sleeps; empty spawns none
+		leak     bool
 	}{
-		{"clean", 0}, {"failure", 7}, {"orphan", 1}, {"orphan-failure", 7},
+		{mode: "clean", code: 0},
+		{mode: "failure", code: 7},
+		{mode: "settle", code: 0, settle: "10s", lifetime: "1"},
+		{mode: "orphan", code: 1, settle: "100ms", lifetime: "600", leak: true},
+		{mode: "orphan-failure", code: 7, settle: "100ms", lifetime: "600", leak: true},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			dir := t.TempDir()
@@ -77,7 +92,8 @@ func TestNoProcessLeaks(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
-			c.Env = append(os.Environ(), "ITERION_PROCTEST_FIXTURE="+tc.mode, "ITERION_PROCTEST_PIDFILE="+pidfile, "ITERION_PROCTEST_HELPER="+helper)
+			c.Env = append(os.Environ(), "ITERION_PROCTEST_FIXTURE="+tc.mode, "ITERION_PROCTEST_PIDFILE="+pidfile,
+				"ITERION_PROCTEST_HELPER="+helper, "ITERION_PROCTEST_LIFETIME="+tc.lifetime, settleEnv+"="+tc.settle)
 			out, err := c.CombinedOutput()
 			code := 0
 			if err != nil {
@@ -90,10 +106,18 @@ func TestNoProcessLeaks(t *testing.T) {
 			if code != tc.code {
 				t.Fatalf("exit=%d want %d: %s", code, tc.code, out)
 			}
-			if strings.HasPrefix(tc.mode, "orphan") {
-				if !strings.Contains(string(out), "test process survived suite cleanup") {
-					t.Fatalf("missing leak diagnosis: %s", out)
+			if reported := strings.Contains(string(out), "test process survived suite cleanup"); reported != tc.leak {
+				t.Fatalf("leak reported=%v want %v: %s", reported, tc.leak, out)
+			}
+			if tc.lifetime != "" && !tc.leak {
+				// A forgiven child is silent by design, so without this count
+				// the case would pass identically to `clean` even with the
+				// settle logic deleted.
+				if !strings.Contains(string(out), "forgave 1 settling child(ren)") {
+					t.Fatalf("settling child not observed then forgiven: %s", out)
 				}
+			}
+			if tc.lifetime != "" {
 				data, err := os.ReadFile(pidfile)
 				if err != nil {
 					t.Fatal(err)
@@ -102,8 +126,8 @@ func TestNoProcessLeaks(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := processState(pid); !os.IsNotExist(err) {
-					t.Fatalf("leaked fixture process %d still exists: %v", pid, err)
+				if _, err := processState(pid); !os.IsNotExist(err) {
+					t.Fatalf("fixture process %d was not reclaimed: %v", pid, err)
 				}
 			}
 		})
