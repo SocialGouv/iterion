@@ -28,6 +28,47 @@ real git repositories (`bots/push_back_banked_branch_test.go`).
   revisions (HEAD and `origin/<branch>`), so a claim that contradicts the
   campaign's own commit count is falsifiable instead of merely surprising.
 
+## 2026-09-08 — #961 continued: the same run resumed on its recovered chain
+
+- Status: **partial** — three further commits on top of the recovered chain;
+  the gate's verdict on the new head is not this entry's to record.
+- Method: run `01a080c5-3bf3-7657-a24f-d9a24d854cc4` (the orphaned one below)
+  re-poked and resumed against the branch as the previous session left it:
+  five recovered/local commits plus a merge of `main`. Pilot `end`, prior
+  review = Revi's `R3d8dcc`, plan carried over from the peer-reviewed triage.
+- Result: `R3d8dcc` was already closed by the recovered `bf9f8cac4`; this pass
+  re-verified it against the current diff rather than re-fixing it, then took
+  the plan's remaining item and two things the plan had not seen.
+  `waitForSubbotStatus` now fails on a child that has SETTLED elsewhere
+  (terminal *or* paused — neither can reach the wanted status unaided) and
+  names the child's own last status on timeout, closing the one diagnostic the
+  shared helper had dropped from the reconcile fixture's inline loop. The
+  panic-barrier test got the `<-done` join its sibling helper had received —
+  it carries an inline copy that predates the extraction.
+- Engine hardening: none. Test-only, as the branch is.
+- Findings / misses: the recovered chain justified both resume joins as
+  protecting `t.TempDir` from a still-checkpointing goroutine. Measured on
+  go1.26.2, that reason does not hold for these callers — every one is inside
+  `synctest.Test`, which does not return until its bubble is empty, so cleanup
+  cannot overlap a live goroutine. What the join actually guards is the
+  REPORT: `t.Fatal` exits the bubble's root, and a scratch bubble with one
+  still-blocked goroutine printed the named failure and then died with
+  `panic: deadlock: main bubble goroutine has exited but blocked goroutines
+  remain`, taking the package's remaining tests with it. Both real arms were
+  then driven — the runner park's assertion forced to fail, the
+  abandoned-branch hang arm forced to fire — and both reported cleanly today,
+  because `defer cancel()` and `close(release)` leave their goroutine nothing
+  to block on. So the joins are structural insurance, not a live bug; the
+  speculative third join I had drafted for the runner fixture was reverted
+  rather than shipped on reasoning alone. The rule is now in the wait audit.
+- Validation: `task check` green; the bubbled tests under
+  `-race -count=3` (which is also the evidence the reviewer's open question
+  about goroutines surviving the bubble asked for) and `pkg/runview` under
+  `-race -count=2`.
+- Lessons for next run: a plausible "why" on a defensive test change is worth
+  one scratch bubble before it becomes a committed comment — this one survived
+  a campaign, a recovery session and a review without being measured.
+
 ## 2026-09-08 — #961: orphaned campaign recovered from its workspace checkpoint
 
 - Status: **useful commits recovered and validated locally**; the bot did not
