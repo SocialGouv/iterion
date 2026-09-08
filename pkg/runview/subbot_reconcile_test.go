@@ -59,7 +59,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	defer svc.Stop(context.Background())
+	defer stopService(t, svc)
 
 	// Project hot-swaps can briefly leave an older Service watching the same
 	// store. It has no Manager handle for svc's runs, so the persisted child
@@ -69,7 +69,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService(observer): %v", err)
 	}
-	defer observer.Stop(context.Background())
+	defer stopService(t, observer)
 
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
