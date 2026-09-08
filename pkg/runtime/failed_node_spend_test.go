@@ -100,13 +100,23 @@ func TestFailedNodeSpendIsRecorded(t *testing.T) {
 		t.Fatalf("an over-budget failure was not booked: %d", tokens)
 	}
 
-	// A node that spent nothing books nothing — no phantom zero rows.
-	before, _, _, _, _, _ := shared.Snapshot()
+	// A node that spent nothing books nothing — no phantom zero rows. The
+	// ITERATIONS axis is the oracle here, not the tokens: a zero booking
+	// cannot move a total by construction, so asserting on tokens alone
+	// would pass with the guard deleted. RecordUsage advances iterationsUsed
+	// unconditionally, so a phantom row shows up there and only there — and
+	// that row is a max_iterations slot a spendless tool failure must not
+	// consume.
+	beforeTokens, _, beforeIters, _, _, _ := shared.Snapshot()
 	engine.recordFailedNodeSpend(rs, "tool", map[string]any{"ok": true})
-	if after, _, _, _, _, _ := shared.Snapshot(); after != before {
-		t.Fatalf("a spendless failure moved the totals: %d -> %d", before, after)
-	}
 	engine.recordFailedNodeSpend(rs, "tool", nil)
+	afterTokens, _, afterIters, _, _, _ := shared.Snapshot()
+	if afterTokens != beforeTokens {
+		t.Fatalf("a spendless failure moved the totals: %d -> %d", beforeTokens, afterTokens)
+	}
+	if afterIters != beforeIters {
+		t.Fatalf("a spendless failure burned %d max_iterations slot(s)", afterIters-beforeIters)
+	}
 }
 
 // And the WIRING, which is the half a helper test cannot show: a node that
@@ -321,10 +331,15 @@ func TestFailedNodeSpendDoesNotSpeakForTheRun(t *testing.T) {
 	})
 }
 
-// meteredFailingBackend is the shape a real delegate returns when a
-// delegation dies: the error, and BESIDE it the result carrying what the
-// pass burned — `typedFailure` allocates the output map and annotates the
-// cost precisely so the figure survives the failure.
+// meteredFailingBackend is the shape a delegate returns when a delegation
+// dies: the error, and BESIDE it the result carrying what the pass burned.
+// Each shipped backend reaches that shape its own way — claude_code through
+// `typedFailure`, which allocates the output map and annotates the cost on a
+// typed refusal; claw through `meteredFailure` over the partial result its
+// generation layer returns beside the error. That the SHIPPED ones actually
+// fill it is pinned where they live
+// (model.TestClawBackendKeepsWhatAnAbandonedGenerationBurned); what this stub
+// pins is the frame above them.
 type meteredFailingBackend struct {
 	calls int
 }
@@ -339,10 +354,10 @@ func (b *meteredFailingBackend) Execute(_ context.Context, _ delegate.Task) (del
 }
 
 // The END of the chain, through the production executor rather than a
-// runtime stub: a real ClawExecutor dispatching to a real delegate.Backend
-// that fails after spending. Every layer below went to trouble to preserve
-// the figure — typedFailure allocates and annotates, dispatchChain folds the
-// abandoned routes' spend into the terminal result — and it only counts if
+// runtime stub: a real ClawExecutor dispatching a registered delegate that
+// fails after spending. Every layer below went to trouble to preserve the
+// figure — the backends stamp it on their failure result, dispatchChain folds
+// the abandoned routes' spend into the terminal one — and it only counts if
 // it survives the last frame into the engine, which is the only place that
 // books it against max_cost_usd, the org cap and a donor's ledger.
 //
@@ -1252,5 +1267,73 @@ func TestBranchSpendSurvivesARefusedCheckpoint(t *testing.T) {
 
 	if !result.spendUncheckpointed {
 		t.Fatal("a REFUSED checkpoint cleared the durability flag: the booking is now neither durable nor scheduled for persistBranchSpend, and the resume is handed back an allowance the run already burned")
+	}
+}
+
+// The failing branch's booking told the daily-cap ledger a new cumulative
+// figure under the branch's own key, and that ledger is MONOTONIC-MAX per
+// key. The durable branch cursor a resume re-seeds from lives in the
+// checkpoint, and the accounting write must carry it: left at its pre-failure
+// value, the resumed branch restarts BELOW the high-water mark the failed
+// attempt already wrote, and every contribution it makes afterwards is
+// discarded — several calls, not one — until the recomputed cumulative
+// overtakes it.
+func TestFailedBranchSpendCarriesTheDurableCostCursor(t *testing.T) {
+	wf := budgetFanOutWorkflow(&ir.Budget{MaxTokens: 1_000_000, MaxParallelBranches: 2})
+	// Branch "a" gets a second node so it SPENDS on a linear edge (which
+	// checkpoints nothing) and then fails: the cursor the run must keep is
+	// the sum of both, not the failing node's alone.
+	wf.Nodes["a2"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a2"}}
+	for _, e := range wf.Edges {
+		if e.From == "a" && e.To == "done" {
+			e.To = "a2"
+		}
+	}
+	wf.Edges = append(wf.Edges, &ir.Edge{From: "a2", To: "done"})
+
+	st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+	var mu sync.Mutex
+	cursors := []float64{}
+	st.onSave = func(cp *store.Checkpoint) {
+		if cp == nil || cp.Parallel == nil {
+			return
+		}
+		if b := cp.Parallel.Branches["branch_router_a"]; b != nil {
+			mu.Lock()
+			cursors = append(cursors, b.CostUSD)
+			mu.Unlock()
+		}
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 1_000, "_cost_usd": 0.10}, nil
+	})
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 2_000, "_cost_usd": 1.00}, nil
+	})
+	exec.on("a2", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"_tokens": 15_000, "_cost_usd": 4.20}, errors.New("stream closed mid-branch")
+	})
+
+	ledger := newMemSpendStore()
+	guard := NewDailyCapGuard(ledger, clock.Default, DailyCapConfig{MaxCostPerDayUSD: 1_000})
+	eng := New(wf, st, exec, WithDailyCap(guard))
+	if err := eng.Run(context.Background(), "run-branch-cursor", nil); err != nil {
+		t.Fatalf("the best-effort join was supposed to carry the run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(cursors) == 0 {
+		t.Fatal("no checkpoint ever carried the failing branch — the accounting write never happened")
+	}
+	// 1.00 (the linear node) + 4.20 (the failure) — what the ledger was told.
+	if last := cursors[len(cursors)-1]; last != 5.20 {
+		t.Fatalf("the durable branch cost cursor lags the ledger: checkpoint %v, ledger %v",
+			last, ledger.get(clock.DayKey(clock.Default.Now())).RunsContributed)
 	}
 }

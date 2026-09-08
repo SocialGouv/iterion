@@ -11,6 +11,20 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+// meteredHumanFailure renders what a FAILED human-node generation burned, in
+// the shape the engine books from. Nil when nothing was served: an output map
+// carrying only meta keys would read as an answer on a path whose caller
+// degrades to a human pause, and the engine's own guard already skips a
+// spendless failure.
+func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
+	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0) {
+		return nil
+	}
+	output := map[string]any{}
+	cost.Annotate(output, modelSpec, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	return output
+}
+
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
 // It calls GenerateObjectDirect against api.APIClient with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
@@ -103,43 +117,14 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	}
 	genOpts.ExplicitSchema = jsonSchema
 
-	// Capture the last step's usage so a FAILED generation can still report
-	// what it burned. GenerateObjectDirect returns a bare nil on every one of
-	// its own failure paths, so without this the engine's booking for this
-	// seam — the one thing that puts an `interaction: llm` node's spend on
-	// max_cost_usd, the daily cap and a donor's ledger — was handed nothing
-	// and returned at its own zero guard. The three post-aggregate failures
-	// (an empty PartialJSON, an unmarshalable one, no tool_use block at all)
-	// are exactly the ones that come AFTER a whole answer was generated and
-	// billed, and they are the common ones on a stream that dies mid-answer.
-	//
-	// Composed, never assigned over: applyHooks above may already have wired
-	// OnStepFinish for the studio timeline, and ExecuteHumanLLMForInteraction
-	// reaches here through the same options.
-	var lastUsage Usage
-	priorStepFinish := genOpts.OnStepFinish
-	genOpts.OnStepFinish = func(step StepResult) {
-		lastUsage = step.Usage
-		if priorStepFinish != nil {
-			priorStepFinish(step)
-		}
-	}
-
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
-		genErr := fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
-		if lastUsage.InputTokens <= 0 && lastUsage.OutputTokens <= 0 {
-			// Nothing observed — a failure before the stream aggregated. A
-			// zero row here would be a phantom, not a measurement.
-			return nil, genErr
-		}
-		// Beside the error, exactly as the delegate seams do. Through
-		// cost.Annotate like the success path below, which is what stamps
-		// `_cost_usd` as well as `_tokens` — the in/out split is still in
-		// hand here, and a total alone could not be priced.
-		spent := make(map[string]any)
-		cost.Annotate(spent, modelSpec, lastUsage.InputTokens, lastUsage.OutputTokens)
-		return spent, genErr
+		// The llm half of a human node is a real LLM call, and the engine
+		// books what it burned from the map returned beside the error (it
+		// then degrades to the human pause). A bare nil made that booking
+		// inert: the attempt is over — the human answers next, and a human
+		// reports no tokens — so this figure is final or lost.
+		return meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object

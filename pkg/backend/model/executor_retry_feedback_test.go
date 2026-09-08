@@ -90,3 +90,106 @@ func TestValidateAndRetry_InjectsSchemaFeedback(t *testing.T) {
 		t.Errorf("retry feedback should name the validation error, got: %q", backend.tasks[1].UserPrompt)
 	}
 }
+
+// TestExecuteBackendKeepsSpendOnInvalidStructuredOutput: a node whose output
+// never satisfies its schema still burned everything the generations cost —
+// and a schema failure is the one that can bill TWICE, because a
+// retry-eligible error buys a second call. validateAndRetry preserves the
+// figure through all of its error exits; executeBackend used to drop it one
+// line later, so the engine (the only caller that books) saw nothing of a
+// node that could have run for an hour.
+func TestExecuteBackendKeepsSpendOnInvalidStructuredOutput(t *testing.T) {
+	newExec := func(backend delegate.Backend) *ClawExecutor {
+		reg := delegate.NewRegistry()
+		reg.Register("test_backend", backend)
+		wf := &ir.Workflow{
+			Prompts: map[string]*ir.Prompt{},
+			Schemas: map[string]*ir.Schema{
+				"out_schema": {
+					Name:   "out_schema",
+					Fields: []*ir.SchemaField{{Name: "answer", Type: ir.FieldTypeString}},
+				},
+			},
+		}
+		return NewClawExecutor(NewRegistry(), wf,
+			WithBackendRegistry(reg),
+			WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
+		)
+	}
+	node := func() *ir.AgentNode {
+		return &ir.AgentNode{
+			BaseNode:     ir.BaseNode{ID: "answerer"},
+			LLMFields:    ir.LLMFields{Backend: "test_backend"},
+			SchemaFields: ir.SchemaFields{OutputSchema: "out_schema"},
+		}
+	}
+
+	t.Run("a non-retryable shape books the one call it made", func(t *testing.T) {
+		// A type mismatch is the model returning the WRONG shape; no retry
+		// is bought for it, so the bill is exactly the first generation's.
+		exec := newExec(&capturingBackend{results: []delegate.Result{{
+			Output:      map[string]any{"answer": 42, "_cost_usd": 1.50},
+			Tokens:      1_000,
+			BackendName: "test_backend",
+		}}})
+		output, err := exec.executeBackend(context.Background(), node(), map[string]any{})
+		if err == nil {
+			t.Fatal("precondition: a type-mismatched output must fail validation")
+		}
+		if output == nil {
+			t.Fatal("the failed node's spend never left the executor: nil output")
+		}
+		if got := output["_tokens"]; got != 1_000 {
+			t.Errorf("_tokens = %v, want 1000", got)
+		}
+		if got := output["_cost_usd"]; got != 1.50 {
+			t.Errorf("_cost_usd = %v, want 1.50", got)
+		}
+	})
+
+	t.Run("a failed schema retry books both generations", func(t *testing.T) {
+		// Missing-required-field IS retry-eligible: the executor buys a
+		// second generation, and when that one is invalid too the node owes
+		// the sum. Booking only one of the two halves the bill.
+		exec := newExec(&capturingBackend{results: []delegate.Result{
+			{Output: map[string]any{"other": "x", "_cost_usd": 1.50}, Tokens: 1_000, BackendName: "test_backend"},
+			{Output: map[string]any{"other": "y", "_cost_usd": 0.90}, Tokens: 700, BackendName: "test_backend"},
+		}})
+		output, err := exec.executeBackend(context.Background(), node(), map[string]any{})
+		if err == nil {
+			t.Fatal("precondition: an output still missing the field must fail")
+		}
+		if output == nil {
+			t.Fatal("the failed node's spend never left the executor: nil output")
+		}
+		if got := output["_tokens"]; got != 1_700 {
+			t.Errorf("_tokens = %v, want 1700 (first attempt + retry)", got)
+		}
+	})
+
+	t.Run("an abandoned retry is billed too", func(t *testing.T) {
+		// The retry came back parse-fallback, so the executor abandons it
+		// and surfaces the FIRST attempt's error. It was still a second
+		// generation the provider charged for: the exit accumulates nothing
+		// of its own, so without the fold the node reports a bill it did
+		// not run up. No "text" on either output, so the last-resort claw
+		// extraction bails before any provider lookup.
+		exec := newExec(&capturingBackend{results: []delegate.Result{
+			{Output: map[string]any{"other": "x", "_cost_usd": 1.50}, Tokens: 1_000, BackendName: "test_backend"},
+			{Output: map[string]any{"other": "y", "_cost_usd": 0.90}, Tokens: 700, ParseFallback: true, BackendName: "test_backend"},
+		}})
+		output, err := exec.executeBackend(context.Background(), node(), map[string]any{})
+		if err == nil {
+			t.Fatal("precondition: an abandoned parse-fallback retry must fail the node")
+		}
+		if output == nil {
+			t.Fatal("the failed node's spend never left the executor: nil output")
+		}
+		if got := output["_tokens"]; got != 1_700 {
+			t.Errorf("_tokens = %v, want 1700 (first attempt + abandoned retry)", got)
+		}
+		if got := output["_cost_usd"]; got != 2.40 {
+			t.Errorf("_cost_usd = %v, want 2.40 (first attempt + abandoned retry)", got)
+		}
+	})
+}

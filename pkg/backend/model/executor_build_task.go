@@ -206,9 +206,9 @@ func meteredFailureOutput(out chainOutcome, backendName string) map[string]any {
 		}
 		output = map[string]any{}
 	}
-	// The success path stamps the same keys; the failure path must too, or
-	// a delegate that filled Result.Tokens without touching the map reports
-	// a spend of zero.
+	// The success path stamps through stampDelegateOutputMeta above; the
+	// failure path must too, or a delegate that filled Result.Tokens
+	// without touching the map reports a spend of zero.
 	stampDelegateOutputMeta(output, out.Result, firstNonEmpty(out.BackendName, backendName))
 	return output
 }
@@ -483,8 +483,10 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
 	if err != nil {
 		// A failed delegation still SPENT, and everything below this line
-		// went to trouble to keep the figure: `typedFailure` allocates the
-		// output map and annotates the cost on a typed refusal, and
+		// went to trouble to keep the figure: claude_code's `typedFailure`
+		// allocates the output map and annotates the cost on a typed
+		// refusal, claw's `meteredFailure` does the same over the partial
+		// result its generation layer returns beside the error, and
 		// dispatchChain folds every abandoned route's spend into the
 		// terminal result. Returning a bare nil threw all of it away one
 		// frame short of the engine, which is the only place that books it
@@ -610,20 +612,16 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		if schema, ok := e.schemas[f.outputSchema]; ok {
 			validated, err := e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
 			if err != nil {
-				// The same reason the dispatch failure above hands its
-				// metered result up, one frame further in: the delegation
-				// SUCCEEDED here and only the schema check failed, so this
-				// is a whole served session — and, on the after-retry
-				// return, TWO (validateAndRetry folds the first attempt's
-				// tokens into the retry's). validated carries it: the map
-				// was stamped before validation ran, and the retry path
-				// re-stamps its own. Returning a bare nil here made every
-				// booking downstream inert on the failure mode that costs
-				// the most, since a node that dies on its schema has still
-				// paid for every token the model emitted.
-				failed := out
-				failed.Result = validated
-				return meteredFailureOutput(failed, servingBackendName), err
+				// The node failed AFTER the model answered and the call was
+				// paid for — often twice, since a retry-eligible failure
+				// buys a second generation. validateAndRetry hands back a
+				// METERED result on each of its three error exits (it goes
+				// to the trouble of accumulating the first attempt's tokens
+				// onto the retry's for exactly this reason); dropping it
+				// here undid that work one line later, and the engine — the
+				// only caller that books — saw nothing.
+				out.Result = validated
+				return meteredFailureOutput(out, servingBackendName), err
 			}
 			result = validated
 			// The schema retry (and the claw extraction fallback) hand
@@ -744,7 +742,15 @@ func (e *ClawExecutor) validateAndRetry(
 		if out, ok := e.extractStructuredViaClaw(ctx, f.id, task, retryResult, result, schema, backendName); ok {
 			return out, nil
 		}
-		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
+		// The retry was a second generation and it was billed, whether it
+		// errored or came back parse-fallback again. Returning the first
+		// attempt alone reports half the bill to the caller that books it
+		// — the same accumulation the success path does at the bottom of
+		// this function, on the exit where the money is already spent and
+		// nothing downstream can recover it.
+		var abandoned chainSpend
+		abandoned.add(retryResult)
+		return abandoned.applyTo(result), fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
 	}
 	// Accumulate token/duration from the first attempt so per-node
 	// accounting reflects the full cost paid (dropping it understated
