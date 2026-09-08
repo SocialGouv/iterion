@@ -44,6 +44,12 @@ type branchResult struct {
 	// seeded from the durable branch cursor so a resumed pass keeps
 	// growing the same monotonic-max daily-cap ledger entry.
 	costUSD float64
+	// spendUncheckpointed marks spend booked into the shared run budget that
+	// no checkpoint has carried yet. Only a failing branch node sets it: every
+	// other booking is followed by a branch checkpoint that snapshots the run
+	// budget along with the cursor, whereas a failure returns from execBranch
+	// immediately. See persistBranchSpend.
+	spendUncheckpointed bool
 }
 
 // errBranchPauseDeferred marks a branch that reached a human gate after a
@@ -248,6 +254,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			if branchHuman && result.err != nil && !errors.Is(result.err, ErrRunPaused) && !errors.Is(result.err, errBranchPauseDeferred) {
 				e.emitBranchNodeFailed(ctx, runID, branchID, currentNodeID, result.err, result)
 			}
+			e.persistBranchSpend(rs, parallel, result)
 			return result
 		}
 		branchRS.outputs[currentNodeID] = output
@@ -445,6 +452,10 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 	}
 	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
 		e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, err)
+	} else {
+		// This snapshot carries the run budget, so any spend booked before it
+		// is now durable and persistBranchSpend has nothing left to write.
+		result.spendUncheckpointed = false
 	}
 	if barrier != nil {
 		close(barrier)
@@ -809,6 +820,44 @@ func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runI
 	bookCtx, cancel := detachedBookingCtx(ctx)
 	defer cancel()
 	_ = e.recordBranchSpend(bookCtx, rs, runID, branchID, ledgerKey, currentNodeID, output, branchCostUSD, result)
+	result.spendUncheckpointed = true
+}
+
+// persistBranchSpend makes a failing branch's booking durable. The booking
+// itself only reaches the shared budget in MEMORY, and this branch writes no
+// checkpoint of its own: execBranch returns as soon as the node fails. Whether
+// the spend survives would otherwise depend on a sibling happening to
+// checkpoint afterwards — so the same run loses a whole failed session's spend
+// or keeps it, by scheduling. A resume reads its budget carry from the last
+// checkpoint, and is handed back an allowance the run has already burned.
+//
+// Cursors are deliberately untouched: this is an accounting write. It
+// snapshots the parallel state as it stands, so a restart still finds every
+// branch exactly where its own boundary left it, and the failed node's restart
+// position stays the retry logic's to decide.
+func (e *Engine) persistBranchSpend(parent *runState, parallel *parallelExecutionState, result *branchResult) {
+	if parent == nil || parallel == nil || result == nil || !result.spendUncheckpointed {
+		return
+	}
+	result.spendUncheckpointed = false
+	parallel.saveMu.Lock()
+	defer parallel.saveMu.Unlock()
+	if parallel.isRetired() {
+		return
+	}
+	ps := parallel.snapshot()
+	if ps == nil {
+		return
+	}
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	// Detached for the reason the booking was: the branch's context is the
+	// one that just died, and this is the last frame that can write.
+	writeCtx, cancel := detachedBookingCtx(parent.ctx)
+	defer cancel()
+	if err := e.store.SaveCheckpoint(writeCtx, parent.runID, cp); err != nil && e.logger != nil {
+		e.logger.Error("failed to persist branch %s spend: %v", result.branchID, err)
+	}
 }
 
 // publishBranchArtifact persists the node's output as a versioned artifact

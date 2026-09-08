@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/clock"
 
@@ -14,27 +16,47 @@ import (
 )
 
 // checkpointCapturingStore keeps the last checkpoint the engine wrote, which
-// is where a resume reads the budget carry from.
+// is where a resume reads the budget carry from. Guarded: under a fan-out the
+// writers are branch goroutines. onSave, when set, runs on every checkpoint
+// write and lets a test order itself against the engine's own progress.
 type checkpointCapturingStore struct {
 	store.RunStore
-	last *store.Checkpoint
+	mu     sync.Mutex
+	last   *store.Checkpoint
+	onSave func(*store.Checkpoint)
+}
+
+func (s *checkpointCapturingStore) capture(cp *store.Checkpoint) {
+	s.mu.Lock()
+	s.last = cp
+	hook := s.onSave
+	s.mu.Unlock()
+	if hook != nil {
+		hook(cp)
+	}
+}
+
+func (s *checkpointCapturingStore) lastCheckpoint() *store.Checkpoint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
 }
 
 func (s *checkpointCapturingStore) SaveCheckpoint(ctx context.Context, runID string, cp *store.Checkpoint) error {
-	s.last = cp
+	s.capture(cp)
 	return s.RunStore.SaveCheckpoint(ctx, runID, cp)
 }
 
 func (s *checkpointCapturingStore) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
 	if cp != nil {
-		s.last = cp
+		s.capture(cp)
 	}
 	return s.RunStore.FailRunResumable(ctx, id, cp, runErr, code)
 }
 
 func (s *checkpointCapturingStore) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
 	if cp != nil {
-		s.last = cp
+		s.capture(cp)
 	}
 	return s.RunStore.FailRunTerminal(ctx, id, cp, runErr, code)
 }
@@ -113,7 +135,7 @@ func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
 		}
 		// Read where a RESUME reads it: the checkpoint's budget carry, which
 		// is what stops a resumed run from re-granting the whole allowance.
-		cp := st.last
+		cp := st.lastCheckpoint()
 		if cp == nil {
 			t.Fatal("no checkpoint to read the budget from")
 		}
@@ -164,7 +186,7 @@ func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
 		if backend.calls != 2 {
 			t.Fatalf("expected a failed attempt and its retry, got %d delegation(s)", backend.calls)
 		}
-		cp := st.last
+		cp := st.lastCheckpoint()
 		if cp == nil {
 			t.Fatal("no checkpoint to read the budget from")
 		}
@@ -375,20 +397,42 @@ func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
 // nothing retries it in place, and the trunk aggregates the failure without
 // ever seeing the output, so this is the last frame that can book what it
 // burned.
+// Booking it in memory is only half: a resume reads the carry from the LAST
+// CHECKPOINT, and the failing branch writes none — execBranch returns the
+// moment the node fails. The order below is imposed rather than raced: the
+// sibling's completion checkpoint lands first, taken before the failure books
+// anything, and the failing branch then has to make its own spend durable. Left
+// to the scheduler this passes most runs — the sibling usually checkpoints
+// after the booking — and the same run silently loses a whole failed session's
+// spend on the interleavings where it does not.
 func TestFailedBranchNodeSpendReachesTheRun(t *testing.T) {
 	wf := budgetFanOutWorkflow(&ir.Budget{MaxTokens: 1_000_000, MaxParallelBranches: 2})
+	st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+
+	siblingBooked := make(chan struct{})
+	var once sync.Once
+	st.onSave = func(cp *store.Checkpoint) {
+		if cp != nil && cp.BudgetTokensUsed == 1_000 {
+			once.Do(func() { close(siblingBooked) })
+		}
+	}
+
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"ok": true}, nil
 	})
-	exec.on("a", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"_tokens": 15_000, "_cost_usd": 4.20}, errors.New("stream closed mid-branch")
-	})
 	exec.on("b", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"ok": true, "_tokens": 1_000, "_cost_usd": 0.10}, nil
 	})
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		select {
+		case <-siblingBooked:
+		case <-time.After(30 * time.Second):
+			t.Error("the sibling never checkpointed its own spend; the ordering this test rests on is gone")
+		}
+		return map[string]any{"_tokens": 15_000, "_cost_usd": 4.20}, errors.New("stream closed mid-branch")
+	})
 
-	st := &checkpointCapturingStore{RunStore: tmpStore(t)}
 	eng := New(wf, st, exec)
 	// best_effort convergence: the sibling carries the run, so the failing
 	// branch's spend has to land WITHOUT the run failing to make it visible.
@@ -396,7 +440,7 @@ func TestFailedBranchNodeSpendReachesTheRun(t *testing.T) {
 		t.Fatalf("the best-effort join was supposed to carry the run: %v", err)
 	}
 
-	cp := st.last
+	cp := st.lastCheckpoint()
 	if cp == nil {
 		t.Fatal("no checkpoint to read the budget from")
 	}
