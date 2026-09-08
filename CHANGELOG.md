@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.122.1](https://github.com/SocialGouv/iterion/compare/v3.122.0...v3.122.1) (2026-09-08)
+
+### Bug Fixes
+
+* **runner:** a new generation erased the checkpoint it should have read ([#990](https://github.com/SocialGouv/iterion/issues/990)) ([6f3926e](https://github.com/SocialGouv/iterion/commit/6f3926e1aeb2c663cbc32e76f898b62845ad361e)), references [#988](https://github.com/SocialGouv/iterion/issues/988)
+
+    <details><summary>why</summary>
+
+    The workspace checkpoint is force-pushed to ONE ref per run, so the first push of a new runner generation destroys what the previous one left. That is harmless when the resume continued the same tree, and irreversible when it did not.
+
+    </details>
+
 ## [3.122.0](https://github.com/SocialGouv/iterion/compare/v3.121.5...v3.122.0) (2026-09-08)
 
 ### Features
