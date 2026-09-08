@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
@@ -140,6 +141,45 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 			t.Errorf("a spendless failure must stay the zero Result, got %+v", res)
 		}
 	})
+}
+
+// TestClawRetryLoopKeepsEveryAttemptsSpend: the metered failure above is only
+// worth what survives the retry loop wrapping it. `result, err = fn()`
+// overwrote the previous attempt, so an expensive tool loop that hit a 429 and
+// then retried into an instant, free failure reported the FREE one as the
+// node's bill — the same drop this branch removed one frame down.
+//
+// The attempts SUM: claw opens a fresh conversation each time (it never reads
+// SessionID), so no attempt's figure contains another's.
+func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
+	backend := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond})
+	task := delegate.Task{NodeID: "reviewer", Model: "test/test-model"}
+
+	attempt := 0
+	res, err := backend.retryLoop(context.Background(), task.NodeID, func() (delegate.Result, error) {
+		attempt++
+		if attempt == 1 {
+			// A whole agentic turn, billed, then rate-limited: retryable, so
+			// the loop buys a second one.
+			return meteredFailure(task, Usage{InputTokens: 1_000, OutputTokens: 200}),
+				&APIError{Message: "rate limited", StatusCode: 429, IsRetryable: true}
+		}
+		// The retry dies before the provider bills anything.
+		return delegate.Result{}, &APIError{Message: "unauthorized", StatusCode: 401}
+	})
+	if err == nil {
+		t.Fatal("precondition: the second attempt must fail terminally")
+	}
+	if attempt != 2 {
+		t.Fatalf("precondition: want 2 attempts, got %d", attempt)
+	}
+	if res.Tokens != 1_200 {
+		t.Errorf("Result.Tokens = %d, want 1200 — the retried attempt was billed", res.Tokens)
+	}
+	// The map is what the engine books from (extractUsage), not the struct.
+	if got := res.Output["_tokens"]; got != 1_200 {
+		t.Errorf("_tokens = %v, want 1200 — the engine books from the map", got)
+	}
 }
 
 // TestHumanLLMHalfKeepsWhatItBurnedOnFailure: the llm half of a human node is

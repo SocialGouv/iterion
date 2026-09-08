@@ -544,7 +544,23 @@ func (b *ClawBackend) retryLoop(ctx context.Context, nodeID string, fn func() (d
 			return result, ctx.Err()
 		}
 
+		prev := result
 		result, err = fn()
+		// The attempt that just failed was BILLED — that is what the
+		// metered-failure results above are for — and overwriting it here
+		// dropped exactly the figure this loop's own cancel arm goes to the
+		// trouble of keeping. The shape that loses the most is the common
+		// one: a tool loop that ran to its step limit and then hit a 429,
+		// retried into an instant auth failure that billed nothing, reporting
+		// the free attempt as the node's whole bill.
+		//
+		// SUMMED, never folded at a MAX: claw opens a fresh conversation per
+		// attempt (it never reads SessionID — it replays from the run's own
+		// store), so no attempt's figure contains another's, and
+		// cost.Annotate prices each from its own tokens. `false` states that
+		// invariant at the call site rather than inferring it. The frame
+		// above applies the same rule (retryDelegateLoop).
+		result = foldSpend(prev, result, false)
 	}
 	return result, err
 }
