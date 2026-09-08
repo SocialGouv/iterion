@@ -97,13 +97,23 @@ func TestFailedNodeSpendIsRecorded(t *testing.T) {
 		t.Fatalf("an over-budget failure was not booked: %d", tokens)
 	}
 
-	// A node that spent nothing books nothing — no phantom zero rows.
-	before, _, _, _, _, _ := shared.Snapshot()
+	// A node that spent nothing books nothing — no phantom zero rows. The
+	// ITERATIONS axis is the oracle here, not the tokens: a zero booking
+	// cannot move a total by construction, so asserting on tokens alone
+	// would pass with the guard deleted. RecordUsage advances iterationsUsed
+	// unconditionally, so a phantom row shows up there and only there — and
+	// that row is a max_iterations slot a spendless tool failure must not
+	// consume.
+	beforeTokens, _, beforeIters, _, _, _ := shared.Snapshot()
 	engine.recordFailedNodeSpend(rs, "tool", map[string]any{"ok": true})
-	if after, _, _, _, _, _ := shared.Snapshot(); after != before {
-		t.Fatalf("a spendless failure moved the totals: %d -> %d", before, after)
-	}
 	engine.recordFailedNodeSpend(rs, "tool", nil)
+	afterTokens, _, afterIters, _, _, _ := shared.Snapshot()
+	if afterTokens != beforeTokens {
+		t.Fatalf("a spendless failure moved the totals: %d -> %d", beforeTokens, afterTokens)
+	}
+	if afterIters != beforeIters {
+		t.Fatalf("a spendless failure burned %d max_iterations slot(s)", afterIters-beforeIters)
+	}
 }
 
 // And the WIRING, which is the half a helper test cannot show: a node that
