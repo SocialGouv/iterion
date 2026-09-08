@@ -57,7 +57,7 @@ injects a `scenarioExecutor` (stub configurable per node) and executes via
 
 | Test | Verification |
 |------|-------------|
-| `TestAllFixturesCompile` | All 5 fixtures compile without errors (parse + IR) |
+| `TestAllFixturesCompile` | All 16 `e2e/testdata` fixtures compile without errors (parse + IR) — the four flagship scenarios above plus `pr_review`, `pr_review_fix`, `llm_router_task_dispatch`, `session_fork`, `recipe_benchmark`, `feature_request_dual_model`, `dual_model_plan_implement_review`, `session_review_fix`, `rust_to_go_port`, `exhaustive_dsl_coverage`, `dogfood_editor_ui_loop`, `playwright_visual_qa` |
 | `TestEventSequenceCoherence` | Event rules: run_started first, run_finished/failed last, node_started/finished paired, seq monotonic |
 
 ## Primitive Coverage
@@ -78,4 +78,4 @@ injects a `scenarioExecutor` (stub configurable per node) and executes via
 | publish / artifacts | All |
 | artifact versioning | SingleModel_GlobalReloop, CIFix_FixLoop |
 | budget / metrics | SingleModel_HappyPath, DualParallel_HappyPath, CIFix_HappyPath |
-| session modes | Validated at compilation (fresh, inherit, artifacts_only) |
+| session modes | Validated at compilation (fresh, inherit, fork, artifacts_only — `inherit_if_available` and `persist` are exercised by `pkg/runtime` unit tests, not by these fixtures) |
