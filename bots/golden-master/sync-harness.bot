@@ -3413,6 +3413,71 @@ tool sync_harness:
 
     # ─── Self-test ──────────────────────────────────────────────────────────────
 
+    # ─── Auto-maintenance audit (selftest) ──────────────────────────────────────
+
+    _GIT_MAINTENANCE_OFF = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+
+    def _git_command_lines(argv):
+        """The git command lines an argv spawns.
+
+        Two forms, because both occur here: the argv IS git, or it is a shell
+        running a script in which `git` stands in command position. Split on the
+        separators a shell uses, so `cd x && git commit` is seen as a git command
+        and `rm -rf .git` is not.
+        """
+        if isinstance(argv, (list, tuple)):
+            parts = [str(a) for a in argv]
+        elif isinstance(argv, str):
+            parts = ["sh", "-c", argv]
+        else:
+            return []
+        if not parts:
+            return []
+        found = []
+        if os.path.basename(parts[0]) == "git":
+            found.append(parts)
+        if len(parts) > 2 and os.path.basename(parts[0]) in ("sh", "bash", "dash", "zsh") \
+                and parts[1] == "-c":
+            for segment in re.split(r"&&|\|\||[;|\n]", parts[2]):
+                tokens = segment.strip().lstrip("(").strip().split()
+                if tokens and os.path.basename(tokens[0]) == "git":
+                    found.append(tokens)
+        return found
+
+
+    def _git_refuses_auto_maintenance(tokens, env):
+        """Whether a git command line turns BOTH switches off — by `-c` in its own
+        argv, or by git's environment form of the same thing.
+
+        Both switches, not one: `maintenance.auto` is Git >= 2.48 and `gc.auto` is
+        the older one AND the fallback a recent Git consults when the first is
+        absent, so a single switch holds on one version and not the other.
+
+        Both idioms, not one: the argv is what a call site writes, the environment
+        is what a chokepoint sets for every call site at once. Accepting only the
+        idiom in use here would refuse the other the day someone moves the guard.
+
+        env is None when the child inherits the parent's — that inherited
+        environment is the one that will decide, so it is what gets read.
+        """
+        flags = [tokens[i + 1] for i, a in enumerate(tokens[:-1]) if a == "-c"]
+        environ = os.environ if env is None else env
+        try:
+            count = int(environ.get("GIT_CONFIG_COUNT", "0") or "0")
+        except ValueError:
+            count = 0
+        from_env = {}
+        for i in range(count):
+            key = environ.get("GIT_CONFIG_KEY_%d" % i)
+            if key:
+                from_env[key] = environ.get("GIT_CONFIG_VALUE_%d" % i)
+        for key, value in _GIT_MAINTENANCE_OFF:
+            if "%s=%s" % (key, value) not in flags and from_env.get(key) != value:
+                return False
+        return True
+
+
     def _selftest():
         """GM_MODE=selftest — teste la moitie qui DECIDE, pas celle qui compare.
 
@@ -3430,6 +3495,46 @@ tool sync_harness:
         """
         failures, checked = [], [0]
         skipped_under_root = []
+
+        # A writing git command in a scratch repo detaches `git maintenance run
+        # --auto` (Git >= 2.48), which goes on writing under .git/objects after the
+        # command returned — while the fixture's temp dir is being removed.
+        #
+        # The switches are set HERE, once, in the environment every child git
+        # inherits, rather than at each call site: enumerating the call sites is
+        # what failed. Two sweeps read this file and both missed a helper defined
+        # four hundred lines below fixture_git, inside a block.
+        #
+        # And the audit below does not read the source either — it WATCHES what the
+        # selftest spawns. Popen is the hook because run, call, check_call and
+        # check_output all reach the kernel through it; hooking run alone would
+        # leave the other four unseen. os.system reaches neither and is refused
+        # outright rather than watched, so the door nobody guards fails closed.
+        _git_audit = {"seen": 0, "offenders": []}
+        _real_popen = subprocess.Popen
+        _real_system = os.system
+
+        class _AuditedPopen(_real_popen):
+            def __init__(self, args, *rest, **kw):
+                for tokens in _git_command_lines(args):
+                    _git_audit["seen"] += 1
+                    if not _git_refuses_auto_maintenance(tokens, kw.get("env")):
+                        _git_audit["offenders"].append(" ".join(tokens)[:120])
+                super().__init__(args, *rest, **kw)
+
+        def _refuse_system(command):
+            raise AssertionError(
+                "selftest: os.system(%r) bypasses the git audit — use subprocess" % command)
+
+        saved_git_env = {k: os.environ.get(k) for k in
+                         ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+                          "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1")}
+        for i, (key, value) in enumerate(_GIT_MAINTENANCE_OFF):
+            os.environ["GIT_CONFIG_KEY_%d" % i] = key
+            os.environ["GIT_CONFIG_VALUE_%d" % i] = value
+        os.environ["GIT_CONFIG_COUNT"] = str(len(_GIT_MAINTENANCE_OFF))
+        subprocess.Popen = _AuditedPopen
+        os.system = _refuse_system
 
         def check(name, got, want):
             checked[0] += 1
@@ -5208,6 +5313,22 @@ tool sync_harness:
                     os.environ["GM_SCRATCH"] = saved_scratch
         finally:
             g.update(saved)
+            subprocess.Popen = _real_popen
+            os.system = _real_system
+            for key, value in saved_git_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        # Judged on what ran, not on what the source says. A future helper that
+        # spawns git its own way is caught by having RUN, which is the only thing
+        # that found the one this replaces.
+        check("aucune commande git du selftest ne laisse la maintenance automatique detachee"
+              " (%d invocations vues)" % _git_audit["seen"],
+              _git_audit["offenders"], [])
+        check("le selftest lance bien des commandes git (l'audit a une prise)",
+              _git_audit["seen"] > 0, True)
 
         if failures:
             log("harnais : %d test(s) ECHOUENT" % len(failures))
