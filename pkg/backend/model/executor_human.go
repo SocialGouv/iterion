@@ -103,9 +103,43 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	}
 	genOpts.ExplicitSchema = jsonSchema
 
+	// Capture the last step's usage so a FAILED generation can still report
+	// what it burned. GenerateObjectDirect returns a bare nil on every one of
+	// its own failure paths, so without this the engine's booking for this
+	// seam — the one thing that puts an `interaction: llm` node's spend on
+	// max_cost_usd, the daily cap and a donor's ledger — was handed nothing
+	// and returned at its own zero guard. The three post-aggregate failures
+	// (an empty PartialJSON, an unmarshalable one, no tool_use block at all)
+	// are exactly the ones that come AFTER a whole answer was generated and
+	// billed, and they are the common ones on a stream that dies mid-answer.
+	//
+	// Composed, never assigned over: applyHooks above may already have wired
+	// OnStepFinish for the studio timeline, and ExecuteHumanLLMForInteraction
+	// reaches here through the same options.
+	var lastUsage Usage
+	priorStepFinish := genOpts.OnStepFinish
+	genOpts.OnStepFinish = func(step StepResult) {
+		lastUsage = step.Usage
+		if priorStepFinish != nil {
+			priorStepFinish(step)
+		}
+	}
+
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
-		return nil, fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		genErr := fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		if lastUsage.InputTokens <= 0 && lastUsage.OutputTokens <= 0 {
+			// Nothing observed — a failure before the stream aggregated. A
+			// zero row here would be a phantom, not a measurement.
+			return nil, genErr
+		}
+		// Beside the error, exactly as the delegate seams do. Through
+		// cost.Annotate like the success path below, which is what stamps
+		// `_cost_usd` as well as `_tokens` — the in/out split is still in
+		// hand here, and a total alone could not be priced.
+		spent := make(map[string]any)
+		cost.Annotate(spent, modelSpec, lastUsage.InputTokens, lastUsage.OutputTokens)
+		return spent, genErr
 	}
 
 	output := result.Object
@@ -129,7 +163,12 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 // question keys.
 //
 // Returns:
-//   - answers: LLM-generated answers for each question
+//   - answers: LLM-generated answers for each question — and, when err is
+//     non-nil, the failed generation's SPEND instead (a `_tokens`/`_cost_usd`
+//     map, nil when nothing was observed). The interaction LLM is a real,
+//     billed model call, and this is the last frame that still holds the
+//     figure; the callers read `answers` as answers only on success, and book
+//     it on failure.
 //   - needsHuman: true if the LLM decided to escalate (llm_or_human mode only)
 //   - err: any error from model execution
 func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
@@ -182,7 +221,11 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 
 	output, err := e.executeHumanLLM(ctx, node, input, syntheticSchema)
 	if err != nil {
-		return nil, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
+		// output is the spend map on this path, not answers — see the doc
+		// comment. Passing it up is what lets the engine book a failed
+		// auto-answer; dropping it here would waste the capture one frame
+		// short, which is the whole defect this seam exists to close.
+		return output, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
 	}
 
 	// Check if the LLM decided to escalate (llm_or_human mode).

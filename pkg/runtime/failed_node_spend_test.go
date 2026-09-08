@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+
 	"github.com/SocialGouv/iterion/pkg/clock"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -715,6 +717,156 @@ func TestFailedHumanLLMHalfBooksItsSpendBeforeThePause(t *testing.T) {
 	}
 	if r.Checkpoint.BudgetCostUSD != 1.80 {
 		t.Fatalf("the failed llm half's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
+// proseOnlyClient answers a STRUCTURED request with plain prose and no
+// tool_use block — the shape a model produces when it ignores the schema, and
+// one of the three post-aggregate failures of GenerateObjectDirect. The stream
+// completes and reports its usage first, so the tokens below are billed.
+type proseOnlyClient struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *proseOnlyClient) StreamResponse(context.Context, api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	ch := make(chan api.StreamEvent, 8)
+	go func() {
+		defer close(ch)
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 4_000}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}}
+		ch <- api.StreamEvent{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "I'd rather not answer in JSON."}}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 2_000}}
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+	return ch, nil
+}
+
+// The test above drives a runtime stub, and a stub can return whatever shape
+// the assertion wants. Production could not return that shape: executeHumanLLM
+// went through GenerateObjectDirect, which answers `nil, err` on every failure
+// path of its own — so the booking was handed nil, extractUsage(nil) gave
+// (0, 0), and the call returned at its own zero guard. The seam the branch
+// claimed to close was inert (prior review R1c7030).
+//
+// This drives the REAL executor against a client that streams a complete,
+// billed answer and then fails the structured parse, and reads the figure back
+// off the checkpoint. `_cost_usd` is asserted as well as `_tokens`: this path
+// annotates through cost.Annotate with the in/out split still in hand, which
+// is more than the delegate seams' `_tokens`-only stamp can manage.
+func TestFailedHumanLLMHalfBooksItsSpendInProduction(t *testing.T) {
+	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
+	wf.Budget = &ir.Budget{MaxTokens: 1_000_000}
+	// The stub executor cannot serve the entry agent here (a real executor is
+	// under test), so the human node is the entry.
+	wf.Entry = "review"
+
+	client := &proseOnlyClient{}
+	reg := model.NewRegistry()
+	// A PRICED spec, standing in for the provider's client: `_cost_usd` can
+	// only be asserted on a model the cost table knows, and pricing it is
+	// half of what this path does.
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return client, nil })
+	if n, ok := wf.Nodes["review"].(*ir.HumanNode); ok {
+		n.Model = "anthropic/claude-opus-5"
+	}
+	exec := model.NewClawExecutor(reg, wf, model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	// A non-empty input: the node is the entry here, and a generation with no
+	// user message is refused before the client is ever reached.
+	if err := eng.Run(context.Background(), "run-human-llm-production",
+		map[string]any{"summary": "complex change"}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected the human half to take over, got %v", err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("expected exactly one generation, got %d", client.calls)
+	}
+
+	r, err := st.LoadRun(context.Background(), "run-human-llm-production")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 6_000 {
+		t.Fatalf("the failed generation's tokens never reached the run: %d (0 means the seam is still inert)", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD <= 0 {
+		t.Fatalf("the failed generation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
+// askingBackend parks on a question the way a delegate's ask_user does, with
+// no spend of its own to report — so the only figure in the run below is the
+// interaction LLM's, which is exactly what is being measured.
+type askingBackend struct{ calls int }
+
+func (b *askingBackend) Execute(context.Context, delegate.Task) (delegate.Result, error) {
+	b.calls++
+	return delegate.Result{}, &model.ErrNeedsInteraction{
+		NodeID:    "worker",
+		Questions: map[string]any{delegate.AskUserQuestionKey: "which database?"},
+		SessionID: "sess-ask",
+		Backend:   "metered_stub",
+	}
+}
+
+// The same seam once more, from the OTHER surface that uses it: `interaction:
+// llm` on an agent node auto-answers the delegate's ask_user through the very
+// generation just fixed. Neither of the two engine call sites booked at all —
+// the branch wired eight sites and missed these — so a failed auto-answer, a
+// real billed call, left no trace on the run at all.
+func TestFailedInteractionLLMBooksItsSpend(t *testing.T) {
+	for _, mode := range []ir.InteractionMode{ir.InteractionLLM, ir.InteractionLLMOrHuman} {
+		t.Run(mode.String(), func(t *testing.T) {
+			wf := interactionWorkflow(mode)
+			wf.Budget = &ir.Budget{MaxTokens: 1_000_000}
+			worker := wf.Nodes["worker"].(*ir.AgentNode)
+			worker.Backend = "metered_stub"
+			worker.Model = "anthropic/claude-opus-5"
+			worker.InteractionModel = "anthropic/claude-opus-5"
+
+			client := &proseOnlyClient{}
+			modelReg := model.NewRegistry()
+			modelReg.Register("anthropic", func(string) (api.APIClient, error) { return client, nil })
+			delReg := delegate.NewRegistry()
+			delReg.Register("metered_stub", &askingBackend{})
+			exec := model.NewClawExecutor(modelReg, wf,
+				model.WithBackendRegistry(delReg),
+				model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+			)
+
+			st := tmpStore(t)
+			eng := New(wf, st, exec)
+			runID := "run-interaction-llm-spend"
+			if err := eng.Run(context.Background(), runID, map[string]any{"task": "pick one"}); err == nil {
+				t.Fatal("the run was supposed to fail on the interaction LLM")
+			}
+			if client.calls != 1 {
+				t.Fatalf("expected exactly one auto-answer generation, got %d", client.calls)
+			}
+
+			r, err := st.LoadRun(context.Background(), runID)
+			if err != nil {
+				t.Fatalf("load run: %v", err)
+			}
+			if r.Checkpoint == nil {
+				t.Fatal("no checkpoint to read the budget from")
+			}
+			if r.Checkpoint.BudgetTokensUsed != 6_000 {
+				t.Fatalf("the failed auto-answer's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+			}
+			if r.Checkpoint.BudgetCostUSD <= 0 {
+				t.Fatalf("the failed auto-answer's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+			}
+		})
 	}
 }
 
