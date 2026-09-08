@@ -16,7 +16,11 @@ per finding to the iterion native kanban board (labelled `severity:*`,
 
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
-diff_precheck -> topology (condition)
+diff_precheck -> tier_expand (compute)   resolve review_tier into the
+                                         three sentinel-defaulted vars
+tier_expand -> topology (condition)
+  ├─ mono, glance tier -> reviewer_claude_glance   claude_code + claude-sonnet-5
+  │                    /  reviewer_gpt_glance      claw + openai/gpt-5.4-mini
   ├─ mono/claude -> reviewer_claude   claude_code, read-only
   ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-5.5, read-only tools
   └─ dual        -> fan (fan_out_all) -> both reviewers
@@ -45,9 +49,10 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `base_ref` | `main` | Ref to diff against (`merge-base(base_ref, HEAD)` vs working tree). `HEAD` = uncommitted only. |
 | `scope_notes` | `""` | Free-text steering passed to the selected reviewer(s). |
 | `prior_pushback` | `""` | What a fixer already did with an EARLIER review of this same PR, per finding id: fixed (with the commit), contested (with its argument), or deferred. Stamped at launch by the engine when such a run exists; empty is the normal case. This is what keeps a review↔fix pair converging instead of oscillating — a contested finding returns only against NEW evidence. It is **not** an instruction to drop it: a wrong argument must be answered, and a finding that is still real still counts against the gate. |
-| `severity_threshold` | `low` | Drop findings below this (low < medium < high < critical). |
-| `max_findings` | `40` | Cap on issues/rows (highest severity first); a capped run says so. |
-| `post_to_board` | `true` | File findings on the native board; `false` = report only. |
+| `review_tier` | `guard` | Depth of the review: `glance`, `guard` or `audit`. A studio launch primary — it resolves the three sentinel-defaulted vars below, and `audit` also forces the dual topology. |
+| `severity_threshold` | `auto` | Drop findings below this floor (low < medium < high < critical). `auto` resolves from `review_tier`: `high` (glance) / `medium` (guard, the default) / `low` (audit). An explicit value wins over the tier. |
+| `max_findings` | `0` (auto) | Cap on issues/rows (highest severity first); a capped run says so. `0` resolves from `review_tier`: 5 (glance) / 15 (guard, the default) / 40 (audit). Any positive value is an explicit override. |
+| `post_to_board` | `auto` | File findings on the native board. `auto` resolves from `review_tier`: `false` on glance (a quick signal has no business filing board issues), `true` on guard/audit. Pass `"true"`/`"false"` to force. |
 | `report_path` | `.review-pr/findings.md` | Markdown report destination (gitignorable; not under `.iterion/`). |
 | `pr_url` | `""` | When set, ALSO publish the review onto this PR (see below). Empty = board + report only. |
 | `pr_review_mode` | `inline` | How the PR review is posted: `inline` (per-line comments) or `summary` (one comment). |
