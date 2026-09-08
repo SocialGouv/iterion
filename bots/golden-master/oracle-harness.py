@@ -3203,6 +3203,20 @@ def _selftest():
         if got != want:
             failures.append("%s\n    attendu : %r\n    obtenu  : %r" % (name, want, got))
 
+    def fixture_git(repo, *args):
+        # A failed add/commit/reset used to be ignored: the verdict then read
+        # an old tree and acted[0] hid Git's diagnostic behind an IndexError
+        # (#876). Fixture setup must succeed before any rule can be judged.
+        # These disposable repos also must not spawn detached maintenance
+        # while the next scenario resets them (Git >= 2.48).
+        cmd = shlex.join(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                          "-c", "user.email=t@t", "-c", "user.name=t"] + list(args))
+        code, out = run(cmd, repo, timeout=60)
+        if code != 0:
+            raise SystemExit("selftest fixture git failed in %s: %s (exit %s)\n%s"
+                             % (repo, cmd, code, out))
+        return out.strip()
+
     g = globals()
     saved = {k: g[k] for k in ("apply_mutant", "revert_mutant", "tree_fingerprint",
                                "data_fingerprint", "app_restart", "capture", "control_ids")}
@@ -3636,9 +3650,8 @@ def _selftest():
               [True, False])
         repo2 = os.path.join(sroot, "committed")
         gmd2 = mk_holdout(repo2)
-        for cmd in ("git init -q", "git add -A",
-                    "git -c user.email=t@t -c user.name=t commit -qm seed"):
-            run(cmd, repo2, timeout=60)
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(repo2, *args)
         sealed2 = os.path.join(sroot, "sealed2")
         check("jeu committe -> laisse en place, rien de scelle",
               [seal_holdout(gmd2, sealed2),
@@ -3678,9 +3691,8 @@ def _selftest():
         gmd3 = mk_holdout(repo3)
         with open(os.path.join(gmd3, "config.json"), "w", encoding="utf-8") as f:
             f.write('{"seal_committed": true}')
-        for cmd in ("git init -q", "git add -A",
-                    "git -c user.email=t@t -c user.name=t commit -qm seed"):
-            run(cmd, repo3, timeout=60)
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(repo3, *args)
         check("opt-in par config.json -> le jeu committe se scelle",
               [seal_holdout(gmd3, os.path.join(sroot, "sealed3")),
                os.path.isdir(os.path.join(gmd3, "mutants", "holdout", "t01"))],
@@ -3736,10 +3748,9 @@ def _selftest():
             json.dump({"entries": [base_entry]}, f)
         with open(os.path.join(xgm, "refs", "1.txt"), "w", encoding="utf-8") as f:
             f.write("ref-1\n")
-        for cmd in ("git init -q", "git add -A",
-                    "git -c user.email=t@t -c user.name=t commit -qm seed"):
-            run(cmd, xroot, timeout=60)
-        xbase = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(xroot, *args)
+        xbase = fixture_git(xroot, "rev-parse", "HEAD")
 
         def xledger(*blks):
             with open(os.path.join(xgm, "EXTENSIONS.md"), "w", encoding="utf-8") as f:
@@ -3747,9 +3758,8 @@ def _selftest():
                                   for b in blks))
 
         def xcommit():
-            run("git add -A", xroot, timeout=60)
-            run("git -c user.email=t@t -c user.name=t commit -qm x",
-                xroot, timeout=60)
+            fixture_git(xroot, "add", "-A")
+            fixture_git(xroot, "commit", "-qm", "x")
 
         def xrequest(req):
             """The lot files its request and commits. A fixture that stages a
@@ -3760,8 +3770,16 @@ def _selftest():
             xcommit()
 
         def xreset():
-            run("git reset -q --hard %s" % xbase, xroot, timeout=60)
-            run("git clean -qfd", xroot, timeout=60)
+            fixture_git(xroot, "reset", "-q", "--hard", xbase)
+            fixture_git(xroot, "clean", "-qfd")
+
+        def xverdict(base):
+            verdict = extension_verdict(xroot, ".golden-master", base)
+            if len(verdict.get("acted", [])) != 1:
+                raise SystemExit("selftest extension fixture expected one acted entry "
+                                 "in %s at base %s; got %s"
+                                 % (xroot, base, json.dumps(verdict, sort_keys=True)))
+            return verdict
 
         req2 = ('{"id": "E-1", "lot": "L", "type": "add-file",'
                 ' "paths": [".golden-master/refs/2.txt"]}')
@@ -3786,7 +3804,7 @@ def _selftest():
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2\n")
         xcommit()
-        v = extension_verdict(xroot, ".golden-master", xbase)
+        v = xverdict(xbase)
         check("add-file legitime -> ok, chemin exempte",
               [v["acted"][0]["ok"], v["ok_paths"]],
               [True, [".golden-master/refs/2.txt"]])
@@ -3794,11 +3812,11 @@ def _selftest():
         # Un acte deja present A LA BASE n'est pas re-juge : ses ajouts sont
         # les references de cette base, et les relire comme des reecritures
         # refuserait tout lot parti d'une base qui contient un acte certifie.
-        xbase_acted = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        xbase_acted = fixture_git(xroot, "rev-parse", "HEAD")
         with open(os.path.join(xroot, "later.txt"), "w", encoding="utf-8") as f:
             f.write("a lot landed after the act\n")
         xcommit()
-        v_after = extension_verdict(xroot, ".golden-master", xbase_acted)
+        v_after = xverdict(xbase_acted)
         check("acte present a la base -> ok, acted_at_base, aucun probleme",
               [v_after["acted"][0]["ok"], v_after["acted"][0].get("acted_at_base"),
                v_after["acted"][0]["problems"], v_after["problems"]],
@@ -3808,7 +3826,7 @@ def _selftest():
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2-reecrite-par-un-lot\n")
         xcommit()
-        v_touch = extension_verdict(xroot, ".golden-master", xbase_acted)
+        v_touch = xverdict(xbase_acted)
         check("acte a la base + ref reecrite -> le certificat n'exempte rien",
               [v_touch["acted"][0]["ok"], v_touch["ok_paths"]], [True, []])
 
@@ -3820,7 +3838,7 @@ def _selftest():
             f.write("ref-1-reecrite\n")
         xcommit()
         check("reecriture deguisee en ajout -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Suppression enregistree : le chemin manque a HEAD (le cote delete
         # d'un renommage perd exactement ici).
@@ -3828,7 +3846,7 @@ def _selftest():
         xledger(("request", req2), ("act", act2))
         xcommit()
         check("chemin enregistre absent a HEAD (delete/rename) -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Entree de corpus legitime, revendiquee par la demande.
         xreset()
@@ -3843,7 +3861,7 @@ def _selftest():
             json.dump({"entries": [base_entry, new_entry]}, f)
         xcommit()
         check("add-entry legitime et revendiquee -> ok",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], True)
+              xverdict(xbase)["acted"][0]["ok"], True)
 
         # La meme demande dans l'orthographe du registre de re-baseline
         # (`expected_paths` + `entries` en identifiants) : lue au meme point,
@@ -3863,7 +3881,7 @@ def _selftest():
             f.write("ref-2\n")
         xcommit()
         check("demande ecrite comme le registre de re-baseline l'enseigne -> ok",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], True)
+              xverdict(xbase)["acted"][0]["ok"], True)
 
         # Retouche d'une entree existante sous couvert d'ajout.
         xreset()
@@ -3875,7 +3893,7 @@ def _selftest():
             json.dump({"entries": [touched, new_entry]}, f)
         xcommit()
         check("entree existante retouchee -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Collision : la « nouvelle » entree observe le meme tuple qu'une
         # existante — deux references pour une observation.
@@ -3888,7 +3906,7 @@ def _selftest():
             json.dump({"entries": [base_entry, collider]}, f)
         xcommit()
         check("collision de tuple d'observation -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Entree passee en fraude : ajoutee au corpus, revendiquee par
         # personne.
@@ -3901,7 +3919,7 @@ def _selftest():
             json.dump({"entries": [base_entry, new_entry, smuggled]}, f)
         xcommit()
         check("entree non revendiquee a cote d'une actee -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Chemin hors surface : le canon est le territoire du juge.
         xreset()
@@ -3913,7 +3931,7 @@ def _selftest():
             f.write("# neuf\n")
         xcommit()
         check("chemin hors refs/+corpus (canon) -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Registre reecrit : un registre COMMITTE a la base n'est plus un
         # prefixe de HEAD. (Un registre ne EXISTANT PAS a la base rend ce
@@ -3922,12 +3940,12 @@ def _selftest():
         xreset()
         xledger(("request", req2))
         xcommit()
-        xbase2 = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        xbase2 = fixture_git(xroot, "rev-parse", "HEAD")
         xledger(("act", act2))  # la demande a disparu : trail edite
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2\n")
         xcommit()
-        v = extension_verdict(xroot, ".golden-master", xbase2)
+        v = xverdict(xbase2)
         check("registre committe puis reecrit -> append_only faux et acte refuse",
               [v["ledger_append_only"], v["acted"][0]["ok"]],
               [False, False])
@@ -3945,7 +3963,7 @@ def _selftest():
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2\n")
         xcommit()
-        v_self = extension_verdict(xroot, ".golden-master", xbase)
+        v_self = xverdict(xbase)
         check("demande et acte dans UN commit (le lot s'auto-sert) -> refuse",
               [v_self["acted"][0]["ok"], v_self["ok_paths"]], [False, []])
 
@@ -3960,7 +3978,7 @@ def _selftest():
         check("acte n'enregistrant QUE le registre -> la demande RESTE pendante",
               [p["id"] for p in pending_extensions(xgm)], ["E-1"])
         check("acte n'enregistrant QUE le registre -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"],
+              xverdict(xbase)["acted"][0]["ok"],
               False)
 
         # Un scalaire la ou le juge itere : le bloc devient refusable, il ne
@@ -3972,7 +3990,7 @@ def _selftest():
         xcommit()
         check("recorded_paths scalaire -> la demande RESTE pendante, pas de crash",
               [p["id"] for p in pending_extensions(xgm)], ["E-1"])
-        v_scalar = extension_verdict(xroot, ".golden-master", xbase)
+        v_scalar = xverdict(xbase)
         check("recorded_paths scalaire -> verdict rendu et acte refuse",
               ["error" not in v_scalar, v_scalar["acted"][0]["ok"]], [True, False])
 
@@ -3986,7 +4004,7 @@ def _selftest():
               _entry_observation_key(a1) == _entry_observation_key(a2), False)
 
         check("acte sans demande -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # 8f. Les refus arraches par la revue adversariale — chaque
         #     deguisement executee contre le verdict doit rester rouge.
@@ -4008,7 +4026,7 @@ def _selftest():
         os.symlink("1.txt", os.path.join(xgm, "refs", "2.txt"))
         xcommit()
         check("symlink sous refs/ -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Un chemin refs/ enregistre mais non declare par la demande.
         xreset()
@@ -4019,7 +4037,7 @@ def _selftest():
             f.write("ref-3\n")
         xcommit()
         check("ref ajoutee non declaree par la demande -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
         xreset()
@@ -4031,7 +4049,7 @@ def _selftest():
             json.dump({"entries": [twin, base_entry]}, f)
         xcommit()
         check("id duplique dans le corpus -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Une cle cosmetique ne neutralise pas la collision d'observation.
         xreset()
@@ -4043,7 +4061,7 @@ def _selftest():
             json.dump({"entries": [base_entry, cosmetic]}, f)
         xcommit()
         check("collision masquee par une cle cosmetique -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Une base irresoluble ne tamponne rien : elle refuse.
         check("GM_BASE irresoluble -> erreur, pas un laissez-passer",
@@ -4058,7 +4076,7 @@ def _selftest():
             f.write('{"entries": {"E1": {}}}')
         xcommit()
         check("corpus malforme -> refuse, pas une traceback",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # 8g. Les refus du tour de CONSOLIDATION — la classe id-derive-un-
         #     chemin et la cle sensible a la presence, plus le flux add-entry
@@ -4075,7 +4093,7 @@ def _selftest():
             json.dump({"entries": [base_entry, traversal]}, f)
         xcommit()
         check("id en traversee (../refs/1) -> refuse",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # La PRESENCE d'un champ allowliste vide ne scinde pas la cle.
         xreset()
@@ -4087,7 +4105,7 @@ def _selftest():
             json.dump({"entries": [base_entry, present_twin]}, f)
         xcommit()
         check("collision masquee par un champ allowliste VIDE -> refusee",
-              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+              xverdict(xbase)["acted"][0]["ok"], False)
 
         # Le flux add-entry LEGITIME : l'entree revendiquee revendique sa
         # reference derivee — corpus.json ET refs/2.txt exemptes, sans
@@ -4104,7 +4122,7 @@ def _selftest():
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2\n")
         xcommit()
-        v = extension_verdict(xroot, ".golden-master", xbase)
+        v = xverdict(xbase)
         check("add-entry avec sa ref derivee, sans `paths` -> ok, les deux exemptes",
               [v["acted"][0]["ok"], v["ok_paths"]],
               [True, [".golden-master/corpus.json", ".golden-master/refs/2.txt"]])
