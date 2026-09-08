@@ -169,7 +169,7 @@ func awaitRunCompletion(t *testing.T, done <-chan struct{}, what string) {
 //
 // A child that is DORMANT in another status — terminal, or paused awaiting an
 // operator — fails the test on the spot: neither can reach `want` without help
-// nobody is coming to give, so waiting on is waiting for the ceiling. That
+// nobody is coming to give, so waiting on it is waiting for the ceiling. That
 // fail-fast assumes the caller's fixture: exactly ONE subbot, GATED (a release
 // file, a human gate, a long tool) so it cannot legitimately finish before it
 // is observed. A caller that spawns several children, or lets one complete on
