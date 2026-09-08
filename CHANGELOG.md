@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.121.2](https://github.com/SocialGouv/iterion/compare/v3.121.1...v3.121.2) (2026-09-08)
+
+### Bug Fixes
+
+* **server:** the reads that DESCRIBE a bot resolve the tier that runs it ([#946](https://github.com/SocialGouv/iterion/issues/946)) ([#971](https://github.com/SocialGouv/iterion/issues/971)) ([8608ae5](https://github.com/SocialGouv/iterion/commit/8608ae5c13429af7bd4bdaa05a0b9185c0e04e21)), references [#871](https://github.com/SocialGouv/iterion/issues/871)
+
+    <details><summary>why</summary>
+
+    #871 made every launch surface resolve `team -> platform -> baked`, so a team's fork now runs on its board cards, triggers, schedules and webhooks. The reads that describe those launches stayed on platform-over-baked, so the same delivery ran the fork and was described by the origin — with no diagnostic, because both answers are well-formed.
+
+    </details>
+
 ## [3.121.1](https://github.com/SocialGouv/iterion/compare/v3.121.0...v3.121.1) (2026-09-08)
 
 ### Bug Fixes
