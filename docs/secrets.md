@@ -295,7 +295,9 @@ secrets:
 ### Storage, master key, scope
 
 - **Files** — machine-global `~/.iterion/secrets.json` plus an optional
-  per-project `<store-dir>/.iterion/secrets.json`. Both are AES-256-GCM sealed
+  per-project `<store-dir>/secrets.json`, `<store-dir>` being the
+  resolved run store: `<repo>/.iterion/secrets.json` for a repo-local
+  store, `~/.iterion/projects/<key>/secrets.json` otherwise. Both are AES-256-GCM sealed
   (the value is never on disk in clear) and written `0600`. The **project layer
   overrides the global by name** (precedence: project > global).
 - **Master key** — 32 bytes held in the **OS keychain** (macOS Keychain /

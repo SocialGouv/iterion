@@ -24,7 +24,10 @@ override that shadows the global by name:
 
 ```
 ~/.iterion/skills/<name>/SKILL.md          # global (default)
-<store-dir>/.iterion/skills/<name>/SKILL.md   # per-project override (--project)
+<store-dir>/skills/<name>/SKILL.md         # per-project override (--project);
+                                           # <store-dir> is the resolved run
+                                           # store — <repo>/.iterion, or
+                                           # ~/.iterion/projects/<key>
 ```
 
 A flat `<name>.md` form is also read (as produced by an imported pack); `add`

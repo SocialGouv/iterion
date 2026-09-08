@@ -127,7 +127,9 @@ reads one (stdin when `--in` is omitted) and merges under `--strategy`
 The canonical consumer is the **session-continuity** skill shipped in
 the `whats-next` bundle
 ([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md)).
-It exposes three tools that every catalog bot can use:
+It exposes three tools — available on `backend: "claw"` **only**. The
+compiler emits **C047** when a `memory:` block sits on any other backend,
+and the tools are simply absent there:
 
 - `memory_read` — read a document from the configured space.
 - `memory_write` — write or overwrite a document.

@@ -79,7 +79,7 @@ name: my-bot              # human-friendly identifier (display only)
 version: 0.1.0            # free-form, semver recommended
 description: One-liner.
 author: Your Name <you@example.com>
-schema_version: 1         # required; iterion refuses unknown versions
+schema_version: 1         # optional (defaults to 1); iterion refuses any other value
 
 # Optional: map workflow attachment names → files inside attachments/
 attachments:
