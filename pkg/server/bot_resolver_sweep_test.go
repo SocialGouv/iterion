@@ -11,8 +11,8 @@ import (
 // The bot-resolution authority is bot_resolver.go: every pkg/server site
 // that turns a bot id into source, a manifest, or catalog metadata must go
 // through it, or a platform override is silently ignored on that surface
-// (grep-la-classe: the class is "sites that select a bot"). These two
-// static sweeps keep the class closed as the package grows.
+// (grep-la-classe: the class is "sites that select a bot"). These static
+// sweeps keep the class closed as the package grows.
 
 // resolverSweepAllowed lists the files that may call the raw botregistry
 // discovery/lookup functions, with the reason.
@@ -54,6 +54,7 @@ func TestBotResolutionSweep_NoRawRegistryReads(t *testing.T) {
 // to behave like the fifth.
 var teamlessResolveAllowed = map[string]string{
 	"resume_source.go": "the no-persisted-origin branch: a run whose BotSourceTenant is empty did NOT launch from a team row (the team branch above re-resolves that row by its own tenant)",
+	"board_comment.go": "the native board is a single local store with no tenancy — the launch its comment dispatcher triggers resolves platform-over-baked too",
 }
 
 func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
@@ -65,7 +66,7 @@ func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
 	// Only a LITERAL "" is decidable statically; a variable that happens to
 	// be empty at run time is the caller's own contract to keep.
 	teamless := regexp.MustCompile(
-		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolveRunRetryPolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam)\([^,]+,\s*""`)
+		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolveRunRetryPolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam|effectiveEntriesFor(?:Team)?|botExistsForTeam|botConfigShareSpec|boardRouteForLabel|cmdDiscoveryFor|entryOriginFor|teamHandoffProducers|forgeBot(?:Forge|Invocations))\([^,]+,\s*""`)
 	sweepServerFiles(t, func(name, body string) {
 		if !teamless.MatchString(body) {
 			return
@@ -74,6 +75,41 @@ func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
 			return
 		}
 		t.Errorf("%s resolves a bot with a hardcoded empty team — pass the team the launch is FOR (the card's, the subscription's, the schedule's, the webhook's) or add an allowlist entry saying why this surface has none", name)
+	})
+}
+
+// tenantFreeMetadataAllowed lists the files that may call a tenant-FREE
+// metadata form, with the reason. Each of these forms answers for the
+// platform + baked tiers only; a lane that holds a tenant and calls one
+// describes a bundle the launch will not run — silently (#946). The
+// team-aware counterpart of each is named in bot_resolver.go's contract.
+var tenantFreeMetadataAllowed = map[string]string{
+	"bot_resolver.go":            "the authority itself: these ARE the platform + baked floor every team-aware form falls through to",
+	"bots_routes.go":             "the /bots read paths consult tenantBotEntries first and refuseStoredBotEdit fences the two FS-catalog write paths; entryOrigin is the platform/catalog half of entryOriginFor",
+	"bots_create.go":             "confirms the scaffold it just WROTE to the filesystem is discoverable — a team row of the same name would shadow the file under test",
+	"config_shares_routes.go":    "botManifest is botManifestFor's platform + baked fall-through",
+	"forge_gate_pause_notice.go": "effectiveFindByName is teamBotManifest's fall-through, reached only when the run records no team row",
+	"webhooks_handoff.go":        "the deployment-wide producer FLOOR; teamHandoffProducers is the team half, and the scan picks per run by Run.BotSourceTenant",
+	// The pipelines control center launches by FILESYSTEM PATH
+	// (entry.MainFile()) instead of through resolveBotSource, so a stored
+	// bundle has no path to launch from and its admission check must match.
+	// Making the check tenant-aware alone would create cards that can never
+	// launch; both halves move together, in the #871 launch-surface class.
+	"pipeline_boards_tasks.go": "admission check for a lane whose launch is itself FS-path-based (tracked with the launch half)",
+	"pipeline_admission.go":    "same lane: launchTicketNow launches entry.MainFile(), not a resolved bundle",
+}
+
+func TestBotResolutionSweep_TenantFreeMetadataIsDeclared(t *testing.T) {
+	tenantFree := regexp.MustCompile(
+		`s\.(?:effectiveEntries\(\)|effectiveEntriesWithSchema\(\)|effectiveFindByName\(|botExists\(|botManifest\(|entryOrigin\(|findBot\()`)
+	sweepServerFiles(t, func(name, body string) {
+		if !tenantFree.MatchString(body) {
+			return
+		}
+		if _, ok := tenantFreeMetadataAllowed[name]; ok {
+			return
+		}
+		t.Errorf("%s reads bot metadata through a tenant-FREE form — a lane that knows its team reads the tier that will SERVE the launch (effectiveEntriesForTeam / effectiveFindByNameForTeam / botManifestFor / botExistsForTeam / entryOriginFor), or add an allowlist entry saying why this surface has no tenant", name)
 	})
 }
 

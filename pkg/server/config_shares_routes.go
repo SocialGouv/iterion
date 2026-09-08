@@ -118,8 +118,13 @@ func (s *Server) botManifest(botID string) *bundle.Manifest {
 // bot without a discoverable surface mints with explicit operator-supplied
 // paths — the block is a guard-rail + convenience for the common case, not the
 // trust boundary against the operator.
-func (s *Server) botConfigShareSpec(botID string) *bundle.ConfigShareSpec {
-	if m := s.botManifest(botID); m != nil {
+//
+// Read from teamID's own tier first: the share is minted FOR that team and the
+// bot it names is the bundle that team runs, so a fork's config file and
+// editable paths are the ones a share may be derived from. A share derived
+// from the origin pins paths into a file the running bundle never reads.
+func (s *Server) botConfigShareSpec(ctx context.Context, teamID, botID string) *bundle.ConfigShareSpec {
+	if m := s.botManifestFor(ctx, teamID, botID); m != nil {
 		return m.ConfigShare
 	}
 	return nil
@@ -160,7 +165,7 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 	allowed := req.AllowedPaths
 	visible := req.VisiblePaths
 	derivedFromSpec := false
-	if spec := s.botConfigShareSpec(req.BotID); spec != nil {
+	if spec := s.botConfigShareSpec(r.Context(), teamID, req.BotID); spec != nil {
 		a, v, err := configshare.DeriveGrant(spec.EditablePaths, spec.VisiblePaths, req.Category, req.EditableFields...)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())

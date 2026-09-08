@@ -81,7 +81,7 @@ func (f *fakeAdmin) ListHooks(_ context.Context, repo string) ([]HookHandle, err
 
 // --- fixtures ---
 
-func testBotLookup(botID string) (*bundle.ForgeRequirements, error) {
+func testBotLookup(_ context.Context, _, botID string) (*bundle.ForgeRequirements, error) {
 	switch botID {
 	case "review-pr":
 		return &bundle.ForgeRequirements{
@@ -657,7 +657,7 @@ func TestSyncSchedules_PreservesOperatorTuning(t *testing.T) {
 	ctx := context.Background()
 	sched := cloudsched.NewMemoryStore()
 	o.Schedules = sched
-	o.Invocations = func(botID string) ([]bundle.Invocation, error) {
+	o.Invocations = func(_ context.Context, _, botID string) ([]bundle.Invocation, error) {
 		if botID == "review-pr" {
 			return []bundle.Invocation{{
 				Kind:     bundle.InvocationKindSchedule,
