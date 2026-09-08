@@ -1,5 +1,70 @@
 # Billy — branch-improvement validation
 
+## 2026-09-08 — #964: quota stop after useful fixes, bank delivered locally
+
+- Status: **banked commits recovered and locally validated**. The campaign
+  did not reach its ledger or delivery gate, so this is not a successful
+  end-to-end Billy run.
+- Method: `/billy` on our PR #964 at 11:26:52Z, after Revi's medium finding
+  `R565a2f`. Run `01a080c5-585f-7574-8394-bb28803d6f24` completed planning,
+  peer review and revision, then entered campaign at 12:06:51Z. The PR was
+  removed from the merge queue while the fixer worked; the interactive owner
+  made no concurrent edits to its branch.
+- Result: the campaign reached the Claude session limit at 12:43:31Z and
+  stopped as `failed_resumable / USAGE_LIMIT_BLOCKED`, with `retry_armed` for
+  the 15:00Z reset. That reset was after its advertised working window. The
+  owner cancelled the parked run to disarm the retry, verified `cancelled`
+  with no running execution or continuation, then recovered its final bank.
+  No campaign was relaunched.
+- Recovery: `iterion/run-01a080c5-585f-7574-8394-bb28803d6f24` at
+  `e9b7e0576c9e7d1c9ab16ef9d3c51301c9666ed6` held nine commits, preserved by
+  fast-forward. `0f9c8c0df` adds settling; `fd59f26d9` bounds the server join;
+  `c4393c6f3` preserves the suite exit code; `f913b4ea8` groups imports;
+  `0d82611d9` records the audit; `5db295eec` narrows the fixture ownership
+  check; `cd143ff62` fixes final forgiveness accounting; `2a9c459fd` signals
+  late descendants at the reclaim deadline; `e9b7e0576` reflows the audit.
+- Finding ledger: **R565a2f fixed**. A child gets a 500 ms settle window before
+  a leak verdict, keyed by PID and process start time. True survivors still
+  fail the suite and are killed through verified owned process handles. The
+  server fixture cancels its process group and applies a ten-second WaitDelay
+  for inherited output pipes. The final timeout sweep remains best effort:
+  it fails the suite rather than claiming that every descendant was joined.
+- Live steering: checkpoint review identified an interleaving the campaign
+  had missed: a child can be seen alive and reaped in the same scan, then
+  disappear through ECHILD before its forgiveness is counted. A `runs send`
+  message at 12:34:29Z was consumed at 12:35:48Z. The campaign confirmed and
+  fixed it. Independent local falsification used Go overlays to delay the
+  per-PID reap by 1.1 seconds: the real settling-child fixture passed, then
+  failed when only the ECHILD accounting call was removed. No checked-out
+  source was modified by those canaries.
+- Validation after recovery: full Devbox `task check` passed. Complete race
+  suites passed for proctest, dispatcher, runview, runner, runtime, CLI and
+  E2E, with only the previously reproduced unrelated ordering test from #960
+  excluded from that race invocation. The non-race full suite retained it.
+  The proctest subprocess cases still cover a genuine surviving orphan,
+  settling exit, clean success and preservation of an existing failure code.
+- Value: real fixes for a false leak verdict and an unbounded inherited-pipe
+  join, plus a useful interaction between checkpoint review and live steering.
+  The bank saved the work when quota prevented delivery; the owner supplied
+  the missing final validation and ledger. Revi and CI still need to judge
+  the published head before merge-queue entry.
+- Frictions and boundaries: the final quota denial followed soft usage events
+  reporting `stopped=false`, including zero-percent readings just before the
+  denial; those events did not establish remaining capacity. The remaining
+  Git-maintenance gap in fixture repository config is tracked separately in
+  #974 after verification against main. No shared infrastructure, historical
+  orphan, other session's branch, or operator Git configuration was changed.
+- Independent review of the delivered bank found `Race656`: a missing Linux
+  child-scan/subreaper capability could fail or skip a whole package suite.
+  The owner completed this bounded follow-up after the quota stop, checking
+  first that no fixer was active on this PR. Startup now probes the scanner
+  before enabling adoption, logs unavailability, and runs the suite normally;
+  a post-activation scan failure still fails. A red-first capability-boundary
+  regression covers both missing capabilities, exactly-once suite execution,
+  preservation of success/failure results and later hard scan errors. The
+  original process-group comment was also corrected: it is not a pidfd-backed
+  group signal and does not prove PID reuse impossible.
+
 ## The delivery tail's contract (bot 1.7.0)
 
 Three properties `push_back_tool` and `publish_verdict` now hold, in the order
@@ -27,6 +92,54 @@ real git repositories (`bots/push_back_banked_branch_test.go`).
 - **"Nothing to push" names what it compared.** The no-op reason carries both
   revisions (HEAD and `origin/<branch>`), so a claim that contradicts the
   campaign's own commit count is falsifiable instead of merely surprising.
+
+## 2026-09-08 — #961: orphaned campaign recovered from its workspace checkpoint
+
+- Status: **useful commits recovered and validated locally**; the bot did not
+  reach its delivery ledger or final gate. This is not a successful end-to-end
+  Billy run.
+- Method: `/billy` on our PR #961 at 11:26:44Z, after Revi's medium finding
+  `R3d8dcc`. Run `01a080c5-3bf3-7657-a24f-d9a24d854cc4` completed planning,
+  peer review and revision, then entered campaign at 11:52:48Z. The PR was
+  dequeued while the fixer worked; the interactive session did not edit its
+  branch during that time.
+- Result: the runner lost its connection to the Kubernetes API at 12:05:43Z;
+  delegate retries did not restore the campaign. The last persisted checkpoint
+  event was at 12:08:35Z. Run inspection subsequently reported
+  `failed_resumable / PROCESS_ORPHANED`, continuation `final`, with no active
+  execution or scheduled retry. We did not relaunch the campaign.
+- Recovery: `final_branch` and `final_commit` were null, and the commit endpoint
+  said `available=false`, `reason=no_baseline`. Nevertheless, the checkpoint ref
+  `iterion/run-01a080c5-3bf3-7657-a24f-d9a24d854cc4-checkpoint` existed at
+  `4e16f625d802e5a1353bbd7f4b5c7e86e52c7766`. Fetching it recovered three
+  commits on top of the PR head, which were fast-forwarded locally:
+  `bf9f8cac4` caps one operation rather than consuming the package timeout;
+  `e2a91068d` bounds service teardown; `4e16f625d` records the race-oracle
+  falsification under synctest. Local follow-up tightened the helper's edge
+  cases, reports teardown timeout explicitly, and aligns the audit wording.
+- Finding ledger: **R3d8dcc fixed**. A real-process wait now takes the smaller
+  of a three-minute operation ceiling and the remaining harness time minus
+  30 seconds. Explicit `-timeout=0` remains unlimited. Service cleanup has its
+  own 30-second context. The callerless old `waitBudget` helper was removed.
+- Validation after recovery: full Devbox `task check` passed; full runview and
+  runner suites passed under `-race`. Independent Go-overlay canaries both
+  failed as intended: restoring the old package-wide deadline broke the bound
+  tests, and removing the retired-epoch guard produced `DATA RACE` in
+  `TestFanOutAbandonedBranchDoesNotRaceRunState`. These overlays did not alter
+  the checked-out production sources. The bot's additional unsynchronized
+  probe is recorded in the wait audit; it was not independently rerun locally.
+- Value: the campaign supplied two real lifecycle fixes and measured evidence
+  for the retained race oracle. The persisted checkpoint preserved that value
+  despite a failed delivery. PR #961 receives the preserved commit chain and
+  this local validation report; Revi and CI must judge the new head before it
+  can return to the merge queue.
+- Friction: recovery required discovering the checkpoint ref outside the
+  normal final-bank and commits fields. Tracked separately in #972; this
+  session does not change shared runner infrastructure.
+- Coordination lesson: `gh pr merge --disable-auto` did not remove a queued
+  PR here. We used `dequeuePullRequest` with the verified PR ID. Inspect
+  `mergeQueueEntry`: an empty `autoMergeRequest` does not establish that the
+  PR is absent from the queue.
 
 ## 2026-09-08 — the campaign delivered, the tail never ran: a provider cap killed the run at minute 53 and the banked branch was the only receipt (run 01a07f7a)
 

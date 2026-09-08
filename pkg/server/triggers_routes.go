@@ -69,7 +69,12 @@ type triggerFromInvocationReq struct {
 // bot+kind is a 409 carrying the existing id.
 func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("name"))
-	entry, ok, err := s.findBot(name)
+	// The subscription this derives launches through the trigger spine, which
+	// resolves the tenant's own tier — so the invocation it is derived FROM
+	// comes from the same tier, or the binding describes a bundle that will
+	// not run (and a bot the team authored is not enable-able at all).
+	tenant := s.triggerTenant(r)
+	entry, ok, err := s.effectiveFindByNameForTeam(r.Context(), tenant, name)
 	if err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
@@ -104,7 +109,6 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 
 	now := time.Now().UTC()
 	id := uuid.NewString()
-	tenant := s.triggerTenant(r)
 	var (
 		sub     trigger.Subscription
 		derived bool

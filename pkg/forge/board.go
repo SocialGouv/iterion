@@ -283,6 +283,12 @@ func AsBoardClient(a Admin) (BoardClient, bool) {
 
 // ErrProjectNotFound reports a board that the credential cannot resolve —
 // wrong owner, wrong number, or no visibility.
+//
+// A forge-answered 404 that is nonetheless OUTSIDE the ErrNotFound class: its
+// callers classify it themselves (a bind answers the operator's own board ref,
+// which a bare 404 would send them to re-check for nothing — see
+// assertProjectGrant). Moving it into the class hands it to
+// forgeUpstreamStatus instead, which is a behaviour change to own, not a tidy-up.
 var ErrProjectNotFound = errors.New("forge: project not found")
 
 // ---- the status vocabulary joining a board to the native kanban ----

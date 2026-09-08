@@ -34,6 +34,47 @@ import (
 //
 // The second result is the Retry-After to echo, empty unless the forge named
 // one: a delay iterion invented would be worse than none.
+//
+// # The ErrNotFound class, and every pkg/forge sentinel's side of it
+//
+// The 404 arm reads MEMBERSHIP — errors.Is(err, forge.ErrNotFound) — not the
+// sentinel's name. Two shapes therefore coexist in pkg/forge with nothing in
+// the text telling them apart, and the difference is load-bearing: the store
+// misses are what every "…but could not be recorded: %w" wrap in the forge
+// layer carries, so moving one into the class turns that wrap into a 404 —
+// "the forge has no such thing" for a write iterion itself failed — with no
+// message anywhere changing. TestForgeSentinelFamilies_ArePinned pins each
+// row below, and sweeps pkg/forge for declarations so a NEW sentinel is red
+// until its family is stated here.
+//
+//	IN the class → 404 here
+//	  forge.ErrNotFound                    the class itself
+//	  forge.ErrHookNotFound                "%w: hook"
+//	  *forge.NotFoundError                 Unwrap() → ErrNotFound; every typed forge 404
+//
+//	OUTSIDE it, iterion's own state — a store miss the forge never answered
+//	  forge.ErrConnectionNotFound          0 → the caller's fault status
+//	  forge.ErrIntegrationNotFound         0
+//	  forge.ErrOAuthAppNotFound            0
+//	  forge.ErrBoardBindingNotFound        0
+//	  forge.ErrProvisionApprovalNotFound   0
+//
+//	OUTSIDE it, though the forge did answer 404 — the caller classifies
+//	  forge.ErrProjectNotFound             0; a bind answers the board ref itself
+//	  forge.ErrFileNotFound                0; config-share answers every read failure alike
+//
+//	OUTSIDE it, and not a 404 in any reading
+//	  forge.ErrForbidden                   403  (arm above)
+//	  forge.ErrUnauthorized                422  (arm above)
+//	  forge.ErrPermissionsNotGranted       422  (arm above)
+//	  forge.ErrOAuthAppExists              0
+//	  forge.ErrRepoExists                  0
+//	  forge.ErrFileConflict                0
+//	  forge.ErrBoardSyncLeaseLost          0
+//	  forge.ErrAvatarUnsupported           0
+//	  forge.ErrSecurityReadMalformed       0
+//	  forge.ErrSecurityReadNoOrgKey        0
+//	  forge/github.ErrInstallationNotOwned  0
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

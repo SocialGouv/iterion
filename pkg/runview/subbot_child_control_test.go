@@ -65,26 +65,10 @@ workflow control_parent:
   run_child -> done
 `
 
-// waitForChild polls the store until a child run of parentID exists in a
-// non-terminal state, returning its id. Fails the test on timeout.
+// waitForActiveChild observes the persisted child before exercising its control.
 func waitForActiveChild(t *testing.T, svc *Service, parentID string) string {
 	t.Helper()
-	deadline := time.Now().Add(waitBudget(t, 30*time.Second))
-	for {
-		if time.Now().After(deadline) {
-			t.Fatal("child run never appeared active")
-		}
-		runs, err := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
-		if err != nil {
-			t.Fatalf("list runs: %v", err)
-		}
-		for _, r := range runs {
-			if r.ParentRunID == parentID && r.Status == store.RunStatusRunning {
-				return r.ID
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	return waitForSubbotStatus(t, svc, parentID, store.RunStatusRunning)
 }
 
 // The regression for H2 (PR #193): a studio Cancel targeting the CHILD run id
@@ -109,6 +93,8 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
+	t.Cleanup(func() { stopService(t, svc) })
+
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
@@ -118,11 +104,7 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 	// failure that hides the first.
 	t.Cleanup(func() {
 		_ = svc.Cancel(res.RunID)
-		select {
-		case <-res.Done:
-		case <-time.After(waitBudget(t, 30*time.Second)):
-			t.Error("the run goroutine outlived the test; its writes race t.TempDir() removal")
-		}
+		awaitRunCompletion(t, res.Done, "run goroutine outlived the test")
 	})
 
 	childID := waitForActiveChild(t, svc, res.RunID)
@@ -137,27 +119,9 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 		t.Fatalf("Cancel(child) = %v, want nil (child not controllable mid-flight)", err)
 	}
 
-	// The child ends cancelled, and the parent branch fails (its subbot node
-	// returns the child's error) — not a hang.
-	//
-	// The ceiling is a HANG detector, and it must not be the child's own
-	// blocking duration: the child sits in `sleep 30`, so a bare 30s here
-	// reads "the tool node ran to completion" as "the parent hung", with a
-	// margin equal to the launch→cancel gap alone. Measured post-cancel on a
-	// starved box (GOMAXPROCS=1, 30 busy processes, n=30): 0.15-0.18s once the
-	// run's source repository is one the test owns, 5.7-20.3s when it was the
-	// developer's checkout — a spread that reached this ceiling on CI (#927).
-	// waitBudget is the package's own allowance for a contended runner, which
-	// every budget in the sibling subbot_restart_test.go already takes.
-	//
-	// Raising it does not make the row vacuous: the status assertion below
-	// still refuses a child that merely ran its sleep out instead of being
-	// cancelled.
-	select {
-	case <-res.Done:
-	case <-time.After(waitBudget(t, 30*time.Second)):
-		t.Fatal("parent did not terminate after the child was cancelled")
-	}
+	// Completion is signalled by the run goroutine; the status assertion
+	// below still rejects a child that ran to completion instead of cancelling.
+	awaitRunCompletion(t, res.Done, "parent did not terminate after its child was cancelled")
 
 	child, err := svc.store.LoadRun(context.Background(), childID)
 	if err != nil {
@@ -197,13 +161,15 @@ func TestServiceLaunch_SubbotChild_PauseMidFlight(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
+	t.Cleanup(func() { stopService(t, svc) })
+
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = svc.Cancel(res.RunID)
-		<-res.Done
+		awaitRunCompletion(t, res.Done, "run goroutine outlived the test")
 	})
 
 	childID := waitForActiveChild(t, svc, res.RunID)
@@ -214,9 +180,9 @@ func TestServiceLaunch_SubbotChild_PauseMidFlight(t *testing.T) {
 	}
 
 	// Within a few loop boundaries the child checkpoints as paused_operator.
-	deadline := time.Now().Add(waitBudget(t, 30*time.Second))
+	waitCtx := runWaitContext(t)
 	for {
-		if time.Now().After(deadline) {
+		if waitCtx.Err() != nil {
 			child, _ := svc.store.LoadRun(context.Background(), childID)
 			t.Fatalf("child never reached paused_operator (last status %q)", child.Status)
 		}

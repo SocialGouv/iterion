@@ -204,7 +204,7 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngineRunner: %v", err)
 	}
-	defer func() { _ = runner.Close() }()
+	t.Cleanup(func() { _ = runner.Close() })
 	runID, err := store.GenerateRunID()
 	if err != nil {
 		t.Fatalf("GenerateRunID: %v", err)
@@ -217,9 +217,18 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	// reached the node" and "the child is alive and the probe cannot see it".
 	var seenMu sync.Mutex
 	var seen []string
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	var dispatchErr error
+	dispatched := false
+	t.Cleanup(func() {
+		cancel()
+		if !dispatched {
+			<-done
+		}
+	})
 	go func() {
-		done <- runner.Dispatch(context.Background(), DispatchSpec{
+		done <- runner.Dispatch(ctx, DispatchSpec{
 			RunID:         runID,
 			WorkspacePath: workspace,
 			StoreDir:      storeDir,
@@ -234,18 +243,14 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 
 	// Catch the child mid-pass and prove its lock is held. The child blocks
 	// until release-lock-probe exists, so there is no timing window to race.
-	// Cleanup writes the release file even on a Fatal path, so the dispatch
-	// goroutine always drains instead of leaking a forever-polling child into
-	// the next test.
+	// Cleanup cancels AND joins the dispatch on a Fatal path. Merely writing
+	// the sentinel does not join the shell before TempDir removes its workspace.
 	release := filepath.Join(workspace, "release-lock-probe")
-	t.Cleanup(func() { _ = os.WriteFile(release, []byte("go"), 0o644) })
 	childID := ""
 	held := false
 	// Watch the dispatch goroutine while polling. The child blocks until the
 	// release file exists, so Dispatch returning here means it never reached
 	// the subbot node — and its error is the diagnosis.
-	var dispatchErr error
-	dispatched := false
 	// The wait is bounded by the HARNESS's budget, never by a clock of this
 	// test's own: nothing here is timing-sensitive (the child blocks on the
 	// release file), so a bound only covers the parent reaching the subbot
@@ -352,6 +357,7 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 
 	if !dispatched {
 		dispatchErr = <-done
+		dispatched = true
 	}
 	if dispatchErr != nil {
 		t.Fatalf("Dispatch: %v", dispatchErr)

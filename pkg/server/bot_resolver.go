@@ -34,20 +34,32 @@ import (
 // substitution. A surface with no team id has none to invent: it resolves
 // platform-over-baked and says so by passing an empty team.
 //
-// The METADATA reads below are a separate, narrower view:
-// effectiveEntries* / effectiveFindByName / botExists / platformBotManifest
-// are tenant-context-FREE (platform over baked). A metadata read must match
-// the tier the LAUNCH it describes will resolve, or the two disagree in
-// silence — so a lane whose launch is tenant-aware reads through
-// effectiveFindByNameForTeam, and a lane whose launch is tenant-free keeps
-// the tenant-free view. Wired so far: the webhook hand-off `consumes:` seeds
-// and the gate-var defaults, the two that describe a delivery this file's
-// launch resolution now serves from the team tier. Still tenant-free, and
-// therefore still able to disagree with a team fork: the retry-policy
-// manifest read (botManifest), the command discovery, the /bots listing, and
-// the hand-off PRODUCER set — pre-existing on the manual surface, tracked as
-// #946. A caller that holds the tier a bot ACTUALLY resolved through — a
-// run's BotSourceTenant, stamped at launch — asks teamBotManifest instead.
+// A metadata read DESCRIBES a launch, so it resolves the tier that SERVES
+// that launch — the same three-tier order, from the same team id. Reading a
+// different tier is a disagreement with no diagnostic: a fork that renames
+// its `consumes:` var gets an empty seed, a fork that moves its gate context
+// greens a status nothing requires, a fork that renames its `/command`
+// stamps the operator's text under a var the running bundle never declared.
+//
+// Which tenant a lane passes depends on what it describes:
+//   - a delivery about to launch → the launching team (the webhook config's
+//     tenant, the request's active team): effectiveFindByNameForTeam,
+//     effectiveEntriesForTeam, botManifestFor, botExistsForTeam;
+//   - a run that ALREADY launched → that run's own BotSourceTenant, which
+//     records the tier it resolved through: teamBotManifest. The ambient
+//     tenant is the wrong question there — a team's own run may still have
+//     been served by the platform or baked tier.
+//
+// The tenant-free forms (effectiveEntriesWithSchema / effectiveFindByName /
+// botExists / platformBotManifest / botManifest) remain, as the platform +
+// baked floor every team-aware form falls through to, and as the answer for
+// the lanes that genuinely hold no tenant: the native board's comment
+// dispatcher (a single local store, no tenancy) and the deployment-wide
+// producer floor a hand-off scan starts from.
+//
+// The team tier's rows are read through teamBotRow, so an operator-typed
+// spelling (`feature_dev` for `feature-dev`) reaches the launch and the
+// metadata alike — one row resolution, never two that can diverge.
 
 // launchBot is a resolved, launch-ready bot. Cloud resolution freezes its
 // collection before compile and carries the same snapshot to the runner.
@@ -352,36 +364,77 @@ func (s *Server) invalidatePlatformBots() {
 
 // effectiveEntriesWithSchema returns the baked catalog overlaid with the
 // platform overrides: a platform entry REPLACES the same-slug baked entry,
-// a new-slug platform bot is appended. This is the metadata set every
-// tenant-context-free consumer (command discovery, hand-offs, gate-var
-// defaults) reads.
+// a new-slug platform bot is appended. The platform + baked floor —
+// effectiveEntriesForTeam adds the team tier on top for a lane that knows
+// which team its launch is for.
 func (s *Server) effectiveEntriesWithSchema() ([]botregistry.EntryWithSchema, error) {
 	catalog, err := botregistry.ListWithSchema(s.botListOptions())
 	if err != nil {
 		return nil, err
 	}
-	overrides := s.platformBotEntries()
-	if len(overrides) == 0 {
-		return catalog, nil
+	return overlayEntriesByName(catalog, s.platformBotEntries()), nil
+}
+
+// effectiveEntriesForTeam is effectiveEntriesWithSchema with teamID's own
+// rows overlaid last — the whole-set counterpart of
+// effectiveFindByNameForTeam, for the lanes that read the SET rather than
+// one name (command discovery, the label route's invocation).
+//
+// A team row REPLACES the same-slug platform/baked entry and a slug only the
+// team authored is appended, matching launch resolution exactly: reading a
+// narrower set means routing a command to a bundle that does not declare it,
+// or refusing one that does.
+//
+// It materialises the team's bundles (storedBotEntries), so it belongs on a
+// per-delivery path, not a per-run one; a lane that needs a single bot asks
+// effectiveFindByNameForTeam, which materialises one row.
+func (s *Server) effectiveEntriesForTeam(ctx context.Context, teamID string) ([]botregistry.EntryWithSchema, error) {
+	base, err := s.effectiveEntriesWithSchema()
+	if err != nil {
+		return nil, err
 	}
-	byName := make(map[string]int, len(catalog))
-	for i, e := range catalog {
+	if teamID == "" || s.botSources == nil {
+		return base, nil
+	}
+	return overlayEntriesByName(base, s.storedBotEntries(ctx, teamID)), nil
+}
+
+// overlayEntriesByName lays overrides over base by entry name: a same-name
+// override replaces in place (keeping the base's position, so a listing does
+// not reshuffle when an override appears), a new name is appended. The ONE
+// definition of the tier overlay, so the platform pass and the team pass
+// cannot acquire different precedence.
+func overlayEntriesByName(base, overrides []botregistry.EntryWithSchema) []botregistry.EntryWithSchema {
+	if len(overrides) == 0 {
+		return base
+	}
+	byName := make(map[string]int, len(base))
+	for i, e := range base {
 		byName[e.Name] = i
 	}
-	out := catalog
+	out := base
 	for _, e := range overrides {
 		if i, ok := byName[e.Name]; ok {
 			out[i] = e
 			continue
 		}
+		byName[e.Name] = len(out)
 		out = append(out, e)
 	}
-	return out, nil
+	return out
 }
 
 // effectiveEntries is effectiveEntriesWithSchema flattened to plain entries.
 func (s *Server) effectiveEntries() ([]botregistry.Entry, error) {
-	withSchema, err := s.effectiveEntriesWithSchema()
+	return flattenEntries(s.effectiveEntriesWithSchema())
+}
+
+// effectiveEntriesFor is effectiveEntriesForTeam flattened to plain entries.
+func (s *Server) effectiveEntriesFor(ctx context.Context, teamID string) ([]botregistry.Entry, error) {
+	return flattenEntries(s.effectiveEntriesForTeam(ctx, teamID))
+}
+
+func flattenEntries(withSchema []botregistry.EntryWithSchema, err error) ([]botregistry.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -412,20 +465,51 @@ func (s *Server) platformBotManifest(slug string) *bundle.Manifest {
 // "platform" when a deployment override shadows it, else "catalog". Keeps
 // the detail/PUT responses consistent with the list's origin so the studio
 // badge doesn't flicker between surfaces.
+//
+// It answers for the platform + baked tiers only; a caller that must also
+// know whether the ACTIVE TEAM shadows the name (the two FS-catalog write
+// paths, which would otherwise edit the bundle every tenant shares) asks
+// entryOriginFor.
+//
+// The match is exact then NormalizeName-folded, the same two passes
+// effectiveFindByName makes: an origin stricter than the lookup it labels
+// would call a platform override "catalog" for every non-canonical spelling
+// the launcher accepts.
 func (s *Server) entryOrigin(name string) string {
-	for _, e := range s.platformBotEntries() {
+	entries := s.platformBotEntries()
+	for _, e := range entries {
 		if e.Name == name {
 			return "platform"
+		}
+	}
+	if nn := botregistry.NormalizeName(name); nn != "" {
+		for _, e := range entries {
+			if botregistry.NormalizeName(e.Name) == nn {
+				return "platform"
+			}
 		}
 	}
 	return "catalog"
 }
 
-// botExists reports whether a bot id resolves on this deployment (platform
-// override or baked catalog) WITHOUT materializing anything — the cheap
-// probe for callers that only route (e.g. the /revi converse gate). Team
-// bots are deliberately out of scope, matching launch resolution on the
-// tenant-context-free surfaces.
+// entryOriginFor is entryOrigin with the team tier consulted first —
+// "tenant" when teamID authored a row of that name. The tier vocabulary the
+// /bots views already render (botEntryView.Origin), resolved from one place.
+func (s *Server) entryOriginFor(ctx context.Context, teamID, name string) string {
+	if teamID != "" && s.botSources != nil && strings.TrimSpace(name) != "" {
+		if _, found, err := s.teamBotRow(ctx, teamID, name); err == nil && found {
+			return "tenant"
+		} else if err != nil {
+			s.logWarn("bot source %s/%s: %v — the origin was read from the platform tier", teamID, name, err)
+		}
+	}
+	return s.entryOrigin(name)
+}
+
+// botExists reports whether a bot id resolves on the platform + baked tiers
+// WITHOUT materializing anything — the cheap probe for callers that only
+// route. botExistsForTeam adds the team tier for a lane that knows the team
+// its launch is for.
 func (s *Server) botExists(botID string) bool {
 	for _, e := range s.platformBotEntries() {
 		if e.Name == botID {
@@ -436,15 +520,38 @@ func (s *Server) botExists(botID string) bool {
 	return err == nil
 }
 
+// botExistsForTeam reports whether a bot id resolves for teamID — its own
+// row first, then platform over baked. Same three tiers as the launch, so a
+// routing gate cannot refuse a bot the launch would have served: a team's
+// own bot exists nowhere in the catalog, and answering "no" for it silently
+// disables the whole command surface that bot was authored for.
+//
+// Still cheap enough for a hot path: the team pass is one indexed row read
+// (teamBotRow), and nothing is materialized on either tier.
+func (s *Server) botExistsForTeam(ctx context.Context, teamID, botID string) bool {
+	if teamID != "" && s.botSources != nil && strings.TrimSpace(botID) != "" {
+		switch _, found, err := s.teamBotRow(ctx, teamID, botID); {
+		case err != nil:
+			// A store blip is not "this team authored no such bot": say so,
+			// then fall through to the tiers that can still answer.
+			s.logWarn("bot source %s/%s: %v — the existence probe fell through to the platform tier", teamID, botID, err)
+		case found:
+			return true
+		}
+	}
+	return s.botExists(botID)
+}
+
 // teamBotManifest reads the manifest of a TEAM-authored bot row. It is for
 // callers holding the tier a bot actually resolved through — a run's
 // BotSourceTenant — so that a run's own manifest is read where the run came
 // from. Nil when the tenant names no team row (empty, the platform sentinel,
 // or no such slug), leaving the caller on the platform + baked tiers.
 //
-// Deliberately NOT folded into effectiveFindByName: see the contract at the
-// top of this file — a lane whose LAUNCH is tenant-free must stay blind to a
-// team fork, or it would describe a bundle it will not run.
+// Distinct from effectiveFindByNameForTeam by the QUESTION, not the tier: a
+// run's provenance is a fact already recorded, so this takes it verbatim and
+// never re-derives it from an ambient tenant — a team's own run may still
+// have been served by the platform or baked tier, and the run says which.
 //
 // It resolves the row through teamBotRow, so one row resolution serves the
 // launch, the entry metadata and the manifest: a card's spelling cannot
@@ -478,9 +585,10 @@ func (s *Server) teamBotManifest(ctx context.Context, tenantID, slug string) *bu
 // through teamBotRow, so the spelling a card carries reaches the same row on
 // both reads.
 //
-// Deliberately NOT the default: effectiveFindByName stays tenant-free for
-// the lanes whose launch is tenant-free too (see the contract at the top of
-// this file). Widening it is #946, not this seam.
+// It reads ONE name, materialising one row; a lane that needs the whole set
+// asks effectiveEntriesForTeam. effectiveFindByName remains as the platform
+// + baked floor this falls through to, and as the answer for the lanes that
+// hold no tenant at all (see the contract at the top of this file).
 func (s *Server) effectiveFindByNameForTeam(ctx context.Context, teamID, name string) (botregistry.EntryWithSchema, bool, error) {
 	if teamID != "" && s.botSources != nil && strings.TrimSpace(name) != "" {
 		bs, found, err := s.teamBotRow(ctx, teamID, name)

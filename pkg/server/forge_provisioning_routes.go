@@ -334,7 +334,7 @@ func (s *Server) handlePreviewForgeEnable(w http.ResponseWriter, r *http.Request
 	// Mirror Provision exactly: a forge: block is optional, a command-only bot
 	// subscribes to the comment event. Without this, command-only bots would
 	// be (wrongly) flagged as conflicts and the Enable button disabled.
-	pv := forge.PreviewEnable(s.forgeOrchestrator.Bots, s.forgeOrchestrator.Invocations, botIDs)
+	pv := forge.PreviewEnable(r.Context(), teamID, s.forgeOrchestrator.Bots, s.forgeOrchestrator.Invocations, botIDs)
 	binds := make([]forgePreviewBind, 0, len(pv.Binds))
 	for _, b := range botIDs {
 		if secret, ok := pv.Binds[b]; ok {

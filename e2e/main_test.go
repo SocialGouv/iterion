@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // e2eParallelCap bounds how many of this package's tests run at once.
@@ -41,7 +42,7 @@ const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 // package when that count moves, and names the test that moved it.
 func TestMain(m *testing.M) {
 	capParallelism()
-	os.Exit(gittest.NoWorktreeLeaks(m))
+	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
 }
 
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 
@@ -78,7 +77,7 @@ func TestLaunch_AppliesBudgetOverrides(t *testing.T) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit (expected immediate human pause)")
 	}
 

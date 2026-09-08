@@ -9,8 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+	"testing/synctest"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -249,6 +250,10 @@ workflow child:
 // a park on it returned at once with `context canceled` — the gate failed the
 // parent node 20 ms in instead of waiting for a human.
 func TestSubbotRunnerParksOnHumanGate(t *testing.T) {
+	synctest.Test(t, testSubbotRunnerParksOnHumanGate)
+}
+
+func testSubbotRunnerParksOnHumanGate(t *testing.T) {
 	r, st := subbotTestRunner(t)
 	dir := t.TempDir()
 	parentDir := filepath.Join(dir, "parent")
@@ -256,20 +261,24 @@ func TestSubbotRunnerParksOnHumanGate(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestHumanChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
-	const parentDeadline = 1500 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), parentDeadline)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	start := time.Now()
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
-	_, err := run(ctx, runtime.SubbotRequest{
-		Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
-	})
-	elapsed := time.Since(start)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v after %s, want the PARENT's deadline: a `context canceled` here is the child's own cancel leaking into the park", err, elapsed)
-	}
-	if elapsed < parentDeadline-100*time.Millisecond {
-		t.Fatalf("park returned after %s, want it held until the parent's deadline (%s)", elapsed, parentDeadline)
+	done := make(chan error, 1)
+	go func() {
+		_, err := run(ctx, runtime.SubbotRequest{
+			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+		})
+		done <- err
+	}()
+	// Quiescence is the observation: the child has returned from its human
+	// gate and the parent is parked. A child's cancelled context would have
+	// returned an error already; no minimum elapsed duration can prove this.
+	synctest.Wait()
+	select {
+	case err := <-done:
+		t.Fatalf("park returned before the parent was cancelled: %v", err)
+	default:
 	}
 	// The child is parked on its gate, not dead.
 	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
@@ -290,6 +299,16 @@ func TestSubbotRunnerParksOnHumanGate(t *testing.T) {
 	}
 	if children != 1 {
 		t.Fatalf("children of the parent = %d, want exactly one", children)
+	}
+	cancel()
+	synctest.Wait()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("park after parent cancellation = %v, want context.Canceled", err)
+		}
+	default:
+		t.Fatal("park did not observe the parent's cancellation")
 	}
 }
 
@@ -384,6 +403,7 @@ func (f *parentSandboxFake) Command(ctx context.Context, cmd []string, opts sand
 	f.commands++
 	f.mu.Unlock()
 	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	proc.TerminateGroupOnCancel(c)
 	c.Dir = opts.WorkDir
 	c.Env = os.Environ()
 	for k, v := range opts.Env {

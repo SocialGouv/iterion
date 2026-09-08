@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/clock"
@@ -94,7 +93,7 @@ func TestLaunch_HonoursDispatcherConvergenceFields(t *testing.T) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit (expected immediate human pause)")
 	}
 

@@ -254,6 +254,7 @@ func markLogicalDescendants(n ast.Node, marked map[ast.Node]bool) {
 // reason here.
 var negativeSpaceAllowlist = map[string]allowEntry{
 	// -- pkg/store: transition machinery + harnesses.
+	"pkg/store/storetest/await_answers_wait.go :: Cancelled+Failed+Queued":                                                             {[]string{"RunAwaitAnswersWaitConformance"}, "test-only transition fixtures exercise distinct mutation APIs clearing wait proof, not a production status-classification set"},
 	"pkg/store/store_run.go :: Cancelled+Failed+FailedResumable+Finished":                                                              {[]string{"applyStatusTransitionOutcome"}, "FinishedAt-stamping side-effect switch (renamed by the outcome-bookkeeping merge)"},
 	"pkg/store/store_run.go :: PausedWaitingHuman+Running":                                                                             {[]string{"applyStatusTransitionOutcome"}, "FinishedAt-clear pair (resume paths un-freeze the duration ticker)"},
 	"pkg/store/mongo/runs.go :: Cancelled+Failed+FailedResumable+Finished":                                                             {[]string{"ListNotifiableRuns", "SaveRun"}, "the notifiable-sweep terminal $in + SaveRun's terminal-arrival episode increment (a bson filter/pipeline cannot call a predicate; both are IsTerminal's set — the transition choke point itself now derives via predicates in statusTransitionSet)"},

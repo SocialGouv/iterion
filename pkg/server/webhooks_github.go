@@ -495,7 +495,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// still launches (or a board coordinator owns it). repoRef empty → the
 	// runner clones the repo's default branch; featurly's worktree: auto
 	// branches from there.
-	route := s.boardRouteForLabel(botID)
+	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
 }

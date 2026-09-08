@@ -97,7 +97,9 @@ notice that the bytes reaching the browser changed, and a scan of source files c
 6. **Stop.** The runner and the report are emitted by the workflow, not by you. Writing a
    `REPORT.md` of your own is welcome when you have something the template cannot say — your
    documented blind spots, the causes behind your canonicalisation rules — and it will not be
-   overwritten. Do not write `verify-oracle.sh`.
+   overwritten. Do not write `verify-oracle.sh`. This freedom is the RITE's: inside the extension
+   subbot the only writable paths are the extension surface, and a refusal is reported in the
+   node's `summary`, never in a file (see «Extensions: who may act, and how the gate knows»).
 
 ## Putting the runner in CI, and the three ways that job goes green without judging
 
@@ -429,3 +431,27 @@ string** is a file part, and one such field makes the whole form
 If the net cannot be made to see something, **write that down** rather than narrowing the corpus
 until it goes green. A documented blind spot is a usable engineering artefact. A green run
 obtained by removing what failed is a lie with a timestamp on it.
+
+## Extensions: who may act, and how the gate knows
+
+A lot may **ask** for a new observation point (a request block in the ledger); only
+the net's own subbot (`extend`) may **act** it. The gate does not take anyone's word
+for who acted: the subbot reports the commits it made (`acted_commits`), the request
+ids it acted and the blob it certified per surface path (`acted_blobs`); the parent
+hands them to the harness on every pass, and an act introduced by any other commit —
+or a certified path whose blob moved since — is a typed refusal (`EXTENSION_FORGED`),
+never a repair pass and never certified later by a resume from the banked branch.
+
+Practical consequences for the constrained party (the lot):
+
+- File the request, commit, and stop. Do not write refs, corpus entries or an act
+  block yourself — the gate refuses them whatever author your commits carry.
+- Do not leave anything uncommitted under the net's directory: the subbot refuses
+  to start on a dirty net, since it could not tell its own additions from yours.
+- Do not merge or rebase the base into your branch while a lot runs: the acts the
+  subbot certified are known by commit and by content; a history rewritten after
+  the subbot ran keeps its certified content and loses its shas.
+
+The git identity of the subbot's commits is set by the engine for its run and restored
+after (`golden-master extend <extend@golden-master.iterion>` by default): it is
+attribution the gate reports, not the lock — the lock is the list of commits.

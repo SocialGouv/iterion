@@ -43,11 +43,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	// Stop joins the orphan reconciler and every run goroutine before the
 	// TempDir goes: a service left running writes into a directory RemoveAll
 	// is already walking.
-	t.Cleanup(func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer stopCancel()
-		svc.Stop(stopCtx)
-	})
+	t.Cleanup(func() { stopService(t, svc) })
 
 	// 1. Launch the parent under a cancelable context (the "process").
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -64,16 +60,15 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	childID := ""
 	var lastChildStatus store.RunStatus
 	var lastRecord map[string]string
-	budget := waitBudget(t, 30*time.Second)
-	deadline := time.Now().Add(budget)
+	waitCtx := runWaitContext(t)
 	for {
-		if time.Now().After(deadline) {
+		if waitCtx.Err() != nil {
 			// Name WHICH half is missing: "the child never got there" is a
 			// slow machine, "the child parked but the key is absent" is the
 			// product invariant this row exists for, and the old message
 			// could not tell them apart.
-			t.Fatalf("after %s: child=%q status=%q, parent.SubbotChildren=%v — want a paused_waiting_human child recorded under run_child",
-				budget, childID, lastChildStatus, lastRecord)
+			t.Fatalf("%v: child=%q status=%q, parent.SubbotChildren=%v — want a paused_waiting_human child recorded under run_child",
+				waitCtx.Err(), childID, lastChildStatus, lastRecord)
 		}
 		runs, lerr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
 		if lerr != nil {
@@ -100,11 +95,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	// 3. Simulate the restart: cancel the parent's context so its parked
 	//    goroutine exits. Wait for the run to settle to a resumable status.
 	cancel()
-	select {
-	case <-res.Done:
-	case <-time.After(waitBudget(t, 30*time.Second)):
-		t.Fatal("parent goroutine did not exit after context cancel")
-	}
+	awaitRunCompletion(t, res.Done, "parent goroutine did not exit after context cancel")
 	parent, err := svc.store.LoadRun(context.Background(), parentID)
 	if err != nil {
 		t.Fatalf("load parent after cancel: %v", err)
@@ -141,11 +132,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume parent: %v", err)
 	}
-	select {
-	case <-pres.Done:
-	case <-time.After(waitBudget(t, 30*time.Second)):
-		t.Fatal("parent did not finish after resume")
-	}
+	awaitRunCompletion(t, pres.Done, "parent did not finish after resume")
 
 	parent, err = svc.store.LoadRun(context.Background(), parentID)
 	if err != nil {
@@ -191,8 +178,8 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 
 func waitStatus(t *testing.T, svc *Service, runID string, want store.RunStatus) {
 	t.Helper()
-	deadline := time.Now().Add(waitBudget(t, 30*time.Second))
-	for time.Now().Before(deadline) {
+	ctx := runWaitContext(t)
+	for ctx.Err() == nil {
 		r, err := svc.store.LoadRun(context.Background(), runID)
 		if err == nil && r.Status == want {
 			return

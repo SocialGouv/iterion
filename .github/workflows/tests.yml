@@ -26,6 +26,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# A job that is NOT a required status check cannot block a merge, so running
+# it inside the merge queue buys a verdict nobody can act on — while holding a
+# runner slot the queue needs. The org shares 20 concurrent jobs across every
+# repository, and a queue entry is a full CI cycle, so those slots are what
+# decides how long a merge takes. The four advisory jobs below therefore run
+# on the pull request and on main, and skip in `merge_group`.
+#
+# The line to hold: the jobs carrying that skip are exactly the complement of
+# the ruleset's required checks (test, race, vendor-check, mongo-conformance,
+# golangci, revi/review). Promoting one of them to required means deleting its
+# skip in the same change — a required check that never reports leaves the
+# queue waiting for check_response_timeout_minutes and then failing.
+# The list lives in a ruleset, outside this repo, so nothing here can assert
+# it — docs/merge-policy.md carries the same warning beside the required list.
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -327,6 +342,9 @@ jobs:
           echo "::endgroup::"
 
   nats-conformance:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # Runs the JetStream integration tests (mixed-version schema rollout,
     # issue #481) against a real broker. Gated on ITERION_TEST_NATS_URI
     # in-tree so a developer's plain `go test ./...` skips them; CI
@@ -378,6 +396,9 @@ jobs:
           go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
 
   cloud-e2e:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with bundled Mongo + NATS + MinIO (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →
@@ -597,6 +618,9 @@ jobs:
           git diff --exit-code go.mod go.sum vendor/
 
   helm-lint:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # Catches values typing drift cheaply (~30s) so a broken values.yaml
     # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
@@ -662,6 +686,9 @@ jobs:
         run: golangci-lint run --timeout 5m
 
   govulncheck:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # govulncheck is call-graph aware (only reports CVEs whose vulnerable
     # functions are actually reachable from this codebase). Trivy's
     # filesystem scan catches the broader set including unused-import

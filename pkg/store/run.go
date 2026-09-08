@@ -506,9 +506,14 @@ type Run struct {
 	// losing the answered child's work. Empty for parents with no subbot
 	// nodes and for runs that predate this field. Set only on the parent.
 	SubbotChildren map[string]string `json:"subbot_children,omitempty" bson:"subbot_children,omitempty"`
-	WorkflowName   string            `json:"workflow_name" bson:"workflow_name"`
-	WorkflowHash   string            `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
-	FilePath       string            `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+
+	// AwaitAnswersWaits contains only nodes currently parked at await_answers.
+	// Expiry bounds stale markers; a state transition ends their execution.
+	AwaitAnswersWaits map[string]AwaitAnswersWait `json:"await_answers_waits,omitempty" bson:"await_answers_waits,omitempty"`
+
+	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
+	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	FilePath     string `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
 	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
 	// answers "did the source change since?"; this answers "which node
 	// changed", which is what `iterion rewind --auto` needs to target the
