@@ -932,6 +932,60 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 			t.Fatalf("an id with a space lost its cover — the parser split it out of the set: %+v", v.Acted)
 		}
 	})
+	// The twin of the test above, and its opposite: an id must not inherit the
+	// cover of one that merely LOOKS like it. The reader normalised each line
+	// while the verdict compares the id verbatim, so two ids differing only by
+	// surrounding whitespace collapsed into one — and the act the subbot
+	// REFUSED came back covered by the id it had acted. That is a refused
+	// extension converging, reopened by an encoding.
+	t.Run("a near-identical id does not inherit the cover of the acted one", func(t *testing.T) {
+		ws, base, blob := extensionLedgerRepo(t, "E-2")
+		cmd := exec.Command("python3", harness)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GM_MODE=extend-verify", "GM_WORKSPACE="+ws,
+			"GM_DIR=.golden-master", "GM_BASE="+base, "GM_ACTED_COMMITS=",
+			// The subbot acted " E-2". The ledger's act is "E-2" — a DIFFERENT
+			// id, written by the constrained party in its own commit.
+			"GM_ACTED_IDS= E-2",
+			"GM_ACTED_BLOBS=.golden-master/refs/2.txt="+blob)
+		out, _ := cmd.Output()
+		var v struct {
+			Acted []struct {
+				OK     bool `json:"ok"`
+				Forged bool `json:"forged"`
+			} `json:"acted"`
+		}
+		if uerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &v); uerr != nil {
+			t.Fatalf("no verdict: %v (%q)", uerr, out)
+		}
+		if len(v.Acted) != 1 || !v.Acted[0].Forged {
+			t.Fatalf("the lot's own act rode the certificate of a DIFFERENT id — "+
+				"the reader normalised what the verdict compares raw: %+v", v.Acted)
+		}
+	})
+	// The other shape the encoding leaves open: an id carrying a line break
+	// publishes as TWO lines, and the reader seeds the covered set with a
+	// fragment no subbot ever acted. It cannot round-trip, so it is refused at
+	// the parse point rather than repaired.
+	t.Run("an id carrying a line break is refused, not split into fragments", func(t *testing.T) {
+		ws, base, blob := extensionLedgerRepo(t, "E\n2")
+		cmd := exec.Command("python3", harness)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GM_MODE=extend-verify", "GM_WORKSPACE="+ws,
+			"GM_DIR=.golden-master", "GM_BASE="+base, "GM_ACTED_COMMITS=",
+			"GM_ACTED_IDS=E\n2",
+			"GM_ACTED_BLOBS=.golden-master/refs/2.txt="+blob)
+		out, _ := cmd.Output()
+		var v struct {
+			Problems []string `json:"problems"`
+		}
+		if uerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &v); uerr != nil {
+			t.Fatalf("no verdict: %v (%q)", uerr, out)
+		}
+		if !strings.Contains(strings.Join(v.Problems, " | "), "one-id-per-line") {
+			t.Fatalf("an id that cannot survive the line transport was accepted: %+v", v.Problems)
+		}
+	})
 	t.Run("an entry the judge cannot read is refused, not dropped", func(t *testing.T) {
 		v, exit := run(t, "GM_ACTED_COMMITS=", "GM_ACTED_BLOBS=no-equals-sign-here")
 		if exit == 0 {
@@ -942,4 +996,64 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 			t.Fatalf("the refusal must name what it could not read: %q", msg)
 		}
 	})
+}
+
+// extensionLedgerRepo builds the smallest repo an extension verdict can judge:
+// a base commit, a request filed by the lot, then an act answering it and the
+// reference it records — both introduced by the LOT's own commit, so only the
+// content rule can ever cover the act. Returns the workspace, the base sha and
+// the blob of the recorded reference. The id is marshalled, never interpolated:
+// a test whose id carries a line break must produce a LEGAL JSON block, or it
+// would prove the escape rather than the guard.
+func extensionLedgerRepo(t *testing.T, id string) (ws, base, blob string) {
+	t.Helper()
+	ws = t.TempDir()
+	gm := filepath.Join(ws, ".golden-master")
+	if err := os.MkdirAll(filepath.Join(gm, "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		out, gerr := cmd.CombinedOutput()
+		if gerr != nil {
+			t.Fatalf("git %v: %v (%s)", args, gerr, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	g("init", "-q", "-b", "main")
+	g("config", "user.email", "t@t")
+	g("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(gm, "corpus.json"), []byte(`{"entries": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g("add", "-A")
+	g("commit", "-qm", "base")
+	base = g("rev-parse", "HEAD")
+
+	jid, err := json.Marshal(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := func(blocks string) {
+		if werr := os.WriteFile(filepath.Join(gm, "EXTENSIONS.md"), []byte(blocks), 0o644); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	req := "<!-- iterion:extension-request\n" +
+		`{"id": ` + string(jid) + `, "lot": "L", "type": "add-file", "paths": [".golden-master/refs/2.txt"]}` +
+		"\n-->\n"
+	ledger(req)
+	g("add", "-A")
+	g("commit", "-qm", "the lot files it")
+	ledger(req + "<!-- iterion:extension-act\n" +
+		`{"id": ` + string(jid) + `, "lot": "L", "recorded_paths": [".golden-master/refs/2.txt"]}` +
+		"\n-->\n")
+	if err := os.WriteFile(filepath.Join(gm, "refs", "2.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g("add", "-A")
+	g("commit", "-qm", "acted")
+	return ws, base, g("rev-parse", "HEAD:.golden-master/refs/2.txt")
 }

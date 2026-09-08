@@ -1295,6 +1295,17 @@ tool oracle_run:
             if not isinstance(obj, dict) or \
                     not (isinstance(obj.get("id"), str) and obj.get("id")):
                 obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+            elif obj["id"].splitlines() != [obj["id"]] or not obj["id"].strip():
+                # An id reaches the gate through a LINE-ORIENTED transport
+                # (`GM_ACTED_IDS`, one id per line). One carrying a line separator
+                # arrives as two fragments and seeds the covered set with an id no
+                # subbot ever acted; one made only of whitespace cannot be told
+                # from a blank line. Refused at this single parse point rather
+                # than repaired downstream — a repair is precisely what collapses
+                # two distinct ids into one, and the collapse re-opens the
+                # smuggling this file exists to close. An INTERIOR space stays
+                # legal: it round-trips whole, and a lot-authored id may carry one.
+                obj = {"id": "UNPARSEABLE", "raw": body[:120]}
             else:
                 # The list-shaped fields are iterated by every judgement below. A
                 # scalar here raised TypeError inside the verdict, and a verdict
@@ -1356,7 +1367,9 @@ tool oracle_run:
         acts = _extension_blocks(text, "act")
         if any(b.get("id") == "UNPARSEABLE" for b in requests + acts):
             return [{"id": "UNPARSEABLE",
-                     "why": "a ledger block does not parse as JSON — escalate, do not guess"}]
+                     "why": "a ledger block does not parse as JSON, or carries an "
+                            "id that cannot survive the one-id-per-line "
+                            "certificate — escalate, do not guess"}]
         # Only a WELL-FORMED act closes a request: an act with no recorded path
         # acted nothing, and letting it close the term would let the constrained
         # party silence the conjunction with four lines of JSON — the
@@ -1515,7 +1528,9 @@ tool oracle_run:
                       _extension_blocks(head_txt, "act"))
         if any(b.get("id") == "UNPARSEABLE" for b in all_blocks):
             verdict["problems"].append(
-                "a ledger block does not parse as JSON — escalate, do not guess")
+                "a ledger block does not parse as JSON, or carries an id that "
+                "cannot survive the one-id-per-line certificate — escalate, do "
+                "not guess")
         requests = {b["id"]: b for b in _extension_blocks(head_txt, "request")
                     if b.get("id") != "UNPARSEABLE"}
         acts = [b for b in _extension_blocks(head_txt, "act")
@@ -5265,7 +5280,14 @@ tool oracle_run:
             # rule only ever EXEMPTS.
             acted_ids = None
             if "GM_ACTED_IDS" in os.environ:
-                acted_ids = {l.strip() for l in
+                # The RAW line, exactly as the blob certificate above reads its
+                # own: `.strip()` is an emptiness test here, never a repair.
+                # Normalising the id while `extension_verdict` compares it
+                # verbatim made two ids differing only by surrounding whitespace
+                # collapse into one — the act the subbot REFUSED came back covered
+                # by the id it had acted, which is the smuggling of a refused
+                # extension, reopened by an encoding.
+                acted_ids = {l for l in
                              os.environ.get("GM_ACTED_IDS", "").splitlines()
                              if l.strip()}
             print(json.dumps(extension_verdict(
