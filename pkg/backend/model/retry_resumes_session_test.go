@@ -1,0 +1,130 @@
+package model
+
+import (
+	"context"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+)
+
+// foldSameSession answers where the work RAN, not where the task asked it
+// to run. Reading the task alone was right until a retry could resume a
+// session the task never carried — which is exactly what an in-process
+// retry now does, and where a cumulative report would be billed twice.
+func TestFoldSameSessionReadsWhereTheWorkRan(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		prev, next  delegate.Result
+		taskSession string
+		want        bool
+	}{
+		{"both name the same session", delegate.Result{SessionID: "s1"}, delegate.Result{SessionID: "s1"}, "", true},
+		{"both name DIFFERENT sessions", delegate.Result{SessionID: "s1"}, delegate.Result{SessionID: "s2"}, "s1", false},
+		{"neither names one: the task answers", delegate.Result{}, delegate.Result{}, "s1", true},
+		{"neither names one, no task session", delegate.Result{}, delegate.Result{}, "", false},
+		{"only one names one: the task still answers", delegate.Result{SessionID: "s1"}, delegate.Result{}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := foldSameSession(tc.prev, tc.next, tc.taskSession); got != tc.want {
+				t.Errorf("foldSameSession = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The measured shape, 2026-09-08: a delegate died 46 minutes into a node,
+// node_recovery retried it two seconds later IN THE SAME POD (2
+// node_started, 1 sandbox_started), and the node began again from zero —
+// throwing away context that was still on the pod's disk.
+func TestInProcessRetryResumesTheSessionTheDeadAttemptOpened(t *testing.T) {
+	e := newTestExecutorForRetry(3)
+	var seen []delegate.Task
+	task := &delegate.Task{NodeID: "n"}
+	calls := 0
+
+	got, err := e.retryDelegateLoopChain(context.Background(), "n", "claude_code", task.SessionID, nil,
+		func() (delegate.Result, error) {
+			calls++
+			seen = append(seen, *task)
+			// Attempt 1 opens a session and dies with it named (the
+			// enabling half); attempt 2 resumes it and reports the
+			// session's RUNNING TOTAL.
+			if calls == 1 {
+				return delegate.Result{SessionID: "s-live", Tokens: 9000,
+					Output: map[string]any{"_tokens": 9000}}, &delegate.ErrTransient{Reason: "stream closed"}
+			}
+			return delegate.Result{SessionID: "s-live", Tokens: 10300,
+				Output: map[string]any{"_tokens": 10300}}, nil
+		},
+		func(prev delegate.Result) {
+			if task.SessionID == "" && prev.SessionID != "" {
+				task.SessionID = prev.SessionID
+				task.SessionOptional = true
+			}
+		})
+	if err != nil || calls != 2 {
+		t.Fatalf("want one retry then success: err=%v calls=%d", err, calls)
+	}
+	if seen[0].SessionID != "" {
+		t.Fatalf("the FIRST attempt must open its own session: %q", seen[0].SessionID)
+	}
+	if seen[1].SessionID != "s-live" {
+		t.Fatalf("the retry started over instead of resuming: SessionID=%q", seen[1].SessionID)
+	}
+	if !seen[1].SessionOptional {
+		t.Error("the resumed session must be OPTIONAL — if it cannot be served, the existing degrade path must take over and say so, not fail the node forever")
+	}
+	// And the coupling that would otherwise bill twice in silence: the two
+	// attempts shared a session, so the later report already contains the
+	// earlier's spend.
+	if got.Tokens != 10300 {
+		t.Fatalf("tokens = %d, want 10300 — a resumed session reports cumulatively, so summing bills the same tokens twice", got.Tokens)
+	}
+}
+
+// resumeScriptedBackend fails its first call naming the session it opened,
+// then succeeds — and records the task it was handed each time.
+type resumeScriptedBackend struct {
+	name  string
+	tasks []delegate.Task
+}
+
+func (b *resumeScriptedBackend) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
+	b.tasks = append(b.tasks, task)
+	res := delegate.Result{BackendName: b.name, SessionID: "s-live", Tokens: 100,
+		Output: map[string]any{"served_by": b.name}}
+	if len(b.tasks) == 1 {
+		return res, &delegate.ErrTransient{Reason: "stream closed"}
+	}
+	return res, nil
+}
+
+// The WIRING, which the fold's own tests cannot show: the main dispatch must
+// hand the retry loop a carry-forward that resumes. A mutant dropping it at
+// the call site leaves every other test in this file green while the node
+// goes on starting over from zero — the defect this exists to close.
+func TestDispatchWiresTheResumingRetry(t *testing.T) {
+	be := &resumeScriptedBackend{name: delegate.BackendClaudeCode}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, be)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, _ string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review"}, nil
+		})
+	if _, err := e.dispatchChain(context.Background(), "review",
+		[]chainElement{{Label: "primary"}}, "claude-opus-5", build); err != nil {
+		t.Fatalf("the second attempt succeeds: %v", err)
+	}
+	if len(be.tasks) != 2 {
+		t.Fatalf("want one retry, got %d attempts", len(be.tasks))
+	}
+	if be.tasks[0].SessionID != "" {
+		t.Fatalf("the first attempt must open its own session: %q", be.tasks[0].SessionID)
+	}
+	if be.tasks[1].SessionID != "s-live" || !be.tasks[1].SessionOptional {
+		t.Fatalf("the retry did not resume what the dead attempt opened: SessionID=%q optional=%v",
+			be.tasks[1].SessionID, be.tasks[1].SessionOptional)
+	}
+}

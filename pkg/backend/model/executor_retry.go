@@ -211,7 +211,14 @@ func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // PARENT id, and reading only the id would call two disjoint children one
 // session. It narrows exactly one thing in foldSpend — whether a
 // session-total cost may be folded at its MAX.
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+//
+// carryForward, when non-nil, is handed the attempt that just failed before
+// the next one is issued — the seam through which a caller lets the retry
+// CONTINUE what the dead attempt opened instead of starting over. Nil means
+// every attempt is independent, which is what every caller but the main
+// dispatch wants. A carry makes the attempts share a session the TASK never
+// named, which is why the fold asks the results too (see foldSameSession).
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -244,8 +251,13 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 		}
 
 		prev := result
+		for _, carry := range carryForward {
+			if carry != nil {
+				carry(prev)
+			}
+		}
 		result, err = fn()
-		result = foldSpend(prev, result, sharedSession)
+		result = foldSpend(prev, result, foldSameSession(prev, result, sharedSession))
 	}
 	return result, err
 }
@@ -262,6 +274,27 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 // and bills its own work while the id stays non-empty throughout.
 func sharesSession(task *delegate.Task) bool {
 	return task != nil && task.SessionID != "" && !task.ForkSession
+}
+
+// foldSameSession refines that answer with what the attempts ACTUALLY did.
+// A delegation names the session it opened even when it failed, so when both
+// attempts name one, that reading is the true one: it observes where the work
+// ran, not where the task asked it to run.
+//
+// The two part company exactly when a retry RESUMES a session the task never
+// carried — what carryForward creates. There the task says "no shared
+// session" while the second report is a session total that already contains
+// the first, and folding at the SUM would bill one session twice. It also
+// separates two attempts that each opened a session of their own under a task
+// that named one, which the task alone cannot see.
+//
+// The task's answer stands when neither result names a session: a spawn that
+// never opened one, or a backend that reports none.
+func foldSameSession(prev, next delegate.Result, sharedSession bool) bool {
+	if prev.SessionID != "" && next.SessionID != "" {
+		return prev.SessionID == next.SessionID
+	}
+	return sharedSession
 }
 
 // foldSpend folds two attempts' ACCOUNTING onto the later attempt's
@@ -1001,6 +1034,26 @@ func (e *ClawExecutor) dispatchChain(
 		lastBackend = backendName
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
+		}, func(prev delegate.Result) {
+			// An in-process retry stays in the SAME sandbox — the engine
+			// starts one per run, never per node (runtime: startSandbox is
+			// called from engine_run and resume only) — so the CLI session
+			// files the dead attempt wrote are still on the pod's disk.
+			// Measured 2026-09-08 on a live run: 2 node_started, 1
+			// sandbox_started, one node_recovery between them; the node
+			// began again from zero and threw away 46 minutes of context
+			// that were sitting right there.
+			//
+			// Marked OPTIONAL, not required: if the session cannot be
+			// served after all, the executor's existing degrade path
+			// retries once with it dropped and SAYS so on three channels
+			// (log, session_degraded event, _session_degraded output stamp
+			// a deterministic gate can fail closed on). One degradation
+			// path, not a second one beside it.
+			if task.SessionID == "" && prev.SessionID != "" {
+				task.SessionID = prev.SessionID
+				task.SessionOptional = true
+			}
 		})
 		// Best-effort session degrade (inherit_if_available / persist): the
 		// upstream session id resolved, but its backing state can be gone —
