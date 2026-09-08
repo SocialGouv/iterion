@@ -73,7 +73,7 @@ func TestApiKeyTenantCtx_UsesThePathTeamNotTheActiveOne(t *testing.T) {
 	r.SetPathValue("id", "team-b")
 	r = r.WithContext(store.WithTenant(r.Context(), "team-a")) // what requireAuth stamped
 
-	got, ok := store.TenantFromContext(apiKeyTenantCtx(r))
+	got, ok := store.TenantFromContext(teamPathTenantCtx(r))
 	if !ok || got != "team-b" {
 		t.Fatalf("want the path team team-b, got %q (ok=%v)", got, ok)
 	}
@@ -88,7 +88,7 @@ func TestApiKeyTenantCtx_KeepsTheActiveTeamWhenNoPathTeam(t *testing.T) {
 	}
 	r = r.WithContext(store.WithTenant(r.Context(), "team-a"))
 
-	got, ok := store.TenantFromContext(apiKeyTenantCtx(r))
+	got, ok := store.TenantFromContext(teamPathTenantCtx(r))
 	if !ok || got != "team-a" {
 		t.Fatalf("want the active team team-a, got %q (ok=%v)", got, ok)
 	}

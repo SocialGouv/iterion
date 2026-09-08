@@ -414,11 +414,15 @@ func (m *MemoryApiKeyStore) Create(ctx context.Context, k ApiKey) error {
 	return nil
 }
 
-func (m *MemoryApiKeyStore) Get(_ context.Context, id string) (ApiKey, error) {
+// Create already stamps the ctx tenant; the reads MUST filter on it too,
+// or the double cannot express the failure the Mongo store produces (a row
+// written under one tenant, invisible under another) and a tenant-scoping
+// regression passes its tests. See stampTenant / visibleToTenant (#997).
+func (m *MemoryApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
-	if !ok {
+	if !ok || !visibleToTenant(ctx, k.TenantID) {
 		return ApiKey{}, ErrApiKeyNotFound
 	}
 	return k, nil
@@ -438,20 +442,23 @@ func (m *MemoryApiKeyStore) GetOwned(_ context.Context, id, ownerUserID string) 
 	return k, nil
 }
 
-func (m *MemoryApiKeyStore) Update(_ context.Context, k ApiKey) error {
+func (m *MemoryApiKeyStore) Update(ctx context.Context, k ApiKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.keys[k.ID]; !ok {
+	cur, ok := m.keys[k.ID]
+	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrApiKeyNotFound
 	}
+	k.TenantID = stampTenant(ctx, cur.TenantID)
 	m.keys[k.ID] = k
 	return nil
 }
 
-func (m *MemoryApiKeyStore) Delete(_ context.Context, id string) error {
+func (m *MemoryApiKeyStore) Delete(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.keys[id]; !ok {
+	k, ok := m.keys[id]
+	if !ok || !visibleToTenant(ctx, k.TenantID) {
 		return ErrApiKeyNotFound
 	}
 	delete(m.keys, id)

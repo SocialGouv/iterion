@@ -9,7 +9,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -180,26 +179,6 @@ func (s *Server) writeApiKeyList(w http.ResponseWriter, r *http.Request, keys []
 	return true
 }
 
-// apiKeyTenantCtx scopes the store context to the team a route names in its
-// path, instead of the caller's ACTIVE team that requireAuth stamped.
-//
-// The api-keys store derives tenant_id from the context — on write it stamps
-// the row, on read it filters. So a key created for a team other than the
-// caller's active one used to land as (scope_team = target, tenant_id =
-// caller's active team): listable from the context that created it, and
-// INVISIBLE to the runs of the team it was meant to fund. Nothing failed —
-// the run simply resolved no key and fell back to the platform credential,
-// which is the one shape a credential bug must never take.
-//
-// Routes with no {id} (the /api/me family) keep the active team: there the
-// caller's own tenant IS the scope.
-func apiKeyTenantCtx(r *http.Request) context.Context {
-	if teamID := r.PathValue("id"); teamID != "" {
-		return store.WithTenant(r.Context(), teamID)
-	}
-	return r.Context()
-}
-
 // auditApiKey routes an api-key mutation to the right audit log: platform
 // rows (ScopeTeamID == secrets.PlatformTenantID) are super-admin actions on
 // the deployment's own fallback credentials and land in the PLATFORM log —
@@ -222,7 +201,7 @@ func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	// Team admins see all team-wide keys + their own user-scoped
 	// keys (matches BYOK plan). Members only see what's visible.
-	keys, err := s.apiKeys.ListByTeam(apiKeyTenantCtx(r), teamID, id.UserID)
+	keys, err := s.apiKeys.ListByTeam(teamPathTenantCtx(r), teamID, id.UserID)
 	s.writeApiKeyList(w, r, keys, err)
 }
 
@@ -307,7 +286,7 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 
 		MaxConcurrentRuns: req.MaxConcurrentRuns,
 	}
-	ctx := apiKeyTenantCtx(r)
+	ctx := teamPathTenantCtx(r)
 	if err := s.apiKeys.Create(ctx, key); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -341,7 +320,7 @@ func (s *Server) refuseApiKey(w http.ResponseWriter, r *http.Request, teamID, ke
 func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
-	ctx := apiKeyTenantCtx(r)
+	ctx := teamPathTenantCtx(r)
 	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
@@ -408,7 +387,7 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
-	ctx := apiKeyTenantCtx(r)
+	ctx := teamPathTenantCtx(r)
 	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
