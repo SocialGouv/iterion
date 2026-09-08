@@ -174,14 +174,14 @@ Important property groups:
 
 | Group | Properties |
 |---|---|
-| Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
+| Model execution | `model`, `backend`, `provider`, the `claude_code`-compatible binary override `command`, and the ordered cross-backend `fallbacks:` block (alternative backend/model routes taken when the primary fails). See [backends](backends.md) and [delegation](delegation.md). |
 | Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
 | Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only\|persist`, `interaction`, `interaction_prompt`, `interaction_model`. `persist` (ADR-089) resumes **this node's own** last CLI conversation on re-entry (claude_code / pi / codex); judges and humans stay graph nodes. Trunk-only (C243). |
 | Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. |
 | Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
 | Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |
-| Persistent context | `memory` and `cursors`. |
+| Persistent context | `memory`, `cursors`, and `auto_memory` (the backend's own `MEMORY.md`, off by default — see [memory-and-knowledge](memory-and-knowledge.md)). |
 
 `readonly: true` forces delegated agents into a read-only sandbox and classifies the node as non-mutating for parallel workspace safety. `full_access: true` is a high-authority Codex-only opt-in; `readonly` wins if both are present.
 
@@ -293,7 +293,7 @@ tool run_tests:
   needs: [test_slot]
 ```
 
-`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
+`command` and `script` are mutually exclusive. A script adds `language: js|node|py|python|python3|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
 
 Verified Actions add a deterministic outcome check and bounded recovery:
 
@@ -632,7 +632,7 @@ workflow review:
   reviewer -> prepare when not approved as retry(3)
 ```
 
-Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
+Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, `sandbox`, `auto_memory`, `loop_budget_guard`, and `repo_devbox`.
 
 #### Budget fields
 
