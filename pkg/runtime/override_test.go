@@ -593,7 +593,7 @@ func TestRaiseBudget_DeadlineExpiryIsJudgedOnTheRaisedCap(t *testing.T) {
 	}
 }
 
-// TestRaiseBudget_AModestRaiseAlsoLifisTheVerdict pins the half a proximity
+// TestRaiseBudget_AModestRaiseAlsoLiftsTheVerdict pins the half a proximity
 // test got wrong. The old guard asked "is the run within 10% of its cap?", so
 // the verdict only flipped once the new cap exceeded used/0.9 — measured on a
 // real run (used 36001s, cap 36000s) that meant every raise below 11.112h kept
