@@ -1,0 +1,72 @@
+name: modernize-scope
+display_name: Scopy
+icon: 📐
+version: 0.1.0
+description: |
+  Frames a modernisation BEFORE it starts: what the repository is today,
+  what a programme would have to carry, and how big the project is —
+  each figure recomputable from pinned git objects, never asserted by an
+  agent.
+
+  Scopy produces the entry Morphy is missing. Today an operator writes
+  `.modernize/plan.yaml` by hand; Scopy derives the inventory, drafts the
+  contract from it, and lints the draft against the same rules Morphy
+  reads it with. It renders three documents — état des lieux, plan,
+  taille — whose every number carries the command that recomputes it.
+
+  The split is the catalogue's own: stack knowledge lives in skills, an
+  adaptive agent reads the matching skill and runs the DETERMINISTIC
+  extractor it names, and a coverage gate verifies every detected stack
+  produced its artifact. The agent chooses which tool to run; it never
+  counts. A stack with no skill is reported `unsupported` and degrades
+  visibly — never silently zero.
+
+  What Scopy refuses rather than guesses: a shallow or grafted clone (a
+  `--depth=1` clone makes commit-cadence answer about the clone, not the
+  history), a reference that is a tag name with no pinned SHA, a declared
+  claim whose evidence is absent from the tree, and the same declaration
+  made twice — a declaration is a FIGURE, and repeating one inflates a
+  count no tree contradicts.
+when_to_use: |
+  Use at the START of a modernisation, on a repository that has no
+  programme yet: no `.modernize/plan.yaml`, no behavioural net, no prior
+  campaign. Scopy answers "what are we walking into, and how big is it?"
+  and leaves an auditable contract draft behind.
+
+  Engage when:
+    - an operator must scope or quote a modernisation and wants the
+      inventory derived rather than asserted;
+    - a repository is about to enter a Morphy programme and the contract
+      is still hand-written;
+    - a stakeholder needs the état des lieux as a document, with each
+      figure recomputable.
+
+  Do NOT use to run the modernisation (that is Morphy), to build the
+  behavioural net (that is Goldy), or to set a long-horizon architectural
+  vision on a settled codebase (that is Evoly). Scopy does not modify the
+  target's sources; it reads, and it writes documents plus a contract
+  DRAFT the operator still owns.
+author: SocialGouv (devthejo) — modernize-scope/main.bot
+schema_version: 1
+
+triggers:
+  - scope
+  - cadrage
+  - modernize-scope
+  - sizing
+  - etat-des-lieux
+  - inventory
+
+dispatch_vars:
+  scope_notes: |-
+    {{issue.title}}
+
+    {{issue.body}}
+
+enabled: false
+
+## Launch form: the operator names what they already know (decisions the
+## tree cannot carry — target versions, support policy, compatibility
+## constraints). Everything else is derived.
+launch:
+  primary: [scope_notes]

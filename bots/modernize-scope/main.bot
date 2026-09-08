@@ -1,0 +1,190 @@
+## ─────────────────────────────────────────────────────────────────
+## modernize-scope — "Scopy", the framing pass that runs BEFORE a
+## programme exists.
+##
+## SKELETON (0.1.0): the graph, its refusals and its coverage gate are
+## wired; the extractors are stubs that emit their envelope and declare
+## themselves unimplemented. Every node below is a `tool` except the two
+## that must adapt to an unknown repository — and neither of those two
+## ever produces a published figure.
+##
+## The division of labour, which is the whole design:
+##
+##   - the AGENT detects stacks and names which deterministic extractor
+##     the matching skill prescribes. It does not count.
+##   - the EXTRACTORS are deterministic tools reading pinned git objects.
+##     They produce the figures.
+##   - the GATE verifies coverage: the agnostic floor must have produced
+##     output on ANY repository (missing = the tool crashed, not a clean
+##     repo), and every DETECTED stack must have produced its artifact,
+##     else the run degrades with a visible banner.
+##
+## Adding a language is dropping `skills/lang-<id>.md`. There is no
+## language, package manager or ecosystem named anywhere in this file —
+## that is a hard rule of the catalogue, and `catalog_universality_test`
+## enforces it.
+##
+## Two phases, and the second is deliberately absent here: sizing needs
+## a MEASURED campaign to calibrate against, and no such measurement
+## exists on a first pass. Rendering a projection before a single lot has
+## run would be inventing its own input.
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  ## The repository to frame. Empty = the workspace the run was given.
+  workspace_dir: string = ""
+  ## What the operator already knows and the tree cannot carry: target
+  ## versions, support policy, compatibility constraints, decisions
+  ## already taken. Free text; `plan_draft` treats it as DECLARED input,
+  ## never as evidence.
+  scope_notes: string = ""
+  ## The measurement profile: metrics, canonical exclusions, domain of
+  ## applicability, anchor and thresholds, together under one version.
+  ## Outside its domain the size is "not applicable", never a wrong letter.
+  profile: string = "scope-profile-v1"
+  ## Where the framing documents land in the target repository.
+  out_dir: string = "docs/modernisation"
+
+schema survey_output:
+  ## Open lists, never closed booleans: a stack this bot has never heard
+  ## of must be REPRESENTABLE, so it can be reported unsupported.
+  stacks:       json
+  ## One entry per declaration the agent asserts about the tree, each with
+  ## the file that proves it. `scope_lint` verifies every one.
+  declarations: json
+  ## What the agent could not resolve from the tree alone.
+  unresolved:   json
+
+schema coverage_report:
+  floor_ok:    bool
+  detected:    json
+  covered:     json
+  unsupported: json
+  degraded:    bool
+
+prompt survey_system:
+  You are Scopy's surveyor. You are pointed at a repository you have never
+  seen, in a language you must not assume.
+
+  Your job is to DECLARE, never to count. For every fact the framing needs,
+  you name where it is declared in this repository and which deterministic
+  extractor should read it — you do not read the value yourself and you do
+  not estimate. A number you produce is a number nobody can recompute, and
+  this bot exists to make every number recomputable.
+
+  Procedure:
+  1. Detect which stacks are present. Report them as an OPEN list of
+     identifiers; if you meet something you have no skill for, say so in
+     `unsupported` rather than forcing it into a category you know.
+  2. For each detected stack, read the matching `lang-<id>` skill and name
+     the extractor it prescribes.
+  3. Emit `declarations`: each is a claim about the tree with the file that
+     proves it — where a version is declared, which globs are vendored or
+     generated, which file proves a deployable exists.
+  4. Emit `unresolved` for everything the tree cannot establish: target
+     versions, support policy, compatibility constraints. These are
+     DECISIONS, not facts, and they belong to the operator.
+
+  Two rules that are checked after you, so violating them only wastes a run:
+  a declaration whose evidence is absent from the tree is refused, and the
+  same declaration made twice is refused — a repeated declaration inflates
+  a count that no tree contradicts.
+
+prompt survey_user:
+  Repository: {{vars.workspace_dir}}
+
+  Operator notes (DECLARED input, not evidence):
+  {{vars.scope_notes}}
+
+  Survey this repository and emit your structured output.
+
+## ── Phase 1, node by node ─────────────────────────────────────────
+
+## The clone must be able to answer the questions we will ask it. A
+## reachability read on a shallow clone measures the CLONE, not the
+## history: a --depth=1 clone makes a repository of thousands of commits
+## report a squashed import, and the run would publish that as a fact.
+tool workspace_probe:
+  command: `echo '{"unimplemented":"workspace_probe","refuses":["shallow clone","graft file","replace refs","unpinned ref"]}'`
+
+agent survey:
+  ## Adaptive on purpose: it meets repositories this bot has never seen.
+  ## It reads the skills and NAMES extractors; it never emits a figure.
+  backend: "claw"
+  output: survey_output
+  system: survey_system
+  user: survey_user
+  tools: [skill]
+  tool_max_steps: 24
+
+## The agent returns a structured value; a tool materialises it. An agent
+## node cannot write the file itself — the delegate runs it read-only.
+tool scope_write:
+  command: `echo '{"unimplemented":"scope_write"}'`
+
+## A declaration is a FIGURE. Measured on the private predecessor of this
+## bot: declaring one deployable four times, evidence untouched in the
+## tree, moved the amplitude index from 3,84 to 4,20 and the published
+## letter from M to L. So the perimeter itself is guarded — canonical
+## identities, duplicates refused, overlaps refused, an explicit partition
+## of the files, and evidence proper to each exclusion.
+tool scope_lint:
+  command: `echo '{"unimplemented":"scope_lint","refuses":["evidence absent","declaration repeated","overlapping perimeters"]}'`
+
+## The always-on, stack-agnostic floor: tree, file counts, tags, CI
+## presence, secret patterns, deployables proven by a file. It MUST
+## produce output on any repository — missing output means the extractor
+## crashed, not that the repository is empty.
+tool inventory_floor:
+  command: `echo '{"unimplemented":"inventory_floor"}'`
+
+## The per-stack layer: runs the extractors the survey named, one per
+## detected stack. No stack is named here; the skills are the catalogue.
+tool inventory_stacks:
+  command: `echo '{"unimplemented":"inventory_stacks"}'`
+
+## The determinism is HERE, and it is coverage, not judgement: the floor
+## must have produced output, and every detected stack must have produced
+## its artifact. Expectations derive from the same skill blocks the survey
+## executed, so the check stays in lockstep with what actually ran.
+tool coverage_gate:
+  output: coverage_report
+  command: `echo '{"floor_ok": false, "detected": [], "covered": [], "unsupported": [], "degraded": true}'`
+
+tool render_etat:
+  command: `echo '{"unimplemented":"render_etat"}'`
+
+tool amplitude:
+  command: `echo '{"unimplemented":"amplitude","note":"index and profile only — projection needs a measured campaign"}'`
+
+tool plan_draft_lint:
+  command: `echo '{"unimplemented":"plan_draft_lint","note":"walks EVERY lot: types, enums, DAG, unknown refs, timeouts, editable shape"}'`
+
+tool render_plan:
+  command: `echo '{"unimplemented":"render_plan"}'`
+
+fail floor_missing:
+  description: "the stack-agnostic floor produced no output"
+  code: SCOPE_FLOOR_MISSING
+  message: "the stack-agnostic floor produced no output — the extractor failed, which is not the same as an empty repository"
+  resumable: false
+
+workflow modernize_scope:
+  entry: workspace_probe
+
+  workspace_probe -> survey
+  survey -> scope_write
+  scope_write -> scope_lint
+  scope_lint -> inventory_floor
+  inventory_floor -> inventory_stacks
+  inventory_stacks -> coverage_gate
+  coverage_gate -> floor_missing when not floor_ok
+  coverage_gate -> render_etat
+  render_etat -> amplitude
+  amplitude -> plan_draft_lint
+  plan_draft_lint -> render_plan
+  render_plan -> done
+
+  budget:
+    max_duration: "45m"
+    max_cost_usd: 10
