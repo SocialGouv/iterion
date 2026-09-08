@@ -511,19 +511,36 @@ tool oracle_run:
         return text.encode("utf-8")
 
 
-    def multipart_boundary(payloads):
+    def header_value(s):
+        """A name, filename or content type as it may appear in a part header.
+
+        RFC 7578 §5.1 — the rule browsers actually emit: %-escape the three bytes
+        that can end a header parameter early or open a line the corpus never
+        asked for. A bare `"` otherwise truncates the parameter, and the
+        application is then observed answering about a filename the corpus did
+        NOT declare; a CRLF is worse still, opening a second part out of the
+        first one's header. The declared name must reach the application AS
+        DECLARED, or the reference records the behaviour of another request.
+        """
+        return str(s).replace('"', "%22").replace("\r", "%0D").replace("\n", "%0A")
+
+
+    def multipart_boundary(contents):
         """A boundary that no part contains — derived from the parts, not drawn
         at random, so the same request encodes to the same bytes forever.
 
-        RFC 7578 requires the delimiter to appear in no part. The base name is a
-        constant (readable in a capture, and the same across every net); when a
-        payload happens to contain it, a counter is appended until it does not.
-        Deterministic in both branches: the collision is a property of the
-        content, and the same content yields the same boundary.
+        RFC 7578 requires the delimiter to appear in no part, and a part is its
+        HEADER as much as its payload — so `contents` carries both. Checking the
+        payloads alone would leave the guard blind to the half a corpus writes by
+        hand: a filename is where the delimiter is most likely to be typed. The
+        base name is a constant (readable in a capture, and the same across every
+        net); when a content happens to contain it, a counter is appended until
+        it does not. Deterministic in both branches: the collision is a property
+        of the content, and the same content yields the same boundary.
         """
         boundary = FILE_PART_BOUNDARY
         n = 0
-        while any(boundary.encode("utf-8") in p for p in payloads):
+        while any(boundary.encode("utf-8") in c for c in contents):
             n += 1
             boundary = "%s-%d" % (FILE_PART_BOUNDARY, n)
         return boundary
@@ -536,20 +553,22 @@ tool oracle_run:
         insertion order, and an ordering that follows the declaration is one the
         reader of a reference can predict.
         """
-        parts, payloads = [], []
+        payloads, heads = [], []
         for name, value in fields.items():
+            head = 'Content-Disposition: form-data; name="%s"' % header_value(name)
             if is_file_part(value):
                 payloads.append(file_part_bytes(value))
+                head += '; filename="%s"' % header_value(value["filename"])
+                head += "\r\nContent-Type: %s" % header_value(
+                    value.get("content_type") or "application/octet-stream")
             else:
                 payloads.append(("" if value is None else str(value)).encode("utf-8"))
-        boundary = multipart_boundary(payloads)
-        for (name, value), payload in zip(fields.items(), payloads):
-            head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (boundary, name)
-            if is_file_part(value):
-                head += '; filename="%s"' % value["filename"]
-                head += "\r\nContent-Type: %s" % (value.get("content_type")
-                                                   or "application/octet-stream")
-            parts.append(head.encode("utf-8") + b"\r\n\r\n" + payload + b"\r\n")
+            heads.append(head.encode("utf-8"))
+        # Headers are built BEFORE the boundary, and enter its derivation: they
+        # are part content too, and their escaping is what makes them so.
+        boundary = multipart_boundary(payloads + heads)
+        parts = [b"--" + boundary.encode("utf-8") + b"\r\n" + head + b"\r\n\r\n"
+                 + payload + b"\r\n" for head, payload in zip(heads, payloads)]
         parts.append(("--%s--\r\n" % boundary).encode("utf-8"))
         return b"".join(parts), 'multipart/form-data; boundary=%s' % boundary
 
@@ -3614,6 +3633,30 @@ tool oracle_run:
                    [p.split(b'name="')[1].split(b'"')[0]
                     for p in body.split(b"--" + ctype.split("=")[1].encode())[1:-1]]],
                   [b"hello", [b"titre", b"doc"]])
+            # Le nom DECLARE est le nom qui arrive : un guillemet ne coupe pas le
+            # parametre, un CRLF n'ouvre ni une part ni un en-tete que le corpus
+            # n'a pas declares. Sinon l'application repond a une AUTRE requete que
+            # celle du corpus, et c'est cette reponse-la que la reference grave.
+            hostile = {"doc": {"filename": 'a";name="evil.pdf',
+                               "content_type": "text/plain\r\nX-Injecte: 1",
+                               "text": "X"}}
+            hbody, hctype = encode_multipart(hostile)
+            hparsed = parse_multipart(hbody, hctype)
+            check("guillemet dans le nom de fichier : le parametre entier, non tronque",
+                  [list(hparsed), hparsed["doc"][0], hparsed["doc"][2]],
+                  [["doc"], 'a%22;name=%22evil.pdf', b"X"])
+            check("CRLF echappe : aucun en-tete que le corpus n'a pas declare",
+                  [b"\r\nX-Injecte:" in hbody, b"%0D%0AX-Injecte:" in hbody],
+                  [False, True])
+            # Une frontiere ecrite dans un NOM DE FICHIER — la ou un corpus
+            # l'ecrit a la main — entre dans la derivation comme une charge utile.
+            hidden = {"doc": {"filename": "%s.txt" % FILE_PART_BOUNDARY, "text": "X"}}
+            hibody, hictype = encode_multipart(hidden)
+            check("frontiere dans le nom de fichier -> frontiere deplacee, deterministe",
+                  [FILE_PART_BOUNDARY + "-1" in hictype,
+                   encode_multipart(hidden) == (hibody, hictype),
+                   parse_multipart(hibody, hictype)["doc"][0]],
+                  [True, True, "%s.txt" % FILE_PART_BOUNDARY])
             # Et le CHOIX, pas seulement l'encodeur : une session qui parle a un
             # vrai serveur, parce qu'un encodeur juste que `fetch` n'appelle pas
             # laisse le defaut exactement ou il etait.
