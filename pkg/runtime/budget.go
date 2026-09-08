@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -705,9 +706,33 @@ func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[s
 	// the overrun is only NOTED, and the note is taken exclusively at
 	// execLoopAfterExec — a success-path boundary no failure exit reaches —
 	// so it stays what this helper says it is: accounting.
-	if err := e.recordBudget(rs, nodeID, output, true); err != nil {
+	//
+	// On a DETACHED context, because half the exits that reach this helper
+	// are reached BECAUSE the run's own context is done — a teardown mid-node,
+	// a cancel during the retry backoff. The writes recordBudget makes (the
+	// daily-cap record, a budget_warning) go through that context, so booking
+	// on it would drop the ledger write on exactly the exits where the figure
+	// is most certainly final: the FS store ignores ctx, but on Mongo the
+	// day's spend would silently miss a cancelled run's last node. Same shape
+	// handleContextDoneWithCheckpoint uses for its own last writes.
+	ctx, cancel := detachedBookingCtx(rs)
+	defer cancel()
+	if err := e.recordBudgetOn(ctx, rs, nodeID, output, true); err != nil {
 		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
 	}
+}
+
+// detachedBookingCtx builds the bounded, cancellation-free context a spend
+// booking persists through. rs.ctx keeps its values (a store handle, a trace
+// span) and loses only its cancellation; a nil one — runStates built directly
+// in tests have no context — degrades to Background rather than panicking
+// inside the accounting path.
+func detachedBookingCtx(rs *runState) (context.Context, context.CancelFunc) {
+	parent := rs.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 }
 
 // recordAndDeferBudget records usage and DEFERS a hard overrun to the
@@ -719,6 +744,14 @@ func (e *Engine) recordAndDeferBudget(rs *runState, nodeID string, output map[st
 }
 
 func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
+	return e.recordBudgetOn(rs.ctx, rs, nodeID, output, deferExceeded)
+}
+
+// recordBudgetOn is recordBudget with the context its two persistence writes
+// use made explicit, so a caller that is reached ON a cancelled run can still
+// land the ledger entry (see recordFailedNodeSpend). Everything else — the
+// in-memory totals, the exceeded decision — is context-free.
+func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
 	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
@@ -727,7 +760,7 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 	// checkpoint at a not-yet-executed node.
 	if e.dailyCap != nil && costUSD > 0 {
 		rs.costUSDTotal += costUSD
-		if _, err := e.dailyCap.Record(rs.ctx, rs.runID, rs.costUSDTotal); err != nil {
+		if _, err := e.dailyCap.Record(ctx, rs.runID, rs.costUSDTotal); err != nil {
 			e.logger.Warn("daily spend cap: record failed: %v", err)
 		}
 	}
@@ -740,7 +773,7 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {
-		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
+		_ = e.emit(ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
 	}
 
 	// Exceeded by a node that ALREADY SUCCEEDED: note it and let the
