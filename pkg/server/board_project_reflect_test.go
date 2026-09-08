@@ -405,7 +405,7 @@ func TestIssueImportPreservesTheProjectSyncState(t *testing.T) {
 	id := seedSynced(t, board, 613, native.StateInProgress, "Planned", at)
 
 	// The issue-import upsert path, on a card that already exists.
-	b := board.Board()
+	b := mustBoard(t, board)
 	_, updated, err := upsertForgeCardForTest(board, b, forge.IssueRef{
 		Number: 613, Title: "t", Body: "b", State: "open", URL: "u",
 	})

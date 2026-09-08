@@ -333,7 +333,12 @@ func (s *Server) handlePipelineBoardTaskClose(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board close: %v", err)
 		return
 	}
-	target, ok := pipelineCloseTargetState(boardStore.Board())
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board close: read board: %v", err)
+		return
+	}
+	target, ok := pipelineCloseTargetState(board)
 	if !ok {
 		s.httpErrorFor(w, r, http.StatusConflict,
 			"pipeline board close: board has no terminal state — declare one or move the ticket by hand")

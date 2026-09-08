@@ -455,12 +455,21 @@ func (c *Dispatcher) noteRunReadFailure(err error) {
 // launchStates asks the tracker which columns a card is dispatched from
 // (tracker.LaunchStateLister). A tracker without the capability returns
 // nothing, which keeps the watchdog conservative: it then honours every
-// state it did not expect rather than guessing.
+// state it did not expect rather than guessing. A tracker that HAS the
+// capability but could not read it lands on the same conservative answer,
+// and says so — a read that failed and a tracker that cannot answer are
+// the same decision here but not the same event.
 func (c *Dispatcher) launchStates() []string {
-	if l, ok := c.tracker.(tracker.LaunchStateLister); ok {
-		return l.LaunchStates()
+	l, ok := c.tracker.(tracker.LaunchStateLister)
+	if !ok {
+		return nil
 	}
-	return nil
+	states, err := l.LaunchStates()
+	if err != nil {
+		c.logger.Warn("dispatcher: claim watchdog cannot read the launch states (%v) — every unexpected move is honoured this pass", err)
+		return nil
+	}
+	return states
 }
 
 // loadRunForReap resolves the card's recorded run for the decision

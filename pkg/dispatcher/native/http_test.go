@@ -202,7 +202,7 @@ func TestHTTPStateManagement(t *testing.T) {
 	} else {
 		r.Body.Close()
 	}
-	if s.Board().StateByName("triage") == nil {
+	if mustBoard(t, s).StateByName("triage") == nil {
 		t.Fatal("triage not added")
 	}
 
@@ -223,7 +223,7 @@ func TestHTTPStateManagement(t *testing.T) {
 	} else {
 		r.Body.Close()
 	}
-	if st := s.Board().StateByName("todo"); st == nil || !st.Eligible {
+	if st := mustBoard(t, s).StateByName("todo"); st == nil || !st.Eligible {
 		t.Fatalf("flags not updated: %+v", st)
 	}
 
@@ -248,7 +248,7 @@ func TestHTTPStateManagement(t *testing.T) {
 	} else {
 		r.Body.Close()
 	}
-	if s.Board().StateByName("todo") != nil {
+	if mustBoard(t, s).StateByName("todo") != nil {
 		t.Fatal("todo not deleted")
 	}
 	if got, _ := s.Get(iss.ID); got.State != "ready" {
@@ -257,7 +257,7 @@ func TestHTTPStateManagement(t *testing.T) {
 
 	// Reorder.
 	names := make([]string, 0)
-	for _, st := range s.Board().States {
+	for _, st := range mustBoard(t, s).States {
 		names = append(names, st.Name)
 	}
 	rev := make([]string, len(names))
@@ -270,7 +270,7 @@ func TestHTTPStateManagement(t *testing.T) {
 	} else {
 		r.Body.Close()
 	}
-	if s.Board().States[0].Name != rev[0] {
+	if mustBoard(t, s).States[0].Name != rev[0] {
 		t.Fatal("reorder not applied")
 	}
 }

@@ -47,6 +47,17 @@ func newTestBoard(t *testing.T) *native.Store {
 	return st
 }
 
+// mustBoard is Board or Fatal: the contract reports a read failure rather
+// than substituting a default board for it (see native.BoardStore.Board).
+func mustBoard(t *testing.T, s native.BoardStore) *native.Board {
+	t.Helper()
+	b, err := s.Board()
+	if err != nil {
+		t.Fatalf("Board: %v", err)
+	}
+	return b
+}
+
 func TestForgeCardID_Deterministic(t *testing.T) {
 	a := forgeCardID(forge.ProviderGitHub, "org/api", 12)
 	b := forgeCardID(forge.ProviderGitHub, "org/api", 12)
@@ -65,7 +76,7 @@ func TestForgeCardID_Deterministic(t *testing.T) {
 
 func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 	board := newTestBoard(t)
-	b := board.Board()
+	b := mustBoard(t, board)
 	openCol := defaultOpenColumn(b) // "inbox"
 	doneCol := terminalColumn(b)    // "done"
 	if openCol == "" || doneCol == "" {
@@ -132,7 +143,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 // the first column, PRs are skipped, and a re-sync upserts (no duplicates).
 func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 	board := newTestBoard(t)
-	openCol := defaultOpenColumn(board.Board())
+	openCol := defaultOpenColumn(mustBoard(t, board))
 	ic := &fakeIssueClient{issues: []forge.IssueRef{
 		{Number: 1, Title: "add metrics", State: "open", Labels: []string{"feat"}},
 		{Number: 2, Title: "a PR, skipped", State: "open", IsPullRequest: true},
@@ -190,7 +201,7 @@ func TestImportForgeIssues_UnsupportedProvider(t *testing.T) {
 
 func TestUpsertForgeCard_ClosedCreatesInTerminal(t *testing.T) {
 	board := newTestBoard(t)
-	b := board.Board()
+	b := mustBoard(t, board)
 	is := forge.IssueRef{Number: 9, Title: "old", State: "closed"}
 	if _, _, err := upsertForgeCard(board, b, defaultOpenColumn(b), terminalColumn(b), forge.ProviderForgejo, "c", "o/r", is, false); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -208,7 +219,7 @@ func TestUpsertForgeCard_ClosedCreatesInTerminal(t *testing.T) {
 // else, so the sentinel is what distinguishes the two.
 func TestUpsertForgeCard_PropagatesAStoreFailure(t *testing.T) {
 	board := newTestBoard(t)
-	b := board.Board()
+	b := mustBoard(t, board)
 	flaky := &flakyBoard{BoardStore: board, err: errors.New("boardmongo: get issue: i/o timeout")}
 
 	is := forge.IssueRef{Number: 7, Title: "fix login", State: "open"}

@@ -482,6 +482,33 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 	}
 }
 
+// StopBackground ends every PERIODIC worker the service owns — the orphan
+// reconcile ticker, the pipeline scheduler, the alert manager's stall poll —
+// and leaves the in-flight runs strictly alone.
+//
+// It exists for the caller that REPLACES a service without draining it (the
+// studio's project hot-swap): the engines that already captured this service
+// keep writing to the store they started on, which is the point, while
+// nothing keeps scanning a store the server no longer serves. Every teardown
+// goes through it, so a periodic worker added here is reaped by all three
+// paths at once instead of by the two that remembered.
+//
+// Bounded by ctx: the reconcile half AWAITS the scan in flight (see
+// stopPeriodicReconcile), so a scan wedged in a store call degrades the
+// promise loudly rather than hanging the caller.
+func (s *Service) StopBackground(ctx context.Context) {
+	s.stopPeriodicReconcile(ctx)
+	// Queued pipelines stay persisted as queued docs and are recovered by the
+	// next service built over that store, so stopping the scheduler here never
+	// strands them.
+	s.stopPipelineScheduler()
+	// Started with context.Background() so it outlives per-run contexts —
+	// nothing else reaps it.
+	if s.alertManager != nil {
+		s.alertManager.Stop()
+	}
+}
+
 // Stop cancels every active run and waits for their goroutines to
 // finish, but does not flip persisted statuses or emit any
 // observability event. Use Stop in tests or for a quiet teardown
@@ -491,8 +518,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // publishes EventRunInterrupted and flips each in-flight run to
 // failed_resumable so the next server boot can offer one-click resume.
 func (s *Service) Stop(ctx context.Context) {
-	s.stopPeriodicReconcile(ctx)
-	s.stopPipelineScheduler()
+	s.StopBackground(ctx)
 	s.manager.Stop(ctx)
 }
 
@@ -517,18 +543,7 @@ func (s *Service) Stop(ctx context.Context) {
 // it returns, the service should not be used to launch new work.
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
-	s.stopPeriodicReconcile(ctx)
-	// Queued pipelines stay persisted as queued docs and are recovered on
-	// the next boot, so stopping the scheduler here never strands them.
-	s.stopPipelineScheduler()
-
-	// Stop the alert manager's stall-poll goroutine. It was started with
-	// context.Background() (so it outlives per-run contexts), so Drain is
-	// the only place that reaps it — without this it leaks across project
-	// hot-swaps that construct a fresh Service.
-	if s.alertManager != nil {
-		s.alertManager.Stop()
-	}
+	s.StopBackground(ctx)
 
 	handles := s.manager.Snapshot()
 

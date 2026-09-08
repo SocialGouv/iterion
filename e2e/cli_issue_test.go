@@ -53,6 +53,17 @@ func reopenBoard(t *testing.T, storeDir string) *native.Store {
 	return s
 }
 
+// mustBoard is Board or Fatal: the contract reports a read failure rather
+// than substituting a default board for it (see native.BoardStore.Board).
+func mustBoard(t *testing.T, s native.BoardStore) *native.Board {
+	t.Helper()
+	b, err := s.Board()
+	if err != nil {
+		t.Fatalf("Board: %v", err)
+	}
+	return b
+}
+
 // issueEvents reads the persisted audit trail.
 func issueEvents(t *testing.T, storeDir string) []native.Event {
 	t.Helper()
@@ -276,7 +287,7 @@ func TestIssueCLILifecycleCreateMoveUpdateClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reload closed issue: %v", err)
 		}
-		st := s.Board().StateByName(got.State)
+		st := mustBoard(t, s).StateByName(got.State)
 		if st == nil || !st.Terminal {
 			t.Fatalf("close left the card in %q, which is not a terminal board state", got.State)
 		}
@@ -361,7 +372,7 @@ func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
 
 	// Rewrite the board with every terminal flag cleared.
 	s := reopenBoard(t, storeDir)
-	board := s.Board()
+	board := mustBoard(t, s)
 	for i := range board.States {
 		board.States[i].Terminal = false
 	}

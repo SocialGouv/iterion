@@ -314,7 +314,10 @@ func PromoteUnblockedDependents(store BoardStore, closedID string) error {
 	if store == nil || closedID == "" {
 		return nil
 	}
-	board := store.Board()
+	board, err := store.Board()
+	if err != nil {
+		return err
+	}
 	if board == nil || board.StateByName(StateWaitingDeps) == nil {
 		return nil
 	}

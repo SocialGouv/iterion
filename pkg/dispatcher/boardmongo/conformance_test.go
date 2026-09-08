@@ -42,6 +42,28 @@ func lastStatePayload(t *testing.T, s native.BoardStore, id string) map[string]a
 	return last
 }
 
+// mustBoard / mustLabels are Board / AggregateLabels or Fatal. Both report a
+// read failure rather than substituting a default board or an empty
+// vocabulary, so a row that ignored the error would assert against the
+// fallback instead of the store.
+func mustBoard(t *testing.T, s native.BoardStore) *native.Board {
+	t.Helper()
+	b, err := s.Board()
+	if err != nil {
+		t.Fatalf("Board: %v", err)
+	}
+	return b
+}
+
+func mustLabels(t *testing.T, s native.BoardStore) []native.LabelUsage {
+	t.Helper()
+	got, err := s.AggregateLabels()
+	if err != nil {
+		t.Fatalf("AggregateLabels: %v", err)
+	}
+	return got
+}
+
 // mustGetIssue is Get or Fatal, for the provenance rows that read a method
 // off the record.
 func mustGetIssue(t *testing.T, s native.BoardStore, id string) *native.Issue {
@@ -907,7 +929,7 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 
 	// AggregateLabels.
-	labels := store.AggregateLabels()
+	labels := mustLabels(t, store)
 	found := false
 	for _, l := range labels {
 		if l.Label == "x" && l.Count >= 1 {
@@ -1070,7 +1092,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.AddState(native.State{Name: "triage", Display: "Triage"}); err != nil {
 		t.Fatalf("AddState: %v", err)
 	}
-	if store.Board().StateByName("triage") == nil {
+	if mustBoard(t, store).StateByName("triage") == nil {
 		t.Fatal("AddState: triage not persisted")
 	}
 	if err := admin.AddState(native.State{Name: "triage"}); err == nil {
@@ -1085,7 +1107,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.UpdateState("triage", native.StatePatch{Eligible: &yes, Display: ptr("Triage!")}); err != nil {
 		t.Fatalf("UpdateState: %v", err)
 	}
-	if st := store.Board().StateByName("triage"); st == nil || !st.Eligible || st.Display != "Triage!" {
+	if st := mustBoard(t, store).StateByName("triage"); st == nil || !st.Eligible || st.Display != "Triage!" {
 		t.Errorf("UpdateState not applied: %+v", st)
 	}
 	if err := admin.UpdateState("nope", native.StatePatch{Display: ptr("x")}); err == nil {
@@ -1105,7 +1127,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(parked.ID); got.State != "triaging" {
 		t.Errorf("RenameState cascade: parked state=%q want triaging", got.State)
 	}
-	if store.Board().StateByName("triage") != nil {
+	if mustBoard(t, store).StateByName("triage") != nil {
 		t.Error("RenameState: old column still present")
 	}
 	if _, err := admin.RenameState("triaging", native.StateInbox); err == nil {
@@ -1127,7 +1149,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(parked.ID); got.State != native.StateBacklog {
 		t.Errorf("DeleteState migrate: parked state=%q want backlog", got.State)
 	}
-	if store.Board().StateByName("triaging") != nil {
+	if mustBoard(t, store).StateByName("triaging") != nil {
 		t.Error("DeleteState: column still present")
 	}
 	if _, err := admin.DeleteState("ghost", ""); err == nil {
@@ -1167,7 +1189,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	}
 
 	// ReorderStates: permutation only.
-	cur := store.Board()
+	cur := mustBoard(t, store)
 	names := make([]string, len(cur.States))
 	for i, st := range cur.States {
 		names[i] = st.Name
@@ -1178,8 +1200,8 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 		if err := admin.ReorderStates(swapped); err != nil {
 			t.Errorf("ReorderStates: %v", err)
 		}
-		if store.Board().States[0].Name != swapped[0] {
-			t.Errorf("ReorderStates not applied: %+v", store.Board().States)
+		if mustBoard(t, store).States[0].Name != swapped[0] {
+			t.Errorf("ReorderStates not applied: %+v", mustBoard(t, store).States)
 		}
 	}
 	if err := admin.ReorderStates([]string{"only-one"}); err == nil {
@@ -1191,7 +1213,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.AddField(native.Field{Name: "severity", Type: native.FieldText}); err != nil {
 		t.Fatalf("AddField: %v", err)
 	}
-	if store.Board().FieldByName("severity") == nil {
+	if mustBoard(t, store).FieldByName("severity") == nil {
 		t.Fatal("AddField: severity not persisted")
 	}
 	if err := admin.AddField(native.Field{Name: "severity", Type: native.FieldText}); err == nil {
@@ -1205,7 +1227,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.UpdateField("severity", native.FieldPatch{Display: ptr("Severity")}); err != nil {
 		t.Errorf("UpdateField: %v", err)
 	}
-	if f := store.Board().FieldByName("severity"); f == nil || f.Display != "Severity" {
+	if f := mustBoard(t, store).FieldByName("severity"); f == nil || f.Display != "Severity" {
 		t.Errorf("UpdateField not applied: %+v", f)
 	}
 	if err := admin.UpdateField("nope", native.FieldPatch{Display: ptr("x")}); err == nil {
@@ -1225,7 +1247,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(withField.ID); got.Fields["sev"] != "high" || got.Fields["severity"] != nil {
 		t.Errorf("RenameField cascade: fields=%+v", got.Fields)
 	}
-	if store.Board().FieldByName("severity") != nil {
+	if mustBoard(t, store).FieldByName("severity") != nil {
 		t.Error("RenameField: old field def still present")
 	}
 	if _, err := admin.RenameField("sev", "bot_args"); err == nil {
@@ -1239,7 +1261,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(withField.ID); got.Fields["sev"] != nil {
 		t.Errorf("DeleteField cascade: key not stripped: %+v", got.Fields)
 	}
-	if store.Board().FieldByName("sev") != nil {
+	if mustBoard(t, store).FieldByName("sev") != nil {
 		t.Error("DeleteField: field def still present")
 	}
 	if _, err := admin.DeleteField("ghost"); err == nil {
@@ -1250,7 +1272,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.AddField(native.Field{Name: "owner", Type: native.FieldText}); err != nil {
 		t.Fatalf("AddField owner: %v", err)
 	}
-	fcur := store.Board()
+	fcur := mustBoard(t, store)
 	fnames := make([]string, len(fcur.Fields))
 	for i, f := range fcur.Fields {
 		fnames[i] = f.Name
@@ -1263,8 +1285,8 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 		if err := admin.ReorderFields(rev); err != nil {
 			t.Errorf("ReorderFields: %v", err)
 		}
-		if store.Board().Fields[0].Name != rev[0] {
-			t.Errorf("ReorderFields not applied: %+v", store.Board().Fields)
+		if mustBoard(t, store).Fields[0].Name != rev[0] {
+			t.Errorf("ReorderFields not applied: %+v", mustBoard(t, store).Fields)
 		}
 	}
 	if err := admin.ReorderFields([]string{"x"}); err == nil {
@@ -1279,7 +1301,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.SaveView(native.View{Name: "mine", Assignee: "you"}); err != nil {
 		t.Fatalf("SaveView upsert: %v", err)
 	}
-	if vs := store.Board().Views; len(vs) != 1 || vs[0].Assignee != "you" {
+	if vs := mustBoard(t, store).Views; len(vs) != 1 || vs[0].Assignee != "you" {
 		t.Errorf("SaveView upsert by name: %+v", vs)
 	}
 	if err := admin.SaveView(native.View{Name: ""}); err == nil {
@@ -1288,8 +1310,8 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.DeleteView("mine"); err != nil {
 		t.Errorf("DeleteView: %v", err)
 	}
-	if len(store.Board().Views) != 0 {
-		t.Errorf("DeleteView: view still present: %+v", store.Board().Views)
+	if len(mustBoard(t, store).Views) != 0 {
+		t.Errorf("DeleteView: view still present: %+v", mustBoard(t, store).Views)
 	}
 	if err := admin.DeleteView("ghost"); err == nil {
 		t.Error("DeleteView unknown should fail")

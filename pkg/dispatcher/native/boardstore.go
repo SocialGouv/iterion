@@ -17,7 +17,13 @@ import (
 // here. They are plain JSON/BSON-friendly structs with no filesystem
 // coupling, so this is types-only reuse, not behaviour.
 type BoardStore interface {
-	Board() *Board
+	// Board reads the board configuration. It reports a failure rather
+	// than substituting DefaultBoard for it: a backend that reads its
+	// config over the network (boardmongo) would otherwise answer a
+	// transport failure with a board the tenant never declared, and the
+	// caller would file cards into columns that do not exist. A backend
+	// with no config document yet legitimately answers DefaultBoard.
+	Board() (*Board, error)
 	SetBoard(b *Board) error
 
 	Create(in Issue) (*Issue, error)
@@ -111,7 +117,12 @@ type BoardStore interface {
 
 	Resolve(prefix string) (string, error)
 	ScanEvents(visit func(*Event) bool) error
-	AggregateLabels() []LabelUsage
+	// AggregateLabels reads the board's label vocabulary. Like Board it
+	// carries an error: an empty slice means "this board uses no labels",
+	// and a read that failed must not borrow that answer — the studio
+	// picker renders it as an empty vocabulary and an operator re-creates
+	// labels that already exist.
+	AggregateLabels() ([]LabelUsage, error)
 }
 
 // UniqueTitleCreator is the optional interface for board backends that can

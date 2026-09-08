@@ -287,8 +287,12 @@ func IsMachineReason(reason string) bool {
 // the running column never landed (file it, or the next tick launches a
 // second run for work already delivered). A tracker that cannot answer
 // leaves the watchdog conservative — it honours every move it sees.
+// A tracker that could not READ its launch states reports the failure
+// rather than answering the empty list: empty means "this tracker
+// dispatches from no column", and the poller that consumes it would read
+// a failed read as "no eligible tickets".
 type LaunchStateLister interface {
-	LaunchStates() []string
+	LaunchStates() ([]string, error)
 }
 
 // Errors returned by Tracker implementations. Callers should use

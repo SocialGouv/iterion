@@ -34,7 +34,7 @@ func TestNewStoreInitializesBoard(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "issues")); err != nil {
 		t.Fatalf("issues dir not created: %v", err)
 	}
-	b := s.Board()
+	b := mustBoard(t, s)
 	if len(b.States) == 0 {
 		t.Fatal("board has no states")
 	}
@@ -66,7 +66,7 @@ func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	got := s.Board().States
+	got := mustBoard(t, s).States
 	// Upgrade also inserts waiting_deps after ready → 5 states.
 	if len(got) != 5 {
 		t.Fatalf("want 5 states after schema upgrade, got %d: %+v", len(got), got)
@@ -84,8 +84,8 @@ func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore (second pass): %v", err)
 	}
-	if len(s2.Board().States) != 5 {
-		t.Fatalf("schema upgrade ran twice: %+v", s2.Board().States)
+	if len(mustBoard(t, s2).States) != 5 {
+		t.Fatalf("schema upgrade ran twice: %+v", mustBoard(t, s2).States)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	got := s.Board().States
+	got := mustBoard(t, s).States
 	// Upgrade inserts waiting_deps (after ready) + awaiting_input (after in_progress).
 	// Legacy had: inbox, ready, in_progress, done → +2 = 6.
 	if len(got) != 6 {
@@ -142,8 +142,8 @@ func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore (second pass): %v", err)
 	}
-	if len(s2.Board().States) != 6 {
-		t.Fatalf("schema upgrade inserted twice: %+v", s2.Board().States)
+	if len(mustBoard(t, s2).States) != 6 {
+		t.Fatalf("schema upgrade inserted twice: %+v", mustBoard(t, s2).States)
 	}
 }
 
@@ -205,10 +205,10 @@ func TestNewStoreLeavesCustomBoardWithoutInProgressUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if got := s.Board().States; len(got) != 3 {
+	if got := mustBoard(t, s).States; len(got) != 3 {
 		t.Fatalf("custom board must be untouched, got %+v", got)
 	}
-	if s.Board().StateByName(StateAwaitingInput) != nil {
+	if mustBoard(t, s).StateByName(StateAwaitingInput) != nil {
 		t.Fatal("awaiting_input must not be inserted into a board without in_progress")
 	}
 }
@@ -248,8 +248,8 @@ func TestCreateDefaultsToFirstState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if iss.State != s.Board().States[0].Name {
-		t.Fatalf("default state mismatch: got %q want %q", iss.State, s.Board().States[0].Name)
+	if iss.State != mustBoard(t, s).States[0].Name {
+		t.Fatalf("default state mismatch: got %q want %q", iss.State, mustBoard(t, s).States[0].Name)
 	}
 }
 
@@ -774,7 +774,7 @@ func TestLabelVocabularyOps(t *testing.T) {
 	if n != 2 {
 		t.Errorf("rename touched %d, want 2", n)
 	}
-	got := s.AggregateLabels()
+	got := mustLabels(t, s)
 	want := map[string]int{"new": 3, "keep": 3}
 	for _, u := range got {
 		if exp, ok := want[u.Label]; ok && u.Count != exp {
@@ -796,7 +796,7 @@ func TestLabelVocabularyOps(t *testing.T) {
 	if _, err := s.MergeLabels("new", "keep"); err != nil {
 		t.Fatalf("MergeLabels: %v", err)
 	}
-	got = s.AggregateLabels()
+	got = mustLabels(t, s)
 	if _, present := labelMap(got)["new"]; present {
 		t.Errorf("merge did not remove 'new' from the board")
 	}
@@ -809,8 +809,8 @@ func TestLabelVocabularyOps(t *testing.T) {
 	if _, err := s.DeleteLabel("keep"); err != nil {
 		t.Fatalf("DeleteLabel: %v", err)
 	}
-	if len(s.AggregateLabels()) != 0 {
-		t.Errorf("delete did not clear: %+v", s.AggregateLabels())
+	if len(mustLabels(t, s)) != 0 {
+		t.Errorf("delete did not clear: %+v", mustLabels(t, s))
 	}
 
 	// Edge cases.
@@ -869,7 +869,7 @@ func TestAggregateLabels(t *testing.T) {
 	mk("e", []string{""}) // empty label string ignored
 	mk("f", []string{"source:whats-next"})
 
-	got := s.AggregateLabels()
+	got := mustLabels(t, s)
 	if len(got) != 4 {
 		t.Fatalf("got %d distinct labels, want 4: %+v", len(got), got)
 	}

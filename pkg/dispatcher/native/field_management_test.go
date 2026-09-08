@@ -25,7 +25,7 @@ func TestAddField(t *testing.T) {
 	if err := s.AddField(Field{Name: "eta", Type: FieldDate}); err != nil {
 		t.Fatalf("AddField: %v", err)
 	}
-	if s.Board().FieldByName("eta") == nil {
+	if mustBoard(t, s).FieldByName("eta") == nil {
 		t.Fatal("eta not added")
 	}
 	if err := s.AddField(Field{Name: "eta", Type: FieldText}); err == nil {
@@ -48,7 +48,7 @@ func TestRenameFieldCascades(t *testing.T) {
 	if touched != 1 {
 		t.Fatalf("touched = %d, want 1", touched)
 	}
-	if s.Board().FieldByName("owner") != nil || s.Board().FieldByName("assignee_name") == nil {
+	if mustBoard(t, s).FieldByName("owner") != nil || mustBoard(t, s).FieldByName("assignee_name") == nil {
 		t.Fatal("schema rename not applied")
 	}
 	got, _ := s.Get(iss.ID)
@@ -71,7 +71,7 @@ func TestUpdateField(t *testing.T) {
 	if err := s.UpdateField("sev", FieldPatch{Display: &disp, Required: &req}); err != nil {
 		t.Fatalf("UpdateField: %v", err)
 	}
-	f := s.Board().FieldByName("sev")
+	f := mustBoard(t, s).FieldByName("sev")
 	if f.Display != disp || !f.Required {
 		t.Fatalf("update not applied: %+v", f)
 	}
@@ -91,7 +91,7 @@ func TestDeleteFieldStripsIssues(t *testing.T) {
 	if touched != 1 {
 		t.Fatalf("touched = %d, want 1", touched)
 	}
-	if s.Board().FieldByName("owner") != nil {
+	if mustBoard(t, s).FieldByName("owner") != nil {
 		t.Fatal("field not removed from schema")
 	}
 	got, _ := s.Get(iss.ID)
@@ -112,7 +112,7 @@ func TestReorderFields(t *testing.T) {
 	if err := s.ReorderFields([]string{"owner", "sev"}); err != nil {
 		t.Fatalf("ReorderFields: %v", err)
 	}
-	if s.Board().Fields[0].Name != "owner" {
+	if mustBoard(t, s).Fields[0].Name != "owner" {
 		t.Fatal("reorder not applied")
 	}
 	if err := s.ReorderFields([]string{"owner"}); err == nil {
