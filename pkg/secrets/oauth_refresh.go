@@ -179,6 +179,10 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		rec.Fingerprint = SubscriptionFingerprint(rec.Kind, payload)
 	}
 	now := time.Now().UTC()
+	// A refresh decides the record's next-sweep schedule from scratch: any
+	// cool-down a previous one left is answered by this exchange, and
+	// carrying it forward would hold the sweep off a record that is due.
+	rec.RefreshNotBefore = nil
 	switch rec.Kind {
 	case OAuthKindClaudeCode:
 		view, perr := ParseAnthropicView(payload)
@@ -255,12 +259,22 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		// an exchange that may be old, and `last_refresh` dates the write,
 		// not the token).
 		//
-		// Zero stays zero: an expiry we cannot read is left unstamped
-		// rather than invented.
+		// When NEITHER is readable the expiry is left as it stands, which
+		// is emphatically not "unstamped": the record was selected because
+		// its stored expiry is already past, so leaving it means the record
+		// stays inside the sweep's window and every 10-minute tick runs
+		// this exchange again — rotating the refresh token at OpenAI
+		// forever. Truth is not invented to escape that (the field is the
+		// token's actual deadline, exposed under that name); the record
+		// gets a SCHEDULING cool-down instead, which is a retry cadence and
+		// says nothing about how long the token lives.
 		if t := codexRefreshedExpiry(res, updated); !t.IsZero() {
 			rec.AccessTokenExpiresAt = &t
+		} else {
+			next := now.Add(undatableRefreshBackoff)
+			rec.RefreshNotBefore = &next
 		}
-		default:
+	default:
 		return fmt.Errorf("secrets: RefreshRecord unsupported kind %q", rec.Kind)
 	}
 	rec.LastRefreshedAt = &now
@@ -350,6 +364,14 @@ func NewRefreshClaimOwner() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil
 }
+
+// undatableRefreshBackoff is how long the sweep leaves a record alone after
+// a refresh that SUCCEEDED but yielded no readable deadline. It is a retry
+// cadence, not a claimed token lifetime — the record keeps its truthful
+// (past) expiry, so nothing downstream is told the token lives an hour.
+// An hour keeps such a credential rotating often enough to stay usable
+// while removing 5 of every 6 exchanges the 10-minute sweep would run.
+const undatableRefreshBackoff = time.Hour
 
 // codexRefreshedExpiry resolves the access-token deadline to store after a
 // codex refresh: the provider's own expires_in when it sent one, otherwise

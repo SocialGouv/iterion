@@ -180,6 +180,53 @@ func TestOAuthRefreshWorker_ReconnectDuringExchangeKeepsTheNewCredential(t *test
 	}
 }
 
+// A refresh that succeeds but yields no readable deadline used to leave the
+// record's PAST expiry in place — and the record was selected precisely
+// because that expiry is past, so every sweep re-ran the exchange, every 10
+// minutes, for good. Each one rotates the refresh token at OpenAI.
+//
+// The oracle is again the provider: one exchange for two sweeps. The stored
+// expiry must stay the truthful past one — nothing may invent a deadline
+// for a token that states none.
+func TestOAuthRefreshWorker_UndatableCodexRefreshStopsRepeating(t *testing.T) {
+	freshRetrySchedule(t)
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	st := NewMemoryOAuthStore()
+	past := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	seedCodexRecord(t, st, sealer, "alice", past)
+
+	// An opaque access token: no expires_in, no `exp` claim to read.
+	srv := newFakeOAuthServer(`{"access_token":"opaque-access-token-value","refresh_token":"rt.rotated"}`, http.StatusOK)
+	defer srv.Close()
+
+	w := &OAuthRefreshWorker{Store: st, Sealer: sealer, HTTP: redirectingClient(srv.URL), Lead: 30 * time.Minute}
+	if n, err := w.RunOnce(context.Background()); err != nil || n != 1 {
+		t.Fatalf("first sweep: n=%d err=%v, want 1 refreshed", n, err)
+	}
+	if n, err := w.RunOnce(context.Background()); err != nil || n != 0 {
+		t.Fatalf("second sweep: n=%d err=%v, want 0 — the record must be cooling down", n, err)
+	}
+	if hits := atomic.LoadInt32(&srv.hits); hits != 1 {
+		t.Fatalf("provider called %d times over two sweeps, want 1: an undatable refresh must not "+
+			"re-run on every tick, rotating the refresh token each time", hits)
+	}
+
+	rec, err := st.Get(context.Background(), "alice", OAuthKindCodex)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec.AccessTokenExpiresAt == nil || !rec.AccessTokenExpiresAt.UTC().Equal(past) {
+		t.Fatalf("stored expiry = %v, want the truthful past %s: the cool-down is a retry cadence, "+
+			"never a claimed token lifetime", rec.AccessTokenExpiresAt, past)
+	}
+	if rec.RefreshNotBefore == nil || !rec.RefreshNotBefore.After(time.Now()) {
+		t.Fatalf("RefreshNotBefore = %v, want a future cool-down", rec.RefreshNotBefore)
+	}
+	if rec.RefreshClaimOwner != "" {
+		t.Fatalf("claim owner = %q after a committed refresh, want released", rec.RefreshClaimOwner)
+	}
+}
+
 // The claim's own contract, at the store: one holder at a time, a dead
 // holder's claim reclaimable once its lease passes, and release/commit both
 // conditional on still owning it — the property that makes a slow refresher
