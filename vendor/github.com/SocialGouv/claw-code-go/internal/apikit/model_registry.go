@@ -121,6 +121,9 @@ func (r *ModelRegistry) ensureInit() {
 	// Effort level matrices, curated from provider docs (May 2026).
 	// Anthropic source: platform.claude.com/docs/en/build-with-claude/effort
 	// OpenAI source:    platform.openai.com/docs/guides/reasoning
+	// Claude 5 (Opus 5, Sonnet 5, Fable 5.1): the API accepts the same effort
+	// levels as Opus 4.8, up to max, with adaptive thinking.
+	anthropicClaude5Effort := []string{"low", "medium", "high", "xhigh", "max"}
 	anthropicOpus48Effort := []string{"low", "medium", "high", "xhigh", "max"}
 	anthropicOpus47Effort := []string{"low", "medium", "high", "xhigh", "max"}
 	anthropicOpus46Effort := []string{"low", "medium", "high", "max"}
@@ -133,7 +136,15 @@ func (r *ModelRegistry) ensureInit() {
 		// thinking only; temperature/top_p/top_k and manual budget_tokens 400.
 		// The API effort default is "high" (start at "xhigh" for coding/agentic).
 		// platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8
-		{Canonical: "claude-opus-4-8", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus", "opus-4-8"}, Metadata: anthropicMeta,
+		// Claude 5 — the current line. The bare "opus"/"sonnet"/"fable" aliases
+		// resolve to the newest of their line, so they live here, not on 4.x.
+		{Canonical: "claude-opus-5", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus", "opus-5"}, Metadata: anthropicMeta,
+			SupportedReasoningEfforts: anthropicClaude5Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive", RejectsSampling: true},
+		{Canonical: "claude-fable-5-1", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"fable", "fable-5-1", "fable-5"}, Metadata: anthropicMeta,
+			SupportedReasoningEfforts: anthropicClaude5Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive", RejectsSampling: true},
+		{Canonical: "claude-sonnet-5", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet", "sonnet-5"}, Metadata: anthropicMeta,
+			SupportedReasoningEfforts: anthropicClaude5Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive"},
+		{Canonical: "claude-opus-4-8", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus-4-8"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicOpus48Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive", RejectsSampling: true},
 		{Canonical: "claude-opus-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus-4-7"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicOpus47Effort, DefaultReasoningEffort: "xhigh", ThinkingMode: "adaptive", RejectsSampling: true},
@@ -142,7 +153,7 @@ func (r *ModelRegistry) ensureInit() {
 		// Sonnet 4.7 effort matrix not yet documented by Anthropic — leaving nil
 		// rather than guessing. Update once code.claude.com/docs/en/model-config
 		// publishes the table.
-		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet", "sonnet-4-7"}, Metadata: anthropicMeta},
+		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-7"}, Metadata: anthropicMeta},
 		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-6"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicSonnet46Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive"},
 		// Haiku does not support effort — the docs only list Opus and Sonnet.
