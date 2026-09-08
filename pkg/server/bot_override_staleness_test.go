@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -324,6 +326,43 @@ func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) 
 		if v.ShadowsNewerVersion {
 			t.Errorf("no row may claim a verdict when the check could not run; got %+v", v)
 		}
+	}
+}
+
+// A team row is measured against the platform overlay, so an overlay that
+// could not be READ is unknown — not "no platform rows". Answering "the bake"
+// there reports a team row deliberately pinned to match an older platform
+// override as shadowing, and warnIfOverrideShadowsNewerBake caches only
+// positive verdicts, so that false line could never be superseded once the
+// overlay recovered.
+func TestVersionsBelow_AnUnreadablePlatformOverlayIsUnknown(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+
+	// The overlay read fails from cold: the resolver has no last-known value,
+	// so Get serves nil — the same shape a Mongo blip produces at boot.
+	s.platformBots = platformcfg.NewResolverFunc(func(context.Context) (*platformBotSet, error) {
+		return nil, errors.New("bot-source store unavailable")
+	}, nil)
+
+	if below, ok := s.versionsBelow("t1"); ok {
+		t.Errorf("an unreadable platform overlay must read as unknown; got below=%v ok=%v", below, ok)
+	}
+
+	// And the warn path must stay silent rather than name a shadow it cannot
+	// establish.
+	var buf bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	staleOverrideWarned.Range(func(k, _ any) bool { staleOverrideWarned.Delete(k); return true })
+	s.warnIfOverrideShadowsNewerBake("t1", "reviewer", "team", "0.7.0")
+	if strings.Contains(buf.String(), "serves the") {
+		t.Errorf("no shadow may be claimed while the overlay is unreadable; got:\n%s", buf.String())
+	}
+
+	// The platform tier itself is measured against the bake, which IS
+	// readable — the outage must not blind that half too.
+	if below, ok := s.versionsBelow(botsource.PlatformTenantID); !ok || below["reviewer"] != "0.8.0" {
+		t.Errorf("a platform row still compares against the readable bake; got below=%v ok=%v", below, ok)
 	}
 }
 
