@@ -3,6 +3,19 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.116.1](https://github.com/SocialGouv/iterion/compare/v3.116.0...v3.116.1) (2026-09-08)
+
+### Bug Fixes
+
+* **golden-master:** report broken selftest fixtures before indexing verdicts ([#910](https://github.com/SocialGouv/iterion/issues/910)) ([6af47f6](https://github.com/SocialGouv/iterion/commit/6af47f69a4df51e929e5df453ed711d65e1ef531))
+* **recovery,retrypolicy:** two structural verdicts EXECUTION_FAILED promised could be outlasted ([#921](https://github.com/SocialGouv/iterion/issues/921)) ([9a27477](https://github.com/SocialGouv/iterion/commit/9a274770538b7bf05e6ac32c0f6656028c9e302b))
+
+    <details><summary>why</summary>
+
+    A provider that refuses the MODEL — an id no backend claims, a model the account may not use, one whose minimum client release the image is behind — answered about the caller, not about the request. No sample differs and no wait helps, so the automatic resume above it can only spend pods to be told the same thing.
+
+    </details>
+
 ## [3.116.0](https://github.com/SocialGouv/iterion/compare/v3.115.3...v3.116.0) (2026-09-08)
 
 ### Features
