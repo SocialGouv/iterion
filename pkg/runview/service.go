@@ -1089,11 +1089,30 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		})
 	}))
 
-	runLookup := func(id string) (string, bool) {
+	// Alert callbacks run outside request contexts. Bootstrap the identity
+	// from the exact run already observed by this internal manager, then
+	// restore its tenant for descendant reads and the persisted health event.
+	loadAlertRun := func(ctx context.Context, id string) (*store.Run, context.Context, error) {
 		if s.store == nil {
-			return "", false
+			return nil, ctx, fmt.Errorf("alert store unavailable")
 		}
-		r, err := s.store.LoadRun(context.Background(), id)
+		systemCtx := store.WithoutTenantFilter(ctx)
+		r, err := s.store.LoadRun(systemCtx, id)
+		if err != nil {
+			return nil, ctx, fmt.Errorf("load alert run %s: %w", id, err)
+		}
+		if r == nil {
+			return nil, ctx, fmt.Errorf("alert run %s is missing", id)
+		}
+		if r.TenantID == "" {
+			ctx = systemCtx // local/legacy runs have no tenant identity
+		}
+		return r, store.WithIdentity(ctx, r.TenantID, r.OwnerID), nil
+	}
+	runLookup := func(id string) (string, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		r, _, err := loadAlertRun(ctx, id)
 		if err != nil || r == nil {
 			return "", false
 		}
@@ -1106,6 +1125,13 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
+		alert.WithHumanWaitLookup(func(ctx context.Context, id string, now time.Time) bool {
+			_, ctx, err := loadAlertRun(ctx, id)
+			if err != nil {
+				return false
+			}
+			return store.HasBlockingHumanWait(ctx, s.store, id, now)
+		}),
 		alert.WithBaseURL(set.BaseURL),
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
@@ -1119,6 +1145,13 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		opts = append(opts, alert.WithStoreSink(func(a alert.Alert) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			_, ctx, err := loadAlertRun(ctx, a.RunID)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
+				}
+				return
+			}
 			if _, err := s.store.AppendEvent(ctx, a.RunID, store.Event{
 				Type:      store.EventRunHealth,
 				RunID:     a.RunID,

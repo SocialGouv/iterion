@@ -217,6 +217,9 @@ func notDeleted(filter bson.M) bson.M {
 // SaveRun replaces the run document atomically. Tenant-scoped
 // callers can only overwrite documents belonging to their tenant.
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
+	if r.Status != store.RunStatusRunning {
+		r.AwaitAnswersWaits = nil
+	}
 	if err := s.guardNotDeleted(ctx, r.ID); err != nil {
 		return err
 	}
@@ -965,6 +968,11 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		"updated_at": now,
 		"version":    bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 	}
+	if status == store.RunStatusRunning {
+		set["await_answers_waits"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$await_answers_waits", "$$REMOVE"}}}}
+	} else {
+		set["await_answers_waits"] = "$$REMOVE"
+	}
 	// The error message: a transition always states its own (empty
 	// included); a same-status rewrite that states nothing keeps the
 	// transition's message — the runner's continuation promote must not
@@ -1343,7 +1351,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		// platform continuation statement — same discipline as
 		// statusTransitionSet, which this checkpoint-coupled write
 		// bypasses.
-		"$unset": bson.M{"finished_at": "", "failure_code": "", "continuation_state": ""},
+		"$unset": bson.M{"finished_at": "", "failure_code": "", "continuation_state": "", "await_answers_waits": ""},
 	}
 	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))

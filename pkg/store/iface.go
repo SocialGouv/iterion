@@ -167,6 +167,12 @@ type RunStore interface {
 	AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 	RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 
+	// SetAwaitAnswersWait records one active await_answers invocation. The
+	// token isolates parallel/repeated invocations. Nil removes only that
+	// token; additions require a running run. Both forms are granular writes
+	// and fence stale SaveRun copies through the run version.
+	SetAwaitAnswersWait(ctx context.Context, runID, token string, wait *AwaitAnswersWait) error
+
 	// Subbot re-attach map (subbot restart-safety). SetSubbotChild records
 	// childRunID under key in the parent run's SubbotChildren map;
 	// ClearSubbotChild removes it. Both are atomic per-key writes so
