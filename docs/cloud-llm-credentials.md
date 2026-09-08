@@ -115,6 +115,61 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   `tokens.account_id`, and when it is false the forfait is silently skipped.
   Re-run `codex login` with "Sign in with ChatGPT" and upload the file
   unedited.
+- **A codex forfait has exactly ONE refresher, and a record connected by
+  an older build may be invisible to it.** OpenAI rotates the refresh
+  token on use, so two holders refreshing the same credential invalidate
+  each other — the measured incident in
+  [bot-runs/feed-watch.md](bot-runs/feed-watch.md), whose remediation reads
+  "one session, one record, one refresher". The single refresher is the
+  server-side `OAuthRefreshWorker`; runner pods deliberately do **not**
+  refresh codex (`runner.startOAuthRefreshers` takes claude_code only),
+  and each deployment wants its own `codex login` session rather than one
+  shared with an operator's laptop.
+  "One refresher" is **enforced on the record, not assumed of the
+  deployment** — that worker runs in every server replica with no leader
+  election. Each refresh (the sweep's and the manual
+  `POST …/oauth/{kind}/refresh`) first takes a compare-and-swap claim on
+  the record (`refresh_claim_owner` + `refresh_not_before`, a 2-minute
+  lease) and commits only while it still holds it. Consequences you can
+  observe: a manual refresh answers **409** while another one is in
+  flight; a re-connect during an exchange wins, and the refresh that was
+  in flight discards its tokens (409, "replaced while the refresh was in
+  flight") instead of overwriting the credential you just uploaded; and a
+  replica that dies mid-refresh costs one sweep, not a stuck credential —
+  the lease simply expires.
+  A third 409 says **cool-down**, and names the instant it ends: the last
+  refresh succeeded but the token it returned states no readable deadline,
+  so the sweep backs off an hour rather than re-running the exchange (and
+  rotating the refresh token) every tick. Nothing is in flight and
+  retrying does not help — re-connect the credential, which clears the
+  cool-down, or wait for the instant in the message.
+  That worker only ever sees records `ExpiringBefore` returns, which
+  requires `access_token_expires_at` to exist. It is now stamped from the
+  access token's own `exp` claim at connect and after each refresh — but
+  real `~/.codex/auth.json` blobs carry no `expires_in`, so a record
+  connected by an OLDER build has **no** stored expiry and is skipped
+  forever. Symptom: a run failing its first LLM call with `authentication
+  token is expired` while the studio shows the credential present
+  (measured: ten days). Fix is one call — re-upload it, which stamps the
+  field:
+  ```bash
+  iterion remote admin llm oauth set codex --from-file ~/.codex/auth.json
+  ```
+  Check first with `iterion remote api GET /api/admin/llm/oauth/connections`:
+  a codex entry whose `access_token_expires_at` is absent is one of these.
+  A credential whose token states no readable deadline logs a Warn at
+  connect (`stored WITHOUT an access-token expiry`) and needs a manual
+  re-connect whenever it expires. One whose token is expired AND carries
+  no refresh token logs a louder one (`NO refresh token`): it is stored,
+  but nothing can renew it and every run drawing it dies on its first LLM
+  call — re-run `codex login` and upload again.
+  You do **not** have to wait a sweep for a credential you connected
+  already expired: the connect fires one refresh immediately (best-effort,
+  off the request), and the server also sweeps once at boot rather than
+  only on its next tick — a restart used to re-phase that ticker, leaving
+  a token the previous replica was about to rotate dying for a full
+  period. Both show in the log as `oauth-forfait refresh …: rotated N
+  token(s)`.
 - **A run with no credential at all is QUEUED, not refused, by default.**
   The publisher logs one Warn (`no credential resolved for run=… tiers
   consulted: byok, oauth-forfait, pool, platform`) and the runner falls

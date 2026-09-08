@@ -227,43 +227,7 @@ func (s *Server) ListenAndServe() error {
 			}
 		}()
 	}
-	// OAuth-forfait token refresh: proactively rotate Claude Code (and
-	// Codex) subscription access tokens before they expire so neither an
-	// interactive run nor an automated (webhook/dispatcher/cron) run ever
-	// reads a stale credential. Covers personal AND org-scoped records.
-	// No-op without a store/sealer or any configured client id.
-	if s.oauthStore != nil && s.sealer != nil && (s.cfg.AnthropicOAuthClientID != "" || s.cfg.CodexOAuthClientID != "") {
-		worker := &secrets.OAuthRefreshWorker{
-			Store:             s.oauthStore,
-			Sealer:            s.sealer,
-			HTTP:              s.httpClient,
-			AnthropicClientID: s.cfg.AnthropicOAuthClientID,
-			CodexClientID:     s.cfg.CodexOAuthClientID,
-			Lead:              30 * time.Minute,
-		}
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
-			t := time.NewTicker(10 * time.Minute)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-						s.logger.Warn("oauth-forfait refresh: %v", err)
-					} else if n > 0 && s.logger != nil {
-						s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
-					}
-				}
-			}
-		}()
-	}
+	s.startOAuthForfaitRefresh()
 	// Forge → board issue sync (cloud only): periodically mirror every
 	// sync-enabled repo's forge issues onto its team board. Off unless a
 	// cloud board + the integration store are wired. See board_forge.go.
@@ -447,6 +411,116 @@ func (s *Server) ListenAndServe() error {
 	}
 	s.logger.Info("Editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 	return s.server.Serve(ln)
+}
+
+// oauthRefreshWorker builds the forfait refresh sweep, or nil when this
+// deployment has nothing to sweep with (no store, no sealer, no client id
+// for either kind). One builder for both callers — the periodic loop and
+// the out-of-band kick a connect fires — so neither can drift into
+// sweeping with a different lead or a different logger.
+func (s *Server) oauthRefreshWorker() *secrets.OAuthRefreshWorker {
+	if s.oauthStore == nil || s.sealer == nil || (s.cfg.AnthropicOAuthClientID == "" && s.cfg.CodexOAuthClientID == "") {
+		return nil
+	}
+	return &secrets.OAuthRefreshWorker{
+		Store:             s.oauthStore,
+		Sealer:            s.sealer,
+		HTTP:              s.httpClient,
+		AnthropicClientID: s.cfg.AnthropicOAuthClientID,
+		CodexClientID:     s.cfg.CodexOAuthClientID,
+		Lead:              30 * time.Minute,
+		Logger:            s.logger,
+	}
+}
+
+// kickOAuthRefresh runs ONE sweep out of band, off the request that
+// triggered it. It exists for the connect path: a credential uploaded
+// already expired is accepted on the promise that the worker renews it,
+// and without this that promise is up to a ticker period away — minutes in
+// which every run drawing the credential is handed a token the server
+// knows is dead.
+//
+// Detached from the request context (which dies with the response) and
+// bounded on its own, best-effort throughout: the upload has already
+// succeeded, and a provider that is down must not turn into a failed
+// connect. The claim makes it safe to overlap with the periodic sweep —
+// whichever gets there first does the exchange.
+func (s *Server) kickOAuthRefresh(ownerKey string, kind secrets.OAuthKind) {
+	worker := s.oauthRefreshWorker()
+	if worker == nil {
+		return
+	}
+	errtrack.Go("server.oauthRefreshOnConnect", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), oauthConnectRefreshTimeout)
+		defer cancel()
+		// The count is the SWEEP's, not this owner's: RunOnce is a full pass
+		// over every due record, and reading "owner=X … rotated 3" as three
+		// rotations of X's credential would be wrong on any deployment with
+		// more than one. The owner/kind name what TRIGGERED the pass.
+		if n, err := worker.RunOnce(ctx); err != nil {
+			s.logger.Warn("oauth-forfait refresh, swept on connect of owner=%s kind=%s: %v", ownerKey, kind, err)
+		} else if n > 0 {
+			s.logger.Info("oauth-forfait refresh, swept on connect of owner=%s kind=%s: rotated %d token(s) across all due records", ownerKey, kind, n)
+		}
+	})
+}
+
+// oauthConnectRefreshTimeout bounds that kick. Generous enough for the
+// exchange's three attempts at the 15s client timeout, short enough that a
+// hanging provider cannot keep a goroutine (and a refresh claim) alive
+// across the next periodic sweep.
+const oauthConnectRefreshTimeout = time.Minute
+
+// startOAuthForfaitRefresh runs the OAuth-forfait refresh sweep: proactively
+// rotate Claude Code (and Codex) subscription access tokens before they
+// expire so neither an interactive run nor an automated
+// (webhook/dispatcher/cron) run ever reads a stale credential. Covers
+// personal AND org-scoped records. No-op without a store/sealer or any
+// configured client id.
+//
+// Its own method so the boot sweep below is reachable from a test — the
+// hazard it closes is invisible in a unit test of RunOnce, which is exactly
+// how it went missing.
+func (s *Server) startOAuthForfaitRefresh() {
+	worker := s.oauthRefreshWorker()
+	if worker == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-s.shutdown
+			cancel()
+		}()
+		sweep := func() {
+			if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+				s.logger.Warn("oauth-forfait refresh: %v", err)
+			} else if n > 0 && s.logger != nil {
+				s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
+			}
+		}
+		// Boot sweep, for the same reason as the forge worker above: a
+		// restart re-phases the ticker onto this pod's start time, so a
+		// token the old replica was about to rotate would otherwise sit
+		// expired until this replica's first tick — ten minutes in which the
+		// publisher hands out a credential it knows is dead (it seals what
+		// the store holds; no tier checks the expiry). It also covers a
+		// connect: an expired-but-refreshable record is accepted on the
+		// promise that "the refresh worker renews it on its next pass", and
+		// after a restart that pass is a full period away.
+		sweep()
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
 }
 
 // startUserNotify builds the usernotify dispatcher (web-push sink), attaches

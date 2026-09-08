@@ -32,8 +32,35 @@ const oauthRefreshLead = 10 * time.Minute
 // runner already materialised at claim time).
 //
 // The goroutines stop when `stop` is closed (run end / cleanup). Only the
-// Claude Code (Anthropic) forfait is handled — it is the one with a known
-// public OAuth client id; codex files are left to the CLI / store worker.
+// Claude Code (Anthropic) forfait is handled, and NOT because codex lacks a
+// usable client id — a codex credential names its own (see
+// secrets.CodexCredentialsView.OAuthClientID), so that half is merely the
+// easy half. Codex is excluded because of OWNERSHIP.
+//
+// A codex run draws its blob from a SHARED tier (platform/team/pool: the
+// platform record is one meter for the whole deployment), so every
+// concurrent run materialises a copy of the SAME credential. This loop
+// refreshes a run-local FILE and never writes back to the OAuthStore — and
+// OpenAI rotates the refresh token on use, so the first run to refresh
+// would invalidate the token still held by the store, by the server's
+// OAuthRefreshWorker, and by every sibling run. One long run would poison
+// the deployment's codex forfait until a human re-connected it, which is a
+// strictly worse failure than the expiry this loop exists to avoid.
+//
+// That is not a hypothesis: it is the measured incident in
+// docs/bot-runs/feed-watch.md ("rotating refresh tokens make dual-client
+// use self-destructive — each refresh invalidates the other holder"), whose
+// remediation is stated as "one session, one record, one refresher", and
+// the reason pkg/backend/delegate/pi_codex.go goes to such lengths to keep
+// a codex refresh "the exception it should be rather than something every
+// node does". The single canonical codex refresher is the server-side
+// OAuthRefreshWorker, which rotates the record everyone reads from.
+//
+// Admitting codex here needs a centralised single-flight refresh against
+// the canonical record plus distribution of the new blob to live runs —
+// tracked as audit row B2 (native:fc0c51d4), not a `case` on this switch.
+// Anthropic is safe on the SAME shape only for want of a measured
+// counter-example; see the note on refreshAnthropicFile.
 func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files map[string]string) {
 	hc := &http.Client{Timeout: oauthRefreshHTTPTimeout}
 	for kind, path := range files {
@@ -105,6 +132,15 @@ func readAnthropicExpiry(path string) (time.Time, string, error) {
 // refreshAnthropicFile exchanges the file's refresh_token for a fresh access
 // token and rewrites the .credentials.json in place (0600). The HTTP call is
 // bounded by its own timeout context (hc.Timeout also applies).
+//
+// Note the asymmetry with codex (see startOAuthRefreshers): this writes the
+// run-local file only, never the OAuthStore, so IF Anthropic also rotated
+// the refresh token on use, the same "one credential, many refreshers"
+// hazard would apply to a shared claude_code forfait. Nothing in this tree
+// establishes either way — RefreshAnthropic merely tolerates a rotated
+// token — and no incident has been observed, so this long-standing
+// behaviour is left as it is rather than changed on a guess. It belongs
+// with the same audit row (B2 / native:fc0c51d4) as the codex fix.
 func refreshAnthropicFile(hc *http.Client, path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
